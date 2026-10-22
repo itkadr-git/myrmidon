@@ -90,7 +90,7 @@ describe("gemini execute", () => {
     const configuredHome = path.join(root, "configured-home");
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
-    const skillSource = await createSkillDir(path.join(root, "runtime-skills"), "paperclip");
+    const skillSource = await createSkillDir(path.join(root, "runtime-skills"), "myrmidon");
     await fs.mkdir(workspace, { recursive: true });
     await writeFakeGeminiCommand(commandPath);
 
@@ -119,8 +119,8 @@ describe("gemini execute", () => {
           cwd: workspace,
           env: { HOME: configuredHome },
           paperclipRuntimeSkills: [{
-            key: "paperclipai/paperclip/paperclip",
-            runtimeName: "paperclip",
+            key: "paperclipai/paperclip/myrmidon",
+            runtimeName: "myrmidon",
             source: skillSource,
           }],
           promptTemplate: "Follow the paperclip heartbeat.",
@@ -131,10 +131,10 @@ describe("gemini execute", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      const installedSkill = path.join(configuredHome, ".gemini", "skills", "paperclip");
+      const installedSkill = path.join(configuredHome, ".gemini", "skills", "myrmidon");
       expect((await fs.lstat(installedSkill)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(installedSkill)).toBe(await fs.realpath(skillSource));
-      await expect(fs.lstat(path.join(processHome, ".gemini", "skills", "paperclip"))).rejects.toThrow();
+      await expect(fs.lstat(path.join(processHome, ".gemini", "skills", "myrmidon"))).rejects.toThrow();
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -199,7 +199,7 @@ describe("gemini execute", () => {
       expect(capture.argv).toContain("yolo");
       const promptArg = capture.stdin; // myrmidon(H4)
       expect(promptArg).toContain("Follow the paperclip heartbeat.");
-      expect(promptArg).toContain("Paperclip runtime note:");
+      expect(promptArg).toContain("Myrmidon runtime note:");
       expect(capture.paperclipEnvKeys).toEqual(
         expect.arrayContaining([
           "PAPERCLIP_AGENT_ID",
@@ -209,9 +209,9 @@ describe("gemini execute", () => {
           "PAPERCLIP_RUN_ID",
         ]),
       );
-      expect(invocationPrompt).toContain("Paperclip runtime note:");
+      expect(invocationPrompt).toContain("Myrmidon runtime note:");
       expect(invocationPrompt).toContain("PAPERCLIP_API_URL");
-      expect(invocationPrompt).toContain("Paperclip API access note:");
+      expect(invocationPrompt).toContain("Myrmidon API access note:");
       expect(invocationPrompt).toContain("run_shell_command");
       expect(result.question).toBeNull();
     } finally {
@@ -491,7 +491,7 @@ describe("gemini execute", () => {
       const promptArg = capture.stdin; // myrmidon(H4)
       expect(capture.argv).toContain("--resume");
       expect(capture.argv).toContain("gemini-session-1");
-      expect(promptArg).toContain("## Paperclip Resume Delta");
+      expect(promptArg).toContain("## Myrmidon Resume Delta");
       expect(promptArg).toContain("Do not switch to another issue until you have handled this wake.");
       expect(promptArg).toContain("Second comment");
       expect(promptArg).not.toContain("Follow the paperclip heartbeat.");

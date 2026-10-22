@@ -12,6 +12,7 @@ import {
   nextPromotionFields,
   nextRollbackFields,
   readSkillPilotAgents,
+  resolveSkillPilotAgents,
   rollbackTargetVersionId,
   SkillLifecycleError,
   type SkillDeliveryState,
@@ -41,6 +42,14 @@ export interface SkillLifecycleServiceDeps {
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
   logActivity?: (entry: SkillLifecycleActivityEntry) => Promise<void>;
+  /**
+   * myrmidon(1.6.6 KNOWLEDGE-2.0 K-7): the board-stored pilot list of one
+   * company (null = not configured on the board, then env applies). Injected so
+   * the service keeps no DB dependency; wired to pilot-agents-store in index.ts.
+   */
+  readStoredPilotAgents?: (companyId: string) => Promise<string[] | null>;
+  /** Replace the board-stored pilot list of one company (PUT of the setting). */
+  writeStoredPilotAgents?: (companyId: string, agentIds: readonly string[]) => Promise<string[]>;
 }
 
 export interface SkillLifecycleView {
@@ -70,11 +79,32 @@ export interface SkillLifecycleDelivery {
   reasons: Map<string, string>;
 }
 
+/**
+ * myrmidon(PERF-DIET-G): a caller-provided cache of one sweep (the shape of
+ * bot-containers/profile-pass.ts `BotProfilePass`, declared here so this module
+ * needs no dependency on the bot containers). `resolveDelivery` is per agent,
+ * but the two reads behind it — the company's skills and their lifecycle
+ * records — are company-scoped and identical for every bot, so a caller that
+ * compiles a whole sweep shares them through this.
+ */
+export interface SkillLifecycleReadCache {
+  once<T>(key: string, read: () => Promise<T>): Promise<T>;
+}
+
 export interface SkillLifecycleService {
   list(companyId: string): Promise<SkillLifecycleView[]>;
   state(companyId: string, skillId: string): Promise<SkillLifecycleView>;
   history(companyId: string, skillId: string): Promise<SkillLifecycleEvent[]>;
   setCandidate(companyId: string, skillId: string, actor: SkillLifecycleActor): Promise<SkillLifecycleView>;
+  /** The effective pilot set of a company and which source produced it (§5.5, K-7). */
+  pilotAgents(companyId: string): Promise<{ agentIds: string[]; source: "setting" | "env" }>;
+  /** Store the pilot list of a company on the board; an empty array is an
+   *  explicit "no pilot". */
+  setPilotAgents(
+    companyId: string,
+    agentIds: readonly string[],
+    actor: SkillLifecycleActor,
+  ): Promise<{ agentIds: string[]; source: "setting" | "env" }>;
   promote(
     companyId: string,
     skillId: string,
@@ -91,7 +121,7 @@ export interface SkillLifecycleService {
     companyId: string,
     skillId: string,
   ): Promise<{ versionId: string; revisionNumber: number; files: Array<{ path: string; content: string }> } | null>;
-  resolveDelivery(companyId: string, agentId: string): Promise<SkillLifecycleDelivery>;
+  resolveDelivery(companyId: string, agentId: string, cache?: SkillLifecycleReadCache): Promise<SkillLifecycleDelivery>;
 }
 
 function actorIdOf(actor: SkillLifecycleActor): string {
@@ -227,13 +257,50 @@ export function createSkillLifecycleService(deps: SkillLifecycleServiceDeps): Sk
       return viewOf(skill, saved, await revisionNumber(companyId, skill.id, saved.verifiedVersionId));
     },
 
+    async pilotAgents(companyId) {
+      const stored = (await deps.readStoredPilotAgents?.(companyId)) ?? null;
+      const resolved = resolveSkillPilotAgents({ stored, envIds: readSkillPilotAgents(env) });
+      return {
+        agentIds: [...resolved].sort(),
+        source: stored !== null ? "setting" : "env",
+      };
+    },
+
+    async setPilotAgents(companyId, agentIds, actor) {
+      if (!deps.writeStoredPilotAgents) {
+        throw new SkillLifecycleError("pilot_setting_unavailable", "The pilot setting is not wired on this server.");
+      }
+      const saved = await deps.writeStoredPilotAgents(companyId, agentIds);
+      await recordActivity({
+        companyId,
+        actorType: actor.actorType,
+        actorId: actorIdOf(actor),
+        action: "skill.lifecycle_pilot_agents",
+        entityType: "company_skill",
+        entityId: companyId,
+        details: { agentIds: saved },
+      });
+      return { agentIds: [...saved].sort(), source: "setting" as const };
+    },
+
     async promote(companyId, skillId, input) {
       const skill = await requireSkill(companyId, skillId);
-      const approval = await store.getApproval(input.approvalId);
-      const approved = assertPromotionApproval(approval, skill.id);
       const versionId = skill.currentVersionId;
       if (!versionId) {
-        throw new SkillLifecycleError("promotion_no_version", "The skill has no version to promote.");
+        throw new SkillLifecycleError("skill_has_no_version", "A skill without a version cannot be promoted.");
+      }
+      // Validate first so pending or malformed approvals report their real gate
+      // error; consume only after the approval is known to be eligible.
+      const pendingApproval = await store.getApproval(input.approvalId);
+      assertPromotionApproval(pendingApproval, skill.id);
+      const approved = await store.consumeApproval(input.approvalId, companyId, skill.id);
+      if (!approved) {
+        // Another promotion may have consumed the approval between the read and
+        // the conditional update. Do not allow the stale read to authorize it.
+        throw new SkillLifecycleError(
+          "promotion_requires_approved_status",
+          "Promotion requires an approved approval of type skill_promotion for this skill.",
+        );
       }
       const existing = await store.getRecord(companyId, skill.id);
       const timestamp = now();
@@ -353,15 +420,32 @@ export function createSkillLifecycleService(deps: SkillLifecycleServiceDeps): Sk
       };
     },
 
-    async resolveDelivery(companyId, agentId) {
-      const [skills, records] = await Promise.all([store.listSkills(companyId), store.listRecords(companyId)]);
+    // myrmidon(PERF-DIET-G): the two reads are company-scoped and identical for
+    // every bot of the company — shared through `cache` when the caller compiles
+    // more than one bot (a sweep). The decision below stays per agent: a
+    // candidate reaches the pilot set, not the fleet.
+    async resolveDelivery(companyId, agentId, cache) {
+      const readCatalogue = () => Promise.all([store.listSkills(companyId), store.listRecords(companyId)]);
+      const [skills, records] = cache
+        ? await cache.once(`skill-lifecycle:${companyId}`, readCatalogue)
+        : await readCatalogue();
       const byId = new Map(records.map((record) => [record.skillId, record] as const));
-      const pilotAgentIds = readSkillPilotAgents(env);
+      // K-7: the board setting wins over env once written (an explicit empty
+      // list is "no pilot"); env is the fallback. Shared per sweep like the
+      // catalogue reads: company-scoped, identical for every bot.
+      const readPilot = async (): Promise<Set<string>> =>
+        resolveSkillPilotAgents({
+          stored: (await deps.readStoredPilotAgents?.(companyId)) ?? null,
+          envIds: readSkillPilotAgents(env),
+        });
+      const pilotAgentIds = cache
+        ? await cache.once(`skill-pilot-agents:${companyId}`, readPilot)
+        : await readPilot();
       const delivery: SkillLifecycleDelivery = { blockedKeys: new Set(), pinnedVersions: new Map(), reasons: new Map() };
       for (const skill of skills) {
         const record = byId.get(skill.id) ?? null;
         const state: SkillDeliveryState | null = record
-          ? { state: record.state, verifiedVersionId: record.verifiedVersionId }
+          ? { state: record.state, verifiedVersionId: record.verifiedVersionId, authorAgentId: skill.originAgentId ?? null }
           : null;
         const decision = decideSkillDelivery({ skillKey: skill.key, agentId, lifecycle: state, pilotAgentIds });
         if (decision.blocked) {

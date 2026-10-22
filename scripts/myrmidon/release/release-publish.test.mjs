@@ -27,6 +27,7 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(HERE, "publish-github-release.sh");
+const SCRIPT_TEXT = fs.readFileSync(SCRIPT, "utf8");
 const BUILDER = path.join(HERE, "release-body.mjs");
 const REPO = "itkadr-git/myrmidon";
 const COMMIT = "c78a6c9fde4992a98e5e76d3fd556e33bb87935a";
@@ -172,12 +173,15 @@ function writeFakeGh(dir) {
   return bin;
 }
 
-function sandbox({ runs = [], releases = {}, changelog = CHANGELOG } = {}) {
+function sandbox({ runs = [], releases = {}, changelog = CHANGELOG, auditReport = "# DB audit\n\nDone.\n" } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-release-publish-"));
   const bin = writeFakeGh(dir);
-  // The checkout the script runs in (cwd): the changelog at its repo path.
-  fs.mkdirSync(path.join(dir, "docs/myrmidon"), { recursive: true });
+  // The checkout the script runs in (cwd): the changelog and release docs.
+  fs.mkdirSync(path.join(dir, "docs/myrmidon/releases"), { recursive: true });
   fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), changelog);
+  if (auditReport !== null) {
+    fs.writeFileSync(path.join(dir, "docs/myrmidon/releases/1.6.0-db-audit.md"), auditReport);
+  }
   fs.writeFileSync(path.join(dir, "ref-tag.json"),
     JSON.stringify({ object: { sha: TAG_OBJECT, type: "tag" } }));
   fs.writeFileSync(path.join(dir, "tag-object.json"),
@@ -232,28 +236,28 @@ const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : ""
 const mutations = (sb) => read(path.join(sb.dir, "mutations.log"));
 
 const GREEN_RUNS = [
-  run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success"),
+  run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success"),
   run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
   run(COMMIT, ".github/workflows/myrmidon-dockergate.yml", "success"),
   run(COMMIT, ".github/workflows/myrmidon-fleetd.yml", "success"),
 ];
 
 describe("publish-github-release.sh: the CI gate", () => {
-  it("refuses to publish when Myrmidon CI failed for the tag commit", () => {
+  it("refuses to publish when Myrmidon CI (tag) failed for the tag commit", () => {
     const sb = sandbox({ runs: [
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "failure"),
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "failure"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
     ] });
     const { code, out } = runScript(sb, "myr-v1.6.0");
     assert.notEqual(code, 0, out);
-    assert.match(out, /Myrmidon CI did not succeed/);
+    assert.match(out, /Myrmidon CI \(tag\) did not succeed/);
     assert.match(out, /NOT publishing/);
     assert.equal(mutations(sb), "", "no release mutation happened");
   });
 
   it("refuses to publish when the board image workflow failed", () => {
     const sb = sandbox({ runs: [
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "failure"),
     ] });
     const { code, out } = runScript(sb, "myr-v1.6.0");
@@ -268,14 +272,14 @@ describe("publish-github-release.sh: the CI gate", () => {
     ] });
     const { code, out } = runScript(sb, "myr-v1.6.0");
     assert.notEqual(code, 0, out);
-    assert.match(out, /no run of Myrmidon CI found/);
+    assert.match(out, /no run of Myrmidon CI \(tag\) found/);
     assert.equal(mutations(sb), "");
   });
 
   it("publishes when dockergate/fleetd have no run (paths-filtered), but not when they failed", () => {
     // absent: fine
     const sbOk = sandbox({ runs: [
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
     ] });
     const ok = runScript(sbOk, "myr-v1.6.0");
@@ -286,7 +290,7 @@ describe("publish-github-release.sh: the CI gate", () => {
 
     // failed: refuse
     const sbBad = sandbox({ runs: [
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
       run(COMMIT, ".github/workflows/myrmidon-fleetd.yml", "failure"),
     ] });
@@ -298,13 +302,72 @@ describe("publish-github-release.sh: the CI gate", () => {
 
   it("treats a mixed conclusion (a failed attempt among re-runs) as failure", () => {
     const sb = sandbox({ runs: [
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success"),
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "failure"),
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "failure"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
     ] });
     const { code, out } = runScript(sb, "myr-v1.6.0");
     assert.notEqual(code, 0, out);
-    assert.match(out, /Myrmidon CI did not succeed.*mixed/);
+    assert.match(out, /Myrmidon CI \(tag\) did not succeed.*mixed/);
+    assert.equal(mutations(sb), "");
+  });
+
+  // RELEASE-GATE-POLL-BUDGET: the gate's wait budget must cover a
+  // tag CI run delayed far beyond the old 120-poll default by the
+  // hosted-runner queue. rc.13: 9 workflows started at the tag push, the tag
+  // CI completed after ~50 min (> 120 x 20 s = 40 min) and the publish died
+  // at the timeout with an empty verdict 11 min before the green run landed.
+  // The scenario «the run completes only after more than the old 120 polls»
+  // must now publish (POLL_SECONDS is overridden to 0 in the tests, so the
+  // poll count is the budget, not the wall clock).
+  it("publishes when the tag CI run completes only after more than the old 120 polls (the rc.13 queue delay)", () => {
+    const before = [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", null, "in_progress"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ];
+    const after = [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success"),
+      before[1],
+    ];
+    const sb = sandbox({ runs: before });
+    fs.writeFileSync(path.join(sb.dir, "runs-after.json"),
+      JSON.stringify({ total_count: after.length, workflow_runs: after }));
+    // Reads per gate poll: one for the cancelled-run pre-check, then two per
+    // poll (verdict + status) while the verdict is "missing". The old default
+    // budget (120) times out on poll 120, i.e. after read 1 + 2*120 + 2 = 243
+    // reads. Switching after 300 reads (~poll 149) therefore lands strictly
+    // between the old (120) and the new (240) budget: the same scenario must
+    // time out with the old budget and publish with the raised one.
+    const switchAfter = "300";
+    const old = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_POLL_MAX: "120",
+      GH_RUNS_SWITCH_AFTER: switchAfter,
+    } });
+    assert.notEqual(old.code, 0, old.out);
+    assert.match(old.out, /timed out waiting for Myrmidon CI \(tag\) runs on .* after 120 polls/);
+    assert.equal(mutations(sb), "");
+    fs.rmSync(path.join(sb.dir, "runs-reads.count"), { force: true });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_POLL_MAX: "240",
+      GH_RUNS_SWITCH_AFTER: switchAfter,
+    } });
+    assert.equal(code, 0, out);
+    assert.match(out, /gate: Myrmidon CI \(tag\) success/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("still refuses on a tag CI run that never completes, just after more polls (240, not 120)", () => {
+    // The raised budget must not turn the gate into an infinite wait: with
+    // the run never completing the publish refuses — after POLL_MAX polls.
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", null, "in_progress"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_POLL_MAX: "6",
+    } });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /timed out waiting for Myrmidon CI \(tag\) runs on .* after 6 polls/);
     assert.equal(mutations(sb), "");
   });
 
@@ -318,14 +381,11 @@ describe("publish-github-release.sh: the CI gate", () => {
     // which was still in progress. The old gate matched by head_sha only,
     // saw the green main run, skipped the wait and the digest probe failed.
     const before = [
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "main"),
-      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "main"),
-      // the tag's own CI run completed with the push; the image run builds
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", null, "in_progress"),
     ];
     const after = [
-      ...before.slice(0, 3),
+      before[0],
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
     ];
     const sb = sandbox({ runs: before });
@@ -342,9 +402,8 @@ describe("publish-github-release.sh: the CI gate", () => {
     // Same layout, but the TAG's image run completed with a failure: the
     // refusal must name the tag run, not be masked by the green main run.
     const sb = sandbox({ runs: [
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "main"),
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "main"),
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "failure"),
     ] });
     const { code, out } = runScript(sb, "myr-v1.6.0");
@@ -354,36 +413,93 @@ describe("publish-github-release.sh: the CI gate", () => {
     assert.equal(mutations(sb), "");
   });
 
-  it("CI gate accepts the same-commit main run (myrmidon-ci.yml has no tag trigger), but the image gate still refuses only-main runs", () => {
-    // Only main-branch runs exist. myrmidon-ci.yml triggers on pull_request /
-    // push to main / workflow_dispatch — NOT on tags, so a release tag never
-    // has a CI run of its own; CI is commit-level validation and a green
-    // main run of the SAME commit is the evidence the gate wants
-    // (RELEASE-PUBLISH-WAIT follow-up). The image workflows DO run on tags,
-    // so their gates stay tag-scoped: a green main image run must NOT
-    // satisfy the board-image gate.
+  // ---- TAG-CI (the 1.6.4 incident): the tag's own run is the ONLY source of green ----
+
+  it("CI gate no longer accepts the same-commit main run: the publish green comes from the tag's own run only", () => {
+    // 1.6.4 shape: the release commit's main-branch runs are green, but the
+    // tag has no CI run of its own yet (myrmidon-ci-tag.yml still starting).
+    // The old gate passed CI on the main run; the new gate waits for the
+    // TAG run and refuses when it never completes.
     const sb = sandbox({ runs: [
       run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "main"),
-      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "main"),
-    ] });
-    const { code, out } = runScript(sb, "myr-v1.6.0");
-    // the CI gate passed on the main run, the image gate timed out waiting
-    assert.notEqual(code, 0, out);
-    assert.match(out, /gate: Myrmidon CI success for/);
-    assert.match(out, /no run of Myrmidon image \(board\) found|timed out waiting for Myrmidon image \(board\)/);
-    assert.equal(mutations(sb), "");
-  });
-
-  it("CI gate refuses when the same-commit CI run failed on main (fail-closed stays)", () => {
-    const sb = sandbox({ runs: [
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "failure", "completed", "main"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
     ] });
     const { code, out } = runScript(sb, "myr-v1.6.0");
     assert.notEqual(code, 0, out);
-    assert.match(out, /Myrmidon CI did not succeed/);
-    assert.match(out, /NOT publishing/);
+    assert.match(out, /no run of Myrmidon CI \(tag\) found|timed out waiting for Myrmidon CI \(tag\)/);
     assert.equal(mutations(sb), "");
+  });
+
+  it("publishes when the tag's own CI run is green even with no main-branch run at all", () => {
+    // The inverse of the old main-fallback test: a green tag run is
+    // sufficient by itself — the gate never looks at main.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    assert.match(out, /gate: Myrmidon CI \(tag\) success/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("refuses to publish when the tag CI run was cancelled (the 1.6.4 shape)", () => {
+    // The exact incident: main's concurrency-cancel cancelled the CI run of
+    // the tag's commit; the publish must refuse LOUDLY (naming the cancelled
+    // run and the workflow_dispatch recovery), not time out waiting.
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "cancelled"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(code, 0, out);
+    assert.match(out, /Myrmidon CI \(tag\) has a CANCELLED run/);
+    assert.match(out, /NOT publishing/);
+    assert.match(out, /workflow_dispatch/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("accepts an -rc.N tag through the same tag-scoped gate", () => {
+    // RC releases (myr-v1.6.5-rc.1) take the same tag-scoped gate: the CI
+    // runs are matched by head_branch == the RC tag. (The body builder is
+    // X.Y.Z-scoped today; the RC publish path belongs to the RC task — this
+    // test pins the GATE side only.)
+    const rcTag = "myr-v1.6.0-rc.1";
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success", "completed", rcTag),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", rcTag),
+    ] });
+    const { code, out } = runScript(sb, rcTag);
+    assert.match(out, /gate: Myrmidon CI \(tag\) success/);
+    assert.match(out, /gate: Myrmidon image \(board\) success/);
+  });
+
+  it("still refuses a tag that does not look like myr-vX.Y.Z[-rc.N]", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "main");
+    assert.notEqual(code, 0, out);
+    assert.match(out, /tag must look like myr-vX\.Y\.Z/);
+    assert.equal(mutations(sb), "");
+  });
+});
+
+describe("publish-github-release.sh: the DB audit gate", () => {
+  it("refuses a final tag without its versioned audit report before waiting for CI", () => {
+    const sb = sandbox({ runs: GREEN_RUNS, auditReport: null });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(code, 0, out);
+    assert.match(out, /docs\/myrmidon\/releases\/1\.6\.0-db-audit\.md is missing/);
+    assert.match(out, /OPE-401 decision registry/);
+    assert.equal(mutations(sb), "");
+    assert.doesNotMatch(out, /gate: Myrmidon CI/);
+  });
+
+  it("does not require an audit report for an rc tag", () => {
+    const rcTag = "myr-v1.6.0-rc.1";
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success", "completed", rcTag),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", rcTag),
+    ], auditReport: null });
+    const { out } = runScript(sb, rcTag);
+    assert.match(out, /gate: rc tag/);
+    assert.doesNotMatch(out, /audit report .* is missing/);
   });
 });
 
@@ -443,7 +559,7 @@ describe("publish-github-release.sh: the release body and mutations", () => {
 describe("publish-github-release.sh: release candidates (RC-VERSIONS)", () => {
   it("publishes an rc as a PRE-RELEASE with the rc title, the base version's notes and the rc's digests — and supersedes nothing", () => {
     const rcRuns = [
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "myr-v1.6.0-rc.1"),
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success", "completed", "myr-v1.6.0-rc.1"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "myr-v1.6.0-rc.1"),
     ];
     const sb = sandbox({
@@ -471,7 +587,7 @@ describe("publish-github-release.sh: release candidates (RC-VERSIONS)", () => {
 
   it("the rc body carries the trial-run header pointing at the final tag and promote-latest.sh", () => {
     const sb = sandbox({ runs: [
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "myr-v1.6.0-rc.1"),
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success", "completed", "myr-v1.6.0-rc.1"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "myr-v1.6.0-rc.1"),
     ] });
     const { code, out } = runScript(sb, "myr-v1.6.0-rc.1");
@@ -743,6 +859,72 @@ describe("myrmidon-release.yml: the tag input wins over ref_name", () => {
   it("declares the tag input as required", () => {
     assert.match(workflow, /tag:\s*\n\s+description:[^\n]+\n\s+required: true/);
   });
+
+  // RELEASE-GATE-POLL-BUDGET: the publish job raises the gate's
+  // poll budget so a tag CI run delayed by the tag-push runner queue
+  // (rc.13: ~50 min against the 40-min default) is waited out instead of
+  // timing out with an empty verdict.
+  it("raises the gate wait budget for the tag CI queue delay (MYRMIDON_RELEASE_POLL_MAX)", () => {
+    assert.match(workflow, /MYRMIDON_RELEASE_POLL_MAX: "240"/);
+    // The budget (20 s x 240 = 80 min) must stay inside the job's own timeout.
+    assert.match(workflow, /timeout-minutes: 90/);
+  });
+});
+
+// TAG-CI (the 1.6.4 incident): the tag has its own un-cancellable CI run
+// and the publish gate takes its green from it alone.
+describe("myrmidon-ci-tag.yml: the tag CI is a separate un-cancellable run", () => {
+  const TAG_WORKFLOW = path.join(HERE, "..", "..", "..", ".github", "workflows", "myrmidon-ci-tag.yml");
+  const workflow = fs.readFileSync(TAG_WORKFLOW, "utf8");
+
+  it("triggers on release tags (including -rc.N) and workflow_dispatch", () => {
+    assert.match(workflow, /on:\s*\n\s+push:\s*\n\s+tags:\s*\n\s+- "myr-v\*\.\*\.\*"/);
+    assert.match(workflow, /workflow_dispatch:/);
+  });
+
+  it("has its own concurrency group keyed by the tag with cancel-in-progress: false", () => {
+    assert.match(workflow, /group: myrmidon-ci-tag-\$\{\{ inputs\.tag \|\| github\.ref_name \}\}/);
+    assert.match(workflow, /cancel-in-progress: false/);
+    // A main push must never share the group: the group expression carries
+    // no pull_request number / branch ref from the main CI.
+    assert.doesNotMatch(workflow, /group: myrmidon-ci-\$\{\{ github\.event/);
+  });
+
+  it("keeps the full-tier lanes of myrmidon-ci.yml (typecheck, build, tests, checks, dockergate, fleetd)", () => {
+    for (const lane of ["typecheck:", "build:", "tests:", "tests-other:", "tests-runner:", "checks:", "fleetd:", "dockergate:", "ci-result:"]) {
+      assert.match(workflow, new RegExp(`^  ${lane}`, "m"), `lane ${lane} missing`);
+    }
+    // every lane is mandatory for the result: nothing may skip
+    assert.match(workflow, /all\(to_entries\[\]; \.value\.result == "success"\)/);
+  });
+
+  it("workflow_dispatch checks out the typed tag (the 1.6.4 manual re-run path)", () => {
+    const checkouts = [...workflow.matchAll(/ref: \$\{\{ ([^}]+) \}\}/g)].map((m) => m[1]);
+    assert.ok(checkouts.length >= 3, "every lane's checkout resolves the tag");
+    for (const expr of new Set(checkouts)) {
+      assert.equal(expr, "inputs.tag || ''");
+    }
+  });
+});
+
+describe("publish-github-release.sh: the gate takes its green from the tag CI workflow", () => {
+  it("waits on myrmidon-ci-tag.yml, not myrmidon-ci.yml", () => {
+    assert.match(SCRIPT_TEXT, /wait_for "\.github\/workflows\/myrmidon-ci-tag\.yml" must "Myrmidon CI \(tag\)"/);
+    assert.doesNotMatch(SCRIPT_TEXT, /wait_for "\.github\/workflows\/myrmidon-ci\.yml"/);
+  });
+
+  it("refuses a cancelled tag CI run before waiting", () => {
+    assert.match(SCRIPT_TEXT, /refuse_if_cancelled "\.github\/workflows\/myrmidon-ci-tag\.yml"/);
+    assert.match(SCRIPT_TEXT, /CANCELLED run/);
+  });
+
+  it("never matches main-branch runs (no main fallback in the run selectors)", () => {
+    assert.doesNotMatch(SCRIPT_TEXT, /branch_match_expr "\$tag" main/);
+  });
+
+  it("accepts -rc.N tags", () => {
+    assert.match(SCRIPT_TEXT, /\^myr-v\(\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\)\(-rc\\\.\(\[0-9\]\+\)\)\?\$/);
+  });
 });
 
 describe("release-body.mjs: body construction", () => {
@@ -789,6 +971,57 @@ describe("release-body.mjs: body construction", () => {
     assert.match(body, /check-release-support\.sh --from-tag 1\.6\.0/);
     // no private addresses, no token-shaped strings
     assert.doesNotMatch(body, /(?<!\d)(?:10|192|172)\.\d+\.\d+\.\d+(?!\d)/);
+  });
+
+  it("condenses a notes section over GitHub's limit to its entry headings (the 1.6.6-rc.1 publish)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "release-body-condense-"));
+    fs.mkdirSync(path.join(dir, "docs/myrmidon/changes"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "docs/myrmidon/changes/huge.md"),
+      `## changelog-en\n\n### Huge entry\n\n- ${"x".repeat(130000)}\n`,
+    );
+    const registryState = {
+      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",
+      "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+    };
+    fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
+    fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), "# Changelog\n");
+    const r = spawnSync("node", [BUILDER, "--registry-state", path.join(dir, "registry-state.json"), "1.6.5-rc.6"], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.length <= 125000);
+    assert.match(r.stdout, /^- Huge entry$/m);
+    assert.match(r.stdout, /docs\/myrmidon\/CHANGELOG\.md/);
+    assert.doesNotMatch(r.stdout, /x{1000}/);
+    assert.match(r.stderr, /publishing the entry headings/);
+  });
+
+  it("refuses a body over GitHub's 125000-character limit before publish (the 1.6.5-rc.6 422)", () => {
+    // An rc body collects every pending change fragment; a long release
+    // window overruns GitHub's release-body limit and `gh release create`
+    // dies with HTTP 422 after all gates passed. The builder must refuse
+    // first, naming the limit and the byte count.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "release-body-limit-"));
+    fs.mkdirSync(path.join(dir, "docs/myrmidon/changes"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "docs/myrmidon/changes/huge.md"),
+      `## changelog-en\n\n### ${"Huge heading ".repeat(11000)}\n\n- entry\n`,
+    );
+    const registryState = {
+      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",
+      "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+    };
+    fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
+    fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), "# Changelog\n");
+    const r = spawnSync("node", [BUILDER, "--registry-state", path.join(dir, "registry-state.json"), "1.6.5-rc.6"], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 1, `expected a refusal, got: ${r.stdout.slice(0, 200)}`);
+    assert.match(r.stderr, /125000/);
+    assert.match(r.stderr, /body is too long|characters/);
   });
 });
 
@@ -884,5 +1117,64 @@ describe("release manifest (release-components.json)", () => {
     assert.equal(manifest.version, "1.6.0");
     assert.deepEqual(Object.keys(manifest.components).sort(), ["board", "dockergate", "fleetd", "hermes"]);
     assert.match(manifest.components.dockergate.digest, /^sha256:/);
+  });
+});
+
+// VENDOR-SHARE-METRIC (1.6.5): the publisher appends the vendor-derived share
+// and its delta to the previous release to the notes. The current share comes
+// from MYRMIDON_RELEASE_VENDOR_SHARE_STATE (the offline seam next to
+// MYRMIDON_RELEASE_REGISTRY_STATE) and the previous numbers from
+// MYRMIDON_RELEASE_PREVIOUS_BODY (the previous release's own notes). A metric
+// failure must never break a publish: the section then reads «не посчитано»
+// and the release still goes out (OPE-4152 acceptance).
+describe("publish-github-release.sh: the vendor-derived share in the notes", () => {
+  const writeShareState = (sb, { inherited, totalFiles }) => {
+    const file = path.join(sb.dir, "vendor-share-state.json");
+    fs.writeFileSync(file, JSON.stringify({
+      summary: { inherited, totalFiles, share: inherited / totalFiles },
+    }));
+    return file;
+  };
+
+  it("appends the share and the delta to the previous release", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const previousBody = path.join(sb.dir, "previous-body.md");
+    fs.writeFileSync(previousBody, "Vendor-derived files: 6116 of 6812 (89.78%)\n");
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VENDOR_SHARE_STATE: writeShareState(sb, { inherited: 6123, totalFiles: 6812 }),
+      MYRMIDON_RELEASE_PREVIOUS_BODY: previousBody,
+    } });
+    assert.equal(code, 0, out);
+    assert.match(out, /vendor-share section: Vendor-derived files: 6123 of 6812 \(89\.89%\)/);
+    const log = mutations(sb);
+    assert.match(log, /create tag=myr-v1\.6\.0/);
+    assert.match(log, /## Vendor-derived files/);
+    assert.match(log, /Vendor-derived files: 6123 of 6812 \(89\.89%\), Δ to myr-v1\.5\.0: \+0\.10 pp \(\+7 files\)/);
+    // the metric is additive: the CHANGELOG section is still in the body
+    assert.match(log, /New thing A\./);
+  });
+
+  it("says 'нет данных' when the previous release carries no share line", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const previousBody = path.join(sb.dir, "previous-body.md");
+    fs.writeFileSync(previousBody, "## What's changed\n\n- nothing about vendor files\n");
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VENDOR_SHARE_STATE: writeShareState(sb, { inherited: 6123, totalFiles: 6812 }),
+      MYRMIDON_RELEASE_PREVIOUS_BODY: previousBody,
+    } });
+    assert.equal(code, 0, out);
+    assert.match(mutations(sb), /Δ to myr-v1\.5\.0: нет данных \(no vendor-share line in that release\)/);
+  });
+
+  it("publishes «не посчитано» instead of failing when the share cannot be computed", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VENDOR_SHARE_STATE: path.join(sb.dir, "absent.json"),
+    } });
+    assert.equal(code, 0, "a metric failure never breaks the publish");
+    assert.match(out, /vendor-share metric not computed/);
+    const log = mutations(sb);
+    assert.match(log, /create tag=myr-v1\.6\.0/);
+    assert.match(log, /## Vendor-derived files\s*\n\s*не посчитано/);
   });
 });

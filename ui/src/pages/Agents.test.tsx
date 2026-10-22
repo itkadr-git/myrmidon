@@ -10,6 +10,7 @@ import { ToastProvider } from "../context/ToastContext";
 import type { BuiltInAgentState } from "../api/builtInAgents";
 import { Agents } from "./Agents";
 import { Agents as ProductionAgents } from "./Agents.production";
+import { agentBelongsToProject, filterAgentsByScope, parseAgentScope } from "./Agents.scope-filters";
 import type { AgentOrgChainHealth } from "@paperclipai/shared";
 
 const mockRouterState = vi.hoisted(() => ({
@@ -21,6 +22,7 @@ const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   org: vi.fn(),
 }));
+const mockProjectsApi = vi.hoisted(() => ({ list: vi.fn() }));
 
 const mockBuiltInAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -39,6 +41,10 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   get: vi.fn(),
+}));
+
+const mockAuthApi = vi.hoisted(() => ({
+  getSession: vi.fn(),
 }));
 
 const mockResourceMembershipsApi = vi.hoisted(() => ({
@@ -77,6 +83,7 @@ vi.mock("../context/SidebarContext", () => ({
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
+vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 
 vi.mock("../api/builtInAgents", () => ({
   builtInAgentsApi: mockBuiltInAgentsApi,
@@ -92,6 +99,10 @@ vi.mock("../api/heartbeats", () => ({
 
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/auth", () => ({
+  authApi: mockAuthApi,
 }));
 
 vi.mock("../api/resourceMemberships", () => ({
@@ -294,6 +305,27 @@ function findAgentRow(container: HTMLElement, agentName: string): HTMLElement | 
   return Array.from(container.querySelectorAll("a")).find((row) => row.textContent?.includes(agentName)) ?? null;
 }
 
+describe("Agents scope filters", () => {
+  it("parses company and project scope from the URL", () => {
+    expect(parseAgentScope("")).toEqual({ type: "company" });
+    expect(parseAgentScope("?scope=project%3Ap-1")).toEqual({ type: "project", projectId: "p-1" });
+  });
+
+  it("filters only by explicit membership, falling back to project lead", () => {
+    const projectAgent = makeAgent({ id: "a1", projectIds: ["p1"] } as Partial<Agent>);
+    const otherAgent = makeAgent({ id: "a2", projectIds: ["p2"] } as Partial<Agent>);
+    expect(agentBelongsToProject(projectAgent, { id: "p1", leadAgentId: null, agentIds: [] })).toBe(true);
+    expect(agentBelongsToProject(otherAgent, { id: "p1", leadAgentId: "a2", agentIds: [] })).toBe(false);
+    expect(filterAgentsByScope([projectAgent, otherAgent], { type: "project", projectId: "p1" }, [{ id: "p1", leadAgentId: null, agentIds: [] }]))
+      .toEqual([projectAgent]);
+  });
+
+  it("preserves the whole roster for company scope", () => {
+    const roster = [makeAgent({ id: "a1" }), makeAgent({ id: "a2" })];
+    expect(filterAgentsByScope(roster, { type: "company" }, [])).toEqual(roster);
+  });
+});
+
 describe("Agents", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
@@ -311,11 +343,14 @@ describe("Agents", () => {
 
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({
-        adapterConfig: { model: "gpt-5.4" },
+        // myrmidon(PERF-DIET-G): the list row carries the precomputed model, not
+        // the adapter config.
+        adapterModel: "gpt-5.4",
         // Old enough that relativeTime() falls back to an absolute date string.
         lastHeartbeatAt: new Date("2026-01-15T00:00:00Z"),
       }),
     ]);
+    mockProjectsApi.list.mockResolvedValue([]);
     mockAgentsApi.org.mockResolvedValue([
       {
         id: "agent-1",
@@ -331,6 +366,7 @@ describe("Agents", () => {
     ]);
     mockEnvironmentsApi.capabilities.mockResolvedValue(environmentCapabilities);
     mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings());
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" }, session: { userId: "user-1" } });
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockResourceMembershipsApi.listMine.mockResolvedValue({
       projectMemberships: {},
@@ -430,9 +466,12 @@ describe("Agents", () => {
     });
     await flushReact();
 
+    const treeToggle = container.querySelector<HTMLButtonElement>('button[aria-label="Tree view"]');
     const listToggle = container.querySelector<HTMLButtonElement>('button[aria-label="List view"]');
     const orgToggle = container.querySelector<HTMLButtonElement>('button[aria-label="Org chart view"]');
-    expect(listToggle?.getAttribute("aria-pressed")).toBe("true");
+    // myrmidon(AGENTS-TREE): the hierarchy tree is the default view now.
+    expect(treeToggle?.getAttribute("aria-pressed")).toBe("true");
+    expect(listToggle?.getAttribute("aria-pressed")).toBe("false");
     expect(orgToggle?.getAttribute("aria-pressed")).toBe("false");
     expect(orgToggle?.querySelector(".lucide-network")).not.toBeNull();
     expect(orgToggle?.querySelector(".lucide-git-branch")).toBeNull();
@@ -536,6 +575,7 @@ describe("Agents", () => {
       urlKey: "regular-agent",
     });
     mockAgentsApi.list.mockResolvedValue([builtInAgent, regularAgent]);
+    mockProjectsApi.list.mockResolvedValue([]);
     mockAgentsApi.org.mockResolvedValue([
       {
         id: "built-in-agent",
@@ -723,6 +763,7 @@ describe("Agents", () => {
         defaultEnvironmentId: "env-daytona",
       }),
     ]);
+    mockProjectsApi.list.mockResolvedValue([]);
     mockAgentsApi.org.mockResolvedValue([
       {
         id: "agent-local",
@@ -783,6 +824,7 @@ describe("Agents", () => {
         defaultEnvironmentId: "env-override",
       }),
     ]);
+    mockProjectsApi.list.mockResolvedValue([]);
     mockAgentsApi.org.mockResolvedValue([
       {
         id: "agent-fallback",
@@ -928,6 +970,7 @@ describe("Agents", () => {
         urlKey: "regular-agent",
       }),
     ]);
+    mockProjectsApi.list.mockResolvedValue([]);
     mockAgentsApi.org.mockResolvedValue([
       {
         id: "built-in-agent",
@@ -1098,5 +1141,160 @@ describe("Agents", () => {
 
     expect(container.textContent).toContain("Alpha");
     expect(container.querySelector('[aria-label="Invalid reporting chain"]')).not.toBeNull();
+  });
+});
+
+// myrmidon(AGENTS-TREE): the roster's default tree view.
+describe("Agents tree view", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot> | null;
+  let queryClient: QueryClient;
+
+  const teamRoster = () => [
+    makeAgent({ id: "ceo", name: "Ava CEO", role: "ceo" }),
+    makeAgent({ id: "cto", name: "Cara CTO", role: "cto", reportsTo: "ceo" }),
+    makeAgent({ id: "eng1", name: "Bob Engineer", reportsTo: "cto" }),
+    makeAgent({ id: "eng2", name: "Dana Dev", reportsTo: "cto", status: "running" }),
+    makeAgent({ id: "orphan", name: "Oscar Orphan", reportsTo: "missing-manager" }),
+  ];
+
+  async function renderTreePage() {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+  }
+
+  beforeEach(() => {
+    mockRouterState.pathname = "/agents/all";
+    mockRouterState.navigate.mockClear();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = null;
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockAgentsApi.list.mockResolvedValue(teamRoster());
+    mockAgentsApi.org.mockResolvedValue([]);
+    mockBuiltInAgentsApi.list.mockResolvedValue([]);
+    mockEnvironmentsApi.list.mockResolvedValue([]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(environmentCapabilities);
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings());
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" }, session: { userId: "user-1" } });
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    mockResourceMembershipsApi.listMine.mockResolvedValue({
+      projectMemberships: {},
+      agentMemberships: {},
+      updatedAt: null,
+    });
+    mockSidebarState.isMobile = false;
+    localStorage.clear();
+  });
+
+  afterEach(async () => {
+    const currentRoot = root;
+    if (currentRoot) {
+      await act(async () => {
+        currentRoot.unmount();
+      });
+    }
+    queryClient.clear();
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  it("renders the roster as a tree with the orphan group and first level expanded", async () => {
+    await renderTreePage();
+
+    const body = container.querySelector('[data-testid="agent-tree-body"]');
+    expect(body).not.toBeNull();
+    // First level (ceo) is expanded by default: nested agents are visible.
+    expect(container.textContent).toContain("Cara CTO");
+    expect(container.textContent).toContain("Bob Engineer");
+    // Dangling reportsTo lands in the dedicated group.
+    const orphans = container.querySelector('[data-testid="agent-tree-orphans"]');
+    expect(orphans).not.toBeNull();
+    expect(orphans?.textContent).toContain("Oscar Orphan");
+  });
+
+  it("collapses and expands a subtree via the chevron, persisting the state", async () => {
+    await renderTreePage();
+
+    const ctoToggle = container.querySelector<HTMLButtonElement>(
+      'button[data-slot="agent-tree-toggle"][data-agent-id="cto"]',
+    );
+    expect(ctoToggle).not.toBeNull();
+
+    await act(async () => {
+      ctoToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // Children hidden, collapsed badge shows the subtree size (2 + the node).
+    expect(container.textContent).not.toContain("Bob Engineer");
+    const badge = container.querySelector('[data-slot="agent-tree-collapsed-badge"]');
+    expect(badge?.textContent).toContain("3");
+
+    // Persisted per user+company.
+    const stored = localStorage.getItem("paperclip.agentTreeCollapsed:company-1:user-1");
+    expect(stored).toContain("cto");
+
+    // Expand again.
+    await act(async () => {
+      ctoToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(container.textContent).toContain("Bob Engineer");
+  });
+
+  it("search by name reveals a nested agent and expands its branch", async () => {
+    // Collapse the CTO subtree first so the search has work to do.
+    localStorage.setItem(
+      "paperclip.agentTreeCollapsed:company-1:user-1",
+      JSON.stringify(["cto"]),
+    );
+    await renderTreePage();
+    expect(container.textContent).not.toContain("Bob Engineer");
+
+    const search = container.querySelector<HTMLInputElement>('[data-testid="agent-tree-search"]');
+    expect(search).not.toBeNull();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+      setter.call(search, "bob");
+      search?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+
+    // The branch expanded for the match even though it was collapsed.
+    expect(container.textContent).toContain("Bob Engineer");
+    // Clearing the query restores the user's collapsed state.
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+      setter.call(search, "");
+      search?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+    expect(container.textContent).not.toContain("Bob Engineer");
+  });
+
+  it("switches back to the flat list with the toggle", async () => {
+    await renderTreePage();
+
+    const listToggle = container.querySelector<HTMLButtonElement>('button[aria-label="List view"]');
+    await act(async () => {
+      listToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.querySelector('[data-testid="agent-tree-body"]')).toBeNull();
+    expect(container.textContent).toContain("Bob Engineer");
   });
 });

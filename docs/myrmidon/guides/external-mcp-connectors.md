@@ -19,7 +19,7 @@ The vendor surface, checked against `main` on 2026-10-02:
   enabled, health). Created without a code change through either entry
   point below.
 - **Credentials via the secret service.** Bearer keys, custom headers,
-  OAuth clients — every value becomes a Paperclip secret, write-only,
+  OAuth clients — every value becomes a Myrmidon secret, write-only,
   never echoed back. `McpConnectionCredentialRef` binds the secret to the
   connection; the tool gateway resolves it at call time
   (`server/src/services/tool-gateway.ts`, `secrets.resolveSecretValue`).

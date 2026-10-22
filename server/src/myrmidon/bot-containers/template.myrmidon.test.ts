@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_ENV } from "@paperclipai/shared";
 import type { BotExtraMount } from "./driver.js";
 import {
   assertBotRuntimeContract,
+  BOT_KEY_ENV,
+  botdProfileEnv,
   botVolumeLayout,
   BOT_KEY_PATTERN,
   BOT_LABEL_KEYS,
@@ -98,6 +101,20 @@ describe("buildBinds", () => {
     expect(buildBinds("/srv/myrmidon/bots", "agent-a")).toEqual(["/srv/myrmidon/bots/agent-a:/bot"]);
   });
 
+  // myrmidon(1.6.5-BOT-DISK-H5c): the worktree mechanics ride the one /bot mount —
+  // this snapshot pins the binds C7 promises every worktree bot: /workspace,
+  // /scratch and /data/hermes stay inside the single /bot bind, and git-base is a
+  // directory under /data/hermes/.myrmidon, never a mount of its own. A change
+  // here IS a contract change; update the snapshot with the contract, never alone.
+  it("keeps the BOT-DISK-H mount contract: the single /bot bind, no worktree-specific mounts", () => {
+    expect(buildBinds("/srv/bots", "agent-a")).toEqual(["/srv/bots/agent-a:/bot"]);
+    expect(buildBinds("/srv/bots", "agent-a", { volumeLayout: "legacy" })).toEqual([
+      "/srv/bots/agent-a/hermes:/data/hermes",
+      "/srv/bots/agent-a/workspace:/workspace",
+      "/srv/bots/agent-a/scratch:/scratch",
+    ]);
+  });
+
   it("lays the three separate binds under the legacy volume layout (contract \"1\")", () => {
     expect(buildBinds("/srv/myrmidon/bots", "agent-a", { volumeLayout: "legacy" })).toEqual([
       "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
@@ -115,9 +132,11 @@ describe("buildBinds", () => {
           : ["/srv/bots/agent-a:/bot"],
       );
       const full = buildBinds("/srv/bots", "agent-a", { mounts, allowedSources: ["/srv/shared/sources"], sharedPackageCachePath: "/srv/cache", gitMirror: true, volumeLayout });
-      expect(full.slice(-6)).toEqual([
+      expect(full.slice(-8)).toEqual([
         "/srv/shared/sources:/srv/shared/sources:ro",
         "/srv/cache/pnpm:/cache/pnpm:rw",
+        "/srv/cache/pnpm-store:/cache/pnpm-store:rw",
+        "/srv/cache/uv:/cache/uv:rw", // myrmidon(1.6.5-BOT-DISK-UV-A)
         "/srv/cache/go-mod:/cache/go-mod:rw",
         "/srv/cache/go-build:/cache/go-build:rw",
         "/srv/cache/gradle:/cache/gradle:rw",
@@ -257,6 +276,16 @@ describe("devbuildContainerEnv / devbuildKeyMount", () => {
       DEVBUILD_BASE: "/builds",
     });
     expect(devbuildContainerEnv(settings({ host: null }))).toBeNull();
+  });
+
+  it("keys the build host copy by the bot: DEVBUILD_BOT_NAME is the bot key (all containers run as user bot)", () => {
+    expect(devbuildContainerEnv(settings(), "d35df9f1-85dc-42b0-94c8-22b84a5c4ab5")).toEqual({
+      DEVBUILD_HOST: "build-host.internal",
+      DEVBUILD_USER: "builder",
+      DEVBUILD_BASE: "/builds",
+      DEVBUILD_BOT_NAME: "d35df9f1-85dc-42b0-94c8-22b84a5c4ab5",
+    });
+    expect(devbuildContainerEnv(settings({ host: null }), "d35df9f1-85dc-42b0-94c8-22b84a5c4ab5")).toBeNull();
   });
 
   it("mounts the first allowlisted source ending in devbuild-ssh, read-only, at the reserved path", () => {
@@ -449,5 +478,140 @@ describe("botVolumeLayout (volume layout pinned by the image contract)", () => {
     expect(() => botVolumeLayout("myrmidon-hermes:bad", { [BOT_RUNTIME_CONTRACT_LABEL]: "9" })).toThrow(/supports only/);
     expect(() => declaredBotRuntimeContract("img", { [BOT_RUNTIME_CONTRACT_LABEL]: "1" })).not.toThrow();
     expect(declaredBotRuntimeContract("img", { [BOT_RUNTIME_CONTRACT_LABEL]: "2" })).toBe("2");
+  });
+});
+
+// myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime (the design's class C)
+// and operator data directories inside the bot's own volume (class J).
+describe("buildBinds: the shared bot runtime (1.6.5-BOT-DISK-H11)", () => {
+  const runtime = "/srv/bot-runtime";
+  const pairs = [
+    `${runtime}/bin:/bot/hermes/bin:ro`,
+    `${runtime}/lazy-packages:/bot/hermes/lazy-packages:ro`,
+    `${runtime}/lsp:/bot/hermes/lsp:ro`,
+  ];
+
+  it("adds the three runtime binds read-only, at the real path inside the bot's own mount", () => {
+    expect(buildBinds("/srv/myrmidon/bots", "agent-a", { sharedBotRuntimePath: runtime })).toEqual([
+      "/srv/myrmidon/bots/agent-a:/bot",
+      ...pairs,
+    ]);
+  });
+
+  it("keeps the cache binds and then the runtime binds, last", () => {
+    expect(buildBinds("/srv/bots", "agent-a", { sharedPackageCachePath: "/srv/cache", sharedBotRuntimePath: runtime })).toEqual([
+      "/srv/bots/agent-a:/bot",
+      "/srv/cache/pnpm:/cache/pnpm:rw",
+      "/srv/cache/pnpm-store:/cache/pnpm-store:rw",
+      "/srv/cache/uv:/cache/uv:rw", // myrmidon(1.6.5-BOT-DISK-UV-A)
+      "/srv/cache/go-mod:/cache/go-mod:rw",
+      "/srv/cache/go-build:/cache/go-build:rw",
+      "/srv/cache/gradle:/cache/gradle:rw",
+      ...pairs,
+    ]);
+  });
+
+  it("binds them at the volume itself under the legacy layout (contract \"1\" images)", () => {
+    expect(buildBinds("/srv/bots", "agent-a", { sharedBotRuntimePath: runtime, volumeLayout: "legacy" }).slice(-3)).toEqual([
+      `${runtime}/bin:/data/hermes/bin:ro`,
+      `${runtime}/lazy-packages:/data/hermes/lazy-packages:ro`,
+      `${runtime}/lsp:/data/hermes/lsp:ro`,
+    ]);
+  });
+
+  it("binds them into the member directory of a shared scope instance (BOT-DISK-F)", () => {
+    const scope = { scopeRoot: "/srv/bots/.scopes", dirName: "caste-7" };
+    expect(buildBinds("/srv/bots", "agent-a", { sharedBotRuntimePath: runtime, scope }).slice(-3)).toEqual([
+      `${runtime}/bin:/bot-scope/agent-a/hermes/bin:ro`,
+      `${runtime}/lazy-packages:/bot-scope/agent-a/hermes/lazy-packages:ro`,
+      `${runtime}/lsp:/bot-scope/agent-a/hermes/lsp:ro`,
+    ]);
+  });
+
+  it("stays off unless the operator set the path", () => {
+    expect(buildBinds("/srv/bots", "agent-a")).toEqual(["/srv/bots/agent-a:/bot"]);
+  });
+
+  it("refuses a path that is not an absolute host directory", () => {
+    for (const bad of ["srv/runtime", "/srv/runtime/", "/srv//runtime"]) {
+      expect(() => buildBinds("/srv/bots", "agent-a", { sharedBotRuntimePath: bad })).toThrow(BotContainerTemplateError);
+    }
+  });
+
+  it("still refuses a mount point that would take over a runtime path", () => {
+    const mounts = [{ source: "/srv/media", containerPath: "/data/hermes/bin", readOnly: true } as const];
+    expect(() => buildBinds("/srv/bots", "agent-a", { mounts, allowedSources: ["/srv/media"] })).toThrow(
+      BotContainerTemplateError,
+    );
+  });
+});
+
+describe("buildBinds: owner data inside the bot's own volume (1.6.5-BOT-DISK-H11, class J)", () => {
+  const mounts = [{ source: "/srv/media", containerPath: "/data/hermes/media/site", readOnly: true } as const];
+
+  it("binds an owner-data mount at the real path inside the bot's own mount", () => {
+    expect(buildBinds("/srv/bots", "agent-a", { mounts, allowedSources: ["/srv/media"] })).toEqual([
+      "/srv/bots/agent-a:/bot",
+      "/srv/media:/bot/hermes/media/site:ro",
+    ]);
+  });
+
+  it("keeps its container path under the legacy layout", () => {
+    expect(
+      buildBinds("/srv/bots", "agent-a", { mounts, allowedSources: ["/srv/media"], volumeLayout: "legacy" }).slice(-1),
+    ).toEqual(["/srv/media:/data/hermes/media/site:ro"]);
+  });
+
+  it("refuses a mount point under a runtime path of the bot's own tree", () => {
+    const taken = [{ source: "/srv/media", containerPath: "/data/hermes/lsp/site", readOnly: true } as const];
+    expect(() => buildBinds("/srv/bots", "agent-a", { mounts: taken, allowedSources: ["/srv/media"] })).toThrow(
+      BotContainerTemplateError,
+    );
+  });
+});
+
+// myrmidon(1.6.5-BOT-DISK-H5c): the env the profile compiler hands the BOT-DISK-H
+// mechanics (C7). The names are pinned by the H0 contract (WS_PROFILE_ENV); the
+// values are the resolved `general.botDisk` settings plus the board address the
+// gateway already compiled for the bot.
+describe("botdProfileEnv (1.6.5-BOT-DISK-H5c)", () => {
+  const resolvedDefaults = {
+    graceClosingMinutes: WS_BOT_DISK_SETTING_DEFAULTS.graceClosingMinutes,
+    scratchTtlHours: WS_BOT_DISK_SETTING_DEFAULTS.scratchTtlHours,
+    partitionThresholdPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionThresholdPercent,
+    partitionRefuseOpenPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionRefuseOpenPercent,
+    partitionCriticalPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionCriticalPercent,
+  };
+
+  it("writes the C7 variables with their values, and no interval when none is set", () => {
+    expect(botdProfileEnv(resolvedDefaults, "http://board.example.com:3100")).toEqual({
+      [WS_PROFILE_ENV.partitionThresholdPercent]: "85",
+      [WS_PROFILE_ENV.partitionRefuseOpenPercent]: "90",
+      [WS_PROFILE_ENV.partitionCriticalPercent]: "95",
+      [WS_PROFILE_ENV.graceClosingMinutes]: "30",
+      [WS_PROFILE_ENV.scratchTtlHours]: "24",
+      [WS_PROFILE_ENV.boardUrl]: "http://board.example.com:3100",
+      // The key travels as the NAME of the .env variable holding it — never the value.
+      [WS_PROFILE_ENV.boardKeyEnv]: WS_BOTD_BOARD_KEY_ENV_VALUE,
+    });
+  });
+
+  it("writes MYRMIDON_BOT_KEY (the agent id, read by botd) only when a bot key is given", () => {
+    const withKey = botdProfileEnv(resolvedDefaults, "http://board:3100", "agent-a");
+    expect(BOT_KEY_ENV).toBe("MYRMIDON_BOT_KEY");
+    expect(withKey[BOT_KEY_ENV]).toBe("agent-a");
+    expect(botdProfileEnv(resolvedDefaults, "http://board:3100")).not.toHaveProperty(BOT_KEY_ENV);
+  });
+
+  it("writes the operator-set interval only when one is set", () => {
+    const withInterval = botdProfileEnv({ ...resolvedDefaults, botdIntervalSec: 300 }, "http://board:3100");
+    expect(withInterval[WS_PROFILE_ENV.botdIntervalSec]).toBe("300");
+    expect(botdProfileEnv(resolvedDefaults, "http://board:3100")).not.toHaveProperty(WS_PROFILE_ENV.botdIntervalSec);
+  });
+
+  it("is deterministic: the same mechanics and board give byte-identical entries", () => {
+    expect(botdProfileEnv({ ...resolvedDefaults, botdIntervalSec: 300 }, "http://board:3100")).toEqual(
+      botdProfileEnv({ ...resolvedDefaults, botdIntervalSec: 300 }, "http://board:3100"),
+    );
   });
 });

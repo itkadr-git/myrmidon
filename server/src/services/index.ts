@@ -5,6 +5,8 @@ export { companySearchExtractService } from "./company-search-extract.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
 export { companySkillPolicyService, normalizeSkillPolicySourceType } from "./company-skill-policy.js";
+// myrmidon(1.6.5 BASE-SKILLS): the company base-skills registry.
+export { companyBaseSkillService, type CompanyBaseSkillActor } from "./company-base-skills.js";
 export { folderService } from "./folders.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
 export {

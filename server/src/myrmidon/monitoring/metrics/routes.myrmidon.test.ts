@@ -12,8 +12,13 @@ import {
   myrmidonMetricsRoutes,
   resolveMetricsToken,
   tokenMatches,
+  type MetricsRoutesDeps,
 } from "./routes.js";
-import { METRIC_FAMILIES, METRICS_CONTENT_TYPE, type MetricsSnapshot } from "./metrics.js";
+import {
+  METRIC_FAMILIES,
+  METRICS_CONTENT_TYPE,
+  type MetricsSnapshot,
+} from "./metrics.js";
 
 const TOKEN = "scraper-token-a";
 const SECRET_TOKEN = "secret-token-a";
@@ -23,6 +28,7 @@ describe("metrics endpoint routes", () => {
   function appWith(input: {
     env?: Record<string, string | undefined>;
     secretToken?: string | null;
+    selfCheck?: MetricsRoutesDeps["runSelfCheck"];
   } = {}) {
     const env: Record<string, string | undefined> = {
       [METRICS_TOKEN_ENV]: TOKEN,
@@ -40,6 +46,7 @@ describe("metrics endpoint routes", () => {
         listSecretRowsByName: async (name) =>
           name === "metrics-scraper-token" ? [{ id: "secret-id-a", companyId: "company-a" }] : [],
         readSecretValue: async () => secretToken,
+        ...(input.selfCheck ? { runSelfCheck: input.selfCheck } : {}),
       }),
     );
     return app;
@@ -99,6 +106,181 @@ describe("metrics endpoint routes", () => {
     expect(secretTokenRes.status).toBe(200);
   });
 
+  it("the selfcheck probe answers 401 without the bearer token", async () => {
+    const res = await request(appWith()).get("/api/myrmidon/monitoring/selfcheck");
+    expect(res.status).toBe(401);
+  });
+
+  it("the selfcheck probe answers 200 with the aggregate shape and no values", async () => {
+    const app = appWith({
+      selfCheck: async () => ({
+        ok: true,
+        families_ok: METRIC_FAMILIES.length,
+        families_failed: [],
+        scrape_ms: 7,
+        checked_at: NOW.toISOString(),
+      }),
+    });
+    const res = await request(app).get("/api/myrmidon/monitoring/selfcheck").set("Authorization", `Bearer ${TOKEN}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      families_ok: METRIC_FAMILIES.length,
+      families_failed: [],
+      scrape_ms: 7,
+      checked_at: NOW.toISOString(),
+    });
+    // The probe body carries no metric value beyond family counts, no token.
+    expect(JSON.stringify(res.body)).not.toContain(TOKEN);
+  });
+
+  it("the selfcheck probe answers 503 when a family failed", async () => {
+    const app = appWith({
+      selfCheck: async () => ({
+        ok: false,
+        families_ok: METRIC_FAMILIES.length - 1,
+        families_failed: ["myrmidon_role_queue_tasks"],
+        scrape_ms: 3,
+        checked_at: NOW.toISOString(),
+      }),
+    });
+    const res = await request(app).get("/api/myrmidon/monitoring/selfcheck").set("Authorization", `Bearer ${TOKEN}`);
+    expect(res.status).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.families_failed).toEqual(["myrmidon_role_queue_tasks"]);
+  });
+
+  it("the selfcheck probe answers 500 with a shape when it throws", async () => {
+    const app = appWith({
+      selfCheck: async () => {
+        throw new Error("collector exploded");
+      },
+    });
+    const res = await request(app).get("/api/myrmidon/monitoring/selfcheck").set("Authorization", `Bearer ${TOKEN}`);
+    expect(res.status).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(JSON.stringify(res.body)).not.toContain("exploded");
+  });
+
+  // myrmidon(1.6.6 OPE-6959): /internal/procs — the machine-readable process
+  // list, same bearer guard as /metrics, fields per design BOARD-PROCESSES
+  // этап 1: role, pid, uptime, ready.
+  describe("/internal/procs", () => {
+    const STARTED = new Date("2026-10-03T11:59:00.000Z");
+    const LIVE_SEEN = new Date("2026-10-03T11:59:58.000Z");
+    const STALE_SEEN = new Date("2026-10-03T11:00:00.000Z");
+
+    function procsApp(input: {
+      rows?: Array<{
+        bootId: string;
+        role: string;
+        pid: number;
+        hostname: string;
+        container: string | null;
+        version: string;
+        startedAt: Date;
+        lastSeenAt: Date;
+        apiPort: number | null;
+        eventLoopLagMs: number | null;
+        rssBytes: number | null;
+      }>;
+      throws?: boolean;
+      role?: string;
+      env?: Record<string, string | undefined>;
+    }) {
+      const env = { [METRICS_TOKEN_ENV]: TOKEN, ...input.env } as NodeJS.ProcessEnv;
+      const app = express();
+      app.use(
+        myrmidonMetricsRoutes({
+          db: {} as never,
+          env,
+          now: () => NOW,
+          processStore: {
+            heartbeat: async () => {},
+            deleteStale: async () => 0,
+            listProcesses: async () => {
+              if (input.throws) throw new Error("registry read exploded");
+              return input.rows ?? [];
+            },
+          },
+          ...(input.role ? { role: input.role } : {}),
+        }),
+      );
+      return app;
+    }
+
+    function row(overrides: Record<string, unknown> = {}) {
+      return {
+        bootId: "boot-a",
+        role: "api",
+        pid: 4242,
+        hostname: "host-a",
+        container: null,
+        version: "1.6.6",
+        startedAt: STARTED,
+        lastSeenAt: LIVE_SEEN,
+        apiPort: 3100,
+        eventLoopLagMs: 3,
+        rssBytes: 1000,
+        ...overrides,
+      } as never;
+    }
+
+    it("answers 401 without the bearer token", async () => {
+      const res = await request(procsApp({})).get("/internal/procs");
+      expect(res.status).toBe(401);
+    });
+
+    it("lists the processes with role, pid, uptime and ready", async () => {
+      const res = await request(
+        procsApp({
+          rows: [
+            row({ bootId: "boot-api", role: "api", pid: 4242 }),
+            row({ bootId: "boot-worker", role: "worker", pid: 4343, lastSeenAt: STALE_SEEN }),
+          ],
+        }),
+      )
+        .get("/internal/procs")
+        .set("Authorization", `Bearer ${TOKEN}`);
+      expect(res.status).toBe(200);
+      expect(res.body.role).toBe("all");
+      expect(res.body.processes).toHaveLength(2);
+      expect(res.body.processes[0]).toMatchObject({
+        role: "api",
+        pid: 4242,
+        uptimeSeconds: 60,
+        ready: true,
+      });
+      expect(res.body.processes[0].startedAt).toBe(STARTED.toISOString());
+      expect(res.body.processes[1]).toMatchObject({ role: "worker", pid: 4343, ready: false });
+    });
+
+    it("reports the process role from PAPERCLIP_PROCESS_ROLE", async () => {
+      const res = await request(procsApp({ env: { PAPERCLIP_PROCESS_ROLE: "worker" } }))
+        .get("/internal/procs")
+        .set("Authorization", `Bearer ${TOKEN}`);
+      expect(res.status).toBe(200);
+      expect(res.body.role).toBe("worker");
+    });
+
+    it("marks the row of this very process as self", async () => {
+      const res = await request(procsApp({ rows: [row()] }))
+        .get("/internal/procs")
+        .set("Authorization", `Bearer ${TOKEN}`);
+      expect(res.body.processes[0].self).toBe(false); // boot-a ≠ this test process
+      expect(res.body.selfBootId).toBeTruthy();
+    });
+
+    it("answers a well-formed empty list when the registry read fails", async () => {
+      const res = await request(procsApp({ throws: true }))
+        .get("/internal/procs")
+        .set("Authorization", `Bearer ${TOKEN}`);
+      expect(res.status).toBe(200);
+      expect(res.body.processes).toEqual([]);
+      expect(JSON.stringify(res.body)).not.toContain("exploded");
+    });
+  });
+
   it("tokenMatches is constant-shape and length-strict", () => {
     expect(tokenMatches(TOKEN, TOKEN)).toBe(true);
     expect(tokenMatches(TOKEN, `${TOKEN}x`)).toBe(false);
@@ -135,6 +317,7 @@ describe("metrics endpoint routes", () => {
 
   it("the snapshot contract keeps every family field", () => {
     const snapshot: MetricsSnapshot = {
+      role: "all",
       runsActive: 0,
       runsQueued: 0,
       runsFailedTotal: 0,

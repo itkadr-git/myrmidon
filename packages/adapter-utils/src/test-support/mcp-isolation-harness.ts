@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export interface CommandResult {
   exitCode: number | null;
@@ -12,7 +13,7 @@ export interface CommandResult {
 }
 
 export async function createMcpIsolationRoot(prefix: string): Promise<string> {
-  const parent = process.env.PAPERCLIP_RUN_SCRATCH_DIR ?? os.tmpdir();
+  const parent = readProductEnv("RUN_SCRATCH_DIR") ?? os.tmpdir();
   await fs.mkdir(parent, { recursive: true });
   return fs.mkdtemp(path.join(parent, prefix));
 }

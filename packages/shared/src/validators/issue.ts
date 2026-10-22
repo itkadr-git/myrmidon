@@ -36,11 +36,25 @@ import {
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+import { ISSUE_CASTE_SOURCES, issueScentSchema } from "../myrmidon-scent.js";
 import {
   lowTrustReviewPresetPolicySchema,
   trustAuthorizationPolicySchema,
 } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
+import {
+  MAX_PHEROMONE_STRENGTH,
+  MIN_PHEROMONE_STRENGTH,
+} from "../myrmidon-swarm-claim.js";
+
+// 1.6.5 (F-27 PHEROMONE): the issue pheromone strength — a non-negative
+// integer the swarm queue orders by inside the P0 band. Shared between the
+// create/update schemas and the import path.
+export const issuePheromoneStrengthSchema = z
+  .number()
+  .int()
+  .min(MIN_PHEROMONE_STRENGTH)
+  .max(MAX_PHEROMONE_STRENGTH);
 
 export const issueBlockedInboxStateSchema = z.enum([
   "needs_attention",
@@ -431,6 +445,33 @@ export const issueExecutionMonitorPolicySchema = z.object({
     .default(null),
 });
 
+export const issueBlockReasonSchema = z.enum([
+  "external_wait",
+  "dependency",
+  "recovery",
+  "human_decision",
+  "resource",
+]);
+
+export const issueBlockerMetadataSchema = z.object({
+  blockReason: issueBlockReasonSchema,
+  owner: z.union([
+    z.object({ agentId: z.string().uuid() }).strict(),
+    z.object({ userId: z.string().uuid() }).strict(),
+  ]),
+  blockedByIssueIds: z.array(z.string().uuid()).max(20).optional(),
+  externalRef: z.string().trim().min(1).max(500).optional(),
+  nextCheckAt: z.string().datetime(),
+  timeoutAt: z.string().datetime(),
+  escalationPolicy: z.string().trim().min(1).max(120),
+}).strict().refine(
+  (value: {
+    blockedByIssueIds?: string[];
+    externalRef?: string;
+  }) => Boolean(value.blockedByIssueIds?.length || value.externalRef),
+  { message: "Provide blockedByIssueIds or externalRef", path: ["externalRef"] },
+);
+
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
@@ -446,6 +487,36 @@ export const issueExecutionPolicySchema = z.object({
     .optional()
     .nullable()
     .default(null),
+  reviewEscalationPolicy: z.object({
+    maxReviewRounds: z.number().int().positive().max(100).optional(),
+    participantRoles: z.array(z.enum(["lead", "architect", "secondary_reviewer"])).min(1).max(3),
+    fallbackQueue: z.string().trim().min(1).max(200),
+    timeoutAt: z.string().datetime().nullable(),
+    policyRevision: z.string().trim().min(1).max(200),
+    participants: z.object({
+      lead: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+      architect: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+      secondary_reviewer: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+    }).strict().optional(),
+  }).strict().nullable().optional(),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({
@@ -492,6 +563,8 @@ export const issueExecutionMonitorStateSchema = z.object({
     .default(null),
   clearedAt: z.string().datetime().nullable(),
   clearReason: z.enum(ISSUE_EXECUTION_MONITOR_CLEAR_REASONS).nullable(),
+  // myrmidon(MON-RESTORE): distinct from nextCheckAt, which is null when cleared.
+  nextScheduledAt: z.string().datetime().nullable().optional(),
 });
 
 export const issueReviewRequestSchema = z
@@ -513,6 +586,11 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
   changesRequestedCount: z.number().int().nonnegative().optional().default(0),
+  reviewCycleId: z.string().min(1).max(200).nullable().optional().default(null),
+  escalationPolicyRevision: z.string().min(1).max(200).nullable().optional().default(null),
+  escalationReason: z.literal("review_round_limit").nullable().optional().default(null),
+  escalationFromParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
+  escalationToParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({
@@ -683,6 +761,7 @@ const createIssueBaseSchema = z.object({
   goalId: z.string().guid().optional().nullable(),
   parentId: z.string().guid().optional().nullable(),
   blockedByIssueIds: z.array(z.string().guid()).optional(),
+  blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
   unblockDescriptor: z
     .object({
       owner: z.union([
@@ -738,6 +817,22 @@ const createIssueBaseSchema = z.object({
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   harnessKind: z.enum(ISSUE_HARNESS_KINDS).optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
+  // 1.6.5 (F-27 PHEROMONE): explicit pheromone strength. When omitted the
+  // create path derives it from `priority` via the swarm settings mapping
+  // (swarmClaim.pheromone); the patch keeps the stored value.
+  pheromoneStrength: issuePheromoneStrengthSchema.optional().nullable(),
+  // 1.6.5 (F-27 rework 09.10): the caste key; the server checks it against
+  // the company's caste directory (design §2.1). NULL = project/company
+  // default.
+  casteKey: z.string().trim().min(1).max(120).optional().nullable(),
+  // myrmidon(1.6.5 F-26 T10 SCENT): who set the caste ('manual' when the
+  // caller pins casteKey; the create hook writes 'auto' when the classifier
+  // decides). Server-side only in practice — a client-sent value is accepted
+  // for imports/seeds but the create hook treats a pinned casteKey as manual.
+  casteSource: z.enum(ISSUE_CASTE_SOURCES).optional().nullable(),
+  // The stored scent — normally written by the classifier; accepted on input
+  // so imports/tests can seed it directly.
+  scent: issueScentSchema.optional().nullable(),
   reviewPolicy: z.enum(ISSUE_REVIEW_POLICIES).optional().nullable(),
   assigneeAgentId: z.string().guid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
@@ -801,11 +896,13 @@ function requireReasonRefForBlockedTransition(
   value: {
     status?: unknown;
     blockedByIssueIds?: unknown;
+    blockerMetadata?: unknown;
     unblockDescriptor?: { reasonRef?: unknown } | null;
   },
   ctx: z.RefinementCtx,
 ) {
   if (value.status !== "blocked") return;
+  if (value.blockerMetadata !== undefined && value.blockerMetadata !== null) return;
   const hasBlockers =
     Array.isArray(value.blockedByIssueIds) &&
     value.blockedByIssueIds.length > 0;
@@ -935,6 +1032,7 @@ export const updateIssueShapeSchema = objectWithoutDefaults(
     interrupt: z.boolean().optional(),
     deferWakeForGoal: z.boolean().optional(),
     hiddenAt: z.string().datetime().nullable().optional(),
+    blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
   });
 
 export const updateIssueSchema = objectWithoutDefaults(
@@ -961,6 +1059,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     /** Assignment-only handoff; the following structured goal action owns the wake. */
     deferWakeForGoal: z.boolean().optional(),
     hiddenAt: z.string().datetime().nullable().optional(),
+    blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
     // myrmidon(STALE-BLOCK): blocked transitions need a reason reference
     // (issue | event | date) — enforced on PATCH via the refine below.
   })
@@ -1231,6 +1330,14 @@ export const suggestedTaskDraftSchema = z
       .nullable()
       .optional(),
     priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
+    pheromoneStrength: issuePheromoneStrengthSchema.nullable().optional(),
+    // 1.6.5 (F-27 rework 09.10): the caste key (directory membership is
+    // checked server-side, where the company's directory lives).
+    casteKey: z.string().trim().min(1).max(120).nullable().optional(),
+    casteSource: z.enum(ISSUE_CASTE_SOURCES).nullable().optional(),
+    // Refreshing the stored scent via the API goes through the scent routes;
+    // the patch validator still accepts it for imports/tests.
+    scent: issueScentSchema.nullable().optional(),
     workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
     assigneeAgentId: z.string().guid().nullable().optional(),
     assigneeUserId: z.string().trim().min(1).nullable().optional(),

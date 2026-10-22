@@ -16,6 +16,8 @@
 // why the button is disabled instead of showing a bare 500.
 
 import { Router } from "express";
+import { and, asc, eq } from "drizzle-orm";
+import { agents } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import { logActivity } from "../../services/activity-log.js";
@@ -24,11 +26,13 @@ import {
   createEvalsService,
   type EvalsService,
   type EvalRunInput,
+  type EvalRunSubject,
 } from "./service.js";
 import { createJudge, DEFAULT_EVALS_MODEL, evalsSettingsProblem, readEvalsSettings, type EvalsSettings } from "./judge.js";
 import { createLangfuseScoreExporter, noopScoreExporter, readLangfuseExportSettings } from "./langfuse.js";
 import { ENGINEER_REFERENCE_TASKS, EVALS_PILOT_ROLE, seedReferenceTasks } from "./seed.js";
 import { isEvalVerdict } from "./domain.js";
+import { ADAPTER_SPECIAL_MODEL_VALUES } from "../agent-model-validation.js";
 
 export interface EvalsRoutesDeps {
   env?: NodeJS.ProcessEnv;
@@ -36,6 +40,13 @@ export interface EvalsRoutesDeps {
   /** Resolves the company secret named by MYRMIDON_EVALS_KEY_SECRET; null when missing. */
   readCompanyKey(companyId: string, secretName: string): Promise<string | null>;
   service?: EvalsService;
+  /**
+   * myrmidon(1.6.5 EVALS-JUDGE-FAMILY): resolves the model of the subject —
+   * the agent whose work is judged — for the sameFamily flag. Tests inject a
+   * stub; production reads the agent card of the role
+   * (`subjectModelFromAgentCard`). Never the judge's own model.
+   */
+  subjectModelFor?(input: EvalRunSubject): string | undefined | Promise<string | undefined>;
   now(): Date;
 }
 
@@ -76,6 +87,37 @@ function parseRunInput(body: unknown): EvalRunInput | { error: string } {
   };
 }
 
+/**
+ * myrmidon(1.6.5 EVALS-JUDGE-FAMILY): the subject's model — the model of the
+ * agent whose work is judged, read from the agent card of the evaluated role.
+ *
+ * The badge compares the judge with this value, so it must never be the judge
+ * model: while the old code passed the judge's own model, `sameFamily` was true
+ * for every subject under the default qwen-plus-free judge. A missing agent, a
+ * missing model, or a value that only means "let the adapter decide" answers
+ * undefined, and the badge is simply not shown instead of guessing.
+ */
+export async function subjectModelFromAgentCard(
+  db: Db,
+  companyId: string,
+  input: EvalRunSubject,
+): Promise<string | undefined> {
+  const role = input.role.trim();
+  if (!role) return undefined;
+  const rows = await db
+    .select({ adapterConfig: agents.adapterConfig })
+    .from(agents)
+    .where(and(eq(agents.companyId, companyId), eq(agents.role, role)))
+    // Several agents can share a role; the first one is a stable choice and the
+    // model is the same across the role's cards in practice.
+    .orderBy(asc(agents.createdAt))
+    .limit(1);
+  const config = rows[0]?.adapterConfig;
+  const model = config && typeof config.model === "string" ? config.model.trim() : "";
+  if (!model || ADAPTER_SPECIAL_MODEL_VALUES.includes(model)) return undefined;
+  return model;
+}
+
 export function myrmidonEvalsRoutes(db: Db, deps: Partial<EvalsRoutesDeps> = {}) {
   const router = Router();
   const env = deps.env ?? process.env;
@@ -88,10 +130,16 @@ export function myrmidonEvalsRoutes(db: Db, deps: Partial<EvalsRoutesDeps> = {})
     if (deps.service) return { service: deps.service, problem: null };
     const current = settings();
     const problem = evalsSettingsProblem(current);
+    // myrmidon(1.6.5 EVALS-JUDGE-FAMILY): sameFamily compares the judge with
+    // the *subject* — the agent of this role, from its agent card. The old
+    // `subjectModel: current.model` passed the judge model, so the judge was
+    // compared with itself and the flag was true for every run.
+    const subjectModelFor =
+      deps.subjectModelFor ?? ((input: EvalRunSubject) => subjectModelFromAgentCard(db, companyId, input));
     if (problem) {
       // Still return a service bound to a heuristic judge? No — mutations
       // must refuse instead of silently scoring with a fake. Reads only.
-      return { service: createEvalsService(db, { judge: createJudge({ fetch: fetch, apiKey: "", baseUrl: "http://127.0.0.1:9", model: DEFAULT_EVALS_MODEL, timeoutMs: 1 }), model: current.model, now }), problem };
+      return { service: createEvalsService(db, { judge: createJudge({ fetch: fetch, apiKey: "", baseUrl: "http://127.0.0.1:9", model: DEFAULT_EVALS_MODEL, timeoutMs: 1 }), model: current.model, subjectModelFor, now }), problem };
     }
     const readCompanyKey =
       deps.readCompanyKey ??
@@ -104,7 +152,7 @@ export function myrmidonEvalsRoutes(db: Db, deps: Partial<EvalsRoutesDeps> = {})
         const key = current.keySecret ? await readCompanyKey(companyId, current.keySecret) : null;
     if (!key) {
       return {
-        service: createEvalsService(db, { judge: createJudge({ fetch: fetch, apiKey: "", baseUrl: "http://127.0.0.1:9", model: DEFAULT_EVALS_MODEL, timeoutMs: 1 }), model: current.model, now }),
+        service: createEvalsService(db, { judge: createJudge({ fetch: fetch, apiKey: "", baseUrl: "http://127.0.0.1:9", model: DEFAULT_EVALS_MODEL, timeoutMs: 1 }), model: current.model, subjectModelFor, now }),
         problem: `the evals API key secret "${current.keySecret ?? "—"}" is not available`,
       };
     }
@@ -122,11 +170,18 @@ export function myrmidonEvalsRoutes(db: Db, deps: Partial<EvalsRoutesDeps> = {})
           fetch: deps.fetch ?? fetch,
           apiKey: key,
           baseUrl: current.baseUrl!,
-          model: current.model,
+          // myrmidon(1.6.5 EVALS-JUDGE-FAMILY): the whole priority list goes
+          // into the judge so a gateway error on one candidate falls through
+          // to the next instead of aborting the run; the head is still the
+          // recorded model. The list is re-read on every call, so a change
+          // takes effect on the next run without a restart.
+          model: current.judgeModels[0] ?? current.model,
+          judgeModels: current.judgeModels,
           timeoutMs: current.timeoutMs,
         }),
         exporter,
-        model: current.model,
+        model: current.judgeModels[0] ?? current.model,
+        subjectModelFor,
         now,
       }),
       problem: null,

@@ -4,6 +4,7 @@ import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function isInsideOsTmpDir(targetPath: string): boolean {
   const tmpRoot = path.resolve(os.tmpdir());
@@ -53,7 +54,7 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
     // ephemeral/CI instances that don't set PAPERCLIP_IN_WORKTREE are not flagged.)
     // Check BEFORE creating the dir so we don't bootstrap the very temp location
     // we're warning about.
-    if (isInsideOsTmpDir(dataDir) && process.env.PAPERCLIP_IN_WORKTREE === "true") {
+    if (isInsideOsTmpDir(dataDir) && readProductEnv("IN_WORKTREE") === "true") {
       return {
         name: "Database",
         status: "warn",

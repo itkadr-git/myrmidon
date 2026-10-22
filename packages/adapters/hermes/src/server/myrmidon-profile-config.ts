@@ -60,7 +60,14 @@ export function readHermesCardModels(config: Record<string, unknown>): HermesCar
     stt: nonEmptyString(models.stt),
     tts: nonEmptyString(models.tts),
     fallbacks: fallbacks.length > 0 ? fallbacks : undefined,
-    reasoningEffort: nonEmptyString(config.effort) ?? nonEmptyString(models.reasoningEffort),
+    // myrmidon(BOT-TUNING-C): an empty effort compiles to the model's safe
+    // default instead of leaving Hermes at its global "medium", which some
+    // models (GLM via DashScope) reject. Unknown models return undefined and
+    // leave the profile value alone.
+    reasoningEffort:
+      nonEmptyString(config.effort) ??
+      nonEmptyString(models.reasoningEffort) ??
+      defaultEffortForModelName(nonEmptyString(config.model)),
   };
 }
 
@@ -232,6 +239,39 @@ export interface ApplyCardModelsResult {
 const HERMES_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 /**
+ * myrmidon(BOT-TUNING-C): the model's safe default for an empty card effort.
+ * The server-side registry lives in server/src/myrmidon/effort-policy (this
+ * package is hot, see docs/myrmidon/CONVENTIONS.md section 8, so the table is
+ * mirrored here, kept in sync with ui/src/lib/card-effort-policy.ts).
+ * A model not in the table returns undefined — the profile value stays alone.
+ */
+const MODEL_EFFORT_PREFIXES: ReadonlyArray<[prefix: string, entry: { efforts: readonly string[]; defaultEffort: string }]> = [
+  // Z.AI / DashScope GLM reasoning models accept low/high/max, not medium.
+  ["glm-", { efforts: ["low", "high", "max"], defaultEffort: "high" }],
+];
+
+/** The static effort entry for a model name (longest prefix wins), or undefined. */
+function effortEntryForModelName(model: string | undefined): { efforts: readonly string[]; defaultEffort: string } | undefined {
+  if (!model) return undefined;
+  const lowered = model.trim().toLowerCase();
+  const bare = lowered.includes("/") ? lowered.split("/").pop()! : lowered;
+  let match: { efforts: readonly string[]; defaultEffort: string } | undefined;
+  let matchLength = -1;
+  for (const [prefix, entry] of MODEL_EFFORT_PREFIXES) {
+    if (bare.startsWith(prefix) && prefix.length > matchLength) {
+      match = entry;
+      matchLength = prefix.length;
+    }
+  }
+  return match;
+}
+
+/** The effort policy default for a model name, or undefined for unknown models. */
+export function defaultEffortForModelName(model: string | undefined): string | undefined {
+  return effortEntryForModelName(model)?.defaultEffort;
+}
+
+/**
  * Write the card models into a config.yaml text. `provider` is the provider
  * the run resolved (used for the fallback chain, which Hermes requires to
  * carry a provider per entry).
@@ -303,8 +343,18 @@ export function applyCardModelsToConfigYaml(
   }
   if (models.reasoningEffort) {
     const effort = models.reasoningEffort.toLowerCase();
-    if (!HERMES_REASONING_EFFORTS.includes(effort)) {
-      warnings.push(`agent.reasoning_effort: "${models.reasoningEffort}" is not a Hermes effort level; profile value kept`);
+    // myrmidon(BOT-TUNING-C): the card-side effort policy (server
+    // effort-policy) already guarantees the selected model accepts the value,
+    // and Hermes ignores an effort it does not recognize (same stance as the
+    // G4 model_options path), so the per-model list is not re-checked here.
+    // myrmidon(BOT-TUNING-C): a model with its own effort set is checked
+    // against that set — a per-model value Hermes does not know (GLM "max")
+    // passes (Hermes ignores what it does not recognize, same stance as the
+    // G4 model_options path), while a value the model rejects stays back.
+    const entry = effortEntryForModelName(models.text);
+    const accepted = entry ? entry.efforts : HERMES_REASONING_EFFORTS;
+    if (!accepted.includes(effort)) {
+      warnings.push(`agent.reasoning_effort: "${models.reasoningEffort}" is not an effort level "${models.text ?? "the model"}" accepts (accepted: ${accepted.join(", ")}); profile value kept`);
     } else {
       attempt("agent.reasoning_effort", () => setScalar(lines, ["agent", "reasoning_effort"], effort));
     }

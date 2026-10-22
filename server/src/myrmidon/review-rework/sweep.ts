@@ -122,17 +122,32 @@ export interface ReviewReworkSweep {
  * bare number is ambiguous — the loop then acts only on the explicit forms);
  * the resolver's answer is the final check, so a wrong pairing resolves as
  * `unknown` and moves nothing.
+ *
+ * `known` entries may come from outside the store (test fakes, future
+ * sources) with no `repo`: a parseable PR `url` restores the repo, anything
+ * else is silently skipped — one bad entry must never fail the whole task.
  */
 export function extractPrCoordinates(
   parts: readonly string[],
-  known: readonly { repo: string; number: number }[],
+  known: readonly { repo?: string | null; number: number; url?: string | null }[],
 ): Array<{ repo: string; number: number }> {
   const out = new Map<string, { repo: string; number: number }>();
-  for (const entry of known) out.set(reviewReworkPrKey(entry), entry);
   const add = (repo: string, number: number) => {
+    if (!Number.isSafeInteger(number) || number <= 0) return;
     const entry = { repo: repo.toLowerCase(), number };
     out.set(reviewReworkPrKey(entry), entry);
   };
+  for (const entry of known) {
+    if (typeof entry.repo === "string" && entry.repo.length > 0) {
+      add(entry.repo, entry.number);
+      continue;
+    }
+    if (typeof entry.url === "string") {
+      const match = /github\.com\/([^/]+)\/([^/]+)\/pull\/([1-9][0-9]*)/i.exec(entry.url);
+      if (match) add(`${match[1]}/${match[2]}`, Number(match[3]));
+    }
+    // No repo and no parseable URL: skip the entry instead of throwing.
+  }
   for (const text of parts) {
     for (const match of text.matchAll(new RegExp(GITHUB_URL_PR_PATTERN.source, "g"))) add(`${match[1]}/${match[2]}`, Number(match[3]));
     for (const match of text.matchAll(new RegExp(FULL_PR_REFERENCE_PATTERN.source, "g"))) add(`${match[1]}/${match[2]}`, Number(match[3]));
@@ -205,7 +220,7 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
   ): Promise<ReviewReworkPrFact[]> {
     const coordinates = extractPrCoordinates(
       [...row.textParts, ...commentBodies],
-      row.products.map((product) => ({ repo: product.repo, number: product.number })),
+      row.products.map((product) => ({ repo: product.repo, number: product.number, url: product.url ?? null })),
     );
     const facts: ReviewReworkPrFact[] = [];
     for (const coordinate of coordinates) {

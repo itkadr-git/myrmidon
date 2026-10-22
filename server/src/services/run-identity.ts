@@ -280,6 +280,8 @@ export async function prepareSteeredIdentity(
     runId: string;
     messageId: string;
     issueId: string;
+    // myrmidon(UPSTREAM-13539): "interaction" steers carry a projected card response, not a comment.
+    source?: "comment" | "interaction";
   },
 ) {
   const [run] = await executor
@@ -291,7 +293,8 @@ export async function prepareSteeredIdentity(
         eq(heartbeatRuns.companyId, input.companyId),
       ),
     );
-  const [comment] = await executor
+  // myrmidon(UPSTREAM-13539): interaction steers validate against the resolved card, not issueComments.
+  const [comment] = input.source === "interaction" ? [] : await executor
     .select()
     .from(issueComments)
     .where(
@@ -301,7 +304,15 @@ export async function prepareSteeredIdentity(
         eq(issueComments.issueId, input.issueId),
       ),
     );
-  if (!run || !comment?.authorUserId)
+  const [interaction] = input.source === "interaction" ? await executor.select().from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.id, input.messageId),
+    eq(issueThreadInteractions.companyId, input.companyId),
+    eq(issueThreadInteractions.issueId, input.issueId),
+    inArray(issueThreadInteractions.status, ["accepted", "answered", "rejected"]),
+  )) : [];
+  // myrmidon(UPSTREAM-13539): responsible user comes from the card resolver for interaction steering.
+  const responsibleUserId = interaction?.resolvedByUserId ?? comment?.authorUserId;
+  if (!run || !responsibleUserId)
     throw forbidden("Steering requires an authenticated message author");
   if (
     run.status !== "running" ||
@@ -313,11 +324,11 @@ export async function prepareSteeredIdentity(
   return append(executor, {
     companyId: input.companyId,
     runId: input.runId,
-    responsibleUserId: comment.authorUserId,
-    messageId: comment.id,
+    responsibleUserId,
+    messageId: input.messageId,
     parentContextId: run.activeIdentityContextId,
     cause: "steering",
-    correlationId: `message:${comment.id}`,
+    correlationId: `${input.source === "interaction" ? "interaction" : "message"}:${input.messageId}`,
     status: "pending",
   });
 }
@@ -513,7 +524,8 @@ export async function reconcileSteeredIdentity(
 /** Only events validated and persisted by the native control-plane transport count. */
 export async function storedSteeringAcknowledgement(
   executor: Pick<Db, "select">,
-  context: RunIdentityContext,
+  // myrmidon(UPSTREAM-13539): callers may pass a bare Pick when no identity row was reserved.
+  context: Pick<RunIdentityContext, "companyId" | "runId" | "messageId">,
 ) {
   if (!context.messageId) return null;
   const [receipt] = await executor

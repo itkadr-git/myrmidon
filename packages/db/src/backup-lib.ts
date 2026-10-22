@@ -2,10 +2,11 @@ import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
-import { open as openFile } from "node:fs/promises";
+import { open as openFile, statfs, type FileHandle } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type BackupRetentionPolicy = {
   dailyDays: number;
@@ -40,6 +41,12 @@ export type RunDatabaseBackupResult = {
   backupFile: string;
   sizeBytes: number;
   prunedCount: number;
+  /**
+   * myrmidon(SHARED-PG-BACKUP): non-fatal diagnostics of the run, e.g. the
+   * pg_dump client major-version mismatch that made an "auto" engine fall
+   * back to the JavaScript dump path. Absent when the run was clean.
+   */
+  warnings?: string[];
 };
 
 export type RunDatabaseRestoreOptions = {
@@ -84,6 +91,7 @@ const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46
 // BACKUP_BREAKPOINT_DETECT_BYTES — the check streams the file and holds only
 // this many bytes of its tail.
 const BACKUP_VERIFY_TAIL_BYTES = 64 * 1024;
+const BACKUP_MIN_FREE_BYTES = 6 * 1024 * 1024 * 1024;
 
 // myrmidon(BACKUP-KEEP-LAST / OPE-4832): each dump engine closes its output
 // with its own completion marker. The JavaScript logical dump ends its
@@ -226,8 +234,7 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
 
 /**
  * myrmidon(BACKUP-KEEP-LAST): first pass of every pruning mode — remove
- * orphaned, never-finished plain `.sql` leftovers from interrupted runs (the
- * file is written plain, then gzipped; a crash leaves the `.sql` behind).
+ * orphaned, never-finished plain `.sql` leftovers from legacy interrupted runs.
  * Only files with an mtime strictly older than the cutoff count — a live
  * run's own in-progress `.sql` stays untouched, and these orphans count into
  * prunedCount in BOTH retention modes (tiered and keep-last).
@@ -461,12 +468,125 @@ async function waitForChildExit(child: ReturnType<typeof spawn>, label: string):
   }
 }
 
+// myrmidon(OPE-4996): shared option set for every backup/restore postgres.js
+// client. `connection.statement_timeout` is sent as a startup-packet
+// parameter, so it lands on the session and wins over a database-level
+// `ALTER DATABASE … SET statement_timeout`; without it a database-wide limit
+// aborts the long COPY/SELECT statements of a dump with PostgresError 57014.
+// The value must be the STRING "0": postgres.js@3.4.9 builds the startup
+// packet with `.filter(([, v]) => v)` (connection.js `StartupMessage`), which
+// drops falsy values — the number 0 would be silently discarded and the
+// database default would survive.
+function backupClientOptions(connectTimeout: number): {
+  max: 1;
+  connect_timeout: number;
+  connection: { statement_timeout: number };
+} {
+  return {
+    max: 1,
+    connect_timeout: connectTimeout,
+    connection: { statement_timeout: "0" as unknown as number },
+  };
+}
+
+// myrmidon(OPE-4996): libpq clients (pg_dump, psql) honour the database-level
+// default too, so both child-process env blocks must carry the same session
+// override; an inherited PGOPTIONS is kept and the override appended to it.
+function backupPgOptions(): string {
+  const inherited = process.env.PGOPTIONS?.trim();
+  return inherited ? `${inherited} -c statement_timeout=0` : "-c statement_timeout=0";
+}
+
+/**
+ * myrmidon(SHARED-PG-BACKUP): the configured `pg_dump` client is older than
+ * the database server's major version. pg_dump refuses to dump a newer
+ * server ("server version X is newer than client version Y"), so a dump with
+ * such a client dies mid-run with an unclear utility error. The engine
+ * detects the mismatch before spawning the real dump: engine "pg_dump" fails
+ * loudly with this error and the fix, engine "auto" warns and falls back to
+ * the JavaScript dump path, which speaks SQL through postgres.js and works
+ * against any server the board can connect to (a shared PostgreSQL 18 with
+ * the host's older client tools included).
+ */
+export class BackupClientVersionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BackupClientVersionError";
+  }
+}
+
+// myrmidon(SHARED-PG-BACKUP): the major version of a Postgres version string
+// — the server's `SELECT version()` ("PostgreSQL 18.1 ...") or a utility's
+// --version output ("pg_dump (PostgreSQL) 17.6 (Ubuntu 17.6-0.pgdg...)").
+// The major is the leading number of a real `major.minor` version token;
+// unrelated output (no version shape) -> null.
+export function parsePgMajorVersion(text: string): number | null {
+  // myrmidon(SHARED-PG-BACKUP): accept only real version shapes (major.minor
+  // or the longer "18.1 (build)" spellings). A bare `\d+` scan mis-reads the
+  // first digit in any unrelated output as the major — e.g. a stub client
+  // that answers `--version` with its dump body ("SELECT 1;") read as major
+  // 1 and made the compatibility gate throw in CI.
+  const match = /(\d+)(?:\.\d+)+/.exec(text);
+  if (!match) return null;
+  const value = Number.parseInt(match[1]!, 10);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+// myrmidon(SHARED-PG-BACKUP): the dump client binary used for the pg_dump
+// path: the host's client by default, PAPERCLIP_PG_DUMP_PATH points at a
+// client of the server's major version or newer when the host ships an older
+// one (a shared PostgreSQL 18 server with pg_dump 17 tools on the host).
+function pgDumpBinPath(): string {
+  return process.env.PAPERCLIP_PG_DUMP_PATH?.trim() || "pg_dump";
+}
+
+/**
+ * myrmidon(SHARED-PG-BACKUP): diagnose the dump client before the real dump.
+ * Asks `pgDumpBin --version` and compares the majors. Returns a fix message
+ * only when both versions are known and the client is older than the server;
+ * `null` means "run the dump" — including the cases the utility cannot be
+ * asked (missing binary, no output, exit != 0): those keep the pre-existing
+ * behavior, the dump spawn fails on its own and engine "auto" falls back to
+ * JavaScript exactly as before.
+ */
+export async function diagnosePgDumpClient(
+  pgDumpBin: string,
+  serverMajor: number,
+): Promise<string | null> {
+  const versionOutput = await new Promise<string | null>((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(pgDumpBin, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      resolve(null);
+      return;
+    }
+    let out = "";
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      out = (out + chunk).slice(0, 1024);
+    });
+    child.once("error", () => resolve(null));
+    // "close" (not "exit") fires after the stdio streams have flushed; a fast
+    // child can emit "exit" while `out` is still empty.
+    child.once("close", (code) => resolve(code === 0 && out.trim() ? out : null));
+  });
+  if (versionOutput === null) return null;
+  const clientMajor = parsePgMajorVersion(versionOutput);
+  if (clientMajor === null || clientMajor >= serverMajor) return null;
+  return (
+    `the pg_dump client is PostgreSQL major ${clientMajor} but the database server is major ` +
+    `${serverMajor}: pg_dump refuses to dump a newer server. Install a client of the server's ` +
+    `major or newer (PostgreSQL ${serverMajor}+) or point PAPERCLIP_PG_DUMP_PATH at one`
+  );
+}
+
 async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
   connectTimeout: number;
 }): Promise<void> {
-  const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
+  const pgDumpBin = pgDumpBinPath();
   const child = spawn(
     pgDumpBin,
     [
@@ -482,6 +602,9 @@ async function runPgDumpBackup(opts: {
       env: {
         ...process.env,
         PGCONNECT_TIMEOUT: String(opts.connectTimeout),
+        // myrmidon(OPE-4996): keep pg_dump's session free of the
+        // database-level statement_timeout so the long COPY statements survive.
+        PGOPTIONS: backupPgOptions(),
       },
     },
   );
@@ -497,7 +620,7 @@ async function runPgDumpBackup(opts: {
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
-  const psqlBin = process.env.PAPERCLIP_PSQL_PATH || "psql";
+  const psqlBin = readProductEnv("PSQL_PATH") || "psql";
   const child = spawn(
     psqlBin,
     [
@@ -511,6 +634,9 @@ async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: 
       env: {
         ...process.env,
         PGCONNECT_TIMEOUT: String(connectTimeout),
+        // myrmidon(OPE-4996): restore replays the same long COPY statements,
+        // so psql must not inherit the database-level statement_timeout.
+        PGOPTIONS: backupPgOptions(),
       },
     },
   );
@@ -586,17 +712,30 @@ async function* readRestoreStatements(backupFile: string): AsyncGenerator<string
   }
 }
 
-export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
-  const filePromise = openFile(filePath, "w");
+export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES, gzip = false) {
+  const filePromise = gzip ? null : openFile(filePath, "w");
   const flushThreshold = Math.max(1, Math.trunc(maxBufferedBytes));
   let bufferedLines: string[] = [];
   let bufferedBytes = 0;
   let firstChunk = true;
   let closed = false;
   let pendingWrite = Promise.resolve();
+  let gzipStream: ReturnType<typeof createGzip> | null = null;
+  let gzipDone: Promise<void> | null = null;
 
   const writeChunk = async (chunk: string | Buffer): Promise<void> => {
-    const file = await filePromise;
+    if (gzipStream) {
+      const stream = gzipStream;
+      if (!stream.write(chunk)) await new Promise<void>((resolve) => stream.once("drain", resolve));
+      return;
+    }
+    if (gzip) {
+      gzipStream = createGzip();
+      gzipDone = pipeline(gzipStream, createWriteStream(filePath));
+      if (!gzipStream.write(chunk)) await new Promise<void>((resolve) => gzipStream?.once("drain", resolve));
+      return;
+    }
+    const file = await filePromise!;
     if (typeof chunk === "string") {
       await file.write(chunk, null, "utf8");
     } else {
@@ -647,7 +786,19 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
       closed = true;
       flushBufferedLines();
       await pendingWrite;
-      const file = await filePromise;
+      if (gzipStream) {
+        gzipStream.end();
+        await gzipDone!;
+        return;
+      }
+      if (gzip) {
+        gzipStream = createGzip();
+        gzipDone = pipeline(gzipStream, createWriteStream(filePath));
+        gzipStream.end();
+        await gzipDone;
+        return;
+      }
+      const file = await filePromise!;
       await file.close();
     },
     async abort() {
@@ -656,7 +807,13 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
       bufferedLines = [];
       bufferedBytes = 0;
       await pendingWrite.catch(() => {});
-      await filePromise.then((file) => file.close()).catch(() => {});
+      if (gzipStream) {
+        gzipStream.destroy();
+        await gzipDone?.catch(() => {});
+        if (existsSync(filePath)) try { unlinkSync(filePath); } catch { /* best effort */ }
+        return;
+      }
+      if (filePromise) await filePromise.then(async (file: FileHandle) => { await file.close(); }).catch(() => {});
       if (existsSync(filePath)) {
         try {
           unlinkSync(filePath);
@@ -681,7 +838,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
-  let sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  let sql = postgres(opts.connectionString, backupClientOptions(connectTimeout));
   let sqlClosed = false;
   const closeSql = async () => {
     if (sqlClosed) return;
@@ -689,26 +846,52 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await sql.end();
   };
   mkdirSync(opts.backupDir, { recursive: true });
-  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
-  const backupFile = `${sqlFile}.gz`;
-  // myrmidon(OPE-4832): mutable because an engine-auto fallback onto the
-  // JavaScript path reopens a fresh writer after the pg_dump path aborted the
-  // original one (abort closes the handle and deletes the .sql).
-  let writer = createBufferedTextFileWriter(sqlFile);
+  const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql.gz`);
+  // myrmidon(SHARED-PG-BACKUP): non-fatal diagnostics collected during the
+  // run (client major-version fallback); surfaced on the result so the
+  // scheduler log and the CLI show why the engine was downgraded.
+  const backupWarnings: string[] = [];
+  const warningsOnResult: () => Pick<RunDatabaseBackupResult, "warnings"> = () =>
+    backupWarnings.length > 0 ? { warnings: [...backupWarnings] } : {};
+  // Check disk space before opening the output writer. The JS fallback is
+  // compressed as it is produced, so it never materializes a plain .sql file.
+  let fsStats: Awaited<ReturnType<typeof statfs>>;
+  try {
+    fsStats = await statfs(opts.backupDir);
+  } catch (error) {
+    await closeSql();
+    throw error;
+  }
+  const freeBytes = fsStats.bavail * fsStats.bsize;
+  if (freeBytes < BACKUP_MIN_FREE_BYTES) {
+    await closeSql();
+    throw new Error(`Skipping database backup: ${freeBytes} bytes free; ${BACKUP_MIN_FREE_BYTES} required`);
+  }
+  let writer = createBufferedTextFileWriter(backupFile, DEFAULT_BACKUP_WRITE_BUFFER_BYTES, true);
 
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
       await sql`SELECT 1`;
       try {
+        // myrmidon(SHARED-PG-BACKUP): check the dump client against the
+        // server BEFORE spawning the real dump. libpq refuses to dump a
+        // newer server, so a pg_dump older than the shared PostgreSQL 18
+        // must not die mid-spawn with an unclear utility error: explicit
+        // engine fails with BackupClientVersionError, engine "auto" warns
+        // and falls back to the JavaScript path below.
+        const serverVersionRows = await sql<{ version: string }[]>`SELECT version()`;
+        const serverMajor = parsePgMajorVersion(String(serverVersionRows[0]?.version ?? ""));
+        const clientIssue =
+          serverMajor === null ? null : await diagnosePgDumpClient(pgDumpBinPath(), serverMajor);
+        if (clientIssue) throw new BackupClientVersionError(clientIssue);
         await closeSql();
         await runPgDumpBackup({
           connectionString: opts.connectionString,
           backupFile,
           connectTimeout,
         });
-        await writer.abort();
-        // myrmidon(BACKUP-KEEP-LAST): verify before any deletion — a corrupt
-        // new dump is dropped and older backups are kept, the run fails loudly.
+        // pg_dump already wrote the compressed output directly.
+        // A corrupt new dump is dropped and older backups are kept.
         if (keepLastOnly) {
           const verification = await verifyBackupFile(backupFile);
           if (!verification.ok) {
@@ -730,6 +913,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           backupFile,
           sizeBytes,
           prunedCount,
+          ...warningsOnResult(),
         };
       } catch (error) {
         if (existsSync(backupFile)) {
@@ -747,17 +931,26 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         if (backupEngine === "pg_dump") {
           throw error;
         }
+        // myrmidon(SHARED-PG-BACKUP): a diagnosed client/server major-version
+        // mismatch is reported as a warning on the result — the JavaScript
+        // fallback below produces the dump the older client could not. The
+        // gate throws before closeSql() ran, so close the probe connection
+        // first: the reassignment below would otherwise leak the old pool.
+        if (error instanceof BackupClientVersionError) {
+          backupWarnings.push(error.message);
+          await closeSql();
+        }
         effectiveBackupEngine = "javascript";
         // myrmidon(OPE-4832): the aborted-on-success pg_dump path may have
-        // already closed and deleted the plain .sql writer above; when the
+        // already closed and deleted the compressed writer above; when the
         // child itself failed, the original writer is still open. `abort()`
         // is idempotent, so run it first and then reopen a fresh writer on
         // the same path — the JavaScript path below emits through `writer`
         // and must never see a closed handle ("Cannot write to closed
         // backup file").
         await writer.abort();
-        writer = createBufferedTextFileWriter(sqlFile);
-        sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+        writer = createBufferedTextFileWriter(backupFile, DEFAULT_BACKUP_WRITE_BUFFER_BYTES, true);
+        sql = postgres(opts.connectionString, backupClientOptions(connectTimeout));
         sqlClosed = false;
       }
     }
@@ -1123,7 +1316,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       if (effectiveBackupEngine !== "javascript" && nullifiedColumns.size === 0) {
         emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
         await writer.writeRaw("\n");
-        const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+        const copySql = postgres(opts.connectionString, backupClientOptions(connectTimeout));
         try {
           const copyStream = await copySql
             .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
@@ -1206,11 +1399,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     await writer.close();
 
-    // Compress the SQL file with gzip
-    const sqlReadStream = createReadStream(sqlFile);
-    const gzWriteStream = createWriteStream(backupFile);
-    await pipeline(sqlReadStream, createGzip(), gzWriteStream);
-    unlinkSync(sqlFile);
+    // Writer streams SQL through gzip directly to the final backup file.
 
     // myrmidon(BACKUP-KEEP-LAST): verify before any deletion — a corrupt
     // new dump is dropped and older backups are kept, the run fails loudly.
@@ -1236,14 +1425,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       backupFile,
       sizeBytes,
       prunedCount,
+      ...warningsOnResult(),
     };
   } catch (error) {
     await writer.abort();
     if (existsSync(backupFile)) {
       try { unlinkSync(backupFile); } catch { /* ignore */ }
-    }
-    if (existsSync(sqlFile)) {
-      try { unlinkSync(sqlFile); } catch { /* ignore */ }
     }
     throw error;
   } finally {
@@ -1266,7 +1453,7 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
     }
   }
 
-  const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  const sql = postgres(opts.connectionString, backupClientOptions(connectTimeout));
 
   try {
     await sql`SELECT 1`;
@@ -1292,5 +1479,8 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
 export function formatDatabaseBackupResult(result: RunDatabaseBackupResult): string {
   const size = formatBackupSize(result.sizeBytes);
   const pruned = result.prunedCount > 0 ? `; pruned ${result.prunedCount} old backup(s)` : "";
-  return `${result.backupFile} (${size}${pruned})`;
+  // myrmidon(SHARED-PG-BACKUP): non-fatal diagnostics (e.g. the pg_dump
+  // client major-version fallback) belong in every consumer's log line.
+  const warnings = (result.warnings ?? []).map((warning) => `; warning: ${warning}`).join("");
+  return `${result.backupFile} (${size}${pruned}${warnings})`;
 }

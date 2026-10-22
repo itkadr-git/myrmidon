@@ -31,7 +31,11 @@ type AgentLike = {
   id: string;
   companyId: string;
   name: string;
-  adapterConfig: unknown;
+  // myrmidon(PERF-DIET-G): optional, because the shared `Agent` type marks
+  // adapterConfig optional — the configuration travels only on detail and
+  // configuration reads, never on the company list. Every reader here tolerates
+  // an absent config (asRecord returns null).
+  adapterConfig?: unknown;
 };
 
 type AgentInstructionsFileSummary = {

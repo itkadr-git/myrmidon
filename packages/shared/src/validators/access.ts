@@ -95,18 +95,92 @@ export const BOARD_API_KEY_SCOPE_KINDS = [
   "agents_manage",
   "secrets_manage",
   "release",
+  // myrmidon(1.6.6 MONITORING E): the key a linking component (Zabbix
+  // aggregator, Alertmanager webhook, collector) carries. It may only create
+  // and update a task plus report its own liveness, so a leaked or expired
+  // link key cannot do operator work — the shared operator key is no longer
+  // the only thing standing between a broken link and the whole board.
+  "monitoring_link",
 ] as const;
 
-export const boardApiKeyScopeSchema = z.object({
-  kind: z.enum(BOARD_API_KEY_SCOPE_KINDS),
+export const BOARD_API_KEY_ROLE_SCOPE_KINDS = [
+  "read_only",
+  "ops",
+  "agents_manage",
+  "secrets_manage",
+  "release",
+] as const;
+
+/**
+ * myrmidon(1.6.6 MONITORING E): the scope of a linking component's board key.
+ * The policy fields live on the key itself — the watchdog reads them from the
+ * key row, so a link is described in exactly one place and the liveness
+ * thresholds apply without a second settings surface.
+ */
+export const monitoringLinkScopeSchema = z.object({
+  kind: z.literal("monitoring_link"),
+  /** Stable slug the alarm and the status feed report on, e.g. "zabbix-aggregator". */
+  linkKey: z.string().trim().min(1).max(120),
+  /** The company whose tasks the link writes and whose observers get the alarm. */
+  companyId: z.string().guid(),
+  /**
+   * No-pulse threshold in seconds. The board's watchdog adds at most one sweep
+   * interval on top, so the default (480s = 8 min) keeps detection inside the
+   * 10-minute budget the issue asks for with the default 60s sweep.
+   */
+  staleAfterSec: z.coerce.number().int().min(60).max(86_400).default(480),
+  /** Where the High alarm lands; resolved from the company when absent. */
+  alertAssigneeAgentId: z.string().guid().optional().nullable(),
 });
+
+export type MonitoringLinkScope = z.infer<typeof monitoringLinkScopeSchema>;
+
+export const boardApiKeyScopeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.enum(["full", ...BOARD_API_KEY_ROLE_SCOPE_KINDS]) }),
+  monitoringLinkScopeSchema,
+]);
 
 export type BoardApiKeyScope = z.infer<typeof boardApiKeyScopeSchema>;
 export type BoardApiKeyScopeKind = BoardApiKeyScope["kind"];
 
+/**
+ * True when the scope belongs to a linking component's minimal-rights key.
+ *
+ * myrmidon(1.6.6 MONITORING E): this is not a discriminant check. Every caller
+ * uses it to decide whether the narrow link rules apply — the middleware, the
+ * company confinement in authz, the pulse endpoint — so a `monitoring_link`
+ * scope that lost the policy fields it cannot work without must not count as
+ * one. Failing closed here is what keeps a truncated row from being read as a
+ * usable link key.
+ */
+export function isMonitoringLinkScope(
+  scope: BoardApiKeyScope | null | undefined,
+): scope is MonitoringLinkScope {
+  return monitoringLinkScopeSchema.safeParse(scope).success;
+}
+
+/**
+ * myrmidon(1.6.6 MONITORING E): a stored scope that is present but unreadable
+ * must never widen to full access — a malformed role key would otherwise
+ * silently become an operator key, which is exactly the escalation this
+ * change exists to close. Only an absent scope (a key created before
+ * ROLE-SCOPED-TOKENS, or created without one) keeps the backwards-compatible
+ * full access, so existing operator and CLI flows stay unaffected.
+ */
 export function normalizeBoardApiKeyScope(value: unknown): BoardApiKeyScope {
   const parsed = boardApiKeyScopeSchema.safeParse(value);
-  return parsed.success ? parsed.data : { kind: "full" };
+  if (parsed.success) return parsed.data;
+  if (value === null || value === undefined) return { kind: "full" };
+  // A bare string is what a hand-written or legacy row looks like. Honour it
+  // when it names a kind explicitly — the narrowest reading of a readable
+  // value — and fail closed on everything else, including a `monitoring_link`
+  // scope that lost the policy fields it cannot work without.
+  if (typeof value === "string") {
+    const named = BOARD_API_KEY_ROLE_SCOPE_KINDS.find((kind) => kind === value);
+    if (named) return { kind: named };
+    if (value === "full") return { kind: "full" };
+  }
+  return { kind: "read_only" };
 }
 
 export const createBoardApiKeySchema = z.object({

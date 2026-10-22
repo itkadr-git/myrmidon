@@ -91,7 +91,19 @@ export const ru: Ui2Catalog = {
     saveFailed: "Не удалось сохранить выбор языка. Он останется только для этого браузера.",
     serverHint: "Выбор сохраняется в профиле пользователя и следует за вами на других устройствах.",
     telegramBridgeUser: "Бот Telegram тоже отвечает вам на этом языке.",
-    telegramBridgeEnv: "Сейчас бот Telegram не следует этому выбору: переменная окружения сервера принудительно ставит {language} во всех чатах.",
+    telegramBridgeEnv: "Сейчас бот Telegram не следует этому выбору: переменная окружения сервера принудительно ставит {{language}} во всех чатах.",
+    // myrmidon(1.6.5-TG-LOCALE-C): оставшиеся источники называем честно.
+    telegramBridgeInstance:
+      "Бот Telegram отвечает на {{language}} — это язык инстанса, потому что здесь вы язык не выбирали.",
+    telegramBridgeDefault:
+      "Бот Telegram отвечает на {{language}} — это язык по умолчанию, потому что здесь вы язык не выбирали.",
+    instanceLanguageTitle: "Язык бота Telegram на инстансе",
+    instanceLanguageDescription:
+      "Действует для всех членов доски, которые не выбрали язык выше. Менять может только администратор инстанса; применяется со следующего ответа, без перезапуска.",
+    instanceLanguageSave: "Сохранить",
+    instanceLanguageSaved: "Язык бота Telegram на инстансе: {{language}}.",
+    instanceLanguageFailed: "Не удалось сохранить язык инстанса.",
+    instanceLanguageAdminOnly: "Менять язык инстанса может только администратор инстанса.",
   },
   status: {
     open: "Открыта",

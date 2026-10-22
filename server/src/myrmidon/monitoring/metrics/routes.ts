@@ -16,6 +16,7 @@
 import { Router, type Request, type Response } from "express";
 import { and, eq, ne } from "drizzle-orm";
 import { companySecrets, type Db } from "@paperclipai/db";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 import { secretService } from "../../../services/secrets.js";
 import {
   clampErrorWindowSec,
@@ -23,7 +24,25 @@ import {
   collectMetricsSnapshot,
   METRICS_CONTENT_TYPE,
   renderMetricsText,
+  runMetricsSelfCheck,
+  type MetricsCollectorDeps,
+  type MetricsSelfCheck,
 } from "./metrics.js";
+import {
+  startProcessMetricsObservation,
+  type ProcessMetricsSource,
+} from "./process-metrics.js";
+import {
+  BOARD_PROCESS_STALE_MS,
+  boardProcessAgeSeconds,
+  boardProcessBootId,
+  boardProcessStatus,
+  resolveBoardProcessRole,
+} from "../../process-registry/domain.js";
+import {
+  createBoardProcessStore,
+  type BoardProcessStore,
+} from "../../process-registry/store.js";
 
 /** Settings env: the NAME of the company secret holding the scraper token. */
 export const METRICS_TOKEN_SECRET_ENV = "MYRMIDON_METRICS_TOKEN_SECRET";
@@ -50,6 +69,20 @@ export interface MetricsRoutesDeps {
   listSecretRowsByName?: ListSecretRowsByName;
   /** Secret value seam; the real wiring resolves through the secret service. */
   readSecretValue?: ReadSecretValue;
+  /** Self-check seam; the real wiring runs the collector against `db`. */
+  runSelfCheck?: (deps: MetricsCollectorDeps) => Promise<MetricsSelfCheck>;
+  /**
+   * myrmidon(1.6.5-PROCS-Q3): the process-metrics seam (event loop delay,
+   * memory, live events). Absent → the production in-process source.
+   */
+  processMetrics?: ProcessMetricsSource | null;
+  /**
+   * myrmidon(1.6.6 OPE-6959): the registry read seam behind /internal/procs.
+   * Absent → the production store on `db`.
+   */
+  processStore?: BoardProcessStore;
+  /** Role override (tests); resolved through the product env aliases otherwise. */
+  role?: string;
 }
 
 /**
@@ -116,34 +149,128 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
     });
   const defaultErrorWindowSec = clampErrorWindowSec(env[METRICS_ERROR_WINDOW_ENV]);
   const defaultLatencyWindowSec = clampLatencyWindowSec(env[METRICS_LATENCY_WINDOW_ENV]);
+  const runSelfCheck: (deps: MetricsCollectorDeps) => Promise<MetricsSelfCheck> =
+    deps.runSelfCheck ?? runMetricsSelfCheck;
+  // myrmidon(1.6.6 OPE-6959): the role of THIS process, stamped on every
+  // metric sample and reported by /internal/procs.
+  const role = deps.role ?? resolveBoardProcessRole(readProductEnvFrom(env, "PROCESS_ROLE"));
+  const processStore: BoardProcessStore = deps.processStore ?? createBoardProcessStore(deps.db);
 
-  router.get("/metrics", async (req: Request, res: Response) => {
-    // The guard runs before any collection: a scraper without the token
+  // myrmidon(1.6.5-PROCS-Q3): the process observers (delay histogram +
+  // live-event subscribers) start lazily on the FIRST authorized scrape and
+  // never cost anything before that — an unconfigured endpoint stays exactly
+  // as cheap as before. Injected fakes (tests) skip the start.
+  let processObservationStarted = false;
+  function ensureProcessObservation(): void {
+    if (deps.processMetrics || processObservationStarted) return;
+    processObservationStarted = true;
+    startProcessMetricsObservation();
+  }
+
+  /** Resolves the bearer guard for this router; false answers 401. */
+  async function authorized(req: Request, res: Response): Promise<boolean> {
+    // The guard runs before any collection: a caller without the token
     // learns nothing about the board (not even which families exist).
     const token = await resolveMetricsToken({ env, listSecretRowsByName, readSecretValue });
     if (!token) {
       res.status(401).send("metrics token is not configured");
-      return;
+      return false;
     }
     const header = req.headers.authorization ?? "";
     if (!header.startsWith("Bearer ")) {
       res.status(401).send("bearer token required");
-      return;
+      return false;
     }
     const provided = header.slice("Bearer ".length).trim();
     if (!provided || !tokenMatches(token, provided)) {
       res.status(401).send("invalid bearer token");
-      return;
+      return false;
     }
+    return true;
+  }
 
+  router.get("/metrics", async (req: Request, res: Response) => {
+    if (!(await authorized(req, res))) return;
+
+    ensureProcessObservation();
     const query = req.query as Record<string, unknown>;
     const snapshot = await collectMetricsSnapshot({
       db: deps.db,
       now: deps.now,
       errorWindowSec: clampErrorWindowSec(query.window ?? defaultErrorWindowSec),
       latencyWindowSec: clampLatencyWindowSec(query.latency_window ?? defaultLatencyWindowSec),
+      role,
+      ...(deps.processMetrics !== undefined ? { processMetrics: deps.processMetrics } : {}),
     });
     res.status(200).set("Content-Type", METRICS_CONTENT_TYPE).send(renderMetricsText(snapshot));
+  });
+
+  // myrmidon(1.6.6 OPE-6959, design BOARD-PROCESSES этап 1): the internal
+  // process list the orchestrator and the scraper read. It answers from the
+  // same registry rows the «Процессы» panel shows, trimmed to the fields the
+  // machines need — role, pid, uptime, ready — and guarded by the same
+  // bearer token as /metrics (this router is mounted at the origin root,
+  // outside /api, so there is no board actor on the request).
+  router.get("/internal/procs", async (req: Request, res: Response) => {
+    if (!(await authorized(req, res))) return;
+
+    const at = deps.now();
+    try {
+      const rows = await processStore.listProcesses();
+      res.status(200).json({
+        role,
+        selfBootId: boardProcessBootId,
+        staleAfterSeconds: Math.round(BOARD_PROCESS_STALE_MS / 1000),
+        processes: rows.map((row) => ({
+          role: row.role,
+          pid: row.pid,
+          startedAt: row.startedAt.toISOString(),
+          uptimeSeconds: boardProcessAgeSeconds(row.startedAt, at),
+          ready: boardProcessStatus(row.lastSeenAt, at, BOARD_PROCESS_STALE_MS) === "live",
+          self: row.bootId === boardProcessBootId,
+        })),
+      });
+    } catch {
+      // Same contract as the self-check probe: a failed read still answers
+      // with a shape, never a stack — a caller polling procs during a DB
+      // outage gets a well-formed empty list, not an error page.
+      res.status(200).json({
+        role,
+        selfBootId: boardProcessBootId,
+        staleAfterSeconds: Math.round(BOARD_PROCESS_STALE_MS / 1000),
+        processes: [],
+      });
+    }
+  });
+
+  // Self-check link (myrmidon 1.6.6 annex): the probe answers under the
+  // canonical /api path but rides this same router — no second app.ts
+  // mount, no new credentials. It carries only aggregate numbers (which
+  // families worked, how long the scrape took): no secret and no metric
+  // value ever leaves it.
+  router.get("/api/myrmidon/monitoring/selfcheck", async (req: Request, res: Response) => {
+    if (!(await authorized(req, res))) return;
+
+    const query = req.query as Record<string, unknown>;
+    try {
+      const result = await runSelfCheck({
+        db: deps.db,
+        now: deps.now,
+        errorWindowSec: clampErrorWindowSec(query.window ?? defaultErrorWindowSec),
+        latencyWindowSec: clampLatencyWindowSec(query.latency_window ?? defaultLatencyWindowSec),
+        ...(deps.processMetrics !== undefined ? { processMetrics: deps.processMetrics } : {}),
+      });
+      res.status(result.ok ? 200 : 503).json(result);
+    } catch {
+      // A probe that itself throws still answers with a shape, never a stack.
+      res.status(500).json({
+        ok: false,
+        families_ok: 0,
+        families_failed: ["selfcheck_crash"],
+        scrape_ms: 0,
+        checked_at: deps.now().toISOString(),
+      });
+    }
   });
 
   return router;

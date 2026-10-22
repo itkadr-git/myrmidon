@@ -5252,7 +5252,7 @@ describe("company portability", () => {
       target: { mode: "new_company", newCompanyName: "Future Import" },
       agents: "all",
       collisionStrategy: "rename",
-    }, "user-1")).rejects.toThrow(/newer Paperclip/);
+    }, "user-1")).rejects.toThrow(/newer Myrmidon/);
     expect(issueSvc.importIssues).not.toHaveBeenCalled();
   });
 

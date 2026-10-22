@@ -32,6 +32,30 @@ import { readStaleBlockSignals } from "../../stale-block/attention.js";
 import {
   readSwarmClaimAttentionSignals,
 } from "./swarm-signals.js";
+import {
+  resolveProcessMetricsSource,
+  type ProcessMetricsSample,
+  type ProcessMetricsSource,
+} from "./process-metrics.js";
+import {
+  resolveLaneMetricsSource,
+  type BoardLaneMetricsSource,
+  type BoardLaneSample,
+} from "../board-load/lanes.js";
+
+import {
+  resolveChannelBridgeFallbackSource,
+  type ChannelBridgeFallbackSample,
+  type ChannelBridgeFallbackSource,
+} from "../../channel-connectors/bridge/fallback-counters.js";
+import { resolveBoardProcessRole } from "../../process-registry/domain.js";
+
+// myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors —
+// the in-process counter the ingress seam keeps (design section 4 and 7).
+import {
+  channelIngressCounters,
+  type ChannelIngressCounters,
+} from "../../channel-connectors/ingress.js";
 
 /** Content type of the Prometheus text exposition format, version 0.0.4. */
 export const METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
@@ -68,6 +92,29 @@ export const METRIC_FAMILIES = [
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
   "myrmidon_scrape_errors",
+  // myrmidon(1.6.5-PROCS-Q3): the process families — the loop delay, the
+  // memory of this process, and the live-event flow (design §1, этап 0).
+  "myrmidon_board_event_loop_lag_seconds",
+  // myrmidon(1.6.6 PROCS-0.1): event-loop utilization (design §5.1, этап 0).
+  "myrmidon_board_event_loop_utilization",
+  "myrmidon_board_process_rss_bytes",
+  "myrmidon_board_heap_bytes",
+  "myrmidon_board_live_events_total",
+  "myrmidon_board_live_event_bytes_total",
+  // myrmidon(1.6.6-PROCS-0.3A): the load lanes — which shape of board work
+  // spends the CPU and issues the DB statements (design OPE-5394 §1 П2).
+  "myrmidon_board_db_queries_total",
+  "myrmidon_board_lane_busy_seconds_total",
+
+  // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback chain of the bridge seam — how
+  // often the channel adapter did not answer and the direct path took the call
+  // back, per reason (design OPE-6985).
+  "myrmidon_adapter_fallback_total",
+
+  // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors
+  // by path — the adapter and the vendor path that still reads in parallel
+  // (design section 4, the inbound flow).
+  "myrmidon_chat_ingress_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -76,7 +123,8 @@ export type MetricFamily = (typeof METRIC_FAMILIES)[number];
 // Scrape snapshot
 // ---------------------------------------------------------------------------
 
-export interface MetricsSnapshot {
+/** The per-family values one scrape reads (the selfcheck probe shares them). */
+export interface MetricsSnapshotFields {
   /** Live (running) runs right now. */
   runsActive: number;
   /** Queued runs waiting for admission right now. */
@@ -98,6 +146,47 @@ export interface MetricsSnapshot {
   agentErrorSignals: number;
   /** Cost spend collected by litellm-costs inside the error window, in cents. */
   llmCostCentsWindow: number;
+  /**
+   * myrmidon(1.6.5-PROCS-Q3): the process half, read from the in-process
+   * source (no DB). null renders HELP/TYPE with no samples — the families
+   * exist even before the first event of a kind was published.
+   */
+  process?: ProcessMetricsSample | null;
+  /**
+   * myrmidon(1.6.6-PROCS-0.3A): the load lanes of this process, read from the
+   * in-process registry (no DB). null renders HELP/TYPE with no samples —
+   * the two families exist even before the first lane ran.
+   */
+  lanes?: BoardLaneSample[] | null;
+  /**
+   * myrmidon(1.6.6-CH-CONNECTOR-G): the bridge fallback counters of this
+   * process, read from the in-process registry (no DB). null renders HELP/TYPE
+   * with no samples; a present sample renders every known reason, zeros
+   * included, so a missing series can only mean an unwired counter.
+   */
+  adapterFallbacks?: ChannelBridgeFallbackSample[] | null;
+
+  /**
+   * myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of this process by path,
+   * read from the in-process counter of the connector seam (no DB). null
+   * renders HELP/TYPE with no samples; both paths render as samples whenever
+   * the counter was read — zero included, so "nothing reads through a
+   * connector yet" is readable off the graph.
+   */
+  chatIngress?: ChannelIngressCounters | null;
+}
+
+/** The fields plus the scrape bookkeeping rendered into the exposition text. */
+export interface MetricsSnapshot extends MetricsSnapshotFields {
+  /**
+   * myrmidon(1.6.6 OPE-6959, design BOARD-PROCESSES этап 1): the process role
+   * (`api` | `worker` | `all`) of the process that answered this scrape. It is
+   * rendered as the `role` label on EVERY sample, so the same instance can be
+   * scraped through N api processes and one worker and the monitoring stack
+   * tells them apart without relabel rules on the scrape config. The metric
+   * NAMES do not change — only the label set grows.
+   */
+  role: string;
   /** Non-fatal collection errors of this scrape (already logged upstream). */
   scrapeErrors: number;
   /** When the snapshot was taken. */
@@ -116,6 +205,39 @@ export interface MetricsCollectorDeps {
   errorWindowSec: number;
   /** Latency window in seconds. */
   latencyWindowSec: number;
+  /**
+   * myrmidon(1.6.6 OPE-6959): the process role stamped on every sample as the
+   * `role` label. Absent → resolved from `PAPERCLIP_PROCESS_ROLE` (the same
+   * resolution the process registry uses), so `mode=single` keeps rendering
+   * `role="all"`.
+   */
+  role?: string;
+  /**
+   * myrmidon(1.6.5-PROCS-Q3): where the process half comes from. Production
+   * reads the in-process observers; tests inject fakes. Absent → the
+   * production default (no fake needed for the DB families).
+   */
+  processMetrics?: ProcessMetricsSource | null;
+  /**
+   * myrmidon(1.6.6-PROCS-0.3A): where the lane half comes from. Production
+   * reads the in-process registry; tests inject fakes. Absent → the
+   * production default — a test that renders lanes injects its own source,
+   * so no test ever depends on another test's counters.
+   */
+  laneMetrics?: BoardLaneMetricsSource | null;
+  /**
+   * myrmidon(1.6.6-CH-CONNECTOR-G): where the bridge fallback counters come
+   * from. Production reads the in-process registry of the seam; tests inject a
+   * fake, so no test depends on another test's fallbacks.
+   */
+  adapterFallbacks?: ChannelBridgeFallbackSource | null;
+
+  /**
+   * myrmidon(1.6.6 CONNECTOR-IN): where the ingress half comes from. Production
+   * reads the in-process counter of the connector seam; a test injects its own,
+   * so no test depends on another test's reads.
+   */
+  chatIngress?: (() => ChannelIngressCounters) | null;
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
@@ -147,7 +269,7 @@ async function readRunCounters(db: Db): Promise<{
 async function readRunDurations(
   db: Db,
   windowStart: Date,
-): Promise<{ p50: number | null; p95: number | null }> {
+): Promise<{ p50: number | null; p95: number | null; samples: number }> {
   const rows = await db
     .select({
       seconds: sql<number>`extract(epoch from (${heartbeatRuns.finishedAt} - ${heartbeatRuns.startedAt}))`,
@@ -165,8 +287,8 @@ async function readRunDurations(
   const durations = rows
     .map((row) => Number(row.seconds))
     .filter((value) => Number.isFinite(value) && value >= 0);
-  if (durations.length === 0) return { p50: null, p95: null };
-  return { p50: percentile(durations, 0.5), p95: percentile(durations, 0.95) };
+  if (durations.length === 0) return { p50: null, p95: null, samples: 0 };
+  return { p50: percentile(durations, 0.5), p95: percentile(durations, 0.95), samples: durations.length };
 }
 
 /** Linear-interpolated percentile of an ascending-sorted sample. */
@@ -244,27 +366,85 @@ async function readCostWindow(db: Db, windowStart: Date): Promise<number> {
 
 /** One scrape: every family is collected, and one family's failure never kills the rest. */
 export async function collectMetricsSnapshot(deps: MetricsCollectorDeps): Promise<MetricsSnapshot> {
+  const collected = await collectMetricsParts(deps);
+  return {
+    ...collected.fields,
+    role: collected.role,
+    scrapeErrors: collected.errors.length,
+    collectedAt: collected.now.toISOString(),
+  };
+}
+
+/** Per-family outcome of one scrape, shared by the snapshot and the selfcheck probe. */
+export interface MetricsCollectedParts {
+  fields: MetricsSnapshotFields;
+  /** Family names whose read failed (empty on a clean scrape). */
+  errors: string[];
+  /** The clock value the scrape used. */
+  now: Date;
+  /** Latency sample sizes behind the p50/p95 pair. */
+  latencySamples: number;
+  /** myrmidon(1.6.6 OPE-6959): the resolved role this scrape renders as the `role` label. */
+  role: string;
+}
+
+/**
+ * Collects one snapshot's worth of fields family by family. A family that
+ * throws falls back to its zero/empty value and lands in `errors`: one broken
+ * read never kills the scrape, and the failure is visible upstream as
+ * `myrmidon_scrape_errors` — the alerting half maps that counter to a task
+ * for the owning role.
+ */
+export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<MetricsCollectedParts> {
   const now = deps.now();
+  const role = deps.role ?? resolveBoardProcessRole();
   const errorWindowStart = new Date(now.getTime() - deps.errorWindowSec * 1000);
   const latencyWindowStart = new Date(now.getTime() - deps.latencyWindowSec * 1000);
 
-  let scrapeErrors = 0;
-  async function guarded<T>(read: () => Promise<T>, fallback: T): Promise<T> {
+  const errors: string[] = [];
+  async function guarded<T>(family: string, read: () => Promise<T>, fallback: T): Promise<T> {
     try {
       return await read();
     } catch {
-      scrapeErrors += 1;
+      errors.push(family);
       return fallback;
     }
   }
 
-  const runCounters = await guarded(() => readRunCounters(deps.db), { active: 0, queued: 0, failedTotal: 0 });
-  const durations = await guarded(() => readRunDurations(deps.db, latencyWindowStart), { p50: null, p95: null });
-  const roleQueues = await guarded(() => readRoleQueues(deps.db), [] as Array<{ role: string; status: string; count: number }>);
-  const claimCounters = await guarded(() => readClaimCounters(deps.db, now), { active: 0, total: 0 });
-  const errorSignals = await guarded(() => readAgentErrorSignals(deps.db), 0);
-  const costWindow = await guarded(() => readCostWindow(deps.db, errorWindowStart), 0);
+  // The run counters answer three families with one grouped query; a failure
+  // names all three in the selfcheck output.
+  const runCounters = await guarded(
+    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_failed_total",
+    () => readRunCounters(deps.db),
+    { active: 0, queued: 0, failedTotal: 0 },
+  );
+  const durations = await guarded(
+    "myrmidon_run_duration_seconds",
+    () => readRunDurations(deps.db, latencyWindowStart),
+    { p50: null, p95: null, samples: 0 },
+  );
+  const roleQueues = await guarded(
+    "myrmidon_role_queue_tasks",
+    () => readRoleQueues(deps.db),
+    [] as Array<{ role: string; status: string; count: number }>,
+  );
+  const claimCounters = await guarded(
+    "myrmidon_swarm_claims_active|myrmidon_swarm_claims_total",
+    () => readClaimCounters(deps.db, now),
+    { active: 0, total: 0 },
+  );
+  const errorSignals = await guarded(
+    "myrmidon_agent_error_signals",
+    () => readAgentErrorSignals(deps.db),
+    0,
+  );
+  const costWindow = await guarded(
+    "myrmidon_llm_cost_cents_total",
+    () => readCostWindow(deps.db, errorWindowStart),
+    0,
+  );
   const failedWindow = await guarded(
+    "myrmidon_runs_failed_window",
     () =>
       deps.db
         .select({ total: count() })
@@ -273,21 +453,108 @@ export async function collectMetricsSnapshot(deps: MetricsCollectorDeps): Promis
         .then((rows) => Number(rows[0]?.total ?? 0)),
     0,
   );
+  // myrmidon(1.6.5-PROCS-Q3): the process half rides the same guarded
+  // scrape: a throwing source zeroes it (HELP/TYPE render without samples)
+  // and names the six families, never kills the scrape.
+  const processSample = await guarded(
+    "myrmidon_board_event_loop_lag_seconds|myrmidon_board_event_loop_utilization|myrmidon_board_process_rss_bytes|myrmidon_board_heap_bytes|myrmidon_board_live_events_total|myrmidon_board_live_event_bytes_total",
+    () => Promise.resolve().then(resolveProcessMetricsSource(deps.processMetrics)),
+    null as ProcessMetricsSample | null,
+  );
+  // myrmidon(1.6.6-PROCS-0.3A): the lane half rides the same guarded scrape —
+  // a throwing source zeroes it and names the two families, never kills the
+  // scrape. The registry itself cannot throw; the guard is here for the seam.
+  const laneSample = await guarded(
+    "myrmidon_board_db_queries_total|myrmidon_board_lane_busy_seconds_total",
+    () => Promise.resolve().then(resolveLaneMetricsSource(deps.laneMetrics)),
+    null as BoardLaneSample[] | null,
+  );
+
+  // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback counters of the bridge seam
+  // ride the same guarded scrape. The registry cannot throw; the guard is here
+  // for the seam, the way it is for the lanes.
+  const fallbackSample = await guarded(
+    "myrmidon_adapter_fallback_total",
+    () => Promise.resolve().then(resolveChannelBridgeFallbackSource(deps.adapterFallbacks)),
+    null as ChannelBridgeFallbackSample[] | null,
+  );
+
+  // myrmidon(1.6.6 CONNECTOR-IN): the ingress half rides the same guarded
+  // scrape: an in-process counter that cannot throw today, guarded anyway so a
+  // future source cannot kill the scrape — it names its family instead.
+  const chatIngress = await guarded(
+    "myrmidon_chat_ingress_total",
+    () => Promise.resolve().then(() => (deps.chatIngress ?? channelIngressCounters)()),
+    null as ChannelIngressCounters | null,
+  );
 
   return {
-    runsActive: runCounters.active,
-    runsQueued: runCounters.queued,
-    runsFailedTotal: runCounters.failedTotal,
-    runsFailedWindow: failedWindow,
-    runDurationSecondsP50: durations.p50,
-    runDurationSecondsP95: durations.p95,
-    roleQueueTasks: roleQueues,
-    swarmClaimsActive: claimCounters.active,
-    swarmClaimsTotal: claimCounters.total,
-    agentErrorSignals: errorSignals,
-    llmCostCentsWindow: costWindow,
-    scrapeErrors,
-    collectedAt: now.toISOString(),
+    fields: {
+      runsActive: runCounters.active,
+      runsQueued: runCounters.queued,
+      runsFailedTotal: runCounters.failedTotal,
+      runsFailedWindow: failedWindow,
+      runDurationSecondsP50: durations.p50,
+      runDurationSecondsP95: durations.p95,
+      roleQueueTasks: roleQueues,
+      swarmClaimsActive: claimCounters.active,
+      swarmClaimsTotal: claimCounters.total,
+      agentErrorSignals: errorSignals,
+      llmCostCentsWindow: costWindow,
+      process: processSample,
+      lanes: laneSample,
+
+      adapterFallbacks: fallbackSample,
+
+      chatIngress,
+    },
+    errors,
+    now,
+    latencySamples: durations.samples,
+    role,
+  };
+}
+
+/**
+ * The self-check probe (myrmidon 1.6.6 annex): one scrape of every family,
+ * summarised without any secret or metric value. Answers whether the whole
+ * chain the board owns works: DB reads for each family and the exposition
+ * render of the collected snapshot. `families_failed` names the families
+ * whose read threw — the same per-family failures the scrape counter
+ * exposes to the monitoring stack, from which the alerting half opens a
+ * task for the owning role.
+ */
+export interface MetricsSelfCheck {
+  ok: boolean;
+  families_ok: number;
+  families_failed: string[];
+  scrape_ms: number;
+  /** When the probe ran. */
+  checked_at: string;
+}
+
+export async function runMetricsSelfCheck(deps: MetricsCollectorDeps): Promise<MetricsSelfCheck> {
+  const startedAt = Date.now();
+  const collected = await collectMetricsParts(deps);
+  // The render is part of the probe: a family that collects but cannot be
+  // rendered would hand the scraper a broken response.
+  try {
+    renderMetricsText({
+      ...collected.fields,
+      role: collected.role,
+      scrapeErrors: collected.errors.length,
+      collectedAt: collected.now.toISOString(),
+    });
+  } catch {
+    collected.errors.push("exposition_render");
+  }
+  const failed = new Set(collected.errors.flatMap((entry) => entry.split("|")));
+  return {
+    ok: failed.size === 0,
+    families_ok: METRIC_FAMILIES.filter((family) => !failed.has(family)).length,
+    families_failed: [...failed].sort(),
+    scrape_ms: Date.now() - startedAt,
+    checked_at: collected.now.toISOString(),
   };
 }
 
@@ -339,8 +606,17 @@ function familyBlock(
  * Renders the snapshot as Prometheus text exposition (0.0.4): every family
  * has exactly one HELP and one TYPE line, families are separated by a blank
  * line, and a value is never a bare `NaN`/`Infinity`.
+ *
+ * myrmidon(1.6.6 OPE-6959): every sample carries the process `role` label
+ * (api | worker | all). Metric names do not change — only the label set
+ * grows, so a multi-process deployment (design BOARD-PROCESSES этап 1) can
+ * tell the api processes from the worker without scrape-config relabeling.
+ * The role goes FIRST in the label set so a future group_left join reads
+ * naturally: `{role="api",quantile="0.5"}`.
  */
 export function renderMetricsText(snapshot: MetricsSnapshot): string {
+  const role = snapshot.role ?? "all";
+  const R = `role="${escapeLabelValue(role)}"`;
   const blocks: string[] = [];
 
   blocks.push(
@@ -348,7 +624,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_runs_active",
       "Heartbeat runs currently running or claimed.",
       "gauge",
-      [`myrmidon_runs_active ${formatSampleValue(snapshot.runsActive)}`],
+      [`myrmidon_runs_active{${R}} ${formatSampleValue(snapshot.runsActive)}`],
     ),
   );
   blocks.push(
@@ -356,7 +632,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_runs_queued",
       "Heartbeat runs waiting for admission (queued, retrying, scheduled_retry).",
       "gauge",
-      [`myrmidon_runs_queued ${formatSampleValue(snapshot.runsQueued)}`],
+      [`myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`],
     ),
   );
   blocks.push(
@@ -364,7 +640,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_runs_failed_total",
       "Heartbeat runs with status failed, all time.",
       "gauge",
-      [`myrmidon_runs_failed_total ${formatSampleValue(snapshot.runsFailedTotal)}`],
+      [`myrmidon_runs_failed_total{${R}} ${formatSampleValue(snapshot.runsFailedTotal)}`],
     ),
   );
   blocks.push(
@@ -372,7 +648,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_runs_failed_window",
       "Failed heartbeat runs inside the scrape error window.",
       "gauge",
-      [`myrmidon_runs_failed_window ${formatSampleValue(snapshot.runsFailedWindow)}`],
+      [`myrmidon_runs_failed_window{${R}} ${formatSampleValue(snapshot.runsFailedWindow)}`],
     ),
   );
   blocks.push(
@@ -382,10 +658,10 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "summary",
       [
         ...(snapshot.runDurationSecondsP50 !== null
-          ? [`myrmidon_run_duration_seconds{quantile=\"0.5\"} ${formatSampleValue(snapshot.runDurationSecondsP50)}`]
+          ? [`myrmidon_run_duration_seconds{${R},quantile="0.5"} ${formatSampleValue(snapshot.runDurationSecondsP50)}`]
           : []),
         ...(snapshot.runDurationSecondsP95 !== null
-          ? [`myrmidon_run_duration_seconds{quantile=\"0.95\"} ${formatSampleValue(snapshot.runDurationSecondsP95)}`]
+          ? [`myrmidon_run_duration_seconds{${R},quantile="0.95"} ${formatSampleValue(snapshot.runDurationSecondsP95)}`]
           : []),
       ],
     ),
@@ -397,7 +673,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "gauge",
       snapshot.roleQueueTasks.map(
         (row) =>
-          `myrmidon_role_queue_tasks{role="${escapeLabelValue(row.role)}",status="${escapeLabelValue(row.status)}"} ${formatSampleValue(row.count)}`,
+          `myrmidon_role_queue_tasks{${R},assignee_role="${escapeLabelValue(row.role)}",status="${escapeLabelValue(row.status)}"} ${formatSampleValue(row.count)}`,
       ),
     ),
   );
@@ -406,7 +682,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_swarm_claims_active",
       "Live (not released, not expired) SWARM claims.",
       "gauge",
-      [`myrmidon_swarm_claims_active ${formatSampleValue(snapshot.swarmClaimsActive)}`],
+      [`myrmidon_swarm_claims_active{${R}} ${formatSampleValue(snapshot.swarmClaimsActive)}`],
     ),
   );
   blocks.push(
@@ -414,7 +690,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_swarm_claims_total",
       "SWARM claim rows ever written (issue_claims rows).",
       "counter",
-      [`myrmidon_swarm_claims_total ${formatSampleValue(snapshot.swarmClaimsTotal)}`],
+      [`myrmidon_swarm_claims_total{${R}} ${formatSampleValue(snapshot.swarmClaimsTotal)}`],
     ),
   );
   blocks.push(
@@ -422,7 +698,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_agent_error_signals",
       "Live agent error signals in the attention registries (tracing health, stale blocks, swarm claims).",
       "gauge",
-      [`myrmidon_agent_error_signals ${formatSampleValue(snapshot.agentErrorSignals)}`],
+      [`myrmidon_agent_error_signals{${R}} ${formatSampleValue(snapshot.agentErrorSignals)}`],
     ),
   );
   blocks.push(
@@ -430,7 +706,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_llm_cost_cents_total",
       "LLM spend collected by the gateway cost sweep inside the scrape window, in cents.",
       "counter",
-      [`myrmidon_llm_cost_cents_total ${formatSampleValue(snapshot.llmCostCentsWindow)}`],
+      [`myrmidon_llm_cost_cents_total{${R}} ${formatSampleValue(snapshot.llmCostCentsWindow)}`],
     ),
   );
   blocks.push(
@@ -438,7 +714,156 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_scrape_errors",
       "Metric families that failed to collect during this scrape.",
       "gauge",
-      [`myrmidon_scrape_errors ${formatSampleValue(snapshot.scrapeErrors)}`],
+      [`myrmidon_scrape_errors{${R}} ${formatSampleValue(snapshot.scrapeErrors)}`],
+    ),
+  );
+
+  // myrmidon(1.6.5-PROCS-Q3): the process families. An absent/failed process
+  // read renders HELP/TYPE with no samples — the scrape still answers.
+  const proc = snapshot.process ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_event_loop_lag_seconds",
+      "Event loop delay of the board process (p50/p99/max) since the previous scrape.",
+      "summary",
+      proc && proc.eventLoop
+        ? [
+            `myrmidon_board_event_loop_lag_seconds{${R},quantile="0.5"} ${formatSampleValue(proc.eventLoop.p50Seconds)}`,
+            `myrmidon_board_event_loop_lag_seconds{${R},quantile="0.99"} ${formatSampleValue(proc.eventLoop.p99Seconds)}`,
+            `myrmidon_board_event_loop_lag_seconds{${R},quantile="1"} ${formatSampleValue(proc.eventLoop.maxSeconds)}`,
+          ]
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_event_loop_utilization",
+      "Share of the event loop window the board process was busy (0..1) since the previous scrape.",
+      "gauge",
+      proc && proc.eventLoopUtilization
+        ? [
+            `myrmidon_board_event_loop_utilization{${R}} ${formatSampleValue(proc.eventLoopUtilization.utilization)}`,
+          ]
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_process_rss_bytes",
+      "Resident set size of the board process.",
+      "gauge",
+      proc ? [`myrmidon_board_process_rss_bytes{${R}} ${formatSampleValue(proc.memory.rssBytes)}`] : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_heap_bytes",
+      "V8 heap of the board process by kind label (used / total).",
+      "gauge",
+      proc
+        ? [
+            `myrmidon_board_heap_bytes{${R},kind="used"} ${formatSampleValue(proc.memory.heapUsedBytes)}`,
+            `myrmidon_board_heap_bytes{${R},kind="total"} ${formatSampleValue(proc.memory.heapTotalBytes)}`,
+          ]
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_live_events_total",
+      "Live events published by kind, cumulative since boot.",
+      "counter",
+      proc
+        ? proc.liveEvents.map(
+            (row) =>
+              `myrmidon_board_live_events_total{${R},kind="${escapeLabelValue(row.type)}"} ${formatSampleValue(row.count)}`,
+          )
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_live_event_bytes_total",
+      "Serialized payload bytes of published live events by kind, cumulative since boot.",
+      "counter",
+      proc
+        ? proc.liveEvents.map(
+            (row) =>
+              `myrmidon_board_live_event_bytes_total{${R},kind="${escapeLabelValue(row.type)}"} ${formatSampleValue(row.bytes)}`,
+          )
+        : [],
+    ),
+  );
+
+  // myrmidon(1.6.6-PROCS-0.3A): the load lanes. Every lane renders even at
+  // zero — a lane that never ran is information ("this work does not happen
+  // on this process"), and a missing series would be indistinguishable from
+  // an uninstrumented one. The DB family carries no `lane` label of its own
+  // (`untagged` is the residue, not a lane).
+  const lanes = snapshot.lanes ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_db_queries_total",
+      "DB statements issued by the board process per load lane, cumulative since boot (work outside every lane is counted as untagged; statements inside a transaction are not counted by the driver observer).",
+      "counter",
+      lanes
+        ? lanes.map(
+            (row) =>
+              `myrmidon_board_db_queries_total{${R},lane="${escapeLabelValue(row.lane)}"} ${formatSampleValue(row.dbQueries)}`,
+          )
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_lane_busy_seconds_total",
+      "Wall time the board process spent inside each load lane, cumulative since boot (seconds).",
+      "counter",
+      lanes
+        ? lanes.map(
+            (row) =>
+              `myrmidon_board_lane_busy_seconds_total{${R},lane="${escapeLabelValue(row.lane)}"} ${formatSampleValue(row.busyMs / 1000)}`,
+          )
+        : [],
+    ),
+  );
+
+  // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback chain of the bridge seam. Both
+  // reasons render even at zero — "the adapter never fell back" is exactly what
+  // an operator looks for after a rollout, and a missing series would hide an
+  // unwired counter instead of reporting it.
+  const fallbacks = snapshot.adapterFallbacks ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_adapter_fallback_total",
+      "Bridge adapter calls that did not answer and were served by the direct path instead, per reason, cumulative since boot.",
+      "counter",
+      fallbacks
+        ? fallbacks.map(
+            (row) =>
+              `myrmidon_adapter_fallback_total{reason="${escapeLabelValue(row.reason)}"} ${formatSampleValue(row.count)}`,
+          )
+        : [],
+    ),
+  );
+
+  // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors.
+  // Both paths render as samples whenever the counter was read, zero included:
+  // "all ingress is read by the vendor path because no connector is registered
+  // yet" is information, and a missing series would be indistinguishable from
+  // an uninstrumented read.
+  const ingress = snapshot.chatIngress ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_chat_ingress_total",
+      "Inbound chat events read per path, cumulative since boot: read by the channel connector of the provider (adapter) or by the vendor path (direct).",
+      "counter",
+      ingress
+        ? [
+            `myrmidon_chat_ingress_total{path="adapter"} ${formatSampleValue(ingress.adapter)}`,
+            `myrmidon_chat_ingress_total{path="direct"} ${formatSampleValue(ingress.direct)}`,
+          ]
+        : [],
     ),
   );
 

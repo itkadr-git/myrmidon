@@ -1,11 +1,24 @@
 import fs from "node:fs/promises";
+// myrmidon(1.6.6-HERMES-SKILLS-A): moduleDir for the skills-source resolver.
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
+  PromptBreakdown,
   RuntimeStatusUpdate,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import { githubLauncherPayload } from "@paperclipai/adapter-utils/github-launcher";
+import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
+import { classifyInputOverflow } from "@paperclipai/adapter-utils/input-overflow";
+import {
+  INPUT_LIMIT_CONFIG_KEY,
+  decideInputLimit,
+  readInputLimitHint,
+  trimTextToChars,
+} from "@paperclipai/adapter-utils/input-limit";
 import {
   asNumber,
   asString,
@@ -26,6 +39,13 @@ import {
   STOP_GRACE_MS,
   STOP_REQUEST_TIMEOUT_MS,
 } from "../shared/constants.js";
+// myrmidon(N4-RUN-LIVENESS): event-based run liveness behind
+// MYRMIDON_RUN_LIVENESS_EVENTS (default off); see run-liveness-events.ts.
+import {
+  installRunLivenessWatch,
+  resolveRunLivenessEvents,
+  touchRunLiveness,
+} from "./run-liveness-events.js";
 import {
   allowsInsecureRemoteHttp,
   isRemotePlainHttp,
@@ -46,6 +66,13 @@ import {
   readCentralHistorySettings,
   type CentralHistoryClient,
 } from "./central-history.js";
+// myrmidon(1.6.6-HERMES-SKILLS-A): gateway-side delivery of Paperclip-managed
+// skills (see ./myrmidon-skills-reconcile.ts for the route decision).
+import {
+  buildPaperclipSkillsField,
+  factCheckGatewayPaperclipSkills,
+  reconcileGatewayPaperclipSkills,
+} from "./myrmidon-skills-reconcile.js";
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -91,6 +118,11 @@ type ExecutionState = {
    * (message.delta only — see RUNTIME_PROGRESS_DELTA_THROTTLE_MS), or null
    * before the first one. */
   lastRuntimeProgressAt: number | null;
+  /** myrmidon(N4-RUN-LIVENESS): Date.now() of the newest gateway event
+   * (handleEvent stamps every SSE frame); the liveness watch reads it.
+   * Initialized at run creation, so a run whose stream never connects still
+   * stalls after its full timeoutSec. */
+  lastEventAtMs: number;
 };
 
 type TextRedactor = (value: string) => string;
@@ -108,7 +140,10 @@ const SENSITIVE_KEY_PATTERN =
 const BEARER_TOKEN_PATTERN = /Bearer\s+\S+/gi;
 const HERMES_SESSION_KEY_HEADER_PATTERN = /(X-Hermes-Session-Key\s*[:=]\s*)([^\s,;]+)/gi;
 const PAPERCLIP_SESSION_KEY_PATTERN =
-  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)\b/gi;
+  // myrmidon(PERF-DIET-K): the optional trailing `:g<N>` is the session
+  // generation suffix of an issue-scoped key (server/src/myrmidon/session-generations
+  // in the board), so a redacted key hides its generation too.
+  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)(?::g\d+)?\b/gi;
 
 // myrmidon(CONTAINER-GITHUB-WRITE): env names heartbeat.ts writes into
 // runtimeConfig.env (services/heartbeat.ts ~21995-22015) when the run's
@@ -180,6 +215,23 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+// myrmidon(PERF-DIET-K): the session-key generation the board decided for this
+// run (see server/src/myrmidon/session-generations/ there). The board writes
+// `sessionGeneration` into the run's adapter config only once an issue-scoped
+// session has passed its threshold; a missing value, an unreadable one and the
+// first generation all read as 1, which leaves the session key byte-for-byte
+// the vendor's — the default behaviour is unchanged.
+export function readSessionGeneration(value: unknown): number {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseInt(value.trim(), 10)
+        : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed <= 1) return 1;
+  return Math.floor(parsed);
+}
+
 function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
   const raw = asString(value, "issue").trim().toLowerCase();
   if (raw === "agent" || raw === "run" || raw === "none") return raw;
@@ -222,6 +274,14 @@ export function resolveSessionKey(input: {
   agentId: string;
   runId: string;
   issueId: string | null;
+  /**
+   * myrmidon(PERF-DIET-K): the issue-scoped session generation. The board
+   * raises it once the session passes its age/activity threshold (and, since
+   * OPE-6168, after a provider input-overflow failure), so a task's
+   * conversation stays bounded. Only the issue strategy carries it; generation
+   * 1 keeps the key without a suffix, so nothing changes until it is crossed.
+   */
+  generation?: number | null;
 }): string | null {
   if (input.strategy === "none") return null;
   if (input.strategy === "agent") {
@@ -231,7 +291,12 @@ export function resolveSessionKey(input: {
     return `paperclip:run:${input.runId}`;
   }
   const issuePart = input.issueId ? `issue:${input.issueId}` : `run:${input.runId}`;
-  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}`;
+  // myrmidon(PERF-DIET-K): the generation suffix applies to an issue-scoped
+  // key only — the no-issue fallback is this attempt's own run and is never
+  // resumed, so it has no history to bound.
+  const generation = readSessionGeneration(input.generation);
+  const generationPart = input.issueId && generation > 1 ? `:g${generation}` : "";
+  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}${generationPart}`;
 }
 
 function stringifyForLog(value: unknown, maxChars = 4_000): string {
@@ -331,7 +396,10 @@ function buildHeaders(input: {
   };
 }
 
-function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null, idempotencyRunId: string): string {
+function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null, idempotencyRunId: string): {
+  text: string;
+  sections: Record<string, string | null | undefined>;
+} {
   // Stable session keys (issue/agent strategy) resume the same remote Hermes
   // conversation across runs; a stored session id from a prior run means that
   // conversation already received the task brief, so pick the compact
@@ -352,7 +420,9 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   });
   const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
-  const lines = [
+  // myrmidon(1.6.5 PROMPT-BUDGET A): the identity/contract head of the input,
+  // measured as its own prompt section.
+  const identityContract = [
     `You are ${ctx.agent.name}, an AI agent employee in a Paperclip-managed company.`,
     "",
     "Paperclip runtime identity:",
@@ -362,7 +432,11 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     // idempotencyRunId) — see the idempotencyKey comment in execute() for
     // why it is never ctx.context.retryOfRunId.
     `- Run ID: ${idempotencyRunId}`,
-    ...(paperclipApiUrl ? [`- Paperclip API URL: ${paperclipApiUrl}`] : []),
+    ...(paperclipApiUrl
+      ? [
+          `- Paperclip API URL: ${paperclipApiUrl} (as configured for the Hermes host; if curl from inside this run fails with empty reply/403, fall back to the \`$PAPERCLIP_API_URL\` env var instead of treating the board as down)`,
+        ]
+      : []),
     ...(issueWorkMode ? [`- Issue work mode: ${issueWorkMode}`] : []),
     "",
     ...(ctx.context.conversationMode === true || isPaperclipRecoveryWakePayload(ctx.context.paperclipWake)
@@ -375,20 +449,31 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
           "- Use X-Paperclip-Run-Id on mutating Paperclip API requests when a Paperclip API key is available.",
           "",
         ]),
+  ].join("\n");
+  const wakePayloadBlock = wakePayloadJson
+    ? ["Structured wake payload JSON:", "```json", wakePayloadJson, "```"].join("\n")
+    : null;
+  const lines = [
+    identityContract,
     wakePrompt,
     ...(sessionHandoff ? ["", sessionHandoff] : []),
     ...(taskMarkdown ? ["", taskMarkdown] : []),
-    ...(wakePayloadJson
-      ? [
-          "",
-          "Structured wake payload JSON:",
-          "```json",
-          wakePayloadJson,
-          "```",
-        ]
-      : []),
+    ...(wakePayloadBlock ? ["", wakePayloadBlock] : []),
   ];
-  return lines.filter((line) => line !== null && line !== undefined).join("\n").trim();
+  return {
+    text: lines.filter((line) => line !== null && line !== undefined).join("\n").trim(),
+    // myrmidon(1.6.5 PROMPT-BUDGET A): the raw prompt sections, returned so
+    // buildRunBody can measure them together with the sections it owns
+    // (instructions, configuredInput) in one pass. They partition the input
+    // text almost exactly — only inter-section newlines are unaccounted for.
+    sections: {
+      identityContract,
+      wakePrompt,
+      sessionHandoff,
+      taskMarkdown,
+      wakePayloadJson: wakePayloadBlock,
+    },
+  };
 }
 
 // myrmidon(G4): translate the M1 reasoning-effort card field into the
@@ -418,18 +503,115 @@ function buildGitHubBrokerField(
   return { broker_url: brokerUrl, capability };
 }
 
+// myrmidon(1.6.5 BOT-DISK-H5a, contract C6): the `workspace` field of a
+// /v1/runs request — `{key, repo, baseRef}` — from which the gateway runs
+// `myr-ws open` before the model starts. The shapes mirror
+// `runWorkspaceFieldSchema` of @paperclipai/shared (this package does not
+// depend on it; execute.test.ts checks the output against the real schema).
+// key: the board identifier of the run's issue; repo: `owner/name` derived
+// from the project workspace's repo URL (github.com only: https, ssh:// or scp-like
+// form, userinfo/.git stripped); baseRef: the workspace's repoRef when it is a
+// valid git ref. A task without a usable repository or issue key yields
+// undefined — the field is then absent and the bot works in /scratch.
+// myrmidon(1.6.5-BOT-DISK-H4b): when the project workspace gives no usable
+// repository, `context.paperclipBotDiskDefaultRepo` (the server copies
+// general.botDisk.defaultRepo there, `owner/name`) is the fallback.
+const WS_ISSUE_KEY_RE = /^[A-Z][A-Z0-9]*-[0-9]+$/;
+const WS_REPO_NAME_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const WS_GIT_REF_RE = /^[^\s~^:?*[\]\\]+$/;
+
+function deriveWorkspaceRepoName(repoUrl: string): string | null {
+  // Only github.com is accepted (myr-ws fetches from github.com): any other
+  // host, including look-alikes such as github.com.evil.example, yields null.
+  let path: string | null = null;
+  const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\/\/)(.+)$/.exec(repoUrl);
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(repoUrl)) {
+    try {
+      const url = new URL(repoUrl);
+      if (url.protocol !== "https:" && url.protocol !== "ssh:") return null;
+      if (url.hostname.toLowerCase() !== "github.com") return null;
+      path = url.pathname;
+    } catch {
+      return null;
+    }
+  } else if (scp) {
+    if (scp[1].toLowerCase() !== "github.com") return null;
+    path = scp[2];
+  }
+  if (!path) return null;
+  const parts = path.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").split("/");
+  if (parts.length !== 2) return null;
+  const name = parts.join("/");
+  return WS_REPO_NAME_RE.test(name) ? name : null;
+}
+
+function buildWorkspaceField(
+  context: Record<string, unknown>,
+): { key: string; repo: string; baseRef?: string } | undefined {
+  const wake = parseObject(context.paperclipWake);
+  const key = asString(parseObject(wake.issue).identifier, "").trim();
+  if (!WS_ISSUE_KEY_RE.test(key)) return undefined;
+  const workspace = parseObject(context.paperclipWorkspace);
+  const repoUrl = asString(workspace.repoUrl, "").trim();
+  let repo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  let usedDefault = false;
+  if (!repo) {
+    const fallback = asString(context.paperclipBotDiskDefaultRepo, "").trim();
+    if (fallback && WS_REPO_NAME_RE.test(fallback)) {
+      repo = fallback;
+      usedDefault = true;
+    }
+  }
+  if (!repo) return undefined;
+  // The ref belongs to the project workspace's own repository, not to the fallback one.
+  const baseRef = usedDefault ? "" : asString(workspace.repoRef, "").trim();
+  return {
+    key,
+    repo,
+    ...(baseRef && baseRef.length <= 200 && WS_GIT_REF_RE.test(baseRef) ? { baseRef } : {}),
+  };
+}
+
+// myrmidon(GITHUB-SHARED-IDENTITY): the managed Git launcher, delivered as
+// request content (NONCONTAINER-GITHUB-LAUNCHER).
+//
+// A hermes gateway run has no execution target on the board's side, so
+// `prepareGitHubOperationLaunchers` (which stages git/gh/the credential helper
+// on a local or SSH target) never reaches it: the gateway may run on another
+// host, or in a container whose image the board cannot write into. The gateway
+// therefore stages the launcher itself, from the bodies this field carries,
+// next to the run's own terminals.
+//
+// Gated on the broker pair above: the launcher resolves credentials through
+// that run's broker capability, so shipping it without one would only stage
+// programs that cannot act (and would keep a static token around). Bodies are
+// constants, so the field is byte-stable per run and does not disturb the
+// Idempotency-Key fingerprint of a replay.
+function buildGitHubLauncherField(
+  broker: { broker_url: string; capability: string } | undefined,
+): { version: number; files: Record<string, string> } | undefined {
+  if (!broker) return undefined;
+  return githubLauncherPayload();
+}
+
 function buildRunBody(
   ctx: AdapterExecutionContext,
   sessionKey: string | null,
   agentInstructionsBundle: string,
   idempotencyRunId: string,
-): Record<string, unknown> {
+  // myrmidon(1.6.6-HERMES-SKILLS-A): the skills field is computed by the
+  // reconcile step (execute) and handed in, so a card cannot forge it through
+  // payloadTemplate — same rule as github_broker (set after the spread;
+  // `undefined` deletes a forged value and is dropped by JSON serialization).
+  paperclipSkillsField: ReturnType<typeof buildPaperclipSkillsField> = undefined,
+): { body: Record<string, unknown>; promptBreakdown: PromptBreakdown } {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const configuredInput = nonEmpty(payloadTemplate.input);
+  const builtInput = buildInput(ctx, paperclipApiUrl, idempotencyRunId);
   const input = configuredInput && ctx.context.conversationMode === true
-    ? `${configuredInput}\n\n${buildInput(ctx, paperclipApiUrl, idempotencyRunId)}`
-    : configuredInput ?? buildInput(ctx, paperclipApiUrl, idempotencyRunId);
+    ? `${configuredInput}\n\n${builtInput.text}`
+    : configuredInput ?? builtInput.text;
   const cardInstructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
@@ -455,7 +637,16 @@ function buildRunBody(
   // an absent pair leaves the body without the field entirely (see
   // buildGitHubBrokerField).
   const githubBroker = buildGitHubBrokerField(ctx.config);
-  return {
+  // myrmidon(1.6.5 BOT-DISK-H5a): same discipline for the `workspace` field —
+  // derived from the run context only, set after the spread (a card cannot
+  // forge it), `undefined` when the task has no repository.
+  const workspaceField = buildWorkspaceField(ctx.context);
+  // myrmidon(GITHUB-SHARED-IDENTITY): same forgery rule as github_broker —
+  // set unconditionally after the payloadTemplate spread, so a card's attempt
+  // to inject launcher content is deleted (`undefined` drops the key); only
+  // this builder decides (see buildGitHubLauncherField).
+  const githubLauncher = buildGitHubLauncherField(githubBroker);
+  const body: Record<string, unknown> = {
     ...payloadTemplate,
     input,
     instructions,
@@ -464,7 +655,41 @@ function buildRunBody(
     ...(provider ? { provider } : {}),
     ...(modelOptions ? { model_options: modelOptions } : {}),
     github_broker: githubBroker,
+    workspace: workspaceField,
+    github_launcher: githubLauncher,
+    // myrmidon(1.6.6-HERMES-SKILLS-A): Paperclip-managed skills for the run's
+    // profile (see the buildRunBody signature note); the gateway image's
+    // run-scoped-skills patch materializes them before the agent starts.
+    paperclip_skills: paperclipSkillsField,
   };
+  // myrmidon(1.6.5 PROMPT-BUDGET A): extend buildInput's per-section
+  // breakdown with the sections buildRunBody owns. `instructionsBundle` and
+  // `cardInstructions` are measured separately (the bundle dominates and is
+  // the first optimization target); the wire `instructions` field is their
+  // join. A configured payloadTemplate input replaces the assembled input
+  // text, so its sections are replaced by `configuredInput` rather than
+  // summed with them. `total` is measured against the serialized run body
+  // itself so it covers the JSON envelope, payloadTemplate extras and the
+  // broker field too; section estimates cover only their own text, so the
+  // parts need not sum exactly to `total` (unlike the joined-less contract,
+  // where total is the exact parts sum).
+  const promptBreakdown = measureSections(
+    {
+      instructionsBundle: agentInstructionsBundle,
+      cardInstructions,
+      ...(configuredInput && ctx.context.conversationMode === true
+        ? // conversation mode appends the assembled input after the configured
+          // input, so both are on the wire and both are measured.
+          { ...builtInput.sections, configuredInput }
+        : configuredInput
+          ? // a configured input replaces the assembled input text: measuring
+            // both would double-count a prompt only one of which was sent.
+            { configuredInput }
+          : builtInput.sections),
+    },
+    { joined: JSON.stringify(body) },
+  );
+  return { body, promptBreakdown };
 }
 
 async function readResponseJson(response: Response): Promise<unknown> {
@@ -589,6 +814,7 @@ function createExecutionState(runId: string): ExecutionState {
     deltaLineBuffer: "",
     toolPreviews: new Map(),
     lastRuntimeProgressAt: null,
+    lastEventAtMs: Date.now(),
   };
 }
 
@@ -896,6 +1122,9 @@ async function handleEvent(input: {
   const record = asRecord(parsed);
   const eventName = eventNameFromData(parsed, frame.event);
   state.lastEventName = eventName;
+  // myrmidon(N4-RUN-LIVENESS): every gateway event is proof of life; the
+  // liveness watch (when enabled) reads this stamp instead of the wall clock.
+  touchRunLiveness(state);
 
   if (debugEvents) {
     // myrmidon(G4): raw event JSON is now opt-in (adapterConfig.debugEvents);
@@ -953,15 +1182,21 @@ async function handleEvent(input: {
 async function delay(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return;
   await new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    // myrmidon(GATEWAY-DELAY-LEAK): the abort listener must go when the timer
+    // fires. `{ once: true }` only removes it on abort, so every poll tick of a
+    // long run left one more listener on the run's signal; with thousands of
+    // them each add/remove on that signal (undici fetch adds one per request)
+    // walked the whole list and the board's single process spent ~40 % of its
+    // CPU there (live profile 06.10).
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -1102,9 +1337,29 @@ function extractSessionId(value: unknown): string | null {
   return nonEmpty(record?.session_id) ?? nonEmpty(record?.sessionId) ?? nonEmpty(asRecord(record?.data)?.session_id);
 }
 
+// myrmidon(F06-MODEL-TELEMETRY): a payload that echoes the run journal's own
+// sentinel back ("unknown") is not naming a model, so it falls through to the
+// next source exactly like an absent field does.
+function nonEmptyModel(value: unknown): string | null {
+  const text = nonEmpty(value);
+  return text !== null && text.toLowerCase() !== "unknown" ? text : null;
+}
+
+// myrmidon(F06-MODEL-TELEMETRY): the terminal payload of the gateway does not
+// always carry the model, so most runs landed in heartbeat_runs.usageJson.model
+// as "unknown". Sources, in order: the `model` the gateway reports (top level,
+// then inside `usage`), then the LiteLLM route name `model_group` (the name
+// LiteLLM writes into its own spend log — top level, then inside `usage`); the
+// caller supplies the run's configured model as the final fallback.
 function extractModel(value: unknown): string | null {
   const record = asRecord(value);
-  return nonEmpty(record?.model) ?? nonEmpty(asRecord(record?.usage)?.model);
+  const usage = asRecord(record?.usage);
+  return (
+    nonEmptyModel(record?.model) ??
+    nonEmptyModel(usage?.model) ??
+    nonEmptyModel(record?.model_group) ??
+    nonEmptyModel(usage?.model_group)
+  );
 }
 
 function extractErrorMessage(value: unknown): string | null {
@@ -1128,12 +1383,31 @@ function terminalResultCode(status: string): { exitCode: number; signal: string 
 // hermes_gateway_run_failed keeps the vendor's hold-and-ask behavior.
 const HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE = "Connection error.";
 
+// myrmidon(PERF-DIET-I): the LiteLLM key-permission signature. When the key a
+// bot runs with is not allowed to serve the requested model, the gateway
+// returns 403 and the turn ends with a "key not allowed to access model
+// <model>" message. Retrying re-issues the same 403 forever (257 empty
+// retries a day, perf-plan-v2 §1.4), so this family is permanent_config_error:
+// the recovery classifier blocks the issue instead of scheduling a retry.
+const HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE = "key not allowed";
+
 export function mapFinalResultForTest(input: {
   terminal: TerminalState;
   outputChunks: string[];
   sessionKey: string | null;
   strategy: SessionKeyStrategy;
   redactText?: TextRedactor;
+  /** myrmidon(1.6.5 PROMPT-BUDGET A): per-section prompt-token breakdown of
+   * the run's request body, recorded on resultJson for the server to persist
+   * into heartbeat_runs.usageJson.promptBreakdown. Optional so existing test
+   * callers that exercise only the result mapping keep their shape. */
+  promptBreakdown?: PromptBreakdown;
+  /** myrmidon(F06-MODEL-TELEMETRY): the model the run was configured with
+   * (ctx.config.model). Used only as the last resort when the terminal payload
+   * names no model, so usageJson.model stops reading "unknown" for runs whose
+   * gateway answer omits it. Optional so existing test callers that exercise
+   * only the result mapping keep their shape. */
+  configuredModel?: string | null;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -1152,18 +1426,34 @@ export function mapFinalResultForTest(input: {
   // failed turn whose message carries the upstream-connection signature is
   // transient, so it is marked for a bounded retry. Any other failed turn
   // stays a plain provider failure.
+  // myrmidon(PERF-DIET-I): a failed turn carrying the LiteLLM key-permission
+  // signature is permanent_config_error (case-insensitive — the 403 body's
+  // casing varies with the gateway version), so recovery blocks the issue
+  // instead of retrying the same 403.
   const errorFamily =
     mapped.errorCode === "hermes_gateway_run_failed" &&
     errorMessage !== null &&
     errorMessage.includes(HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE)
       ? "transient_upstream"
-      : null;
+      : mapped.errorCode === "hermes_gateway_run_failed" &&
+          errorMessage !== null &&
+          errorMessage
+            .toLowerCase()
+            .includes(HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE)
+        ? "permanent_config_error"
+        : mapped.errorCode === "hermes_gateway_run_failed" &&
+            classifyInputOverflow(errorMessage)
+          ? "input_overflow"
+          : null;
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
     timedOut: false,
     provider: "hermes_gateway",
-    model: extractModel(payload),
+    // myrmidon(F06-MODEL-TELEMETRY): payload first, configured model last —
+    // see extractModel().
+    model: extractModel(payload) ?? nonEmptyModel(input.configuredModel),
+    ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(errorFamily ? { errorFamily } : {}),
@@ -1194,6 +1484,7 @@ export function mapFinalResultForTest(input: {
       output: output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
+      ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     },
   };
 }
@@ -1221,6 +1512,37 @@ async function stopRun(input: {
     return null;
   }
 }
+
+/**
+ * myrmidon(HERMES-RUN-REATTACH): board-side stop for a gateway run the board
+ * is not actively supervising (no live adapter execution): the heartbeat
+ * cancellation path calls this with the run's persisted externalRunId so the
+ * gateway slot frees immediately instead of staying occupied until the
+ * gateway's own timeout sweeps it. Best-effort and bounded: a failed stop is
+ * logged by the caller and never blocks the cancellation itself.
+ */
+export async function stopGatewayRunForBoard(input: {
+  baseUrl: string;
+  apiKey: string;
+  gatewayRunId: string;
+}): Promise<{ stopped: boolean }> {
+  const baseUrl = normalizeBaseUrl(input.baseUrl);
+  if (!baseUrl) return { stopped: false };
+  try {
+    await fetchJson(apiUrl(baseUrl, `/v1/runs/${encodeURIComponent(input.gatewayRunId)}/stop`), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${input.apiKey}` },
+      signal: AbortSignal.timeout(STOP_REQUEST_TIMEOUT_MS),
+    });
+    return { stopped: true };
+  } catch {
+    // 404 means the gateway already forgot the run; anything else (network,
+    // auth) is the operator's signal to check the gateway. Either way the
+    // board-side cancellation proceeds.
+    return { stopped: false };
+  }
+}
+
 
 async function fetchFinalStatus(input: {
   baseUrl: URL;
@@ -1267,6 +1589,59 @@ function readPredecessorRunId(ctx: AdapterExecutionContext): string | null {
   if (!params || typeof params !== "object") return null;
   const value = (params as Record<string, unknown>).hermesRunId;
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * myrmidon(HERMES-RUN-REATTACH): the gateway run id the heartbeat service
+ * persisted on THIS run's row (externalRunId) before the board restarted, and
+ * re-injected into the context (context.reattachGatewayRunId) when it
+ * re-dispatches the same run after startup. Distinct from the predecessor
+ * guard: the reattach id is the same logical attempt resuming supervision of
+ * the very run it created, not a previous turn that must be stopped.
+ */
+export function readReattachGatewayRunId(ctx: AdapterExecutionContext): string | null {
+  const value = ctx.context?.reattachGatewayRunId;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/** Test alias for readReattachGatewayRunId. */
+export const readReattachGatewayRunIdForTest = readReattachGatewayRunId;
+
+/**
+ * myrmidon(HERMES-RUN-REATTACH): decide whether the run can be reattached.
+ * A single bounded GET /v1/runs/{id} (same request bound as the stop path):
+ * - a live (non-terminal) status → attach and keep supervising;
+ * - a terminal status → attach too: consumeEvents/pollStatus will resolve the
+ *   terminal state and the run's result lands on the board as if it never
+ *   restarted (the result is read back from the gateway, not replayed);
+ * - unknown (404) or unreachable → do not attach; the caller falls back to the
+ *   ordinary create path with this attempt's own Idempotency-Key.
+ */
+async function probeReattachRun(input: {
+  ctx: AdapterExecutionContext;
+  baseUrl: URL;
+  headers: Record<string, string>;
+  runId: string;
+  redactText: TextRedactor;
+}): Promise<{ attached: boolean; status: string | null }> {
+  try {
+    const observed = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}`), {
+      method: "GET",
+      headers: input.headers,
+      signal: AbortSignal.timeout(STOP_REQUEST_TIMEOUT_MS),
+    });
+    const status = extractStatus(observed);
+    // A readable status (live or terminal) proves the gateway still owns the
+    // run; reattach either way. No status shape we can parse → treat as
+    // unknown and fall back to create.
+    return { attached: status !== null, status };
+  } catch (err) {
+    await input.ctx.onLog(
+      "stderr",
+      `[hermes-gateway] reattach probe for run ${input.runId} failed (${redactErrorMessage(err, input.redactText)}); creating a fresh run instead\n`,
+    );
+    return { attached: false, status: null };
+  }
 }
 
 /**
@@ -1483,12 +1858,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // `replayed:true` response from Hermes is now only ever a genuine
   // duplicate create for this very attempt; that handling is kept below.
   const idempotencyKey = ctx.runId;
+  // myrmidon(PERF-DIET-K): the board's session generation for this issue (see
+  // server/src/myrmidon/session-generations/); 1 = the vendor's unsuffixed key.
+  const sessionGeneration = readSessionGeneration(ctx.config.sessionGeneration);
   const sessionKey = resolveSessionKey({
     strategy,
     companyId: ctx.agent.companyId,
     agentId: ctx.agent.id,
     runId: idempotencyKey,
     issueId: issueIdFromContext(ctx),
+    generation: sessionGeneration,
   });
   const extraHeaders = parseHeaders(ctx.config.headers);
   // myrmidon(MEMORY-CENTRAL-B): create the client here (no network yet); the
@@ -1548,7 +1927,70 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  const body = buildRunBody(ctx, sessionKey, agentInstructionsBundle, idempotencyKey);
+  // myrmidon(1.6.6-HERMES-SKILLS-A): deliver the Paperclip-managed skills
+  // before POST /v1/runs, at the same boundary hermes_local reconcile skills
+  // (execute.ts:372-389). The preferred route — reading/writing the gateway
+  // profile's skills.external_dirs over the API — does not exist on the
+  // pinned image (no profile/skills write endpoint in api_server.py's route
+  // table), so the skills ride the run body as paperclip_skills and the
+  // image's run-scoped-skills patch materializes them into the run profile's
+  // skills root before the agent starts. Without the key in ctx.config the
+  // whole block is a no-op (a developer outside the board is unaffected) —
+  // buildPaperclipSkillsField returns undefined and JSON drops the field.
+  // Any reconcile/fact-check failure aborts before the run is created, with
+  // the same "Cannot start without the required Paperclip-managed skills"
+  // message as hermes_local; the redactor is applied defensively even though
+  // the module's own messages never carry secrets.
+  let paperclipSkillsField: ReturnType<typeof buildPaperclipSkillsField> = undefined;
+  if (Object.prototype.hasOwnProperty.call(ctx.config, "paperclipRuntimeSkills")) {
+    try {
+      const skillsReconcile = await reconcileGatewayPaperclipSkills(ctx.config, {
+        moduleDir: path.dirname(fileURLToPath(import.meta.url)),
+        onLog: (line) => ctx.onLog("stdout", line),
+      });
+      paperclipSkillsField = buildPaperclipSkillsField(skillsReconcile);
+      if (skillsReconcile && paperclipSkillsField) {
+        // The fact-check verifies the assembled field carries every desired
+        // entry before the POST sends it; the image patch re-verifies by
+        // reading the profile's skills root after materialization and fails
+        // the run loudly when an entry did not land.
+        factCheckGatewayPaperclipSkills({
+          skills: paperclipSkillsField,
+          expected: skillsReconcile.expected,
+        });
+        await ctx.onLog(
+          "stdout",
+          `[hermes-gateway] skills fact-check: ${paperclipSkillsField.length} Paperclip-managed skill(s) verified in the run-body field\n`,
+        );
+      }
+    } catch (err) {
+      const reason = redactErrorMessage(err, redactText);
+      await ctx.onLog(
+        "stderr",
+        `[hermes-gateway] Cannot start without the required Paperclip-managed skills: ${reason}\n`,
+      );
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: "paperclip_skills_unavailable",
+        errorMessage: `Cannot start without the required Paperclip-managed skills: ${reason}`,
+        provider: "hermes_gateway",
+        sessionParams: { strategy },
+        sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
+      };
+    }
+  }
+
+  const body = buildRunBody(ctx, sessionKey, agentInstructionsBundle, idempotencyKey, paperclipSkillsField);
+  // myrmidon(1.6.5 PROMPT-BUDGET A): the per-section prompt-token breakdown
+  // of the request body. Recorded on every return path's resultJson so the
+  // server can persist it into heartbeat_runs.usageJson.promptBreakdown even
+  // for a run that never reached a terminal provider usage report.
+  // Note: the breakdown is measured on the wake input BEFORE the central
+  // history block below is appended, so `input` sections reflect the prompt
+  // as assembled by buildInput — not the post-restore wake text.
+  const promptBreakdown = body.promptBreakdown;
   // myrmidon(MEMORY-CENTRAL-B): the read happens before the run body is
   // consumed — a store failure never blocks a run: the wake proceeds without
   // the restored block, the reason is logged.
@@ -1561,7 +2003,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
       restoredHistoryBlock = renderRestoredHistory(storedTurns, centralHistorySettings.maxTurns);
       if (restoredHistoryBlock) {
-        body.input = `${body.input}\n\n---\n\n${restoredHistoryBlock}`;
+        body.body.input = `${body.body.input}\n\n---\n\n${restoredHistoryBlock}`;
         await ctx.onLog(
           "stdout",
           `[hermes-gateway] central history: restored ${storedTurns.length} turn(s) into the wake input\n`,
@@ -1571,6 +2013,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await ctx.onLog(
         "stderr",
         `[hermes-gateway] central history: read failed (${redactErrorMessage(err, redactText)}); continuing without restored turns\n`,
+      );
+    }
+  }
+  // myrmidon(OPE-6168): the model input limit, checked before the request is
+  // sent. The board puts the limit of the agent's model (catalog or override)
+  // into config.inputLimit; a request over its budget is trimmed here (head and
+  // tail of the input kept, the cut named in the middle) instead of being sent
+  // to a provider that rejects it. Whether the session itself still has room
+  // is the board's decision (it starts a fresh session generation).
+  const inputLimitHint = readInputLimitHint(ctx.config[INPUT_LIMIT_CONFIG_KEY]);
+  if (inputLimitHint) {
+    const requestBody = body.body;
+    const inputText = typeof requestBody.input === "string" ? requestBody.input : "";
+    const instructionsText = typeof requestBody.instructions === "string" ? requestBody.instructions : "";
+    const decision = decideInputLimit({
+      hint: inputLimitHint,
+      instructionsChars: instructionsText.length,
+      inputChars: inputText.length,
+    });
+    if (decision.action === "trim") {
+      const trimmed = trimTextToChars(inputText, decision.targetInputChars);
+      requestBody.input = trimmed.text;
+      await ctx.onLog(
+        "stdout",
+        `[hermes-gateway] input limit: the request (${decision.promptChars} chars) exceeds the budget of ${decision.budgetChars} chars for model ${inputLimitHint.model ?? "(unknown)"}; trimmed ${trimmed.removedChars} chars from the input before sending\n`,
       );
     }
   }
@@ -1586,9 +2053,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       eventReconnectMs: reconnectMs,
       sessionKeyStrategy: strategy,
       hasSessionKey: Boolean(sessionKey),
+      // myrmidon(PERF-DIET-K): only reported once there is something to see —
+      // generation 1 is the ordinary, unsuffixed session.
+      ...(sessionGeneration > 1 ? { sessionGeneration } : {}),
     },
   });
-  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy})\n`);
+  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy}${sessionGeneration > 1 ? `, generation=g${sessionGeneration}` : ""})\n`);
   await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders, [], 0, redactText), 3_000)}\n`);
 
   // myrmidon(G4): opt into signal-based cancellation before any provider
@@ -1609,6 +2079,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       provider: "hermes_gateway",
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
       resultJson: {
+        promptBreakdown,
         executionCancellation: {
           state: "acknowledged",
           acknowledgedAt: new Date().toISOString(),
@@ -1620,8 +2091,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
+  // myrmidon(HERMES-RUN-REATTACH): after a board restart, the reattach sweep
+  // re-dispatches the SAME heartbeat run (still status=running) with the
+  // gateway run id it persisted when the run was created. The adapter then
+  // attaches to the provider run instead of creating a second one: consumeEvents
+  // and pollStatus below key off the run id either way, so attachment is just
+  // "skip the create and use this id". A gateway that no longer knows the run
+  // (404) or answers unreachable falls back to the ordinary create path — the
+  // idempotency key of this attempt is unchanged, so no duplicate turn can
+  // happen either way.
+  const reattachRunId = readReattachGatewayRunId(ctx);
   let runId: string | null = null;
   let replayed = false;
+  if (reattachRunId) {
+    const reattached = await probeReattachRun({
+      ctx,
+      baseUrl,
+      headers: eventHeaders,
+      runId: reattachRunId,
+      redactText,
+    });
+    if (reattached.attached) {
+      runId = reattachRunId;
+      await ctx.onExternalRunId?.(reattachRunId);
+      await ctx.onLog(
+        "stdout",
+        `[hermes-gateway] reattached to gateway run ${reattachRunId} (${reattached.status ?? "unknown status"}) after board restart; no new run created\n`,
+      );
+    }
+  }
   // myrmidon(RECOVERY-HERMES-GATEWAY): never start a second turn over a live
   // predecessor. The task session carries the previous attempt's gateway run
   // id, so a resumed/re-woken task whose earlier turn is still running on the
@@ -1652,6 +2150,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorFamily: "transient_upstream",
         errorMessage: `Hermes gateway run ${predecessorRunId} from the previous attempt is still running; waiting for it to stop instead of running two turns at once.`,
         provider: "hermes_gateway",
+        resultJson: { promptBreakdown },
         // Keep the predecessor's id in the task session: the transient retry
         // must check the same live run again rather than start a fresh one
         // beside it.
@@ -1672,6 +2171,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     AbortSignal.timeout(createTimeoutMs),
     delayedAbortSignal(ctx.signal, CREATE_CANCEL_GRACE_MS),
   ]);
+  // myrmidon(HERMES-RUN-REATTACH): an attached reattach (or a replayed create)
+  // already has its gateway run id — the create request is skipped entirely.
+  // Reuse the existing run's idempotency header shape for consistency.
+  if (!runId) {
   try {
     // This adapter has no local child process, so crossing into the first
     // remote create request is its dispatch boundary. Report it before the
@@ -1680,7 +2183,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const created = await fetchJson(createRunUrl, {
       method: "POST",
       headers: runHeaders,
-      body: JSON.stringify(body),
+      body: JSON.stringify(body.body),
       signal: createSignal,
     });
     runId = extractRunId(created);
@@ -1693,8 +2196,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorCode: "hermes_gateway_protocol_error",
         errorMessage: "Hermes /v1/runs response did not include run_id.",
         errorMeta: { response: redactForLog(created, [], 0, redactText) as Record<string, unknown> },
+        resultJson: { promptBreakdown },
       };
     }
+    // myrmidon(HERMES-RUN-REATTACH): report the provider run id to the host the
+    // moment the provider admits the run, so the heartbeat run row carries it
+    // for a restart reattach even if this process dies before the result.
+    await ctx.onExternalRunId?.(runId);
   } catch (err) {
     if (createSignal.aborted) {
       // myrmidon(G4): the create request was cut off by our own guard, not
@@ -1727,6 +2235,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : `Hermes /v1/runs did not respond within ${createTimeoutMs}ms.`,
         errorFamily: cancelled ? null : "transient_upstream",
         provider: "hermes_gateway",
+        resultJson: { promptBreakdown },
         sessionParams: { strategy },
         sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
       };
@@ -1748,6 +2257,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         provider: "hermes_gateway",
         executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         resultJson: {
+          promptBreakdown,
           executionCancellation: {
             state: "acknowledged",
             acknowledgedAt: new Date().toISOString(),
@@ -1760,6 +2270,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     return errorResult(err, redactText);
   }
+  }
 
   // myrmidon(G4): a replayed create attaches to the run Hermes already
   // admitted for this Idempotency-Key; consumeEvents/pollStatus below key off
@@ -1768,7 +2279,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "stdout",
     replayed
       ? `[hermes-gateway] idempotent replay: attaching to existing run ${runId} instead of starting a new one\n`
-      : `[hermes-gateway] run created: ${runId}\n`,
+      : reattachRunId && runId === reattachRunId
+        ? `[hermes-gateway] supervising reattached gateway run ${runId}\n`
+        : `[hermes-gateway] run created: ${runId}\n`,
   );
 
   const state = createExecutionState(runId);
@@ -1795,10 +2308,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }).catch(() => undefined);
 
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposeLivenessWatch: (() => void) | null = null;
+  // myrmidon(N4-RUN-LIVENESS): with MYRMIDON_RUN_LIVENESS_EVENTS (or the
+  // card's livenessEvents) on, the fixed wall-clock timer is replaced by a
+  // silence watch — a run that keeps emitting gateway events past its
+  // timeoutSec is alive and is left alone; only a run whose event stream has
+  // been silent for the whole budget is reported timed out. Off (default) —
+  // the vendor's fixed timer below, unchanged.
+  const livenessByEvents = timeoutMs > 0 && resolveRunLivenessEvents(ctx.config.livenessEvents);
+  let fireTimeout: () => void = () => undefined;
   const timeoutPromise = new Promise<"timeout">((resolve) => {
     if (timeoutMs <= 0) return;
+    if (livenessByEvents) {
+      fireTimeout = () => resolve("timeout");
+      return;
+    }
     timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
+  if (livenessByEvents) {
+    disposeLivenessWatch = installRunLivenessWatch({
+      state,
+      timeoutMs,
+      onStalled: fireTimeout,
+    });
+  }
   // myrmidon(G4): operator cancellation — see gateway-parity-gap.md #22.
   const cancelPromise = new Promise<"cancelled">((resolve) => {
     if (!ctx.signal) return;
@@ -1811,6 +2344,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const outcome = await Promise.race([state.terminalPromise, timeoutPromise, cancelPromise]);
   if (timeoutTimer) clearTimeout(timeoutTimer);
+  // myrmidon(N4-RUN-LIVENESS): the silence watch reschedules itself; without
+  // the disposer its next tick would outlive a finished/cancelled run.
+  disposeLivenessWatch?.();
   controller.abort();
   // myrmidon(G4): handleEvent's SSE terminal branch already flushes the
   // trailing partial delta line, but pollStatus's terminal branch (the
@@ -1850,6 +2386,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         run_id: runId,
         status: extractStatus(finalStatus) ?? "cancelled",
         last_event: state.lastEventName,
+        promptBreakdown,
         final_status: redactForLog(finalStatus, [], 0, redactText),
         ...(terminationVerified
           ? {
@@ -1892,6 +2429,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         run_id: runId,
         status: extractStatus(finalStatus) ?? "timeout",
         last_event: state.lastEventName,
+        promptBreakdown,
         final_status: redactForLog(finalStatus, [], 0, redactText),
         ...(cancelledToo
           ? {
@@ -1917,6 +2455,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     sessionKey,
     strategy,
     redactText,
+    promptBreakdown,
+    // myrmidon(F06-MODEL-TELEMETRY): the run's own model from the agent card,
+    // used when the gateway's terminal payload names none.
+    configuredModel: nonEmpty(ctx.config.model),
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
   // the run reached a terminal outcome (whatever it was — a failed turn's

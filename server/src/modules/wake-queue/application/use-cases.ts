@@ -11,6 +11,7 @@ import {
   isConfigurationIncompleteFailedRun,
   isWorkspaceValidationFailedRun,
   readNonEmptyString,
+  parseObject,
 } from "../domain/values.js";
 import type {
   AdmitWakeBehindIssueExecutionResult,
@@ -136,11 +137,46 @@ async function runReleaseDrain(
   input: ReleaseIssueExecutionInput,
 ): Promise<ReleaseTransactionResult> {
   const { run } = locked;
-  const issue = locked.primaryIssue;
+  let issue = locked.primaryIssue;
   const postCommitEffects: PostCommitEffect[] = [];
-
+  const siblingIssue = locked.releasedSiblingIssue;
+  const shouldDrainSibling = Boolean(siblingIssue &&
+    (!siblingIssue.assigneeAgentId || siblingIssue.assigneeAgentId === run.agentId));
   if (locked.recoveryOnly) {
     return runReleaseRecoveryTail(issue, run, ports.host, ports.transaction, input, postCommitEffects);
+  }
+  if (locked.primaryReleaseOnly && !siblingIssue) {
+    return { outcome: { kind: "released" }, postCommitEffects };
+  }
+  let drainsPrimary = true;
+  if (siblingIssue && shouldDrainSibling) {
+    const claimed = await ports.transaction.claimIssueExecutionLease({
+      companyId: run.companyId, issueId: siblingIssue.id, runId: run.id,
+    });
+    if (!claimed) {
+      return { outcome: { kind: "released" }, postCommitEffects };
+    }
+    // A sibling is only worth holding the lease for when it has a deferred
+    // wake to drain. Otherwise hand the lease back so the issue stays released
+    // (no orphan execution_run_id, no spurious recovery block) and fall
+    // through to the primary issue's own drain.
+    const siblingWake = await ports.transaction.findNextDeferredWake({
+      companyId: run.companyId, issueId: siblingIssue.id,
+    });
+    const sibling = siblingWake
+      ? await ports.transaction.findIssue({ companyId: run.companyId, issueId: siblingIssue.id })
+      : null;
+    if (sibling && sibling.status !== "done" && sibling.status !== "cancelled") {
+      issue = sibling;
+      drainsPrimary = false;
+    } else {
+      await ports.transaction.releaseIssueExecutionLease({
+        companyId: run.companyId, issueId: siblingIssue.id, runId: run.id,
+      });
+    }
+  }
+  if (drainsPrimary && locked.primaryReleaseOnly) {
+    return { outcome: { kind: "released" }, postCommitEffects };
   }
 
   // Each `continue` path either excludes a pending handoff receipt from
@@ -822,8 +858,12 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         requestedByActorType: input.requestedByActorType,
         requestedByActorId: input.requestedByActorId,
       }));
+    // myrmidon(UPSTREAM-13539): each resolved card has its own immutable decision and
+    // continuation. Never merge it with comments or another card, in either arrival order.
+    const interactionReceipt = Boolean(input.contextSnapshot.interactionId || input.payload?.interactionId);
     const decision = decideWakeAdmission({
-      allowRunCoalescing: input.allowRunCoalescing,
+      allowRunCoalescing: interactionReceipt || parseObject(input.activeExecutionRun.contextSnapshot).interactionId
+        ? false : input.allowRunCoalescing,
       sameDurableActor,
       isSameExecutionAgent,
       shouldDeferFollowupWake,
@@ -865,7 +905,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     // existing deferred wake, so the coalesce path (the common path) never
     // pays for this query.
     const existingDeferred =
-      input.allowRunCoalescing === false
+      (interactionReceipt || input.allowRunCoalescing === false)
         ? null
         : await deps.reader.findExistingDeferredWake(scope, {
             companyId: input.companyId,
@@ -881,7 +921,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
               : {}),
           });
 
-    if (existingDeferred) {
+    if (existingDeferred && !existingDeferred.payload?.interactionId && !existingDeferred.deferredContext.interactionId) {
       const mergedDeferredContext = deps.helpers.mergeCoalescedContextSnapshot(
         existingDeferred.deferredContext,
         input.contextSnapshot,

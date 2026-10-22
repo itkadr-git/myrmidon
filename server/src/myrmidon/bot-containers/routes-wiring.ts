@@ -17,6 +17,7 @@ import { forbidden } from "../../errors.js";
 import { accessService } from "../../services/index.js";
 import { authorizationDeniedDetails } from "../../services/authorization.js";
 import { applyBotContainerNow, type BotContainerAgent, type BotContainerRuntimeDeps } from "./index.js";
+import { drizzleBotApplyJobStore } from "./apply-jobs.js";
 import { GATEWAY_RATE_LIMITED_ERROR_CODE } from "./concurrency-sync.js";
 import { botContainerRoutes } from "./routes.js";
 
@@ -73,6 +74,9 @@ export function myrmidonBotContainerRoutes(db: Db) {
           // myrmidon(CONCURRENCY-SYNC): the card's heartbeat.maxConcurrentRuns, so the
           // status route can report the limit the board would apply.
           runtimeConfig: agents.runtimeConfig,
+          // myrmidon(BOT-ROLLOUT): the agent's lifecycle status, the same value the
+          // rollout script reads to decide a switch (idle/pause only).
+          status: agents.status,
         })
         .from(agents)
         .where(eq(agents.id, id))
@@ -112,5 +116,8 @@ export function myrmidonBotContainerRoutes(db: Db) {
     },
     getRuntime: getBotContainerRuntime,
     applyNow: applyBotContainerNow,
+    // myrmidon(1.6.5 ASYNC-BOT-APPLY): the bot_apply_jobs journal behind the
+    // async apply — the same db handle the agent lookup uses.
+    applyJobs: drizzleBotApplyJobStore(db),
   });
 }

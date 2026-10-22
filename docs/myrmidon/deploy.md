@@ -20,7 +20,10 @@ settings file of an installation lives in a private deploy repository and never 
 - the Myrmidon server runs under docker compose, and the service image is set in a separate
   override file (`COMPOSE_OVERRIDE_FILE`). The script changes only the `image:` line in it;
 - a database dump command (`DUMP_COMMAND`) and, for a rollback with a restore, a restore
-  command (`RESTORE_COMMAND`). Both get the path in the `DUMP_FILE` variable;
+  command (`RESTORE_COMMAND`). Both get the path in the `DUMP_FILE` variable. The board
+  database is pure configuration: either the built-in `db` compose service or a database
+  on a shared PostgreSQL server (`pg_dump`/`pg_restore` by `DATABASE_URL` — see the two
+  profiles in `deploy.env.example`); the scripts hold no container name of their own;
 - in `authenticated` mode, anonymous `/api/health` shows the commit but not the version. A
   board key in a file with mode `0600` at `HEALTH_TOKEN_FILE` is **required**: without it the
   version check at step 7 fails and the deploy counts as failed (by design — the version is
@@ -170,10 +173,29 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
   **paused or idle**; a busy bot is retried within `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC`
   and otherwise keeps its old image (the periodic sweep applies it later), so no run is
   interrupted. Every batch and failure is logged and journalled
-  (`$STATE_DIR/bot-image-rollout.log`), with a summary in
-  `$STATE_DIR/bot-image-rollout-summary.json`. The superseded bot images leave `images[]`
-  only after every bot moved. Bot-card failures end the deploy as DEGRADED. There is no board
-  setting for a default bot image to update.
+ (`$STATE_DIR/bot-image-rollout.log`), with a summary in
+ `$STATE_DIR/bot-image-rollout-summary.json`. Applying an image is asynchronous: a bot that
+ accepts the apply answers 202 with an `applyId`, and the script polls
+ `GET /api/myrmidon/bot-container/apply/:applyId` every
+ `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC` (default 4 s) until the job reports
+ `succeeded` or `failed`, for at most `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC` (default
+ 300 s). A success is then confirmed with `GET /api/myrmidon/bot-container/status`; a
+ timeout counts the bot as deferred instead of applied, and the plain synchronous apply
+ response is still accepted. The success confirm reads `GET /api/myrmidon/bot-container/status`. When the switch loop ends, the rollout verifies the FACT for
+ every tracking bot: the card's image (`adapterConfig.container.image`) against the running
+ container's image
+ (`GET /api/myrmidon/agents/:id/bot-container/status`, the same board API the script
+ already uses), and prints a per-bot table of
+ `switched | deferred | mismatch | failed` (a deferred row carries its reason). The
+ verdict follows the fact, not the apply answers: a `mismatch` or a `failed` bot ends the
+ deploy as DEGRADED (exit 1); bots that are only deferred exit 0 with a WARNING and the
+ printed command of the standard
+ re-run pass — `--retry-deferred [--wait-sec N]` (default `N=30`, from
+ `MYRMIDON_BOT_IMAGE_ROLLOUT_RETRY_WAIT_SEC`). The re-run reads the deferred list from the
+ previous rollout's summary (a missing summary fails closed with exit 1, never a silent
+ empty retry), waits `N` seconds per bot, re-switches only those bots and verifies again;
+ no pass ever interrupts a running bot. The superseded bot images leave `images[]`
+ only after every bot moved. There is no board setting for a default bot image to update.
 
 ### Release candidates and the `latest` marker (RC-VERSIONS)
 
@@ -271,6 +293,23 @@ reproduces it.
 - **A refusal is readable.** The output of `dockergate check-config` (stdout and stderr) is
   logged line by line whenever it refuses a config, in the preflight, the bot rollout and the
   component rollout.
+
+### Upgrading from 1.6.4 to 1.6.5
+
+What changes for operators:
+
+- **The vendor's config backups in bot volumes are wiped by the board.** The
+  vendored Hermes CLI snapshots each bot's `config.yaml` into
+  `hermes/backups/config/` on every successful config load and offers no
+  switch to turn that off. The compiled `config.yaml` never holds a secret
+  value (only a `${VAR}` reference; the value lives in `hermes/.env`, mode
+  `0600`), but a backup copy can hold the resolved value, and a host backup
+  of the bot volume would then carry it. From 1.6.5 the apply script of every
+  profile rebuild removes `hermes/backups` as a best-effort step, so the
+  copies disappear on each bot's first profile rebuild after the upgrade.
+  There are no manual steps: if a bot's volume was included in a host backup
+  taken before the upgrade, treat the older copies inside that host backup as
+  potentially holding the bot's LLM gateway key.
 
 ### Upgrading from 1.5.0 to 1.6.0
 
@@ -470,6 +509,90 @@ config check (step 0.55; see
 [Deploy hardening](#deploy-hardening-the-0510-follow-up)): it fails exactly when the real run
 would.
 
+## Applying PostgreSQL settings with the deploy (DB-TUNING)
+
+The PostgreSQL settings from the database audit (OPE-4270) are applied **declaratively by
+the deploy**, never by a manual `ALTER SYSTEM` on the running server. The source of truth is
+in the repository:
+
+- `scripts/myrmidon/deploy/db-tuning.sql` — the audit values, applied by the deploy;
+- `scripts/myrmidon/deploy/db-tuning-rollback.sql` — the reset back to the defaults, applied
+  by `rollback.sh` (and by the failed DB-TUNING step itself).
+
+| Parameter | Value | Scope |
+| --- | --- | --- |
+| `jit` | `off` | server (ALTER SYSTEM) |
+| `work_mem` | `16MB` | server |
+| `wal_compression` | `lz4` | server |
+| `autovacuum_vacuum_scale_factor` | `0.05` | server |
+| `autovacuum_vacuum_scale_factor` | `0.02` | tables `heartbeat_runs`, `agent_wakeup_requests`, `company_secrets` |
+| `autovacuum_analyze_scale_factor` | `0.02` | table `issues` |
+
+Four optional settings wire the step into the deploy (`deploy.env`, documented in
+`scripts/myrmidon/deploy/deploy.env.example`):
+
+- `DB_TUNE_COMMAND` — the shell command that applies `db-tuning.sql` (an empty value skips
+  the whole step):
+  ```
+  DB_TUNE_COMMAND='docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -v ON_ERROR_STOP=1 -f - < scripts/myrmidon/deploy/db-tuning.sql'
+  ```
+- `DB_TUNE_SHOW_COMMAND` — a command that receives the parameter name in `DB_TUNE_PARAM`
+  and prints its `SHOW` value:
+  ```
+  DB_TUNE_SHOW_COMMAND='docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -tAc "SHOW $DB_TUNE_PARAM"'
+  ```
+- `DB_TUNE_EXPECTED` — the `name=value` pairs (one per line) the deploy verifies through
+  `DB_TUNE_SHOW_COMMAND` after applying:
+  ```
+  DB_TUNE_EXPECTED='jit=off
+  work_mem=16MB
+  wal_compression=lz4
+  autovacuum_vacuum_scale_factor=0.05'
+  ```
+- `DB_TUNE_ROLLBACK_COMMAND` — the command that returns the previous settings (runs
+  `db-tuning-rollback.sql`); called by `rollback.sh` and by the deploy when the DB-TUNING
+  step fails after applying. Empty — the settings rollback is skipped with a warning in the
+  log.
+
+The step runs after the health check (deploy step "7d" of the plan; the dry-run describes it
+like every other step). Before the first apply the deploy records the live `SHOW` values of
+every `DB_TUNE_EXPECTED` parameter into `$STATE_DIR/db-tuning-previous` — that file is what
+the rollback restores to and what `rollback.sh` checks against. A `SHOW` mismatch is
+`DEPLOY FAILED`: maintenance stays on, the rollback command is printed, and the half-applied
+settings are returned immediately if `DB_TUNE_ROLLBACK_COMMAND` is set. `rollback.sh` applies
+`DB_TUNE_ROLLBACK_COMMAND` after the image and health steps and verifies the same parameters
+against the recorded previous values.
+
+To measure the effect before/after a release, pull the top queries' time statistics from
+`pg_stat_statements` (same command shape as above). The view stores only `mean_exec_time`
+and `stddev_exec_time` per statement, so `mean + stddev` is the p95-normal approximation
+(about 84–95 % of executions fall below it):
+
+```
+docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -c "
+SELECT round((mean_exec_time + stddev_exec_time)::numeric, 1) AS p95_ms_approx,
+       round(total_exec_time::numeric / nullif(calls, 0), 1) AS mean_ms,
+       calls, rows, round(total_exec_time::numeric / 1000, 0) AS total_s,
+       left(query, 80) AS query
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC LIMIT 20;"
+```
+
+A reset of the counters between the two samples makes the comparison clean:
+`SELECT pg_stat_statements_reset();` (same `exec -T db psql -c` shape, run by the operator).
+
+## nginx proxy buffers in front of the board (NGINX-PROXY-BUFFERS)
+
+The production reverse proxy lives outside this repository, but its sizing is
+board-relevant: agent wakes embed the issue list, and answers of 64 KB+ overflow
+nginx's default proxy buffers (the upstream response gets buffered to disk).
+[`scripts/myrmidon/deploy/nginx-proxy-buffers.conf.example`](../../scripts/myrmidon/deploy/nginx-proxy-buffers.conf.example)
+carries the server-block fragment (`proxy_buffer_size 64k`, `proxy_buffers 16 64k`,
+`proxy_busy_buffers_size 128k`) for the `location /` block that proxies to the board
+service; the agent list defaults (compact projection, limit 200 by default and 500 at most, no description; switch `issuesListAgentDefaults`) keep
+the typical wake answer <= 500 KB, the buffers absorb the larger explicit requests.
+Apply with `nginx -t && nginx -s reload`.
+
 ## One boot path (systemd unit)
 
 The board container must be started at boot from **the same compose files the
@@ -588,6 +711,45 @@ scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --to sha256:<ol
 
 The script asks to type `RESTORE` (or takes `--yes-restore-database`), stops the server
 service, runs `RESTORE_COMMAND`, then brings the old image up.
+
+## Multi-process mode (BOARD-PROCESSES)
+
+> Russian version of this section: [deploy.ru.md](deploy.ru.md#многопроцессный-режим-board-processes)
+
+The board can run as more than one Node process inside the same container. This is
+delivered in stages; the default `single` mode — one process that does everything — is
+unchanged and stays the current behavior until an operator deliberately turns the split
+on.
+
+**Two roles, one container.** In `split` mode there is one **worker** process (the
+scheduler, the run executor, the bots, the plugins, the chat reconciliation — all the
+background timers) and N **api** processes (HTTP / WebSocket / MCP on `:3100`). The
+worker is also the parent and supervisor of the api children. Communication between
+processes goes only through Postgres: table rows plus `LISTEN/NOTIFY`. There is no Redis,
+no IPC protocol, no second container.
+
+**Turning the split on.** The switch lives in the interface, not in the environment:
+Instance settings → **«Процессы»** (writes `instance_settings.general.processes`). Set
+`mode` to `split` and choose `apiCount`. The change applies **without a restart**: the
+worker forks the api children, and once they report ready it closes its own `:3100`
+listener (`server.close()` + `closeIdleConnections()`, WebSocket clients get a `1012`
+close and reconnect to the children within 1–16 s). There is no downtime — the port is
+listened on by someone the whole time.
+
+**Rollback to one process.** Set `mode` back to `single` in the same settings screen.
+The worker opens `:3100` itself (`reusePort` lets it do so while children are still
+alive) and then drains the children one by one. The switch back takes seconds and does
+**not** restart the container. If a settings change itself caused trouble and you need a
+"start as before" path, the environment override `PAPERCLIP_PROCESS_MODE=single` is read
+before the database and forces the single-process mode on boot.
+
+**How many api processes.** Recommended starting point on a 4-core container: **worker
+1 + api 2** (three processes ≈ three cores at peak, one core left for GC, plugin workers
+and `pg_dump`). The practical ceiling for `apiCount` is **3**: more api processes only add
+parallel load to Postgres, which is the next bottleneck. Raise `apiCount` by one only
+when the process metrics show `event_loop_utilization` of the api processes staying above
+0.6 **and** Postgres CPU staying below 300 %. If it is the worker's ELU that is high,
+that is the run-supervision / background work — more api processes will not help.
 
 ### Откат на локальный образ (ROLLBACK-LOCAL)
 
@@ -781,22 +943,77 @@ reads the `## X.Y.Z` section of the merged changelog, so the tag goes on the
 merge commit of this PR or later. Format of a fragment:
 [changes/README.md](changes/README.md).
 
+**A tag without its changelog section fails CI (RELEASE-CUT-CHANGELOG).**
+Pushing a `myr-vX.Y.Z` tag runs **Myrmidon CI (tag)** (`myrmidon-ci-tag.yml`), whose `checks`
+lane verifies both changelogs with
+`node scripts/myrmidon/release/collect-fragments.mjs --version X.Y.Z --check`:
+a non-empty `## X.Y.Z` section and an empty unreleased heading, in EN and RU
+alike. A tag cut without the release-cut PR (the 1.6.3 incident: the notes
+sat under `## Unreleased` and the publish refused with "release body could
+not be built (missing notes)") goes red here, before the release publish
+starts. `collect-fragments.mjs` itself runs the same check before writing
+anything, so a cut that would not pass CI fails locally instead.
+
 **The GitHub Release is created by CI, not by hand.** Pushing a `myr-vX.Y.Z` tag
-triggers the **Myrmidon release publish** workflow
+(including `-rc.N`) triggers the **Myrmidon release publish** workflow
 ([myrmidon-release.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release.yml)):
-it waits for the tag's image workflow runs to succeed and for `Myrmidon CI`
-to be green on the release commit — the image/component gate matches runs by
-the tag, not by the commit (the release commit is usually already on `main`,
-whose runs build the `main`/`sha-` image tags, not the version tag; that
-mix-up is what failed the 1.6.1 publish), while the CI gate also accepts a
-green `main`-branch run of the same commit, because `myrmidon-ci.yml` has no
-tag trigger and a tag never has a CI run of its own — so the publish waits
-up to ~40 minutes while the tag's images build — then
+it waits for the tag's own **Myrmidon CI (tag)** run
+([myrmidon-ci-tag.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-ci-tag.yml)
+— the full CI tier as a separate, un-cancellable run on the tag; the 1.6.4 incident,
+where a main push cancelled the tag commit's CI through the shared concurrency
+group, is what created it) and the tag's image workflow runs
+to succeed — the gate matches runs by the tag, not by the commit (the release
+commit is usually already on `main`, whose runs build the `main`/`sha-` image
+tags, not the version tag; that mix-up is what failed the 1.6.1 publish), so
+the publish waits up to ~40 minutes while the tag's images build — then
 creates the Release (Latest) with the `## X.Y.Z` section of
 [CHANGELOG.md](CHANGELOG.md) and the component image digests, and marks the
-previous release "(superseded)". A failed CI run produces no Release. To
+previous release "(superseded)". A failed or cancelled tag run produces no
+Release (a cancelled tag CI run refuses the publish with an explicit message —
+re-run Actions → Myrmidon CI (tag) with the tag name). A green main-branch run
+of the same commit never satisfies the gate: the tag's own run is the only
+source of green. To
 re-run it (for example after fixing a failed gate, or to refresh the body):
 Actions → Myrmidon release publish → Run workflow → the tag name in the `tag`
 input — the input wins over the branch you dispatch from, so running from
 `main` publishes the typed tag; the publish is idempotent — an existing
 Release is updated, not duplicated.
+
+## Release mode (merge freeze)
+
+Between the release cut and a green CI on the tag, `main` is frozen: merges
+(bots included) wait. The reason is the 1.6.4 incident (04.10): one minute
+after the tag, bots merged #475 plus three more PRs, the tag commit's CI run
+was cancelled as superseded, the autopublish refused, and the release had to
+be published by hand.
+
+**How it works.** The **Myrmidon release publish** workflow (started by the
+`myr-vX.Y.Z` tag push) opens an issue titled `release-freeze: <tag>`; the
+issue being open IS the freeze. The **Release freeze gate** check (workflow
+[myrmidon-release-freeze.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release-freeze.yml))
+fails on every PR into `main` while the freeze is active. As soon as
+`Myrmidon CI` is green on the tag, the same tag workflow closes the issue —
+freeze cleared. The state is derived from GitHub (newest tag + its CI + the
+open freeze issue); there is no file flag in the repo. The logic lives in
+[release-freeze.sh](https://github.com/itkadr-git/myrmidon/blob/main/scripts/myrmidon/release/release-freeze.sh).
+
+**Gate behaviour.**
+
+- Fails (red check) while the newest tag's CI is not green or the freeze
+  issue of that tag is open.
+- A green tag CI clears the freeze immediately, even before the issue-closing
+  step has run (no lag window).
+- A FAILED tag CI is not a merge freeze but a broken release: the merge gate
+  passes, and the release gate refuses the publish.
+- If the repo state cannot be read (no token, API down) the gate fails
+  closed.
+
+**To make the freeze binding,** the operator adds the `freeze` check of the
+**Release freeze gate** workflow to the required status checks of `main`
+(Settings → Branches). Without that it is advisory: red, but an admin can
+still merge.
+
+**Manual control.** The freeze is the issue: manual release = close the
+`release-freeze: <tag>` issue (the gate stays red until the tag CI is green
+anyway); manual freeze = open an issue with that title. Both actions are
+documented in the issue body; the automation never overwrites them.

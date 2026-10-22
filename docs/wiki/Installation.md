@@ -2,94 +2,124 @@
 
 > Русская версия: [Installation.ru](Installation.ru)
 
-From a clean server to a running board and the first agent. Everything here
-traces to
-[`docs/myrmidon/deploy.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/deploy.md)
-and the [README](https://github.com/itkadr-git/myrmidon/blob/main/README.md);
-read the full deploy documentation before the first install — it is the
-authoritative version.
-
-## 1. Prepare the host
-
-Check the [System requirements](System-requirements) first. In short:
-
-1. Install bash 4+, Docker with the `compose` and `buildx` plugins, `curl`,
-   `jq`, `git`.
-2. Clone this repository on the deploy host; its `origin` must point at
-   `github.com/itkadr-git/myrmidon` — the deploy script verifies the image
-   commit against this clone and refuses to run from anywhere else.
-3. Have the Myrmidon server managed by docker compose, with the server image
-   set in a separate override file (`COMPOSE_OVERRIDE_FILE`) — the script
-   rewrites only the `image:` line there.
-4. Prepare the database dump command (`DUMP_COMMAND`) and, for rollback with
-   restore, the restore command (`RESTORE_COMMAND`).
-
-## 2. Fill in the settings file
-
-Copy
-[`scripts/myrmidon/deploy/deploy.env.example`](https://github.com/itkadr-git/myrmidon/blob/main/scripts/myrmidon/deploy/deploy.env.example)
-into a private deploy repository (never into this one) and fill in the real
-values: compose project paths, `HEALTH_URL`, `STATE_DIR`, `DUMP_DIR`,
-maintenance mode, release components (`MYRMIDON_RELEASE_COMPONENTS`,
-default `dockergate,fleetd`), and — for a first install —
-`SYSTEMD_UNIT_INSTALL=1` so the canonical boot unit is installed.
-
-In `authenticated` deployment mode, point `HEALTH_TOKEN_FILE` at a `0600`
-file with a board API key: without it the version check fails and the deploy
-counts as failed, by design.
-
-## 3. Pick the image digest
-
-Releases pin the image **digest**, never a tag. Take it from:
-
-- the summary of the `image` job of the **Myrmidon image** workflow
-  (Actions → the run on the release commit or tag), the `Digest` line; or
-- the registry:
+One command brings a clean server to a working Myrmidon board. Copy it onto
+the server and run it — the installer does the rest itself:
 
 ```sh
-docker buildx imagetools inspect ghcr.io/itkadr-git/myrmidon:<version> --format '{{json .Manifest.Digest}}'
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.11/install.sh | sudo bash
 ```
 
-## 4. Deploy
+The command above pins the currently published release candidate,
+1.6.6-rc.11. Replace the tag with the release you intend to install; the
+permanent `releases/latest/download/install.sh` link follows the latest
+stable release and is not a substitute for a pinned candidate. The command
+needs an internet connection and `curl` (on a bare Ubuntu or Debian, run
+`sudo apt-get install -y curl` to add it).
 
-Dry-run first, then the real run:
+## What the installer does, step by step
 
-```sh
-scripts/myrmidon/deploy/deploy.sh --config /path/to/deploy.env --digest sha256:<digest> --dry-run
-scripts/myrmidon/deploy/deploy.sh --config /path/to/deploy.env --digest sha256:<digest>
+1. **Checks the machine** against the
+   [System requirements](System-requirements) and says in plain words what is
+   missing — it stops there rather than failing halfway.
+2. **Installs Docker** and the compose plugin, if they are not there yet
+   (from the official Docker repository).
+3. **Picks the release named in the command** and downloads exactly its files —
+   the same ones that passed the release checks. A release stays
+   byte-identical forever, so tomorrow's install of the same version matches
+   today's.
+4. **Creates all secrets** (the database password and the board's internal
+   keys) and writes the configuration into `/opt/myrmidon`. Nothing to fill
+   in by hand; the secrets file is readable only by root.
+5. **Downloads the program images and starts the service**: the database,
+   the board and the part that will later run agents.
+6. **Waits until the board answers** and then prints a summary.
+
+The whole run takes a few minutes, most of it on step 5. The installer asks
+no questions; `--interactive` enables three of them (install directory, port,
+the address the board is opened at).
+
+## What you see at the end
+
+A summary like this:
+
+```
+Myrmidon 1.6.6 is installed and answering.
+
+  Address:            http://my-server:3100
+  First administrator: open http://my-server:3100 , create an account — the
+                       first account becomes the administrator of this instance.
+  Files:              /opt/myrmidon
 ```
 
-For a published release the short form resolves every component digest from
-the release manifest itself:
-
-```sh
-scripts/myrmidon/deploy/deploy.sh --config /path/to/deploy.env --release myr-vX.Y.Z
-```
-
-The script enforces, before anything changes, that the image is CI-built
-from `main` or a `myr-v*` tag, restores the predeploy dump into a throwaway
-Postgres and proves the new board on it, opens one maintenance window, rolls
-the board and the release components together, and verifies health. A
-component failure inside the window rolls everything back together
-(`MYRMIDON_COMPONENT_AUTO_ROLLBACK=1`, the default).
-
-## 5. Verify the board is up
-
-```sh
-curl http://127.0.0.1:3100/api/health
-```
-
-The response must report `status: ok` and the version (`myr-v…`) — in
-`authenticated` mode pass the board key. Then open the board in the browser
-and finish the setup in the interface: models and agents on their cards, the
-autonomy matrix and the member list in Company Settings. That is where the
-first agent is created and given its model and keys — from its card the
-board creates and maintains its isolated container (see
+Open the printed address in a browser and create an account — the first
+account on the server becomes its administrator. From there the board is
+ready: add a model and create the first agent in the interface (see
 [Settings in the interface](Settings-in-the-interface)).
 
-## 6. Day two
+## Which database the installer gives you
 
-- Updates and rollbacks use the same script — see
-  [Upgrading and rollback](Upgrading-and-rollback).
-- Instance-wide switches (`MYRMIDON_*`) are documented in
-  [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md).
+By default the installer raises a small PostgreSQL server in a container
+next to the board and creates the board's database there — enough for a
+first look and for small installations.
+
+Since release 1.6.5 the board can also keep its database on a **shared
+PostgreSQL 18 server** — one server, prepared by your administrator, that
+hosts a separate database and role for each program that needs one (the
+board, the LLM gateway, tracing, agent memory). The server needs
+PostgreSQL 18 with the `pgvector` extension installed; the board uses
+only its own database and role and cannot see the neighbors' data.
+
+To place the board's database on such a server instead of the bundled
+container, give the installer the connection string your administrator
+prepared (`postgres://user@host:5432/database`) as the installer's
+database-address parameter — the installer names the parameter itself in
+its help and interactive prompts. The password is not part of the
+connection string on the command line: the installer asks for it at run
+time, or reads it from the standard PostgreSQL environment variable.
+
+The connection string names the board's own database and role on the
+shared server; your administrator creates both beforehand. How the board
+treats the shared server on updates and backups (and what changes for the
+host's PostgreSQL client tools) is described in
+[Upgrading and rollback](Upgrading-and-rollback). The one-line install
+command without options keeps using the bundled database container.
+
+## If a step fails
+
+The installer stops at the failed step and says why in plain language —
+for example, that there is less memory than needed or the port is taken.
+Fix what it names and run the same command again: the installer is safe to
+re-run and continues from a clean state. If the board did not come up, the
+last lines of its log are printed right there.
+
+## Useful options
+
+- `install.sh --version myr-vX.Y.Z` — install a specific release instead of
+  the latest.
+- `install.sh --dir /srv/myrmidon --port 8080` — a different directory or
+  port (both also offered by `--interactive`).
+- `install.sh --lang ru` / `--lang en` — the installer's messages follow the
+  system locale; this overrides it.
+
+To use an option with the one-line form, download the script first:
+
+```sh
+curl -fsSL -O https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.11/install.sh
+sudo bash install.sh --version myr-vX.Y.Z
+```
+
+## Updating and removing
+
+- **Update:** run the same one-line command again. The installer dumps the
+  database first, switches to the new release, checks that the board answers,
+  and returns to the previous release on its own if the new one does not come
+  up. Details: [Upgrading and rollback](Upgrading-and-rollback).
+- **Stop and remove:** `sudo bash install.sh --uninstall` stops the service
+  and keeps the data; `--uninstall --purge` also deletes the database and the
+  install directory.
+
+## For experienced administrators
+
+A hands-on rollout through `deploy.sh` — the maintenance-window flow the
+production server uses — lives on a separate page:
+[Manual deployment](Manual-deployment). A fresh install does not need it.

@@ -51,12 +51,17 @@ devbuild 'uname -a'
 | `DEVBUILD_BASE` | base dir on the VPS | `/srv/devbuild` |
 
 Optional: `DEVBUILD_SSH_KEY` (default `/opt/devbuild-ssh/id_ed25519`),
-`DEVBUILD_WORKSPACE` (default `/workspace`), `DEVBUILD_BOT_NAME` (default
+`DEVBUILD_SSH_KEY_DATA` (the key text itself — when the key file is not
+mounted, the script materializes it into a private 0600 file under the run
+scratch and removes it on exit; this is how the board hands the key to a bot
+without a `/opt/devbuild-ssh` mount), `DEVBUILD_WORKSPACE` (default
+`/workspace`), `DEVBUILD_BOT_NAME` (default
 `id -un` — the per-bot subdirectory of `DEVBUILD_BASE`), `DEVBUILD_KNOWN_HOSTS`.
 
 The remote layout is `$DEVBUILD_BASE/<bot>/<repo>/` — each bot gets its own
 repo copy; the caches are shared. The ssh key is mounted read-only by the
-runtime template at `/opt/devbuild-ssh/id_ed25519`; ssh access is provisioned
+runtime template at `/opt/devbuild-ssh/id_ed25519`, or arrives as the
+`DEVBUILD_SSH_KEY_DATA` secret env; ssh access is provisioned
 by the fleet operator.
 
 If `DEVBUILD_HOST`/`DEVBUILD_USER`/`DEVBUILD_BASE` are unset, devbuild exits 1
@@ -93,7 +98,7 @@ near-instant.
 | Symptom | Cause / fix |
 |---|---|
 | `DEVBUILD_HOST ... not set` and exit 1 | The bot profile has no devbuild env — ask the fleet operator (part D of BUILD-OFFLOAD). |
-| `ssh key /opt/devbuild-ssh/id_ed25519 is missing` | The runtime template (part C) has not mounted the key yet. |
+| `ssh key /opt/devbuild-ssh/id_ed25519 is missing` | Neither the key mount (part C) nor the `DEVBUILD_SSH_KEY_DATA` secret env reached the container — ask the fleet operator. |
 | `Permission denied (publickey)` | Key not authorized on the VPS — fleet operator's job. |
 | `rsync: command not found` | Image too old; needs `rsync` in the dev runtime image. |
 | First run is slow | Caches and the full repo (incl. `.git`) transfer once; subsequent runs transfer only the diff. |

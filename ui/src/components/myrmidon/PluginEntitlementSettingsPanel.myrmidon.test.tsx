@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-// myrmidon(PLUGIN-ENTITLEMENT C): the settings panel — accept a key, see the
-// list with expiry, remove a key, and a clear local error on empty input.
+// myrmidon(PLUGIN-ENTITLEMENT C / 1.6.3 A): the settings panel — accept a key,
+// see the list with expiry, remove a key, show the server's rejection reason,
+// and manage the ed25519 verification public key (with its value source).
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
@@ -20,8 +21,9 @@ function renderPanel(): HTMLDivElement {
   return container;
 }
 
-function setInputValue(input: HTMLInputElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+function setInputValue(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const proto = input instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement : window.HTMLInputElement;
+  const setter = Object.getOwnPropertyDescriptor(proto.prototype, "value")!.set!;
   setter.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
@@ -29,9 +31,10 @@ function setInputValue(input: HTMLInputElement, value: string) {
 const FAR_FUTURE = "2999-01-01T00:00:00.000Z";
 const PAST = "2000-01-01T00:00:00.000Z";
 
+// The list view carries no key values — the server strips them.
 const keys = [
-  { pluginId: "example.premium-feature", key: "k1", expiresAt: FAR_FUTURE, acceptedAt: FAR_FUTURE },
-  { pluginId: "example.expired-feature", key: "k2", expiresAt: PAST, acceptedAt: PAST },
+  { pluginId: "example.premium-feature", expiresAt: FAR_FUTURE, acceptedAt: FAR_FUTURE },
+  { pluginId: "example.expired-feature", expiresAt: PAST, acceptedAt: PAST },
 ];
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3000) {
@@ -44,10 +47,19 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000) {
   }
 }
 
+function findButton(container: HTMLDivElement, testId: string): HTMLButtonElement {
+  return container.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)!;
+}
+
 describe("PluginEntitlementSettingsPanel", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     document.body.innerHTML = "";
+    // The panel also loads the verification public key; default to "not set".
+    vi.spyOn(apiModule.pluginEntitlementApi, "getPublicKey").mockResolvedValue({
+      publicKey: null,
+      source: "none",
+    } as never);
   });
 
   it("lists the accepted keys with expiry status", async () => {
@@ -77,17 +89,38 @@ describe("PluginEntitlementSettingsPanel", () => {
     await waitFor(() => Boolean(container.querySelector('[data-testid="plugin-entitlement-empty"]')));
     const idInput = container.querySelector<HTMLInputElement>('[data-testid="plugin-entitlement-plugin-id-input"]')!;
     const keyInput = container.querySelector<HTMLInputElement>('[data-testid="plugin-entitlement-key-input"]')!;
-    const buttons = container.querySelectorAll<HTMLButtonElement>("button");
-    const addButton = Array.from(buttons).find((b) => b.textContent?.includes("key") || b.textContent?.includes("ключ"))!;
     await act(async () => {
       setInputValue(idInput, "example.premium-feature");
-      setInputValue(keyInput, "PC-example-123");
+      setInputValue(keyInput, "PEK1.payload.signature");
     });
     await act(async () => {
-      addButton.click();
+      findButton(container, "plugin-entitlement-add").click();
     });
     await waitFor(() => accept.mock.calls.length > 0);
-    expect(accept).toHaveBeenCalledWith({ pluginId: "example.premium-feature", key: "PC-example-123" });
+    expect(accept).toHaveBeenCalledWith({ pluginId: "example.premium-feature", key: "PEK1.payload.signature" });
+  });
+
+  it("shows the server's rejection reason when a key does not verify", async () => {
+    const accept = vi
+      .fn()
+      .mockRejectedValue(new Error("the key signature does not verify against this instance's public key"));
+    vi.spyOn(apiModule.pluginEntitlementApi, "list").mockResolvedValue([]);
+    vi.spyOn(apiModule.pluginEntitlementApi, "accept").mockImplementation(accept as never);
+    const container = renderPanel();
+    await waitFor(() => Boolean(container.querySelector('[data-testid="plugin-entitlement-empty"]')));
+    const idInput = container.querySelector<HTMLInputElement>('[data-testid="plugin-entitlement-plugin-id-input"]')!;
+    const keyInput = container.querySelector<HTMLInputElement>('[data-testid="plugin-entitlement-key-input"]')!;
+    await act(async () => {
+      setInputValue(idInput, "example.premium-feature");
+      setInputValue(keyInput, "PEK1.payload.forged-signature");
+    });
+    await act(async () => {
+      findButton(container, "plugin-entitlement-add").click();
+    });
+    await waitFor(() => Boolean(container.querySelector('[data-testid="plugin-entitlement-error"]')));
+    expect(container.querySelector('[data-testid="plugin-entitlement-error"]')!.textContent).toContain(
+      "signature does not verify",
+    );
   });
 
   it("does not call the API with an empty key", async () => {
@@ -102,10 +135,8 @@ describe("PluginEntitlementSettingsPanel", () => {
       setInputValue(idInput, "example.premium-feature");
       setInputValue(keyInput, "   ");
     });
-    const buttons = container.querySelectorAll<HTMLButtonElement>("button");
-    const addButton = Array.from(buttons).find((b) => b.textContent?.includes("key") || b.textContent?.includes("ключ"))!;
     // Empty key disables the add button: clicking is a no-op.
-    expect(addButton.disabled).toBe(true);
+    expect(findButton(container, "plugin-entitlement-add").disabled).toBe(true);
     expect(accept).not.toHaveBeenCalled();
   });
 
@@ -115,11 +146,43 @@ describe("PluginEntitlementSettingsPanel", () => {
     vi.spyOn(apiModule.pluginEntitlementApi, "remove").mockImplementation(remove as never);
     const container = renderPanel();
     await waitFor(() => Boolean(container.querySelector('[data-testid="plugin-entitlement-list"]')));
-    const removeButton = container.querySelector<HTMLButtonElement>('[data-testid="plugin-entitlement-remove"]')!;
     await act(async () => {
-      removeButton.click();
+      findButton(container, "plugin-entitlement-remove").click();
     });
     await waitFor(() => remove.mock.calls.length > 0);
     expect(remove).toHaveBeenCalledWith("example.premium-feature");
+  });
+
+  it("shows where the effective verification public key comes from", async () => {
+    vi.spyOn(apiModule.pluginEntitlementApi, "list").mockResolvedValue([]);
+    vi.spyOn(apiModule.pluginEntitlementApi, "getPublicKey").mockResolvedValue({
+      publicKey: "-----BEGIN PUBLIC KEY-----...",
+      source: "env",
+    } as never);
+    const container = renderPanel();
+    await waitFor(() =>
+      Boolean(
+        container
+          .querySelector('[data-testid="plugin-entitlement-public-key-source"]')
+          ?.textContent?.includes("MYRMIDON_PLUGIN_ENTITLEMENT_PUBLIC_KEY"),
+      ),
+    );
+  });
+
+  it("saves the verification public key through the API", async () => {
+    const setPublicKey = vi.fn().mockResolvedValue({ publicKey: "-----BEGIN PUBLIC KEY-----...", source: "settings" });
+    vi.spyOn(apiModule.pluginEntitlementApi, "list").mockResolvedValue([]);
+    vi.spyOn(apiModule.pluginEntitlementApi, "setPublicKey").mockImplementation(setPublicKey as never);
+    const container = renderPanel();
+    await waitFor(() => Boolean(container.querySelector('[data-testid="plugin-entitlement-public-key-input"]')));
+    const input = container.querySelector<HTMLTextAreaElement>('[data-testid="plugin-entitlement-public-key-input"]')!;
+    await act(async () => {
+      setInputValue(input, "-----BEGIN PUBLIC KEY-----\nAAA\n-----END PUBLIC KEY-----");
+    });
+    await act(async () => {
+      findButton(container, "plugin-entitlement-public-key-save").click();
+    });
+    await waitFor(() => setPublicKey.mock.calls.length > 0);
+    expect(setPublicKey).toHaveBeenCalledWith("-----BEGIN PUBLIC KEY-----\nAAA\n-----END PUBLIC KEY-----");
   });
 });

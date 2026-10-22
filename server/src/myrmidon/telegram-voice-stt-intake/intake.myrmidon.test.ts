@@ -122,6 +122,46 @@ describe("transcribeTelegramVoiceIntake (mock core)", () => {
     }
   });
 
+  it("transcribes on the company's own switch when the environment is silent (no restart)", async () => {
+    const core = transcriber(success);
+    const item = voiceAttachment({});
+    try {
+      const outcome = await transcribeTelegramVoiceIntake({
+        companyId: "company-a",
+        senderText: "",
+        voiceAttachments: [item.attachment],
+        env: {},
+        companyEnabled: true,
+        transcriber: core,
+      });
+      expect(outcome.skip).toBeNull();
+      expect(outcome.body).toBe("привет, это голосовое");
+      expect(core.transcribeAudio).toHaveBeenCalledOnce();
+    } finally {
+      await item.runtime.shutdown();
+    }
+  });
+
+  it("the environment master switch still overrides the company's switch", async () => {
+    const core = transcriber(success);
+    const item = voiceAttachment({});
+    try {
+      const outcome = await transcribeTelegramVoiceIntake({
+        companyId: "company-a",
+        senderText: "",
+        voiceAttachments: [item.attachment],
+        env: { MYRMIDON_TELEGRAM_VOICE_STT: "0" },
+        companyEnabled: true,
+        transcriber: core,
+      });
+      expect(outcome.skip).toBe("stt_disabled");
+      expect(core.transcribeAudio).not.toHaveBeenCalled();
+      expect(item.fetchData).not.toHaveBeenCalled();
+    } finally {
+      await item.runtime.shutdown();
+    }
+  });
+
   it("returns stt_unconfigured without a transcriber (core not merged yet)", async () => {
     const item = voiceAttachment({});
     try {

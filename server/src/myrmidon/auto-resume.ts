@@ -1,6 +1,9 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import { activityLog, agents, companies, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+// myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
+// switch) this sweep obeys, so the switch can be changed without a restart.
+import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
 
 /**
  * AUTO-RESUME (Myrmidon 1.4).
@@ -298,6 +301,12 @@ export interface AutoResumeSweeperDeps {
   isAgentUnderMaintenance: (agentId: string) => Promise<boolean>;
   /** Optional activity log; absent in unit tests. */
   logActivity?: (input: AutoResumeActivityInput) => Promise<void>;
+  /**
+   * myrmidon(TEAM-LIVENESS-SETTINGS): the effective knobs, read once per pass so
+   * a save on the instance settings page takes effect without a restart. Absent
+   * (unit tests that predate the settings area) means the environment decides.
+   */
+  readLiveness?: () => Promise<ResolvedTeamLiveness>;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -331,6 +340,8 @@ interface AutoResumeAgentRow {
   errorReason: string | null;
   updatedAt: Date;
   metadata: Record<string, unknown> | null;
+  /** myrmidon(TEAM-LIVENESS-SETTINGS): the card the per-agent switch lives on. */
+  adapterConfig?: unknown;
 }
 
 /**
@@ -384,6 +395,11 @@ export interface AutoResumeSweeper {
  * handler owns the timer; this only remembers the last pass. Single-flight is
  * the caller's job (the sweep queue in `server/src/index.ts`).
  */
+/** The agent row's card as a plain object; anything else reads as an empty card. */
+function readAgentCard(raw: unknown): Record<string, unknown> {
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+}
+
 export function createAutoResumeSweeper(deps: AutoResumeSweeperDeps): AutoResumeSweeper {
   let lastSweepAtMs = 0;
   return {
@@ -393,7 +409,11 @@ export function createAutoResumeSweeper(deps: AutoResumeSweeperDeps): AutoResume
     async sweep(now = new Date()): Promise<AutoResumeSweepResult> {
       const env = deps.env ?? process.env;
       const settings = readAutoResumeSettings(env);
-      if (!settings.enabled) return emptyAutoResumeResult();
+      // myrmidon(TEAM-LIVENESS-SETTINGS): stored instance settings beat the
+      // environment; the reader resolved that precedence per key already.
+      const liveness = deps.readLiveness ? (await deps.readLiveness()).settings : null;
+      const enabled = liveness ? liveness.autoResumeEnabled : settings.enabled;
+      if (!enabled) return emptyAutoResumeResult();
       if (now.getTime() - lastSweepAtMs < settings.intervalSec * 1000) return emptyAutoResumeResult();
       lastSweepAtMs = now.getTime();
 
@@ -407,6 +427,7 @@ export function createAutoResumeSweeper(deps: AutoResumeSweeperDeps): AutoResume
           errorReason: agents.errorReason,
           updatedAt: agents.updatedAt,
           metadata: agents.metadata,
+          adapterConfig: agents.adapterConfig,
         })
         .from(agents)
         .innerJoin(companies, eq(companies.id, agents.companyId))
@@ -415,6 +436,13 @@ export function createAutoResumeSweeper(deps: AutoResumeSweeperDeps): AutoResume
       const result = emptyAutoResumeResult();
       for (const agent of rows) {
         result.agentsChecked += 1;
+        // myrmidon(TEAM-LIVENESS-SETTINGS): this agent's own switch. A card that
+        // turned auto-resume off keeps its `error` state for an operator to
+        // decide; an absent switch means the instance value applies.
+        if (liveness && !resolveAgentTeamLiveness(readAgentCard(agent.adapterConfig), liveness).autoResumeEnabled) {
+          result.skipped += 1;
+          continue;
+        }
         const invokable = await deps.isAgentInvokable(agent);
         const underMaintenance = await deps.isAgentUnderMaintenance(agent.id);
         const decision = decideAutoResume({

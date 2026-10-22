@@ -22,14 +22,17 @@
 #
 # Fail-closed and idempotent:
 #   1. Resolve the tag's commit (annotated tags dereferenced).
-#   2. GATE: require a successful "Myrmidon CI" run and a successful
-#      "Myrmidon image" (board) run for THIS tag (image/component runs are
-#      matched by head_branch == the tag — the same commit's main-branch
-#      runs build different image tags and must not satisfy the gate,
-#      RELEASE-PUBLISH-WAIT). "Myrmidon CI" is commit-level validation and
-#      myrmidon-ci.yml has no tag trigger, so its gate also accepts a green
-#      main-branch run of the SAME commit; a failed run (tag or main) exits 1
-#      BEFORE anything is published. Dockergate and
+#   2. GATE: require a successful "Myrmidon CI (tag)" run and a successful
+#      "Myrmidon image" (board) run for THIS tag (runs are matched by
+#      head_branch == the tag). TAG-CI (the 1.6.4 incident): the tag has its
+#      own un-cancellable CI run (myrmidon-ci-tag.yml, its own concurrency
+#      group with cancel-in-progress: false — a push to main that supersedes
+#      the main-branch CI of the same commit can no longer cancel it). The
+#      publish takes its green ONLY from the tag's own run: a main-branch
+#      run of the same commit never satisfies the gate, and a CANCELLED tag
+#      run refuses the publish loudly (an operator cancelling the tag run
+#      must not silently fall back to the wait). A failed run (any lane)
+#      exits 1 BEFORE anything is published. Dockergate and
 #      fleetd are paths-filtered workflows, so their tag run may
 #      legitimately be absent — but their digests must exist in the registry
 #      (step 3) or the publish is refused (fail-closed, the RELEASE-GATE
@@ -109,6 +112,21 @@ else
 fi
 log "tag $tag -> commit $sha"
 
+# -------------------------------------- 1b. DB audit gate (final tags only) --
+# DB-AUDIT-GATE (the 08.10.2026 entry of the OPE-401 decision registry): a
+# final tag publishes only with the database audit report of its version in
+# the tagged commit. Runs before any CI wait: a missing report fails the
+# publish immediately, whatever the CI state is.
+db_audit_report="docs/myrmidon/releases/${base_version}-db-audit.md"
+if ((prerelease == 0)); then
+  if [[ ! -f "$db_audit_report" ]]; then
+    die "the database audit report $db_audit_report is missing in the tagged commit — NOT publishing the final tag $tag. The mandatory pre-release database audit (OPE-401 decision registry, entry of 08.10.2026) must be committed as $db_audit_report before the final tag is pushed; rc tags (myr-vX.Y.Z-rc.N) are not gated."
+  fi
+  log "gate: database audit report $db_audit_report present"
+else
+  log "gate: rc tag — the database audit report is required only for the final tag (checked: $db_audit_report)"
+fi
+
 # ------------------------------------------------------------- 2. CI gate ----
 # Completed-run verdict of one workflow for THIS tag: prints "missing"
 # when no completed run exists, else the unique conclusion, else "mixed"
@@ -140,14 +158,13 @@ runs_of() {
 
 run_verdict() {
   local workflow_file="$1" branches verdict
-  branches="$(branch_match_expr "$tag" main)"
-  # RELEASE-PUBLISH-WAIT follow-up: CI is commit-level validation — the
-  # release commit reaches main before the tag is pushed, and myrmidon-ci.yml
-  # has no tag trigger, so the tag's own CI run never exists. A green CI run
-  # of the same commit on main is the evidence the gate wants (same sha).
-  if [[ "$workflow_file" != ".github/workflows/myrmidon-ci.yml" ]]; then
-    branches="$(branch_match_expr "$tag")"
-  fi
+  # TAG-CI (the 1.6.4 incident): the release green comes ONLY from the tag's
+  # own runs (head_branch == the tag). A green main-branch run of the same
+  # commit used to satisfy the CI gate (myrmidon-ci.yml had no tag trigger);
+  # myrmidon-ci-tag.yml now runs the full pipeline on the tag itself, so the
+  # main fallback is gone — and a push to main can no longer cancel the
+  # tag's run (own concurrency group, cancel-in-progress: false).
+  branches="$(branch_match_expr "$tag")"
   verdict="$(runs_of "$workflow_file" "$branches" \
     | jq "[.[] | select(.status == \"completed\")]
           | if length == 0 then \"missing\"
@@ -161,10 +178,7 @@ run_verdict() {
 # Status of the newest run (any state) of one workflow for THIS tag.
 run_status() {
   local workflow_file="$1" branches status
-  branches="$(branch_match_expr "$tag" main)"
-  if [[ "$workflow_file" != ".github/workflows/myrmidon-ci.yml" ]]; then
-    branches="$(branch_match_expr "$tag")"
-  fi
+  branches="$(branch_match_expr "$tag")"
   status="$(runs_of "$workflow_file" "$branches" \
     | jq ".[0].status // \"missing\"" 2>/dev/null)" \
     || status="missing"
@@ -172,7 +186,10 @@ run_status() {
 }
 
 # Poll cadence of the gate wait. Overridable for the tests (the default is
-# sized for CI: image workflows on a tag push run up to ~40 minutes).
+# sized for CI: image workflows on a tag push run up to ~40 minutes, and the
+# hosted-runner queue of a tag push — 9 workflows started at once — has
+# delayed the tag CI beyond that; myrmidon-release.yml raises POLL_MAX to
+# 240 (80 min) for the publish job).
 POLL_SECONDS="${MYRMIDON_RELEASE_POLL_SECONDS:-20}"
 POLL_MAX="${MYRMIDON_RELEASE_POLL_MAX:-120}"
 
@@ -211,8 +228,27 @@ wait_for() {
   log "gate: $label success for $sha"
 }
 
-log "gate: Myrmidon CI on $sha"
-wait_for ".github/workflows/myrmidon-ci.yml" must "Myrmidon CI"
+# TAG-CI (the 1.6.4 incident): the tag's own CI run is un-cancellable by
+# main pushes, but an operator can still cancel it by hand. A cancelled tag
+# run must refuse the publish loudly — never look like "no run yet" and
+# fall back into the wait (the wait would time out ~40 minutes later with a
+# misleading message).
+refuse_if_cancelled() {
+  local workflow_file="$1" label="$2" branches cancelled
+  branches="$(branch_match_expr "$tag")"
+  cancelled="$(runs_of "$workflow_file" "$branches" \
+    | jq '[.[] | select(.status == "completed" and .conclusion == "cancelled")] | length' 2>/dev/null)" \
+    || cancelled="0"
+  cancelled="${cancelled//\"/}"
+  [[ "$cancelled" =~ ^[0-9]+$ ]] || cancelled="0"
+  if ((cancelled > 0)); then
+    die "$label has a CANCELLED run for $sha (tag) — NOT publishing. Re-run Actions → Myrmidon CI (tag) for $tag (workflow_dispatch) and let it complete."
+  fi
+}
+
+log "gate: Myrmidon CI (tag) on $sha"
+refuse_if_cancelled ".github/workflows/myrmidon-ci-tag.yml" "Myrmidon CI (tag)"
+wait_for ".github/workflows/myrmidon-ci-tag.yml" must "Myrmidon CI (tag)"
 log "gate: Myrmidon image (board) on $sha"
 wait_for ".github/workflows/myrmidon-image.yml" must "Myrmidon image (board)"
 log "gate: Myrmidon dockergate image on $sha"
@@ -240,6 +276,40 @@ node "$here/release-body.mjs" "${body_args[@]}" "$version" > release-body.md \
   || die "release body could not be built for $version (missing notes or component digests)"
 log "release body built ($(wc -c < release-body.md) bytes)"
 
+# ------------------------------------------ 3b. the vendor-share metric -------
+# VENDOR-SHARE-METRIC (1.6.5): the share of files inherited from the vendor base
+# and its delta to the previous release ride in the notes as the
+# `## Vendor-derived files` section (see guides/vendor-share-release-metric.md).
+# Advisory only: when the share cannot be computed the section reads
+# «не посчитано» and the publish continues — the metric must never break a
+# release (OPE-4152 acceptance). The previous release's own notes carry the
+# line, so no second checkout is needed; --previous-body is fed from them via
+# gh. MYRMIDON_RELEASE_VENDOR_SHARE_STATE (JSON share summary) and
+# MYRMIDON_RELEASE_PREVIOUS_BODY (a body file) are the offline seams for tests,
+# next to MYRMIDON_RELEASE_REGISTRY_STATE above.
+vendor_prev_version="$(node "$here/release-body.mjs" --previous "$base_version" 2>/dev/null || true)"
+vendor_prev_tag=""
+[[ -n "$vendor_prev_version" ]] && vendor_prev_tag="myr-v$vendor_prev_version"
+notes_vendor_section() {
+  printf '\n## Vendor-derived files\n\n%s\n' "$1"
+}
+vendor_prev_body="${MYRMIDON_RELEASE_PREVIOUS_BODY:-}"
+if [[ -z "$vendor_prev_body" && -n "$vendor_prev_tag" ]]; then
+  vendor_prev_body="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/vendor-share-prev.XXXXXX.md")"
+  gh release view "$vendor_prev_tag" --repo "$repo" --json body --jq '.body' \
+    > "$vendor_prev_body" 2>/dev/null || true
+fi
+vendor_args=()
+[[ -n "$vendor_prev_tag" ]] && vendor_args+=(--previous-tag "$vendor_prev_tag")
+[[ -n "$vendor_prev_body" ]] && vendor_args+=(--previous-body "$vendor_prev_body")
+if vendor_line="$(node "$here/vendor-share-notes.mjs" "${vendor_args[@]}")"; then
+  log "vendor-share section: $vendor_line"
+else
+  vendor_line="не посчитано (the vendor-share metric failed; the release continues)"
+  log "vendor-share metric not computed — the notes say «не посчитано»"
+fi
+notes_vendor_section "$vendor_line" >> release-body.md
+
 # -------------------------------------------------------- 4. publish --------
 # RC-VERSIONS: a publish NEVER touches the `latest` marker — that is the
 # explicit promote step (promote-latest.sh) after the release proved itself
@@ -260,6 +330,16 @@ fi
 # the body of the same publish.
 gh release upload "$tag" release-components.json --repo "$repo" --clobber
 log "uploaded the component manifest asset release-components.json"
+
+# ONE-COMMAND-INSTALL (1.6.6): the installer of a fresh installation rides with
+# every release as the asset `install.sh`, so
+# https://github.com/<repo>/releases/latest/download/install.sh always serves the
+# installer of the latest release. The same file is committed at
+# scripts/myrmidon/install/install.sh (the single source of truth).
+installer="$here/../install/install.sh"
+[[ -f "$installer" ]] || die "the installer script $installer is missing"
+gh release upload "$tag" "$installer#install.sh" --repo "$repo" --clobber
+log "uploaded the installer asset install.sh"
 
 # ----------------------------------------------- 5. supersede the previous --
 # The manual convention for 1.3.x/1.4.0: the previous minor/patch release's

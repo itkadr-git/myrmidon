@@ -8,11 +8,12 @@ import { KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { pluginEntitlementApi, pluginEntitlementQueryKey } from "./pluginEntitlementApi";
-import type { PluginEntitlementKey } from "@paperclipai/shared";
+import { Textarea } from "@/components/ui/textarea";
+import { pluginEntitlementApi, pluginEntitlementPublicKeyQueryKey, pluginEntitlementQueryKey } from "./pluginEntitlementApi";
+import type { PluginEntitlementKeyView } from "@paperclipai/shared";
 import { useTranslation } from "@/i18n";
 
-function formatExpiry(value: PluginEntitlementKey["expiresAt"]): string | null {
+function formatExpiry(value: PluginEntitlementKeyView["expiresAt"]): string | null {
   if (value === null || value === undefined) return null;
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return null;
@@ -25,14 +26,25 @@ export function PluginEntitlementSettings() {
   const [pluginId, setPluginId] = useState("");
   const [keyValue, setKeyValue] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [publicKeyValue, setPublicKeyValue] = useState("");
+  const [publicKeyError, setPublicKeyError] = useState<string | null>(null);
 
   const { data: keys, isLoading } = useQuery({
     queryKey: pluginEntitlementQueryKey,
     queryFn: pluginEntitlementApi.list,
   });
 
+  const { data: publicKey } = useQuery({
+    queryKey: pluginEntitlementPublicKeyQueryKey,
+    queryFn: pluginEntitlementApi.getPublicKey,
+  });
+
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: pluginEntitlementQueryKey });
+  };
+
+  const refreshPublicKey = () => {
+    void queryClient.invalidateQueries({ queryKey: pluginEntitlementPublicKeyQueryKey });
   };
 
   const accept = useMutation({
@@ -44,7 +56,22 @@ export function PluginEntitlementSettings() {
       refresh();
     },
     onError: (err: unknown) => {
+      // The server answers 400 with the failure reason (bad signature,
+      // expired, wrong instance, wrong plugin) — show it as-is so the admin
+      // knows why the key was rejected.
       setError(err instanceof Error ? err.message : t("pluginEntitlement.saveFailed"));
+    },
+  });
+
+  const savePublicKey = useMutation({
+    mutationFn: () => pluginEntitlementApi.setPublicKey(publicKeyValue.trim() ? publicKeyValue.trim() : null),
+    onSuccess: () => {
+      setPublicKeyError(null);
+      setPublicKeyValue("");
+      refreshPublicKey();
+    },
+    onError: (err: unknown) => {
+      setPublicKeyError(err instanceof Error ? err.message : t("pluginEntitlement.publicKeySaveFailed"));
     },
   });
 
@@ -152,10 +179,48 @@ export function PluginEntitlementSettings() {
           data-testid="plugin-entitlement-key-input"
         />
         <div className="flex items-center gap-2">
-          <Button size="sm" onClick={submit} disabled={accept.isPending || !pluginId.trim() || !keyValue.trim()}>
+          <Button size="sm" onClick={submit} disabled={accept.isPending || !pluginId.trim() || !keyValue.trim()} data-testid="plugin-entitlement-add">
             {t("pluginEntitlement.addKeyButton")}
           </Button>
           {error && <p className="text-xs text-red-600" data-testid="plugin-entitlement-error">{error}</p>}
+        </div>
+      </div>
+
+      <div className="space-y-2 border-t pt-4">
+        <Label htmlFor="plugin-entitlement-public-key">{t("pluginEntitlement.publicKeyLabel")}</Label>
+        <p className="text-xs text-muted-foreground" data-testid="plugin-entitlement-public-key-source">
+          {publicKey?.publicKey
+            ? t(
+                publicKey.source === "env"
+                  ? "pluginEntitlement.publicKeySourceEnv"
+                  : "pluginEntitlement.publicKeySourceSettings",
+              )
+            : t("pluginEntitlement.publicKeySourceNone")}
+        </p>
+        <Textarea
+          id="plugin-entitlement-public-key"
+          placeholder={t("pluginEntitlement.publicKeyPlaceholder")}
+          value={publicKeyValue}
+          rows={4}
+          onChange={(event) => {
+            setPublicKeyValue(event.target.value);
+            setPublicKeyError(null);
+          }}
+          data-testid="plugin-entitlement-public-key-input"
+        />
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => savePublicKey.mutate()}
+            disabled={savePublicKey.isPending}
+            data-testid="plugin-entitlement-public-key-save"
+          >
+            {t("pluginEntitlement.publicKeySaveButton")}
+          </Button>
+          {publicKeyError && (
+            <p className="text-xs text-red-600" data-testid="plugin-entitlement-public-key-error">{publicKeyError}</p>
+          )}
         </div>
       </div>
     </section>

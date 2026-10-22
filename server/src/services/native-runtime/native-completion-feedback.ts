@@ -1,6 +1,8 @@
 import { validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { findAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { issueService } from "../issues.js";
+// myrmidon(DB-CARE DBC-3): the run's objective lives in its continuation row.
+import { loadRunContinuationEnvelope } from "../run-continuation-snapshot.js";
 import { and, eq, inArray, notInArray } from "drizzle-orm";
 import {
   approvals,
@@ -14,6 +16,8 @@ import {
   normalizePrpResultSignals,
   type PrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../../myrmidon/product.js";
 
 /** Read current constraints before accepting the report, not a premature status commit. */
 export async function nativeCompletionFeedback(
@@ -62,7 +66,13 @@ export async function nativeCompletionFeedback(
   if (issue.executionRunId && issue.executionRunId !== runId) {
     return "Report accepted; a newer run owns the task. Do not claim this report changed its status.";
   }
-  const continuation = run.contextSnapshot?.executionContinuation as { objective?: unknown } | undefined;
+  // myrmidon(DB-CARE DBC-3): the objective now comes from the continuation row
+  // of this run; the loader falls back to the legacy snapshot copy.
+  const continuation = (await loadRunContinuationEnvelope(db, {
+    companyId: run.companyId,
+    runId,
+    legacyContext: run.contextSnapshot,
+  })) as { objective?: unknown } | null;
   const objective = typeof continuation?.objective === "string"
     ? continuation.objective : [issue.title, issue.description].filter(Boolean).join("\n");
   await validateNativeDeliverableEvidence(db, { companyId: run.companyId, issueId: issue.id, runId,
@@ -127,7 +137,7 @@ export async function nativeCompletionFeedback(
     signals.actionableAttentionRequests.length === 0
   ) {
     throw new Error(
-      "needs_review requires a concrete decision and a named reviewer in attentionRequests. Continue unfinished work or checks; report done when complete. Paperclip will not create an automatic completion approval.",
+      `needs_review requires a concrete decision and a named reviewer in attentionRequests. Continue unfinished work or checks; report done when complete. ${PN} will not create an automatic completion approval.`,
     );
   }
   return "Completion report accepted. Task status will be committed after this turn and workspace finalization finish. Describe the completed work and any explicitly requested reviewer action; do not claim an approval is needed unless one was requested.";

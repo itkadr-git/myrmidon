@@ -247,9 +247,12 @@ the fleet operator's part (D). The image adds `rsync` to the apt set for the tra
   `/usr/bin/git`. For `git clone https://github.com/<owner>/<repo>` it adds
   `--reference-if-able /cache/git/<owner>/<repo>.git` when that directory exists (the board's
   read-only mirror, mounted only when the instance lists mirrored repositories); everything else
-  runs the real git unchanged, so `git-credential-paperclip` keeps working. Clones that choose
-  their own storage (`--reference`, `--dissociate`, `--shared`, `--local`, `--mirror`, `--depth`,
-  `--filter`) are left alone.
+  runs the real git unchanged, so `git-credential-paperclip` keeps working. Clones that pick the
+  storage of their own objects (`--dissociate`, `--shared`, `--local`, `--mirror`, `--filter`) are
+  left alone; a bounded clone (`--depth` and the shallow options), a clone that names
+  `--reference`/`--reference-if-able`/`--no-local` and a non-GitHub clone take the mirror as one
+  more alternate, and one that the store does not serve prints a `[myrmidon-git]` line and writes
+  `$HERMES_HOME/.myrmidon/git-objects-last-error.json`.
 - `/opt/paperclip/bin/bot-clone-hygiene` (`git-reference/bot-clone-hygiene`, Python standard
   library) is started by the entrypoint (every `MYRMIDON_CLONE_HYGIENE_INTERVAL_SEC`, default
   900) and writes `$HERMES_HOME/.myrmidon/clone-hygiene.json`: per repository under `/workspace`
@@ -417,6 +420,17 @@ image (`true`, `0.0.0.0`, `8642`, `/data/hermes`, `1`,
 `/data/hermes/lazy-packages`, `/data:/workspace:/scratch`) — override only
 if the container topology needs something else.
 
+The entrypoint sets `umask 077` before its first file write, so every file a
+run creates — scratch dumps, cache, tmp helpers — is born `0600` (directories
+`0700`). Every bot on a host shares uid `10001`, and the mode bits are the
+only barrier between one run's scratch/cache and another bot's processes;
+the umask is inherited by every child of the entrypoint (gateway → session →
+terminal/tool), so no cooperation from the workload is needed. Files that
+are legitimately shared between processes of the same container (the
+`${HERMES_HOME}/.myrmidon/*.json` start report read by the container's own
+reporter, ipc sockets, logs collected by the host's root-side janitor) keep
+working: their readers are the same uid or root.
+
 ## Bot-runtime contract
 
 The image declares `myrmidon.bot-runtime.contract="1"` (an OCI label,
@@ -443,6 +457,12 @@ The container has ONE writable bind, the bot's whole tree, at `/bot` (with `herm
 are links the image makes into it (`/data/hermes` → `/bot/hermes`, `/workspace` →
 `/data/workspace` → `/bot/workspace`, `/scratch` → `/data/scratch` → `/bot/scratch`), not
 mounts. The ownership requirement applies to the three directories inside `/bot`.
+The `/bot` root itself must also let uid `10001` enter it: the driver's prepare
+helper normalizes the host directory's mode to `0711` (owner `root` kept,
+non-recursive, the content untouched) at every apply, and when a bot still starts
+on a root it cannot enter, `entrypoint.sh` fails with a line naming the traversal
+problem and the fix (recreate the bot) instead of the misleading
+`API_SERVER_KEY is required`.
 
 A member of a **shared isolation scope** (BOT-DISK-F, label `myrmidon.bot-runtime.scope=1`) has no
 `/bot`: its one mount is the scope instance's directory at `/bot-scope`, a tmpfs over `/data`
@@ -510,6 +530,55 @@ loopback and streams one chunk per second so the run is stoppable. The
 script binds `/bot` from a throwaway directory whose `hermes/` carries the key through
 `${HERMES_HOME}/.env`, per the bot-runtime contract, mirroring the container
 driver's single-mount layout.
+
+### Task workspaces: `myr-ws`, `git clone` interception, quota refusals (1.6.5 BOT-DISK-H, contract H0)
+
+How a bot gets its task copy now, per the interface contract
+(`docs/myrmidon/bot-disk-contract/README.md`):
+
+- A run arrives with `workspace: {key, repo, baseRef?}`. The gateway opens the
+  copy itself with `myr-ws open <key> <repo> [--base <baseRef>] --json` and
+  starts the run with `MYRMIDON_TASK_WORKSPACE=/workspace/<key>` as cwd. If
+  `open` fails with exit 3/4/5 (quota, base limit, network), the run still
+  starts — in `/scratch`, with a warning event.
+- The copy is a **worktree** of a per-bot bare base at
+  `$HERMES_HOME/.myrmidon/git-base/<owner>/<repo>.git` on branch
+  `bot/<KEY>`: no per-copy objects, no promisor packs, no token in
+  `.git/config` (auth stays with `git-credential-paperclip`).
+- `git clone https://github.com/<owner>/<repo>` inside the container is
+  intercepted into `myr-ws open`: with `MYRMIDON_TASK_WORKSPACE` set it opens
+  the task copy, otherwise it becomes a scratch copy at `/scratch/<name>`.
+  `--filter`, `--depth`, `--mirror` and `--bare` are ignored with a message —
+  the objects are already in the base. The real git lives at
+  `/opt/paperclip/libexec/git` outside PATH.
+- `myr-ws` commands: `open <KEY> [owner/repo] [--base <ref>] [--scratch]`,
+  `list`, `close <KEY> [--force]`, `restore <KEY>`, `migrate`; global
+  `--json`. Exit codes: `0` ok, `2` invalid arguments, `3` quota/disk
+  refusal — the message starts with `BOT_DISK_QUOTA_EXCEEDED:` — `4`
+  repository over the base limit (8), `5` network/fetch, `6` no such
+  copy/archive, `7` unpushed work without `--force`.
+- On `BOT_DISK_QUOTA_EXCEEDED:` the bot partition is over its quota or past
+  the refuse-open fill level: stop cloning, commit and push what you have,
+  report to the board, do not retry in a loop.
+- The in-container agent `botd` follows the board's desired state
+  (`GET /api/myrmidon/bots/me/workspaces`): a copy whose task went terminal,
+  was reassigned or had its PR merged turns `closing`, survives a grace
+  (`general.botDisk.graceClosingMinutes`, default 30 min), and is removed;
+  unpushed work is archived first (`$HERMES_HOME/.myrmidon/archive/`, cap 2
+  GiB / 30 days) and is restorable with `myr-ws restore <KEY>`. Scratch
+  copies expire by idle TTL (`general.botDisk.scratchTtlHours`, default 24 h;
+  under disk pressure the TTL of clean or non-git copies drops to 1 h).
+  A git directory with unsaved work (dirty or not pushed) in `/scratch` or
+  `/workspace` is different: pressure never shortens its term, and botd keeps
+  it while the bot has a live run or the run state is unknown (reported as
+  held, `unsafe-git-live-run` / `unsafe-git-run-unknown`). It is archived and
+  removed only with no run and after the full `scratchTtlHours` of idle time.
+  A run is live when the board lists an active task for the bot, a process of
+  the container works under `/workspace` or `/scratch`, or a run woke botd
+  (SIGUSR1) in the last 30 minutes; for 30 minutes after botd starts the state
+  is unknown.
+  When the board is unreachable botd deletes nothing. Botd reports disk state
+  back with `POST /api/myrmidon/bots/me/disk-report`.
 
 ## What's not verified yet
 

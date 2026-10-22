@@ -455,7 +455,9 @@ export function buildSuccessfulRunHandoffInstruction(input: {
     "1. Mark it `done` (scope complete) or `cancelled` (intentionally stopped).",
     "",
     "**Does someone else need to look at it?**",
-    "2. Move it to `in_review` with a real reviewer path — `executionState.currentParticipant`, a human owner via `assigneeUserId`, a pending issue-thread interaction, or a linked pending approval.",
+    // myrmidon(HUMAN-REVIEW-WAIT): `human_only` is a first-class human wait so a
+    // finished run never has to fabricate an interaction/approval to hand off.
+    "2. Move it to `in_review` with a real reviewer path — `executionState.currentParticipant`, a human owner via `assigneeUserId`, a pending issue-thread interaction, a linked pending approval, or `reviewPolicy: \"human_only\"` with the issue left on the responsible human.",
     "",
     "**Can it not continue right now?**",
     "3. Mark it `blocked` with first-class blockers (`blockedByIssueIds`) or a clearly named unblock owner/action.",

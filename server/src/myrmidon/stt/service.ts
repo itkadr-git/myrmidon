@@ -15,7 +15,10 @@
 //   4. each chunk is transcribed once — no retries: a retry would multiply a
 //      slow, expensive call;
 //   5. the per-chunk results are merged back onto the recording's timeline
-//      (offsets from the split, speakers renumbered globally).
+//      (offsets from the split, speakers renumbered globally);
+//   6. the speaker-label outcome is reported as a value (requested, applied,
+//      distinct speakers, or the stable `diarization_no_speakers` marker) so a
+//      multi-voice recording is never silently presented as one voice.
 //
 // Nothing in this file puts text, bytes or a key value into a log line or an
 // error message: the messages carry codes, counts and settings names only.
@@ -23,6 +26,7 @@
 import { chunkAudio, estimateDurationMs } from "./chunk.js";
 import { dashscopeTranscribe } from "./backend-dashscope.js";
 import { deepgramTranscribe } from "./backend-deepgram.js";
+import { summarizeDiarization } from "./diarization.js";
 import { mergeChunkResults } from "./merge.js";
 import { sttSettingsProblem, sttKeySecretEnvName, type SttSettings } from "./settings.js";
 import { SttError, type SttAudioMime, type SttResult } from "./types.js";
@@ -122,7 +126,14 @@ export async function transcribeAudioWithMetadata(
             { fetch: deps.fetch, baseUrl: deps.settings.baseUrl!, apiKey, timeoutMs: deps.settings.timeoutMs },
           )
         : await dashscopeTranscribe(
-            { bytes: chunk.bytes, mimeType: chunk.mimeType, language: deps.settings.language },
+            {
+              bytes: chunk.bytes,
+              mimeType: chunk.mimeType,
+              language: deps.settings.language,
+              // myrmidon(1.6.5 VOICE-STT B): the same switch the Deepgram path
+              // already honors; the LiteLLM path asks the model for labels too.
+              diarization: deps.settings.diarization,
+            },
             { fetch: deps.fetch, baseUrl: deps.settings.baseUrl!, apiKey, model: deps.settings.model!, timeoutMs: deps.settings.timeoutMs },
           );
     transcriptions.push(transcription);
@@ -141,6 +152,9 @@ export async function transcribeAudioWithMetadata(
       durationMs: durationMs ?? undefined,
       truncated,
       backend: deps.settings.backend,
+      // myrmidon(1.6.5 VOICE-STT B): requested asked, applied answered — a
+      // caller never has to read silence.
+      diarization: summarizeDiarization(merged.segments, deps.settings.diarization),
     },
     metadata: {
       backend: deps.settings.backend,

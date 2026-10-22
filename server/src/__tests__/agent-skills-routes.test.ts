@@ -1,6 +1,11 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+// myrmidon(1.6.5 BASE-SKILLS): this suite's db double cannot answer the
+// drizzle query on `company_base_skills`; the read is mocked at the port so
+// the routes exercise the base-skills union without a full database. The
+// factory is `vi.hoisted` because it is referenced from `registerModuleMocks`.
+const mockReadCompanyBaseSkillKeysPort = vi.hoisted(() => vi.fn(async () => [] as string[]));
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -118,6 +123,11 @@ vi.mock("../adapters/index.js", () => ({
   detectAdapterModel: vi.fn(),
 }));
 
+vi.mock("../services/company-base-skill-keys-port.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/company-base-skill-keys-port.js")>()),
+  readCompanyBaseSkillKeysPort: mockReadCompanyBaseSkillKeysPort,
+}));
+
 function registerModuleMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentCreated: mockTrackAgentCreated,
@@ -159,6 +169,11 @@ function registerModuleMocks() {
     findActiveServerAdapter: vi.fn(() => mockAdapter),
     listAdapterModels: vi.fn(),
     detectAdapterModel: vi.fn(),
+  }));
+
+  vi.doMock("../services/company-base-skill-keys-port.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../services/company-base-skill-keys-port.js")>()),
+    readCompanyBaseSkillKeysPort: mockReadCompanyBaseSkillKeysPort,
   }));
 }
 
@@ -252,6 +267,8 @@ describe.sequential("agent skill routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockReadCompanyBaseSkillKeysPort.mockClear();
+    mockReadCompanyBaseSkillKeysPort.mockResolvedValue([]);
     for (const mock of Object.values(mockAgentService)) mock.mockReset();
     for (const mock of Object.values(mockAccessService)) mock.mockReset();
     for (const mock of Object.values(mockApprovalService)) mock.mockReset();
@@ -278,8 +295,8 @@ describe.sequential("agent skill routes", () => {
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
       {
-        key: "paperclipai/paperclip/paperclip",
-        runtimeName: "paperclip",
+        key: "paperclipai/paperclip/myrmidon",
+        runtimeName: "myrmidon",
         source: "/tmp/paperclip",
       },
     ]);
@@ -287,14 +304,14 @@ describe.sequential("agent skill routes", () => {
       async (_companyId: string, requested: string[]) =>
         requested.map((value) =>
           value === "paperclip"
-            ? "paperclipai/paperclip/paperclip"
+            ? "paperclipai/paperclip/myrmidon"
             : value,
         ),
     );
     mockCompanySkillService.resolveRequestedSkillEntries.mockImplementation(
       async (_companyId: string, requested: Array<{ key: string; versionId?: string | null }>) => ({
         resolved: requested.map((entry) => ({
-          key: entry.key === "paperclip" ? "paperclipai/paperclip/paperclip" : entry.key,
+          key: entry.key === "paperclip" ? "paperclipai/paperclip/myrmidon" : entry.key,
           versionId: entry.versionId ?? null,
         })),
         unresolved: [],
@@ -304,7 +321,7 @@ describe.sequential("agent skill routes", () => {
       adapterType: "claude_local",
       supported: true,
       mode: "ephemeral",
-      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      desiredSkills: ["paperclipai/paperclip/myrmidon"],
       entries: [],
       warnings: [],
     });
@@ -312,7 +329,7 @@ describe.sequential("agent skill routes", () => {
       adapterType: "claude_local",
       supported: true,
       mode: "ephemeral",
-      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      desiredSkills: ["paperclipai/paperclip/myrmidon"],
       entries: [],
       warnings: [],
     });
@@ -486,7 +503,7 @@ describe.sequential("agent skill routes", () => {
       adapterType: "claude_local",
       supported: true,
       mode: "ephemeral",
-      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      desiredSkills: ["paperclipai/paperclip/myrmidon"],
       entries: [],
       warnings: [],
     });
@@ -509,7 +526,7 @@ describe.sequential("agent skill routes", () => {
       adapterType: "codex_local",
       supported: true,
       mode: "ephemeral",
-      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      desiredSkills: ["paperclipai/paperclip/myrmidon"],
       entries: [],
       warnings: [],
     });
@@ -539,7 +556,7 @@ describe.sequential("agent skill routes", () => {
       adapterType: "acpx_local",
       supported: true,
       mode: "ephemeral",
-      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      desiredSkills: ["paperclipai/paperclip/myrmidon"],
       entries: [],
       warnings: [],
     });
@@ -579,7 +596,7 @@ describe.sequential("agent skill routes", () => {
       config: {
         agent: "codex",
         paperclipSkillSync: {
-          desiredSkills: ["paperclipai/paperclip/paperclip"],
+          desiredSkills: ["paperclipai/paperclip/myrmidon"],
         },
       },
     });
@@ -587,7 +604,7 @@ describe.sequential("agent skill routes", () => {
       adapterType: "acpx_local",
       supported: true,
       mode: "ephemeral",
-      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      desiredSkills: ["paperclipai/paperclip/myrmidon"],
       entries: [],
       warnings: [],
     });
@@ -603,7 +620,7 @@ describe.sequential("agent skill routes", () => {
         adapterConfig: expect.objectContaining({
           agent: "codex",
           paperclipSkillSync: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
+            desiredSkills: ["paperclipai/paperclip/myrmidon"],
           }),
         }),
       }),
@@ -617,7 +634,7 @@ describe.sequential("agent skill routes", () => {
           paperclipRuntimeSkills: expect.any(Array),
         }),
       }),
-      ["paperclipai/paperclip/paperclip"],
+      ["paperclipai/paperclip/myrmidon"],
     );
   });
 
@@ -650,7 +667,7 @@ describe.sequential("agent skill routes", () => {
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: {
-            desiredSkills: ["company-1/keep", "paperclipai/paperclip/paperclip"],
+            desiredSkills: ["company-1/keep", "paperclipai/paperclip/myrmidon"],
           },
         }),
       }),
@@ -663,7 +680,7 @@ describe.sequential("agent skill routes", () => {
       ...makeAgent("claude_local"),
       adapterConfig: {
         paperclipSkillSync: {
-          desiredSkills: ["company-1/keep", "paperclipai/paperclip/paperclip"],
+          desiredSkills: ["company-1/keep", "paperclipai/paperclip/myrmidon"],
         },
       },
     });
@@ -702,7 +719,7 @@ describe.sequential("agent skill routes", () => {
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: {
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
+            desiredSkills: ["paperclipai/paperclip/myrmidon"],
           },
         }),
       }),
@@ -718,7 +735,7 @@ describe.sequential("agent skill routes", () => {
       .send({
         mode: "replace",
         desiredSkills: [{
-          key: "paperclipai/paperclip/paperclip",
+          key: "paperclipai/paperclip/myrmidon",
           versionId: "22222222-2222-4222-8222-222222222222",
         }],
       }));
@@ -737,7 +754,7 @@ describe.sequential("agent skill routes", () => {
       .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
       .send({
         mode: "replace",
-        desiredSkills: [{ key: "paperclipai/paperclip/paperclip", versionId }],
+        desiredSkills: [{ key: "paperclipai/paperclip/myrmidon", versionId }],
       }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -746,7 +763,7 @@ describe.sequential("agent skill routes", () => {
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: expect.objectContaining({
-            desiredSkills: [{ key: "paperclipai/paperclip/paperclip", versionId }],
+            desiredSkills: [{ key: "paperclipai/paperclip/myrmidon", versionId }],
           }),
         }),
       }),
@@ -773,7 +790,7 @@ describe.sequential("agent skill routes", () => {
             unresolved.push(entry.key);
           } else {
             resolved.push({
-              key: entry.key === "paperclip" ? "paperclipai/paperclip/paperclip" : entry.key,
+              key: entry.key === "paperclip" ? "paperclipai/paperclip/myrmidon" : entry.key,
               versionId: entry.versionId ?? null,
             });
           }
@@ -793,7 +810,7 @@ describe.sequential("agent skill routes", () => {
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip", "stale/removed/skill"],
+            desiredSkills: ["paperclipai/paperclip/myrmidon", "stale/removed/skill"],
           }),
         }),
       }),
@@ -815,7 +832,7 @@ describe.sequential("agent skill routes", () => {
       adapterType: "cursor",
       supported: true,
       mode: "persistent",
-      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      desiredSkills: ["paperclipai/paperclip/myrmidon"],
       entries: [],
       warnings: [],
     });
@@ -838,7 +855,7 @@ describe.sequential("agent skill routes", () => {
 
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
-      .send({ desiredSkills: ["paperclipai/paperclip/paperclip"], mode: "replace" }));
+      .send({ desiredSkills: ["paperclipai/paperclip/myrmidon"], mode: "replace" }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAdapter.syncSkills).toHaveBeenCalled();
@@ -849,7 +866,7 @@ describe.sequential("agent skill routes", () => {
 
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
-      .send({ desiredSkills: ["paperclipai/paperclip/paperclip"], mode: "replace" }));
+      .send({ desiredSkills: ["paperclipai/paperclip/myrmidon"], mode: "replace" }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAgentService.update).toHaveBeenCalledWith(
@@ -872,14 +889,14 @@ describe.sequential("agent skill routes", () => {
       ...makeAgent("paperclip_runner"),
       adapterConfig: {
         paperclipSkillSync: {
-          desiredSkills: ["company-1/keep", "paperclipai/paperclip/paperclip"],
+          desiredSkills: ["company-1/keep", "paperclipai/paperclip/myrmidon"],
         },
       },
     });
 
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
-      .send({ desiredSkills: ["paperclipai/paperclip/paperclip"], mode: "remove" }));
+      .send({ desiredSkills: ["paperclipai/paperclip/myrmidon"], mode: "remove" }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAgentService.update).toHaveBeenCalledWith(
@@ -942,7 +959,7 @@ describe.sequential("agent skill routes", () => {
 
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
-      .send({ desiredSkills: ["paperclipai/paperclip/paperclip"], mode: "replace" }));
+      .send({ desiredSkills: ["paperclipai/paperclip/myrmidon"], mode: "replace" }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAdapter.syncSkills).toHaveBeenCalledWith(
@@ -953,7 +970,7 @@ describe.sequential("agent skill routes", () => {
           paperclipRuntimeSkills: expect.any(Array),
         }),
       }),
-      ["paperclipai/paperclip/paperclip"],
+      ["paperclipai/paperclip/myrmidon"],
     );
   });
 
@@ -970,7 +987,7 @@ describe.sequential("agent skill routes", () => {
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
+            desiredSkills: ["paperclipai/paperclip/myrmidon"],
           }),
         }),
       }),
@@ -996,7 +1013,7 @@ describe.sequential("agent skill routes", () => {
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
+            desiredSkills: ["paperclipai/paperclip/myrmidon"],
           }),
         }),
       }),
@@ -1019,7 +1036,7 @@ describe.sequential("agent skill routes", () => {
         role: "engineer",
         adapterType: "claude_local",
         desiredSkills: [{
-          key: "paperclipai/paperclip/paperclip",
+          key: "paperclipai/paperclip/myrmidon",
           versionId: "22222222-2222-4222-8222-222222222222",
         }],
         adapterConfig: {},
@@ -1229,8 +1246,8 @@ describe.sequential("agent skill routes", () => {
   });
 
   it.each([
-    ["agents", "paperclipai/paperclip/paperclip-create-agent"],
-    ["agent-hires", "paperclipai/paperclip/paperclip-create-agent"],
+    ["agents", "paperclipai/paperclip/myrmidon-create-agent"],
+    ["agent-hires", "paperclipai/paperclip/myrmidon-create-agent"],
     ["agents", "paperclip"],
     ["agent-hires", "paperclip"],
   ])("gives a general onboarding chief core skills and preserves %s version pins for %s", async (route, skill) => {
@@ -1246,8 +1263,8 @@ describe.sequential("agent skill routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     const input = mockAgentService.create.mock.calls[0][1];
     expect(input.role).toBe("general");
-    const canonicalKey = skill === "paperclip" ? "paperclipai/paperclip/paperclip" : skill;
-    const expected = ["paperclip", "paperclip-board", "paperclip-converting-plans-to-tasks", "paperclip-create-agent", "para-memory-files"]
+    const canonicalKey = skill === "paperclip" ? "paperclipai/paperclip/myrmidon" : skill;
+    const expected = ["myrmidon", "myrmidon-board", "myrmidon-converting-plans-to-tasks", "myrmidon-create-agent", "para-memory-files"]
       .map((name) => ({ key: `paperclipai/paperclip/${name}`, versionId: `paperclipai/paperclip/${name}` === canonicalKey ? versionId : null }));
     expect(input.adapterConfig.paperclipSkillSync.desiredSkills).toEqual(expect.arrayContaining(expected));
     expect(input.adapterConfig.paperclipSkillSync.desiredSkills).toHaveLength(5);
@@ -1313,9 +1330,9 @@ describe.sequential("agent skill routes", () => {
       "company-1",
       expect.objectContaining({
         payload: expect.objectContaining({
-          desiredSkills: ["paperclipai/paperclip/paperclip"],
+          desiredSkills: ["paperclipai/paperclip/myrmidon"],
           requestedConfigurationSnapshot: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
+            desiredSkills: ["paperclipai/paperclip/myrmidon"],
           }),
         }),
       }),
@@ -1339,10 +1356,10 @@ describe.sequential("agent skill routes", () => {
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: expect.objectContaining({
             desiredSkills: expect.arrayContaining([
-              "paperclipai/paperclip/paperclip",
-              "paperclipai/paperclip/paperclip-board",
-              "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
-              "paperclipai/paperclip/paperclip-create-agent",
+              "paperclipai/paperclip/myrmidon",
+              "paperclipai/paperclip/myrmidon-board",
+              "paperclipai/paperclip/myrmidon-converting-plans-to-tasks",
+              "paperclipai/paperclip/myrmidon-create-agent",
               "paperclipai/paperclip/para-memory-files",
             ]),
           }),
@@ -1372,10 +1389,10 @@ describe.sequential("agent skill routes", () => {
       adapterConfig: { paperclipSkillSync: { desiredSkills: string[] } };
     };
     expect(createInput.adapterConfig.paperclipSkillSync.desiredSkills).not.toContain(
-      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/myrmidon",
     );
     expect(createInput.adapterConfig.paperclipSkillSync.desiredSkills).toContain(
-      "paperclipai/paperclip/paperclip-board",
+      "paperclipai/paperclip/myrmidon-board",
     );
   });
 
@@ -1397,7 +1414,7 @@ describe.sequential("agent skill routes", () => {
     const desired = createInput.adapterConfig.paperclipSkillSync.desiredSkills;
     // "paperclip" resolves to its canonical key and dedupes with the default.
     expect(desired).toHaveLength(5);
-    expect(desired).toContain("paperclipai/paperclip/paperclip");
+    expect(desired).toContain("paperclipai/paperclip/myrmidon");
   });
 
   it("does not add default skills to non-CEO hires", async () => {
@@ -1425,7 +1442,7 @@ describe.sequential("agent skill routes", () => {
         role: "engineer",
         adapterType: "claude_local",
         desiredSkills: [{
-          key: "paperclipai/paperclip/paperclip",
+          key: "paperclipai/paperclip/myrmidon",
           versionId: "22222222-2222-4222-8222-222222222222",
         }],
         adapterConfig: {},
@@ -1460,7 +1477,7 @@ describe.sequential("agent skill routes", () => {
         icon: "crown",
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
+            desiredSkills: ["paperclipai/paperclip/myrmidon"],
           }),
         }),
       }),
@@ -1478,9 +1495,9 @@ describe.sequential("agent skill routes", () => {
       expect.objectContaining({
         payload: expect.objectContaining({
           icon: "crown",
-          desiredSkills: ["paperclipai/paperclip/paperclip"],
+          desiredSkills: ["paperclipai/paperclip/myrmidon"],
           requestedConfigurationSnapshot: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
+            desiredSkills: ["paperclipai/paperclip/myrmidon"],
           }),
         }),
       }),

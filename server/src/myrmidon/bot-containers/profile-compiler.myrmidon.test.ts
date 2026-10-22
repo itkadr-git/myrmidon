@@ -254,14 +254,16 @@ describe("myrmidon(G2) compileHermesProfile — file modes and secrecy", () => {
 });
 
 describe("myrmidon(G2) compileHermesProfile — always-set config.yaml fields", () => {
-  it("always sets approvals.mode off, platforms.api_server.enabled true, terminal.cwd /workspace, memory.provider hindsight and skills.external_dirs", () => {
+  it("sets the required profile fields and disables external skill directories", () => {
     const profile = compileHermesProfile(baseInput());
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
     expect(yaml).toContain('approvals:\n  mode: "off"');
     expect(yaml).toContain("platforms:\n  api_server:\n    enabled: true");
     expect(yaml).toContain('terminal:\n  cwd: "/workspace"');
     expect(yaml).toContain('memory:\n  provider: "hindsight"');
-    expect(yaml).toContain('skills:\n  external_dirs:\n  - "/data/hermes/skills-board"');
+    // Empty mappings/lists are omitted by the deterministic YAML writer, so
+    // absence of the skills block is the serialized form of no external dirs.
+    expect(yaml).not.toContain("skills:");
   });
 
   it("sets gateway.api_server.max_concurrent_runs from maxConcurrentRuns", () => {
@@ -282,6 +284,83 @@ describe("myrmidon(G2) compileHermesProfile — always-set config.yaml fields", 
   });
 });
 
+// myrmidon(MEMORY-CENTRAL-A): the compiler half of the instance switch — with
+// disableLocalMemory on, the bot's Hermes LOCAL memory (the built-in
+// MEMORY.md/USER.md stores) is turned off and durable memory lives only in
+// hindsight; off, the memory block is exactly the pre-feature one.
+describe("myrmidon(MEMORY-CENTRAL-A) compileHermesProfile — local memory off", () => {
+  it("writes memory_enabled/user_profile_enabled false while keeping the hindsight provider", () => {
+    const profile = compileHermesProfile(baseInput({ instanceDefaults: { disableLocalMemory: true } }));
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain(
+      'memory:\n  memory_enabled: false\n  provider: "hindsight"\n  user_profile_enabled: false',
+    );
+  });
+
+  it("does not touch the memory block when the flag is unset or false", () => {
+    for (const instanceDefaults of [{}, { disableLocalMemory: false }]) {
+      const yaml = fileByPath(compileHermesProfile(baseInput({ instanceDefaults })).files, "hermes/config.yaml").content;
+      expect(yaml).toContain('memory:\n  provider: "hindsight"');
+      expect(yaml).not.toContain("memory_enabled");
+    }
+  });
+
+  it("leaves the hindsight config.json rule untouched: mode stays local_external with the flag on", () => {
+    const profile = compileHermesProfile(baseInput({ instanceDefaults: { disableLocalMemory: true } }));
+    const json = JSON.parse(fileByPath(profile.files, "hermes/hindsight/config.json").content);
+    expect(json.mode).toBe("local_external");
+  });
+});
+
+// myrmidon(TOOL-DIET): agent.disabled_tools — single tools kept out of the model's schema.
+describe("myrmidon(TOOL-DIET) compileHermesProfile — disabled tools", () => {
+  const yamlOf = (input: HermesProfileInput) => fileByPath(compileHermesProfile(input).files, "hermes/config.yaml").content;
+
+  it("writes the instance list under agent.disabled_tools", () => {
+    const yaml = yamlOf(baseInput({ instanceDefaults: { disabledTools: ["browser_vault_fill", "vision_analyze"] } }));
+    expect(yaml).toContain('agent:\n  disabled_tools:\n  - "browser_vault_fill"\n  - "vision_analyze"');
+  });
+
+  it("writes no key at all when the list is unset, empty or all blank", () => {
+    const plain = yamlOf(baseInput());
+    for (const disabledTools of [undefined, [], ["", "  "]]) {
+      expect(yamlOf(baseInput({ instanceDefaults: { disabledTools } }))).toBe(plain);
+    }
+    expect(plain).not.toMatch(/disabled_tools:/);
+  });
+
+  it("the card list wins over the instance list and may be empty", () => {
+    const own = yamlOf(
+      baseInput({ adapterConfig: { disabledTools: ["web_extract"] }, instanceDefaults: { disabledTools: ["vision_analyze"] } }),
+    );
+    expect(own).toContain('- "web_extract"');
+    expect(own).not.toContain("vision_analyze");
+    const none = yamlOf(baseInput({ adapterConfig: { disabledTools: [] }, instanceDefaults: { disabledTools: ["vision_analyze"] } }));
+    expect(none).not.toMatch(/disabled_tools:/);
+  });
+
+  it("keeps vision_analyze for a card with its own vision model, but not when the card lists it itself", () => {
+    const instance = { disabledTools: ["vision_analyze", "browser_vault_fill"] };
+    const kept = yamlOf(baseInput({ adapterConfig: { models: { vision: "fleet-vision" } }, instanceDefaults: instance }));
+    expect(kept).not.toContain("vision_analyze");
+    expect(kept).toContain("browser_vault_fill");
+    const listed = yamlOf(
+      baseInput({ adapterConfig: { models: { vision: "fleet-vision" }, disabledTools: ["vision_analyze"] }, instanceDefaults: instance }),
+    );
+    expect(listed).toContain('- "vision_analyze"');
+  });
+
+  it("drops a name that is not a tool name with a warning, and deduplicates", () => {
+    const detailed = compileHermesProfileDetailed(
+      baseInput({ instanceDefaults: { disabledTools: ["web_extract", "web_extract", "a b", "x;y"] } }),
+    );
+    const yaml = fileByPath(detailed.profile.files, "hermes/config.yaml").content;
+    expect(yaml.match(/web_extract/g)).toHaveLength(1);
+    expect(yaml).not.toContain("a b");
+    expect(detailed.warnings.filter((w) => w.includes("agent.disabled_tools"))).toHaveLength(2);
+  });
+});
+
 describe("myrmidon(G2) compileHermesProfile — model mapping (repeats the M1 mapping)", () => {
   it("maps model, provider and a valid reasoning effort", () => {
     const profile = compileHermesProfile(
@@ -292,14 +371,42 @@ describe("myrmidon(G2) compileHermesProfile — model mapping (repeats the M1 ma
     expect(yaml).toContain('agent:\n  reasoning_effort: "high"');
   });
 
-  it("drops an unrecognized reasoning effort with a warning, leaving agent: out of the document", () => {
+  it("drops an effort the model does not accept with a warning, leaving agent: out of the document", () => {
     const { profile, warnings } = compileHermesProfileDetailed(
       baseInput({ adapterConfig: { effort: "super-high" } }),
     );
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
     expect(yaml).not.toContain("reasoning_effort");
     expect(yaml).not.toContain("agent:");
-    expect(warnings.some((w) => w.includes('"super-high"') && w.includes("not a Hermes effort level"))).toBe(true);
+    expect(warnings.some((w) => w.includes('"super-high"') && w.includes("not accepted by model"))).toBe(true);
+  });
+
+  // myrmidon(BOT-TUNING-C): an empty effort compiles to the model's safe
+  // default, never the Hermes-global "medium" a GLM model rejects.
+  it("compiles an empty effort to the GLM model default (high), never medium", () => {
+    const profile = compileHermesProfile(
+      baseInput({ adapterConfig: { model: "glm-5.3" } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('reasoning_effort: "high"');
+    expect(yaml).not.toContain("medium");
+  });
+
+  it("drops an effort a GLM model rejects (medium) with a warning", () => {
+    const { profile, warnings } = compileHermesProfileDetailed(
+      baseInput({ adapterConfig: { model: "glm-5.3", effort: "medium" } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).not.toContain("reasoning_effort");
+    expect(warnings.some((w) => w.includes('"medium"') && w.includes("low, high, max"))).toBe(true);
+  });
+
+  it("keeps a GLM-accepted effort Hermes does not know (max)", () => {
+    const profile = compileHermesProfile(
+      baseInput({ adapterConfig: { model: "glm-5.3", effort: "max" } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain('reasoning_effort: "max"');
   });
 
   it("maps models.vision to auxiliary.vision.model", () => {
@@ -354,12 +461,17 @@ describe("myrmidon(G2) compileHermesProfile — model mapping (repeats the M1 ma
     expect(warnings.some((w) => w.startsWith("fallback_model:"))).toBe(true);
   });
 
-  it("leaves model, agent, auxiliary and fallback_model out of the document entirely when the card sets no models", () => {
+  it("leaves model, auxiliary and fallback_model out of the document entirely when the card sets no models", () => {
     const profile = compileHermesProfile(baseInput({ adapterConfig: {} }));
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
-    for (const key of ["model:", "agent:", "auxiliary:", "fallback_model:"]) {
+    for (const key of ["model:", "auxiliary:", "fallback_model:"]) {
       expect(yaml).not.toContain(key);
     }
+    // myrmidon(BOT-TUNING-C): agent.reasoning_effort is always written — an
+    // empty card effort compiles to the effort policy's safe default (never
+    // the Hermes-runtime "medium" a restricted model would reject).
+    expect(yaml).toContain("agent:");
+    expect(yaml).toContain('reasoning_effort: "minimal"');
   });
 });
 

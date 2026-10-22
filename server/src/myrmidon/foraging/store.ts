@@ -7,10 +7,12 @@
 // database. Two tables only, both ours (`foraging_sources`, `foraging_findings`);
 // no vendor table is written.
 
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { foragingFindings, foragingSources } from "@paperclipai/db";
+import { foragingFindings, foragingSources, foragingSpendEvents } from "@paperclipai/db";
 import type { ForagingFindingStatus, ForagingSourceKind } from "./domain.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI)
+import type { ForagingSpendOutcome } from "@paperclipai/db";
 
 export interface ForagingSourceRow {
   id: string;
@@ -70,6 +72,27 @@ export interface ForagingReadPatch {
   lastError: string | null;
 }
 
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the spend ledger rows.
+
+export interface ForagingSpendInsert {
+  companyId: string;
+  sourceId: string;
+  role: string;
+  agentId: string | null;
+  url: string;
+  costCents: number;
+  outcome: ForagingSpendOutcome;
+  occurredAt: Date;
+}
+
+export interface ForagingSpendBreakdownRow {
+  role: string;
+  url: string;
+  costCents: number;
+  reads: number;
+  lastOccurredAt: Date | null;
+}
+
 export interface ForagingStore {
   listSources(companyId: string): Promise<ForagingSourceRow[]>;
   enabledSources(companyId: string): Promise<ForagingSourceRow[]>;
@@ -91,6 +114,22 @@ export interface ForagingStore {
   /** Findings of the current UTC month, for the per-company pass budget. */
   monthFindingCount(companyId: string, since: Date): Promise<number>;
   listCompanyIds(): Promise<string[]>;
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): the spend ledger the limits read.
+  /** One row per source read; the pass writes it right after the read. */
+  insertSpendEvent(input: ForagingSpendInsert): Promise<void>;
+  /** Spend of a window, per role and per agent (null-key = no agent). */
+  spendWindows(
+    companyId: string,
+    daySince: Date,
+    monthSince: Date,
+  ): Promise<{
+    dayCents: number;
+    monthCents: number;
+    byRole: Map<string, number>;
+    byAgent: Map<string, number>;
+  }>;
+  /** Spend per role and per source url of a window, for the Costs view. */
+  spendBreakdown(companyId: string, since: Date): Promise<ForagingSpendBreakdownRow[]>;
 }
 
 function toSource(row: typeof foragingSources.$inferSelect): ForagingSourceRow {
@@ -249,6 +288,73 @@ export function createDbForagingStore(db: Db): ForagingStore {
         .from(foragingFindings)
         .where(and(eq(foragingFindings.companyId, companyId), sql`${foragingFindings.detectedAt} >= ${since}`));
       return Number(row?.count ?? 0);
+    },
+
+    // myrmidon(1.6.1-FORAGING-LIMITS-UI): the spend ledger.
+
+    async insertSpendEvent(input) {
+      await db.insert(foragingSpendEvents).values(input);
+    },
+
+    async spendWindows(companyId, daySince, monthSince) {
+      const [dayRow] = await db
+        .select({ cents: sql<number>`coalesce(sum(${foragingSpendEvents.costCents}), 0)::int` })
+        .from(foragingSpendEvents)
+        .where(and(eq(foragingSpendEvents.companyId, companyId), gte(foragingSpendEvents.occurredAt, daySince)));
+      const [monthRow] = await db
+        .select({ cents: sql<number>`coalesce(sum(${foragingSpendEvents.costCents}), 0)::int` })
+        .from(foragingSpendEvents)
+        .where(and(eq(foragingSpendEvents.companyId, companyId), gte(foragingSpendEvents.occurredAt, monthSince)));
+      const roleRows = await db
+        .select({
+          role: foragingSpendEvents.role,
+          cents: sql<number>`coalesce(sum(${foragingSpendEvents.costCents}), 0)::int`,
+        })
+        .from(foragingSpendEvents)
+        .where(and(eq(foragingSpendEvents.companyId, companyId), gte(foragingSpendEvents.occurredAt, daySince)))
+        .groupBy(foragingSpendEvents.role);
+      const agentRows = await db
+        .select({
+          agentId: foragingSpendEvents.agentId,
+          cents: sql<number>`coalesce(sum(${foragingSpendEvents.costCents}), 0)::int`,
+        })
+        .from(foragingSpendEvents)
+        .where(and(eq(foragingSpendEvents.companyId, companyId), gte(foragingSpendEvents.occurredAt, daySince)))
+        .groupBy(foragingSpendEvents.agentId);
+      const byRole = new Map<string, number>();
+      for (const row of roleRows) byRole.set(row.role, Number(row.cents));
+      const byAgent = new Map<string, number>();
+      for (const row of agentRows) {
+        if (row.agentId !== null) byAgent.set(row.agentId, Number(row.cents));
+      }
+      return {
+        dayCents: Number(dayRow?.cents ?? 0),
+        monthCents: Number(monthRow?.cents ?? 0),
+        byRole,
+        byAgent,
+      };
+    },
+
+    async spendBreakdown(companyId, since) {
+      const rows = await db
+        .select({
+          role: foragingSpendEvents.role,
+          url: foragingSpendEvents.url,
+          costCents: sql<number>`coalesce(sum(${foragingSpendEvents.costCents}), 0)::int`,
+          reads: sql<number>`count(*)::int`,
+          lastOccurredAt: sql<Date | null>`max(${foragingSpendEvents.occurredAt})`,
+        })
+        .from(foragingSpendEvents)
+        .where(and(eq(foragingSpendEvents.companyId, companyId), gte(foragingSpendEvents.occurredAt, since)))
+        .groupBy(foragingSpendEvents.role, foragingSpendEvents.url)
+        .orderBy(desc(sql`coalesce(sum(${foragingSpendEvents.costCents}), 0)`));
+      return rows.map((row) => ({
+        role: row.role,
+        url: row.url,
+        costCents: Number(row.costCents),
+        reads: Number(row.reads),
+        lastOccurredAt: row.lastOccurredAt ? new Date(row.lastOccurredAt) : null,
+      }));
     },
 
     async listCompanyIds() {

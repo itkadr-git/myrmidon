@@ -10,11 +10,17 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   addComment: vi.fn(),
   getDependencyReadiness: vi.fn(),
+  getCurrentRunForIssue: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
+  getLastRunForIssue: vi.fn(),
   findMentionedAgents: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   getRelationSummaries: vi.fn(),
+}));
+
+const mockCompanyService = vi.hoisted(() => ({
+  getById: vi.fn(async () => ({ id: "company-1", defaultResponsibleUserId: "local-board" })),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -25,6 +31,7 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
+  insertReviewAdmissionWakeup: vi.fn(async () => ({ created: true })),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
@@ -121,6 +128,11 @@ vi.mock("../telemetry.js", () => ({
   getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
 }));
 
+// myrmidon(UPSTREAM-13539): stub the queue projection so the fake DB stays comment-only.
+vi.mock("../myrmidon/upstream-steer/queued-interaction-response.js", () => ({
+  hasQueuedInteractionResponse: vi.fn(async () => false),
+}));
+
 vi.mock("../services/access.js", () => ({
   accessService: () => mockAccessService,
 }));
@@ -160,9 +172,7 @@ vi.mock("../services/runner-goals.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
-  companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1" })),
-  }),
+  companyService: () => mockCompanyService,
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   companySkillService: () => ({
@@ -268,6 +278,9 @@ function makeIssue(
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
     status,
+    responsibleUserId: "local-board",
+    executionPolicy: null,
+    projectId: null,
     assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     assigneeUserId: null,
     createdByUserId: "local-board",
@@ -1514,9 +1527,33 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("leaves normal agent comments without derived presentation", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("in_progress"),
+      responsibleUserId: null,
+    });
+    mockIssueService.getCurrentRunForIssue.mockResolvedValue(null);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockIssueService.getLastRunForIssue.mockResolvedValue(null);
+    mockDbSelectWhere.mockImplementation(() => ({
+      then: (
+        onFulfilled: (rows: unknown[]) => unknown,
+        onRejected?: (reason: unknown) => unknown,
+      ) =>
+        Promise.resolve([
+          {
+            id: "run-1",
+            companyId: "company-1",
+            agentId: "22222222-2222-4222-8222-222222222222",
+            permissions: {},
+            invocationSource: "assignment",
+            contextSnapshot: { source: "assignment" },
+          },
+        ]).then(onFulfilled, onRejected),
+    }));
 
-    const res = await request(await installActor(createApp(), agentActor()))
+    const res = await request(
+      await installActor(createApp(), agentActor()),
+    )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "Normal work update." });
 
@@ -1530,7 +1567,7 @@ describe.sequential("issue comment reopen routes", () => {
         runId: "run-1",
         onBehalfOfUserId: null,
       },
-      expect.objectContaining({ attachmentIds: undefined, presentation: null }),
+      expect.objectContaining({ attachmentIds: undefined, presentation: null, sourceTrust: null }),
       mockDb,
     );
   });

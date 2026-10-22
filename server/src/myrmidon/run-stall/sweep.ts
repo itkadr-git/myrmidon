@@ -1,6 +1,9 @@
 import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests, heartbeatRuns, issues } from "@paperclipai/db";
+import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
+// myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
+// switch) this pass obeys, so the threshold can be changed without a restart.
+import { resolveAgentTeamLiveness, type ResolvedTeamLiveness, type TeamLivenessSettings } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import {
   RUN_STALL_ACTIVITY_ACTION,
@@ -11,6 +14,7 @@ import {
 } from "./constants.js";
 import { classifyRunStall, progressAnchorAt, shouldReturnIssueToTodo, type RunProgressTimestamps } from "./policy.js";
 import { readRunStallSettings, type RunStallSettings } from "./settings.js";
+import type { RunStallValues } from "@paperclipai/shared";
 
 /**
  * One pass over the running runs of the instance: interrupt the ones whose
@@ -67,6 +71,12 @@ export interface RunStallSweepDeps {
     entityId: string;
     details: Record<string, unknown>;
   }) => Promise<void>;
+  /**
+   * myrmidon(TEAM-LIVENESS-SETTINGS): the effective knobs, read once per pass so
+   * a save on the instance settings page takes effect without a restart. Absent
+   * (unit tests that predate the settings area) means the environment decides.
+   */
+  readLiveness?: () => Promise<ResolvedTeamLiveness>;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
 }
@@ -86,6 +96,11 @@ export interface RunStallSweepResult {
   skippedMaintenance: number;
   /** Candidates with no recorded timestamp at all: "cannot judge", left alone. */
   skippedUnknown: number;
+  /**
+   * myrmidon(TEAM-LIVENESS-SETTINGS): candidates left alone because their own
+   * agent card switched progress-based run liveness off.
+   */
+  skippedExempt: number;
   /** Runs whose interrupt or follow-up failed; the next pass retries them. */
   failed: number;
   runIds: string[];
@@ -100,6 +115,7 @@ function emptyResult(): RunStallSweepResult {
     skippedActive: 0,
     skippedMaintenance: 0,
     skippedUnknown: 0,
+    skippedExempt: 0,
     failed: 0,
     runIds: [],
   };
@@ -235,20 +251,76 @@ export interface RunStallSweep {
   sweep(options?: { now?: Date; force?: boolean }): Promise<RunStallSweepResult>;
   resetForTest(): void;
   settings(): RunStallSettings;
+  /**
+   * myrmidon(RUN-STALL-SETTINGS, 1.6.5): put settings saved from the UI in
+   * force without a restart. Until the first call the env values rule
+   * (`settingsOverride === null`), exactly as before the settings existed.
+   */
+  applySettings(values: RunStallValues): void;
+}
+
+/** The agent row's card as a plain object; anything else reads as an empty card. */
+function readAgentCard(raw: unknown): Record<string, unknown> {
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+}
+
+/**
+ * The agents that switched progress-based run liveness off for themselves
+ * (myrmidon TEAM-LIVENESS-SETTINGS). One read for the whole pass: the card
+ * lives on the agent row, and a pass inspects at most `pageSize` candidates.
+ */
+async function stallExemptAgentIds(
+  db: Db,
+  agentIds: string[],
+  settings: TeamLivenessSettings,
+): Promise<Set<string>> {
+  if (agentIds.length === 0) return new Set();
+  const rows = await db
+    .select({ id: agents.id, adapterConfig: agents.adapterConfig })
+    .from(agents)
+    .where(inArray(agents.id, agentIds));
+  const exempt = new Set<string>();
+  for (const row of rows) {
+    if (!resolveAgentTeamLiveness(readAgentCard(row.adapterConfig), settings).runStallEnabled) {
+      exempt.add(row.id);
+    }
+  }
+  return exempt;
 }
 
 export function createRunStallSweep(deps: RunStallSweepDeps): RunStallSweep {
   let lastSweepAtMs = 0;
   let inFlight: Promise<RunStallSweepResult> | null = null;
+  // myrmidon(RUN-STALL-SETTINGS): the stored (UI-saved) settings; null means
+  // "read the environment" — the pre-feature behaviour.
+  let settingsOverride: RunStallSettings | null = null;
 
-  async function runPass(now: Date, settings: RunStallSettings): Promise<RunStallSweepResult> {
+  function effectiveSettings(): RunStallSettings {
+    return settingsOverride ?? readRunStallSettings(deps.env ?? process.env);
+  }
+
+  async function runPass(
+    now: Date,
+    settings: RunStallSettings,
+    liveness: TeamLivenessSettings | null,
+  ): Promise<RunStallSweepResult> {
     const cutoff = new Date(now.getTime() - settings.thresholdMs);
     const candidates = await candidateRuns(deps.db, cutoff.toISOString(), settings.pageSize);
     const result = emptyResult();
     result.scanned = candidates.length;
+    // myrmidon(TEAM-LIVENESS-SETTINGS): the per-agent switch, read once for the
+    // whole pass. An exempt agent's silent run keeps going until the hard
+    // timeout — that is what the operator asked for on its card.
+    const exemptAgentIds = liveness
+      ? await stallExemptAgentIds(deps.db, [...new Set(candidates.map((candidate) => candidate.agentId))], liveness)
+      : new Set<string>();
 
     for (const candidate of candidates) {
       try {
+        if (exemptAgentIds.has(candidate.agentId)) {
+          result.skippedExempt += 1;
+          continue;
+        }
         // Re-read immediately before acting: progress recorded a moment ago (or a
         // run that finished on its own) must not be interrupted on stale evidence.
         const progress = await readRunProgress(deps.db, candidate.id);
@@ -375,14 +447,37 @@ export function createRunStallSweep(deps: RunStallSweepDeps): RunStallSweep {
 
   return {
     settings() {
-      return readRunStallSettings(deps.env ?? process.env);
+      return effectiveSettings();
+    },
+    applySettings(values: RunStallValues) {
+      settingsOverride = {
+        enabled: values.enabled,
+        thresholdMs: values.thresholdSec * 1000,
+        checkIntervalMs: values.checkIntervalSec * 1000,
+        pageSize: values.pageSize,
+      };
     },
     resetForTest() {
       lastSweepAtMs = 0;
       inFlight = null;
+      settingsOverride = null;
     },
     async sweep(options = {}) {
-      const settings = this.settings();
+      // myrmidon(TEAM-LIVENESS-SETTINGS): stored instance settings beat the
+      // environment; the reader resolved that precedence per key already. The
+      // sweep keeps its own interval and page size.
+      // myrmidon(RUN-STALL-SETTINGS): when the team-liveness reader is wired it
+      // still decides `enabled` and the threshold (main's precedence, unchanged);
+      // the run-stall settings decide the interval and the page size.
+      const liveness = deps.readLiveness ? (await deps.readLiveness()).settings : null;
+      const configured = this.settings();
+      const settings: RunStallSettings = liveness
+        ? {
+            ...configured,
+            enabled: liveness.runStallEnabled,
+            thresholdMs: liveness.runStallThresholdSec * 1000,
+          }
+        : configured;
       if (!settings.enabled) return emptyResult();
       const now = options.now ?? deps.now?.() ?? new Date();
       if (inFlight) return inFlight;
@@ -390,7 +485,7 @@ export function createRunStallSweep(deps: RunStallSweepDeps): RunStallSweep {
         return emptyResult();
       }
       lastSweepAtMs = now.getTime();
-      inFlight = runPass(now, settings).finally(() => {
+      inFlight = runPass(now, settings, liveness).finally(() => {
         inFlight = null;
       });
       return inFlight;

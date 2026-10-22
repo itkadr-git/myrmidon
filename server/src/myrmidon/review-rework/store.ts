@@ -32,7 +32,7 @@ export interface ReworkCandidateRow {
   /** Title + description text, for PR-reference extraction (comments are read separately). */
   textParts: string[];
   /** The task's pull_request work products (non-archived). */
-  products: Array<{ repo: string; number: number; status: string }>;
+  products: Array<{ repo: string; number: number; url: string | null; status: string }>;
 }
 
 export interface CreateReworkTaskInput {
@@ -245,8 +245,20 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
           task: taskFacts(row),
           textParts: [row.title, row.description ?? ""],
           products: products
-            .map((product) => ({ ...productCoordinates(product.metadata, product.url), status: product.status }))
-            .filter((entry): entry is { repo: string; number: number; status: string } => entry !== null),
+            // Spreading `null` yields `{ status }` with no repo — the guard
+            // below must drop entries whose coordinates could not be read,
+            // not just the literal null (a coordinate-less entry downstream
+            // throws on the first sweep pass).
+            .map((product) => ({
+              ...productCoordinates(product.metadata, product.url),
+              url: product.url,
+              status: product.status,
+            }))
+            .filter(
+              (entry): entry is { repo: string; number: number; url: string | null; status: string } =>
+                typeof entry.repo === "string" && entry.repo.length > 0
+                && typeof entry.number === "number" && Number.isSafeInteger(entry.number) && entry.number > 0,
+            ),
         });
       }
       return out;
@@ -303,7 +315,15 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
             or(
               sql`lower(${issueWorkProducts.metadata} ->> 'repo') = ${pr.repo}
                   and cast(${issueWorkProducts.metadata} ->> 'number' as text) = ${String(pr.number)}`,
-              sql`${issueWorkProducts.url} like ${"%/github.com/" + pr.repo + "/pull/" + pr.number}%`,
+              // myrmidon(1.6.5 REVIEW-REWORK-F02): the url branch matched the PR exactly
+              // (whole number, optional trailing path segments such as /files; query and
+              // fragment parts are stripped). The previous `like ${"..."}%` left the
+              // wildcard outside the parameter — `like $n%` — a syntax error at runtime,
+              // and a trailing-wildcard like also matched /pull/1234 when searching for
+              // PR 123. Work-product urls are written canonical (`https://github.com/
+              // <owner>/<repo>/pull/<n>`, review-rework/resolver.ts), so a regex anchored
+              // on `/github.com/<repo>/pull/<n>(/|$)` also covers scheme-less variants.
+              sql`regexp_replace(${issueWorkProducts.url}, '[#?].*$', '') ~ ('/github.com/' || ${pr.repo} || '/pull/' || ${String(pr.number)} || '(/|$)')`,
             ),
           ),
         )

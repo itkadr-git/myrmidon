@@ -1,0 +1,329 @@
+diff --git a/gateway/platforms/api_server_runs.py b/gateway/platforms/api_server_runs.py
+index 0e71549..d67a16a 100644
+--- a/gateway/platforms/api_server_runs.py
++++ b/gateway/platforms/api_server_runs.py
+@@ -459,6 +459,14 @@ class _RunLaunch:
+     # (see set_github_broker_vars) for the whole turn so tool subprocesses of
+     # THIS run — and only this run — can resolve managed GitHub credentials.
+     github_broker: Optional[Dict[str, str]] = None
++    # myrmidon(G1): run-scoped GitHub operation launcher (NONCONTAINER-GITHUB-LAUNCHER).
++    # ``{"version": int, "files": {name: body}}`` or None: the bodies of the managed
++    # git/gh wrappers plus the credential helper, which a gateway run has no execution
++    # target on the board's side to have staged for it — the gateway stages them under
++    # this run's own directory and binds the resulting env per context (see
++    # set_github_launcher_vars). The token they resolve still comes from this run's
++    # broker capability, so the field is set only alongside one.
++    github_launcher: Optional[Dict[str, Any]] = None
+     # myrmidon(BOT-DISK-H5b): optional ``workspace`` body field (bot-disk contract C6):
+     # ``{"key", "repo", "baseRef?"}`` — validated in _handle_runs; _run_agent_sync opens
+     # the task copy via ``myr-ws open`` before the model starts.
+@@ -607,6 +615,13 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
+     } if isinstance(github_broker, dict) else None
+     if github_broker and not (github_broker["broker_url"] and github_broker["capability"]):
+         github_broker = None
++    # myrmidon(G1): the same request may carry the launcher bodies to stage
++    # (NONCONTAINER-GITHUB-LAUNCHER). Carried as sent: tools/github_launcher_context.py
++    # validates the version, the allowed file names and the sizes before anything is
++    # written, and a payload it refuses (unknown name, oversize body) stages nothing
++    # at all — the run then behaves exactly as a run without the field.
++    github_launcher = body.get("github_launcher") if isinstance(body, dict) else None
++    github_launcher = dict(github_launcher) if isinstance(github_launcher, dict) else None
+     # myrmidon(BOT-DISK-H5b): optional ``workspace`` body field (bot-disk contract C6).
+     # Validated here so the idempotency fingerprint covers exactly what the run will do;
+     # the open itself happens in _run_agent_sync, just before the model starts. A
+@@ -727,6 +742,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
+         turn_author=turn_author,
+         # myrmidon(G1): run-scoped GitHub broker capability (CONTAINER-GITHUB-WRITE).
+         github_broker=github_broker,
++        github_launcher=github_launcher,
+         # myrmidon(BOT-DISK-H5b): task workspace to open via myr-ws before the model starts.
+         workspace=workspace_field)
+     self._activate_admitted_request()
+@@ -783,6 +799,9 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
+     from tools.approval_context import reset_current_session_key, set_current_session_key
+     # myrmidon(G1): run-scoped GitHub broker capability (CONTAINER-GITHUB-WRITE).
+     from tools.github_broker_context import set_github_broker_vars
++    # myrmidon(G1): staging and binding the run's launcher goes through the same
++    # per-run context (NONCONTAINER-GITHUB-LAUNCHER).
++    from tools.github_launcher_context import set_github_launcher_vars
+     session_id = run.session_id
+     effective_task_id = session_id or run.run_id
+     # (token, reset) pairs unwound in the finally block; bound only once each step succeeds.
+@@ -797,6 +816,12 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
+             # tools/environments/local.py then strips them for this run's spawns.
+             if run.github_broker:
+                 resets.append(set_github_broker_vars(run.github_broker))
++            # myrmidon(G1): stage this run's launcher bodies in the gateway's own
++            # temp root and bind PATH/ZDOTDIR/BASH_ENV/GH_CONFIG_DIR for its children
++            # (NONCONTAINER-GITHUB-LAUNCHER). A refused payload, an unwritable temp
++            # root, or a run without a broker capability leaves the run untouched.
++            if run.github_launcher:
++                resets.append(set_github_launcher_vars(run.github_launcher, run.run_id))
+             # myrmidon(BOT-DISK-H5b): the request named a task workspace — open (or reuse)
+             # the copy BEFORE the model starts (bot-disk contract C6). On success the
+             # run's cwd is the copy (bound as the session cwd, so the prompt builder,
+diff --git a/tools/environments/local.py b/tools/environments/local.py
+index 9f32846..1875be3 100644
+--- a/tools/environments/local.py
++++ b/tools/environments/local.py
+@@ -261,6 +261,22 @@ def _inject_session_context_env(env: dict) -> None:
+     else:
+         env.pop("PAPERCLIP_GITHUB_BROKER_URL", None)
+         env.pop("PAPERCLIP_GITHUB_BROKER_TOKEN", None)
++    # myrmidon(G1): bridge this run's GitHub operation launcher
++    # (NONCONTAINER-GITHUB-LAUNCHER) — the directory holding this run's git/gh
++    # wrappers and credential helper, first on PATH, with the login-shell profiles
++    # and GH_CONFIG_DIR that keep it in place. A run WITHOUT a launcher gets our
++    # directory stripped from PATH and the marker name dropped — the staged programs
++    # call the broker, and only a run that carries a capability is staged at all.
++    try:
++        from tools.github_launcher_context import github_launcher_env, strip_github_launcher_env
++        launcher_env = github_launcher_env()
++    except Exception:
++        launcher_env = None
++        strip_github_launcher_env = None
++    if launcher_env:
++        env.update(launcher_env)
++    elif strip_github_launcher_env is not None:
++        strip_github_launcher_env(env)
+     # myrmidon(BOT-DISK-H5b): bridge the run's task workspace (bound by
+     # gateway/platforms/api_server_runs.py after ``myr-ws open``, bot-disk
+     # contract C6) into this run's child processes as MYRMIDON_TASK_WORKSPACE.
+diff --git a/tools/github_launcher_context.py b/tools/github_launcher_context.py
+new file mode 100644
+index 0000000..0fec488
+--- /dev/null
++++ b/tools/github_launcher_context.py
+@@ -0,0 +1,231 @@
++"""Run-scoped GitHub operation launcher context (myrmidon G1, NONCONTAINER-GITHUB-LAUNCHER).
++
++A ``/v1/runs`` request from the board's hermes_gateway adapter may carry a
++``github_launcher`` field: the bodies of the managed Git launcher — the ``git``
++and ``gh`` wrappers plus the ``git-credential-paperclip`` helper — that
++``prepareGitHubOperationLaunchers`` (packages/adapter-utils) stages on a local
++or SSH execution target. A gateway run has no such target: the board stages a
++directory in ITS OWN filesystem, so the paths it puts on PATH do not exist
++where the run happens. This module is the other half of that delivery: the
++adapter ships the bodies in the request, and the gateway stages them here, in
++its own temporary root, for the lifetime of the run.
++
++``set_github_launcher_vars`` writes the bodies into a per-run directory next to
++the login-shell profiles that re-prepend it, and binds the resulting
++environment fragment here — contextvars, never the process env, because one
++gateway process serves many concurrent runs from executor threads that share
++``os.environ``. ``tools/environments/local.py`` bridges the bound fragment into
++every terminal/execute_code child of THAT run only.
++
++The bodies are public program text (token-free by construction), so staging them
++grants nothing on its own: the credential they resolve comes from the run's
++broker capability. That is why a launcher is staged only when the same context
++also carries one (CONTAINER-GITHUB-WRITE) — without a capability the staged
++programs could only fail, and the run is not in managed-credential mode.
++"""
++
++from __future__ import annotations
++
++import os
++import re
++import tempfile
++from contextvars import ContextVar, Token
++from typing import Any, Callable, Mapping, Optional, Tuple
++
++# Payload contract with packages/adapter-utils/src/github-launcher.ts
++# (GITHUB_LAUNCHER_PAYLOAD_VERSION / githubLauncherPayload()).
++GITHUB_LAUNCHER_PAYLOAD_VERSION = 1
++# The three programs the launcher needs, plus the scope file that keeps an
++# enclosing project's "type": "module" out of the staged directory (the bodies
++# are CommonJS). Any other name is refused: a request never picks a write path.
++GITHUB_LAUNCHER_PROGRAM_FILES = ("git", "gh", "git-credential-paperclip")
++GITHUB_LAUNCHER_SCOPE_FILE = "package.json"
++GITHUB_LAUNCHER_ALLOWED_FILES = frozenset(GITHUB_LAUNCHER_PROGRAM_FILES + (GITHUB_LAUNCHER_SCOPE_FILE,))
++GITHUB_LAUNCHER_MAX_FILE_BYTES = 64 * 1024
++GITHUB_LAUNCHER_MAX_TOTAL_BYTES = 256 * 1024
++# Login-shell profiles that restore the staged directory after /etc/profile or
++# path_helper reorder PATH (mirrors the board-side staging, which writes the
++# same text to all of them).
++GITHUB_LAUNCHER_PROFILE_FILES = (".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile")
++GITHUB_LAUNCHER_DIR_NAME = "PAPERCLIP_GITHUB_LAUNCHER_DIR"
++_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
++
++_GITHUB_LAUNCHER: ContextVar[Optional[dict]] = ContextVar("PAPERCLIP_GITHUB_LAUNCHER", default=None)
++
++
++def github_launcher_root() -> str:
++    """Where staged launchers live: the gateway's own temporary root.
++
++    Per host, not per image: a gateway that runs outside the bot image (the
++    build machine) stages exactly the same programs here, and nothing but the
++    run's own children are ever pointed at them.
++    """
++    return os.path.join(tempfile.gettempdir(), "paperclip-github-runtime")
++
++
++def github_launcher_bound() -> bool:
++    """True while this context has a staged launcher of its own."""
++    return _GITHUB_LAUNCHER.get() is not None
++
++
++def github_launcher_env() -> dict:
++    """The env fragment of the bound launcher, or ``{}`` when none is bound."""
++    bound = _GITHUB_LAUNCHER.get()
++    return dict(bound) if bound else {}
++
++
++def strip_github_launcher_env(env: dict) -> None:
++    """Remove launcher names from *env* for a run that has no launcher.
++
++    A run without a launcher must not inherit a directory another surface left
++    on PATH: the staged programs resolve credentials through the broker, and
++    only a run that carries a capability is staged at all.
++    """
++    env.pop(GITHUB_LAUNCHER_DIR_NAME, None)
++    current = env.get("PATH")
++    if current:
++        env["PATH"] = strip_github_launcher_path(current)
++
++
++def strip_github_launcher_path(path: str) -> str:
++    """Drop this host's launcher directories from a PATH value."""
++    root = github_launcher_root()
++    kept = [
++        entry for entry in (path or "").split(os.pathsep)
++        if entry and entry != root and not entry.startswith(root + os.sep)
++    ]
++    return os.pathsep.join(kept)
++
++
++def set_github_launcher_vars(payload: Any, run_id: Any) -> Tuple[Callable, Callable]:
++    """Stage *payload* for *run_id* and bind its environment to this context.
++
++    Returns the ``(marker, reset)`` pair the caller pushes onto its reset stack,
++    the same shape ``set_github_broker_vars`` uses. An invalid payload, an
++    unusable run id, an unwritable temp root or a run without a broker
++    capability leaves the context untouched: the run then behaves exactly as it
++    did before this module existed, and the local env bridge strips any launcher
++    names from its children.
++    """
++    token: Optional[Token] = None
++    env = _staged_launcher_env(payload, run_id)
++    if env is not None:
++        token = _GITHUB_LAUNCHER.set(env)
++
++    def marker() -> None:
++        return None
++
++    def reset(_marker: Any = None) -> None:
++        if token is not None:
++            _GITHUB_LAUNCHER.reset(token)
++
++    return marker, reset
++
++
++def _staged_launcher_env(payload: Any, run_id: Any) -> Optional[dict]:
++    files = _validated_files(payload)
++    if files is None or not _valid_run_id(run_id) or not _broker_bound():
++        return None
++    directory = os.path.join(github_launcher_root(), str(run_id))
++    try:
++        return _stage_launcher(directory, files)
++    except OSError:
++        # An unwritable temp root (or a concurrent run holding the directory)
++        # must not fail the turn: the run continues without managed launchers.
++        return None
++
++
++def _broker_bound() -> bool:
++    """True when this context also carries the run's broker capability."""
++    try:
++        from tools.github_broker_context import github_broker_bound
++    except Exception:
++        return False
++    try:
++        return bool(github_broker_bound())
++    except Exception:
++        return False
++
++
++def _valid_run_id(run_id: Any) -> bool:
++    # The run id names a directory: keep it a single, unambiguous path segment.
++    return isinstance(run_id, str) and bool(_RUN_ID_PATTERN.match(run_id)) and ".." not in run_id
++
++
++def _validated_files(payload: Any) -> Optional[dict]:
++    if not isinstance(payload, Mapping):
++        return None
++    if payload.get("version") != GITHUB_LAUNCHER_PAYLOAD_VERSION:
++        return None
++    files = payload.get("files")
++    if not isinstance(files, Mapping):
++        return None
++    if set(files.keys()) != GITHUB_LAUNCHER_ALLOWED_FILES:
++        return None
++    total = 0
++    staged: dict = {}
++    for name in sorted(GITHUB_LAUNCHER_ALLOWED_FILES):
++        body = files.get(name)
++        if not isinstance(body, str) or not body:
++            return None
++        size = len(body.encode("utf-8"))
++        if size > GITHUB_LAUNCHER_MAX_FILE_BYTES:
++            return None
++        total += size
++        staged[name] = body
++    if total > GITHUB_LAUNCHER_MAX_TOTAL_BYTES:
++        return None
++    return staged
++
++
++def _stage_launcher(directory: str, files: dict) -> dict:
++    managed_path = _managed_path(directory)
++    profile = _profile_text(managed_path)
++    staged = dict(files)
++    for name in GITHUB_LAUNCHER_PROFILE_FILES:
++        staged[name] = profile
++    _write_files(directory, staged)
++    config_directory = os.path.join(directory, "gh-config")
++    os.makedirs(config_directory, mode=0o700, exist_ok=True)
++    return {
++        GITHUB_LAUNCHER_DIR_NAME: directory,
++        "PATH": managed_path,
++        "ZDOTDIR": directory,
++        "BASH_ENV": os.path.join(directory, ".bashrc"),
++        "GH_CONFIG_DIR": config_directory,
++    }
++
++
++def _managed_path(directory: str) -> str:
++    base = strip_github_launcher_path(os.environ.get("PATH", ""))
++    base = os.pathsep.join(dict.fromkeys(part for part in base.split(os.pathsep) if part and part != directory))
++    return f"{directory}:{base}" if base else directory
++
++
++def _profile_text(managed_path: str) -> str:
++    # Same text the board stages for a local/SSH target: restore the managed
++    # PATH after a login shell reordered it, then drop the empty GIT_AUTHOR/
++    # GIT_COMMITTER placeholders the environment merge leaves behind (Git would
++    # treat them as an explicit empty author).
++    clear = "".join(
++        'if [ -z "${%s-}" ]; then unset %s; fi\n' % (key, key)
++        for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")
++    )
++    return "export PATH=%s\n%s" % (_shell_quote(managed_path), clear)
++
++
++def _shell_quote(value: str) -> str:
++    return "'%s'" % value.replace("'", "'\\''")
++
++
++def _write_files(directory: str, files: dict) -> None:
++    os.makedirs(directory, mode=0o700, exist_ok=True)
++    try:
++        os.chmod(directory, 0o700)
++    except OSError:
++        pass
++    for name, body in files.items():
++        path = os.path.join(directory, name)
++        with open(path, "w", encoding="utf-8") as handle:
++            handle.write(body)
++        os.chmod(path, 0o700)
+\ No newline at end of file

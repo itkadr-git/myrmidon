@@ -42,7 +42,10 @@
 # before the first docker call, so an unusable token file fails early — and not
 # while waiting for health, after Postgres and the dump are already up.
 #
-# The stack is removed on exit; MYRMIDON_PREDEPLOY_KEEP=1 keeps it and prints
+# The stack is removed on exit — containers, the network and the copy's data
+# volume (myr-predeploy-dbvol-<digest8>-<pid>, DEPLOY-HYGIENE: an anonymous
+# volume would survive `docker rm -f` and stay on the disk forever).
+# MYRMIDON_PREDEPLOY_KEEP=1 keeps it and prints
 # the container names instead. The production DATABASE_URL of the settings file
 # is ignored on purpose: the throwaway board talks to the copy only.
 set -euo pipefail
@@ -90,6 +93,7 @@ health_timeout="${MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC:-${HEALTH_TIMEOUT_SEC}}"
 keep="${MYRMIDON_PREDEPLOY_KEEP:-0}"
 company_id="${BOARD_COMPANY_ID:-}"
 token_file="${MYRMIDON_PREDEPLOY_TOKEN_FILE:-${HEALTH_TOKEN_FILE:-${BOARD_TOKEN_FILE:-}}}"
+master_key_file="${MYRMIDON_PREDEPLOY_MASTER_KEY_FILE:-}"
 api_paths="${MYRMIDON_PREDEPLOY_API_PATHS:-/api/health,/api/companies/:company:/attention,/api/companies/:company:/issues?limit=1,/api/companies/:company:/agents,/api/companies/:company:/dashboard}"
 
 db_ready_command="${MYRMIDON_PREDEPLOY_DB_READY_COMMAND:-}"
@@ -109,6 +113,45 @@ restore_command="${MYRMIDON_PREDEPLOY_RESTORE_COMMAND:-}"
 # shellcheck disable=SC2016  # the quotes are part of the command the operator overrides
 [[ -n "$restore_command" ]] || restore_command='docker exec -i -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" pg_restore -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" --no-owner --no-acl < "$DUMP_FILE"'
 
+# myrmidon(PREDEPLOY-ANALYZE): pg_restore loads rows but not planner statistics,
+# so the planner of a fresh copy works on default estimates. The issues list
+# then exceeded the 30 s route budget (rc.8 stopped at 07.10 while the same route answered on
+# production). ANALYZE is a step of its own, after ANY restore command, so an
+# overridden MYRMIDON_PREDEPLOY_RESTORE_COMMAND gets the statistics too.
+analyze_command="${MYRMIDON_PREDEPLOY_ANALYZE_COMMAND:-}"
+# shellcheck disable=SC2016  # the quotes are part of the command the operator overrides
+[[ -n "$analyze_command" ]] || analyze_command='docker exec -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" psql -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" -c ANALYZE'
+
+# myrmidon(PREDEPLOY-PG-COMPAT): the board's database may live on a SHARED
+# PostgreSQL server (the 1.6.5 decision: PostgreSQL 18, its own database and
+# role; the same server serves other products), so the throwaway copy must
+# match the server the production dump came from. Two comparisons, both made
+# before the restore (the check refuses BEFORE the window either way):
+#   * the major version: the pg_dump version recorded in the dump's own
+#     archive header (pg_restore --list prints it as `; Dumped by pg_dump
+#     version …`, older clients as `; Saved in: …`) must equal the copy's
+#     server major — an older copy cannot read a newer dump and is refused; a
+#     newer copy is warned about, never refused, because the 1.6.5 migration
+#     deploy dumps the OLD server and restores into the new PostgreSQL 18;
+#   * the extensions: every extension the dump restores (the TOC lines pg_restore
+#     --list prints as `170; 3079 12350 EXTENSION - vector owner`, from
+#     _printTocEntry's `%d; %u %u %s %s %s %s`) must be available in the copy
+#     (SELECT name FROM pg_available_extensions) — the board restores and
+#     reads with them (vector since migration 0051, fuzzystrmatch since 0080)
+#     and a plain postgres image does not carry pgvector, which is why the
+#     deploy example defaults the copy to pgvector/pgvector:pg18. After the
+#     restore the same names must be live in pg_extension. A dump whose
+#     client recorded no extension entries (an old pg_dump) is checked by
+#     the board schema's own CREATE EXTENSION statements instead, with a
+#     warning that the TOC gave nothing to compare.
+# MYRMIDON_PREDEPLOY_PG_COMPAT=off skips the comparison for a deliberate
+# mismatch; the reason is still logged.
+pg_compat="${MYRMIDON_PREDEPLOY_PG_COMPAT:-check}"
+case "$pg_compat" in
+  check|off) ;;
+  *) die "MYRMIDON_PREDEPLOY_PG_COMPAT must be 'check' or 'off' (got: $pg_compat); nothing was changed" ;;
+esac
+
 # Fail closed: without these the step would quietly prove nothing.
 [[ -n "$postgres_image" ]] || die "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE is required: the check restores the predeploy dump into its own Postgres (set MYRMIDON_PREDEPLOY_CHECK=0 to deploy without the check); nothing was changed"
 [[ -n "$board_env_file" ]] || die "MYRMIDON_PREDEPLOY_BOARD_ENV_FILE is required: the throwaway board needs the board's own environment (secrets, tokens) to start like the production board; nothing was changed"
@@ -123,6 +166,19 @@ if [[ -n "$token_file" ]]; then
   [[ -f "$token_file" ]] || die "MYRMIDON_PREDEPLOY_TOKEN_FILE is set but is not a file: $token_file (an input of the predeploy check: the token is read when the routes are walked); nothing was changed"
   [[ -r "$token_file" ]] || die "MYRMIDON_PREDEPLOY_TOKEN_FILE is set but is not readable: $token_file (an input of the predeploy check: the token is read when the routes are walked); nothing was changed"
   [[ -s "$token_file" ]] || die "MYRMIDON_PREDEPLOY_TOKEN_FILE is set but is empty: $token_file (an input of the predeploy check: an empty token cannot be sent, so the route walk would only answer 401/403); nothing was changed"
+fi
+# myrmidon(PREDEPLOY-MASTER-KEY): the copy has no /paperclip volume, so without the
+# production master key it creates its own and every stored secret fails with
+# "Secret decryption failed". The key is mounted READ-ONLY, as a single file;
+# its content is never read or printed here.
+board_key_args=()
+if [[ -n "$master_key_file" ]]; then
+  [[ -f "$master_key_file" ]] || die "MYRMIDON_PREDEPLOY_MASTER_KEY_FILE is set but is not a file: $master_key_file (an input of the predeploy check: it is mounted read-only into the throwaway board); nothing was changed"
+  [[ -r "$master_key_file" ]] || die "MYRMIDON_PREDEPLOY_MASTER_KEY_FILE is set but is not readable: $master_key_file (an input of the predeploy check: it is mounted read-only into the throwaway board); nothing was changed"
+  [[ -s "$master_key_file" ]] || die "MYRMIDON_PREDEPLOY_MASTER_KEY_FILE is set but is empty: $master_key_file (an empty key cannot decrypt the copy's secrets); nothing was changed"
+  board_key_args=(-v "$master_key_file:/run/myrmidon-predeploy/master.key:ro" -e "PAPERCLIP_SECRETS_MASTER_KEY_FILE=/run/myrmidon-predeploy/master.key")
+else
+  log "PREDEPLOY-DB-CHECK: WARNING: no MYRMIDON_PREDEPLOY_MASTER_KEY_FILE: the throwaway board creates its own secrets master key, so stored secrets fail with 'Secret decryption failed' on the copy and the check can be red for that reason alone"
 fi
 if [[ -n "$dockergate_digest" && -z "$dockergate_env_file" ]]; then
   log "PREDEPLOY-DB-CHECK: WARNING: no MYRMIDON_PREDEPLOY_DOCKERGATE_ENV_FILE: the throwaway dockergate starts with its image defaults; a config it needs (caller mode, volumeRoot, allowed images) must come from MYRMIDON_PREDEPLOY_DOCKERGATE_ARGS"
@@ -139,6 +195,11 @@ network="${MYRMIDON_PREDEPLOY_NETWORK:-myr-predeploy-$suffix}"
 db_ctr="myr-predeploy-db-$suffix"
 dg_ctr="myr-predeploy-dockergate-$suffix"
 board_ctr="myr-predeploy-board-$suffix"
+# DEPLOY-HYGIENE (OPE-5107): the copy's data lives in a NAMED volume of this
+# run, removed by the same trap that removes the containers. An anonymous
+# volume (the image's declared data VOLUME) survives `docker rm -f` and stays on
+# the disk forever — the 3.4/3.6 GB orphans of 05.10 and rc.3.
+db_vol="${MYRMIDON_PREDEPLOY_DB_VOLUME:-myr-predeploy-dbvol-$suffix}"
 board_ref="$MYRMIDON_IMAGE@$board_digest"
 dockergate_ref=""
 [[ -n "$dockergate_digest" ]] && dockergate_ref="ghcr.io/itkadr-git/myrmidon-dockergate@$dockergate_digest"
@@ -152,33 +213,37 @@ if [[ "$DRY_RUN" == "1" ]]; then
   log "dry run: nothing will be changed. Predeploy check plan:"
   plan "0. read the predeploy dump $dump_file ($(wc -c <"$dump_file" | tr -d ' ') bytes) as the production snapshot (read-only)"
   plan "1. docker network create $network (no bot container, no production dockergate on it)"
-  plan "2. docker run -d --name $db_ctr --network $network $postgres_image (database $db_name, user $db_user, generated password)"
-  plan "3. wait for the copy to accept connections, then restore the dump into it"
+  plan "2. docker run -d --name $db_ctr --network $network -v $db_vol:<the image's data VOLUME> $postgres_image (database $db_name, user $db_user, generated password)"
+  plan "3. wait for the copy to accept connections, then check the copy against the dump (PREDEPLOY-PG-COMPAT, MYRMIDON_PREDEPLOY_PG_COMPAT=$pg_compat): the pg_dump major recorded in the dump header must equal the copy's server major, and every extension the dump restores must be available in the copy image"
+  plan "3.1 restore the dump into the copy"
   if [[ -n "$dockergate_ref" ]]; then
     plan "4. docker run -d --name $dg_ctr --network $network $dockergate_ref (the NEW dockergate of this release)"
   else
     plan "4. no dockergate digest given: the board is checked without the new dockergate (the release names none)"
   fi
-  plan "5. docker run -d --name $board_ctr --network $network -p 127.0.0.1:$board_port:3100 $board_ref (production DATABASE_URL ignored; the copy's URL is set)"
+  plan "5. docker run -d --name $board_ctr --network $network ${master_key_file:+(production master key file mounted read-only) }-p 127.0.0.1:$board_port:3100 $board_ref (production DATABASE_URL ignored; the copy's URL is set)"
   plan "6. wait for http://127.0.0.1:$board_port/api/health: status ok, version/commit of $board_ref (timeout ${health_timeout}s)"
   plan "7. walk ${api_paths//:company:/$company_id} against the copy"
-  plan "8. remove the throwaway stack (network $network, $db_ctr, $dg_ctr, $board_ctr)"
+  plan "8. remove the throwaway stack (network $network, $db_ctr, $dg_ctr, $board_ctr, volume $db_vol)"
   plan "any failure stops deploy.sh BEFORE the maintenance window; production is never touched"
   exit 0
 fi
 
 log "PREDEPLOY-DB-CHECK: proving $board_ref against a copy of the production database (dump: $dump_file)"
 
-# The throwaway stack never outlives this run.
+# The throwaway stack never outlives this run — and neither does the copy's
+# data volume (DEPLOY-HYGIENE): the trap runs on success, on failure and on an
+# interrupt alike.
 cleanup() {
   local names=() n
   for n in "$board_ctr" "$dg_ctr" "$db_ctr"; do [[ -n "$n" ]] && names+=("$n"); done
   if [[ "$keep" == "1" ]]; then
-    log "PREDEPLOY-DB-CHECK: keeping the throwaway stack (MYRMIDON_PREDEPLOY_KEEP=1): network=$network db=$db_ctr dockergate=${dg_ctr:-<none>} board=$board_ctr (port $board_port)"
+    log "PREDEPLOY-DB-CHECK: keeping the throwaway stack (MYRMIDON_PREDEPLOY_KEEP=1): network=$network db=$db_ctr dockergate=${dg_ctr:-<none>} board=$board_ctr (port $board_port) volume=$db_vol"
     return 0
   fi
   docker rm -f "${names[@]}" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
+  docker volume rm -f "$db_vol" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -212,8 +277,18 @@ export MYR_PREDEPLOY_DB_PASSWORD="$db_password"
 export DUMP_FILE="$dump_file"
 
 log "PREDEPLOY-DB-CHECK: 2/6 copy of the production database ($postgres_image)"
+# The named volume goes exactly where the image declares its data VOLUME:
+# postgres 17 and older declare /var/lib/postgresql/data, postgres 18+ declare
+# /var/lib/postgresql and refuse to start on a mount at .../data. Mounting
+# anywhere else would leave an anonymous volume behind (OPE-5107).
+image_ref="${postgres_image%% *}"
+docker image inspect "$image_ref" >/dev/null 2>&1 || docker pull -q "$image_ref" >/dev/null \
+  || die "cannot pull the copy's Postgres image ($image_ref); production was not touched"
+db_mount="$(docker image inspect -f '{{range $k, $v := .Config.Volumes}}{{$k}}{{"\n"}}{{end}}' "$image_ref" | grep -m1 '^/var/lib/postgresql' || true)"
+db_mount="${db_mount:-/var/lib/postgresql/data}"
 # shellcheck disable=SC2086  # the operator's extra docker arguments are word-split on purpose
 docker run -d --name "$db_ctr" --network "$network" \
+  -v "$db_vol:$db_mount" \
   -e POSTGRES_DB="$db_name" -e POSTGRES_USER="$db_user" -e POSTGRES_PASSWORD="$db_password" \
   $postgres_image >/dev/null || die "cannot start the throwaway Postgres ($postgres_image); production was not touched"
 
@@ -225,8 +300,143 @@ until bash -c "$db_ready_command" >/dev/null 2>&1; do
   fi
   sleep "$POLL_INTERVAL_SEC"
 done
+
+# --- PREDEPLOY-PG-COMPAT: the copy must match the server the dump came from ---
+# Everything here reads the COPY (docker exec on $db_ctr) and the dump that is
+# already on disk; production is not involved. A refusal stops deploy.sh
+# before the window, exactly like every other failure of this check.
+dump_toc=""
+dump_major=""
+dump_exts=""
+copy_major=""
+available_exts=""
+copy_version_reason=""
+copy_exts_reason=""
+# myrmidon(PREDEPLOY-PG-COMPAT): one psql query against the copy. The rc.11/rc.12
+# deploys (08.10) showed the old inline probes proving nothing twice over: a
+# failed `docker exec ... 2>/dev/null || true` left no trace (the extension list
+# WARNING never said why), and a single failed connection right after the
+# readiness wait — auth against a role the restore has not created yet, or the
+# server still reloading — was enough to lose the whole list. The answer goes
+# to the probe's output file, the psql error text to its error file; a failing
+# query is retried three times POLL_INTERVAL apart, and the caller that still
+# gets nothing names the captured error in its WARNING instead of /dev/null.
+pg_probe_out="$STATE_DIR/predeploy-pg-probe.out"
+pg_probe_err="$STATE_DIR/predeploy-pg-probe.err"
+copy_probe() {
+  local query="$1" attempt rc
+  : >"$pg_probe_err"
+  for attempt in 1 2 3; do
+    rc=0
+    docker exec -e "PGPASSWORD=$db_password" "$db_ctr" psql -U "$db_user" -d "$db_name" -Atc "$query" \
+        >"$pg_probe_out" 2>>"$pg_probe_err" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then return 0; fi
+    if [[ "$attempt" -lt 3 ]]; then sleep "$POLL_INTERVAL_SEC"; fi
+  done
+  [[ -s "$pg_probe_err" ]] || printf 'psql exited with code %s and printed no error\n' "$rc" >"$pg_probe_err"
+  return 1
+}
+probe_reason() { head -c 300 "$pg_probe_err" | tr '\n' ' '; }
+if [[ "$pg_compat" == "off" ]]; then
+  log "PREDEPLOY-PG-COMPAT: disabled (MYRMIDON_PREDEPLOY_PG_COMPAT=off): the copy is NOT compared with the dump's server major or extensions"
+else
+  # The dump's own TOC (pg_restore --list, no connection): the server the dump
+  # came from and every extension it will restore. The header prints them as
+  # `; Dumped from database version: 18.0` (the production server) and
+  # `; Dumped by pg_dump version: 18.0` (the client that wrote it); the
+  # server line wins, the client line is the fallback for old dumps without
+  # it. A Debian/PGDG server reports its version with the package tail —
+  # `18 (Debian 18.6-1.pgdg12+2)` — so the parsers below keep ONLY the leading
+  # major digits and drop everything after them (the rc.11/rc.12 deploys lost
+  # the comparison exactly there: an unanchored sed left the whole tail in
+  # `dump_major` and `((copy_major < dump_major))` died with a bash syntax
+  # error, silently skipping the check). Extension entries are
+  # `<dumpId>; <tableoid> <oid> EXTENSION <schema> <name> <owner>`. A plain-SQL
+  # dump is not an archive: pg_restore --list fails, the TOC stays empty and
+  # the `-- Dumped … version …` comments and CREATE EXTENSION lines of
+  # the text dump are read from the file itself instead.
+  dump_toc="$(docker exec -i "$db_ctr" pg_restore --list <"$dump_file" 2>/dev/null || true)"
+  # `major_digits` keeps the leading digits of a version string and drops the
+  # package tail: a Debian/PGDG server reports `18 (Debian 18.6-1.pgdg12+2)`
+  # and an Ubuntu one `17.2 (Ubuntu 17.2-1.pgdg22.04+1)`; the raw text must
+  # never reach an arithmetic comparison.
+  major_digits() { sed -n 's/^\([0-9][0-9]*\).*/\1/p' <<<"$1" | head -n1; }
+  dump_major="$(major_digits "$(sed -n 's/^; *Dumped from database version: *\(.*\)/\1/p' <<<"$dump_toc" | head -n1)")"
+  [[ -n "$dump_major" ]] || dump_major="$(major_digits "$(sed -n 's/^; *Dumped by pg_dump version: *\(.*\)/\1/p' <<<"$dump_toc" | head -n1)")"
+  [[ -n "$dump_major" ]] || dump_major="$(grep -m1 -oE '^-- Dumped from database version [0-9]+' "$dump_file" 2>/dev/null | grep -oE '[0-9]+$' || true)"
+  [[ -n "$dump_major" ]] || dump_major="$(grep -m1 -oE '^-- Dumped by pg_dump version [0-9]+' "$dump_file" 2>/dev/null | grep -oE '[0-9]+$' || true)"
+  dump_exts="$(sed -n 's/^[0-9][0-9]*;[[:space:]]*[0-9][0-9]*[[:space:]]*[0-9][0-9]*[[:space:]]*EXTENSION[[:space:]]*[^[:space:]]*[[:space:]]*\([^[:space:]]*\).*/\1/p' <<<"$dump_toc" | sort -u)"
+  if [[ -z "$dump_exts" && -z "$dump_toc" ]]; then
+    dump_exts="$( { grep -oiE 'CREATE EXTENSION (IF NOT EXISTS )?[a-z0-9_]+' "$dump_file" 2>/dev/null || true; } | awk '{print $NF}' | sort -u)"
+  fi
+  copy_major=""
+  if copy_probe 'SHOW server_version'; then
+    copy_major="$(major_digits "$(head -n1 "$pg_probe_out")")"
+  else
+    copy_version_reason="$(probe_reason)"
+  fi
+  if [[ -n "$dump_major" && -n "$copy_major" ]]; then
+    if ((copy_major < dump_major)); then
+      die "PREDEPLOY-PG-COMPAT: the production dump was written by pg_dump $dump_major, the copy runs $copy_major ($postgres_image): pg_restore cannot read a newer dump. Point MYRMIDON_PREDEPLOY_POSTGRES_IMAGE at the production server's major (shared PostgreSQL 18 -> pgvector/pgvector:pg18); nothing was restored"
+    fi
+    if ((copy_major > dump_major)); then
+      # The migration window: the 1.6.5 deploy moves the board from the built-in
+      # postgres container to the shared PostgreSQL 18 — the dump still comes
+      # from the OLD server while the copy already runs 18, and restoring an
+      # older-major dump into a newer server is exactly the upgrade path. Once
+      # production answers through DATABASE_URL, the majors match again; until
+      # then a newer copy is a loud warning, not a refusal.
+      log "PREDEPLOY-PG-COMPAT: WARNING: the copy runs $copy_major but the dump came from $dump_major — acceptable only while the board migrates onto the newer server; after the migration the production dump must come from the same major as MYRMIDON_PREDEPLOY_POSTGRES_IMAGE"
+    else
+      log "PREDEPLOY-PG-COMPAT: the copy is Postgres $copy_major, the same major the production dump came from"
+    fi
+  else
+    log "PREDEPLOY-PG-COMPAT: WARNING: the dump's or the copy's server major could not be read (dump: '${dump_major:-<none>}', copy: '${copy_major:-<none>}${copy_version_reason:+; copy probe error: $copy_version_reason}'); the version comparison is skipped — an incompatible copy will still fail the restore"
+  fi
+  if [[ -n "$dump_exts" ]]; then
+    available_exts=""
+    if copy_probe 'SELECT name FROM pg_available_extensions'; then
+      available_exts="$(cat "$pg_probe_out")"
+    else
+      copy_exts_reason="$(probe_reason)"
+    fi
+    missing=()
+    for want in $dump_exts; do
+      [[ -n "$available_exts" && -n "$want" ]] || continue
+      grep -qxF "$want" <<<"$available_exts" || missing+=("$want")
+    done
+    if ((${#missing[@]} > 0)); then
+      die "PREDEPLOY-PG-COMPAT: the production dump restores extension(s) ${missing[*]}, the copy image ($postgres_image) does not provide them: use a Postgres image with those extensions (pgvector/pgvector:pg18 for the shared PostgreSQL 18 server — the board needs vector since migration 0051); nothing was restored"
+    elif [[ -z "$available_exts" ]]; then
+      log "PREDEPLOY-PG-COMPAT: WARNING: the copy's extension list could not be read${copy_exts_reason:+ (psql probe failed: $copy_exts_reason)}; the dump needs ${dump_exts//$'\n'/ }; the restore itself fails if an extension is missing"
+    else
+      log "PREDEPLOY-PG-COMPAT: the copy provides every extension the dump restores (${dump_exts//$'\n'/ })"
+    fi
+  else
+    log "PREDEPLOY-PG-COMPAT: the dump records no extensions (an old pg_dump client or a plain dump without CREATE EXTENSION); nothing to compare"
+  fi
+fi
+
 log "PREDEPLOY-DB-CHECK: restoring the predeploy dump into the copy"
 bash -c "$restore_command" >/dev/null || { dump_logs "$db_ctr"; die "cannot restore $dump_file into the throwaway database; production was not touched"; }
+if [[ "$pg_compat" == "check" && -n "$dump_exts" ]]; then
+  # After the restore the required extensions must be LIVE, not only
+  # available: pg_restore runs CREATE EXTENSION, so an absent row means the
+  # copy was not restored the way the dump describes production.
+  live_exts="$(docker exec -e "PGPASSWORD=$db_password" "$db_ctr" psql -U "$db_user" -d "$db_name" -Atc 'SELECT extname FROM pg_extension' 2>/dev/null || true)"
+  not_live=()
+  for want in $dump_exts; do
+    [[ -n "$want" ]] || continue
+    grep -qxF "$want" <<<"$live_exts" || not_live+=("$want")
+  done
+  if ((${#not_live[@]} > 0)); then
+    dump_logs "$db_ctr"
+    die "PREDEPLOY-PG-COMPAT: the dump restores extension(s) ${not_live[*]} but they are not installed in the copy after the restore (SELECT extname FROM pg_extension): the copy does not hold the production data the way production does; production was not touched"
+  fi
+  log "PREDEPLOY-PG-COMPAT: the copy has the dump's extensions installed (${dump_exts//$'\n'/ })"
+fi
+log "PREDEPLOY-DB-CHECK: analyze: collecting planner statistics on the copy (a restored dump has none)"
+bash -c "$analyze_command" >/dev/null || { dump_logs "$db_ctr"; log "PREDEPLOY-DB-CHECK: WARNING: analyze failed on the copy: the board runs on default planner estimates and a slow route may be a false alarm"; }
 
 if [[ -n "$dockergate_ref" ]]; then
   log "PREDEPLOY-DB-CHECK: 3/6 new dockergate of this release next to the copy ($dockergate_ref)"
@@ -241,7 +451,7 @@ fi
 log "PREDEPLOY-DB-CHECK: 4/6 new board on the copy (port 127.0.0.1:$board_port)"
 # shellcheck disable=SC2086  # the operator's extra docker arguments are word-split on purpose
 docker run -d --name "$board_ctr" --network "$network" \
-  --env-file "$env_file" -p "127.0.0.1:$board_port:3100" $board_args \
+  --env-file "$env_file" -p "127.0.0.1:$board_port:3100" ${board_key_args[@]+"${board_key_args[@]}"} $board_args \
   "$board_ref" >/dev/null || { dump_logs "$db_ctr"; die "cannot start the throwaway board ($board_ref); production was not touched"; }
 
 expect_version="$(image_label "$board_ref" org.opencontainers.image.version)"

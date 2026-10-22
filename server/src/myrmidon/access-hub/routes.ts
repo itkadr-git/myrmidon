@@ -46,7 +46,7 @@ import {
 import type { AccessHubHost } from "./types.js";
 import { createFakeDeployPort, type DeployPort, type DeployInput } from "./ssh-deploy.js";
 import { createSshDeployPort, type AdminKeySource } from "./ssh-ops.js";
-import { restartBoundContainers, rotationRestartRuntime, type BotRestartAgent } from "./rotation-restart.js";
+import { rotationRestartRuntime } from "./rotation-restart.js";
 
 export const ACCESS_HUB_ENABLED_ENV = "MYRMIDON_ACCESS_HUB_ENABLED";
 /** Name of the company secret holding the board's private admin ssh key. */
@@ -194,9 +194,11 @@ export function accessHubRoutes(db: Db, deps: AccessHubRoutesDeps = {}) {
           .then((list) => list[0] ?? null);
         if (!agent) continue;
         try {
+          // The runtime adapter takes BotContainerAgent (agentId, adapterType,
+          // adapterConfig) — the company context is resolved inside the
+          // profile compile from the agent row, not from a stub field.
           const result = await runtime.applyNow({
             agentId: agent.id,
-            companyId: "",
             adapterType: agent.adapterType,
             adapterConfig: (agent.adapterConfig ?? {}) as Record<string, unknown>,
           });

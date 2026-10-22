@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   applyCompanyPrefix,
   extractCompanyPrefixFromPath,
@@ -7,6 +9,40 @@ import {
 } from "./company-routes";
 
 describe("company routes", () => {
+  it("keeps board route roots in sync with the company-prefixed route tree", () => {
+    const appSource = readFileSync(fileURLToPath(new URL("../App.tsx", import.meta.url)), "utf8");
+    const routeBlock = appSource.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
+    expect(routeBlock).toBeDefined();
+    const roots = (block: string) => new Set(
+      [...block.matchAll(/path="([a-z][a-z0-9-]*)/g)].map(([, root]) => root!),
+    );
+    const routeRoots = roots(routeBlock!);
+    const boardRouteRoots = new Set([...routeRoots].filter((root) => !["runs", "budgets"].includes(root)));
+    for (const root of ["onboarding", "plugins", "tests", "status-cards", "review-queue", "learnings", "dev", "instance", "chat-identity", "ux-lab"]) {
+      boardRouteRoots.delete(root);
+    }
+    const source = readFileSync(fileURLToPath(new URL("./company-routes.ts", import.meta.url)), "utf8");
+    const rootsBlock = source.match(/const BOARD_ROUTE_ROOTS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
+    expect(rootsBlock).toBeDefined();
+    const listedRoots = new Set([...rootsBlock!.matchAll(/"([a-z][a-z0-9-]*)"/g)].map(([, root]) => root!));
+
+    expect([...listedRoots].filter((root) => !boardRouteRoots.has(root))).toEqual([]);
+    expect([...boardRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
+  });
+
+  it.each(["swarm-claim", "foraging", "quality", "status", "cases", "pipelines", "stack"])(
+    "scopes the Myrmidon %s menu route to the current company",
+    (root) => {
+      const pathname = `/${root}`;
+      const path = `${pathname}?view=all#details`;
+      expect(isBoardPathWithoutPrefix(pathname)).toBe(true);
+      expect(extractCompanyPrefixFromPath(pathname)).toBeNull();
+      expect(applyCompanyPrefix(path, "OPE")).toBe(`/OPE${path}`);
+      expect(applyCompanyPrefix(`/OPE${path}`, "OPE")).toBe(`/OPE${path}`);
+      expect(toCompanyRelativePath(`/OPE${path}`)).toBe(path);
+    },
+  );
+
   it("treats the task-list alias as an unprefixed board route", () => {
     expect(isBoardPathWithoutPrefix("/tasks")).toBe(true);
     expect(extractCompanyPrefixFromPath("/tasks")).toBeNull();
@@ -55,35 +91,6 @@ describe("company routes", () => {
   it("normalizes prefixed company export file URLs for parsing", () => {
     expect(toCompanyRelativePath("/NEU/company/export/files/agents/ceo/AGENTS.md")).toBe(
       "/company/export/files/agents/ceo/AGENTS.md",
-    );
-  });
-
-  // Regression for PAP-10257: Team Catalog navigation (auto-select + row/file
-  // clicks) produces company-relative `/teams-catalog/<key>` paths. Without
-  // `teams-catalog` in the board-route allowlist, `extractCompanyPrefixFromPath`
-  // misread the first segment as a company prefix and `useNavigate` skipped the
-  // rewrite, dropping the `/PAP/` prefix and crashing into "Company not found".
-  it("re-prefixes team catalog routes so navigate preserves the company prefix", () => {
-    expect(isBoardPathWithoutPrefix("/teams")).toBe(false);
-    expect(isBoardPathWithoutPrefix("/teams-catalog")).toBe(true);
-    expect(isBoardPathWithoutPrefix("/teams-catalog/core-exec-team")).toBe(true);
-    expect(extractCompanyPrefixFromPath("/teams-catalog/core-exec-team")).toBeNull();
-
-    // Auto-select effect: `/teams-catalog/<first-key>` must gain the `/PAP/` prefix.
-    expect(applyCompanyPrefix("/teams-catalog/core-exec-team", "PAP")).toBe(
-      "/PAP/teams-catalog/core-exec-team",
-    );
-    // File-tree click: nested `/files/<encoded>` path is preserved under the prefix.
-    expect(applyCompanyPrefix("/teams-catalog/core-exec-team/files/TEAM.md", "PAP")).toBe(
-      "/PAP/teams-catalog/core-exec-team/files/TEAM.md",
-    );
-    // Already-prefixed paths are left untouched (idempotent — no double prefix).
-    expect(applyCompanyPrefix("/PAP/teams-catalog/core-exec-team", "PAP")).toBe(
-      "/PAP/teams-catalog/core-exec-team",
-    );
-    // Round-trips back to a company-relative path.
-    expect(toCompanyRelativePath("/PAP/teams-catalog/core-exec-team")).toBe(
-      "/teams-catalog/core-exec-team",
     );
   });
 

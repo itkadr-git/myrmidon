@@ -66,6 +66,8 @@ import {
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { executionWorkspaceService, readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
+// myrmidon(B1c): product name in user-facing workspace reconciliation texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
@@ -101,6 +103,7 @@ import {
   type PersistedExposureRowSnapshot,
 } from "./runtime-exposure/port-reservation.js";
 import { resolveTailscaleDnsName } from "./runtime-exposure/tailscale-hostname.js";
+import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
@@ -326,7 +329,7 @@ async function isLoopbackPortAvailable(port: number): Promise<boolean> {
 }
 
 function resolveTailscaleBrokerSocketPath(): string {
-  return process.env.PAPERCLIP_TAILSCALE_BROKER_SOCKET?.trim() || DEFAULT_TAILSCALE_BROKER_SOCKET;
+  return readProductEnv("TAILSCALE_BROKER_SOCKET")?.trim() || DEFAULT_TAILSCALE_BROKER_SOCKET;
 }
 
 function defaultWorkspaceRuntimeExposureDeps(): WorkspaceRuntimeExposureDeps {
@@ -384,7 +387,7 @@ export function setWorkspaceRuntimeExposureDepsForTests(deps: WorkspaceRuntimeEx
 export type ManagedRuntimeHttpsMode = "auto" | "off" | "force";
 
 export function resolveManagedRuntimeHttpsMode(): ManagedRuntimeHttpsMode {
-  const raw = process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS?.trim().toLowerCase();
+  const raw = readProductEnv("MANAGED_RUNTIME_HTTPS")?.trim().toLowerCase();
   if (raw === "off" || raw === "false" || raw === "0") return "off";
   if (raw === "force") return "force";
   return "auto";
@@ -679,7 +682,7 @@ export async function ensureServerWorkspaceLinksCurrent(
 export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("PAPERCLIP_")) {
+    if (key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_")) { // myrmidon(REBRAND-C)
       delete env[key];
     }
   }
@@ -1343,7 +1346,7 @@ function explainGitWorktreeBranchIncoherence(input: {
 }) {
   const actualBranch = formatBranchForMessage(input.actualBranchName);
   if (!input.expectedHeadSha || !input.actualHeadSha) {
-    return `Paperclip could not determine branch ancestry because the recorded branch "${input.expectedBranchName}" or checked-out branch "${actualBranch}" is missing a resolvable HEAD commit.`;
+    return `${PN} could not determine branch ancestry because the recorded branch "${input.expectedBranchName}" or checked-out branch "${actualBranch}" is missing a resolvable HEAD commit.`;
   }
   if (input.sameHead) {
     return `The recorded branch "${input.expectedBranchName}" and checked-out branch "${actualBranch}" resolve to the same commit, so the mismatch is branch metadata rather than commit divergence.`;
@@ -1352,9 +1355,9 @@ function explainGitWorktreeBranchIncoherence(input: {
     return `The recorded branch "${input.expectedBranchName}" is an ancestor of the checked-out branch "${actualBranch}", so the checked-out branch is forward of the recorded branch.`;
   }
   if (input.ancestryVerdict === "diverged") {
-    return `The recorded branch "${input.expectedBranchName}" is not an ancestor of the checked-out branch "${actualBranch}", so Paperclip cannot prove a forward-only reconciliation.`;
+    return `The recorded branch "${input.expectedBranchName}" is not an ancestor of the checked-out branch "${actualBranch}", so ${PN} cannot prove a forward-only reconciliation.`;
   }
-  return `Paperclip could not determine whether the checked-out branch "${actualBranch}" is forward of the recorded branch "${input.expectedBranchName}".`;
+  return `${PN} could not determine whether the checked-out branch "${actualBranch}" is forward of the recorded branch "${input.expectedBranchName}".`;
 }
 
 async function inspectGitWorktreeBranchIncoherence(input: {
@@ -1790,7 +1793,7 @@ async function quarantineDirtyWorktreeBranchIncoherence(input: {
       args: [
         "commit",
         "-m",
-        "Paperclip dirty workspace rescue",
+        `${PN} dirty workspace rescue`,
         "-m",
         [
           `Source-Issue: ${input.evidence.sourceIdentifier ?? input.evidence.sourceIssueId ?? "unknown"}`,
@@ -2182,7 +2185,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
   ) {
     const reason = evidence.provenance.expectedBranchExists
       ? "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch."
-      : "Automatic forward reconciliation: the recorded branch no longer exists, so Paperclip adopted the clean checked-out branch.";
+      : `Automatic forward reconciliation: the recorded branch no longer exists, so ${PN} adopted the clean checked-out branch.`;
     if (input.executionWorkspaceId && input.persistForwardReconcile !== false) {
       if (!input.db) {
         evidence.safeRepair.reason = "forward reconciliation requires database access to update the execution workspace record";
@@ -2281,7 +2284,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
       branchName: currentBranch,
       reconciledForward: false,
       warnings: [
-        `${warningPrefix} The checked-out branch contains the recorded branch plus newer commits, so Paperclip adopted it for subsequent runs.`,
+        `${warningPrefix} The checked-out branch contains the recorded branch plus newer commits, so ${PN} adopted it for subsequent runs.`,
       ],
     };
   }
@@ -2331,7 +2334,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
       branchName: expectedBranchName,
       reconciledForward: false,
       warnings: [
-        `${warningPrefix} The detached HEAD contained the recorded branch plus newer commits, so Paperclip moved the recorded branch to that HEAD.`,
+        `${warningPrefix} The detached HEAD contained the recorded branch plus newer commits, so ${PN} moved the recorded branch to that HEAD.`,
       ],
     };
   }
@@ -2882,25 +2885,25 @@ function buildWorkspaceCommandEnv(input: {
   created: boolean;
 }) {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  env.PAPERCLIP_WORKSPACE_CWD = input.worktreePath;
-  env.PAPERCLIP_WORKSPACE_PATH = input.worktreePath;
-  env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = input.worktreePath;
-  env.PAPERCLIP_WORKSPACE_BRANCH = input.branchName;
-  env.PAPERCLIP_WORKSPACE_BASE_CWD = input.base.baseCwd;
-  env.PAPERCLIP_WORKSPACE_REPO_ROOT = input.repoRoot;
-  env.PAPERCLIP_WORKSPACE_SOURCE = input.base.source;
-  env.PAPERCLIP_WORKSPACE_REPO_REF = input.base.repoRef ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_URL = input.base.repoUrl ?? "";
-  env.PAPERCLIP_WORKSPACE_CREATED = input.created ? "true" : "false";
-  env.PAPERCLIP_PROJECT_ID = input.base.projectId ?? "";
-  env.PAPERCLIP_PROJECT_WORKSPACE_ID = input.base.workspaceId ?? "";
-  env.PAPERCLIP_AGENT_ID = input.agent.id ?? "";
-  env.PAPERCLIP_AGENT_NAME = input.agent.name;
-  env.PAPERCLIP_COMPANY_ID = input.agent.companyId;
-  env.PAPERCLIP_ISSUE_ID = input.issue?.id ?? "";
-  env.PAPERCLIP_ISSUE_IDENTIFIER = input.issue?.identifier ?? "";
-  env.PAPERCLIP_ISSUE_TITLE = input.issue?.title ?? "";
-  env.PAPERCLIP_ISSUE_WORK_MODE = input.issue?.workMode ?? "";
+  writeProductEnv(env, "WORKSPACE_CWD", input.worktreePath); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_PATH", input.worktreePath); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_WORKTREE_PATH", input.worktreePath); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_BRANCH", input.branchName); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_BASE_CWD", input.base.baseCwd); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_REPO_ROOT", input.repoRoot); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_SOURCE", input.base.source); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_REPO_REF", input.base.repoRef ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_REPO_URL", input.base.repoUrl ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_CREATED", input.created ? "true" : "false"); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "PROJECT_ID", input.base.projectId ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "PROJECT_WORKSPACE_ID", input.base.workspaceId ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "AGENT_ID", input.agent.id ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "AGENT_NAME", input.agent.name); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "COMPANY_ID", input.agent.companyId); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "ISSUE_ID", input.issue?.id ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "ISSUE_IDENTIFIER", input.issue?.identifier ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "ISSUE_TITLE", input.issue?.title ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "ISSUE_WORK_MODE", input.issue?.workMode ?? ""); // myrmidon(REBRAND-C)
   return env;
 }
 
@@ -3162,18 +3165,17 @@ function buildExecutionWorkspaceCleanupEnv(input: {
   projectWorkspaceCwd?: string | null;
 }) {
   const env: NodeJS.ProcessEnv = sanitizeRuntimeServiceBaseEnv(process.env);
-  env.PAPERCLIP_WORKSPACE_CWD = input.workspace.cwd ?? "";
-  env.PAPERCLIP_WORKSPACE_PATH = input.workspace.cwd ?? "";
-  env.PAPERCLIP_WORKSPACE_WORKTREE_PATH =
-    input.workspace.providerRef ?? input.workspace.cwd ?? "";
-  env.PAPERCLIP_WORKSPACE_BRANCH = input.workspace.branchName ?? "";
-  env.PAPERCLIP_WORKSPACE_BASE_CWD = input.projectWorkspaceCwd ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_ROOT = input.projectWorkspaceCwd ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_URL = input.workspace.repoUrl ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_REF = input.workspace.baseRef ?? "";
-  env.PAPERCLIP_PROJECT_ID = input.workspace.projectId ?? "";
-  env.PAPERCLIP_PROJECT_WORKSPACE_ID = input.workspace.projectWorkspaceId ?? "";
-  env.PAPERCLIP_ISSUE_ID = input.workspace.sourceIssueId ?? "";
+  writeProductEnv(env, "WORKSPACE_CWD", input.workspace.cwd ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_PATH", input.workspace.cwd ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_WORKTREE_PATH", input.workspace.providerRef ?? input.workspace.cwd ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_BRANCH", input.workspace.branchName ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_BASE_CWD", input.projectWorkspaceCwd ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_REPO_ROOT", input.projectWorkspaceCwd ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_REPO_URL", input.workspace.repoUrl ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_REPO_REF", input.workspace.baseRef ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "PROJECT_ID", input.workspace.projectId ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "PROJECT_WORKSPACE_ID", input.workspace.projectWorkspaceId ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "ISSUE_ID", input.workspace.sourceIssueId ?? ""); // myrmidon(REBRAND-C)
   return env;
 }
 
@@ -5208,11 +5210,11 @@ function isPaperclipDevRuntimeService(input: { serviceName?: string | null; comm
   );
 }
 
-export const MANAGED_RUNTIME_PUBLIC_URL_ENV = "PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL";
+export const MANAGED_RUNTIME_PUBLIC_URL_ENV = "MYRMIDON_MANAGED_RUNTIME_PUBLIC_URL";
 
 const EXPLICIT_RUNTIME_ORIGIN_ENV_KEYS = [
-  "PAPERCLIP_PUBLIC_URL",
-  "PAPERCLIP_AUTH_PUBLIC_BASE_URL",
+  "PUBLIC_URL",
+  "AUTH_PUBLIC_BASE_URL",
   "BETTER_AUTH_URL",
   "BETTER_AUTH_BASE_URL",
 ] as const;
@@ -5228,7 +5230,7 @@ function isLoopbackRuntimeHostname(hostname: string) {
 function managedRuntimeOriginError(serviceName: string, reason: string) {
   return new Error(
     `Runtime service "${serviceName}" cannot derive a browser-reachable OAuth callback origin: ${reason}. `
-    + "Configure PAPERCLIP_PUBLIC_URL or BETTER_AUTH_URL for this service, or publish an HTTPS expose.urlTemplate "
+    + "Configure MYRMIDON_PUBLIC_URL or BETTER_AUTH_URL for this service, or publish an HTTPS expose.urlTemplate "
     + "that the operator's browser can reach (loopback HTTP is also supported).",
   );
 }
@@ -5283,7 +5285,9 @@ export function resolveManagedPaperclipRuntimePublicOrigin(input: {
   exposedUrlTemplate?: string | null;
 }) {
   if (!isPaperclipDevRuntimeService(input)) return null;
-  if (EXPLICIT_RUNTIME_ORIGIN_ENV_KEYS.some((key) => input.environment[key]?.trim())) return null;
+  if (EXPLICIT_RUNTIME_ORIGIN_ENV_KEYS.some((key) => readProductEnvFrom(input.environment, key)?.trim())
+    || input.environment.BETTER_AUTH_URL?.trim()
+    || input.environment.BETTER_AUTH_BASE_URL?.trim()) return null;
   if (!input.exposedUrl) {
     throw managedRuntimeOriginError(input.serviceName, "the managed service does not report an exposed URL");
   }
@@ -6146,7 +6150,10 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     uiDevMiddlewareHasTransport
     && isPaperclipDevRuntimeService({ serviceName, command })
   ) {
-    env.PAPERCLIP_UI_DEV_MIDDLEWARE ??= "true";
+    // myrmidon(REBRAND-C): default-on via both spellings.
+    if (readProductEnvFrom(env, "UI_DEV_MIDDLEWARE") === undefined) {
+      writeProductEnv(env, "UI_DEV_MIDDLEWARE", "true");
+    }
   }
   if (port) {
     const portEnvKey = asString(portConfig.envKey, "PORT");
@@ -6176,15 +6183,15 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     // can be arbitrarily old (PAP-17256): the `--bind loopback` argv
     // added above, these env vars for a runner that reads them, and HOST for one
     // old enough to ignore both and infer its bind mode from HOST alone.
-    env.PAPERCLIP_BIND = RUNTIME_EXPOSURE_BIND_MODE;
-    env.PAPERCLIP_BIND_HOST = RUNTIME_EXPOSURE_BIND_HOST;
+    writeProductEnv(env, "BIND", RUNTIME_EXPOSURE_BIND_MODE); // myrmidon(REBRAND-C)
+    writeProductEnv(env, "BIND_HOST", RUNTIME_EXPOSURE_BIND_HOST); // myrmidon(REBRAND-C)
     env.HOST = RUNTIME_EXPOSURE_BIND_HOST;
-    env.PAPERCLIP_VITE_HMR_PROTOCOL = "wss";
-    env.PAPERCLIP_MANAGED_RUNTIME_EXPOSURE = "tailscale_https";
-    env.PAPERCLIP_ALLOWED_HOSTNAMES = exposureHostname!;
-    env.PAPERCLIP_AUTH_BASE_URL_MODE = "explicit";
-    env.PAPERCLIP_AUTH_PUBLIC_BASE_URL = `https://${exposureHostname}:${port}`;
-    env.PAPERCLIP_PUBLIC_URL = `https://${exposureHostname}:${port}`;
+    writeProductEnv(env, "VITE_HMR_PROTOCOL", "wss"); // myrmidon(REBRAND-C)
+    writeProductEnv(env, "MANAGED_RUNTIME_EXPOSURE", "tailscale_https"); // myrmidon(REBRAND-C)
+    writeProductEnv(env, "ALLOWED_HOSTNAMES", exposureHostname!); // myrmidon(REBRAND-C)
+    writeProductEnv(env, "AUTH_BASE_URL_MODE", "explicit"); // myrmidon(REBRAND-C)
+    writeProductEnv(env, "AUTH_PUBLIC_BASE_URL", `https://${exposureHostname}:${port}`); // myrmidon(REBRAND-C)
+    writeProductEnv(env, "PUBLIC_URL", `https://${exposureHostname}:${port}`); // myrmidon(REBRAND-C)
   }
 
   const expose = parseObject(input.service.expose);
@@ -8616,7 +8623,7 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
     try {
       const refs = await startRuntimeServicesForWorkspaceControl({
         db,
-        actor: { id: null, name: "Paperclip", companyId: row.companyId },
+        actor: { id: null, name: PN, companyId: row.companyId },
         issue: null,
         workspace: {
           baseCwd: row.cwd,
@@ -8665,7 +8672,7 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
     try {
       const refs = await startRuntimeServicesForWorkspaceControl({
         db,
-        actor: { id: null, name: "Paperclip", companyId: row.companyId },
+        actor: { id: null, name: PN, companyId: row.companyId },
         issue: row.sourceIssueId
           ? {
               id: row.sourceIssueId,

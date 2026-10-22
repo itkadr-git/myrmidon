@@ -404,6 +404,7 @@
     "server/src/services/workspace-runtime-read-model.test.ts": 1139,
     "server/src/services/workspace-runtime-ready-comment.test.ts": 1744,
     "server/src/shutdown.test.ts": 247,
-    "server/src/url-utils.test.ts": 196
+    "server/src/url-utils.test.ts": 196,
+    "server/scripts/verify-runner-vendor-dependencies.test.mjs": 1308
   }
 }

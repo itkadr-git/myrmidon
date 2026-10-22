@@ -118,6 +118,8 @@ import {
   assertCurrentWakeCommentsRead,
   resolveCurrentWakeCommentsBinding,
 } from "./current-wake-comments.js";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../../myrmidon/product.js";
 import {
   renderNativeRunnerStagedAttachmentPrompt,
   stageNativeRunnerWakeAttachments,
@@ -166,6 +168,7 @@ import {
   type NativeControllerIdentity,
   type NativeRestartRecoveryClaim,
 } from "./native-restart-recovery.js";
+import { deleteProductEnv, readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type ActiveNativeSession = {
   session: NativeSession;
@@ -506,7 +509,7 @@ export function buildNativeProviderEnvironment(
   );
   const environment = { ...inherited, ...configured };
   if (assignedWorkspaceCwd?.trim()) {
-    environment.PAPERCLIP_WORKSPACE_CWD = assignedWorkspaceCwd;
+    writeProductEnv(environment, "WORKSPACE_CWD", assignedWorkspaceCwd); // myrmidon(REBRAND-C)
   }
   return environment;
 }
@@ -1236,7 +1239,7 @@ export async function synchronizeCompletedProviderPlan(input: {
         idempotencyKey: `runner-plan-approval:v1:${input.execution.binding.runId}:${planId}:${providerRevision}:${digest}`,
         sourceRunId: input.execution.binding.runId,
         title: `Review plan revision ${revision.revisionNumber}`,
-        summary: "Review the synchronized Paperclip plan.",
+        summary: `Review the synchronized ${PN} plan.`,
         continuationPolicy: "wake_assignee",
         payload: {
           version: 1,
@@ -1443,7 +1446,7 @@ function legacyCompanyNativeSessionScopeKey(
 
 function runnerdStateBase(): string {
   return (
-    process.env.PAPERCLIP_RUNNER_STATE_DIR ??
+    readProductEnv("RUNNER_STATE_DIR") ??
     resolve(
       resolvePaperclipInstanceRoot(),
       "runtime",
@@ -7683,7 +7686,7 @@ async function executePaperclipNativeSessionWithinScope(
       // Run-scoped broker capabilities must rotate with the process, while the
       // settled provider checkpoint retains the conversation across runs.
       const hasBrokerCapability = Boolean(
-        input.runnerEnvironment?.PAPERCLIP_GITHUB_BROKER_TOKEN,
+        readProductEnvFrom(input.runnerEnvironment ?? {}, "GITHUB_BROKER_TOKEN"),
       );
       const credentialRunChanged =
         Boolean(entry.credentialRunId) !== hasBrokerCapability ||
@@ -7693,9 +7696,9 @@ async function executePaperclipNativeSessionWithinScope(
         entry.configDigest !== warmConfigDigest ||
         credentialRunChanged ||
         entry.githubAuthenticationMode !==
-          input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE ||
+          readProductEnvFrom(input.runnerEnvironment ?? {}, "GITHUB_AUTH_MODE") ||
         entry.networkAccess !==
-          (input.runnerEnvironment?.PAPERCLIP_RUNNER_NETWORK_ACCESS ===
+          (readProductEnvFrom(input.runnerEnvironment ?? {}, "RUNNER_NETWORK_ACCESS") ===
             "enabled")
       ) {
         if (entry.busy) throw new Error("native_session_supervisor_busy");
@@ -8019,12 +8022,14 @@ async function executePaperclipNativeSessionWithinScope(
                 } else
                   warmNativeSessions.set(warmSessionId, {
                     githubAuthenticationMode:
-                      input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE,
+                      readProductEnvFrom(input.runnerEnvironment ?? {}, "GITHUB_AUTH_MODE"),
                     networkAccess:
-                      input.runnerEnvironment
-                        ?.PAPERCLIP_RUNNER_NETWORK_ACCESS === "enabled",
-                    credentialRunId: input.runnerEnvironment
-                      ?.PAPERCLIP_GITHUB_BROKER_TOKEN
+                      readProductEnvFrom(input.runnerEnvironment ?? {}, "RUNNER_NETWORK_ACCESS") ===
+                      "enabled",
+                    credentialRunId: readProductEnvFrom(
+                      input.runnerEnvironment ?? {},
+                      "GITHUB_BROKER_TOKEN",
+                    )
                       ? input.execution.binding.runId
                       : undefined,
                     session,
@@ -11465,7 +11470,7 @@ async function createRunnerdBackendWithinSessionClaim(
   // This authority bit is derived only from the selected execution target.
   // Never let an agent, environment binding, or host variable disable the
   // Codex sandbox for a local runner by supplying the same key.
-  delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX;
+  deleteProductEnv(effectiveRunnerEnvironmentBase, "RUNNER_EXTERNAL_SANDBOX");
   const effectiveRunnerEnvironment: NodeJS.ProcessEnv = remoteRuntimeRoot
     ? {
         ...effectiveRunnerEnvironmentBase,

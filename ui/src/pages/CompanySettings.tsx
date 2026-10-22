@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type InteractionResolverGovernance,
   type IssueThreadInteractionKind,
@@ -9,6 +9,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCloudInstance } from "../hooks/useCloudInstance";
 import { companiesApi } from "../api/companies";
 import { assetsApi } from "../api/assets";
+import { accessApi } from "../api/access";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { SlidersHorizontal } from "lucide-react";
@@ -27,7 +28,9 @@ import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
 import { ConnectorPanel } from "@/components/myrmidon/ConnectorPanel"; // myrmidon(EXTCASE-PANEL)
 import { GitHubSharedIdentityPanel } from "@/components/myrmidon/GitHubSharedIdentityPanel"; // myrmidon(GITHUB-SHARED-IDENTITY)
 import { FleetConsolePanel } from "../components/myrmidon/FleetConsolePanel"; // myrmidon(SC1)
+import { ReferenceTaskEvalsPanel } from "../components/myrmidon/evals/ReferenceTaskEvalsPanel"; // myrmidon(1.6.5 EVALS-JUDGE-FAMILY)
 import { TracingHealthCard } from "../components/myrmidon/tracing-health/TracingHealthCard"; // myrmidon(TRACING-HEALTH)
+import { TeamLivenessHealthCard } from "../components/myrmidon/TeamLivenessHealthCard"; // myrmidon(TEAM-LIVENESS-METRICS)
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 
 export function CompanySettings() {
@@ -81,6 +84,31 @@ export function CompanySettings() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
+  const policyMutation = useMutation({
+    mutationFn: (data: {
+      feedbackDataSharingEnabled?: boolean;
+      defaultResponsibleUserId?: string | null;
+    }) => companiesApi.update(selectedCompanyId!, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
+  const membersQuery = useQuery({
+    queryKey: queryKeys.access.companyMembers(selectedCompanyId ?? ""),
+    queryFn: () => accessApi.listMembers(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const statusMutation = useMutation({
+    mutationFn: (status: "active" | "paused") =>
+      companiesApi.update(selectedCompanyId!, { status }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
     }
   });
 
@@ -173,6 +201,33 @@ export function CompanySettings() {
         {t("settings.noOrganization")}
       </div>
     );
+  }
+
+  const responsibleOptions = (() => {
+    const options = (membersQuery.data?.members ?? [])
+      .filter((m) => m.status === "active")
+      .map((m) => ({
+        id: m.principalId,
+        label: m.user?.name || m.user?.email || m.principalId,
+      }));
+    const current = selectedCompany.defaultResponsibleUserId;
+    // Keep the stored value selectable even when it is not in the member list.
+    if (current && !options.some((o) => o.id === current)) {
+      options.unshift({ id: current, label: current });
+    }
+    return options;
+  })();
+  const isPaused = selectedCompany.status === "paused";
+
+  function handlePauseResume() {
+    if (!selectedCompanyId) return;
+    const confirmed = window.confirm(
+      isPaused
+        ? t("settings.resumeConfirm", { name: selectedCompany!.name })
+        : t("settings.pauseConfirm", { name: selectedCompany!.name })
+    );
+    if (!confirmed) return;
+    statusMutation.mutate(isPaused ? "active" : "paused");
   }
 
   function handleSaveGeneral() {
@@ -323,6 +378,63 @@ export function CompanySettings() {
         </div>
       </div>
 
+      {/* Company policies: feedback sharing, responsible user */}
+      <div className="max-w-2xl space-y-4" data-testid="company-settings-policies-section">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          {t("settings.policies")}
+        </div>
+        <div className="space-y-3">
+          <ToggleField
+            label={t("settings.feedbackSharing")}
+            hint={t("settings.feedbackSharingHint")}
+            checked={!!selectedCompany.feedbackDataSharingEnabled}
+            onChange={(v) => policyMutation.mutate({ feedbackDataSharingEnabled: v })}
+            toggleTestId="company-settings-feedback-sharing-toggle"
+          />
+          <Field
+            label={t("settings.responsibleUser")}
+            hint={t("settings.responsibleUserHint")}
+          >
+            <select
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              data-testid="company-settings-responsible-user-select"
+              value={selectedCompany.defaultResponsibleUserId ?? ""}
+              disabled={policyMutation.isPending || membersQuery.isLoading}
+              onChange={(e) =>
+                policyMutation.mutate({ defaultResponsibleUserId: e.target.value || null })
+              }
+            >
+              <option value="">{t("settings.responsibleUserNone")}</option>
+              {responsibleOptions.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            {membersQuery.isError && (
+              <span className="mt-1 block text-xs text-destructive">
+                {t("settings.responsibleUsersLoadFailed")}
+              </span>
+            )}
+          </Field>
+          <div className="flex items-center gap-2 text-xs">
+            {policyMutation.isPending && (
+              <span className="text-muted-foreground">{t("settings.saving")}</span>
+            )}
+            {policyMutation.isSuccess && !policyMutation.isPending && (
+              <span className="text-muted-foreground">{t("settings.saved")}</span>
+            )}
+            {policyMutation.isError && (
+              <span className="text-destructive" data-testid="company-settings-policies-error">
+                {policyMutation.error instanceof Error
+                  ? policyMutation.error.message
+                  : t("settings.failedToSave")}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Interaction governance */}
       <InteractionGovernancePanel
         governance={governance}
@@ -339,7 +451,14 @@ export function CompanySettings() {
 
       <FleetConsolePanel /> {/* myrmidon(SC1) */}
 
+      {/* Reference-task results with the same-family judge badge
+          (myrmidon(1.6.5 EVALS-JUDGE-FAMILY)) */}
+      <ReferenceTaskEvalsPanel />
+
       <TracingHealthCard /> {/* myrmidon(TRACING-HEALTH): "LLM tracing" status card (part D) */}
+
+      {/* myrmidon(TEAM-LIVENESS-METRICS): what the board did on its own in the last 24 h */}
+      <TeamLivenessHealthCard />
 
       <InstanceGeneralSettings embedded />
 
@@ -353,6 +472,34 @@ export function CompanySettings() {
           {t("settings.dangerZone")}
         </div>
         <div className="space-y-3 bg-destructive/5 px-4 py-4">
+          <p className="text-sm text-muted-foreground">
+            {isPaused ? t("settings.pausedNotice") + " " : ""}
+            {t("settings.pauseHint")}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="company-settings-pause-resume"
+              disabled={statusMutation.isPending || selectedCompany.status === "archived"}
+              onClick={handlePauseResume}
+            >
+              {statusMutation.isPending
+                ? isPaused
+                  ? t("settings.resuming")
+                  : t("settings.pausing")
+                : isPaused
+                ? t("settings.resumeOrganization")
+                : t("settings.pauseOrganization")}
+            </Button>
+            {statusMutation.isError && (
+              <span className="text-xs text-destructive">
+                {statusMutation.error instanceof Error
+                  ? statusMutation.error.message
+                  : t("settings.failedToPauseResume")}
+              </span>
+            )}
+          </div>
           <p className="text-sm text-muted-foreground">
             {t("settings.archiveHint")}
           </p>

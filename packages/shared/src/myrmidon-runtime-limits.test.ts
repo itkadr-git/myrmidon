@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_MAX_HOST_CPU_BUSY_PERCENT,
   DEFAULT_MAX_HOST_LOAD_PERCENT_PER_CORE,
+  DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT,
   DEFAULT_MAX_STARTS_PER_MINUTE,
   DEFAULT_MIN_FREE_HOST_MEMORY_MB,
   DEFAULT_RUN_MEMORY_ESTIMATE_MB,
@@ -23,6 +25,7 @@ const STORED = {
   runMemoryEstimateMb: 250,
   minFreeHostMemoryMb: 12288,
   maxHostLoadPercentPerCore: 150,
+  maxPerAgentStartSharePercent: 25,
 };
 
 describe("myrmidon(C0) run limits: the stored value and the settings field", () => {
@@ -57,6 +60,7 @@ describe("myrmidon(C0) run limits: the stored value and the settings field", () 
       runMemoryEstimateMb: 250,
       minFreeHostMemoryMb: 12288,
       maxHostLoadPercentPerCore: 150,
+      maxPerAgentStartSharePercent: 25,
     });
     expect(mergeRunLimits(STORED, { minFreeHostMemoryMb: null }).minFreeHostMemoryMb).toBeNull();
     expect(patchRunLimitsSchema.safeParse({ minFreeHostMemoryMb: 0 }).success).toBe(false);
@@ -65,6 +69,18 @@ describe("myrmidon(C0) run limits: the stored value and the settings field", () 
     expect(patchRunLimitsSchema.safeParse({ maxHostLoadPercentPerCore: 0 }).success).toBe(false);
     expect(mergeRunLimits(STORED, { maxHostLoadPercentPerCore: null }).maxHostLoadPercentPerCore).toBeNull();
     expect(mergeRunLimits(STORED, {}).maxHostLoadPercentPerCore).toBe(150);
+    // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent start share, 1..100 or null.
+    expect(patchRunLimitsSchema.parse({ maxPerAgentStartSharePercent: 40 })).toEqual({
+      maxPerAgentStartSharePercent: 40,
+    });
+    expect(patchRunLimitsSchema.safeParse({ maxPerAgentStartSharePercent: null }).success).toBe(true);
+    expect(patchRunLimitsSchema.safeParse({ maxPerAgentStartSharePercent: 0 }).success).toBe(false);
+    expect(patchRunLimitsSchema.safeParse({ maxPerAgentStartSharePercent: 101 }).success).toBe(false);
+    expect(patchRunLimitsSchema.safeParse({ maxPerAgentStartSharePercent: 100 }).success).toBe(true);
+    expect(patchRunLimitsSchema.safeParse({ maxPerAgentStartSharePercent: 1 }).success).toBe(true);
+    expect(patchRunLimitsSchema.safeParse({ maxPerAgentStartSharePercent: 1.5 }).success).toBe(false);
+    expect(mergeRunLimits(STORED, { maxPerAgentStartSharePercent: null }).maxPerAgentStartSharePercent).toBeNull();
+    expect(mergeRunLimits(STORED, {}).maxPerAgentStartSharePercent).toBe(25);
   });
 });
 
@@ -77,10 +93,17 @@ describe("myrmidon(C0) run limits: environment values and precedence", () => {
       runMemoryEstimateMb: DEFAULT_RUN_MEMORY_ESTIMATE_MB,
       minFreeHostMemoryMb: DEFAULT_MIN_FREE_HOST_MEMORY_MB,
       maxHostLoadPercentPerCore: DEFAULT_MAX_HOST_LOAD_PERCENT_PER_CORE,
+      maxPerAgentStartSharePercent: DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT,
+      // myrmidon(1.6.5 RUN-ADMISSION, rc.3): the busy ceiling is default-on;
+      // the PSI ceiling is default-off — only the operator turns it on.
+      maxHostCpuBusyPercent: DEFAULT_MAX_HOST_CPU_BUSY_PERCENT,
+      maxHostCpuPsiSomeAvg10: null,
     });
     expect(DEFAULT_MAX_STARTS_PER_MINUTE).toBe(5);
     expect(DEFAULT_MIN_FREE_HOST_MEMORY_MB).toBe(15360);
     expect(DEFAULT_MAX_HOST_LOAD_PERCENT_PER_CORE).toBe(90);
+    expect(DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT).toBe(15);
+    expect(DEFAULT_MAX_HOST_CPU_BUSY_PERCENT).toBe(90);
     expect(parseRunLimitValue(" 12 ")).toBe(12);
     expect(parseRunLimitValue("0")).toBeNull();
     expect(parseRunLimitValue("-3")).toBeNull();
@@ -99,6 +122,9 @@ describe("myrmidon(C0) run limits: environment values and precedence", () => {
         runMemoryEstimateMb: 300,
         minFreeHostMemoryMb: 15360,
         maxHostLoadPercentPerCore: 90,
+        maxPerAgentStartSharePercent: 15,
+        maxHostCpuBusyPercent: 90,
+        maxHostCpuPsiSomeAvg10: null,
       },
       sources: {
         maxConcurrentRuns: "env",
@@ -107,6 +133,7 @@ describe("myrmidon(C0) run limits: environment values and precedence", () => {
         runMemoryEstimateMb: "default",
         minFreeHostMemoryMb: "default",
         maxHostLoadPercentPerCore: "default",
+        maxPerAgentStartSharePercent: "default",
       },
     });
   });
@@ -115,6 +142,7 @@ describe("myrmidon(C0) run limits: environment values and precedence", () => {
     const resolved = resolveRunLimits({ stored: STORED, env: { MYRMIDON_MAX_CONCURRENT_RUNS: "8" } });
     expect(resolved.limits).toEqual(STORED);
     expect(Object.values(resolved.sources)).toEqual([
+      "settings",
       "settings",
       "settings",
       "settings",
@@ -166,6 +194,7 @@ describe("myrmidon(1.6.2 RUN-ADMISSION) host floor and start ramp", () => {
       runMemoryEstimateMb: "settings",
       minFreeHostMemoryMb: "env",
       maxHostLoadPercentPerCore: "settings",
+      maxPerAgentStartSharePercent: "settings",
     });
   });
 });
@@ -214,5 +243,50 @@ describe("myrmidon(1.6.5 RUN-ADMISSION) host CPU ceiling", () => {
     expect(runLimitsSchema.safeParse(withoutCeiling).success).toBe(false);
     expect(runLimitsSchema.safeParse({ ...STORED, maxHostLoadPercentPerCore: 1.5 }).success).toBe(false);
     expect(runLimitsSchema.safeParse({ ...STORED, maxHostLoadPercentPerCore: 0 }).success).toBe(false);
+  });
+});
+
+describe("myrmidon(1.6.5 RUN-FAIRNESS) per-agent start share", () => {
+  it("defaults the share on (15), reads it from the environment, switches off only on an explicit off value", () => {
+    expect(readRunLimitsFromEnv({}).maxPerAgentStartSharePercent).toBe(15);
+    expect(readRunLimitsFromEnv({ MYRMIDON_MAX_PER_AGENT_START_SHARE_PERCENT: "25" }).maxPerAgentStartSharePercent).toBe(25);
+    expect(
+      readRunLimitsFromEnv({ MYRMIDON_MAX_PER_AGENT_START_SHARE_PERCENT: "off" }).maxPerAgentStartSharePercent,
+    ).toBeNull();
+    // A typo keeps the protection rather than silently removing it.
+    expect(readRunLimitsFromEnv({ MYRMIDON_MAX_PER_AGENT_START_SHARE_PERCENT: "lots" }).maxPerAgentStartSharePercent).toBe(15);
+    const resolved = resolveRunLimits({ env: { MYRMIDON_MAX_PER_AGENT_START_SHARE_PERCENT: "off" } });
+    expect(resolved.sources.maxPerAgentStartSharePercent).toBe("env");
+  });
+
+  it("validates the share as a percentage: 1..100, null means off", () => {
+    expect(runLimitsSchema.safeParse({ ...STORED, maxPerAgentStartSharePercent: 1 }).success).toBe(true);
+    expect(runLimitsSchema.safeParse({ ...STORED, maxPerAgentStartSharePercent: 100 }).success).toBe(true);
+    expect(runLimitsSchema.safeParse({ ...STORED, maxPerAgentStartSharePercent: null }).success).toBe(true);
+    expect(runLimitsSchema.safeParse({ ...STORED, maxPerAgentStartSharePercent: 0 }).success).toBe(false);
+    expect(runLimitsSchema.safeParse({ ...STORED, maxPerAgentStartSharePercent: 101 }).success).toBe(false);
+    expect(runLimitsSchema.safeParse({ ...STORED, maxPerAgentStartSharePercent: 1.5 }).success).toBe(false);
+  });
+
+  it("reads a row saved before the start share existed, taking it from the environment", () => {
+    const { maxPerAgentStartSharePercent: _absent, ...oldRow } = STORED;
+    // The settings block must still parse without the RUN-FAIRNESS key.
+    expect(instanceGeneralSettingsSchema.safeParse({ runLimits: oldRow }).success).toBe(true);
+    expect(normalizeRunLimits(oldRow)).toEqual({ ...oldRow, maxPerAgentStartSharePercent: 15 });
+    const resolved = resolveRunLimits({
+      stored: oldRow,
+      env: { MYRMIDON_MAX_PER_AGENT_START_SHARE_PERCENT: "30" },
+    });
+    expect(resolved.limits).toEqual({ ...oldRow, maxPerAgentStartSharePercent: 30 });
+    expect(resolved.sources.maxPerAgentStartSharePercent).toBe("env");
+    // A stored explicit null survives: "off" is a value, not a missing key.
+    const offRow = { ...oldRow, maxPerAgentStartSharePercent: null };
+    expect(resolveRunLimits({ stored: offRow }).limits.maxPerAgentStartSharePercent).toBeNull();
+    expect(resolveRunLimits({ stored: offRow }).sources.maxPerAgentStartSharePercent).toBe("settings");
+  });
+
+  it("keeps the canonical shape strict about the new key", () => {
+    const { maxPerAgentStartSharePercent: _dropped, ...withoutShare } = STORED;
+    expect(runLimitsSchema.safeParse(withoutShare).success).toBe(false);
   });
 });

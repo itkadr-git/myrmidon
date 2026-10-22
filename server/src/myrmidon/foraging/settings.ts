@@ -1,88 +1,175 @@
 // server/src/myrmidon/foraging/settings.ts
 //
-// myrmidon(1.6-FORAGE): where the FORAGING sweep gets its switch, its period,
+// myrmidon(1.6-FORAGING): where the FORAGING sweep gets its switch, its period,
 // its per-pass budget and the name of the company secret it reads with.
 //
-// Off by default: the sweep only starts when the instance explicitly enables it
-// (`MYRMIDON_FORAGING_ENABLED=1`), the same shape the other myrmidon sweeps use
-// for a feature that talks to the outside world. Nothing is read, no timer is
-// armed and no source is fetched while the switch is off.
+// 1.6.1 (FORAGING-LIMITS-UI): the same values became instance settings edited
+// from the interface (the "Foraging" block on Instance → General, saved through
+// PATCH /api/myrmidon/foraging-settings). The precedence — the stored row, a
+// per-key environment override, the built-in default — is decided once in
+// `@paperclipai/shared` (`myrmidon-foraging.ts`); this module only adapts the
+// resolved settings to the shape the sweep and the routes consume, and hosts
+// the read/write service of the stored row. `readForagingSettings` stays
+// exported (the startup, the wiring and the routes call it on every use, so a
+// change applies with the next pass, never a restart).
 //
 // The key is named, never carried: `MYRMIDON_FORAGING_KEY_SECRET` holds the NAME
 // of a company secret whose value is sent as a bearer token to the source. The
 // value is read from the company's secrets at call time and never logged.
 
+import type { Db } from "@paperclipai/db";
 import {
-  DEFAULT_FORAGING_BUDGET_CENTS,
-  DEFAULT_FORAGING_INTERVAL_SEC,
-  FORAGING_BUDGET_CENTS_ENV,
-  FORAGING_INTERVAL_SEC_ENV,
-  FORAGING_KEY_SECRET_ENV,
-  type ForagingBudget,
-} from "./domain.js";
+  FORAGING_SETTINGS_KEY,
+  mergeForagingSettings,
+  resolveForagingSettings,
+  type ForagingSettings,
+  type ForagingSettingsPatch,
+  type ResolvedForagingSettings,
+} from "@paperclipai/shared";
+import type { instanceSettingsService } from "../../services/instance-settings.js";
+import type { ForagingBudget } from "./domain.js";
 
 export const FORAGING_ENABLED_ENV = "MYRMIDON_FORAGING_ENABLED";
-export { FORAGING_BUDGET_CENTS_ENV, FORAGING_INTERVAL_SEC_ENV, FORAGING_KEY_SECRET_ENV };
+export const FORAGING_BUDGET_CENTS_ENV = "MYRMIDON_FORAGING_BUDGET_CENTS";
+export const FORAGING_INTERVAL_SEC_ENV = "MYRMIDON_FORAGING_INTERVAL_SEC";
+export const FORAGING_KEY_SECRET_ENV = "MYRMIDON_FORAGING_KEY_SECRET";
 export const FORAGING_MIN_HOST_INTERVAL_SEC_ENV = "MYRMIDON_FORAGING_MIN_HOST_INTERVAL_SEC";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): the idle-gate toggle moved to
+// instance_settings.general.foragingIdleGate (read on every pass); the env
+// MYRMIDON_FORAGING_IDLE_GATE_ENABLED stays the forced override — the
+// contract lives in @paperclipai/shared (myrmidon-foraging-idle-gate.ts).
 
-const MIN_INTERVAL_SEC = 60;
-const MAX_INTERVAL_SEC = 86_400;
-const DEFAULT_MIN_HOST_INTERVAL_SEC = 60;
-const MIN_HOST_INTERVAL_FLOOR_SEC = 5;
+/** Activity action written for every foraging settings change. */
+export const FORAGING_SETTINGS_UPDATED_ACTION = "instance.foraging.updated";
 
-export interface ForagingSettings {
-  /** The sweep runs only while this is true. */
-  enabled: boolean;
-  intervalMs: number;
-  /** The per-pass cost ceiling; `enabled: false` means "no limit". */
-  budget: ForagingBudget;
-  /** Name of the company secret carrying the read token, or null. */
+export interface ForagingEffectiveSettings extends ResolvedForagingSettings {
+  /** Name of the company secret carrying the read token, or null (env only). */
   keySecret: string | null;
-  /** The smallest pause between two reads of the same host, in milliseconds. */
+  intervalMs: number;
   minHostIntervalMs: number;
+  /** The per-pass budget in the shape the sweep domain uses. */
+  budget: ForagingBudget;
 }
 
-function readInt(raw: string | undefined, fallback: number, min: number, max: number): number {
-  if (!raw) return fallback;
-  const value = Number(raw.trim());
-  if (!Number.isInteger(value) || value < min || value > max) return fallback;
-  return value;
-}
-
-/** The switch is opt-in on the exact value `1`; any other value keeps it off. */
-export function readForagingSettings(env: NodeJS.ProcessEnv = process.env): ForagingSettings {
-  const enabled = env[FORAGING_ENABLED_ENV] === "1";
-  const intervalSec = readInt(
-    env[FORAGING_INTERVAL_SEC_ENV],
-    DEFAULT_FORAGING_INTERVAL_SEC,
-    MIN_INTERVAL_SEC,
-    MAX_INTERVAL_SEC,
-  );
-  const budgetRaw = env[FORAGING_BUDGET_CENTS_ENV]?.trim();
-  let maxCostCents = DEFAULT_FORAGING_BUDGET_CENTS;
-  let budgetEnabled = true;
-  if (budgetRaw !== undefined && budgetRaw !== "") {
-    const value = Number(budgetRaw);
-    if (Number.isFinite(value) && value > 0) {
-      maxCostCents = Math.floor(value);
-    } else {
-      // A configured zero or a negative number is the explicit "no limit".
-      budgetEnabled = false;
-      maxCostCents = 0;
-    }
-  }
-  const minHostIntervalSec = readInt(
-    env[FORAGING_MIN_HOST_INTERVAL_SEC_ENV],
-    DEFAULT_MIN_HOST_INTERVAL_SEC,
-    MIN_HOST_INTERVAL_FLOOR_SEC,
-    MAX_INTERVAL_SEC,
-  );
+/**
+ * The effective settings the sweep runs with right now. The stored row is read
+ * on every call: a value changed in the interface applies with the next pass,
+ * without a restart (the same live-read contract the swarm-claim sweep uses).
+ */
+export async function resolveForagingEffectiveSettings(
+  settings: Pick<ReturnType<typeof instanceSettingsService>, "getGeneral">,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ForagingEffectiveSettings> {
+  const general = (await settings.getGeneral()) as unknown as Record<string, unknown>;
+  const resolved = resolveForagingSettings({ stored: general[FORAGING_SETTINGS_KEY], env });
   const keySecret = env[FORAGING_KEY_SECRET_ENV]?.trim() || null;
   return {
-    enabled,
-    intervalMs: intervalSec * 1000,
-    budget: { maxCostCents, enabled: budgetEnabled },
+    ...resolved,
     keySecret,
-    minHostIntervalMs: minHostIntervalSec * 1000,
+    intervalMs: resolved.settings.intervalSec * 1000,
+    minHostIntervalMs: resolved.settings.minHostIntervalSec * 1000,
+    budget: {
+      maxCostCents: resolved.settings.passBudgetCents ?? 0,
+      enabled: resolved.settings.passBudgetCents !== null,
+    },
+  };
+}
+
+/**
+ * The legacy entry the old callers use: the effective settings from the
+ * environment alone (the stored row is read by the wiring through
+ * `resolveForagingEffectiveSettings`). Kept so the reader construction and the
+ * tests that pin the env reading do not duplicate the env parsing.
+ */
+export function readForagingSettings(env: NodeJS.ProcessEnv = process.env): {
+  enabled: boolean;
+  intervalMs: number;
+  budget: ForagingBudget;
+  keySecret: string | null;
+  minHostIntervalMs: number;
+} {
+  const resolved = resolveForagingSettings({ env });
+  const settings = resolved.settings;
+  return {
+    enabled: settings.enabled,
+    intervalMs: settings.intervalSec * 1000,
+    budget: {
+      maxCostCents: settings.passBudgetCents ?? 0,
+      enabled: settings.passBudgetCents !== null,
+    },
+    keySecret: env[FORAGING_KEY_SECRET_ENV]?.trim() || null,
+    minHostIntervalMs: settings.minHostIntervalSec * 1000,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 1.6.1 (FORAGING-LIMITS-UI): the read/write service of the stored row.
+// ---------------------------------------------------------------------------
+
+export interface ForagingSettingsPorts {
+  /** The instance settings service (general block read/write). */
+  settings: Pick<ReturnType<typeof instanceSettingsService>, "getGeneral" | "updateGeneral">;
+  /** Activity log; absent in unit tests. */
+  logActivity?: (input: {
+    companyId: string;
+    actorType: string;
+    actorId: string;
+    action: string;
+    entityType: string;
+    entityId: string;
+    details: Record<string, unknown>;
+  }) => Promise<void>;
+  env?: Record<string, string | undefined>;
+}
+
+export interface ForagingSettingsService {
+  /** Effective settings and where each value came from. */
+  read(): Promise<ResolvedForagingSettings>;
+  /** Persist, audit and apply a patch; returns the settings now in force. */
+  update(
+    patch: ForagingSettingsPatch,
+    actor: { actorType: string; actorId: string },
+  ): Promise<ResolvedForagingSettings>;
+}
+
+type GeneralRecord = Record<string, unknown>;
+
+function asGeneral(value: unknown): GeneralRecord {
+  return typeof value === "object" && value !== null ? (value as GeneralRecord) : {};
+}
+
+export function foragingSettingsService(
+  _db: Db,
+  ports: ForagingSettingsPorts,
+): ForagingSettingsService {
+  const env = ports.env ?? process.env;
+
+  async function readGeneral(): Promise<GeneralRecord> {
+    return asGeneral(await ports.settings.getGeneral());
+  }
+
+  async function read(): Promise<ResolvedForagingSettings> {
+    const general = await readGeneral();
+    return resolveForagingSettings({ stored: general[FORAGING_SETTINGS_KEY], env });
+  }
+
+  return {
+    read,
+    async update(patch, actor) {
+      const general = await readGeneral();
+      const current = resolveForagingSettings({ stored: general[FORAGING_SETTINGS_KEY], env });
+      const next = mergeForagingSettings(current.settings, patch);
+      await ports.settings.updateGeneral({ [FORAGING_SETTINGS_KEY]: next });
+      await ports.logActivity?.({
+        companyId: "",
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        action: FORAGING_SETTINGS_UPDATED_ACTION,
+        entityType: "instance_settings",
+        entityId: FORAGING_SETTINGS_KEY,
+        details: { settings: next, patch },
+      });
+      return resolveForagingSettings({ stored: next, env });
+    },
   };
 }

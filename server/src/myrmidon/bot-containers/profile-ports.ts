@@ -20,19 +20,19 @@
 //  - A secret it creates is get-or-create by a deterministic name, so a second
 //    call returns the same value (compile must give the same hashes tick after
 //    tick, or the bot restarts every minute).
+//  - myrmidon(PERF-DIET-G): what is company- or instance-scoped and read once
+//    per bot is shared inside one sweep instead (profile-pass.ts): compile
+//    memoizes the instance settings ports, the skill port memoizes the skill
+//    catalogue and the files it reads, and the lifecycle shares the two
+//    company-wide reads behind its delivery decision. Nothing is cached between
+//    sweeps, so a settings or skill change still lands on the next pass.
 
 import { createHash, randomBytes } from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
 
-import { agentApiKeys, companies, companyMemberships, type Db } from "@paperclipai/db";
+import { agentApiKeys, agents as agentsTable, companies, companyMemberships, type Db } from "@paperclipai/db";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 // myrmidon(PARALLEL-HELPERS): the settings type the parallel-helpers port returns.
-import type { BotLspSettings, ParallelHelpersSettings } from "@paperclipai/shared";
-import {
-  readPaperclipSkillSyncPreference,
-  resolveLegacyPaperclipDesiredSkillNames,
-} from "@paperclipai/adapter-utils/server-utils";
+import type { BotLspSettings, BotDiskMechanics, ParallelHelpersSettings } from "@paperclipai/shared";
 import { getConfiguredSecretProvider } from "../../secrets/configured-provider.js";
 import {
   agentInstructionsService,
@@ -41,7 +41,6 @@ import {
   instanceSettingsService,
   secretService,
 } from "../../services/index.js";
-import { skillVersionSelectionMap } from "../../services/runtime-skill-selections.js";
 // myrmidon(1.6-SKILL-LIFE): the lifecycle decides what reaches this agent.
 import { skillLifecycleService } from "../skill-lifecycle/index.js";
 import { BOT_AGENT_API_KEY_NAME, ensureBotAgentKey } from "./agent-key.js";
@@ -54,6 +53,7 @@ import {
 } from "./board-gateway.js";
 import { createBotCardSync, type BotCardSyncPorts, type BotCardSyncResult } from "./card-sync.js";
 import { createCardEnvResolver } from "./card-env.js";
+import { listMediaAclAgents, runMediaAclExport } from "./media-acl-export.js";
 import { loadBotInstructionsBundle } from "./instructions-source.js";
 import { readBotProfileSettings } from "./profile-input.js";
 import {
@@ -63,15 +63,19 @@ import {
   type BotProfileCompileOptions,
   type BotProfilePorts,
 } from "./profile-compile.js";
-import type { HermesProfileSkillFile } from "./profile-compiler.js";
+// myrmidon(PERF-DIET-G): the skills half of these ports, kept out of the database
+// glue so the catalogue rules are tested against fake readers.
+import { createBotProfileSkillLoader } from "./profile-skills.js";
 import type { BotContainerActivitySink } from "./reconciler.js";
+// myrmidon(PERF-DIET-G): the pass a sweep shares between the bots it reconciles.
+import type { BotProfilePass } from "./profile-pass.js";
 import type { CompiledProfile } from "./types.js";
 // myrmidon(1.6-WIKI): approved wiki regulations reach a bot through its compiled profile.
 import { loadRegulationWorkspaceFiles } from "../wiki-cortex/delivery.js";
 import { createWikiRegulationService } from "../wiki-cortex/service.js";
 import { createDbRegulationStore } from "../wiki-cortex/store.js";
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
-import { readBotDiskLayout, readCloneIdleTtlSecForRole, readSharedPackageCachePathForRole } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
+import { readBotDiskLayout, readBotDiskMechanics, readCloneIdleTtlSecForRole, readSharedPackageCachePathForRole } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H5c)
 
 export { BOT_AGENT_API_KEY_NAME };
 
@@ -94,59 +98,12 @@ function generateToken(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Skills: files on disk -> compiler input
+// Skills: read the card's skills into compiler input
 // ---------------------------------------------------------------------------
 
-const SKILL_MAX_FILES = 200;
-const SKILL_MAX_FILE_BYTES = 512 * 1024;
-const SKILL_SKIPPED_DIRECTORIES = new Set([".git", "node_modules"]);
-
-/** Reads a materialized skill directory into compiler input. Symlinks, oversized
- *  and binary files are skipped with a warning, never followed or truncated. */
-async function readSkillFiles(root: string, label: string, warnings: string[]): Promise<HermesProfileSkillFile[]> {
-  const files: HermesProfileSkillFile[] = [];
-  const rootStat = await fs.stat(root);
-  if (rootStat.isFile()) {
-    return [{ path: "SKILL.md", content: await fs.readFile(root, "utf8") }];
-  }
-
-  async function walk(directory: string, relative: string): Promise<void> {
-    const entries = await fs.readdir(directory, { withFileTypes: true });
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    for (const entry of entries) {
-      const relativePath = relative ? `${relative}/${entry.name}` : entry.name;
-      if (entry.isSymbolicLink()) {
-        warnings.push(`skill ${label}: symlink ${relativePath} skipped`);
-        continue;
-      }
-      if (entry.isDirectory()) {
-        if (SKILL_SKIPPED_DIRECTORIES.has(entry.name)) continue;
-        await walk(path.join(directory, entry.name), relativePath);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      if (files.length >= SKILL_MAX_FILES) {
-        warnings.push(`skill ${label}: more than ${SKILL_MAX_FILES} files, ${relativePath} and the rest skipped`);
-        return;
-      }
-      const absolute = path.join(directory, entry.name);
-      const stat = await fs.stat(absolute);
-      if (stat.size > SKILL_MAX_FILE_BYTES) {
-        warnings.push(`skill ${label}: ${relativePath} is larger than ${SKILL_MAX_FILE_BYTES} bytes, skipped`);
-        continue;
-      }
-      const content = await fs.readFile(absolute, "utf8");
-      if (content.includes("\u0000")) {
-        warnings.push(`skill ${label}: ${relativePath} is binary, skipped`);
-        continue;
-      }
-      files.push({ path: relativePath, content });
-    }
-  }
-
-  await walk(root, "");
-  return files;
-}
+// myrmidon(PERF-DIET-G): the rules and the filesystem read moved to
+// profile-skills.ts, where they run against fake readers with call counts;
+// this file binds them to the company skills service below.
 
 // ---------------------------------------------------------------------------
 // Secrets: get-or-create by name
@@ -160,10 +117,10 @@ async function getOrCreateSecret(
   name: string,
   description: string,
   generate: () => string,
-): Promise<{ secretId: string; value: string }> {
-  const existingId = (await secrets.getByName(companyId, name))?.id;
-  if (existingId) {
-    return { secretId: existingId, value: await secrets.resolveSecretValue(companyId, existingId, "latest") };
+): Promise<{ secretId: string; value: string; version: number }> {
+  const existing = await secrets.getByName(companyId, name);
+  if (existing) {
+    return { secretId: existing.id, value: await secrets.resolveSecretValue(companyId, existing.id, "latest"), version: existing.latestVersion };
   }
   let secretId: string;
   try {
@@ -175,11 +132,14 @@ async function getOrCreateSecret(
     secretId = created.id;
   } catch (err) {
     // A parallel create (another process, or the card sync racing this tick) won: use its secret.
-    const raced = (await secrets.getByName(companyId, name))?.id;
+    const raced = await secrets.getByName(companyId, name);
     if (!raced) throw err;
-    secretId = raced;
+    // myrmidon(BOT-KEY-401): the raced row's CURRENT version — the value below is
+    // resolved from "latest", so the version handed back is the one that value lives at.
+    return { secretId: raced.id, value: await secrets.resolveSecretValue(companyId, raced.id, "latest"), version: raced.latestVersion };
   }
-  return { secretId, value: await secrets.resolveSecretValue(companyId, secretId, "latest") };
+  // A fresh secret has exactly version 1; re-reading the row for it would be one more query per create.
+  return { secretId, value: await secrets.resolveSecretValue(companyId, secretId, "latest"), version: 1 };
 }
 
 // ---------------------------------------------------------------------------
@@ -242,10 +202,36 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     // like the other per-tick bot settings; the env source is process.env.
     { env: process.env },
   );
+  // myrmidon(PERF-DIET-G): the skills port, bound to the company services. The
+  // pass it receives (a sweep's, profile-pass.ts) shares the catalogue reads and
+  // the skill files between the bots of that pass.
+  const loadAgentSkills = createBotProfileSkillLoader({
+    readExperimental: () => instanceSettings.getExperimental(),
+    resolveLifecycle: (companyId, agentId, cache) => skillLifecycle.resolveDelivery(companyId, agentId, cache),
+    listRuntimeSkillEntries: (companyId, options) => skills.listRuntimeSkillEntries(companyId, options),
+  });
 
   return {
     async loadAgent(agentId) {
-      const row = await agents.getById(agentId);
+      // myrmidon(PERF-DIET-G): one row by id. The board's own getById hydrates
+      // the whole company and the agent's month spend beside the row — three
+      // queries to normalize an org chain and a cost view a container profile
+      // never reads. The fields the profile uses (BotProfileAgentRecord) are the
+      // columns themselves, so the row is read directly.
+      const rows = await db
+        .select({
+          id: agentsTable.id,
+          companyId: agentsTable.companyId,
+          name: agentsTable.name,
+          role: agentsTable.role,
+          adapterType: agentsTable.adapterType,
+          adapterConfig: agentsTable.adapterConfig,
+          runtimeConfig: agentsTable.runtimeConfig,
+        })
+        .from(agentsTable)
+        .where(eq(agentsTable.id, agentId))
+        .limit(1);
+      const row = rows[0];
       return row ? toAgentRecord(row) : null;
     },
 
@@ -258,15 +244,25 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     },
 
     async ensureApiServerKey(agent) {
-      const { secretId, value } = await getOrCreateSecret(
+      // myrmidon(BOT-KEY-401): the version of the secret the returned value came
+      // from — compile writes that VALUE into the profile's .env, so the card's
+      // secret_ref (card-sync.ts) pins exactly this version and is only re-pinned
+      // once the container actually runs a profile carrying it. A version bump
+      // without a container switch (a rotation, then a failed apply) no longer
+      // moves the card's key out from under the old container.
+      const { secretId, value, version } = await getOrCreateSecret(
         secrets,
         agent.companyId,
         apiServerKeySecretName(agent.id),
         `Hermes API server key of the bot container for agent ${agent.name}`,
         generateToken,
       );
-      return { secretId, value };
+      return { secretId, value, version };
     },
+
+    // (myrmidon(1.6.5-F11-A): no media-token port here — the single token source
+    // is the card env entry MEDIA_TOOLS_TOKEN, which resolveCardEnv above already
+    // resolves; the compiler reads it via mediaTokenFromEnv. See media-mcp.ts.)
 
     async ensureAgentApiKey(agent) {
       const secretName = agentApiKeySecretName(agent.id);
@@ -411,49 +407,12 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
       };
     },
 
-    async loadSkills(agent) {
-      const warnings: string[] = [];
-      const preference = readPaperclipSkillSyncPreference(agent.adapterConfig);
-      const experimental = await instanceSettings.getExperimental();
-      // myrmidon(1.6-SKILL-LIFE): the company lifecycle decides what reaches
-      // this agent — a deprecated skill reaches nobody, a candidate only the
-      // pilot agent set, and a verified skill is pinned to its verified
-      // revision, so a rollback takes effect on the next compile tick.
-      const lifecycle = await skillLifecycle.resolveDelivery(agent.companyId, agent.id);
-      const versionSelections = skillVersionSelectionMap(preference.desiredSkillEntries, {
-        versionPinsEnabled: experimental.enableBetaSkills === true,
-      });
-      for (const [key, versionId] of lifecycle.pinnedVersions) {
-        // The card's own pin wins when it set one; the lifecycle fills the rest.
-        if (!versionSelections.get(key)) versionSelections.set(key, versionId);
-      }
-      const entries = await skills.listRuntimeSkillEntries(agent.companyId, {
-        versionSelections,
-      });
-      // The same resolution hermes_local uses, so a bot in a container carries the
-      // skills it would have had running locally (including the board's own skill).
-      const desiredKeys = resolveLegacyPaperclipDesiredSkillNames(agent.adapterConfig, entries);
-      const byKey = new Map(entries.map((entry) => [entry.key, entry] as const));
-      const result: Record<string, readonly HermesProfileSkillFile[]> = {};
-      for (const key of desiredKeys) {
-        if (lifecycle.blockedKeys.has(key)) {
-          warnings.push(
-            lifecycle.reasons.get(key) ?? `skill ${key}: withheld by the skill lifecycle`,
-          );
-          continue;
-        }
-        const entry = byKey.get(key);
-        if (!entry) {
-          warnings.push(`skill ${key}: not found in the company catalog, skipped`);
-          continue;
-        }
-        if (entry.sourceStatus === "missing") {
-          warnings.push(`skill ${key}: source is missing (${entry.missingDetail ?? "no detail"}), skipped`);
-          continue;
-        }
-        result[entry.runtimeName] = await readSkillFiles(entry.source, key, warnings);
-      }
-      return { skills: result, warnings };
+    // myrmidon(PERF-DIET-G): the rules live in profile-skills.ts (tested with
+    // fake readers); this only binds them to the company services. The pass is the
+    // sweep's: it shares the lifecycle delivery, the runtime catalogue and the skill
+    // files of a whole sweep between its bots.
+    async loadSkills(agent, pass) {
+      return loadAgentSkills(agent, pass);
     },
 
     async loadInstructions(agent) {
@@ -525,6 +484,21 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
       return { storeDir: layout.pnpmStoreDir, importMethod: layout.pnpmImportMethod };
     },
 
+    // myrmidon(1.6.5-BOT-DISK-UV-A): the uv cache directory and link mode, read
+    // per tick from the same row (the layout resolves defaults for a key the
+    // operator never set).
+    async uvSettings(): Promise<{ cacheDir: string; linkMode: string }> {
+      const layout = await readBotDiskLayout(db);
+      return { cacheDir: layout.uvCacheDir, linkMode: layout.uvLinkMode };
+    },
+
+    // myrmidon(1.6.5-BOT-DISK-H5c): the BOT-DISK-H mechanics (C7), read per tick
+    // from the same `general.botDisk` row, so a settings change reaches the bots
+    // on the next reconcile without a restart.
+    async botDiskMechanics(): Promise<BotDiskMechanics> {
+      return readBotDiskMechanics(db);
+    },
+
     // myrmidon(BOT-DISK-F): the layout the board keeps this bot on, so a member of a shared
     // scope instance gets the instance's pnpm store path.
     async scopeLayout(agentId: string) {
@@ -577,16 +551,35 @@ export function botProfileWiring(
   db: Db,
   opts: BotProfileCompileOptions & { activity?: BotContainerActivitySink } = {},
 ): {
-  compile: (agentId: string, botKey: string) => Promise<CompiledProfile>;
-  syncCard: (agentId: string, botKey: string) => Promise<BotCardSyncResult>;
+  compile: (agentId: string, botKey: string, pass?: BotProfilePass) => Promise<CompiledProfile>;
+  /** myrmidon(PERF-DIET-G): the cache one sweep shares between the bots it
+   *  reconciles; the sweep begins one pass per tick and ends it when the last
+   *  bot is done, so nothing survives into the next tick. */
+  beginProfilePass: () => BotProfilePass;
+  endProfilePass: (pass: BotProfilePass) => void;
+  syncCard: (agentId: string, botKey: string, appliedApiServerKeyVersion: number) => Promise<BotCardSyncResult>;
   releaseStrayGateways: (keepAgentIds: ReadonlySet<string>) => Promise<{ released: number; warnings: string[] }>;
+  /** myrmidon(MEDIA-PROVISION): one pass of the media ACL registry exporter
+   *  (media-acl-export.ts) over the fleet, sharing this wiring's card-env
+   *  resolver — so its per-agent cache and secret-stamp validation are the
+   *  profile compiler's, not a second set. */
+  exportMediaAcl: () => Promise<{ bots: number; failedResolves: number; changed: boolean } | null>;
 } {
   const ports = createDbBotProfilePorts(db);
   const { activity, ...compileOptions } = opts;
   const onWarnings = compileOptions.onWarnings ?? (activity ? createActivityWarningSink(activity) : undefined);
+  const compile = createBotProfileCompile(ports, { ...compileOptions, ...(onWarnings ? { onWarnings } : {}) });
   return {
-    compile: createBotProfileCompile(ports, { ...compileOptions, ...(onWarnings ? { onWarnings } : {}) }),
+    compile,
+    beginProfilePass: compile.beginPass,
+    endProfilePass: compile.endPass,
     syncCard: createBotCardSync(createDbBotCardSyncPorts(db, ports)),
     releaseStrayGateways: (keepAgentIds) => releaseStrayBotGateways(db, keepAgentIds),
+    exportMediaAcl: () =>
+      runMediaAclExport({
+        listAgents: listMediaAclAgents(db),
+        resolveCardEnv: ports.resolveCardEnv,
+        env: compileOptions.env ?? process.env,
+      }),
   };
 }

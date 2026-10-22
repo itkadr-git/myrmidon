@@ -1,0 +1,9 @@
+{
+  "graceClosingMinutes": 30,
+  "scratchTtlHours": 24,
+  "partitionThresholdPercent": 85,
+  "partitionRefuseOpenPercent": 90,
+  "partitionCriticalPercent": 95,
+  "pnpmStoreDir": "/cache/pnpm-store",
+  "pnpmImportMethod": "clone"
+}

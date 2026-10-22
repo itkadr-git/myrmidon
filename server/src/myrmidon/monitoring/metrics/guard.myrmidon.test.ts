@@ -56,4 +56,17 @@ describe("metrics wiring guard", () => {
     const router = myrmidonMetricsApp({} as never);
     expect(typeof router).toBe("function");
   });
+
+  it("the router carries the scrape endpoint and the self-check probe", () => {
+    const router = myrmidonMetricsApp({} as never) as {
+      stack: Array<{ route?: { path: string } }>;
+    };
+    const paths = router.stack
+      .filter((layer) => layer.route)
+      .map((layer) => layer.route!.path);
+    expect(paths).toContain("/metrics");
+    // 1.6.6 annex: every link of the chain self-checks — the probe rides the
+    // same origin-root router under the canonical /api path.
+    expect(paths).toContain("/api/myrmidon/monitoring/selfcheck");
+  });
 });

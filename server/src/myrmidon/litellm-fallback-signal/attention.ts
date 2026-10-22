@@ -21,6 +21,19 @@
 // split tracing-health uses. No new table: the feed recomputes on every list.
 
 import type { AttentionSeverity } from "@paperclipai/shared";
+// myrmidon(BOT-RUNTIME-TUNING D2): the settings contract of the signal (stored
+// instance settings over environment over defaults).
+import {
+  DEFAULT_FALLBACK_SIGNAL_INTERVAL_SEC,
+  DEFAULT_FALLBACK_SIGNAL_MIN_CALLS,
+  DEFAULT_FALLBACK_SIGNAL_THRESHOLD_PCT,
+  DEFAULT_FALLBACK_SIGNAL_WINDOW_SEC,
+  FALLBACK_SIGNAL_ENV_KEYS,
+  fallbackSignalIntervalMs,
+  fallbackSignalWindowMs,
+  readFallbackSignalSettingsFromEnv,
+  type FallbackSignalSettings as StoredFallbackSignalSettings,
+} from "@paperclipai/shared";
 
 export const FALLBACK_ATTENTION_DEDUP_PREFIX = "model_fallback:";
 export const FALLBACK_ATTENTION_ACTION_TRANSITION = "myrmidon.model_fallback.signal";
@@ -31,34 +44,25 @@ export function fallbackDedupKey(agentId: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Settings (read in the sweep, not here)
+// Settings (resolved by the sweep and the settings API, not here)
 // ---------------------------------------------------------------------------
+//
+// myrmidon(BOT-RUNTIME-TUNING D2): the values now come from the shared contract
+// — the stored instance settings, then a set environment variable, then the
+// built-in default (see `@paperclipai/shared`, myrmidon-fallback-signal). This
+// module keeps the millisecond shape the sweep works in, and the names the
+// deployment already uses keep their meaning.
 
-export const FALLBACK_ENABLED_ENV = "MYRMIDON_MODEL_FALLBACK_ENABLED";
-export const FALLBACK_THRESHOLD_PCT_ENV = "MYRMIDON_MODEL_FALLBACK_THRESHOLD_PCT";
-export const FALLBACK_MIN_CALLS_ENV = "MYRMIDON_MODEL_FALLBACK_MIN_CALLS";
-export const FALLBACK_WINDOW_SEC_ENV = "MYRMIDON_MODEL_FALLBACK_WINDOW_SEC";
-export const FALLBACK_INTERVAL_SEC_ENV = "MYRMIDON_MODEL_FALLBACK_INTERVAL_SEC";
+export const FALLBACK_ENABLED_ENV = FALLBACK_SIGNAL_ENV_KEYS.enabled;
+export const FALLBACK_THRESHOLD_PCT_ENV = FALLBACK_SIGNAL_ENV_KEYS.thresholdPct;
+export const FALLBACK_MIN_CALLS_ENV = FALLBACK_SIGNAL_ENV_KEYS.minCalls;
+export const FALLBACK_WINDOW_SEC_ENV = FALLBACK_SIGNAL_ENV_KEYS.windowSec;
+export const FALLBACK_INTERVAL_SEC_ENV = FALLBACK_SIGNAL_ENV_KEYS.intervalSec;
 
-export const DEFAULT_FALLBACK_THRESHOLD_PCT = 20;
-export const DEFAULT_FALLBACK_MIN_CALLS = 20;
-export const DEFAULT_FALLBACK_WINDOW_SEC = 3600;
-export const DEFAULT_FALLBACK_SWEEP_INTERVAL_SEC = 300;
-const MIN_FALLBACK_THRESHOLD_PCT = 1;
-const MAX_FALLBACK_THRESHOLD_PCT = 100;
-const MIN_FALLBACK_MIN_CALLS = 1;
-const MIN_FALLBACK_WINDOW_SEC = 300;
-const MAX_FALLBACK_WINDOW_SEC = 86_400;
-const MIN_FALLBACK_SWEEP_INTERVAL_SEC = 60;
-const MAX_FALLBACK_SWEEP_INTERVAL_SEC = 86_400;
-
-function readInt(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
-  const raw = env[name]?.trim();
-  if (!raw) return fallback;
-  const value = Number(raw);
-  if (!Number.isInteger(value)) return fallback;
-  return value;
-}
+export const DEFAULT_FALLBACK_THRESHOLD_PCT = DEFAULT_FALLBACK_SIGNAL_THRESHOLD_PCT;
+export const DEFAULT_FALLBACK_MIN_CALLS = DEFAULT_FALLBACK_SIGNAL_MIN_CALLS;
+export const DEFAULT_FALLBACK_WINDOW_SEC = DEFAULT_FALLBACK_SIGNAL_WINDOW_SEC;
+export const DEFAULT_FALLBACK_SWEEP_INTERVAL_SEC = DEFAULT_FALLBACK_SIGNAL_INTERVAL_SEC;
 
 export interface FallbackSignalSettings {
   /** Master switch; off unless explicitly "1"/"true" — deployment values default off. */
@@ -73,23 +77,25 @@ export interface FallbackSignalSettings {
   intervalMs: number;
 }
 
+/** The shared contract's seconds into the milliseconds the sweep counts in. */
+export function toFallbackSignalSettings(stored: StoredFallbackSignalSettings): FallbackSignalSettings {
+  return {
+    enabled: stored.enabled,
+    windowMs: fallbackSignalWindowMs(stored),
+    thresholdPct: stored.thresholdPct,
+    minCalls: stored.minCalls,
+    intervalMs: fallbackSignalIntervalMs(stored),
+  };
+}
+
+/**
+ * Effective settings from the environment alone, with the built-in defaults.
+ * The sweep uses the stored-aware resolver (settings.ts) instead; this stays
+ * for callers that only have an environment — and it is the reader the module
+ * had before the stored settings existed, unchanged in behaviour.
+ */
 export function readFallbackSignalSettings(env: NodeJS.ProcessEnv = process.env): FallbackSignalSettings {
-  const enabledRaw = env[FALLBACK_ENABLED_ENV]?.trim().toLowerCase();
-  const enabled = enabledRaw === "1" || enabledRaw === "true";
-  const thresholdPct = Math.min(
-    Math.max(readInt(env, FALLBACK_THRESHOLD_PCT_ENV, DEFAULT_FALLBACK_THRESHOLD_PCT), MIN_FALLBACK_THRESHOLD_PCT),
-    MAX_FALLBACK_THRESHOLD_PCT,
-  );
-  const minCalls = Math.max(readInt(env, FALLBACK_MIN_CALLS_ENV, DEFAULT_FALLBACK_MIN_CALLS), MIN_FALLBACK_MIN_CALLS);
-  const windowSec = Math.min(
-    Math.max(readInt(env, FALLBACK_WINDOW_SEC_ENV, DEFAULT_FALLBACK_WINDOW_SEC), MIN_FALLBACK_WINDOW_SEC),
-    MAX_FALLBACK_WINDOW_SEC,
-  );
-  const intervalSec = Math.min(
-    Math.max(readInt(env, FALLBACK_INTERVAL_SEC_ENV, DEFAULT_FALLBACK_SWEEP_INTERVAL_SEC), MIN_FALLBACK_SWEEP_INTERVAL_SEC),
-    MAX_FALLBACK_SWEEP_INTERVAL_SEC,
-  );
-  return { enabled, windowMs: windowSec * 1000, thresholdPct, minCalls, intervalMs: intervalSec * 1000 };
+  return toFallbackSignalSettings(readFallbackSignalSettingsFromEnv(env));
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +276,7 @@ export function readModelFallbackSignals(companyId: string): ModelFallbackAttent
   return signalByCompany.get(companyId) ?? [];
 }
 
-/** Test helper: forget every recorded signal. */
+/** Forget every recorded signal: the sweep's switch went off, and tests. */
 export function resetModelFallbackSignals(): void {
   signalByCompany.clear();
 }

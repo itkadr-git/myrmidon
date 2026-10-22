@@ -33,6 +33,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 import type {
   PaperclipPluginManifestV1,
   PluginLauncherDeclaration,
@@ -53,9 +54,12 @@ import { pluginDatabaseService } from "./plugin-database.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): activation gate — a manifest that opts in
 // stays unactivated until a valid key is accepted in the instance settings.
 import { instanceSettingsService } from "./instance-settings.js";
-import { readPluginEntitlementKeys } from "../myrmidon/plugin-entitlement/store.js";
+import { readPluginEntitlementKeys, readPluginEntitlementPublicKey } from "../myrmidon/plugin-entitlement/store.js";
+import { resolvePaperclipInstanceId } from "../home-paths.js";
 import { resolvePluginActivation } from "./plugin-entitlement-enforcement.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -166,6 +170,10 @@ export function buildPluginWorkerEnv(input: {
 }): Record<string, string> {
   const processEnv = input.processEnv ?? process.env;
   const env: Record<string, string> = {
+    // myrmidon(REBRAND-C): pass both spellings; plugins read MYRMIDON_* with
+    // the PAPERCLIP_* alias fallback.
+    MYRMIDON_DEPLOYMENT_MODE: input.instanceInfo.deploymentMode ?? "",
+    MYRMIDON_DEPLOYMENT_EXPOSURE: input.instanceInfo.deploymentExposure ?? "",
     PAPERCLIP_DEPLOYMENT_MODE: input.instanceInfo.deploymentMode ?? "",
     PAPERCLIP_DEPLOYMENT_EXPOSURE: input.instanceInfo.deploymentExposure ?? "",
   };
@@ -329,6 +337,9 @@ export interface PluginInstallOptions {
    * Ignored when localPath is set.
    */
   version?: string;
+
+  /** Capabilities explicitly approved for an upgrade escalation. */
+  approvedCapabilities?: string[];
 
   /**
    * Plugin install directory where packages are managed.
@@ -787,8 +798,8 @@ function formatLocalPluginManualBuildHint(
   const manualBuildCommand = buildLocalPluginRecoveryCommand(packageRoot, pkgJson, { repoRoot: options.repoRoot });
   if (!manualBuildCommand) return "";
 
-  const autoBuildDisabled = (options.processEnv ?? process.env)["PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD"] === "1"
-    ? " Auto-build is disabled by PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD=1."
+  const autoBuildDisabled = readProductEnvFrom(options.processEnv ?? process.env, "DISABLE_PLUGIN_AUTOBUILD") === "1"
+    ? " Auto-build is disabled by the plugin autobuild compatibility setting."
     : "";
 
   return `${autoBuildDisabled} Run \`${manualBuildCommand}\` from the repo root and retry.`;
@@ -882,7 +893,7 @@ export async function ensureLocalPluginBuilt(
   } = {},
 ): Promise<void> {
   const processEnv = options.processEnv ?? process.env;
-  if (processEnv["PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD"] === "1") return;
+  if (readProductEnvFrom(processEnv, "DISABLE_PLUGIN_AUTOBUILD") === "1") return;
   if (!isRepoBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) return;
 
   const missingEntrypoints = listMissingDeclaredPluginEntrypoints(packageRoot, pkgJson);
@@ -1201,7 +1212,7 @@ export function pluginLoader(
   async function fetchAndValidate(
     installOptions: PluginInstallOptions,
   ): Promise<DiscoveredPlugin> {
-    const { packageName, localPath, version, installDir } = installOptions;
+    const { packageName, localPath, version, installDir, approvedCapabilities } = installOptions;
 
     if (!packageName && !localPath) {
       throw new Error("Either packageName or localPath must be provided");
@@ -1286,7 +1297,7 @@ export function pluginLoader(
         ? formatLocalPluginManualBuildHint(resolvedPackagePath, pkgJson)
         : "";
       throw new Error(
-        `Package ${resolvedPackageName} at ${resolvedPackagePath} does not appear to be a Paperclip plugin (no manifest found).${manualBuildHint}`,
+        `Package ${resolvedPackageName} at ${resolvedPackagePath} does not appear to be a ${PN} plugin (no manifest found).${manualBuildHint}`,
       );
     }
 
@@ -1378,7 +1389,7 @@ export function pluginLoader(
   ): Promise<PluginRecord> {
     const manifest = await loadManifestFromPackageRoot(packageRoot);
     if (!manifest) {
-      throw new Error(`Plugin package ${plugin.packageName} no longer exposes a Paperclip manifest`);
+      throw new Error(`Plugin package ${plugin.packageName} no longer exposes a ${PN} manifest`);
     }
     if (manifest.id !== plugin.pluginKey) {
       throw new Error(
@@ -1802,6 +1813,7 @@ export function pluginLoader(
         // the caller to re-supply the path every time.
         localPath = plugin.packagePath ?? undefined,
         version,
+        approvedCapabilities,
       } = upgradeOptions;
 
       log.info(
@@ -1815,6 +1827,7 @@ export function pluginLoader(
         localPath,
         version,
         installDir: localPluginDir,
+        approvedCapabilities,
       });
 
       const newManifest = discovered.manifest!;
@@ -1831,16 +1844,23 @@ export function pluginLoader(
       const newCaps = newManifest.capabilities ?? [];
       const escalated = newCaps.filter((c) => !oldCaps.has(c));
 
+      const approvalError =
+        `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
+        `The previous version declared [${[...oldCaps].join(", ")}]. ` +
+        `Please review and approve the capability escalation before upgrading.`;
       if (escalated.length > 0) {
-        log.warn(
-          { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
-          "plugin-loader: upgrade introduces new capabilities — requires admin approval",
-        );
-        throw new Error(
-          `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
-            `The previous version declared [${[...oldCaps].join(", ")}]. ` +
-            `Please review and approve the capability escalation before upgrading.`,
-        );
+        if (approvedCapabilities === undefined) {
+          log.warn(
+            { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
+            "plugin-loader: upgrade introduces new capabilities — requires admin approval",
+          );
+          throw new Error(approvalError);
+        }
+        const approved = [...new Set(approvedCapabilities)].sort();
+        const escalatedList = [...escalated].sort();
+        if (approved.length !== approvedCapabilities.length || approved.join("\u0000") !== escalatedList.join("\u0000")) {
+          throw new Error(approvalError);
+        }
       }
 
       // 4. Update the existing record
@@ -2255,8 +2275,13 @@ export function pluginLoader(
       // "not ready", not an error: the loader retries it on the next pass.
       // ------------------------------------------------------------------
       if (manifest.requiresEntitlement === true) {
-        const entitlementKeys = await readPluginEntitlementKeys(instanceSettingsService(db));
-        const activation = resolvePluginActivation(manifest, entitlementKeys);
+        const entitlementSettings = instanceSettingsService(db);
+        const entitlementKeys = await readPluginEntitlementKeys(entitlementSettings);
+        const verificationPublicKey = await readPluginEntitlementPublicKey(entitlementSettings);
+        const activation = resolvePluginActivation(manifest, entitlementKeys, {
+          publicKeyPem: verificationPublicKey,
+          instanceId: resolvePaperclipInstanceId(),
+        });
         if (!activation.activate) {
           log.info(
             { pluginId, pluginKey, reason: activation.reason },

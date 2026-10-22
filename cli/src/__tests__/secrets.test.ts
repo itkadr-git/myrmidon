@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent, CompanySecret } from "@paperclipai/shared";
+import type { AgentConfigurationSummary, CompanySecret } from "@paperclipai/shared";
 import type { PaperclipConfig } from "../config/schema.js";
 import { secretsCheck } from "../checks/secrets-check.js";
 import {
@@ -12,31 +12,23 @@ import {
   toPlainEnvValue,
 } from "../commands/client/secrets.js";
 
-function agent(partial: Partial<Agent>): Agent {
+// myrmidon(PERF-DIET-G): the migration reader takes the configuration
+// projection (GET /companies/:id/agent-configurations), not a company list row.
+function agent(partial: Partial<AgentConfigurationSummary>): AgentConfigurationSummary {
   return {
     id: "agent-12345678",
     companyId: "company-1",
     name: "Coder",
-    urlKey: "coder",
     role: "engineer",
     title: null,
-    icon: null,
     status: "idle",
     reportsTo: null,
-    capabilities: null,
     adapterType: "codex_local",
     adapterConfig: {},
     runtimeConfig: {},
-    budgetMonthlyCents: 0,
-    spentMonthlyCents: 0,
-    pauseReason: null,
-    pausedAt: null,
     permissions: {
       canCreateAgents: false,
     },
-    lastHeartbeatAt: null,
-    metadata: null,
-    createdAt: new Date("2026-04-26T00:00:00.000Z"),
     updatedAt: new Date("2026-04-26T00:00:00.000Z"),
     ...partial,
   };

@@ -5,7 +5,7 @@ import type { AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
  * Paperclip host. The label is a constant, so a local target check never
  * carries an environment ID, a config value, or a credential-derived string.
  */
-export const ADAPTER_TEST_HOST_TARGET_LABEL = "Paperclip host";
+export const ADAPTER_TEST_HOST_TARGET_LABEL = `${PRODUCT_NAME} host`;
 
 // The login hint may show a login URL. The URL must be a normalized https URL
 // with an allowlisted Claude or Anthropic host and no query or fragment. A host
@@ -49,6 +49,8 @@ export interface SandboxProbeDiagnosticFields {
   // it. The helper sanitizes it again before it logs it.
   errorClass?: string | null;
 }
+// myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
+import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
 
 /**
  * Read the class name of a thrown value for a safe probe diagnostic. The
@@ -185,6 +187,6 @@ export function buildAdapterTestTargetCheck(input: {
     level: "info",
     message: input.targetIsRemote
       ? `Probing inside environment: ${label}`
-      : "Probing on the Paperclip host.",
+      : `Probing on the ${PRODUCT_NAME} host.`,
   };
 }

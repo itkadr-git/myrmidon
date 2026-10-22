@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { useEffect, useMemo, useRef, useState, type SVGProps } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -7,15 +8,18 @@ import type {
   CatalogSkill,
   CatalogSkillFileDetail,
   CatalogSkillSource,
+  AgentConfigurationSummary,
   CompanySkillCompatibility,
   CompanySkillCreateRequest,
   CompanySkillDetail,
+  CompanySkillDiscoveredSkill,
   CompanySkillFileDetail,
   CompanySkillFileInventoryEntry,
   CompanySkillListItem,
   CompanySkillProjectScanResult,
   CompanySkillSharingScope,
   CompanySkillSourceBadge,
+  CompanySkillTestRun,
   CompanySkillTrustLevel,
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
@@ -24,6 +28,7 @@ import type {
 import { companySkillsApi } from "../api/companySkills";
 import { foldersApi } from "../api/folders";
 import { agentsApi } from "../api/agents";
+import { secretsApi } from "../api/secrets";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs, type Breadcrumb } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -36,13 +41,15 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { CopyText } from "../components/CopyText";
 import { Identity } from "../components/Identity";
 import { AgentIcon } from "../components/AgentIconPicker";
-import { AgentMultiSelect } from "../components/AgentMultiSelect";
+import { AgentMultiSelect, AgentSelect } from "../components/AgentMultiSelect";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import {
   SkillPolicyDenialNotice,
   useSkillPolicyDenial,
 } from "@/components/skill-studio/SkillPolicySurfaces";
+// myrmidon(1.6.5 BASE-SKILLS): the company base-skills panel of the Skills screen.
+import { CompanyBaseSkillsPanel } from "@/components/skill-studio/CompanyBaseSkillsPanel";
 import {
   Dialog,
   DialogContent,
@@ -566,6 +573,27 @@ export function resolveDiscoveryTab(tabParam: string | null): DiscoveryTab {
 
 export function withDiscoveryTab(current: URLSearchParams, tab: DiscoveryTab): URLSearchParams {
   return withSkillsDiscoveryView(current, tab);
+}
+
+export function isDomainImportSource(rawInput: string): boolean {
+  const trimmed = rawInput.trim();
+  if (!trimmed) return false;
+  if (/^npx\s+skills\s+add/i.test(trimmed)) return false;
+  if (/^(\/|\.\/|\.\.\/|[a-zA-Z]:\\)/.test(trimmed)) return false;
+  if (trimmed.includes("github.com") || trimmed.includes("skills.sh")) return false;
+  let testUrl = trimmed;
+  if (!/^https?:\/\//i.test(testUrl)) {
+    testUrl = `https://${testUrl}`;
+  }
+  try {
+    const url = new URL(testUrl);
+    if (!url.hostname || !url.hostname.includes(".")) return false;
+    const lower = url.hostname.toLowerCase();
+    if (lower.endsWith("github.com") || lower.endsWith("skills.sh")) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function skillDetailBreadcrumbs(
@@ -2265,7 +2293,89 @@ export function InstallPreviewDialog({
   );
 }
 
-type AttachAgentOption = {
+export function DiscoveredSkillsDialog({
+  open,
+  onOpenChange,
+  source,
+  skills,
+  onImport,
+  isPending,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  source: string;
+  skills: CompanySkillDiscoveredSkill[];
+  onImport: (skillName: string) => void;
+  isPending: boolean;
+}) {
+  const [selectedName, setSelectedName] = useState<string>(skills[0]?.name ?? "");
+
+  useEffect(() => {
+    if (skills[0] && (!selectedName || !skills.some((s) => s.name === selectedName))) {
+      setSelectedName(skills[0].name);
+    }
+  }, [skills, selectedName]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Discovered Skills</DialogTitle>
+          <DialogDescription>
+            Found {skills.length} skill{skills.length === 1 ? "" : "s"} at{" "}
+            <span className="font-mono text-foreground">{source}</span>. Select a skill to import.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="max-h-72 space-y-2 overflow-y-auto py-2">
+          {skills.map((skill) => (
+            <div
+              key={skill.name}
+              role="button"
+              tabIndex={0}
+              onClick={() => setSelectedName(skill.name)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setSelectedName(skill.name);
+                }
+              }}
+              className={cn(
+                "flex cursor-pointer flex-col gap-1 rounded-md border p-3 text-sm transition-colors",
+                selectedName === skill.name
+                  ? "border-primary bg-primary/5 text-foreground"
+                  : "border-border hover:bg-accent/40 text-muted-foreground",
+              )}
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-foreground">{skill.name}</span>
+                <Badge variant="outline" className="font-mono text-(length:--text-nano)">
+                  {skill.digest ? skill.digest.slice(0, 12) : "no digest"}
+                </Badge>
+              </div>
+              {skill.description ? (
+                <p className="line-clamp-2 text-xs text-muted-foreground">{skill.description}</p>
+              ) : null}
+            </div>
+          ))}
+        </div>
+        <DialogFooter showCloseButton>
+          <Button
+            type="button"
+            disabled={!selectedName || isPending}
+            onClick={() => {
+              if (selectedName) onImport(selectedName);
+            }}
+          >
+            {isPending ? <RefreshCw className="mr-1.5 h-4 w-4 animate-spin" /> : null}
+            Import selected
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export type AttachAgentOption = {
   id: string;
   name: string;
   adapterType: string;
@@ -2347,6 +2457,416 @@ function AttachAgentsPopover({
         </Badge>
       ) : null}
     />
+  );
+}
+
+export function SkillRequiredKeysSection({
+  companyId,
+  requiredEnv,
+  attachAgents,
+}: {
+  companyId: string;
+  requiredEnv: string[];
+  attachAgents: AttachAgentOption[];
+}) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+
+  const secretsQuery = useQuery({
+    queryKey: queryKeys.secrets.list(companyId),
+    queryFn: () => secretsApi.list(companyId),
+    enabled: Boolean(companyId),
+  });
+
+  const configsQuery = useQuery({
+    queryKey: queryKeys.agents.configurations(companyId),
+    queryFn: () => agentsApi.listConfigurations(companyId),
+    enabled: Boolean(companyId),
+  });
+
+  const secrets = secretsQuery.data ?? [];
+  const configs = configsQuery.data ?? [];
+
+  if (!requiredEnv || requiredEnv.length === 0) {
+    return (
+      <section data-testid="skill-required-keys-section">
+        <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Required keys</div>
+        <p className="text-xs text-muted-foreground">No required environment variables declared.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section data-testid="skill-required-keys-section" className="space-y-3">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Required keys</div>
+      <div className="space-y-3">
+        {requiredEnv.map((envKey) => (
+          <SkillRequiredKeyRow
+            key={envKey}
+            companyId={companyId}
+            envKey={envKey}
+            secrets={secrets}
+            configs={configs}
+            attachAgents={attachAgents}
+            onSecretsInvalidate={() => {
+              queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
+            }}
+            onAgentsInvalidate={() => {
+              queryClient.invalidateQueries({ queryKey: queryKeys.agents.configurations(companyId) });
+              queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+            }}
+            pushToast={pushToast}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function SkillRequiredKeyRow({
+  companyId,
+  envKey,
+  secrets,
+  configs,
+  attachAgents,
+  onSecretsInvalidate,
+  onAgentsInvalidate,
+  pushToast,
+}: {
+  companyId: string;
+  envKey: string;
+  secrets: Array<{ id: string; name: string; key?: string | null }>;
+  configs: AgentConfigurationSummary[];
+  attachAgents: AttachAgentOption[];
+  onSecretsInvalidate: () => void;
+  onAgentsInvalidate: () => void;
+  pushToast: (toast: { tone: "success" | "error" | "warn" | "info"; title: string; body?: string }) => void;
+}) {
+  const currentlyBoundSecretId = useMemo(() => {
+    for (const config of configs) {
+      const adapterConfig = config.adapterConfig as Record<string, unknown> | null;
+      const env = adapterConfig?.env as Record<string, unknown> | null;
+      const binding = env?.[envKey] as { type?: string; secretId?: string } | null;
+      if (binding && binding.type === "secret_ref" && binding.secretId) {
+        return binding.secretId;
+      }
+    }
+    return null;
+  }, [configs, envKey]);
+
+  const [selectedSecretId, setSelectedSecretId] = useState<string>(currentlyBoundSecretId ?? "");
+  const [creatingSecret, setCreatingSecret] = useState(false);
+  const [newSecretName, setNewSecretName] = useState(envKey);
+  const [newSecretValue, setNewSecretValue] = useState("");
+  const [isCreatingSecret, setIsCreatingSecret] = useState(false);
+  const [isUpdatingBindings, setIsUpdatingBindings] = useState(false);
+
+  useEffect(() => {
+    if (currentlyBoundSecretId && !selectedSecretId) {
+      setSelectedSecretId(currentlyBoundSecretId);
+    }
+  }, [currentlyBoundSecretId, selectedSecretId]);
+
+  const boundAgentIds = useMemo(() => {
+    if (!selectedSecretId) return new Set<string>();
+    const ids = new Set<string>();
+    for (const config of configs) {
+      const adapterConfig = config.adapterConfig as Record<string, unknown> | null;
+      const env = adapterConfig?.env as Record<string, unknown> | null;
+      const binding = env?.[envKey] as { type?: string; secretId?: string } | null;
+      if (binding && binding.type === "secret_ref" && binding.secretId === selectedSecretId) {
+        ids.add(config.id);
+      }
+    }
+    return ids;
+  }, [configs, envKey, selectedSecretId]);
+
+  async function handleCreateSecret() {
+    if (!newSecretValue.trim()) return;
+    setIsCreatingSecret(true);
+    try {
+      const created = await secretsApi.create(companyId, {
+        name: newSecretName.trim() || envKey,
+        value: newSecretValue,
+      });
+      onSecretsInvalidate();
+      setSelectedSecretId(created.id);
+      setNewSecretValue("");
+      setCreatingSecret(false);
+      pushToast({ tone: "success", title: "Secret created", body: `Created secret "${created.name}".` });
+    } catch (err) {
+      pushToast({ tone: "error", title: "Failed to create secret", body: err instanceof Error ? err.message : "Error creating secret." });
+    } finally {
+      setIsCreatingSecret(false);
+    }
+  }
+
+  async function handleAgentBindingsSave(nextAgentIds: Set<string>) {
+    if (!selectedSecretId) {
+      pushToast({ tone: "warn", title: "Select a secret first", body: "Please select or create a secret before binding agents." });
+      return;
+    }
+    setIsUpdatingBindings(true);
+    try {
+      const toAdd = Array.from(nextAgentIds).filter((id) => !boundAgentIds.has(id));
+      const toRemove = Array.from(boundAgentIds).filter((id) => !nextAgentIds.has(id));
+
+      for (const agentId of toAdd) {
+        const detail = await agentsApi.get(agentId, companyId);
+        const adapterConfig = { ...((detail.adapterConfig ?? {}) as Record<string, unknown>) };
+        const env = { ...((adapterConfig.env ?? {}) as Record<string, unknown>) };
+        env[envKey] = { type: "secret_ref", secretId: selectedSecretId };
+        await agentsApi.update(agentId, { adapterConfig: { ...adapterConfig, env }, replaceAdapterConfig: true }, companyId);
+      }
+
+      for (const agentId of toRemove) {
+        const detail = await agentsApi.get(agentId, companyId);
+        const adapterConfig = { ...((detail.adapterConfig ?? {}) as Record<string, unknown>) };
+        const env = { ...((adapterConfig.env ?? {}) as Record<string, unknown>) };
+        delete env[envKey];
+        await agentsApi.update(agentId, { adapterConfig: { ...adapterConfig, env }, replaceAdapterConfig: true }, companyId);
+      }
+
+      onAgentsInvalidate();
+      pushToast({ tone: "success", title: "Bindings updated", body: `Updated agents for ${envKey}.` });
+    } catch (err) {
+      pushToast({ tone: "error", title: "Failed to update bindings", body: err instanceof Error ? err.message : "Error updating agent bindings." });
+    } finally {
+      setIsUpdatingBindings(false);
+    }
+  }
+
+  return (
+    <div className="rounded-md border border-border p-3 space-y-2.5" data-testid={`required-env-${envKey}`}>
+      <div className="flex items-center justify-between">
+        <code className="rounded bg-muted/60 px-1.5 py-0.5 font-mono text-xs font-semibold text-foreground">
+          {envKey}
+        </code>
+        {!creatingSecret ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 text-(length:--text-nano)"
+            onClick={() => {
+              setCreatingSecret(true);
+              setNewSecretName(envKey);
+              setNewSecretValue("");
+            }}
+          >
+            + Create secret
+          </Button>
+        ) : null}
+      </div>
+
+      {creatingSecret ? (
+        <div className="space-y-2 rounded border border-border bg-muted/30 p-2 text-xs">
+          <div className="font-medium text-foreground">New Secret for {envKey}</div>
+          <Input
+            value={newSecretName}
+            onChange={(e) => setNewSecretName(e.target.value)}
+            placeholder="Secret name"
+            className="h-7 text-xs"
+          />
+          <Input
+            type="password"
+            value={newSecretValue}
+            onChange={(e) => setNewSecretValue(e.target.value)}
+            placeholder="Secret value"
+            className="h-7 text-xs"
+          />
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              className="h-7 text-xs"
+              onClick={handleCreateSecret}
+              disabled={!newSecretValue.trim() || isCreatingSecret}
+            >
+              {isCreatingSecret ? <RefreshCw className="mr-1 h-3 w-3 animate-spin" /> : null}
+              Save secret
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => {
+                setCreatingSecret(false);
+                setNewSecretValue("");
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <select
+            value={selectedSecretId}
+            onChange={(e) => {
+              if (e.target.value === "__new__") {
+                setCreatingSecret(true);
+                setNewSecretName(envKey);
+                setNewSecretValue("");
+              } else {
+                setSelectedSecretId(e.target.value);
+              }
+            }}
+            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            data-testid={`select-secret-${envKey}`}
+          >
+            <option value="">Select secret…</option>
+            {secrets.map((secret) => (
+              <option key={secret.id} value={secret.id}>
+                {secret.name} {secret.key ? `(${secret.key})` : ""}
+              </option>
+            ))}
+            <option value="__new__">+ Create new secret…</option>
+          </select>
+
+          {selectedSecretId ? (
+            <div className="space-y-1">
+              <div className="text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
+                Bind to agents
+              </div>
+              <AgentMultiSelect
+                agents={attachAgents}
+                selectedAgentIds={boundAgentIds}
+                onSave={handleAgentBindingsSave}
+                pending={isUpdatingBindings}
+                triggerLabel="Bind to agents"
+                triggerSize="sm"
+                emptyMessage="No agents available to bind."
+              />
+              {boundAgentIds.size > 0 ? (
+                <p className="text-(length:--text-nano) text-muted-foreground">
+                  Bound to {boundAgentIds.size} agent{boundAgentIds.size === 1 ? "" : "s"}.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function SkillDeliveryCheckSection({
+  companyId,
+  skillId,
+  agents,
+  attachedAgentIds,
+}: {
+  companyId: string;
+  skillId: string;
+  agents: AttachAgentOption[];
+  attachedAgentIds: string[];
+}) {
+  const [selectedAgentId, setSelectedAgentId] = useState<string>(
+    attachedAgentIds[0] ?? agents[0]?.id ?? "",
+  );
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [lastRun, setLastRun] = useState<CompanySkillTestRun | null>(null);
+  const { pushToast } = useToastActions();
+
+  useEffect(() => {
+    if (!selectedAgentId && (attachedAgentIds[0] || agents[0]?.id)) {
+      setSelectedAgentId(attachedAgentIds[0] ?? agents[0]?.id ?? "");
+    }
+  }, [attachedAgentIds, agents, selectedAgentId]);
+
+  const runDetailQuery = useQuery({
+    queryKey: ["skill-delivery-test-run", companyId, skillId, activeRunId],
+    queryFn: () => companySkillsApi.testRunDetail(companyId, skillId, activeRunId!),
+    enabled: Boolean(activeRunId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "queued" || status === "running" ? 1500 : false;
+    },
+  });
+
+  const checkMutation = useMutation({
+    mutationFn: () => companySkillsApi.createTestRun(companyId, skillId, { agentId: selectedAgentId }),
+    onSuccess: (run) => {
+      setActiveRunId(run.id);
+      setLastRun(run);
+      pushToast({ tone: "info", title: "Delivery check started", body: `Run created for ${run.agentId}` });
+    },
+    onError: (error) => {
+      pushToast({ tone: "error", title: "Delivery check failed to start", body: error instanceof Error ? error.message : "Failed to start test run." });
+    },
+  });
+
+  const run = runDetailQuery.data ?? lastRun;
+  const isRunning = checkMutation.isPending || (run && (run.status === "queued" || run.status === "running"));
+  const isSucceeded = run?.status === "succeeded";
+  const isFailed = run?.status === "failed" || Boolean(run?.error);
+
+  return (
+    <section data-testid="skill-delivery-check-section" className="space-y-3">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Check delivery</div>
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <select
+            value={selectedAgentId}
+            onChange={(e) => setSelectedAgentId(e.target.value)}
+            disabled={Boolean(isRunning) || agents.length === 0}
+            className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            data-testid="delivery-agent-select"
+          >
+            {agents.length === 0 ? (
+              <option value="">No agents available</option>
+            ) : (
+              agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name} ({agent.adapterType})
+                </option>
+              ))
+            )}
+          </select>
+          <Button
+            size="sm"
+            onClick={() => checkMutation.mutate()}
+            disabled={!selectedAgentId || Boolean(isRunning)}
+            data-testid="check-delivery-button"
+          >
+            {isRunning ? <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+            Check delivery
+          </Button>
+        </div>
+
+        {isRunning ? (
+          <div className="flex items-center gap-2 rounded-md border border-border bg-accent/20 p-2.5 text-xs text-muted-foreground">
+            <RefreshCw className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+            <span>Delivery check running ({run?.status ?? "queued"})...</span>
+          </div>
+        ) : null}
+
+        {isSucceeded ? (
+          <div className="rounded-md border border-border bg-accent/40 p-2.5 text-xs text-foreground" data-testid="delivery-success-result">
+            <div className="flex items-center gap-1.5 font-medium text-foreground">
+              <Check className="h-4 w-4" />
+              <span>Delivery verified</span>
+            </div>
+            {run?.outputSnapshot ? (
+              <pre className="mt-2 max-h-36 overflow-y-auto whitespace-pre-wrap rounded bg-muted/60 p-2 font-mono text-xs text-muted-foreground">
+                {run.outputSnapshot}
+              </pre>
+            ) : null}
+          </div>
+        ) : null}
+
+        {isFailed ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2.5 text-xs text-destructive" data-testid="delivery-failure-result">
+            <div className="flex items-center gap-1.5 font-medium text-destructive">
+              <X className="h-4 w-4" />
+              <span>Delivery check failed</span>
+            </div>
+            <pre className="mt-2 max-h-36 overflow-y-auto whitespace-pre-wrap rounded bg-muted/60 p-2 font-mono text-xs text-destructive">
+              {run?.error || run?.outputSnapshot || "Execution error during delivery test."}
+            </pre>
+          </div>
+        ) : null}
+      </div>
+    </section>
   );
 }
 
@@ -3485,6 +4005,19 @@ export function SkillDetailPage({
             </div>
           </section>
 
+          <SkillRequiredKeysSection
+            companyId={detail.companyId}
+            requiredEnv={detail.requiredEnv}
+            attachAgents={attachAgents}
+          />
+
+          <SkillDeliveryCheckSection
+            companyId={detail.companyId}
+            skillId={detail.id}
+            agents={attachAgents}
+            attachedAgentIds={detail.usedByAgents.map((agent) => agent.id)}
+          />
+
           {/* Provenance: where this skill came from, with org/path linked when
               available. Bundled/catalog skills surface their source label too
               (PAP-10907). */}
@@ -4400,10 +4933,39 @@ export function CompanySkills() {
     }
   }
 
+  const [discoveredSkillsDialog, setDiscoveredSkillsDialog] = useState<{
+    open: boolean;
+    source: string;
+    skills: CompanySkillDiscoveredSkill[];
+  } | null>(null);
+
+  const discoverSkill = useMutation({
+    mutationFn: (sourceUrl: string) => companySkillsApi.discover(selectedCompanyId!, sourceUrl),
+    onSuccess: (result, sourceUrl) => {
+      if (result.skills.length === 0) {
+        pushToast({ tone: "warn", title: "No skills found", body: `No skills were discovered at ${sourceUrl}` });
+        return;
+      }
+      setDiscoveredSkillsDialog({
+        open: true,
+        source: sourceUrl,
+        skills: result.skills,
+      });
+    },
+    onError: (error) => {
+      reportSkillError(error, "Skill discovery failed", "Failed to discover skills from site.", "Discovering skills");
+    },
+  });
+
   const importSkill = useMutation({
-    mutationFn: (importSource: string) => companySkillsApi.importFromSource(selectedCompanyId!, importSource),
+    mutationFn: (param: string | { source: string; skillName?: string | null }) => {
+      const src = typeof param === "string" ? param : param.source;
+      const name = typeof param === "string" ? null : (param.skillName ?? null);
+      return companySkillsApi.importFromSource(selectedCompanyId!, src, name);
+    },
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
+      setDiscoveredSkillsDialog(null);
       if (result.imported[0]) navigate(routeForSkill(result.imported[0]));
       pushToast({
         tone: "success",
@@ -5174,6 +5736,10 @@ export function CompanySkills() {
       setEmptySourceHelpOpen(true);
       return;
     }
+    if (isDomainImportSource(trimmedSource)) {
+      discoverSkill.mutate(trimmedSource);
+      return;
+    }
     importSkill.mutate(trimmedSource);
   }
 
@@ -5341,11 +5907,11 @@ export function CompanySkills() {
               <Input
                 value={source}
                 onChange={(event) => setSource(event.target.value)}
-                placeholder="Paste path, GitHub URL, or skills.sh command"
+                placeholder="Paste domain (e.g. kie.ai), GitHub URL, path, or skills.sh"
                 className="h-9 rounded-none border-0 px-0 shadow-none focus-visible:ring-0"
               />
-              <Button size="sm" onClick={handleAddSkillSource} disabled={importSkill.isPending}>
-                {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Import"}
+              <Button size="sm" onClick={handleAddSkillSource} disabled={importSkill.isPending || discoverSkill.isPending}>
+                {importSkill.isPending || discoverSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Import"}
               </Button>
             </div>
             <a
@@ -5375,6 +5941,21 @@ export function CompanySkills() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {discoveredSkillsDialog ? (
+        <DiscoveredSkillsDialog
+          open={discoveredSkillsDialog.open}
+          onOpenChange={(open) => {
+            if (!open) setDiscoveredSkillsDialog(null);
+          }}
+          source={discoveredSkillsDialog.source}
+          skills={discoveredSkillsDialog.skills}
+          onImport={(skillName) =>
+            importSkill.mutate({ source: discoveredSkillsDialog.source, skillName })
+          }
+          isPending={importSkill.isPending}
+        />
+      ) : null}
 
       {selectedCompanyId ? (
         <ImportSkillsFromProjectDialog
@@ -5481,6 +6062,13 @@ export function CompanySkills() {
             </Tabs>
           </div>
         ) : null}
+        {/* myrmidon(1.6.5 BASE-SKILLS): the company base-skills registry — the
+            skills every agent gets automatically, and who still misses one. */}
+        {selectedCompanyId ? (
+          <div className="px-4 pt-4">
+            <CompanyBaseSkillsPanel companyId={selectedCompanyId} />
+          </div>
+        ) : null}
         <DiscoveryGrid
           tab={effectiveDiscoveryTab}
           categories={discoveryCategoryCounts}
@@ -5564,7 +6152,7 @@ export function CompanySkills() {
           onMoveSelected={showInstalledBulkSelection ? (folderId) => void moveSelectedSkills(folderId) : undefined}
           onCreateFolderAndMoveSelected={showInstalledBulkSelection ? () => openCreateFolder(selectedSkillIds) : undefined}
           onClearSelected={showInstalledBulkSelection ? () => setSelectedSkillIds([]) : undefined}
-          folderNudgeStorageKey={showInstalledFolders ? `paperclip:skills-folder-nudge:${selectedCompanyId ?? "none"}` : undefined}
+          folderNudgeStorageKey={showInstalledFolders ? `myrmidon:skills-folder-nudge:${selectedCompanyId ?? "none"}` : undefined}
           showBrowseRails={browseRailsEnabled}
         />
         </>

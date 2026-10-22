@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 // @vitest-environment jsdom
 
 import { act, type ReactNode } from "react";
@@ -843,16 +844,16 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await render();
     await passAccessStep();
 
-    expect(container.textContent).toContain("Connect with Paperclip Cloud");
+    expect(container.textContent).toContain("Connect with managed cloud service");
     expect(container.textContent).toContain(
-      "You must connect this instance to Paperclip Cloud to connect to Gmail (you only need to do this once).",
+      "You must connect this instance to a managed cloud service to connect to Gmail (you only need to do this once).",
     );
-    expect(buttonByText("Connect with Paperclip Cloud")?.closest(".rounded-xl")?.classList.contains("border-border")).toBe(true);
+    expect(buttonByText("Connect with managed cloud service")?.closest(".rounded-xl")?.classList.contains("border-border")).toBe(true);
     expect(container.textContent).not.toContain("Required once for managed Google sign-in.");
     expect(container.textContent).not.toContain("Your OAuth app");
 
     await act(async () => {
-      buttonByText("Connect with Paperclip Cloud")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonByText("Connect with managed cloud service")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
@@ -877,7 +878,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     getCloudConnectorEnrollmentMock.mockResolvedValue({ status: "not_configured" });
     await render(client, false, <ConnectionSetupFlow host="dialog" serviceSlug="gmail" interactionId="intent-1" requestedAgentId="agent-1" />);
     await passAccessStep();
-    await act(async () => buttonByText("Connect with Paperclip Cloud")?.click());
+    await act(async () => buttonByText("Connect with managed cloud service")?.click());
     await flushReact();
     expect(open).toHaveBeenCalled();
     if (popupBlocked) {
@@ -925,7 +926,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }
     await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="gmail" interactionId="intent-1" requestedAgentId="agent-1" />);
     await passAccessStep();
-    await act(async () => buttonByText("Connect with Paperclip Cloud")?.click());
+    await act(async () => buttonByText("Connect with managed cloud service")?.click());
     await flushReact();
     expect(popup.close).toHaveBeenCalledOnce();
     expect(popup.location.assign).not.toHaveBeenCalled();
@@ -1046,7 +1047,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await passAccessStep();
 
-    expect(container.textContent).toContain("Connect with Paperclip Cloud");
+    expect(container.textContent).toContain("Connect with managed cloud service");
     expect(container.textContent).not.toContain("GitHub token");
   });
 
@@ -1059,7 +1060,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).toContain("Step 2 of 2");
     expect(container.textContent).toContain("Continue to GitHub");
     expect(container.textContent).not.toContain("Connect GitHub as");
-    expect(container.textContent).not.toContain("Connect with Paperclip Cloud");
+    expect(container.textContent).not.toContain("Connect with managed cloud service");
   });
 
   it("explains unavailable GitHub sign-in without silently switching to a PAT", async () => {
@@ -1111,7 +1112,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render(queryClient);
 
-    expect(container.textContent).toContain("Myrmidon couldn’t check Cloud registration. Try again.");
+    expect(container.textContent).toContain("The managed cloud service could not check registration. Try again.");
     expect(container.textContent).not.toContain("Your GitHub key");
 
     await act(async () => {
@@ -1169,12 +1170,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
     await act(async () => {
-      buttonByText("Connect with Paperclip Cloud")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonByText("Connect with managed cloud service")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
     expect(JSON.parse(window.sessionStorage.getItem(
-      "paperclip.connector-enrollment-access:github",
+      "myrmidon.connector-enrollment-access:github",
     ) ?? "null")).toEqual({
       companyId: "company-1",
       grantKind: "agent",
@@ -1201,7 +1202,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const coldLoadClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await render(coldLoadClient);
 
-    expect(window.sessionStorage.getItem("paperclip.connector-enrollment-access:github")).toBeNull();
+    expect(window.sessionStorage.getItem("myrmidon.connector-enrollment-access:github")).toBeNull();
     mockCompany.value = {
       selectedCompanyId: "company-1",
       selectedCompany: { id: "company-1", name: "Paperclip" },
@@ -1218,7 +1219,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("Step 2 of 2");
     expect(window.sessionStorage.getItem(
-      "paperclip.connector-enrollment-access:github",
+      "myrmidon.connector-enrollment-access:github",
     )).toBeNull();
     await act(async () => {
       buttonByText("Continue to GitHub")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1242,7 +1243,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         ? `source=${slug}&stage=setup&cloud_connector=enrolled`
         : `source=${slug}`;
       if (enrollmentReturn) {
-        window.sessionStorage.setItem(`paperclip.connector-enrollment-access:${slug}`, JSON.stringify({
+        window.sessionStorage.setItem(`myrmidon.connector-enrollment-access:${slug}`, JSON.stringify({
           companyId: "company-1", grantKind: "user", installChoice: "all", agentIds: [],
         }));
       }
@@ -1267,7 +1268,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       await flushReact();
       // Change auth methods too, including apps with only one capability.
       expect(container.textContent).not.toContain("How do you want to connect?");
-      expect(container.textContent).not.toContain("Connect with Paperclip Cloud");
+      expect(container.textContent).not.toContain("Connect with managed cloud service");
       expect(container.textContent).not.toContain("Your OAuth app");
       expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
       const customerAuth = buttonByText("Use your own Google OAuth app");
@@ -1312,8 +1313,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
 
-    expect(container.textContent).not.toContain("You must connect this instance to Paperclip Cloud");
-    expect(container.textContent).not.toContain("Connect with Paperclip Cloud");
+    expect(container.textContent).not.toContain("You must connect this instance to a managed cloud service");
+    expect(container.textContent).not.toContain("Connect with managed cloud service");
   });
 
   it("keeps Google Drive prerequisites off access and defaults to its write-capable method", async () => {
@@ -1323,7 +1324,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await render();
 
     expect(container.textContent).not.toContain("Google Developer Preview access required");
-    expect(container.textContent).not.toContain("does not enable unrelated Paperclip customers");
+    expect(container.textContent).not.toContain("does not enable unrelated Myrmidon customers");
     expect(container.textContent).not.toContain("final project-registration email");
     expect(container.textContent).not.toContain("Apply or verify Developer Preview enrollment");
     expect(radioContaining("Just me")).toBeTruthy();

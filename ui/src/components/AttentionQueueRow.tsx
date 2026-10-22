@@ -424,7 +424,7 @@ function EyebrowSeparator() {
   );
 }
 
-type CompactDecisionAction = "accept" | "approve" | "reject" | "request_revision";
+type CompactDecisionAction = "accept" | "approve" | "reject" | "request_revision" | "confirm_execution_hold" | "inspect_replay_block";
 
 function compactDecisionAction(item: AttentionItem, verbId: string): CompactDecisionAction | null {
   if (item.sourceKind === "approval" && (verbId === "approve" || verbId === "reject" || verbId === "request_revision")) {
@@ -439,6 +439,14 @@ function compactDecisionAction(item: AttentionItem, verbId: string): CompactDeci
     && (verbId === "accept" || verbId === "reject")
   ) {
     return verbId;
+  }
+  // myrmidon(OPE-6011): the held-task card's Confirm verb — the person
+  // attests the failed run left no external action and the task resumes.
+  if (item.sourceKind === "execution_hold" && verbId === "confirm_continue") {
+    return "confirm_execution_hold";
+  }
+  if (item.sourceKind === "replay_blocked" && verbId === "inspect") {
+    return "inspect_replay_block";
   }
   return null;
 }
@@ -506,6 +514,15 @@ function CompactDecisionActions({
         if (action === "accept") return issuesApi.acceptInteraction(issueId, item.subject.id);
         return issuesApi.rejectInteraction(issueId, item.subject.id);
       }
+      // myrmidon(OPE-6011): confirm a held task's run left no external
+      // action — the card's subject.id is the task itself.
+      if (item.sourceKind === "execution_hold" && action === "confirm_execution_hold") {
+        return issuesApi.confirmExecutionHold(item.subject.id);
+      }
+      if (item.sourceKind === "replay_blocked" && action === "inspect_replay_block") {
+        window.location.assign(item.subject.href ?? `/${companyId}/issues/${item.subject.identifier}`);
+        return Promise.resolve();
+      }
       throw new Error("This decision must be completed from its detail view.");
     },
     onSuccess: (_result, action) => {
@@ -563,12 +580,14 @@ function CompactDecisionActions({
 function decisionLabel(action: CompactDecisionAction): string {
   if (action === "request_revision") return "sent for revision";
   if (action === "accept" || action === "approve") return "approved";
+  if (action === "confirm_execution_hold") return "confirmed";
   return "rejected";
 }
 
 function compactDecisionSuccessLabel(sourceKind: AttentionItem["sourceKind"], action: CompactDecisionAction): string {
   if (sourceKind === "approval") return `Approval ${decisionLabel(action)}`;
   if (sourceKind === "join_request") return `Join request ${decisionLabel(action)}`;
+  if (sourceKind === "execution_hold") return "Execution hold lifted — task resumed";
   return action === "accept" ? "Confirmation accepted" : "Confirmation declined";
 }
 

@@ -56,6 +56,12 @@ if (process.env.MYRMIDON_MAX_RUN_STARTS_PER_MINUTE === undefined) {
 if (process.env.MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE === undefined) {
   process.env.MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE = "off";
 }
+// myrmidon(1.6.5 RUN-ADMISSION rc.3): likewise the CPU busy ceiling — a
+// loaded CI runner would hold every run in the queue. The suites that
+// exercise it build their own admission with explicit limit objects.
+if (process.env.MYRMIDON_MAX_HOST_CPU_BUSY_PERCENT === undefined) {
+  process.env.MYRMIDON_MAX_HOST_CPU_BUSY_PERCENT = "off";
+}
 // myrmidon(GITHUB-SHARED-IDENTITY): the vendor cloud GitHub connector is off by
 // default in our builds; the vendor suites exercise it, so they run with it on.
 // Our suites that pin the default stub the variable themselves.

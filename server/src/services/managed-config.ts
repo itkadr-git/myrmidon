@@ -2,7 +2,7 @@
  * Cloud managed-config bootstrap (harness → app contract).
  *
  * Instances managed by the Paperclip Cloud harness receive one environment
- * variable, `PAPERCLIP_MANAGED_CONFIG`, holding a single JSON document:
+ * variable, `MYRMIDON_MANAGED_CONFIG`, holding a single JSON document:
  *
  *   {
  *     "v": 1,
@@ -37,10 +37,13 @@ import {
   instanceExperimentalSettingsSchema,
   type ManagedExperimentalFeatureKey,
 } from "@paperclipai/shared";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 export type ManagedConfigEnv = Record<string, string | undefined>;
 
-export const MANAGED_CONFIG_ENV_KEY = "PAPERCLIP_MANAGED_CONFIG";
+export const MANAGED_CONFIG_ENV_KEY = "MYRMIDON_MANAGED_CONFIG";
 export const SUPPORTED_MANAGED_CONFIG_VERSION = 1;
 
 export interface ManagedInstanceConfig {
@@ -133,13 +136,13 @@ function describeJsonValue(value: unknown): string {
 }
 
 /**
- * Parse `PAPERCLIP_MANAGED_CONFIG` from a raw env map. Returns null only when
+ * Parse `MYRMIDON_MANAGED_CONFIG` from a raw env map. Returns null only when
  * the variable is absent (self-hosted). Throws with a precise error on a
  * present-but-blank value or any malformed document so a cloud instance fails
  * to start (fail closed).
  */
 export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceConfig | null {
-  const raw = env[MANAGED_CONFIG_ENV_KEY];
+  const raw = readProductEnvFrom(env, "MANAGED_CONFIG");
   if (raw === undefined) return null;
   if (raw.trim().length === 0) {
     fail(
@@ -262,7 +265,7 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
     // here provisions that row, so a longer list can never be satisfied.
     if (doc.environments.length > 1) {
       fail(
-        `"environments" supports at most one entry: each entry provisions the single Paperclip-managed sandbox environment (DB invariant environments_managed_sandbox_idx)`,
+        `"environments" supports at most one entry: each entry provisions the single ${PN}-managed sandbox environment (DB invariant environments_managed_sandbox_idx)`,
       );
     }
     for (const [index, entry] of doc.environments.entries()) {
@@ -346,7 +349,7 @@ let cache: { raw: string | undefined; config: ManagedInstanceConfig | null } | n
 export function getManagedInstanceConfig(
   env: ManagedConfigEnv = process.env,
 ): ManagedInstanceConfig | null {
-  const raw = env[MANAGED_CONFIG_ENV_KEY];
+  const raw = readProductEnvFrom(env, "MANAGED_CONFIG");
   if (cache && cache.raw === raw) return cache.config;
   const config = parseManagedConfigEnv(env);
   cache = { raw, config };

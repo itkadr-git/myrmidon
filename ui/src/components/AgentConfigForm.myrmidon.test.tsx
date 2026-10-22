@@ -14,6 +14,7 @@ import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm } from "./AgentConfigForm";
 import { botContainerApi, type BotContainerStatus } from "./myrmidon/botContainerApi";
 import { ApiError } from "../api/client";
+import { BOT_CONTAINER_DEFAULTS } from "./myrmidon/botContainerConfig";
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(),
@@ -198,7 +199,7 @@ const CAPABILITIES = getEnvironmentCapabilities(["claude_local", "codex_local"],
   },
 });
 
-const CARD = { enabled: true, image: "bot-image:1", memoryMb: 2048, cpus: 1, pidsLimit: 512 };
+const CARD = { enabled: true, image: "bot-image:1", memoryMb: 1024, cpus: 1, pidsLimit: 512 };
 
 const STATUS: BotContainerStatus = {
   enabled: true,
@@ -351,7 +352,7 @@ describe("myrmidon(W2b) agent form container section", () => {
 
     expect(buttonByText(result.container, "Container")).toBeTruthy();
     expect((byId(result.container, "image") as HTMLInputElement).value).toBe("bot-image:1");
-    expect((byId(result.container, "memoryMb") as HTMLInputElement).value).toBe("2048");
+    expect((byId(result.container, "memoryMb") as HTMLInputElement).value).toBe("1024");
     expect(statusSpy).toHaveBeenCalledWith("agent-1");
     expect(byId(result.container, "status")?.textContent).toBe("Running (bot-image:1)");
     expect((byId(result.container, "apply") as HTMLButtonElement).disabled).toBe(false);
@@ -383,7 +384,8 @@ describe("myrmidon(W2b) agent form container section", () => {
     expect(result.onSave).toHaveBeenCalledWith(
       expect.objectContaining({
         replaceAdapterConfig: true,
-        adapterConfig: expect.objectContaining({ container: CARD }),
+        // the section fills in BOT_CONTAINER_DEFAULTS; memory default is 1024 MB since #1480
+        adapterConfig: expect.objectContaining({ container: { ...CARD, memoryMb: BOT_CONTAINER_DEFAULTS.memoryMb } }),
       }),
     );
   });
@@ -418,6 +420,76 @@ describe("myrmidon(W2b) agent form container section", () => {
     expect(result.onSave).toHaveBeenCalledWith(
       expect.objectContaining({
         adapterConfig: expect.objectContaining({ container: { ...CARD, memoryMb: 4096 } }),
+      }),
+    );
+  });
+});
+
+// myrmidon(1.6.6-SETTINGS-UI-B): the agent daily caps and idle-skip in the
+// Advanced Run Policy section of the heartbeat form.
+describe("myrmidon(1.6.6-SETTINGS-UI-B) agent form heartbeat limits", () => {
+  let roots: Root[] = [];
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(CAPABILITIES);
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+    const noSession = () =>
+      Promise.reject(new ApiError("Adapter login session not found", 404, { error: "Adapter login session not found" }));
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockImplementation(noSession);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockImplementation(noSession);
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
+    vi.spyOn(botContainerApi, "status").mockResolvedValue(STATUS);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    roots = [];
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("seeds the fields from runtimeConfig.heartbeat and patches all three", async () => {
+    const result = await renderForm({
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300, maxDailyRuns: 24, maxDailyCostCents: 500, skipTimerWhenNoActionableWork: true } },
+    });
+    roots.push(result.root);
+
+    await act(async () => buttonByText(result.container, "Advanced Run Policy")!.click());
+    await flushReact();
+    const runs = result.container.querySelector('[data-testid="agent-max-daily-runs"]') as HTMLInputElement;
+    const cost = result.container.querySelector('[data-testid="agent-max-daily-cost-cents"]') as HTMLInputElement;
+    expect(runs.value).toBe("24");
+    expect(cost.value).toBe("500");
+
+    await act(async () => setInputValue(runs, "40"));
+    await flushReact();
+    await act(async () => setInputValue(cost, "0"));
+    await flushReact();
+    await act(async () => (result.container.querySelector('[data-testid="agent-skip-timer-no-actionable-work"]') as HTMLElement).click());
+    await flushReact();
+    await act(async () => buttonByText(result.container, "Save")!.click());
+    // 0 in the cost field means "no limit": the patch carries null, not 0
+    // (a stored 0 would block every run, which the server reads as a cap).
+    expect(result.onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeConfig: expect.objectContaining({
+          heartbeat: expect.objectContaining({
+            maxDailyRuns: 40,
+            maxDailyCostCents: null,
+            skipTimerWhenNoActionableWork: false,
+          }),
+        }),
       }),
     );
   });

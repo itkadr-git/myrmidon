@@ -59,8 +59,9 @@ export interface CloneReportEntry {
   error: string | null;
 }
 
-/** myrmidon(BOT-DISK-D): one clone root of the container-start hard-link self-check. */
-export interface HardlinkRootResult {
+/** myrmidon(BOT-DISK-D / BOT-DISK-H8b): one clone root of the container-start
+ *  reflink self-check (formerly the hard-link check). */
+export interface ReflinkRootResult {
   /** Container path of the root: /data/hermes, /workspace or /scratch. */
   root: string;
   ok: boolean;
@@ -68,12 +69,14 @@ export interface HardlinkRootResult {
 }
 
 /** The self-check the entrypoint runs at every start (docker/bot-runtime/entrypoint.sh)
- *  and the reporter passes on: a hard link from the pnpm store into each clone root. */
-export interface HardlinkCheck {
+ *  and the reporter passes on: a reflink (cp --reflink) from the pnpm store
+ *  into each clone root. myrmidon(BOT-DISK-H8b): replaces the BOT-DISK-D
+ *  hard-link check; `method` is "reflink". */
+export interface ReflinkCheck {
   store: string;
   importMethod: string;
   ok: boolean;
-  roots: HardlinkRootResult[];
+  roots: ReflinkRootResult[];
 }
 
 /** myrmidon(1.6.5 BOT-DISK-G): one check of the container-start shared-git-objects self-check. */
@@ -91,21 +94,76 @@ export interface GitRefCheck {
   store: string;
   ok: boolean;
   checks: GitRefCheckItem[];
+  /** myrmidon(1.6.5 BOT-DISK-G live check): the store's facts as snapshotted by
+   *  the entrypoint at this bot's start. Additive; null on an older image. */
+  storeState: GitStoreState | null;
+}
+
+/** myrmidon(1.6.5-BOT-DISK-UV-B board side): one probe root of the
+ *  container-start uv cache self-check (docker/bot-runtime/entrypoint.sh). */
+export interface UvCacheRootResult {
+  /** Container path of the probed root: /data/hermes, /workspace or /scratch. */
+  root: string;
+  ok: boolean;
+  error: string | null;
+}
+
+/** The uv cache self-check the entrypoint runs at every start and the reporter
+ *  passes on: the configured cache directory holds a file of the bot's uid and
+ *  a file inside it links (reflink for `clone`, hardlink otherwise) into every
+ *  clone root. Fields as the entrypoint writes them
+ *  (version/method/checkedAt/cache/ok/roots[]). */
+export interface UvCacheCheck {
+  /** UV_LINK_MODE the entrypoint probed with (clone is the image default). */
+  method: string;
+  /** ISO timestamp of the check at the bot's start; informational only. */
+  checkedAt: string | null;
+  /** The cache directory the probe ran against (the bot's UV_CACHE_DIR). */
+  cache: string;
+  ok: boolean;
+  roots: UvCacheRootResult[];
+}
+
+/** myrmidon(1.6.5 BOT-DISK-G live check): the facts of a bot's shared git-object
+ *  store — how many mirrors it holds, how large it is and which repositories.
+ *  The reporter reads them live into the report's `gitStore`
+ *  (docker/bot-runtime/git-reference/bot-clone-hygiene) and the entrypoint
+ *  snapshots the same shape at start into `gitRefCheck.storeState`
+ *  (docker/bot-runtime/entrypoint.sh), so the board can tell a working store
+ *  from the empty one of OPE-5281 without an exec into the bot. */
+export interface GitStoreState {
+  /** Container path of the store; "" when the store is explicitly off. */
+  path: string;
+  /** False when MYRMIDON_GIT_LOCAL_MIRROR is explicitly empty: no store at all. */
+  enabled: boolean;
+  /** Bare mirrors found under the store (their names are in `repos`). */
+  mirrorCount: number;
+  /** Allocated size of the store in bytes (du); 0 when it could not be walked. */
+  totalBytes: number;
+  /** The mirrored repositories as `owner/repo`. */
+  repos: string[];
 }
 
 export interface CloneReport {
   inspectedAtMs: number;
   repos: Map<string, CloneReportEntry>;
-  hardlinkCheck: HardlinkCheck | null;
+  reflinkCheck: ReflinkCheck | null;
   gitRefCheck: GitRefCheck | null;
+  /** myrmidon(1.6.5-BOT-DISK-UV-B board side): the container-start uv cache
+   *  self-check, passed on by the reporter. Additive; null on an older
+   *  reporter or image. */
+  uvCacheCheck: UvCacheCheck | null;
+  /** myrmidon(1.6.5 BOT-DISK-G live check): the store's facts, read live by the
+   *  reporter on this pass. Additive; null from an older reporter. */
+  gitStore: GitStoreState | null;
 }
 
-/** The report's `hardlinkCheck`, or null when absent or malformed. */
-export function parseHardlinkCheck(value: unknown): HardlinkCheck | null {
+/** The report's `reflinkCheck`, or null when absent or malformed. */
+export function parseReflinkCheck(value: unknown): ReflinkCheck | null {
   if (!value || typeof value !== "object") return null;
   const v = value as Record<string, unknown>;
   if (typeof v.store !== "string" || typeof v.ok !== "boolean" || !Array.isArray(v.roots)) return null;
-  const roots: HardlinkRootResult[] = [];
+  const roots: ReflinkRootResult[] = [];
   for (const item of v.roots.slice(0, 20)) {
     if (!item || typeof item !== "object") continue;
     const r = item as Record<string, unknown>;
@@ -136,6 +194,54 @@ export function parseGitRefCheck(value: unknown): GitRefCheck | null {
     store: typeof v.store === "string" ? v.store.slice(0, 500) : "unknown",
     ok: v.ok,
     checks,
+    storeState: parseGitStoreState(v.storeState),
+  };
+}
+
+/** The report's `uvCacheCheck` (myrmidon 1.6.5-BOT-DISK-UV-B board side), or
+ *  null when absent or malformed — an older reporter or image simply carries
+ *  none, which is not an error. */
+export function parseUvCacheCheck(value: unknown): UvCacheCheck | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.cache !== "string" || typeof v.ok !== "boolean" || !Array.isArray(v.roots)) return null;
+  const roots: UvCacheRootResult[] = [];
+  for (const item of v.roots.slice(0, 20)) {
+    if (!item || typeof item !== "object") continue;
+    const r = item as Record<string, unknown>;
+    if (typeof r.root !== "string" || typeof r.ok !== "boolean") continue;
+    roots.push({ root: r.root.slice(0, 200), ok: r.ok, error: typeof r.error === "string" ? r.error.slice(0, 500) : null });
+  }
+  return {
+    method: typeof v.method === "string" ? v.method.slice(0, 40) : "unknown",
+    checkedAt: typeof v.checkedAt === "string" ? v.checkedAt.slice(0, 40) : null,
+    cache: v.cache.slice(0, 500),
+    ok: v.ok,
+    roots,
+  };
+}
+
+/** The report's `gitStore`, or the check's `storeState` (myrmidon 1.6.5
+ *  BOT-DISK-G live check): null when absent or malformed — an older reporter or
+ *  entrypoint simply carries no store facts, which is not an error. */
+export function parseGitStoreState(value: unknown): GitStoreState | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.enabled !== "boolean") return null;
+  if (typeof v.mirrorCount !== "number" || !Number.isInteger(v.mirrorCount) || v.mirrorCount < 0) return null;
+  if (typeof v.totalBytes !== "number" || !Number.isFinite(v.totalBytes) || v.totalBytes < 0) return null;
+  const repos: string[] = [];
+  if (Array.isArray(v.repos)) {
+    for (const item of v.repos.slice(0, 500)) {
+      if (typeof item === "string" && item.length > 0) repos.push(item.slice(0, 200));
+    }
+  }
+  return {
+    path: typeof v.path === "string" ? v.path.slice(0, 500) : "",
+    enabled: v.enabled,
+    mirrorCount: v.mirrorCount,
+    totalBytes: Math.floor(v.totalBytes),
+    repos,
   };
 }
 
@@ -181,7 +287,14 @@ export function parseCloneReport(raw: string, nowMs: number): CloneReport | null
       error: malformed ? entry.error ?? "malformed report entry" : entry.error,
     });
   }
-  return { inspectedAtMs, repos, hardlinkCheck: parseHardlinkCheck(obj.hardlinkCheck), gitRefCheck: parseGitRefCheck(obj.gitRefCheck) };
+  return {
+    inspectedAtMs,
+    repos,
+    reflinkCheck: parseReflinkCheck(obj.reflinkCheck),
+    gitRefCheck: parseGitRefCheck(obj.gitRefCheck),
+    uvCacheCheck: parseUvCacheCheck(obj.uvCacheCheck),
+    gitStore: parseGitStoreState(obj.gitStore),
+  };
 }
 
 /** Why a reported container path cannot name a clone, or null when it can. */
@@ -222,11 +335,13 @@ export function decideCloneFate(entry: CloneReportEntry | undefined, quiet: bool
 
 /** A clone kept with unpushed work, idle longer than the TTL. */
 export interface CloneHygieneSignal {
-  /** `clone`: unpushed work in an idle clone. `hardlink` (BOT-DISK-D): pnpm cannot
-   *  hard-link from its store into `path` (a clone root), so installs there copy.
-   *  `gitref` (1.6.5 BOT-DISK-G): the shared-git-objects self-check failed, so
-   *  task clones on this bot copy the git history again. */
-  kind?: "clone" | "hardlink" | "gitref";
+  /** `clone`: unpushed work in an idle clone. `reflink` (BOT-DISK-H8b): pnpm
+   *  cannot reflink from its store into `path` (a clone root), so installs
+   *  there copy. `gitref` (1.6.5 BOT-DISK-G): the shared-git-objects self-check
+   *  failed, so task clones on this bot copy the git history again.
+   *  `uvcache` (1.6.5-BOT-DISK-UV-B board side): the uv cache self-check
+   *  failed, so uv installs on this bot fetch into a per-run cache. */
+  kind?: "clone" | "reflink" | "gitref" | "uvcache";
   botKey: string;
   /** Container path of the clone. */
   path: string;
@@ -243,6 +358,10 @@ export function cloneHygieneSignals(): CloneHygieneSignal[] {
 }
 
 /**
+ * @deprecated since 1.6.5 BOT-DISK-H: botd sends the C4 disk report to
+ * `POST /api/myrmidon/bots/me/disk-report` (bot-disk-report-routes.ts). This path
+ * keeps working unchanged for bots that still run the old in-container report.
+ *
  * Replace the signals of one bot with those in its report. `idleTtlMs` is the
  * lifecycle TTL in force; a clone counts as idle when the report's
  * `idleSeconds` exceeds it. Returns false when the text is not a usable report.
@@ -266,16 +385,17 @@ export function ingestCloneReport(botKey: string, raw: string, idleTtlMs: number
       observedAtMs: signals.get(key)?.observedAtMs ?? nowMs,
     });
   }
-  // myrmidon(BOT-DISK-D): a clone root the start-time self-check could not hard-link into.
-  for (const failed of report.hardlinkCheck?.roots.filter((root) => !root.ok) ?? []) {
-    const key = `${botKey}:hardlink:${failed.root}`;
+  // myrmidon(BOT-DISK-H8b): a clone root the start-time self-check could not
+  // reflink into (the card key is bot_disk_lifecycle/reflink).
+  for (const failed of report.reflinkCheck?.roots.filter((root) => !root.ok) ?? []) {
+    const key = `${botKey}:reflink:${failed.root}`;
     seen.add(key);
     signals.set(key, {
-      kind: "hardlink",
+      kind: "reflink",
       botKey,
       path: failed.root,
       branch: null,
-      reason: `cannot hard-link from the pnpm store ${report.hardlinkCheck?.store}: ${failed.error ?? "unknown error"}`,
+      reason: `cannot reflink from the pnpm store ${report.reflinkCheck?.store}: ${failed.error ?? "unknown error"}`,
       observedAtMs: signals.get(key)?.observedAtMs ?? nowMs,
     });
   }
@@ -290,6 +410,21 @@ export function ingestCloneReport(botKey: string, raw: string, idleTtlMs: number
       path: report.gitRefCheck?.store ?? "",
       branch: null,
       reason: `shared git objects check ${failed.check} failed: ${failed.error ?? "unknown error"}`,
+      observedAtMs: signals.get(key)?.observedAtMs ?? nowMs,
+    });
+  }
+  // myrmidon(1.6.5-BOT-DISK-UV-B board side): a uv cache self-check that
+  // failed at the bot's last start. One signal per failed probe root, keyed by
+  // the root; the board aggregates them into one fleet card.
+  for (const failed of report.uvCacheCheck?.roots.filter((root) => !root.ok) ?? []) {
+    const key = `${botKey}:uvcache:${failed.root}`;
+    seen.add(key);
+    signals.set(key, {
+      kind: "uvcache",
+      botKey,
+      path: failed.root,
+      branch: null,
+      reason: `uv cache check of ${failed.root} against ${report.uvCacheCheck?.cache ?? "the configured cache"} failed: ${failed.error ?? "unknown error"}`,
       observedAtMs: signals.get(key)?.observedAtMs ?? nowMs,
     });
   }

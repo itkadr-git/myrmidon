@@ -32,6 +32,7 @@ const SCOPE_HINTS: Record<BoardApiKeyScopeKind, string> = {
   agents_manage: "Read + agent and invite management",
   secrets_manage: "Read + secrets and secret providers",
   release: "Read + issues, work products, attachments",
+  monitoring_link: "One linking component (Zabbix aggregator, Alertmanager webhook, collector): create/update a task and report its own liveness",
 };
 
 function readable(error: unknown): string {

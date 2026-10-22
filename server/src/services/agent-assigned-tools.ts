@@ -14,6 +14,8 @@
 import { createHash } from "node:crypto";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+// myrmidon(B1c): product name in the tool-profile descriptions; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import {
   agents,
   heartbeatRuns,
@@ -28,12 +30,13 @@ import { filterResolvedGitHubConnectionsForRun } from "./git-credentials.js";
 import type { AdapterRuntimeMcpServer } from "../adapters/index.js";
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function configuredPaperclipApiBaseUrl(): string | null {
+  const apiUrlEnv = readProductEnv("API_URL");
   const configured =
-    typeof process.env.PAPERCLIP_API_URL === "string" &&
-    process.env.PAPERCLIP_API_URL.trim().length > 0
-      ? process.env.PAPERCLIP_API_URL
+    typeof apiUrlEnv === "string" && apiUrlEnv.trim().length > 0
+      ? apiUrlEnv
       : null;
   return configured
     ? configured.replace(/\/+$/, "").replace(/\/api$/, "")
@@ -220,7 +223,7 @@ export async function resolveAgentAssignedToolSet(input: {
         body: {
           name: `Native ${input.agent.name} ${assignmentDigest.slice(0, 8)}`,
           slug,
-          description: "Run-scoped Paperclip Runner MCP gateway.",
+          description: `Run-scoped ${PN} Runner MCP gateway.`,
           profileId: profile!.id,
           defaultProfileMode: "gateway_only",
           metadata: {
@@ -356,7 +359,7 @@ async function ensureAssignedProfile(
       const created = await access.createProfile(input.agent.companyId, {
         profileKey,
         name: `Native ${input.agent.id.slice(0, 8)} ${assignmentDigest.slice(0, 12)}`,
-        description: "Immutable Paperclip Runner MCP assignment profile.",
+        description: `Immutable ${PN} Runner MCP assignment profile.`,
         status: "active",
         defaultAction: "deny",
         metadata: {

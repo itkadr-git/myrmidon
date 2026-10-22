@@ -25,6 +25,7 @@ import type {
   WorkspaceReadinessState,
   WorkspaceSeedReadinessState,
 } from "@paperclipai/shared";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
 import {
   resolveWorkspaceHandoffLocalCompanyId,
   resolveWorkspaceHandoffLocalKey,
@@ -51,7 +52,7 @@ type SeedManifestSummary = {
  * with; the cwd fallback covers a guest launched without it.
  */
 export function resolveWorkspaceSeedMarkerDir(env: NodeJS.ProcessEnv = process.env): string {
-  const configPath = env.PAPERCLIP_CONFIG?.trim();
+  const configPath = readProductEnvFrom(env, "CONFIG")?.trim();
   if (configPath) return path.dirname(path.resolve(configPath));
   return path.resolve(process.cwd(), ".paperclip");
 }

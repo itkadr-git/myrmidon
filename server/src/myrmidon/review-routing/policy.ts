@@ -16,6 +16,9 @@ export interface RoutingIssue {
   responsibleUserId?: string | null;
   executionPolicy: unknown;
   executionState: unknown;
+  // myrmidon(HUMAN-REVIEW-WAIT): a declared human-only wait is never routed to
+  // an agent reviewer — the verdict belongs to a person by policy.
+  reviewPolicy?: string | null;
 }
 
 export interface ReviewerCandidate {
@@ -48,6 +51,8 @@ export function policyHasReviewerParticipant(policy: unknown): boolean {
  */
 export function issueNeedsReviewer(issue: RoutingIssue): boolean {
   if (issue.status !== "in_review") return false;
+  // myrmidon(HUMAN-REVIEW-WAIT): see the RoutingIssue field.
+  if (issue.reviewPolicy === "human_only") return false;
   if (policyHasReviewerParticipant(issue.executionPolicy)) return false;
   const state = asRecord(issue.executionState);
   if (state) {
@@ -116,6 +121,38 @@ export function pickReviewer(input: {
   return [...eligible].sort((a, b) => a.load - b.load || a.id.localeCompare(b.id))[0] ?? null;
 }
 
+/**
+ * myrmidon(REVIEW-ROUTING): the PR lane's reviewer pick. Both gates apply:
+ * the general board ceiling (`maxLoadPerReviewer` over `in_progress` +
+ * `in_review` board tasks) and the lane's own OPEN pr-review ceiling
+ * (`maxOpenReviewsPerReviewer`). `openPrLoadByAgent` counts only this lane's
+ * open review tasks; excluded ids cover the PR author's linked agent and any
+ * other hand-set exclusion. Least combined load wins, ties by id.
+ */
+export function pickPrReviewer(input: {
+  reviewers: readonly ReviewerCandidate[];
+  boardLoadByAgent: ReadonlyMap<string, number>;
+  openPrLoadByAgent: ReadonlyMap<string, number>;
+  excluded: ReadonlySet<string>;
+  maxLoadPerReviewer: number;
+  maxOpenReviewsPerReviewer: number;
+}): ReviewerCandidate | null {
+  const candidates: ReviewerCandidate[] = [];
+  for (const reviewer of input.reviewers) {
+    if (input.excluded.has(reviewer.id)) continue;
+    const openReviews = input.openPrLoadByAgent.get(reviewer.id) ?? 0;
+    if (openReviews >= input.maxOpenReviewsPerReviewer) continue;
+    const boardLoad = input.boardLoadByAgent.get(reviewer.id) ?? 0;
+    if (boardLoad >= input.maxLoadPerReviewer) continue;
+    candidates.push({ id: reviewer.id, role: reviewer.role, load: boardLoad + openReviews });
+  }
+  return pickReviewer({
+    candidates,
+    excluded: new Set<string>(),
+    maxLoad: Number.POSITIVE_INFINITY,
+  });
+}
+
 export const REVIEW_ROUTING_REVIEW_INSTRUCTIONS =
   "Automatic review routing: this task was in review with no reviewer. Approve only if the work is " +
   "complete and correct (that closes the task as done); request changes to send it back to the " +
@@ -173,6 +210,68 @@ export function buildReviewRoutingAssignPatch(input: {
     }
   }
   return patch;
+}
+
+export interface PrRoutingTaskPatch {
+  status: string;
+  assigneeAgentId: string;
+  assigneeUserId: null;
+  executionPolicy: Record<string, unknown>;
+  executionState: Record<string, unknown> | null;
+}
+
+/**
+ * myrmidon(REVIEW-ROUTING): the create-time shape of a PR-lane task. The new
+ * task gets exactly the review-stage shape the task lane writes when it routes
+ * a fresh `in_review` task — one review stage with the picked agent as its
+ * only participant, produced through `applyIssueExecutionPolicyTransition` —
+ * with the PR author as the return assignee (the human/bot whose PR this is
+ * has no board identity here, so the lane hands changes back to nobody:
+ * `returnAssignee` stays absent and "request changes" lands on the reviewer
+ * like any stage-less task). The transition decides the status; the lane
+ * mirrors whatever it produces (in practice `in_review` with the reviewer as
+ * assignee), never inventing a new stage shape.
+ */
+export function buildPrRoutingTaskPatch(input: {
+  reviewerAgentId: string;
+}): PrRoutingTaskPatch {
+  const policy = {
+    mode: "normal",
+    commentRequired: false,
+    stages: [
+      {
+        id: randomUUID(),
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ id: randomUUID(), type: "agent", agentId: input.reviewerAgentId, userId: null }],
+      },
+    ],
+  } as unknown as IssueExecutionPolicy;
+  const transition = applyIssueExecutionPolicyTransition({
+    issue: {
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      responsibleUserId: null,
+      createdByUserId: null,
+      executionPolicy: null,
+      executionState: null,
+    },
+    policy,
+    previousPolicy: null,
+    requestedStatus: "in_review",
+    requestedAssigneePatch: {},
+    actor: { agentId: null, userId: null },
+    reviewRequest: { instructions: REVIEW_ROUTING_REVIEW_INSTRUCTIONS },
+  });
+  const patch = { ...transition.patch, executionPolicy: policy } as Record<string, unknown>;
+  return {
+    status: typeof patch.status === "string" ? patch.status : "in_review",
+    assigneeAgentId: typeof patch.assigneeAgentId === "string" ? patch.assigneeAgentId : input.reviewerAgentId,
+    assigneeUserId: null,
+    executionPolicy: patch.executionPolicy as Record<string, unknown>,
+    executionState: (patch.executionState as Record<string, unknown> | null) ?? null,
+  };
 }
 
 /**

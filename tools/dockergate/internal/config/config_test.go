@@ -372,3 +372,30 @@ func TestSec(t *testing.T) {
 		t.Fatal("Sec")
 	}
 }
+
+// myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime root.
+func TestBotRuntimeRoot(t *testing.T) {
+	s := replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/srv/bot-runtime", "network"`)
+	if got := mustParse(t, s).BotRuntimeRoot; got != "/srv/bot-runtime" {
+		t.Fatalf("botRuntimeRoot: %q", got)
+	}
+	// Absent means "no shared runtime": every bot keeps its own bin, lazy-packages and lsp.
+	if got := mustParse(t, goodJSON).BotRuntimeRoot; got != "" {
+		t.Fatalf("a config without botRuntimeRoot must allow no runtime mount, got %q", got)
+	}
+	for name, body := range map[string]string{
+		"relative botRuntimeRoot":              replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "srv/runtime", "network"`),
+		"botRuntimeRoot with ..":               replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/srv/../etc", "network"`),
+		"botRuntimeRoot with a trailing slash": replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/srv/runtime/", "network"`),
+		"botRuntimeRoot is the root":           replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/", "network"`),
+		"botRuntimeRoot inside volumeRoot":     replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/srv/myrmidon-bots/x", "network"`),
+		"botRuntimeRoot is volumeRoot":         replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/srv/myrmidon-bots", "network"`),
+		"botRuntimeRoot holds volumeRoot":      replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/srv", "network"`),
+		"scope root overlaps botRuntimeRoot": replace(t, replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv/runtime/s", "network"`),
+			`"network"`, `"botRuntimeRoot": "/srv/runtime", "network"`),
+	} {
+		if _, _, err := config.Parse([]byte(body)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

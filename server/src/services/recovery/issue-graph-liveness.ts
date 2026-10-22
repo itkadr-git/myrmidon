@@ -1,4 +1,4 @@
-import { getAgentWorkEligibility, isAgentInvokable } from "@paperclipai/shared";
+import { getAgentWorkEligibility, isAgentInvokable, type IssueReviewPolicy } from "@paperclipai/shared";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
@@ -31,6 +31,10 @@ export interface IssueLivenessIssueInput {
   executionState?: Record<string, unknown> | null;
   monitorNextCheckAt?: Date | string | null;
   monitorAttemptCount?: number | null;
+  // myrmidon(HUMAN-REVIEW-WAIT): the review policy and the human owner are the
+  // facts that make "a human is reviewing this" a legal waiting state.
+  reviewPolicy?: IssueReviewPolicy | null;
+  responsibleUserId?: string | null;
 }
 
 export interface IssueLivenessRelationInput {
@@ -229,6 +233,26 @@ export function classifyIssueReviewPaths(
       ref: issue.assigneeUserId,
       agentId: null,
       userId: issue.assigneeUserId,
+      since: null,
+    });
+  }
+
+  // myrmidon(HUMAN-REVIEW-WAIT): `reviewPolicy: "human_only"` is the declaration
+  // that the next verdict must come from a person (the owner or a non-agent
+  // reviewer) even while the assignee stays an agent. Without this fact such a
+  // review reads as "stalled": every finished run re-armed an
+  // `issue_review_path_lost` wake and the executor woke every few minutes to
+  // repeat "waiting for the owner" (a human-only review on a board, 05.10). A human comment
+  // or attachment still wakes the assignee through the normal comment-wake
+  // path, so the review wait is silent until a person answers.
+  if (issue.reviewPolicy === "human_only") {
+    const waitingUserId =
+      issue.responsibleUserId ?? issue.createdByUserId ?? null;
+    paths.push({
+      kind: "human_reviewer",
+      ref: waitingUserId,
+      agentId: null,
+      userId: waitingUserId,
       since: null,
     });
   }

@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "key": "ABC-101",
+  "path": "/workspace/ABC-101",
+  "class": "E",
+  "repo": "acme/widgets",
+  "branch": "bot/ABC-101",
+  "base": "origin/main",
+  "reused": false
+}

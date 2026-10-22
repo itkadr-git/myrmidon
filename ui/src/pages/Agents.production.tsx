@@ -3,6 +3,8 @@ import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
+import { projectsApi } from "../api/projects";
+import { filterAgentsByScope, parseAgentScope } from "./Agents.scope-filters";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -22,6 +24,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
@@ -34,6 +37,7 @@ import {
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { useTranslation } from "@/i18n";
 
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
@@ -103,7 +107,10 @@ function filterAgents(agents: Agent[], tab: FilterTab, builtInAgentIds: Set<stri
 }
 
 function getConfiguredModel(agent: Agent): string | null {
-  const value = agent.adapterConfig?.model;
+  // myrmidon(PERF-DIET-G): the list ships the model precomputed; adapterConfig
+  // no longer travels with the row (the config lives behind
+  // GET /agents/:id/configuration).
+  const value = agent.adapterModel;
   if (typeof value !== "string") return null;
   const model = value.trim();
   return model.length > 0 ? model : null;
@@ -188,11 +195,13 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<st
 }
 
 export function Agents() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const location = useLocation();
+  const scope = parseAgentScope(location.search);
   const { isMobile } = useSidebar();
   const pathSegment = location.pathname.split("/").pop() ?? "all";
   const requestedTab: FilterTab = isFilterTab(pathSegment) ? pathSegment : "all";
@@ -205,8 +214,34 @@ export function Agents() {
     queryFn: () => instanceSettingsApi.get(),
     enabled: !!selectedCompanyId,
   });
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const activeProjects = (projects ?? []).filter((project) => !project.archivedAt);
+  const selectedProject = scope.type === "project"
+    ? activeProjects.find((project) => project.id === scope.projectId) ?? null
+    : null;
+  const [roleFilter, setRoleFilter] = useState("all");
+  const [modelFilter, setModelFilter] = useState("all");
+  const changeScope = (value: string) => {
+    setRoleFilter("all");
+    setModelFilter("all");
+    navigate(value === "company" ? `/agents/${tab}` : `/agents/${tab}?scope=project:${encodeURIComponent(value)}`);
+  };
+  const changeTab = (value: string) => {
+    setRoleFilter("all");
+    setModelFilter("all");
+    navigate(scope.type === "company" ? `/agents/${value}` : `/agents/${value}?scope=project:${encodeURIComponent(scope.projectId)}`);
+  };
   const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
   const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
+  useEffect(() => {
+    if (scope.type === "project" && projects && !selectedProject) {
+      navigate(`/agents/${tab}`, { replace: true });
+    }
+  }, [navigate, projects, scope.type, scope.type === "project" ? scope.projectId : "", selectedProject, tab]);
   const visibleTabItems = useMemo(
     () => AGENT_FILTER_TAB_ITEMS.filter((item) => item.value !== "builtin" || builtInAgentsEnabled),
     [builtInAgentsEnabled],
@@ -260,7 +295,7 @@ export function Agents() {
     resourceKey: "live-runs:agents-page",
     queryKey: runsQueryKey,
     enabled: !!selectedCompanyId,
-    refetchInterval: 15_000,
+    refetchInterval: 60_000,
     leaderOnly: true,
   });
   const { data: runs, dataUpdatedAt: runsUpdatedAt } = useQuery({
@@ -334,8 +369,17 @@ export function Agents() {
     return <PageSkeleton variant="list" />;
   }
 
-  const filtered = filterAgents(agents ?? [], tab, builtInAgentIds);
-  const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds);
+  const scopedAgents = filterAgentsByScope(agents ?? [], scope, activeProjects);
+  const scopedAgentIds = new Set(scopedAgents.map((agent) => agent.id));
+  const filtered = filterAgents(scopedAgents, tab, builtInAgentIds)
+    .filter((agent) => roleFilter === "all" || agent.role === roleFilter)
+    .filter((agent) => modelFilter === "all" || agent.adapterModel === modelFilter);
+  const scopedTree = (nodes: OrgNode[]): OrgNode[] => nodes.flatMap((node) => {
+    const reports = scopedTree(node.reports);
+    if (!scopedAgentIds.has(node.id)) return reports;
+    return [{ ...node, reports }];
+  });
+  const filteredOrg = filterOrgTree(scopedTree(orgTree ?? []), tab, builtInAgentIds);
   const environmentDataLoading = environmentsEnabled && environments === undefined;
   const showEnvironmentColumn = environmentsEnabled && (environments === undefined || environments.length > 1);
   const resolveRenderedEnvironment = (agentId: string) => (
@@ -481,13 +525,26 @@ export function Agents() {
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
-          <PageTabBar
-            items={visibleTabItems}
-            value={tab}
-            onValueChange={(v) => navigate(`/agents/${v}`)}
-          />
-        </Tabs>
+        <div className="flex flex-wrap items-center gap-3">
+          <Tabs value={scope.type === "company" ? "company" : scope.projectId} onValueChange={changeScope}>
+            <PageTabBar
+              align="start"
+              value={scope.type === "company" ? "company" : scope.projectId}
+              onValueChange={changeScope}
+              items={[
+                { value: "company", label: t("agents.scopeCompany") },
+                ...activeProjects.map((project) => ({ value: project.id, label: project.name })),
+              ]}
+            />
+          </Tabs>
+          <Tabs value={tab} onValueChange={changeTab}>
+            <PageTabBar
+              items={visibleTabItems}
+              value={tab}
+              onValueChange={changeTab}
+            />
+          </Tabs>
+        </div>
         <div className="flex items-center gap-2">
           {/* View toggle */}
           {!forceListView && (

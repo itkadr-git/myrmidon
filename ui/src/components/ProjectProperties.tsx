@@ -3,6 +3,7 @@ import { environmentDisplayLabel, filterManagedSandboxSelectableEnvironments } f
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project, SharedWorkspaceConcurrency } from "@paperclipai/shared";
+import { ProjectDefaultCaste } from "./ProjectDefaultCaste";
 import { ProjectRepositories } from "./ProjectRepositories";
 import { cn, formatDate } from "../lib/utils";
 import { environmentsApi } from "../api/environments";
@@ -10,6 +11,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { secretsApi } from "../api/secrets";
 import { useCompany } from "../context/CompanyContext";
+import { useCasteOptions } from "./myrmidon/castes/useCasteOptions";
 import { queryKeys } from "../lib/queryKeys";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
@@ -39,6 +41,8 @@ export type ProjectConfigFieldKey =
   | "status"
   | "goals"
   | "env"
+  // 1.6.5 (F-27 rework 09.10): the nest's default caste.
+  | "defaultCasteKey"
   | "execution_workspace_enabled"
   | "execution_workspace_default_mode"
   | "execution_workspace_shared_concurrency"
@@ -133,6 +137,36 @@ function PropertyRow({
         {children}
       </div>
     </div>
+  );
+}
+
+/**
+ * 1.6.5 (F-27 rework 09.10, design §2.1): the nest's default caste — a task
+ * of this project without a `caste_key` of its own takes this caste; "No
+ * default" clears it so the company default applies.
+ */
+function ProjectDefaultCastePicker({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (casteKey: string | null) => void;
+}) {
+  const { options } = useCasteOptions();
+  return (
+    <select
+      className="h-7 rounded-md border border-border bg-transparent px-2 text-sm"
+      value={value ?? ""}
+      onChange={(event) => onChange(event.target.value === "" ? null : event.target.value)}
+      data-testid="project-default-caste-select"
+    >
+      <option value="">No default (company default)</option>
+      {options.map((option) => (
+        <option key={option.key} value={option.key}>
+          {option.label}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -449,6 +483,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
             </p>
           )}
         </PropertyRow>
+        <ProjectDefaultCaste key={project.id} project={project} editable={Boolean(onUpdate || onFieldUpdate)} />
         {repositories ?? <ProjectRepositories key={project.id} project={project} />}
         <PropertyRow
           label={<FieldLabel label="Env" state={fieldState("env")} />}
@@ -472,6 +507,14 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
         </PropertyRow>
         <PropertyRow label={<FieldLabel label="Updated" state="idle" />}>
           <span className="text-sm">{formatDate(project.updatedAt)}</span>
+        </PropertyRow>
+        {/* 1.6.5 (F-27 rework 09.10, design §2.1): the nest's default caste —
+            a task of this project without a caste_key takes it. */}
+        <PropertyRow label={<FieldLabel label="Default caste" state={fieldState("defaultCasteKey")} />}>
+          <ProjectDefaultCastePicker
+            value={project.defaultCasteKey ?? null}
+            onChange={(defaultCasteKey) => commitField("defaultCasteKey", { defaultCasteKey })}
+          />
         </PropertyRow>
         {project.targetDate && (
           <PropertyRow label={<FieldLabel label="Target Date" state="idle" />}>

@@ -68,6 +68,13 @@ export interface GatewayKeyAdminPort {
   rotateKey(input: { alias: string; value: string }): Promise<boolean>;
   /** Removes a key by alias. */
   deleteKey(input: { alias: string }): Promise<void>;
+  /**
+   * Replaces the model allowlist of an existing key WITHOUT touching its
+   * value. Optional: the allowlist feature (1.6.1 MODEL-PROVIDERS B) skips
+   * gracefully when a port does not implement it. Returns false when the
+   * alias is unknown to the gateway.
+   */
+  setKeyAllowedModels?(input: { alias: string; models: string[] }): Promise<boolean>;
 }
 
 /** What a card's gateway key looks like to a caller: never the value itself. */
@@ -360,7 +367,11 @@ export function defaultAgentGatewayKeyDeps(
 export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): GatewayKeyAdminPort {
   const url = (path: string) => `${baseUrl.replace(/\/$/, "")}${path}`;
 
-  async function post(path: string, body: Record<string, unknown>): Promise<{ status: number; body: unknown }> {
+  async function post(
+    path: string,
+    body: Record<string, unknown>,
+    opts: { okStatuses?: number[] } = {},
+  ): Promise<{ status: number; body: unknown }> {
     const response = await fetch(url(path), {
       method: "POST",
       headers: { Authorization: `Bearer ${adminKey}`, "Content-Type": "application/json" },
@@ -373,7 +384,8 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
     } catch {
       parsed = null;
     }
-    if (!response.ok) {
+    const ok = opts.okStatuses ? opts.okStatuses.includes(response.status) : response.ok;
+    if (!ok) {
       throw unprocessable(`LLM gateway ${path} answered ${response.status}`, {
         code: "gateway_key_request_failed",
         status: response.status,
@@ -393,6 +405,16 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
     },
     async deleteKey({ alias }) {
       await post("/key/delete", { key_aliases: [alias] });
+    },
+    async setKeyAllowedModels({ alias, models }) {
+      // `/key/update` with key_alias but NO `key` field keeps the installed
+      // value and only replaces the metadata the fields present describe —
+      // here `models`, the allowlist the key may call. The agent's stored
+      // secret therefore never needs a rotation to change its allowlist.
+      // A 404 means the gateway does not know the alias: report false rather
+      // than throwing, exactly like rotateKey treats it.
+      const response = await post("/key/update", { key_alias: alias, models }, { okStatuses: [200, 404] });
+      return response.status !== 404;
     },
   };
 }

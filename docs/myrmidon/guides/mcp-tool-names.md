@@ -39,7 +39,7 @@ descriptions here would be a second, separate contract change (see
   package-rename decision).
 - The MCP `serverInfo` name `paperclip` — it is protocol metadata that some
   clients use as a connection key; renaming it is a separate compat decision.
-- Tool descriptions still contain the word "Paperclip" where the vendor wrote
+- Tool descriptions still contain the vendor product name where the vendor wrote
   them, because the runner's committed capability inventories pin those exact
   strings (changing one requires regenerating the spec against the eval
   corpus, which is a full-tier contract task, not part of D).
