@@ -318,16 +318,9 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
 
   it("applies per-nest REDACT settings before create and draft persistence", async () => {
     companyId = await makeCompany();
-    const nest = await db
-      .insert(projects)
-      // Knowledge currently uses companyId as nestId, while REDACT settings
-      // reference projects.id. Give this test nest the shared ID accepted by both FKs.
-      .values({ id: companyId, companyId, name: `REDACT nest ${randomUUID()}` })
-      .returning()
-      .then((rows) => rows[0]!);
-    const nestId = nest.id;
+    const nestId = companyId;
+    const otherCompanyId = await makeCompany();
     const mod = createKnowledgeModule(db, companyId, {
-      nestId,
       now: () => new Date("2026-10-08T00:00:00Z"),
       searchIndex: createMemorySearchIndex(),
     });
@@ -344,6 +337,9 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect((await mod.listRevisions("counterparty-test"))[0]?.content).toBe("Signed by [COUNTERPARTY]");
     await mod.draft("counterparty-test", { content: "Acme (test) renewal" }, AGENT);
     expect((await mod.listRevisions("counterparty-test"))[1]?.content).toBe("[COUNTERPARTY] renewal");
+    const otherMod = createKnowledgeModule(db, otherCompanyId, { searchIndex: createMemorySearchIndex() });
+    await otherMod.create({ slug: "counterparty-test", title: "Acme (test)", content: "Acme (test) remains visible" }, AGENT);
+    expect((await otherMod.listRevisions("counterparty-test"))[0]?.content).toBe("Acme (test) remains visible");
   });
 
   it("the second company sees none of the first company's knowledge", async () => {

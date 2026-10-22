@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { Router } from "express";
-import { projects } from "@paperclipai/db";
+import { companies } from "@paperclipai/db";
 import { nestRedactConfigSchema } from "@paperclipai/shared";
 import { badRequest } from "../../errors.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "../../routes/authz.js";
@@ -14,8 +14,10 @@ export function nestRedactRoutes(db: Db) {
     const allowedCompanies = req.actor.type === "board" && req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin
       ? req.actor.companyIds ?? []
       : undefined;
-    const where = allowedCompanies ? and(eq(projects.id, nestId), inArray(projects.companyId, allowedCompanies)) : eq(projects.id, nestId);
-    const row = await db.select({ id: projects.id }).from(projects).where(where).then((rows) => rows[0]);
+    const where = allowedCompanies
+      ? and(eq(companies.id, nestId), inArray(companies.id, allowedCompanies))
+      : eq(companies.id, nestId);
+    const row = await db.select({ id: companies.id }).from(companies).where(where).then((rows) => rows[0]);
     if (!row) throw badRequest("nest not found");
     return nestId;
   }
