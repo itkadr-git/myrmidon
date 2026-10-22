@@ -184,3 +184,12 @@ export function cardFleetHostPinned(card: { container?: unknown }): boolean {
   }
   return pinned;
 }
+/**
+ * Tenant-scoped key of a fleet site in the client map: a site name is unique
+ * only within a company, so two companies may both own "myr-vm1" with
+ * different URLs/tokens. Routing and the client manager must use this key,
+ * never the bare name, once the agent's company is known.
+ */
+export function fleetSiteKey(companyId: string, name: string): string {
+  return `${companyId}/${name}`;
+}

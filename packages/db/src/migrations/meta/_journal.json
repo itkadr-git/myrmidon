@@ -2396,6 +2396,13 @@
       "when": 1792395504000,
       "tag": "0404_install_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 405,
+      "version": "7",
+      "when": 1792395505000,
+      "tag": "0405_fleet_sites_client_cert",
+      "breakpoints": true
     }
   ]
 }
