@@ -9,6 +9,7 @@
 // paths stay stable so parity comparison stays possible.
 
 import { describe, expect, it } from "vitest";
+import { isUi2PhoneTabActive } from "../shell/Ui2PhoneNav";
 import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
 import { UI2_ROUTE_TABLE } from "../routes";
 import { isUi2RouteElementAPlaceholder } from "../routes";
@@ -70,10 +71,15 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(byKey.get("agents-fleet")?.legacyPath).toBe("/agents");
   });
 
-  it("computes active phone tabs from route segments for a six-tab grid", () => {
-    const tabs = [...UI2_PHONE_TABS, { ...UI2_PHONE_TABS[0], labelKey: "extra-test-tab", to: "/agents/all" }];
-    const active = tabs.filter((tab) => tab.to.startsWith("/agents"));
-    expect(tabs).toHaveLength(6);
+  it("activates exactly one tab at /agents in the six-tab phone grid", () => {
+    expect(UI2_PHONE_TABS).toHaveLength(6);
+    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/agents"));
+    expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.agents"]);
+  });
+
+  it("activates exactly one tab at /agents in the six-tab phone grid", () => {
+    expect(UI2_PHONE_TABS).toHaveLength(6);
+    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/agents"));
     expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.agents"]);
   });
 

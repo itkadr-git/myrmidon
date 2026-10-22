@@ -59,6 +59,9 @@ const en = {
   "ui2.agents.status.error": "Error",
   "ui2.agents.status.paused": "Paused",
   "ui2.screens.agents": "Agents",
+  "ui2.nav.agents": "Agents",
+  "ui2.nav.servers": "Servers",
+  "ui2.nav.more": "More",
 
   "ui2.decisions.title": "Decisions",
   "ui2.decisions.subtitle": "The queue of decisions that wait for you",
@@ -433,6 +436,9 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.agents.status.error": "Ошибка",
   "ui2.agents.status.paused": "Приостановлен",
   "ui2.screens.agents": "Агенты",
+  "ui2.nav.agents": "Агенты",
+  "ui2.nav.servers": "Серверы",
+  "ui2.nav.more": "Ещё",
 
   "ui2.decisions.title": "Решения",
   "ui2.decisions.subtitle": "Очередь решений, которые ждут вас",
