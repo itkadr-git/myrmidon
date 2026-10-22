@@ -41,7 +41,7 @@ function body(over: Record<string, unknown> = {}) {
   };
 }
 
-const TEST_IDEMPOTENCY_KEY = "idem-test-0001";
+const TEST_IDEMPOTENCY_KEY = "idem-test-0000001";
 
 async function seed(db: Db, accounts: unknown[]) {
   const companyId = randomUUID();
