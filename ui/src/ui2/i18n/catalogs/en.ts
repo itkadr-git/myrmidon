@@ -365,8 +365,11 @@ export const en = {
         placeholderBody: "The 2.0 layout for this area is not wired yet; the working screen below keeps the flow.",
         placeholderLegacyLink: "Back to the current layout",
         fleet: {
-          title: "Fleet",
+          title: "Servers",
           subtitle: "Live infrastructure health from the configured monitoring sources.",
+          monitoringError: "Monitoring is not configured or is unavailable.",
+          monitoringUnavailable: "Monitoring data is unavailable.",
+          guide: "Use this screen to check server and service status. Monitoring source errors are shown above the resource list.",
           hosts: "Hosts",
           services: "Services",
           empty: "No fleet data",
@@ -742,7 +745,7 @@ export type Ui2Catalog = {
       placeholderTitle: string;
       placeholderBody: string;
       placeholderLegacyLink: string;
-      fleet: { title: string; subtitle: string; hosts: string; services: string; empty: string; emptyBody: string; error: string; metrics: string; states: { running: string; stopped: string; unknown: string } };
+      fleet: { title: string; subtitle: string; monitoringError: string; monitoringUnavailable: string; guide: string; hosts: string; services: string; empty: string; emptyBody: string; error: string; metrics: string; states: { running: string; stopped: string; unknown: string } };
     },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning

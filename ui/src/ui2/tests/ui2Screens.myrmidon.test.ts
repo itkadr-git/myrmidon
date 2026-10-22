@@ -70,6 +70,13 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(byKey.get("agents-fleet")?.legacyPath).toBe("/agents");
   });
 
+  it("computes active phone tabs from route segments for a six-tab grid", () => {
+    const tabs = [...UI2_PHONE_TABS, { ...UI2_PHONE_TABS[0], labelKey: "extra-test-tab", to: "/agents/all" }];
+    const active = tabs.filter((tab) => tab.to.startsWith("/agents"));
+    expect(tabs).toHaveLength(6);
+    expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.agents"]);
+  });
+
   it("maps canonical agent API statuses without treating active as running", () => {
     expect(fleetStatus("active")).toBe("idle");
     expect(fleetStatus("idle")).toBe("idle");
