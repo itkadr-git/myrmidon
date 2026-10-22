@@ -266,6 +266,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
       keyboardShortcuts: parsed.data.keyboardShortcuts ?? false,
+      ...(parsed.data.taskDrain ? { taskDrain: parsed.data.taskDrain } : {}),
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
@@ -828,6 +829,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveBehaviorSettingsGeneralKeys(current.general), // myrmidon(SETTINGS-CORE)
               ...preserveDebateGeneralKey(current.general), // myrmidon(1.7-DEBATE-ASYM-A)
               ...preserveBoardProcessesGeneralKey(current.general), // myrmidon(1.6.6 PROCS-J)
+              // myrmidon(PROCS-1.8): preserve DB-owned task-drain state unless explicitly changed.
+              ...(patch.taskDrain === undefined && storedRawGeneral.taskDrain !== undefined
+                ? { taskDrain: storedRawGeneral.taskDrain }
+                : {}),
               // The preserve line above restores the stored row: a patch that carries
               // the counts wins (the same rule as DM-PROGRESS), and it is validated
               // where every other read of the key is — at startup.

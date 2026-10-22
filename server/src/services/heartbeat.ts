@@ -1609,7 +1609,7 @@ export function computeTaskDrain(opts: { ttlMs?: number | null } = {}): {
 export function applyTaskDrain(drain: {
   startedAt: Date;
   expiresAt: Date | null;
-}): void {
+} | null): void {
   taskDrainState = drain;
 }
 
