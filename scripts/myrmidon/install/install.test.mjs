@@ -183,11 +183,11 @@ describe("install.sh", () => {
     const sb = sandbox();
     // The address the installer prints has to reach the board on the first
     // click: a bare hostname only resolves for whoever has DNS for it.
-    const r = run(sb, [], { MYRMIDON_ALLOWED_HOSTS: "board.test,10.20.30.40" });
+    const r = run(sb, [], { MYRMIDON_ALLOWED_HOSTS: "board.test,203.0.113.7" });
     assert.equal(r.status, 0, r.stderr);
-    assert.match(envFile(sb), /MYRMIDON_ALLOWED_HOSTNAMES=board\.test,10\.20\.30\.40/);
-    assert.match(envFile(sb), /MYRMIDON_PUBLIC_URL=http:\/\/10\.20\.30\.40:3100/);
-    assert.match(r.stdout, /Address:\s+http:\/\/10\.20\.30\.40:3100/);
+    assert.match(envFile(sb), /MYRMIDON_ALLOWED_HOSTNAMES=board\.test,203\.0\.113\.7/);
+    assert.match(envFile(sb), /MYRMIDON_PUBLIC_URL=http:\/\/203\.0\.113\.7:3100/);
+    assert.match(r.stdout, /Address:\s+http:\/\/203\.0\.113\.7:3100/);
     assert.match(
       fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8"),
       /PAPERCLIP_ALLOWED_HOSTNAMES: "\$\{MYRMIDON_ALLOWED_HOSTNAMES:?/,
