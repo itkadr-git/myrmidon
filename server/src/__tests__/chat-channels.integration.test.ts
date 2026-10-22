@@ -21615,8 +21615,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await holdLock;
       });
     let lockTransaction: Promise<unknown> | undefined;
-    // Safety net: the row lock can never outlive the case (testTimeout is 15s).
-    const lockSafety = setTimeout(() => releaseLock(), 10_000);
+    // Safety net: once taken, the row lock can never outlive the case.
+    let lockSafety: ReturnType<typeof setTimeout> | undefined;
     try {
       await deliverMessage({
         callbacks,
@@ -21626,16 +21626,43 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         trigger: "mention",
       });
       expect(deferred).toHaveLength(1);
+      // The scheduled task only STARTS the conversation drain loop (it is not
+      // awaited by the scheduler), and that loop keeps picking up every
+      // received delivery of the thread until it finds none. Wait for the loop
+      // to finish the first message before the reply arrives, or it would
+      // process the reply before the case holds the lock.
       await deferred.shift()?.();
+      const firstDelivery = async () =>
+        (
+          await db
+            .select()
+            .from(chatDeliveries)
+            .where(eq(chatDeliveries.endpointId, endpoint.id))
+        ).find((candidate) =>
+          JSON.stringify(candidate.normalizedEvent).includes(subscribedMessage.id),
+        );
+      await vi.waitFor(
+        async () => {
+          expect(await firstDelivery()).toMatchObject({ state: "processed" });
+          const conversation = await db
+            .select()
+            .from(chatConversations)
+            .where(eq(chatConversations.endpointId, endpoint.id))
+            .then((rows) => rows[0]);
+          expect(conversation?.issueId).toBeTruthy();
+        },
+        { timeout: 10_000 },
+      );
+      // Let the finished loop release its per-thread schedule slot.
+      await new Promise((resolve) => setTimeout(resolve, 200));
       const replyThread = makeThread({
         channelId: slackThread.thread.channelId,
         id: slackThread.thread.id,
         name: slackThread.thread.channel.name,
       });
-      // Ingest the reply BEFORE the endpoint row is locked: the lock must be
-      // held only around the deferred drain, never around an awaited ingest
-      // call, or the test body waits on its own lock and leaks it to every
-      // following case of the shared database.
+      // Ingest the reply BEFORE the endpoint row is locked: ingest takes the
+      // same row lock, so awaiting it while the case holds the lock would make
+      // the case wait on itself and leak the lock to every following case.
       await deliverMessage({
         callbacks,
         endpointId: endpoint.id,
@@ -21643,32 +21670,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         message: reply,
         trigger: "subscribed_message",
       });
-      await vi.waitFor(async () => {
-        const conversation = await db
-          .select()
-          .from(chatConversations)
-          .where(eq(chatConversations.endpointId, endpoint.id))
-          .then((rows) => rows[0]);
-        expect(conversation?.issueId).toBeTruthy();
-      });
-      {
-        const snapshot = await db
-          .select()
-          .from(chatDeliveries)
-          .where(eq(chatDeliveries.endpointId, endpoint.id));
-        console.log(
-          "DIAG-OPE-7553 after reply ingest",
-          JSON.stringify({
-            deferred: deferred.length,
-            deliveries: snapshot.map((d) => ({
-              id: d.id,
-              state: d.state,
-              attempts: d.attempts,
-              hasReply: JSON.stringify(d.normalizedEvent).includes(reply.id),
-            })),
-          }),
-        );
-      }
       await vi.waitFor(async () => {
         const deliveries = await db
           .select()
@@ -21682,19 +21683,25 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
       lockTransaction = holdEndpointLock();
       await entered;
+      lockSafety = setTimeout(() => releaseLock(), 9_000);
       const drainTask = deferred.shift();
       expect(drainTask).toBeDefined();
       const drain = drainTask!();
-      await vi.waitFor(async () => {
-        const deliveries = await db
-          .select()
-          .from(chatDeliveries)
-          .where(eq(chatDeliveries.endpointId, endpoint.id));
-        const delivery = deliveries.find((candidate) =>
-          JSON.stringify(candidate.normalizedEvent).includes(reply.id),
-        );
-        expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
-      });
+      // The drain loop waits out the ingress reorder window before it claims
+      // the delivery, so give the contention up to the case budget.
+      await vi.waitFor(
+        async () => {
+          const deliveries = await db
+            .select()
+            .from(chatDeliveries)
+            .where(eq(chatDeliveries.endpointId, endpoint.id));
+          const delivery = deliveries.find((candidate) =>
+            JSON.stringify(candidate.normalizedEvent).includes(reply.id),
+          );
+          expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
+        },
+        { timeout: 8_000 },
+      );
       releaseLock();
       await lockTransaction;
       await drain;
@@ -21703,7 +21710,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await lockTransaction;
       throw error;
     } finally {
-      clearTimeout(lockSafety);
+      if (lockSafety) clearTimeout(lockSafety);
     }
 
     const deliveries = await db
