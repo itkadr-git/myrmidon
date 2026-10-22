@@ -243,6 +243,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
           description: body.description,
           value: body.value,
           justification: body.justification,
+          rotateSecretId: body.rotateSecretId,
         })
       : body.kind === "binding"
         ? await proposals.createBinding({ companyId: context.companyId, heartbeatRunId: context.heartbeatRunId }, {
@@ -315,7 +316,17 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
         assertSecretDefinitionAdmin: () => assertSecretDefinitionAdmin(req, companyId),
       }),
     });
-    await notifySecretProposalResolution({ proposal, status: "approved", userId: resolvedByUserId, issues, heartbeat });
+    // Rotation proposals land as a new version of the target secret; tell the
+    // origin issue which version is now live so the proposer can verify its
+    // env fingerprint instead of guessing.
+    let resolutionNote: string | null = null;
+    if (approved.kind === "secret" && approved.rotationTargetSecretId && approved.createdSecretId) {
+      const rotatedSecret = await svc.getById(approved.createdSecretId);
+      if (rotatedSecret) {
+        resolutionNote = `Rotated existing secret \`${rotatedSecret.name}\` to version ${rotatedSecret.latestVersion}`;
+      }
+    }
+    await notifySecretProposalResolution({ proposal, status: "approved", userId: resolvedByUserId, resolutionNote, issues, heartbeat });
     res.json(await boardProposalView(req, await proposals.view(approved)));
   });
 

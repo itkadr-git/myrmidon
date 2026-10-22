@@ -128,7 +128,9 @@ export function processRoleProfileFor(role: ProcessRole): Omit<ProcessRoleProfil
         executesRuns: false,
         migrations: "await",
         runsBackups: false,
-        listen: { host: PROCESS_ROLE_API_HOST, port: PROCESS_ROLE_API_PORT, reusePort: true },
+        // Keep the configured board port; only the socket sharing is role-specific.
+        // Hard-coding 3100 would make PORT ineffective for split deployments.
+        listen: { host: PROCESS_ROLE_API_HOST, port: null, reusePort: true },
         loopbackListen: null,
       };
     case "worker":

@@ -1547,4 +1547,243 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect(await db.select({ reportsTo: agents.reportsTo }).from(agents).where(eq(agents.id, targetAgentId)))
       .toEqual([{ reportsTo: null }]);
   });
+
+  it("rejects a secret proposal colliding with a live secret name at creation, not approval", async () => {
+    const fixture = await seedRun();
+    const existing = await secretService(db).create(fixture.companyId, {
+      name: "adm/collide/token",
+      provider: "local_encrypted",
+      value: "v1-value",
+    });
+
+    const collided = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "adm/collide/token",
+        value: "v2-value",
+        justification: "Rotate the leaked token",
+      });
+
+    expect(collided.status).toBe(409);
+    expect(collided.body.error).toContain("Secret already exists");
+    expect(collided.body.error).toContain(existing.id);
+    expect(await db.select().from(companySecretProposals)).toHaveLength(0);
+  });
+
+  it("rotates the target secret when approving a rotation proposal and @latest bindings follow", async () => {
+    const fixture = await seedRun();
+    const existing = await secretService(db).create(fixture.companyId, {
+      name: "adm/rotation/host-key",
+      provider: "local_encrypted",
+      value: "leaked-v1",
+    });
+    await secretService(db).createBinding({
+      companyId: fixture.companyId,
+      secretId: existing.id,
+      targetType: "agent",
+      targetId: fixture.agentId,
+      configPath: "env.ROTATION_HOST_KEY",
+    });
+
+    const proposed = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "adm/rotation/host-key",
+        value: "fresh-v2",
+        justification: "Rotate the leaked host key",
+        rotateSecretId: existing.id,
+      });
+    expect(proposed.status).toBe(201);
+    expect(proposed.body).toMatchObject({
+      kind: "secret",
+      rotationTargetSecretId: existing.id,
+      rotationTargetName: "adm/rotation/host-key",
+      rotationTargetStatus: "active",
+    });
+
+    const approved = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/approve`)
+      .send({});
+
+    expect(approved.status).toBe(200);
+    expect(approved.body).toMatchObject({ status: "approved", createdSecretId: existing.id });
+    const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, existing.id));
+    expect(secret).toMatchObject({ latestVersion: 2, status: "active" });
+    const versions = await db.select().from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, existing.id))
+      .orderBy(companySecretVersions.version);
+    expect(versions.map((row) => row.status)).toEqual(["previous", "current"]);
+    // @latest resolves through the same binding to the NEW value.
+    const resolved = await secretService(db).resolveSecretValue(fixture.companyId, existing.id, "latest");
+    expect(resolved).toBe("fresh-v2");
+    const actions = (await db.select().from(activityLog)).map((row) => row.action);
+    expect(actions).toEqual(expect.arrayContaining(["secret.rotated", "secret.proposal.approved"]));
+    expect(actions).not.toContain("secret.created");
+  });
+
+  it("rolls a rotation approval back to a clear conflict when the target stops being active", async () => {
+    const fixture = await seedRun();
+    const existing = await secretService(db).create(fixture.companyId, {
+      name: "adm/rotation-archived/token",
+      provider: "local_encrypted",
+      value: "v1",
+    });
+    const proposed = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "adm/rotation-archived/token",
+        value: "v2",
+        justification: "Rotate after the incident",
+        rotateSecretId: existing.id,
+      });
+    expect(proposed.status).toBe(201);
+    await secretService(db).update(existing.id, { status: "archived" });
+
+    const approved = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/approve`)
+      .send({});
+
+    expect(approved.status).toBe(409);
+    expect(approved.body.error).toMatch(/not active/i);
+    const [stillPending] = await db.select().from(companySecretProposals);
+    expect(stillPending.status).toBe("pending");
+    const [secret] = await db.select().from(companySecrets);
+    expect(secret.latestVersion).toBe(1);
+  });
+
+  it("rejects a rotation proposal that names a different secret than its target", async () => {
+    const fixture = await seedRun();
+    const existing = await secretService(db).create(fixture.companyId, {
+      name: "adm/rotation-name/token",
+      provider: "local_encrypted",
+      value: "v1",
+    });
+
+    const mismatched = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "adm/rotation-name/other",
+        value: "v2",
+        justification: "Misleading label",
+        rotateSecretId: existing.id,
+      });
+    expect(mismatched.status).toBe(422);
+    expect(mismatched.body.error).toMatch(/must use the target secret's name/);
+    expect(await db.select().from(companySecretProposals)).toHaveLength(0);
+  });
+
+  it("rejects a rotation proposal against a missing or foreign secret", async () => {
+    const fixture = await seedRun();
+    const missing = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "adm/rotation-missing/token",
+        value: "v2",
+        justification: "No such secret",
+        rotateSecretId: randomUUID(),
+      });
+    expect(missing.status).toBe(404);
+    expect(await db.select().from(companySecretProposals)).toHaveLength(0);
+  });
+
+  it("keeps a plain create working when the name is free and blocks only approval-time races", async () => {
+    const fixture = await seedRun();
+    const proposed = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "dev/free-name/token",
+        value: "fresh-secret",
+        justification: "A brand-new credential",
+      });
+    expect(proposed.status).toBe(201);
+
+    // A live secret appears between creation and approval — the pre-existing
+    // name. Approval must fail with the same conflict the create pre-check now
+    // gives up front, not silently create a duplicate holder.
+    await secretService(db).create(fixture.companyId, {
+      name: "dev/free-name/token",
+      provider: "local_encrypted",
+      value: "raced-v1",
+    });
+
+    const approved = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/approve`)
+      .send({});
+    expect(approved.status).toBe(409);
+    expect(approved.body.error).toMatch(/Secret already exists: dev\/free-name\/token/);
+    const [proposal] = await db.select().from(companySecretProposals);
+    expect(proposal.status).toBe("pending");
+    expect(await db.select().from(companySecretVersions)).toHaveLength(1);
+  });
+
+  it("lets a binding proposal retarget a path that already holds a company secret_ref", async () => {
+    const fixture = await seedRun();
+    const oldSecret = await secretService(db).create(fixture.companyId, {
+      name: "dev/retarget/old",
+      provider: "local_encrypted",
+      value: "old-value",
+    });
+    const newSecret = await secretService(db).create(fixture.companyId, {
+      name: "dev/retarget/new",
+      provider: "local_encrypted",
+      value: "new-value",
+    });
+    const agentBefore = await agentService(db).getById(fixture.agentId);
+    await agentService(db).update(fixture.agentId, {
+      adapterConfig: {
+        ...((agentBefore?.adapterConfig as Record<string, unknown>) ?? {}),
+        env: {
+          RETARGET_KEY: { type: "secret_ref", secretId: oldSecret.id, version: "latest" },
+          PLAIN_KEY: "directly-typed-value",
+        },
+      },
+    });
+
+    const proposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretId: newSecret.id,
+        configPath: "env.RETARGET_KEY",
+        justification: "Point the existing env key at the replacement secret",
+      });
+    expect(proposal.status).toBe(201);
+
+    const approved = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposal.body.id}/approve`)
+      .send({});
+    expect(approved.status).toBe(200);
+
+    const agentAfter = await agentService(db).getById(fixture.agentId);
+    const env = (agentAfter?.adapterConfig as { env: Record<string, unknown> }).env;
+    // Persistence canonicalizes bindings (projection fields on a secret_ref,
+    // `{type:"plain"}` for a literal); compare shapes, not raw JSON.
+    expect(env.RETARGET_KEY).toMatchObject({ type: "secret_ref", secretId: newSecret.id, version: "latest" });
+    expect(env.PLAIN_KEY).toMatchObject({ type: "plain", value: "directly-typed-value" });
+
+    // A proposal onto a path holding a directly-typed plain value still collides.
+    const plainClash = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretId: newSecret.id,
+        configPath: "env.PLAIN_KEY",
+        justification: "Replace a literal value the board typed",
+      });
+    expect(plainClash.status).toBe(201);
+    const rejectedApproval = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${plainClash.body.id}/approve`)
+      .send({});
+    expect(rejectedApproval.status).toBe(409);
+    expect(rejectedApproval.body.error).toMatch(/already exists: env.PLAIN_KEY/);
+    const finalAgent = await agentService(db).getById(fixture.agentId);
+    expect((finalAgent?.adapterConfig as { env: Record<string, unknown> }).env.PLAIN_KEY)
+      .toMatchObject({ type: "plain", value: "directly-typed-value" });
+  });
 });

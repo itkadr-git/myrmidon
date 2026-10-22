@@ -11,6 +11,8 @@
 // process supervisor, which forks or drains the api children and moves the
 // worker's own listener between single and split.
 import type { Db } from "@myrmidon/db";
+import { sql } from "drizzle-orm";
+import type { Db } from "@myrmidon/db";
 import {
   describeProcessesEffect,
   mergeProcessesSettings,
@@ -62,6 +64,14 @@ export interface ProcessesSettingsDeps {
    */
   apply(settings: ProcessesSettings, changedKeys: ProcessesSettingKey[]): void;
   env?: Record<string, string | undefined>;
+  /**
+   * Runs the whole read-merge-write of an update as one step across every
+   * process on the database. Without it two processes saving different keys at
+   * once both merge into the same stale `before`, and the later write drops the
+   * earlier one's key (T5 of the PROCS-1.9 stand). Optional: a caller with a
+   * single writer (a test double) needs no lock.
+   */
+  serialize?<T>(task: () => Promise<T>): Promise<T>;
 }
 
 export interface ProcessesSettingsService {
@@ -72,8 +82,8 @@ export interface ProcessesSettingsService {
 /**
  * One write at a time, in this process. Two operators saving at once would
  * otherwise read the same `before`, and the second write would drop the first
- * one's keys; the cross-process lock (`FOR UPDATE`) arrives with the shared
- * settings registry of the next part.
+ * one's keys; across processes the same step runs under an advisory lock
+ * (`deps.serialize`).
  */
 let processesTransition: Promise<unknown> = Promise.resolve();
 
@@ -91,6 +101,43 @@ export function createProcessesSettingsService(deps: ProcessesSettingsDeps): Pro
     return { ...resolved, ...describeProcessesEffect(resolved.settings) };
   }
 
+  async function applyUpdate(patch: ProcessesSettingsPatch, actor: ProcessesActor): Promise<ProcessesSettingsView> {
+    const general = await deps.settings.getGeneral();
+    const before = resolveProcessesSettings(general.processes, env);
+    const next = mergeProcessesSettings(before.settings, patch);
+    const changedKeys = PROCESSES_SETTING_KEYS.filter(
+      (key) => before.settings[key] !== next[key],
+    ) as ProcessesSettingKey[];
+
+    await deps.settings.updateGeneral({ processes: next });
+
+    const companyIds = await deps.listCompanyIds();
+    await Promise.all(
+      companyIds.map((companyId) =>
+        deps.logActivity({
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: PROCESSES_SETTINGS_ACTION,
+          entityType: "instance_settings",
+          entityId: "default",
+          details: { previous: before.settings, next, changedKeys },
+        }),
+      ),
+    );
+
+    // Only after the row and the journal records are committed.
+    deps.apply(next, changedKeys);
+    logger.info(
+      { settings: next, changedKeys, actorType: actor.actorType },
+      "process settings updated without a restart",
+    );
+    return view(next);
+  }
+
   return {
     read: async (): Promise<ProcessesSettingsView> => {
       const general = await deps.settings.getGeneral();
@@ -98,42 +145,9 @@ export function createProcessesSettingsService(deps: ProcessesSettingsDeps): Pro
     },
 
     update: async (patch, actor) =>
-      withProcessesTransition(async () => {
-        const general = await deps.settings.getGeneral();
-        const before = resolveProcessesSettings(general.processes, env);
-        const next = mergeProcessesSettings(before.settings, patch);
-        const changedKeys = PROCESSES_SETTING_KEYS.filter(
-          (key) => before.settings[key] !== next[key],
-        ) as ProcessesSettingKey[];
-
-        await deps.settings.updateGeneral({ processes: next });
-
-        const companyIds = await deps.listCompanyIds();
-        await Promise.all(
-          companyIds.map((companyId) =>
-            deps.logActivity({
-              companyId,
-              actorType: actor.actorType,
-              actorId: actor.actorId,
-              agentId: actor.agentId,
-              runId: actor.runId,
-              agentApiKeyId: actor.agentApiKeyId,
-              action: PROCESSES_SETTINGS_ACTION,
-              entityType: "instance_settings",
-              entityId: "default",
-              details: { previous: before.settings, next, changedKeys },
-            }),
-          ),
-        );
-
-        // Only after the row and the journal records are committed.
-        deps.apply(next, changedKeys);
-        logger.info(
-          { settings: next, changedKeys, actorType: actor.actorType },
-          "process settings updated without a restart",
-        );
-        return view(next);
-      }),
+      withProcessesTransition(() =>
+        deps.serialize ? deps.serialize(() => applyUpdate(patch, actor)) : applyUpdate(patch, actor),
+      ),
   };
 }
 
@@ -196,5 +210,12 @@ export function defaultProcessesSettingsDeps(db: Db, supervisor: ProcessSupervis
     logActivity: (entry) => logActivity(db, entry),
     apply: (settings, changedKeys) => applyProcessesSettingsToProcess(settings, changedKeys, supervisor),
     env: process.env,
+    // One advisory lock for the instance: the lock connection is held only for
+    // the duration of the update, the update itself runs on the pool.
+    serialize: (task) =>
+      db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext('myrmidon.processes.settings'))`);
+        return task();
+      }),
   };
 }

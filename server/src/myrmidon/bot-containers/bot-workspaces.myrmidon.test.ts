@@ -214,6 +214,18 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
     expect(res.body.workspaces[0]).toMatchObject({ key: "ABC-7", state: "closing" });
   });
 
+  it("keeps a reassigned copy in closing even when the task is older than the terminal lookback", async () => {
+    const lost = issue({
+      identifier: "ABC-8",
+      assigneeAgentId: OTHER_BOT_ID,
+      updatedAt: new Date("2025-01-01T00:00:00Z"),
+    });
+    const { app } = harness({ issues: [lost] });
+    const res = await request(app(botActor)).get(URL);
+    expect(res.body.workspaces).toHaveLength(1);
+    expect(res.body.workspaces[0]).toMatchObject({ key: "ABC-8", state: "closing" });
+  });
+
   it("takes the repository from the project, otherwise from the latest PR", async () => {
     const withProject = issue({ identifier: "ABC-1", projectId: "p1" });
     const viaPr = issue({ identifier: "ABC-2" });

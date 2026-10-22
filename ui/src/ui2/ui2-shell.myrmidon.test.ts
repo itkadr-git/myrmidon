@@ -83,6 +83,7 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
       "commander-chat",
       "costs",
       "decisions",
+      "fleet",
       "knowledge",
       "knowledge-page",
       "settings-autonomy-regulations",
@@ -95,6 +96,17 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
       expect(entry.titleKey.startsWith("ui2.screens."), entry.key).toBe(true);
     }
   }, 30_000);
+
+  it("keeps Agents and Servers as two separate destinations on desktop and phone", async () => {
+    const { UI2_NAV_GROUPS, UI2_PHONE_TABS } = await import("./navModel");
+    const rail = UI2_NAV_GROUPS.flatMap((group) => group.items);
+    expect(rail.find((item) => item.labelKey === "ui2.nav.agents")?.to).toBe("/agents");
+    expect(rail.find((item) => item.labelKey === "ui2.nav.servers")?.to).toBe("/fleet");
+    expect(UI2_PHONE_TABS.find((item) => item.labelKey === "ui2.nav.agents")?.to).toBe("/agents");
+    expect(UI2_PHONE_TABS.find((item) => item.labelKey === "ui2.nav.servers")?.to).toBe("/fleet");
+    expect(rail.some((item) => item.labelKey === "ui2.nav.fleet")).toBe(false);
+    expect(UI2_PHONE_TABS.some((item) => item.labelKey === "ui2.nav.fleet")).toBe(false);
+  });
 
   it("Ui2Root exists and mounts the shell (UI-0b's provider line)", async () => {
     const mod = await import("./Ui2Root");
@@ -176,6 +188,8 @@ describe("ui2 i18n", () => {
       expect(messages.ui2).toBeDefined();
       expect(messages.ui2.nav.center).toBeTruthy();
       expect(messages.ui2.nav.commander).toBeTruthy();
+      expect(messages.ui2.nav.agents).toBeTruthy();
+      expect(messages.ui2.nav.servers).toBeTruthy();
       expect(messages.ui2.commander.placeholder).toBeTruthy();
       expect(messages.ui2.nests.all).toBeTruthy();
       expect(messages.ui2.screens.placeholderTitle).toBeTruthy();
@@ -188,5 +202,7 @@ describe("ui2 i18n", () => {
     expect(ru.ui2.nav.center).toBe("Командный центр");
     expect(ru.ui2.nav.commander).toBe("Полководец");
     expect(ru.ui2.nav.waiting).toBe("Ждёт меня");
+    expect(ru.ui2.nav.agents).toBe("Агенты");
+    expect(ru.ui2.nav.servers).toBe("Серверы");
   });
 });
