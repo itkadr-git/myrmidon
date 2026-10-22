@@ -639,6 +639,30 @@ export function stripCloudCatalogDefaultEchoes(
   return result as Partial<InstanceExperimentalSettings>;
 }
 
+const SWARM_WAKE_KEYS = ["runWithoutTaskGate", "cooldownBaseMin", "cooldownCeilingHours"] as const;
+
+/**
+ * myrmidon(OPE-6894): merge a `general.swarm` PATCH over the stored one.
+ * Wake block (gate + cooling keys): replaced wholesale when the patch carries
+ * any of its keys, so an omitted key resets to the default; otherwise kept.
+ * `scent` block: replaced when the patch carries it, otherwise kept.
+ */
+export function mergeSwarmBlocks(
+  stored: Record<string, unknown> | undefined | null,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const base = stored ?? {};
+  const out: Record<string, unknown> = {};
+  const patchHasWake = SWARM_WAKE_KEYS.some((key) => patch[key] !== undefined);
+  for (const key of SWARM_WAKE_KEYS) {
+    const value = patchHasWake ? patch[key] : base[key];
+    if (value !== undefined) out[key] = value;
+  }
+  const scent = patch.scent !== undefined ? patch.scent : base.scent;
+  if (scent !== undefined) out.scent = scent;
+  return out;
+}
+
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
   // Fail closed: a malformed PAPERCLIP_MANAGED_CONFIG throws here (and at
   // boot in index.ts) rather than silently running without the overlay.
@@ -772,7 +796,19 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         // so changing or unsetting the variable later still takes effect.
         const nextGeneral = stripOperatorGeneralEchoes(
           storedGeneral,
-          normalizeGeneralSettings({ ...storedGeneral, ...patch }),
+          normalizeGeneralSettings({
+            ...storedGeneral,
+            ...patch,
+            // myrmidon(OPE-6894): `general.swarm` is shared by sibling blocks
+            // (the wake-guard/cooling block and T10 `scent`); a PATCH carrying
+            // one block must not erase the other, so each block is replaced
+            // as a whole only when the patch names it. Inside the wake block
+            // an absent key means "back to the default" (the panel omits a
+            // cleared field), so a stored value does not outlive its reset.
+            ...(patch.swarm !== undefined
+              ? { swarm: mergeSwarmBlocks(storedGeneral.swarm, patch.swarm) }
+              : {}),
+          }),
           operatorDefaults,
         );
         // OPE-6406: a PATCH rewrites the whole `general` document, so it must
