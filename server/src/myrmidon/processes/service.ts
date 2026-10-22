@@ -12,7 +12,6 @@
 // worker's own listener between single and split.
 import type { Db } from "@myrmidon/db";
 import { sql } from "drizzle-orm";
-import type { Db } from "@myrmidon/db";
 import {
   describeProcessesEffect,
   mergeProcessesSettings,
