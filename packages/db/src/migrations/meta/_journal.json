@@ -2410,6 +2410,13 @@
       "when": 1792395506000,
       "tag": "0406_swarm_claim_origin",
       "breakpoints": true
+    },
+    {
+      "idx": 407,
+      "version": "7",
+      "when": 1792395507000,
+      "tag": "0407_secret_proposal_rotation_target",
+      "breakpoints": true
     }
   ]
 }
