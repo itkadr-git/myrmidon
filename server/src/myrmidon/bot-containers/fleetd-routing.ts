@@ -75,7 +75,7 @@ export function fleetRoutingDriver(
       return driver.templateDrift(spec, knownStatus);
     },
     async updateResources(spec: BotContainerSpec): Promise<void> {
-      const driver = driverFor(deps, agentOf(spec.botKey));
+      const driver = await driverFor(deps, agentOf(spec.botKey));
       if (driver.updateResources) await driver.updateResources(spec);
       else await driver.recreate(spec);
     },
