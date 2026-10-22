@@ -173,12 +173,15 @@ function writeFakeGh(dir) {
   return bin;
 }
 
-function sandbox({ runs = [], releases = {}, changelog = CHANGELOG } = {}) {
+function sandbox({ runs = [], releases = {}, changelog = CHANGELOG, auditReport = "# DB audit\n\nDone.\n" } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-release-publish-"));
   const bin = writeFakeGh(dir);
-  // The checkout the script runs in (cwd): the changelog at its repo path.
-  fs.mkdirSync(path.join(dir, "docs/myrmidon"), { recursive: true });
+  // The checkout the script runs in (cwd): the changelog and release docs.
+  fs.mkdirSync(path.join(dir, "docs/myrmidon/releases"), { recursive: true });
   fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), changelog);
+  if (auditReport !== null) {
+    fs.writeFileSync(path.join(dir, "docs/myrmidon/releases/1.6.0-db-audit.md"), auditReport);
+  }
   fs.writeFileSync(path.join(dir, "ref-tag.json"),
     JSON.stringify({ object: { sha: TAG_OBJECT, type: "tag" } }));
   fs.writeFileSync(path.join(dir, "tag-object.json"),
@@ -309,6 +312,65 @@ describe("publish-github-release.sh: the CI gate", () => {
     assert.equal(mutations(sb), "");
   });
 
+  // RELEASE-GATE-POLL-BUDGET: the gate's wait budget must cover a
+  // tag CI run delayed far beyond the old 120-poll default by the
+  // hosted-runner queue. rc.13: 9 workflows started at the tag push, the tag
+  // CI completed after ~50 min (> 120 x 20 s = 40 min) and the publish died
+  // at the timeout with an empty verdict 11 min before the green run landed.
+  // The scenario «the run completes only after more than the old 120 polls»
+  // must now publish (POLL_SECONDS is overridden to 0 in the tests, so the
+  // poll count is the budget, not the wall clock).
+  it("publishes when the tag CI run completes only after more than the old 120 polls (the rc.13 queue delay)", () => {
+    const before = [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", null, "in_progress"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ];
+    const after = [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success"),
+      before[1],
+    ];
+    const sb = sandbox({ runs: before });
+    fs.writeFileSync(path.join(sb.dir, "runs-after.json"),
+      JSON.stringify({ total_count: after.length, workflow_runs: after }));
+    // Reads per gate poll: one for the cancelled-run pre-check, then two per
+    // poll (verdict + status) while the verdict is "missing". The old default
+    // budget (120) times out on poll 120, i.e. after read 1 + 2*120 + 2 = 243
+    // reads. Switching after 300 reads (~poll 149) therefore lands strictly
+    // between the old (120) and the new (240) budget: the same scenario must
+    // time out with the old budget and publish with the raised one.
+    const switchAfter = "300";
+    const old = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_POLL_MAX: "120",
+      GH_RUNS_SWITCH_AFTER: switchAfter,
+    } });
+    assert.notEqual(old.code, 0, old.out);
+    assert.match(old.out, /timed out waiting for Myrmidon CI \(tag\) runs on .* after 120 polls/);
+    assert.equal(mutations(sb), "");
+    fs.rmSync(path.join(sb.dir, "runs-reads.count"), { force: true });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_POLL_MAX: "240",
+      GH_RUNS_SWITCH_AFTER: switchAfter,
+    } });
+    assert.equal(code, 0, out);
+    assert.match(out, /gate: Myrmidon CI \(tag\) success/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("still refuses on a tag CI run that never completes, just after more polls (240, not 120)", () => {
+    // The raised budget must not turn the gate into an infinite wait: with
+    // the run never completing the publish refuses — after POLL_MAX polls.
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", null, "in_progress"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_POLL_MAX: "6",
+    } });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /timed out waiting for Myrmidon CI \(tag\) runs on .* after 6 polls/);
+    assert.equal(mutations(sb), "");
+  });
+
   // ---- RELEASE-PUBLISH-WAIT: the gate must wait for the TAG's runs, not the commit's ----
 
   it("waits for the board image run of the tag while it is still building, then publishes (the 1.6.1 incident)", () => {
@@ -415,6 +477,29 @@ describe("publish-github-release.sh: the CI gate", () => {
     assert.notEqual(code, 0, out);
     assert.match(out, /tag must look like myr-vX\.Y\.Z/);
     assert.equal(mutations(sb), "");
+  });
+});
+
+describe("publish-github-release.sh: the DB audit gate", () => {
+  it("refuses a final tag without its versioned audit report before waiting for CI", () => {
+    const sb = sandbox({ runs: GREEN_RUNS, auditReport: null });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(code, 0, out);
+    assert.match(out, /docs\/myrmidon\/releases\/1\.6\.0-db-audit\.md is missing/);
+    assert.match(out, /OPE-401 decision registry/);
+    assert.equal(mutations(sb), "");
+    assert.doesNotMatch(out, /gate: Myrmidon CI/);
+  });
+
+  it("does not require an audit report for an rc tag", () => {
+    const rcTag = "myr-v1.6.0-rc.1";
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success", "completed", rcTag),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", rcTag),
+    ], auditReport: null });
+    const { out } = runScript(sb, rcTag);
+    assert.match(out, /gate: rc tag/);
+    assert.doesNotMatch(out, /audit report .* is missing/);
   });
 });
 
@@ -774,6 +859,16 @@ describe("myrmidon-release.yml: the tag input wins over ref_name", () => {
   it("declares the tag input as required", () => {
     assert.match(workflow, /tag:\s*\n\s+description:[^\n]+\n\s+required: true/);
   });
+
+  // RELEASE-GATE-POLL-BUDGET: the publish job raises the gate's
+  // poll budget so a tag CI run delayed by the tag-push runner queue
+  // (rc.13: ~50 min against the 40-min default) is waited out instead of
+  // timing out with an empty verdict.
+  it("raises the gate wait budget for the tag CI queue delay (MYRMIDON_RELEASE_POLL_MAX)", () => {
+    assert.match(workflow, /MYRMIDON_RELEASE_POLL_MAX: "240"/);
+    // The budget (20 s x 240 = 80 min) must stay inside the job's own timeout.
+    assert.match(workflow, /timeout-minutes: 90/);
+  });
 });
 
 // TAG-CI (the 1.6.4 incident): the tag has its own un-cancellable CI run
@@ -878,6 +973,31 @@ describe("release-body.mjs: body construction", () => {
     assert.doesNotMatch(body, /(?<!\d)(?:10|192|172)\.\d+\.\d+\.\d+(?!\d)/);
   });
 
+  it("condenses a notes section over GitHub's limit to its entry headings (the 1.6.6-rc.1 publish)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "release-body-condense-"));
+    fs.mkdirSync(path.join(dir, "docs/myrmidon/changes"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "docs/myrmidon/changes/huge.md"),
+      `## changelog-en\n\n### Huge entry\n\n- ${"x".repeat(130000)}\n`,
+    );
+    const registryState = {
+      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",
+      "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+    };
+    fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
+    fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), "# Changelog\n");
+    const r = spawnSync("node", [BUILDER, "--registry-state", path.join(dir, "registry-state.json"), "1.6.5-rc.6"], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.length <= 125000);
+    assert.match(r.stdout, /^- Huge entry$/m);
+    assert.match(r.stdout, /docs\/myrmidon\/CHANGELOG\.md/);
+    assert.doesNotMatch(r.stdout, /x{1000}/);
+    assert.match(r.stderr, /publishing the entry headings/);
+  });
+
   it("refuses a body over GitHub's 125000-character limit before publish (the 1.6.5-rc.6 422)", () => {
     // An rc body collects every pending change fragment; a long release
     // window overruns GitHub's release-body limit and `gh release create`
@@ -887,7 +1007,7 @@ describe("release-body.mjs: body construction", () => {
     fs.mkdirSync(path.join(dir, "docs/myrmidon/changes"), { recursive: true });
     fs.writeFileSync(
       path.join(dir, "docs/myrmidon/changes/huge.md"),
-      `## changelog-en\n\n### Huge entry\n\n- ${"x".repeat(130000)}\n`,
+      `## changelog-en\n\n### ${"Huge heading ".repeat(11000)}\n\n- entry\n`,
     );
     const registryState = {
       myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",

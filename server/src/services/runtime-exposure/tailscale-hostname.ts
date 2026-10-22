@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TAILSCALE_BIN = "/usr/bin/tailscale";
@@ -29,7 +30,7 @@ export async function resolveTailscaleDnsName(input?: {
   tailscaleBinPath?: string;
   timeoutMs?: number;
 }): Promise<string> {
-  const configured = process.env.PAPERCLIP_TAILSCALE_DNS_NAME?.trim();
+  const configured = readProductEnv("TAILSCALE_DNS_NAME")?.trim();
   if (configured) return parseTailscaleDnsName({ Self: { DNSName: configured } });
 
   const tailscaleBinPath = input?.tailscaleBinPath ?? DEFAULT_TAILSCALE_BIN;

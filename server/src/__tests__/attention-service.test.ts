@@ -44,6 +44,7 @@ import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
 import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
+import { ingestCloneReport, resetCloneHygieneStateForTests } from "../myrmidon/bot-containers/clone-hygiene.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -99,6 +100,7 @@ describeEmbeddedPostgres("attention service", () => {
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
+    resetCloneHygieneStateForTests();
   });
 
   afterAll(async () => {
@@ -173,6 +175,7 @@ describeEmbeddedPostgres("attention service", () => {
     projectId?: string | null;
     projectWorkspaceId?: string | null;
     executionState?: Record<string, unknown> | null;
+    executionPolicy?: Record<string, unknown> | null;
     updatedAt?: Date;
     createdAt?: Date;
     unblockDescriptor?: { owner: { userId: string } | "board"; action: string } | null;
@@ -200,6 +203,7 @@ describeEmbeddedPostgres("attention service", () => {
       originId: input.originId ?? null,
       originFingerprint: input.originFingerprint ?? "default",
       executionState: input.executionState ?? null,
+      executionPolicy: input.executionPolicy ?? null,
       unblockDescriptor: input.unblockDescriptor ?? null,
       blockedTransitionAt: input.blockedTransitionAt ?? null,
       harnessKind: input.harnessKind ?? null,
@@ -231,6 +235,38 @@ describeEmbeddedPostgres("attention service", () => {
       currentParticipant: { type: "agent", agentId },
     };
   }
+
+  it("surfaces overdue monitors without an outstanding wake claim", async () => {
+    const { companyId, workerId } = await seedCompany("ATM");
+    const dueAt = new Date("2026-08-02T11:50:00.000Z");
+    const policy = {
+      stages: [],
+      monitor: { status: "scheduled", nextCheckAt: dueAt.toISOString(), notes: "Check CI", scheduledBy: "assignee" },
+    };
+    const overdueId = await insertIssue({
+      companyId, identifier: "ATM-1", title: "Overdue monitor", status: "blocked",
+      assigneeAgentId: workerId, updatedAt: dueAt, executionPolicy: policy,
+    });
+    await db.update(issues).set({
+      monitorNextCheckAt: dueAt,
+      monitorWakeRequestedAt: null,
+    }).where(eq(issues.id, overdueId));
+    const claimedId = await insertIssue({
+      companyId, identifier: "ATM-2", title: "Claimed monitor", status: "blocked",
+      assigneeAgentId: workerId, updatedAt: dueAt, executionPolicy: policy,
+    });
+    await db.update(issues).set({
+      monitorNextCheckAt: dueAt,
+      monitorWakeRequestedAt: new Date("2026-08-02T11:59:00.000Z"),
+    }).where(eq(issues.id, claimedId));
+
+    const feed = await attentionService(db, { ...TEST_SERVICE_OPTS, now: () => Date.parse("2026-08-02T12:00:00.000Z") })
+      .list(companyId, { allowUnscopedAll: true, all: true, userId: "board-user" });
+    const alerts = feed.items.filter((item) => item.sourceKind === "issue_monitor_overdue");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]?.subject.id).toBe(overdueId);
+    expect(alerts[0]?.whyNow).toContain(dueAt.toISOString());
+  });
 
   it("excludes internal harness reviews from items, counts, and decision queues", async () => {
     const { companyId, workerId } = await seedCompany("ATH");
@@ -265,6 +301,109 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.some((item) => item.subject.id === harnessIssueId)).toBe(false);
     expect(feed.countsBySourceKind.review ?? 0).toBe(0);
     expect(feed.items.flatMap((item) => item.queues).some((queue) => queue.key === "internal-review")).toBe(false);
+  });
+
+
+  // myrmidon(1.6.5-BOT-DISK-UV-B board side): the start-time self-check
+  // failures (git objects / reflink / uv cache) raise one fleet card per kind
+  // of failure instead of one card per bot per check; unpushed-work clone
+  // cards stay per-bot.
+  it("aggregates the fleet's self-check failures into one card per kind and keeps clone cards per bot", async () => {
+    const { companyId } = await seedCompany();
+    const botIds = [randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(agents).values(
+      botIds.map((id, i) => ({
+        id,
+        companyId,
+        name: `Bot ${i + 1}`,
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      })),
+    );
+    const report = JSON.stringify({
+      version: 1,
+      inspectedAt: new Date().toISOString(),
+      repos: [],
+      gitRefCheck: {
+        store: "/data/hermes/.myrmidon/git-objects",
+        ok: false,
+        checks: [{ check: "reference-clone", ok: false, error: "did not borrow the mirror's objects" }],
+      },
+      uvCacheCheck: {
+        version: 1,
+        method: "clone",
+        checkedAt: new Date().toISOString(),
+        cache: "/cache/uv",
+        ok: false,
+        roots: [{ root: "/workspace", ok: false, error: "cannot create file in /cache/uv: Permission denied" }],
+      },
+    });
+    for (const botId of botIds) {
+      expect(ingestCloneReport(botId, report, 3_600_000)).toBe(true);
+    }
+
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
+    const gitref = feed.items.filter((item) => item.dedupKey.startsWith("bot_disk_gitref:"));
+    const uvcache = feed.items.filter((item) => item.dedupKey.startsWith("bot_disk_uvcache:"));
+    expect(gitref.map((item) => item.dedupKey)).toEqual(["bot_disk_gitref:fleet:reference-clone"]);
+    expect(uvcache.map((item) => item.dedupKey)).toEqual(["bot_disk_uvcache:fleet:uvcache"]);
+    const card = gitref[0]!;
+    expect(card.severity).toBe("high");
+    expect(card.subject.kind).toBe("agent");
+    expect(card.subject.id).toBe("bot-disk-lifecycle");
+    expect(card.whyNow).toContain("on 3 bots");
+    expect(card.whyNow).toContain("Bot 1");
+    expect(card.whyNow).toContain("Bot 3");
+    expect(card.whyNow).toContain("did not borrow the mirror's objects");
+    // The clone (unpushed-work) family stays per-bot.
+    const perBot = feed.items.filter((item) => /bot_disk_(clone|reflink|gitref|uvcache):[0-9a-f-]{36}/.test(item.dedupKey));
+    expect(perBot).toEqual([]);
+  });
+
+  it("keeps unpushed-work clone cards per bot while the self-checks aggregate", async () => {
+    const { companyId } = await seedCompany();
+    const botId = randomUUID();
+    await db.insert(agents).values({
+      id: botId,
+      companyId,
+      name: "Cloner",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const idleSeconds = 7200; // past a 1h TTL
+    const report = JSON.stringify({
+      version: 1,
+      inspectedAt: new Date().toISOString(),
+      repos: [
+        { path: "/workspace/a", dirty: true, inProgress: false, stashCount: 0, unpushedCommits: 2, hasRemote: true, linkedWorktrees: 0, referencedBy: 0, branch: "feature", idleSeconds },
+        { path: "/workspace/b", dirty: false, inProgress: false, stashCount: 1, unpushedCommits: 0, hasRemote: true, linkedWorktrees: 0, referencedBy: 0, branch: "fix", idleSeconds },
+      ],
+      gitRefCheck: {
+        store: "/data/hermes/.myrmidon/git-objects",
+        ok: false,
+        checks: [{ check: "wrapper-runs", ok: false, error: "env: node: not found" }],
+      },
+    });
+    expect(ingestCloneReport(botId, report, 3_600_000)).toBe(true);
+
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
+    const clones = feed.items.filter((item) => item.dedupKey.startsWith(`bot_disk_clone:${botId}:`));
+    expect(clones.map((item) => item.dedupKey).sort()).toEqual([
+      `bot_disk_clone:${botId}:/workspace/a`,
+      `bot_disk_clone:${botId}:/workspace/b`,
+    ]);
+    expect(clones[0]!.subject.id).toBe(botId);
+    const gitref = feed.items.filter((item) => item.dedupKey.startsWith("bot_disk_gitref:"));
+    expect(gitref.map((item) => item.dedupKey)).toEqual(["bot_disk_gitref:fleet:wrapper-runs"]);
+    expect(gitref[0]!.whyNow).toContain("on 1 bot ");
   });
 
   it("returns ranked decision-only items for every active source and excludes non-human or transient rows", async () => {
@@ -435,6 +574,15 @@ describeEmbeddedPostgres("attention service", () => {
       updatedAt: new Date("2026-07-09T12:04:00.000Z"),
     });
 
+    const replayHoldIssueId = await insertIssue({
+      companyId, identifier: "ATN-REPLAY", title: "Replay held task", status: "in_progress", assigneeAgentId: workerId, updatedAt: baseTime,
+    });
+    const replayHoldActionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: replayHoldActionId, companyId, sourceIssueId: replayHoldIssueId, kind: "active_run_watchdog", status: "resolved",
+      cause: "legacy_execution_requires_reconciliation", fingerprint: "attention-replay-hold",
+      evidence: { automaticRecovery: { replay: "blocked" } }, nextAction: "Inspect failed execution", updatedAt: baseTime,
+    });
     await db.insert(issueRecoveryActions).values([
       {
         id: randomUUID(),
@@ -625,7 +773,7 @@ describeEmbeddedPostgres("attention service", () => {
 
     const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
-    expect(feed.totalCount).toBe(11);
+    expect(feed.totalCount).toBe(12);
     expect(feed.countsBySourceKind).toMatchObject({
       approval: 1,
       issue_thread_interaction: 1,
@@ -637,7 +785,16 @@ describeEmbeddedPostgres("attention service", () => {
       failed_run: 1,
       budget_alert: 2,
       agent_error_alert: 1,
+      replay_blocked: 1,
     });
+    const replayCard = feed.items.find((item) => item.sourceKind === "replay_blocked");
+    expect(replayCard).toMatchObject({
+      sourceKind: "replay_blocked",
+      subject: { id: replayHoldIssueId, metadata: { responsibleAgentId: null, responsibleUserId: null, dueAt: expect.any(String) } },
+      decideBy: null,
+      whyNow: expect.stringContaining("board operator"),
+    });
+    expect(replayCard?.subject.metadata?.dueAt).toBe("2026-07-10T12:00:00.000Z");
     expect(feed.items.map((item) => item.sourceKind)).toEqual(expect.arrayContaining([
       "approval",
       "issue_thread_interaction",
@@ -987,14 +1144,20 @@ describeEmbeddedPostgres("attention service", () => {
     ]);
 
     // Assert the database result itself: JavaScript feed deduplication used to
-    // hide the thousands of full run contexts already loaded into memory.
+    // hide the thousands of full run contexts already loaded into memory. The
+    // ids now come from the thin columns with a context_snapshot coalesce
+    // fallback (these rows carry no thin columns — the historical shape).
     const rows = await listAttentionExhaustedRuns(db, companyId);
     expect(rows).toHaveLength(2);
     expect(rows.find((row) => row.id === failedId)).toMatchObject({
       exhaustionMessage: "Bounded retry exhausted receipt 2500",
-      contextSnapshot: { issueId, taskId: null },
+      runIssueId: issueId,
+      runTaskId: null,
     });
-    expect(rows.find((row) => row.id === timedOutId)?.contextSnapshot).toEqual({ issueId: null, taskId });
+    expect(rows.find((row) => row.id === timedOutId)).toMatchObject({
+      runIssueId: null,
+      runTaskId: taskId,
+    });
     expect(Buffer.byteLength(JSON.stringify(rows))).toBeLessThan(4096);
 
     const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, {

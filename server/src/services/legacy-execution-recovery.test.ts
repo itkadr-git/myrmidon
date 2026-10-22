@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { legacyExecutionNeedsReconciliation } from "./legacy-execution-recovery.js";
+import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../myrmidon/maintenance/domain.js";
 
 const stopped = {
   runtimeMode: "legacy", status: "cancelled", errorCode: "cancelled",
@@ -8,6 +9,40 @@ const stopped = {
     executionRecovery: { kind: "interrupted", providerStopped: true, sessionPreserved: true, actionOutcomes: "settled" },
   },
 };
+
+it("does not hold maintenance-interrupted runs scheduled for retry", () => {
+  expect(legacyExecutionNeedsReconciliation({
+    runtimeMode: "legacy", status: "cancelled", errorCode: MAINTENANCE_INTERRUPT_ERROR_CODE,
+    scheduledRetryAttempt: 50, scheduledRetryReason: "myrmidon_maintenance",
+    contextSnapshot: { issueId: "issue-1", retryReason: "myrmidon_maintenance" }, resultJson: {},
+  })).toBe(false);
+});
+
+// myrmidon(CONTINUATION-WAIT-HOLD): a queued review/response wait is cancelled
+// before provider startup and must not create an execution reconciliation hold.
+it("does not hold queued continuations cancelled before provider startup", () => {
+  for (const errorCode of [
+    "issue_continuation_waiting_on_review",
+    "issue_waiting_for_response",
+  ]) {
+    expect(
+      legacyExecutionNeedsReconciliation({
+        runtimeMode: "legacy",
+        status: "cancelled",
+        errorCode,
+        resultJson: {},
+      }),
+    ).toBe(false);
+    expect(
+      legacyExecutionNeedsReconciliation({
+        runtimeMode: "legacy",
+        status: "failed",
+        errorCode,
+        resultJson: {},
+      }),
+    ).toBe(true);
+  }
+});
 
 it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated"])("does not invent unknown provider actions after exhausted %s bootstrap retries", (errorCode) => {
   const run = { runtimeMode: "legacy", status: "failed", errorCode, scheduledRetryAttempt: 2,

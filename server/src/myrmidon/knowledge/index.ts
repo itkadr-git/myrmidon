@@ -24,3 +24,22 @@ export {
   type ImportTreeResult,
 } from "./store.js";
 export { createKnowledgeModule, type KnowledgeModule, type KnowledgeModuleOptions } from "./service.js";
+export {
+  seedKnowledgeBase,
+  SEED_ACTOR,
+  SEED_DECISIONS,
+  SEED_PRODUCT_PAGES,
+  type SeedDecision,
+  type SeedProductPage,
+  type SeedKnowledgeOptions,
+  type SeedKnowledgeResult,
+} from "./seed.js";
+
+export {
+  buildKnowledgeGitTree,
+  readKnowledgeExportSettings,
+  KNOWLEDGE_EXPORT_DEFAULT_BRANCH,
+  type KnowledgeExportSettings,
+  type KnowledgeGitTree,
+} from "./git-export.js";
+export { startKnowledgeExport, stopKnowledgeExport, runKnowledgeExportPass } from "./git-export-job.js";

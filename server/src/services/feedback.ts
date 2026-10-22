@@ -48,6 +48,7 @@ import {
 } from "./feedback-redaction.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const FEEDBACK_SCHEMA_VERSION = "paperclip-feedback-envelope-v2";
 const FEEDBACK_BUNDLE_VERSION = "paperclip-feedback-bundle-v2";
@@ -587,7 +588,7 @@ async function buildOpenCodeTraceFiles(input: {
   }
 
   const opencodeRoot = resolveHomeAwarePath(
-    process.env.PAPERCLIP_OPENCODE_STORAGE_DIR ?? "~/.local/share/opencode",
+    readProductEnv("OPENCODE_STORAGE_DIR") ?? "~/.local/share/opencode",
   );
   const sessionRoot = path.join(opencodeRoot, "storage", "session");
   const diffRoot = path.join(opencodeRoot, "storage", "session_diff");

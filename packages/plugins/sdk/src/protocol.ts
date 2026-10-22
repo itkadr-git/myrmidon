@@ -56,6 +56,7 @@ import type {
   PluginIssueCheckoutOwnership,
   PluginIssueOrchestrationSummary,
   PluginIssueRelationSummary,
+  PluginIssueMutationActor,
   PluginIssueSubtree,
   PluginIssueAttachmentContent,
   PluginIssueWakeupBatchResult,
@@ -265,6 +266,14 @@ export const PLUGIN_RPC_ERROR_CODES = {
    * `multiCompanyConfig: true` on its definition.
    */
   CROSS_TENANT_CONFIG: -32006,
+  /**
+   * The worker has no handler registered for the requested action, data key,
+   * tool, or job key. The error's `data` carries `{ error: string, known: string[] }`
+   * so callers can surface the keys the plugin actually serves. Bridges map this
+   * to a 400-class response instead of a 502 — an unknown key is a caller error,
+   * not a worker failure.
+   */
+  UNKNOWN_ACTION: -32007,
   /** A catch-all for errors that do not fit other categories. */
   UNKNOWN: -32099,
 } as const;
@@ -429,6 +438,13 @@ export interface PluginPerformActionActorContext {
   runId: string | null;
   /** Company id authorized by the host bridge for this action, when applicable. */
   companyId: string | null;
+  /**
+   * myrmidon(PLUGIN-INSTANCE-ADMIN): true when the host verified that the
+   * board user is an instance administrator; false or absent otherwise
+   * (agents, system, older hosts). Lets a plugin restrict an action to the
+   * instance admin without its own user list.
+   */
+  isInstanceAdmin?: boolean;
 }
 
 export interface PluginPerformActionContext {
@@ -2027,6 +2043,10 @@ export interface WorkerToHostMethods {
   "issues.getAttachmentContent": [
     params: { attachmentId: string; companyId: string; maxBytes?: number | null },
     result: PluginIssueAttachmentContent | null,
+  ];
+  "issues.uploadAttachment": [
+    params: { issueId: string; companyId: string; filename: string; contentType: string; contentBase64: string; actor?: PluginIssueMutationActor },
+    result: IssueAttachment,
   ];
 
   // Issue Documents

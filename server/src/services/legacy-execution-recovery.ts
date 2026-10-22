@@ -28,9 +28,19 @@ export function legacyExecutionNeedsReconciliation(
     !["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
   )
     return false;
-  if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false; // myrmidon(R3): maintenance interruption, retried after exit
+  // Maintenance interruption explicitly means retry, including after the
+  // bounded retry scheduler's ordinary attempt budget is exhausted.
+  if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   if (run.errorCode === RUN_STALL_ERROR_CODE) return false; // myrmidon(RUN-STALL): stall interruption, the sweep re-opens the task itself
   if (shouldSkipReconciliationForInfraInterrupt(run)) return false; // myrmidon(L1): infrastructure interruption, retried or released, not held
+  // myrmidon(CONTINUATION-WAIT-HOLD): a queued continuation cancelled before
+  // provider startup is a deliberate wait, not an unknown provider outcome.
+  if (
+    run.status === "cancelled" &&
+    (run.errorCode === "issue_continuation_waiting_on_review" ||
+      run.errorCode === "issue_waiting_for_response")
+  )
+    return false;
   // A fresh conversation turn lets the agent decide what remains. The retry
   // scheduler, not an action-outcome hold, owns the automatic attempt limit.
   if (hasConversationContinuationPolicy(run.resultJson)) return false;

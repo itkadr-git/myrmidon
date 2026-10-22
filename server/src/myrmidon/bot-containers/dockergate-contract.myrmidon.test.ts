@@ -86,7 +86,7 @@ function expand(expression: string): string[] {
   const choices: string[][] = pieces.map((piece) => {
     if (!piece.startsWith("${")) return [piece];
     const expr = piece.slice(2, -1).trim();
-    if (/^nameSegment\((name|containerName|replacement)\)$/.test(expr)) return SUFFIXES.map((s) => `myrmidon-bot-${KEY}${s}`);
+    if (/^nameSegment\((name|containerName|replacement|containerNameFor\(spec\.botKey\))\)$/.test(expr)) return SUFFIXES.map((s) => `myrmidon-bot-${KEY}${s}`);
     if (/^nameSegment\(image\)$/.test(expr)) return [IMAGE];
     if (expr === "encodeURIComponent(name)") return SUFFIXES.map((s) => `myrmidon-bot-${KEY}${s}`);
     if (expr === "encodeURIComponent(mountPath)") return table.routes.flatMap((r) => r.mounts ?? []);
@@ -98,6 +98,11 @@ function expand(expression: string): string[] {
       // The marker of an isolated bot (/bot), of a shared scope member
       // (/bot-scope/<botKey>) and of a LEGACY-layout bot (/data, contract "1").
       return [`/bot-scope/${KEY}`, BOT_ROOT_MOUNT, LEGACY_BOT_REAL_ROOT].map((root) => encodeURIComponent(`${root}/hermes/.myrmidon/applied.json`));
+    }
+    if (expr === "encodeURIComponent(`${root}/hermes/skills`)") {
+      // myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the bot's own skills
+      // directory, in the same three root shapes as the marker above.
+      return [`/bot-scope/${KEY}`, BOT_ROOT_MOUNT, LEGACY_BOT_REAL_ROOT].map((root) => encodeURIComponent(`${root}/hermes/skills`));
     }
     if (expr === "BOT_STOP_TIMEOUT_SEC") return [String(BOT_STOP_TIMEOUT_SEC)];
     if (expr === "filters") return ["%7B%22label%22%3A%5B%22myrmidon.bot%22%5D%7D"];
@@ -174,9 +179,9 @@ describe("board driver <-> dockergate route table", () => {
   it("covers every route of the table the driver uses", () => {
     const used = new Set(calls.flatMap((c) => callAllowedBy(c)));
     // A1 image labels, A2 inspect, A3 marker, A13 report, A4 create, A5 upload, A6 start,
-    // A7 wait, A8 logs, A9 delete, A10 stop, A11 restart, A12 rename.
+    // A7 wait, A8 logs, A9 delete, A10 stop, A11 restart, A12 rename, A16 skills read.
     expect([...used].sort()).toEqual(
-      ["A1", "A10", "A11", "A12", "A13", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9"].sort(),
+      ["A1", "A10", "A11", "A12", "A13", "A16", "A17", "A18", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9"].sort(),
     );
   });
 

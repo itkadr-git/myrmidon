@@ -183,6 +183,7 @@
     "workspace": "Workspace",
     "parent": "Parent task",
     "labels": "Tags",
+    "pheromone": "Pheromone",
     "updated": "Last updated",
     "title": "Title",
     "columns": "Columns",
@@ -199,6 +200,8 @@
     "workspaceDesc": "Execution or project workspace used for the task.",
     "parentDesc": "Parent task identifier and title.",
     "labelsDesc": "Task labels and tags.",
+    "pheromoneDesc": "Swarm-queue pheromone strength; editable in place.",
+    "pheromoneAria": "Pheromone strength",
     "updatedDesc": "Latest visible activity time.",
     "idTaskDesc": "Task identifier like PAP-1009 on the trailing edge.",
     "statusTaskDesc": "Task state icon on the leading edge."
@@ -243,7 +246,12 @@
     "agentView": "Agent view",
     "live": "Live",
     "liveCount": "Live ({{count}})",
-    "sandbox": "Sandbox"
+    "sandbox": "Sandbox",
+    "scopeCompany": "Company",
+    "scopeCompanyNamed": "Company: {{name}}",
+    "filterRole": "Role",
+    "filterModel": "Model",
+    "filterAll": "All"
   },
   "inbox": {
     "title": "Inbox",
@@ -312,6 +320,7 @@
     "export": "Export",
     "import": "Import",
     "members": "Members",
+    "users": "Users",
     "secrets": "Secrets",
     "profile": "Profile",
     "environments": "Environments",
@@ -323,10 +332,12 @@
     "browsers": "Browsers",
     "clouds": "Clouds",
     "autonomy": "Autonomy",
-    "castes": "Castes & models",
+    "castes": "Agent castes",
+    "models": "Models & providers",
     "wipLimit": "WIP limit",
     "reviewRouting": "Review routing",
-    "corpus": "Knowledge corpus"
+    "corpus": "Knowledge corpus",
+    "agentExchange": "Agent exchanges"
   },
   "corpus": {
     "title": "Knowledge corpus",
@@ -520,11 +531,11 @@
   },
   "swarm": {
     "title": "Swarm supervisor",
-    "intro": "Role queues, live role leases and rebalance actions, plus the pilot report compared against the frozen BASELINE snapshot.",
+    "intro": "Role queues, live role leases and rebalance actions of the self-organizing swarm.",
     "selectOrganization": "Select an organization to view swarm role queues.",
     "sections": {
       "roles": "Role queues",
-      "pilot": "Pilot vs BASELINE"
+      "activity": "Activity"
     },
     "queueTitle": "Queue",
     "queueDescription": "Assigned tasks waiting for a claim in this role, oldest first.",
@@ -556,22 +567,18 @@
       "activeLeases": "Active leases",
       "loadVsCap": "Load vs cap",
       "limit": "Limit",
-      "metric": "Metric",
-      "pilot": "Pilot",
-      "baseline": "BASELINE",
-      "delta": "Delta",
-      "tasksDone": "Tasks done",
-      "cycleTimeMean": "Cycle time (mean)",
-      "reviewTimeMean": "Review time (mean)",
-      "returnRate": "Return rate",
-      "costPerTaskMean": "Cost per task (mean)"
+      "eff": "Pheromone",
+      "nest": "Nest",
+      "matchedAt": "Matched",
+      "coolsDownAt": "Cools down"
     },
     "totals": {
       "queuedTasks": "Queued tasks",
       "activeLeases": "Active leases",
       "expiredLeases": "Expired leases",
       "agentsWithLeases": "Agents with leases",
-      "idleAgentsWithQueue": "Idle agents with queue"
+      "idleAgentsWithQueue": "Idle agents with queue",
+      "freeAgentsWithQueue": "Free agents with queue"
     },
     "releaseLease": "Release lease",
     "releaseFailed": "Release failed: {{message}}",
@@ -581,41 +588,23 @@
     "generated": "Generated {{time}}",
     "leaseTtl": "Lease TTL: {{seconds}}",
     "maxActive": "Max active tasks per agent:",
-    "presets": {
-      "7d": "Last 7 Days",
-      "14d": "Last 14 Days",
-      "30d": "Last 30 Days"
-    },
-    "notAvailable": "Swarm supervisor is not available",
-    "notAvailableMessage": "The server answered that the swarm-claim supervisor is not enabled on this instance.",
     "noOverview": "No supervisor overview yet",
     "noOverviewMessage": "The supervisor has not produced an overview for this organization.",
     "disabled": "Swarm supervisor is disabled",
     "disabledMessage": "This organization has the supervisor report disabled.",
     "noRoles": "No roles to supervise",
     "noRolesMessage": "No role currently has queued tasks, live leases or idle agents.",
-    "pilotDisabled": "Swarm pilot is disabled",
-    "pilotDisabledMessage": "The server answered that the swarm pilot is not enabled on this instance.",
-    "pilotDisabledDescription": "The pilot flag is off by default; ask the operator to enable the swarm pilot before comparing against BASELINE.",
-    "noPilotReport": "No pilot report yet",
-    "noPilotReportMessage": "The supervisor has not produced a pilot report for this window.",
-    "noWindow": "No window",
-    "pilotComparisonTitle": "Pilot vs BASELINE",
-    "pilotComparisonDescription": "Mean values over the window: the swarm pilot beside the frozen BASELINE snapshot.",
-    "pilotWindow": "Pilot window",
-    "pilotWindowDescription": "Delivery metrics for the pilot window, by project.",
-    "pilotWindowEmpty": "No pilot data in this window.",
-    "baselineSnapshot": "BASELINE snapshot",
-    "baselineSnapshotDescription": "The frozen BASELINE reference the pilot is measured against, by project.",
-    "baselineSnapshotEmpty": "No BASELINE snapshot yet.",
-    "costsSource": {
-      "litellm": "LLM gateway cost events",
-      "costEvents": "adapter cost events",
-      "none": "no cost source"
+    "disabledDescription": "The swarm switch is off; turn it on in the self-organization settings to inspect role queues.",
+    "matchedTitle": "Recent matches",
+    "matchedDescription": "The last tasks the board matched to a free agent.",
+    "matchedEmpty": "No matches yet — the board will list every task it hands to an agent here.",
+    "cooldownTitle": "Cooling down",
+    "cooldownDescription": "Tasks the board could not match, waiting before another attempt.",
+    "cooldownEmpty": "No tasks are cooling down.",
+    "warnings": {
+      "empty": "No warnings — every caste with tasks has a free agent, every task has a caste, and every run works on a task."
     },
-    "costSourceLine": "cost source: {{source}}",
-    "notAvailableDescription": "Ask the operator to enable the swarm pilot before inspecting role queues and leases.",
-    "disabledDescription": "The pilot flag is off; ask the operator to enable it before inspecting role queues."
+    "claimSwitch": "Claim switch"
   },
   "foraging": {
     "title": "Foraging",
@@ -629,6 +618,39 @@
       "spentThisMonth": "Spent this month: {{value}}",
       "passInterval": "Pass interval: {{minutes}} min",
       "sameHostPause": "Same-host pause: {{seconds}} s"
+    },
+    "idleGate": {
+      "title": "Idle only",
+      "description": "A pass reads a role's sources only while the role is idle: its queue holds no unassigned open task and one of its agents is free. Working tasks always come first.",
+      "label": "Run passes only while the role is idle",
+      "value": "Now: {{value}}",
+      "source": "Value from: {{source}}",
+      "on": "on",
+      "off": "off",
+      "unknown": "value not read",
+      "nextPass": "The rule is read on every pass, so a switch applies to the next pass — no restart.",
+      "saveFailed": "Could not save the setting: {{message}}",
+      "sources": {
+        "settings": "the interface",
+        "env": "the environment",
+        "default": "the default"
+      },
+      "reasons": {
+        "queue_not_empty": "the role's queue is not empty",
+        "no_idle_agent": "no free agent of the role"
+      }
+    },
+    "passes": {
+      "title": "Pass history",
+      "description": "The last passes of this company: what each pass read, and which roles it left alone, with the reason.",
+      "empty": "No passes recorded yet. A pass lands here as soon as one runs.",
+      "when": "Pass",
+      "read": "Sources read",
+      "findings": "Findings",
+      "skipped": "Skipped",
+      "notSkipped": "nothing skipped",
+      "skip": "{{role}} — {{reason}}",
+      "stoppedByBudget": "stopped by the budget"
     },
     "sources": {
       "title": "Sources",
@@ -818,6 +840,22 @@
     "archiving": "Archiving...",
     "alreadyArchived": "Already archived",
     "failedToArchive": "Failed to archive organization",
+    "policies": "Company policies",
+    "feedbackSharing": "Share feedback data",
+    "feedbackSharingHint": "Allow votes and feedback traces from this organization to be shared. Enabling records your consent.",
+    "responsibleUser": "Responsible user",
+    "responsibleUserHint": "Default owner for work that has no assignee.",
+    "responsibleUserNone": "Not set",
+    "responsibleUsersLoadFailed": "Could not load users",
+    "pauseHint": "Pausing stops all agents of this organization from starting new work. Resume to continue.",
+    "pausedNotice": "This organization is paused.",
+    "pauseOrganization": "Pause organization",
+    "resumeOrganization": "Resume organization",
+    "pauseConfirm": "Pause organization \"{{name}}\"? Agents will stop starting new work until it is resumed.",
+    "resumeConfirm": "Resume organization \"{{name}}\"?",
+    "pausing": "Pausing...",
+    "resuming": "Resuming...",
+    "failedToPauseResume": "Failed to change organization state",
     "deploymentAndAuth": "Deployment and auth",
     "localTrustedMode": "Local trusted mode is optimized for a local operator. Browser requests run as local board context and no sign-in is required.",
     "authenticatedPublicMode": "Authenticated public mode requires sign-in for board access and is intended for public URLs.",
@@ -1019,6 +1057,65 @@
     "ageDays": "{{count}} d",
     "ageSeconds": "{{count}} s"
   },
+  "runQueue": {
+    "priorityTitle": "Run queue priority",
+    "priorityDescription": "When the admission ceilings are closed, queued runs start in priority order: review, release and current-release work first. Weights apply on the next admission pass — saving needs no server restart.",
+    "notServed": "This server does not expose queue priority settings yet (the feature arrives with a release update); nothing here is saved.",
+    "loading": "Loading the queue priority settings...",
+    "role": {
+      "review": "Review weight",
+      "release": "Release weight",
+      "lead": "Lead weight",
+      "engineer": "Engineer weight",
+      "docs": "Docs weight"
+    },
+    "weightOff": "off",
+    "source": {
+      "settings": "Saved here",
+      "env": "From the server environment",
+      "default": "Default"
+    },
+    "currentRelease": "Current release",
+    "currentReleaseOff": "off",
+    "currentReleaseHint": "Release tag or string tasks are matched against (label or branch marker); leave it empty for no release bonus.",
+    "currentReleaseBonus": "Current-release bonus",
+    "currentReleaseBonusHint": "Weight added on top of the role weight for tasks of the current release.",
+    "agingMax": "Aging cap",
+    "agingMaxHint": "Maximum weight the aging can add on top of the base weight.",
+    "save": "Save queue priority",
+    "saving": "Saving...",
+    "loadFailed": "Failed to load the queue priority settings.",
+    "saveFailed": "Saving the queue priority settings failed.",
+    "error": {
+      "wholeNumber": "Enter a whole number of 0 or more, or leave it empty"
+    },
+    "position": {
+      "of": "Queue position {{position}} of {{total}}",
+      "only": "Queue position {{position}}"
+    },
+    "waiting": "waiting: {{reason}}",
+    "waitReason": {
+      "global_cap": "the concurrency ceiling is full",
+      "start_ramp": "the start ramp paces new starts",
+      "memory": "the server keeps its free-memory floor",
+      "host_memory": "the host free-memory floor is closed",
+      "host_cpu": "the host CPU ceiling is closed",
+      "agent_fair_share": "another agent's turn comes first (fair share)",
+      "agent_concurrency": "the agent's own concurrency limit is full",
+      "higher_priority_ready": "the agent's more important ready task goes first",
+      "priority": "higher-priority runs are ahead"
+    },
+    "enabled": "Priority ordering on",
+    "enabledHint": "Off: queued runs start oldest first, as before the feature.",
+    "defaultRoleWeight": "Weight of other roles",
+    "defaultRoleWeightHint": "Weight of a role without its own entry above.",
+    "agingStepMinutes": "Aging step (minutes)",
+    "agingStepMinutesHint": "A waiting run gains weight after every full step of this many minutes; 0 turns aging off.",
+    "agingStepWeight": "Aging step weight",
+    "agingStepWeightHint": "Weight gained per full aging step.",
+    "starvationLimit": "Starvation limit (minutes)",
+    "starvationLimitHint": "A run waiting this long starts with the top weight; 0 turns the limit off."
+  },
   "processes": {
     "title": "Board processes",
     "subtitle": "Every running board process refreshes its own row every 10 seconds: its role, when it started, and the event-loop lag and memory of its last pulse. A row older than two minutes is stale and the leader reaps it.",
@@ -1045,7 +1142,50 @@
     "ageSeconds": "{{seconds}} s ago",
     "ageMinutes": "{{minutes}} min ago",
     "ageHours": "{{hours}} h ago",
-    "cadence": "Pulse every {{pulse}} s; a row older than {{stale}} s is stale."
+    "cadence": "Pulse every {{pulse}} s; a row older than {{stale}} s is stale.",
+    "colReady": "Ready",
+    "colRestarts": "Restarts",
+    "readyYes": "ready",
+    "readyNo": "not ready",
+    "restartCount": "{{count}}",
+    "groupSummary": "{{role}} — {{ready}} of {{count}} ready"
+  },
+  "boardLeases": {
+    "title": "Leader leases",
+    "description": "Which process holds each board lease. Refreshed every 10 seconds, so a handover shows up without restarting the board.",
+    "loading": "Loading the lease state…",
+    "noData": "No data",
+    "noDataHint": "The lease endpoint did not answer. The rest of the panel keeps working, the next refresh is in 10 seconds.",
+    "singleProcess": "One process — the single-process board holds one lease.",
+    "empty": "No lease is held right now.",
+    "emptyHint": "A single-process board holds one lease: an empty list means the lease row has not been written yet.",
+    "columnHolder": "Holder",
+    "columnEpoch": "Epoch",
+    "columnAcquired": "Acquired",
+    "columnExpires": "Expires",
+    "leaseScheduler": "Scheduler (background runs)",
+    "leaseBackup": "Backup",
+    "leaseBotOps": "Bot operations",
+    "holderPid": "pid",
+    "holderBoot": "boot",
+    "holderRole": "role",
+    "holderLastSeen": "last pulse",
+    "holderMissing": "No matching board process row",
+    "active": "Active",
+    "expired": "Expired",
+    "expiryUnknown": "Expiry unknown",
+    "selfYes": "I am the leader",
+    "selfNo": "Another process",
+    "selfUnknown": "Unknown",
+    "noEpoch": "—",
+    "noAcquired": "—",
+    "noExpires": "—",
+    "updatedAt": "Refreshed {{time}}"
+  },
+  "litellmWorkers": {
+    "unknown": "unknown",
+    "runningNow": "Running now: {{value}}",
+    "statusUnknown": "Running now is unknown: the gateway did not report its pool size."
   },
   "attentionFeed": {
     "title": "Attention feed",
@@ -1062,5 +1202,207 @@
     "save": "Save",
     "reset": "Use defaults",
     "note": "Stored in the instance settings; there is no environment variable behind either value."
+  },
+  "telegramCard": {
+    "title": "Telegram",
+    "intro": "The Telegram bridge addresses this agent by these aliases and files its card under the group title in /agents.",
+    "aliasesLabel": "Telegram aliases",
+    "aliasesHint": "Lowercase letters, digits and underscores. Leave empty to use the alias computed from the agent name.",
+    "defaultAliasNote": "No aliases set — the bridge answers to the name default @{{alias}}.",
+    "noDefaultAliasNote": "No aliases set, and the name carries no usable default. Add one so the agent is reachable in Telegram.",
+    "addPlaceholder": "alias",
+    "add": "Add",
+    "removeAlias": "Remove alias",
+    "invalidAlias": "An alias may only contain lowercase latin letters, digits and underscores.",
+    "duplicateAlias": "This alias is already in the list.",
+    "groupLabel": "Telegram group",
+    "groupHint": "The group title the /agents list shows this card under. Empty groups the card by its name prefix.",
+    "groupPlaceholder": "group title",
+    "save": "Save Telegram settings",
+    "saving": "Saving…",
+    "saved": "Saved",
+    "saveFailed": "Could not save"
+  },
+  "licensing": {
+    "title": "Licenses",
+    "description": "Licenses of the closed connector modules installed on this server. Copy the license request and send it to the vendor; install the license you receive here — the modules on this server read it from the same file.",
+    "loading": "Loading licenses…",
+    "adminOnly": "Only the instance administrator can manage licenses.",
+    "installId": "Installation id:",
+    "sourceEnv": "The id is set by an environment override, not derived from the machine id. Make sure the modules use the same value.",
+    "sourceGenerated": "No machine id found: the id was generated and cached. Mount the host machine id read-only, otherwise a new installation may get a new id and the license will stop matching.",
+    "statusTitle": "License state",
+    "notInstalled": "not installed",
+    "licensePath": "License file: {{path}}",
+    "sourceIsEnv": "The license is set by the MYR_LICENSE variable of the board.",
+    "notShared": "{{path}} is inside the board container and not mounted from the host: modules on the host will not see a license saved here. Mount the host license directory into the board read-write (see the licensing guide).",
+    "state": {
+      "validForever": "Valid, no expiry",
+      "validUntil": "Valid until {{date}}",
+      "expiring": "Expires {{date}}",
+      "expired": "Expired",
+      "wrong_instance": "Not for this installation",
+      "missing": "No license",
+      "not_granted": "Not included in the license",
+      "bad_signature": "Invalid signature",
+      "invalid": "License damaged or unreadable"
+    },
+    "requestTitle": "Request a license",
+    "requestHint": "Pick the modules, copy the request and send it to the vendor in one message.",
+    "requestLabel": "License request",
+    "copyRequest": "Copy request",
+    "copied": "Copied",
+    "installTitle": "Install a license",
+    "pasteLicense": "License (one line starting with MYR1.)",
+    "loadFile": "Load license.key file",
+    "save": "Save license",
+    "saving": "Saving…",
+    "saved": "License saved. The modules pick it up on their next check, no restart needed.",
+    "saveError": {
+      "badFormat": "This is not a license: expected one line starting with MYR1.",
+      "badPayload": "The license content is damaged. Ask the vendor for the file again.",
+      "badSignature": "The license signature is invalid: the text was changed or it was not issued by the vendor.",
+      "unsupportedRev": "This license format is not supported by this board version. Update the board.",
+      "instanceMismatch": "This license was issued for another installation: the installation id does not match. Send the vendor the request from this screen.",
+      "expired": "This license has already expired. Ask the vendor for a new one.",
+      "noCore": "This license does not allow any module to start.",
+      "envOverride": "The license is set by the MYR_LICENSE variable of the board, so a license cannot be saved here. Change the variable or remove it to use the license file.",
+      "unwritable": "Cannot write the license file {{path}}: the host license directory is not mounted into the board for writing (see the licensing guide).",
+      "fileUnreadable": "Cannot read the selected file.",
+      "generic": "Could not save the license. Try again."
+    },
+    "banner": "A closed module has no valid license: {{modules}}.",
+    "bannerLink": "Open Licenses"
+  },
+  "remoteSites": {
+    "title": "Remote sites",
+    "loading": "Loading sites…",
+    "error": "Unable to load sites: {{error}}",
+    "empty": "No sites configured",
+    "fixture": "Fixture preview — not production data",
+    "stale": "Stale health",
+    "expired": "Client certificate expired",
+    "capacity": "Capacity: {{used}}/{{total}}",
+    "botsCount": "Bots: {{count}}",
+    "driftCount": "Drift: {{count}}",
+    "showBots": "Show bots for {{name}}",
+    "hideBots": "Hide bots for {{name}}",
+    "showBotsLabel": "Show bots",
+    "hideBotsLabel": "Hide bots",
+    "image": "Image:",
+    "state": "State:",
+    "api": "API:",
+    "drift": "Drift",
+    "noBots": "No bots",
+    "status": {
+      "reachable": "Reachable",
+      "degraded": "Degraded",
+      "unreachable": "Unreachable",
+      "draining": "Draining",
+      "quarantined": "Quarantined",
+      "disabled": "Disabled"
+    },
+    "action": {
+      "restart": "Restart",
+      "stop": "Stop",
+      "move": "Move",
+      "drain": "Drain",
+      "resume": "Resume"
+    }
+  },
+  "swarmClaim": {
+    "title": "Self-organization (swarm)",
+    "intro": "The board itself matches a free agent to each unassigned task by caste and scent, and wakes that agent on its own task. Every value applies without a restart — the server re-reads these settings on each claim and sweep tick. Turning the swarm off releases the live leases immediately; assignees are not touched. Environment variables stay forced overrides; each field shows whether the saved value or the override is in force.",
+    "enableLabel": "Enable the swarm",
+    "enableHelp": "One switch for the whole matching pipeline. When it is on, an unassigned task with a caste waits in that caste's queue until a free agent appears.",
+    "sourceSaved": "Saved here",
+    "sourceEnv": "Environment override",
+    "sourceDefault": "Default",
+    "statusLine": "{{queued}} unassigned task(s) waiting · {{claimed}} claimed in the last hour · {{cancelled}} cancelled in the last hour",
+    "pheromonesTitle": "Pheromones",
+    "pheromonesHelp": "The priority → strength mapping seeds a task's pheromone; waiting adds strength (aging) and failed runs subtract it (evaporation) until the task changes. The queue orders by the effective strength.",
+    "pheromone": {
+      "critical": {
+        "label": "Critical (P0) strength",
+        "help": "Strength a new critical (P0) task starts with."
+      },
+      "high": {
+        "label": "High strength",
+        "help": "Strength a new high task starts with."
+      },
+      "medium": {
+        "label": "Medium strength",
+        "help": "Strength a new medium task starts with."
+      },
+      "low": {
+        "label": "Low strength",
+        "help": "Strength a new low task starts with."
+      },
+      "agingStepHours": {
+        "label": "Aging step, hours",
+        "help": "How many hours of waiting make one aging step."
+      },
+      "agingStep": {
+        "label": "Aging increment",
+        "help": "Strength added per aging step."
+      },
+      "agingCap": {
+        "label": "Aging cap",
+        "help": "Total strength aging can add to one task."
+      },
+      "failPenalty": {
+        "label": "Evaporation penalty per failed run",
+        "help": "Strength subtracted per failed run since the last task change."
+      }
+    },
+    "p0Label": "P0 preempts the queue",
+    "p0Help": "On — a critical task is the top of the queue. Off — the queue is strictly by effective strength.",
+    "advanced": "Advanced",
+    "advancedLabel": {
+      "leaseTtlSec": "Lease TTL, seconds",
+      "maxActiveTasks": "Max active tasks per agent",
+      "sweepIntervalSec": "Sweep interval, seconds"
+    },
+    "help": {
+      "leaseTtlSec": "How long a claim on a task lasts before it expires and the task returns to the queue (60–86400 seconds).",
+      "maxActiveTasks": "Most tasks one agent may hold at once (1–100). Leave empty for no ceiling.",
+      "sweepIntervalSec": "How often the board sweeps for expired claims and re-matches tasks (5 seconds or more)."
+    },
+    "noCeilingPlaceholder": "No ceiling",
+    "requiredPlaceholder": "Required",
+    "saving": "Saving...",
+    "save": "Save self-organization settings",
+    "journalTitle": "Change journal",
+    "journalHelp": "Who changed the swarm settings, and when (newest first).",
+    "journalEmpty": "No changes recorded yet.",
+    "journalNoKeys": "(no keys)",
+    "loading": "Loading self-organization settings...",
+    "saveFailed": "Saving the self-organization settings failed.",
+    "loadFailed": "Failed to load the self-organization settings.",
+    "releasedNote": "Swarm switched off: {{released}} live lease(s) released.",
+    "err": {
+      "leaseTtlSec": "Enter a whole number from 60 to 86400",
+      "maxActiveTasks": "Enter a whole number from 1 to 100, or leave it empty for no ceiling",
+      "sweepIntervalSec": "Enter a whole number of at least 5",
+      "pheromone": "Enter a whole number from 0 to 100000, or leave it empty for the default"
+    },
+    "cooling": {
+      "title": "Task cooling",
+      "intro": "How long a task waits before its next automatic wake after a stale run. One rule for the whole board (the wake-task guard): base × 2^(attempts − 1), clamped to the ceiling. Applies without a restart; the swarm-claim settings above are untouched.",
+      "loading": "Loading the cooling settings...",
+      "gateLabel": "Drop wakes without a task",
+      "gateHelp": "On — an automatic wake that names no existing task closes as skipped before any run starts (0 tokens). Off — such wakes are recorded as before.",
+      "baseLabel": "Cooldown base, minutes",
+      "baseHelp": "The first cooling window after a stale automatic run (1–1440). Empty uses the default, 30.",
+      "ceilingLabel": "Cooldown ceiling, hours",
+      "ceilingHelp": "The largest window after repeated stale runs (1–168). Empty uses the default, 24.",
+      "save": "Save cooling settings",
+      "saveFailed": "Saving the cooling settings failed.",
+      "savedNote": "Cooling settings saved — they apply on the next wake, no restart.",
+      "err": {
+        "cooldownBaseMin": "Enter a whole number from 1 to 1440, or leave it empty for the default",
+        "cooldownCeilingHours": "Enter a whole number from 1 to 168, or leave it empty for the default"
+      }
+    }
   }
 }

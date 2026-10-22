@@ -748,6 +748,55 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(receipts.filter((row) => row.status === "coalesced")).toHaveLength(2);
   });
 
+  it.each(["in_progress", "in_review"] as const)(
+    "restores one live path for a %s dependent after blocker resolve/reopen skips assignment",
+    async (status) => {
+      const { companyId, agentId, blockedIssueId, blockerIssueId } =
+        await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+      const heartbeat = heartbeatService(db);
+      await db.update(issues).set({ status }).where(eq(issues.id, blockedIssueId));
+
+      // The blocker resolves, then reopens before the assignment wake is claimed.
+      await db.update(issues).set({ status: "todo" }).where(eq(issues.id, blockerIssueId));
+      expect(await heartbeat.wakeup(agentId, {
+        source: "automation", triggerDetail: "system", reason: "issue_assigned",
+        payload: { issueId: blockedIssueId }, contextSnapshot: { issueId: blockedIssueId },
+      })).toBeNull();
+      const skipped = await db.select().from(agentWakeupRequests).where(
+        eq(agentWakeupRequests.companyId, companyId),
+      );
+      expect(skipped).toHaveLength(1);
+      expect(skipped[0]).toMatchObject({ status: "skipped", reason: "issue_dependencies_blocked", runId: null });
+      expect((await heartbeat.reconcileResolvedDependencyWakes()).healed).toBe(0);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(0);
+
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerIssueId));
+      expect((await heartbeat.reconcileResolvedDependencyWakes()).healed).toBe(1);
+      expect((await heartbeat.reconcileResolvedDependencyWakes()).healed).toBe(0);
+      const recovered = await db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.reason, "issue_blockers_resolved"),
+      ));
+      expect(recovered).toHaveLength(1);
+      expect(["queued", "claimed", "completed"]).toContain(recovered[0]?.status);
+      // Recovery must not discard dependency edges, even when they are resolved.
+      expect(await db.select().from(issueRelations).where(eq(issueRelations.companyId, companyId))).toHaveLength(1);
+    },
+  );
+
+  it("keeps the backstop from waking an active dependent with an unresolved blocker", async () => {
+    const { companyId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, blockedIssueId));
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, blockerIssueId));
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+    expect(result.healed).toBe(0);
+    expect(result.notReadySkipped).toBe(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(0);
+  });
+
   it("retries a resolved dependency wake when the prior wake was skipped as stale", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId } =
       await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });

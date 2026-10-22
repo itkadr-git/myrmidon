@@ -1,5 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
 
 /**
  * A `Db` or an open transaction handle — the subset of query builders the
@@ -50,7 +51,12 @@ import { preserveCloudConnectorGeneralKey } from "../myrmidon/cloud-connector/st
 // myrmidon(SEC1): keep the access-hub host registry across vendor writes of `general`
 import { preserveAccessHubHostsGeneralKey } from "../myrmidon/access-hub/host-registry.js";
 // myrmidon(1.6-AUTONOMY): keep the autonomy matrix and regulations across vendor writes of `general`
-import { preserveAutonomyGeneralKey } from "../myrmidon/autonomy/store.js";
+import {
+  preserveAutonomyGeneralKey,
+  preserveAutonomyToolMappingGeneralKey,
+} from "../myrmidon/autonomy/store.js";
+// myrmidon(1.6.6 K-7): preserve the skill lifecycle pilot list across vendor writes.
+import { preserveSkillPilotAgentsGeneralKey } from "../myrmidon/skill-lifecycle/pilot-agents-store.js";
 // myrmidon(1.6-TG-PROACTIVITY-E, 1.6.1-TG-NOTIFY-B): keep the telegram-notify state across vendor writes of `general`
 import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
 import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
@@ -58,6 +64,7 @@ import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-n
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
 // myrmidon(1.6.6 PROCS-J): keep the board's process counts across vendor writes of `general`
 import { preserveBoardProcessesGeneralKey } from "../myrmidon/board-processes/settings.js";
+import { preserveOwnerDeliveryGeneralKey } from "../myrmidon/owner-delivery/settings.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
 // myrmidon(1.6.1 VOICE-STT A1): keep the per-company STT runtime settings across vendor writes of `general`
 import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
@@ -75,11 +82,19 @@ import {
 } from "../myrmidon/plugin-entitlement/store.js";
 // myrmidon(DM-PROGRESS): keep the Telegram DM progress settings across vendor writes of `general`
 import { preserveTelegramDmProgressGeneralKey } from "../myrmidon/telegram-dm-progress/settings.js";
+// myrmidon(1.6.5-TG-LOCALE-C): keep the instance-wide bridge language across vendor writes of `general`
+import { preserveBridgeLanguageGeneralKey } from "../myrmidon/bridge-language/settings.js";
 // myrmidon(GITHUB-SHARED-IDENTITY): keep the per-company shared GitHub access rules across vendor writes of `general`
 import { preserveGitHubSharedIdentityGeneralKey } from "../myrmidon/github-shared-identity/store.js";
 import { preserveBudgetProjectionGeneralKey } from "../myrmidon/litellm-budget-sync/settings.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 // myrmidon(BOT-RUNTIME-TUNING D2): keep the fallback-signal settings across vendor writes of `general`
 import { preserveFallbackSignalGeneralKey } from "../myrmidon/litellm-fallback-signal/settings.js";
+import { preserveLitellmWorkersGeneralKey } from "../myrmidon/litellm-workers/settings.js"; // myrmidon(1.6.5 LITELLM-WORKERS A)
+import { preserveBudgetLimitsGeneralKey } from "../myrmidon/budget-limits/settings.js";
+// myrmidon(1.6.5-DBC1): keep the datastore-care block across vendor writes of `general`
+import { preserveDatastoreCareGeneralKey } from "../myrmidon/datastore-care/retention/settings.js";
+// myrmidon(DB-PERF-C-P4): keep the tool gateway policy cache TTL across vendor writes of `general`
+import { preserveToolPolicyCacheGeneralKey } from "../myrmidon/tool-policy-cache/settings.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -120,7 +135,7 @@ export function isTruthyRuntimeEnvValue(value: string | undefined) {
 }
 
 function getRuntimeInstanceId(env: Record<string, string | undefined>) {
-  const instanceId = env.PAPERCLIP_INSTANCE_ID?.trim();
+  const instanceId = readProductEnvFrom(env, "INSTANCE_ID")?.trim();
   return instanceId ? instanceId : null;
 }
 
@@ -168,7 +183,7 @@ export function applyExperimentalSettingsPatch(
   }
 
   const runtimeEnv = options.runtimeEnv ?? process.env;
-  if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) {
+  if (!isTruthyRuntimeEnvValue(readProductEnvFrom(runtimeEnv, "IN_WORKTREE"))) {
     return nextExperimental;
   }
 
@@ -232,7 +247,7 @@ export async function resolveWorktreeRunExecutionActivationState(options: {
   runtimeEnv?: Record<string, string | undefined>;
 }): Promise<WorktreeRunExecutionActivationState> {
   const runtimeEnv = options.runtimeEnv ?? process.env;
-  if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) {
+  if (!isTruthyRuntimeEnvValue(readProductEnvFrom(runtimeEnv, "IN_WORKTREE"))) {
     return suppressWorktreeRunExecution("not_worktree_runtime");
   }
   try {
@@ -251,6 +266,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
       keyboardShortcuts: parsed.data.keyboardShortcuts ?? false,
+      ...(parsed.data.taskDrain ? { taskDrain: parsed.data.taskDrain } : {}),
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
@@ -260,6 +276,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.workspaceHygiene ? { workspaceHygiene: parsed.data.workspaceHygiene } : {}),
       // myrmidon(C0): the stored run admission limits survive every general write
       ...(parsed.data.runLimits ? { runLimits: parsed.data.runLimits } : {}),
+      // myrmidon(1.6.5 RUN-PRIORITY A): the stored run queue priority settings
+      // survive every general write (they are edited on their own route).
+      ...(parsed.data.runPriority ? { runPriority: parsed.data.runPriority } : {}),
       // myrmidon(RUN-STALL-SETTINGS): the stored run stall detection settings
       // survive every general write
       ...(parsed.data.runStall ? { runStall: parsed.data.runStall } : {}),
@@ -269,8 +288,15 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // vendor write path silently drops the key, so the module could only ever
       // be switched on from the environment.
       ...(parsed.data.corpus ? { corpus: parsed.data.corpus } : {}),
+      // myrmidon(PROCS-1.1): the stored process settings survive every general write
+      ...(parsed.data.processes ? { processes: parsed.data.processes } : {}),
       // myrmidon(BOT-DISK E): the stored host disk threshold survives every general write
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
+      // myrmidon(1.6.6 MODEL-MENU B): the stored grouped /model menu survives
+      // every general write. Without this line the vendor write path silently
+      // drops the key, so the tree the owner edits in the web interface would
+      // never roundtrip and /model would keep showing the automatic groups.
+      ...(parsed.data.modelMenu ? { modelMenu: parsed.data.modelMenu } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
       // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
@@ -283,14 +309,16 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(BOT-LSP-DEFAULTS): the stored language-server policy survives
       // every general write (it is edited on its own settings panel).
       ...(parsed.data.botLsp ? { botLsp: parsed.data.botLsp } : {}),
-      // myrmidon(1.6-SWARM): the stored swarm-claim pilot settings survive
-      // every general write (they are edited on their own settings page).
-      // 1.6.1: without this line the vendor write path silently dropped the
-      // key, so the stored value never roundtripped and the pilot could only
-      // ever come from the environment.
+      // myrmidon(1.6-SWARM): the stored swarm-claim settings survive every
+      // general write (they are edited on their own settings page). Without
+      // this line the vendor write path silently dropped the key, so the
+      // stored value never roundtripped.
       ...(parsed.data.swarmClaim ? { swarmClaim: parsed.data.swarmClaim } : {}),
-      // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
-      // pilot settings survives every general write (one atomic write carries the
+      // myrmidon(1.6.5 F-26 T5): the stored wake guard (taskless gate and
+      // cooling window, `general.swarm`) survives every general write too.
+      ...(parsed.data.swarm ? { swarm: parsed.data.swarm } : {}),
+      // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm
+      // settings survives every general write (one atomic write carries the
       // settings and the journal entry together).
       ...(parsed.data.swarmClaimJournal ? { swarmClaimJournal: parsed.data.swarmClaimJournal } : {}),
       // myrmidon(REVIEW-REWORK): the stored review-return loop settings survive
@@ -307,6 +335,12 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // (and the optimizer agent id of the advice part) survive every general
       // write — without this line the vendor write path silently drops the key.
       ...(parsed.data.promptBudget ? { promptBudget: parsed.data.promptBudget } : {}),
+      // myrmidon(1.6.5-OWNER-DM-FILTER): the stored owner-DM delivery filter
+      // mode survives every general write (it is edited via /api/myrmidon/owner-delivery).
+      ...(parsed.data.ownerDelivery ? { ownerDelivery: parsed.data.ownerDelivery } : {}),
+      // myrmidon(F16): the stored issue-list agent-defaults toggle survives
+      // every general write (it is a rollback switch, not a settings page).
+      ...(parsed.data.issuesListAgentDefaults ? { issuesListAgentDefaults: parsed.data.issuesListAgentDefaults } : {}),
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),
@@ -314,6 +348,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // survive every general write (they are edited on their own settings
       // panel on Instance → General).
       ...(parsed.data.agentExchange ? { agentExchange: parsed.data.agentExchange } : {}),
+      // myrmidon(1.7-AGENT-EXCHANGE-B): the stored feed settings survive every
+      // general write (they are edited on their own settings panel).
+      ...(parsed.data.agentExchangeFeed ? { agentExchangeFeed: parsed.data.agentExchangeFeed } : {}),
       // myrmidon(REVIEW-ROUTING): the stored review routing settings survive
       // every general write (they are edited on their own settings page).
       ...(parsed.data.reviewRouting ? { reviewRouting: parsed.data.reviewRouting } : {}),
@@ -324,6 +361,11 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(PLUGIN-ENTITLEMENT C): the stored plugin entitlement keys
       // survive every general write (edited on their own settings block).
       ...(parsed.data.pluginEntitlementKeys ? { pluginEntitlementKeys: parsed.data.pluginEntitlementKeys } : {}),
+      // myrmidon(1.6.5-TG-LOCALE-C): the stored instance bridge language
+      // survives every general write (it is edited on the language screen).
+      // Without this line the whitelist drops the key, a PATCH answers 200 yet
+      // stores nothing, and a later write would leave the fallback unreachable.
+      ...(parsed.data.bridgeLanguage ? { bridgeLanguage: parsed.data.bridgeLanguage } : {}),
       // myrmidon(DM-PROGRESS): the stored Telegram DM progress settings survive
       // every general write (edited on their own settings block).
       ...(parsed.data.telegramDmProgress ? { telegramDmProgress: parsed.data.telegramDmProgress } : {}),
@@ -337,18 +379,45 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // this line the vendor write path silently drops the key and the settings
       // could only ever come from the environment.
       ...(parsed.data.teamLiveness ? { teamLiveness: parsed.data.teamLiveness } : {}),
+      // myrmidon(CA-A): the stored channel settings document (general.channelSettings,
+      // incl. the channel access mode) survives every general write. Without this
+      // line the vendor write path drops the key and the mode set on the board
+      // screen never reaches the admission gate.
+      ...(parsed.data.channelSettings !== undefined ? { channelSettings: parsed.data.channelSettings } : {}),
+      // myrmidon(1.6.1-BOT-DISK-D): the stored shared mount settings survive every general write
+      ...(parsed.data.sharedMount ? { sharedMount: parsed.data.sharedMount } : {}),
       // myrmidon(BOT-RUNTIME-TUNING D2): the stored fallback-signal settings
       // survive every general write (they are edited on their own settings
       // page). Without this line `updateGeneral` normalizes the patch away, so
       // PATCH /api/myrmidon/model-fallback/settings would never roundtrip.
       ...(parsed.data.modelFallbackSignal ? { modelFallbackSignal: parsed.data.modelFallbackSignal } : {}),
+      // myrmidon(PAUSE-GUARD): the stored forgotten-pause guard settings
+      // survive every general write (they are edited on their own settings
+      // panel).
+      ...(parsed.data.pauseGuard ? { pauseGuard: parsed.data.pauseGuard } : {}),
+      // myrmidon(1.6.5-DBC1): the stored datastore-care block survives every
+      // general write (it is edited on its own settings page). Without this
+      // line `updateGeneral` normalizes the patch away and PATCH
+      // /api/myrmidon/datastore-care would never roundtrip.
+      ...(parsed.data.datastoreCare ? { datastoreCare: parsed.data.datastoreCare } : {}),
+      // myrmidon(DB-PERF-C-P4): the stored tool gateway policy cache TTL
+      // survives every general write (it is edited on its own settings route).
+      ...(parsed.data.toolPolicyCache ? { toolPolicyCache: parsed.data.toolPolicyCache } : {}),
       // myrmidon(PERF-DIET-K): the session-generation thresholds are edited on the
       // general settings page. Without this line the normalizer drops the key, so a
       // PATCH would not roundtrip and the run dispatch would never read the row.
       ...(parsed.data.sessions ? { sessions: parsed.data.sessions } : {}),
-      // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
-      // survives every general write (edited on its own settings block).
-      ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
+      // myrmidon(1.6.3-FORAGING-IDLE-GATE): the stored foraging idle gate
+      // toggle survives every general write (it is edited on its own page).
+      ...(parsed.data.foragingIdleGate ? { foragingIdleGate: parsed.data.foragingIdleGate } : {}),
+      // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the stored foraging pass
+      // journal survives every general write (the pass appends to it on each
+      // pass, and the "Foraging" page reads it back).
+      ...(parsed.data.foragingPassJournal ? { foragingPassJournal: parsed.data.foragingPassJournal } : {}),
+      // myrmidon(1.6.6 PROCS-1.7 part A): the stored processes settings
+      // (the multi-process mode, design OPE-5394 §5.7) survive every general
+      // write — they are edited at Instance settings -> «Процессы».
+      ...(parsed.data.processes ? { processes: parsed.data.processes } : {}),
       // myrmidon(ATTENTION-WINDOW-CACHE): the attention feed's failed-run
       // horizon (days) and cache TTL (seconds) survive every general write —
       // without these lines the whitelist drops the keys, a PATCH answers 200
@@ -359,6 +428,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.attentionFeedCacheTtlSeconds !== undefined
         ? { attentionFeedCacheTtlSeconds: parsed.data.attentionFeedCacheTtlSeconds }
         : {}),
+      // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
+      // survives every general write (edited on its own settings block).
+      ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
     };
   }
   return {
@@ -567,6 +639,30 @@ export function stripCloudCatalogDefaultEchoes(
   return result as Partial<InstanceExperimentalSettings>;
 }
 
+const SWARM_WAKE_KEYS = ["runWithoutTaskGate", "cooldownBaseMin", "cooldownCeilingHours"] as const;
+
+/**
+ * myrmidon(OPE-6894): merge a `general.swarm` PATCH over the stored one.
+ * Wake block (gate + cooling keys): replaced wholesale when the patch carries
+ * any of its keys, so an omitted key resets to the default; otherwise kept.
+ * `scent` block: replaced when the patch carries it, otherwise kept.
+ */
+export function mergeSwarmBlocks(
+  stored: Record<string, unknown> | undefined | null,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const base = stored ?? {};
+  const out: Record<string, unknown> = {};
+  const patchHasWake = SWARM_WAKE_KEYS.some((key) => patch[key] !== undefined);
+  for (const key of SWARM_WAKE_KEYS) {
+    const value = patchHasWake ? patch[key] : base[key];
+    if (value !== undefined) out[key] = value;
+  }
+  const scent = patch.scent !== undefined ? patch.scent : base.scent;
+  if (scent !== undefined) out.scent = scent;
+  return out;
+}
+
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
   // Fail closed: a malformed PAPERCLIP_MANAGED_CONFIG throws here (and at
   // boot in index.ts) rather than silently running without the overlay.
@@ -678,85 +774,165 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     },
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
-      const current = await getOrCreateRow();
-      const storedGeneral = normalizeGeneralSettings(current.general);
-      // A full-GET echo carries the overlaid operator value for a field the
-      // user never chose; stripping it keeps the overlay strictly read-time,
-      // so changing or unsetting the variable later still takes effect.
-      const nextGeneral = stripOperatorGeneralEchoes(
-        storedGeneral,
-        normalizeGeneralSettings({ ...storedGeneral, ...patch }),
-        operatorDefaults,
-      );
-      const now = new Date();
-      const [updated] = await db
-        .update(instanceSettings)
-        .set({
-          // myrmidon(R3): keep maintenance mode state; myrmidon(R5-A): keep deploy job state; myrmidon(R5-B): keep bot canary state; myrmidon(SUA): keep stack registry cache; myrmidon(SEC1): keep the access-hub host registry
-          // myrmidon(BROWSER-CONSOLE): same for the browser console sessions/journal key
-          general: {
-            ...nextGeneral,
-            ...preserveMaintenanceGeneralKey(current.general), // myrmidon(R3)
-            ...preserveDeployJobsGeneralKey(current.general), // myrmidon(R5-A)
-            ...preserveBrowserConsoleGeneralKey(current.general), // myrmidon(BROWSER-CONSOLE)
-            ...preserveStackGeneralKey(current.general), // myrmidon(SUA)
-            ...preserveBotCanaryGeneralKey(current.general), // myrmidon(R5-B)
-            ...preserveBotRolloutDeferredGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
-            ...preserveAccessHubHostsGeneralKey(current.general), // myrmidon(SEC1)
-            ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
-            ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
-            ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
-            ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
-            ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
-            ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
-            ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
-            ...preserveBehaviorSettingsGeneralKeys(current.general), // myrmidon(SETTINGS-CORE)
-            ...preserveDebateGeneralKey(current.general), // myrmidon(1.7-DEBATE-ASYM-A)
-            ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
-            ...preservePluginEntitlementPublicKeyGeneralKey(current.general), // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A)
-            ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
-            ...preserveFallbackSignalGeneralKey(current.general), // myrmidon(BOT-RUNTIME-TUNING D2)
-            ...preserveBoardProcessesGeneralKey(current.general), // myrmidon(1.6.6 PROCS-J)
-            // The preserve line above restores the stored row: a patch that carries
-            // the counts wins (the same rule as DM-PROGRESS), and it is validated
-            // where every other read of the key is — at startup.
-            ...(patch.processes !== undefined ? { processes: nextGeneral.processes } : {}),
-            // The preserve line above restores the old stored value: a patch
-            // that carries the key must win, the same rule as DM-PROGRESS.
-            ...(patch.modelFallbackSignal !== undefined ? { modelFallbackSignal: nextGeneral.modelFallbackSignal } : {}),
-            // The preserve line above restores the stored value: a patch that carries the key wins.
-            ...(patch.telegramDmProgress !== undefined ? { telegramDmProgress: nextGeneral.telegramDmProgress } : {}),
-            ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
-            ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
-            ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
-          },
-          updatedAt: now,
-        })
-        .where(eq(instanceSettings.id, current.id))
-        .returning();
-      return toInstanceSettings(updated ?? current);
+      // myrmidon(PROCS-Q5): the whole read-modify-write of the general document
+      // (row read + normalize + strip + the preserve* merge + the update below)
+      // must not interleave with a concurrent PATCH — otherwise the later
+      // commit writes a merge of a stale read and the earlier edit is lost.
+      // The lock comes first, before `getOrCreateRow`, so two first-writers
+      // cannot deadlock on the singleton insert (the on-conflict upsert still
+      // runs under our own lock); `FOR UPDATE` serializes concurrent PATCHes
+      // on the row, so each one re-reads the committed state of the previous.
+      const [updated] = await db.transaction(async (tx: InstanceSettingsTransaction) => {
+        await tx
+          .select({ id: instanceSettings.id })
+          .from(instanceSettings)
+          .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
+          .limit(1)
+          .for("update");
+        const current = await getOrCreateRow(tx);
+        const storedGeneral = normalizeGeneralSettings(current.general);
+        // A full-GET echo carries the overlaid operator value for a field the
+        // user never chose; stripping it keeps the overlay strictly read-time,
+        // so changing or unsetting the variable later still takes effect.
+        const nextGeneral = stripOperatorGeneralEchoes(
+          storedGeneral,
+          normalizeGeneralSettings({
+            ...storedGeneral,
+            ...patch,
+            // myrmidon(OPE-6894): `general.swarm` is shared by sibling blocks
+            // (the wake-guard/cooling block and T10 `scent`); a PATCH carrying
+            // one block must not erase the other, so each block is replaced
+            // as a whole only when the patch names it. Inside the wake block
+            // an absent key means "back to the default" (the panel omits a
+            // cleared field), so a stored value does not outlive its reset.
+            ...(patch.swarm !== undefined
+              ? { swarm: mergeSwarmBlocks(storedGeneral.swarm, patch.swarm) }
+              : {}),
+          }),
+          operatorDefaults,
+        );
+        // OPE-6406: a PATCH rewrites the whole `general` document, so it must
+        // start from the STORED row, not from the normalized whitelist alone.
+        // `normalizeGeneralSettings` shrinks the row to the keys it knows and
+        // materializes schema defaults (`censorUsernameInLogs: false` among
+        // them); without the stored keys underneath, a PATCH of one setting
+        // silently resets `censorUsernameInLogs: true` back to false and drops
+        // any stored key the whitelist does not carry yet. The whitelist keeps
+        // its role as the canonical form of the listed keys on top.
+        const storedRawGeneral =
+          current.general && typeof current.general === "object" && !Array.isArray(current.general)
+            ? (current.general as Record<string, unknown>)
+            : {};
+        const now = new Date();
+        const rows = await tx
+          .update(instanceSettings)
+          .set({
+            // myrmidon(R3): keep maintenance mode state; myrmidon(R5-A): keep deploy job state; myrmidon(R5-B): keep bot canary state; myrmidon(SUA): keep stack registry cache; myrmidon(SEC1): keep the access-hub host registry
+            // myrmidon(BROWSER-CONSOLE): same for the browser console sessions/journal key
+            general: {
+              ...storedRawGeneral,
+              ...nextGeneral,
+              ...preserveMaintenanceGeneralKey(current.general), // myrmidon(R3)
+              ...preserveDeployJobsGeneralKey(current.general), // myrmidon(R5-A)
+              ...preserveBrowserConsoleGeneralKey(current.general), // myrmidon(BROWSER-CONSOLE)
+              ...preserveStackGeneralKey(current.general), // myrmidon(SUA)
+              ...preserveBotCanaryGeneralKey(current.general), // myrmidon(R5-B)
+              ...preserveBotRolloutDeferredGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
+              ...preserveAccessHubHostsGeneralKey(current.general), // myrmidon(SEC1)
+              ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
+              ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
+              ...preserveAutonomyToolMappingGeneralKey(current.general), // myrmidon(1.6-AUTONOMY-GW)
+              ...preserveSkillPilotAgentsGeneralKey(current.general), // myrmidon(1.6.6 K-7)
+              ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
+              ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
+              ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
+              ...preserveOwnerDeliveryGeneralKey(current.general), // myrmidon(1.6.5-OWNER-DM-FILTER)
+              // The preserve line above restores the stored value: a patch that carries the key wins.
+              ...(patch.ownerDelivery !== undefined ? { ownerDelivery: nextGeneral.ownerDelivery } : {}), // myrmidon(1.6.5-OWNER-DM-FILTER)
+              ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
+              ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
+              ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
+              ...preservePluginEntitlementPublicKeyGeneralKey(current.general), // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A)
+              ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
+              ...preserveBridgeLanguageGeneralKey(current.general), // myrmidon(1.6.5-TG-LOCALE-C)
+              // The preserve line above restores the stored value: a patch that
+              // carries the key wins, the same rule as DM-PROGRESS.
+              ...(patch.bridgeLanguage !== undefined ? { bridgeLanguage: nextGeneral.bridgeLanguage } : {}),
+              ...preserveFallbackSignalGeneralKey(current.general), // myrmidon(BOT-RUNTIME-TUNING D2)
+              // The preserve line above restores the old stored value: a patch
+              // that carries the key must win, the same rule as DM-PROGRESS.
+              ...(patch.modelFallbackSignal !== undefined ? { modelFallbackSignal: nextGeneral.modelFallbackSignal } : {}),
+              // The preserve line above restores the stored value: a patch that carries the key wins.
+              ...(patch.telegramDmProgress !== undefined ? { telegramDmProgress: nextGeneral.telegramDmProgress } : {}),
+              ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
+              ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
+              ...preserveLitellmWorkersGeneralKey(current.general), // myrmidon(1.6.5 LITELLM-WORKERS A)
+              ...preserveBehaviorSettingsGeneralKeys(current.general), // myrmidon(SETTINGS-CORE)
+              ...preserveDebateGeneralKey(current.general), // myrmidon(1.7-DEBATE-ASYM-A)
+              ...preserveBoardProcessesGeneralKey(current.general), // myrmidon(1.6.6 PROCS-J)
+              // myrmidon(PROCS-1.8): preserve DB-owned task-drain state unless explicitly changed.
+              ...(patch.taskDrain === undefined && storedRawGeneral.taskDrain !== undefined
+                ? { taskDrain: storedRawGeneral.taskDrain }
+                : {}),
+              // The preserve line above restores the stored row: a patch that carries
+              // the counts wins (the same rule as DM-PROGRESS), and it is validated
+              // where every other read of the key is — at startup.
+              ...(patch.processes !== undefined ? { processes: nextGeneral.processes } : {}),
+              ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
+              ...preserveToolPolicyCacheGeneralKey(current.general), // myrmidon(DB-PERF-C-P4)
+              // myrmidon(DB-PERF-C-P4): a patch that carries the key wins over the restored value.
+              ...(patch.toolPolicyCache !== undefined ? { toolPolicyCache: nextGeneral.toolPolicyCache } : {}),
+              ...preserveBudgetLimitsGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG A)
+              ...preserveDatastoreCareGeneralKey(current.general), // myrmidon(1.6.5-DBC1)
+              // The preserve line above restores the stored value: a patch that
+              // carries the key must win, the same rule as ownerDelivery.
+              ...(patch.datastoreCare !== undefined ? { datastoreCare: nextGeneral.datastoreCare } : {}), // myrmidon(1.6.5-DBC1)
+            },
+            updatedAt: now,
+          })
+          .where(eq(instanceSettings.id, current.id))
+          .returning();
+        // `updated` is empty only if the row vanished (it cannot under our own
+        // row lock) — mirror the previous fallback and return the read row.
+        return rows.length > 0 ? rows : [current];
+      });
+      return toInstanceSettings(updated);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
-      const current = await getOrCreateRow();
-      // Guarded Cloud flags stay absent from the row unless chosen, so the
-      // read-time catalog default keeps applying (see stripCloudCatalogDefaultEchoes).
-      const nextExperimental = stripCloudCatalogDefaultEchoes(
-        current.experimental,
-        patch,
-        applyExperimentalSettingsPatch(current.experimental, patch, options),
-        managedConfig,
-      );
-      const now = new Date();
-      const [updated] = await db
-        .update(instanceSettings)
-        .set({
-          experimental: { ...nextExperimental },
-          updatedAt: now,
-        })
-        .where(eq(instanceSettings.id, current.id))
-        .returning();
-      return toInstanceSettings(updated ?? current);
+      // myrmidon(PROCS-Q5): same row, same read-modify-write race as
+      // `updateGeneral` above — the two documents share the singleton row, so
+      // the lock covers both PATCH paths: an experimental write must serialize
+      // against a concurrent general write the same way (order of application
+      // = order of commits, design 4.5).
+      const [updated] = await db.transaction(async (tx: InstanceSettingsTransaction) => {
+        await tx
+          .select({ id: instanceSettings.id })
+          .from(instanceSettings)
+          .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
+          .limit(1)
+          .for("update");
+        const current = await getOrCreateRow(tx);
+        // Guarded Cloud flags stay absent from the row unless chosen, so the
+        // read-time catalog default keeps applying (see stripCloudCatalogDefaultEchoes).
+        const nextExperimental = stripCloudCatalogDefaultEchoes(
+          current.experimental,
+          patch,
+          applyExperimentalSettingsPatch(current.experimental, patch, options),
+          managedConfig,
+        );
+        const now = new Date();
+        const rows = await tx
+          .update(instanceSettings)
+          .set({
+            experimental: { ...nextExperimental },
+            updatedAt: now,
+          })
+          .where(eq(instanceSettings.id, current.id))
+          .returning();
+        return rows.length > 0 ? rows : [current];
+      });
+      return toInstanceSettings(updated);
     },
 
     listCompanyIds: async (): Promise<string[]> =>

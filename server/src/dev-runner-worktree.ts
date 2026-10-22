@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
 import os from "node:os";
 import path from "node:path";
 import { hasVerifiedWorktreeSeedManifest } from "./worktree-seed-manifest.js";
@@ -36,6 +37,17 @@ function parseEnvFile(contents: string): Record<string, string> {
   }
 
   return entries;
+}
+
+function canonicalizeProductEnvEntries(entries: Record<string, string>): Record<string, string> {
+  const canonicalEntries = { ...entries };
+  for (const [key, value] of Object.entries(entries)) {
+    if (!key.startsWith("PAPERCLIP_")) continue;
+    const canonicalKey = `MYRMIDON_${key.slice("PAPERCLIP_".length)}`;
+    if (canonicalEntries[canonicalKey] === undefined) canonicalEntries[canonicalKey] = value;
+    delete canonicalEntries[key];
+  }
+  return canonicalEntries;
 }
 
 type WorktreeEnvBootstrapResult =
@@ -78,7 +90,7 @@ function resolveHomeAwarePath(value: string): string {
 }
 
 function resolveDefaultWorktreeHome(env: NodeJS.ProcessEnv): string {
-  return path.resolve(expandHomePrefix(env.PAPERCLIP_WORKTREES_DIR?.trim() || "~/.paperclip-worktrees"));
+  return path.resolve(expandHomePrefix(readProductEnvFrom(env, "WORKTREES_DIR")?.trim() || "~/.paperclip-worktrees"));
 }
 
 function repairStaleMigratedWorktreeEnvEntries(
@@ -87,7 +99,7 @@ function repairStaleMigratedWorktreeEnvEntries(
   env: NodeJS.ProcessEnv,
 ): Record<string, string> {
   const localConfigPath = path.resolve(rootDir, ".paperclip", "config.json");
-  const configuredPath = entries.PAPERCLIP_CONFIG?.trim();
+  const configuredPath = readProductEnvFrom(entries, "CONFIG")?.trim();
   if (!configuredPath) return entries;
 
   const resolvedConfiguredPath = resolveHomeAwarePath(configuredPath);
@@ -100,9 +112,9 @@ function repairStaleMigratedWorktreeEnvEntries(
   const homeDir = resolveDefaultWorktreeHome(env);
   return {
     ...entries,
-    PAPERCLIP_HOME: homeDir,
-    PAPERCLIP_CONFIG: localConfigPath,
-    PAPERCLIP_CONTEXT: path.resolve(homeDir, "context.json"),
+    MYRMIDON_HOME: homeDir,
+    MYRMIDON_CONFIG: localConfigPath,
+    MYRMIDON_CONTEXT: path.resolve(homeDir, "context.json"),
   };
 }
 
@@ -127,7 +139,9 @@ export function bootstrapDevRunnerWorktreeEnv(
 
   const entries = repairStaleMigratedWorktreeEnvEntries(
     rootDir,
-    parseEnvFile(readFileSync(envPath, "utf8")),
+    canonicalizeProductEnvEntries(
+      parseEnvFile(readFileSync(envPath, "utf8")),
+    ),
     env,
   );
   for (const [key, value] of Object.entries(entries)) {

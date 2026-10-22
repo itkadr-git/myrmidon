@@ -6,11 +6,11 @@ The shortest path to a running board. One command on a fresh server (see
 [System requirements](System-requirements)):
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.5/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.11/install.sh | sudo bash
 ```
 
-Until the 1.6.5 final ships, the command installs the current release
-candidate (see [Installation](Installation) for why). The installer checks
+The command pins the current release candidate, 1.6.6-rc.11; see
+[Installation](Installation) for release selection. The installer checks
 the machine, installs Docker when it is missing, downloads the release,
 creates all secrets and starts the service. At the end it prints the board
 address.

@@ -12,7 +12,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 }
 
 describe("kimi local skill sync", () => {
-  const paperclipKey = "paperclipai/paperclip/paperclip";
+  const paperclipKey = "paperclipai/paperclip/myrmidon";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -43,6 +43,6 @@ describe("kimi local skill sync", () => {
 
     const after = await syncKimiSkills(ctx, [paperclipKey]);
     expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(kimiCodeHome, "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(kimiCodeHome, "skills", "myrmidon"))).isSymbolicLink()).toBe(true);
   });
 });

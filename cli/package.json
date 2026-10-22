@@ -1,9 +1,10 @@
 {
-  "name": "paperclipai",
+  "name": "myrmidon",
   "version": "0.3.1",
-  "description": "Paperclip CLI — orchestrate AI agent teams to run a business",
+  "description": "Myrmidon CLI — orchestrate AI agent teams to run a business",
   "type": "module",
   "bin": {
+    "myrmidon": "./dist/index.js",
     "paperclipai": "./dist/index.js"
   },
   "keywords": [
@@ -45,6 +46,7 @@
     "@paperclipai/adapter-grok-local": "workspace:*",
     "@paperclipai/adapter-kimi-local": "workspace:*",
     "@paperclipai/adapter-opencode-local": "workspace:*",
+    "@paperclipai/adapter-omp-local": "workspace:*",
     "@paperclipai/adapter-pi-local": "workspace:*",
     "@paperclipai/adapter-openclaw-gateway": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*",

@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
 // myrmidon(UI-RU): task detail copy runs through the fork i18n catalog.
@@ -175,6 +176,7 @@ import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { ProjectTile } from "../components/ProjectTile";
 import { InlineEditor } from "../components/InlineEditor";
+import { ExternalSessionsPanel } from "../components/issue/ExternalSessionsPanel";
 import {
   IssueChatThread,
   type IssueChatComposerHandle,
@@ -1199,6 +1201,8 @@ type IssueDetailChatTabProps = {
   issueStatus: Issue["status"];
   /** Marks cross-issue agent comments in the thread (the open cross-task write design (attribution)). */
   issueAssigneeAgentId: Issue["assigneeAgentId"];
+  issueIdentifier: string | null;
+  issueAgentModel: string | null;
   issueWorkMode: IssueWorkMode;
   executionRunId: string | null;
   blockedBy: Issue["blockedBy"];
@@ -1347,6 +1351,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   issueWorkMode,
   issueStatus,
   issueAssigneeAgentId,
+  issueIdentifier,
+  issueAgentModel,
   executionRunId,
   blockedBy,
   liveIssueIds,
@@ -2324,6 +2330,18 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           }}
         >
           <EmailThreadProvider companyId={companyId} issueId={issueId}>
+          {classicTaskInterfaceEnabled && issueAssigneeAgentId ? (
+            <div className="mx-auto w-full max-w-5xl px-4 pt-4">
+              <ExternalSessionsPanel
+                companyId={companyId}
+                issueId={issueId}
+                issueIdentifier={issueIdentifier}
+                agentId={issueAssigneeAgentId}
+                agentModel={issueAgentModel}
+                canLaunch={false}
+              />
+            </div>
+          ) : null}
           <ThreadComponent
             key={conversationMode ? draftKey : issueId}
             {...(!classicTaskInterfaceEnabled ? { creationActivity: resolvedActivity } : {})}
@@ -4340,7 +4358,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           projects={projects}
           liveIssueIds={liveIssueIds}
           projectId={issue.projectId ?? undefined}
-          viewStateKey={`paperclip:issue-detail:${issue.id}:subissues-view`}
+          viewStateKey={`myrmidon:issue-detail:${issue.id}:subissues-view`}
           issueLinkState={resolvedIssueDetailState ?? location.state}
           searchFilters={{ descendantOf: issue.id, includeBlockedBy: true }}
           searchWithinLoadedIssues
@@ -7488,7 +7506,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 mutedIssueIds={mutedChildIssueIds}
                 issueBadgeById={childPauseBadgeById}
                 projectId={issue.projectId ?? undefined}
-                viewStateKey={`paperclip:issue-detail:${issue.id}:subissues-view`}
+                viewStateKey={`myrmidon:issue-detail:${issue.id}:subissues-view`}
                 issueLinkState={resolvedIssueDetailState ?? location.state}
                 searchFilters={{
                   descendantOf: issue.id,
@@ -7746,6 +7764,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               <ReplayBlockedNotice companyId={issue.companyId} issueId={issue.id} onResolved={invalidateIssueDetail} />
               {resolvedDetailTab === "chat" ? (
                 <IssueDetailChatTab
+                  issueIdentifier={issue.identifier}
+                  issueAgentModel={issue.assigneeAgentId ? agentMap.get(issue.assigneeAgentId)?.adapterModel ?? null : null}
                   threadHeader={<>{taskChatThreadHeader}{instanceExperimentalSettings?.enableChatConnectors && <EmailTaskActivity key={issue.id} companyId={issue.companyId} issueId={issue.id} />}</>}
                   issueBrief={
                     // Suppress the seeded-description bubble for the onboarding first
@@ -7873,7 +7893,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   currentUserId={currentUserId}
                   userLabelMap={userLabelMap}
                   userProfileMap={userProfileMap}
-                  draftKey={conversationAgent ? `paperclip:agent-chat-draft:${issue.companyId}:${currentUserId}:${conversationAgent.id}` : `paperclip:issue-comment-draft:${issue.id}`}
+                  draftKey={conversationAgent ? `myrmidon:agent-chat-draft:${issue.companyId}:${currentUserId}:${conversationAgent.id}` : `myrmidon:issue-comment-draft:${issue.id}`}
                   reassignOptions={commentReassignOptions}
                   currentAssigneeValue={actualAssigneeValue}
                   suggestedAssigneeValue={suggestedAssigneeValue}

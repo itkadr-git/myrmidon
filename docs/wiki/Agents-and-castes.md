@@ -24,6 +24,21 @@ The agent card is the operator's window into all of this: the card's tabs
 show the state, the memory, the instructions, the container and the cost of
 recent runs.
 
+The Agents page offers company-wide and per-project scopes. Choose a scope
+with the company/project tabs; the selected project is kept in the URL and the
+list and organization tree are filtered to its members. Role and model filters
+can further narrow the results.
+
+## Agents Fleet screen
+
+UI-2 provides a company-wide Agents Fleet at `/{company}/agents`. It groups
+agents by reporting relationship, shows each agent's status and latest live
+run, and links to the agent detail/chat page. The fleet refreshes agent data
+every 30 seconds and live runs every 15 seconds; paused agents retain their
+distinct paused status. See the
+[fleet guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/ui2-agents-fleet.md)
+for details.
+
 ## The container runtime
 
 An agent with the `hermes_gateway` adapter can run inside a Docker container
@@ -36,6 +51,28 @@ settings and shows the live state. A bot container:
   the downloads are kept once per host, not once per bot;
 - reaches the board through its own gateway key, and reaches the outside
   through the fleet proxy (see [Operations and maintenance](Server-maintenance)).
+
+### Protecting bot-disk archives
+
+The host-side `botd` archive writer creates bundle and tar files with mode
+`0640`, private patches and manifests with `0600`, and archive directories
+with `0750`, regardless of the process's inherited umask. Disk-state and
+attention/cooldown cache files are created as `0640`. This protects the only
+copy of unpushed bot work from other processes sharing the host. Existing
+archives are not rewritten; their retention and layout are unchanged.
+
+### Optional centralized memory for fleetd
+
+The site-level `fleetd` daemon can optionally proxy centralized-memory
+requests when its JSON config has a `memory` block with `enabled: true`, an
+HTTP(S) `url`, and a non-empty `bank`. An optional bearer `token` and
+`timeoutMs` (100–120000; default 15000) configure upstream requests. The
+memory routes remain disabled by default; without an enabled block they
+return `503 centralized_memory_disabled` and make no upstream request.
+`--check-config` rejects missing banks, non-HTTP(S) URLs and URLs containing
+credentials. The client uses only HTTP(S), not a host path or Docker socket.
+These routes require fleetd's normal bearer authentication. See the
+[fleetd change note](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/fleetd-centralized-memory-client.md).
 
 ## Instructions with history
 
@@ -65,7 +102,20 @@ The board watches its agents and repairs what breaks:
   assignee is woken — the board does not wait for a hard timeout to notice
   a stuck run.
 
-## In detail
+## The OMP runtime image
+
+The standalone `agent-runtime-omp` image runs `omp` directly on Bun 1.4.3 with
+`@oh-my-pi/pi-coding-agent` pinned to 18.9.2. It uses uid/gid 1000, its own
+`HOME` and XDG/session directories, and does not use the base image's agent
+shim. The image build smoke-checks the exact Bun and OMP versions, `omp` on
+`PATH`, `omp --help`, and `omp models ls` without calling a model provider.
+
+The `omp` bake target is `linux/amd64`; CI is configured to build, publish and
+cosign-sign the pushed digest using keyless OIDC. Check the workflow run and
+registry digest before treating a tag as available; configuration alone does
+not prove a successful publication. Build/run instructions and the CI scope
+are in the [Agent Runtime Image Family](../../docker/agent-runtime/README.md).
+
 
 - [Bot container: the Container section](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/bot-container-card.md)
 - [Agent memory card](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-memory-card.md)

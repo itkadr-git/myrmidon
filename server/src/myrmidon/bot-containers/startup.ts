@@ -27,6 +27,7 @@ import { agents } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
+import { instanceSettingsService } from "../../services/instance-settings.js"; // myrmidon(1.6.1-BOT-DISK-D)
 import { listBotContainerAgents } from "./agents-query.js";
 import { isBotContainersEnabled } from "./agent-config.js";
 import type { BotContainerDriver } from "./driver.js";
@@ -42,6 +43,7 @@ import { botProfileWiring } from "./profile-ports.js";
 import type { BotContainerActivitySink, BotMaintenancePort } from "./reconciler.js";
 import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime } from "./routes-wiring.js";
 import { readBotCacheLayoutForBot, readSharedBotRuntimePath, startCloneReportCollection } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H11, 1.6.5-DOCKERGATE-A2A3-STORM)
+import { startSiteScheduler } from "./site-scheduler-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 
@@ -89,7 +91,12 @@ export interface BotContainersStartupPorts {
     opts: { activity: BotContainerActivitySink; env: NodeJS.ProcessEnv },
   ): Pick<
     BotContainerRuntimeDeps,
-    "compile" | "beginProfilePass" | "endProfilePass" | "syncCard" | "releaseStrayGateways"
+    | "compile"
+    | "beginProfilePass"
+    | "endProfilePass"
+    | "syncCard"
+    | "releaseStrayGateways"
+    | "exportMediaAcl"
   >;
   maintenancePort(db: Db): BotMaintenancePort;
   listAgents(db: Db): () => Promise<BotContainerAgent[]>;
@@ -108,6 +115,12 @@ export interface BotContainersStartupPorts {
    * real one. Its stop is folded into the stop of this run.
    */
   startCloneReportCollection?: typeof startCloneReportCollection;
+  /**
+   * myrmidon(1.6.6 REMOTE-SITES-T5): the site-scheduler lane (30 s). Opt-in
+   * (MYRMIDON_SITE_SCHEDULER=1): without the flag it reads and starts nothing.
+   * Its stop is folded into the stop of this run.
+   */
+  startSiteScheduler?: typeof startSiteScheduler;
   log: BotContainersLog;
 }
 
@@ -136,6 +149,7 @@ const defaultPorts: BotContainersStartupPorts = {
   currentRuntime: getBotContainerRuntime,
   startReconciliation: startBotContainerReconciliation,
   startCloneReportCollection,
+  startSiteScheduler,
   log: logger,
 };
 
@@ -166,6 +180,8 @@ export function startBotContainers(
   // runtime (it reads the reports through its driver), so it starts after the
   // registration and stops with this run.
   const stopCollector = ports.startCloneReportCollection?.(db, { env }) ?? null;
+  // myrmidon(1.6.6 REMOTE-SITES-T5): after the runtime is registered, because a move uses it.
+  const stopSiteScheduler = ports.startSiteScheduler?.(db, { env }) ?? null;
 
   let stopped = false;
   const stop = () => {
@@ -173,6 +189,7 @@ export function startBotContainers(
     stopped = true;
     stopSweep();
     stopCollector?.();
+    stopSiteScheduler?.();
     // Only clear the registry entry this run put there.
     if (ports.currentRuntime() === runtime) ports.registerRuntime(null);
     if (stopRunning === stop) stopRunning = null;
@@ -191,7 +208,8 @@ function build(
   try {
     const driverConfig = ports.readDriverConfig(env);
     const activity = ports.activitySink();
-    const { compile, beginProfilePass, endProfilePass, syncCard, releaseStrayGateways } = ports.profileWiring(db, { activity, env });
+    const { compile, beginProfilePass, endProfilePass, syncCard, releaseStrayGateways, exportMediaAcl } =
+      ports.profileWiring(db, { activity, env });
     const runtime: BotContainerRuntimeDeps = {
       driver: ports.createDriver(driverConfig, db),
       compile,
@@ -201,10 +219,14 @@ function build(
       ...(endProfilePass ? { endProfilePass } : {}),
       syncCard,
       ...(releaseStrayGateways ? { releaseStrayGateways } : {}),
+      // myrmidon(MEDIA-PROVISION): per-tick media ACL registry export (index.ts sweep hook).
+      ...(exportMediaAcl ? { exportMediaAcl } : {}),
       maintenance: ports.maintenancePort(db),
       activity,
       readAgent: ports.readAgent(db),
       network: driverConfig.network,
+      // myrmidon(1.6.1-BOT-DISK-D): live `general.sharedMount`, read on every pass.
+      readSharedMountSettings: async () => (await instanceSettingsService(db).getGeneral()).sharedMount,
       // myrmidon(BOT-ROLLOUT): deferred-rollout records (deferred-store.ts)
       // and the watcher's backstop audit.
       db,
@@ -220,6 +242,18 @@ function build(
           details: entry.details,
         }).then(() => undefined),
       rolloutCompanyIdOf: async (agentId) => {
+        const row = await db
+          .select({ companyId: agents.companyId })
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .then((rows) => rows[0] ?? null);
+        return row?.companyId ?? null;
+      },
+      // myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the company lookup the
+      // back-import's catalog ports are built from (skill-backimport-ports.ts).
+      // The flag itself (MYRMIDON_BOT_SKILL_BACKIMPORT, off by default) is
+      // read inside the reconciler.
+      backimportCompanyIdOf: async (agentId) => {
         const row = await db
           .select({ companyId: agents.companyId })
           .from(agents)

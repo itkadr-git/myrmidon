@@ -11,6 +11,7 @@ import { shapeWithoutDefaults } from "./partial.js";
 // myrmidon(WORKSPACE-HYGIENE): workspace disk quotas that can be changed while the server runs
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
+import { storedModelMenuSettingsSchema } from "../myrmidon-model-menu.js"; // myrmidon(1.6.6 MODEL-MENU B)
 import { alertRecoverySettingsSchema } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings, lenient stored shape
 import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
@@ -31,6 +32,8 @@ import { storedBoardProcessesSettingsSchema } from "../myrmidon-board-processes.
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus module settings (module switch, parse
 // service base URL, embedder, limits), lenient stored shape.
 import { storedCorpusSettingsSchema } from "../myrmidon-corpus.js";
+// myrmidon(1.6.5 RUN-PRIORITY A): the stored run queue priority shape (role/issue/release/aging).
+import { storedRunPrioritySchema } from "../myrmidon-run-priority.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
 // subagents, changed from the instance settings page and /api/myrmidon/parallel-helpers.
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
@@ -40,9 +43,21 @@ import { botLspSettingsSchema } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in the same general settings row
 import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
 import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
+// myrmidon(1.6.5 F-26 T10 SCENT): the general.swarm.scent settings block
+import { scentSettingsSchema } from "../myrmidon-scent.js";
+// myrmidon(1.6.5 F-26 T5): the SWARM wake guard (taskless gate + cooling) stored
+// in the same general settings row under `general.swarm`.
+import { swarmSettingsSchema } from "../myrmidon-swarm-wake.js";
+import { datastoreCareSettingsSchema } from "../myrmidon-datastore-care.js"; // myrmidon(1.6.5-DBC1)
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
+// myrmidon(1.6.5-OWNER-DM-FILTER)
+import { ownerDeliverySettingsSchema } from "../myrmidon-owner-delivery.js";
+// myrmidon(F16): the issue-list agent defaults stored in the same general
+// settings row (absent = the fix on; `{enabled: false}` = the pre-fix agent
+// behaviour).
+import { issueListAgentDefaultsSchema } from "../myrmidon-issue-list-agent-defaults.js";
 // myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
 // myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
@@ -52,14 +67,23 @@ import { reviewReworkSettingsSchema } from "../myrmidon-review-rework.js";
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings of the same row.
 import { agentExchangeSettingsSchema } from "../myrmidon-agent-exchange.js";
+// myrmidon(1.7-AGENT-EXCHANGE-B): the feed of discussion rooms of the same row.
+import { agentExchangeFeedSettingsSchema } from "../myrmidon-agent-exchange-feed.js";
 // myrmidon(MEMORY-UI): the agent memory settings stored in the same row.
 import { agentMemorySettingsSchema } from "../myrmidon-agent-memory.js";
+// myrmidon(PAUSE-GUARD): the forgotten-pause guard settings stored in the same
+// general settings row (the sweep reads them through this schema).
+import { storedPauseGuardSettingsSchema } from "../myrmidon-pause-guard.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys stored
 // in the same general settings row.
 import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status
 // message, stored in the same general settings row.
 import { telegramDmProgressSettingsSchema } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(1.6.5-TG-LOCALE-C): the instance-wide default language of the
+// bridged Telegram DM, changed from Settings → Language and
+// /api/myrmidon/bridge-language.
+import { bridgeLanguageSettingsSchema } from "../myrmidon-bridge-language.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import { foragingSettingsSchema } from "../myrmidon-foraging.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the knobs of the three automatic team-liveness
@@ -72,6 +96,10 @@ import {
 // percent of the model window, fallback window, optimizer agent) stored in the
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
+import { budgetLimitsSettingsSchema } from "../myrmidon-budget-limits.js";
+// myrmidon(1.6.1-BOT-DISK-D): shared mount settings stored in the same general settings row
+import { sharedMountSettingsSchema } from "../myrmidon-shared-mount.js";
+import { foragingIdleGateSettingsSchema } from "../myrmidon-foraging-idle-gate.js";
 
 // myrmidon(1.6.6 LONG-TASK-CONTEXT): the long-task context guard settings
 // (switch, reset threshold percent, fallback window, history budget) stored in
@@ -82,6 +110,9 @@ import { longTaskContextSettingsSchema } from "../myrmidon-long-task-context.js"
 // threshold percent, minimum calls, window and sweep interval) stored in the
 // same general settings row.
 import { storedFallbackSignalSettingsSchema } from "../myrmidon-fallback-signal.js";
+// myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache, stored in
+// the same general settings row.
+import { toolPolicyCacheSettingsSchema } from "../myrmidon-tool-policy-cache.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -107,6 +138,24 @@ export const backupRetentionPolicySchema = z.object({
   keepLastOnly: z.boolean().optional(),
 });
 
+// myrmidon(1.6.6 PROCS-1.7 part A): the lease-relevant half of
+// `general.processes`. The counts half (api/worker) is owned by PROCS-J in
+// `packages/shared/src/myrmidon-board-processes.ts`; the stored row is shared
+// between both, so this schema passthrough-accepts the fields it does not own
+// (api, worker, and anything a later part adds). Every field has a default
+// and the defaults are the single-process board: nothing changes until an
+// operator explicitly switches `mode` to `split`.
+export const boardProcessesSettingsSchema = z
+  .object({
+    mode: z.enum(["single", "split"]).default("single"),
+    apiCount: z.number().int().min(1).max(4).default(1),
+    leaderLeaseTtlSec: z.number().int().min(5).max(300).default(30),
+    liveEventsBus: z.enum(["local", "pg"]).default("local"),
+    admissionStore: z.enum(["memory", "db"]).default("memory"),
+    singletonProxy: z.boolean().default(true),
+  })
+  .passthrough();
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
@@ -130,6 +179,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(1.6.5 RUN-ADMISSION): the shape also tolerates a row saved
   // before `maxHostLoadPercentPerCore` existed.
   runLimits: storedRunLimitsSchema.optional(),
+  // myrmidon(1.6.5 RUN-PRIORITY A): the stored run queue priority settings,
+  // changed from /api/myrmidon/run-priority; absent means "use the environment
+  // variable, then the default". Lenient: like the runtime-limits row, a row
+  // saved before a key existed still parses.
+  runPriority: storedRunPrioritySchema.optional(),
   // myrmidon(RUN-STALL-SETTINGS): the run stall detection settings, changed
   // from the instance settings page and /api/myrmidon/run-stall; absent means
   // "use the environment variable, then the default" (see
@@ -146,6 +200,16 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".
   hostDisk: hostDiskSettingsSchema.optional(),
+  // myrmidon(1.6.5-DBC1): the datastore-care block (the retention sub-block
+  // with the run-context compaction window), changed from
+  // /api/myrmidon/datastore-care; absent means "use the environment
+  // variable, then the default" (see packages/shared/src/myrmidon-datastore-care.ts).
+  datastoreCare: datastoreCareSettingsSchema.optional(),
+  // myrmidon(1.6.6 MODEL-MENU B): the grouped /model menu, changed from
+  // /api/myrmidon/model-menu; absent means "group by provider family
+  // automatically". Lenient: a hand-edited row without the key, with unknown
+  // keys or with an invalid value still parses (see myrmidon-model-menu.ts).
+  modelMenu: storedModelMenuSettingsSchema,
   // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle (enabled, idle TTL),
   // changed from /api/myrmidon/bot-disk; absent means "use the environment
   // variable, then the default". Lenient: a row without the key, with unknown
@@ -178,13 +242,23 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(EXTCASE-B): browser-bridge allowlist changed from the bridge panel;
   // absent means "no domain is allowed" (deny by default).
   browserBridge: browserBridgeSettingsSchema.optional(),
-  // myrmidon(1.6-SWARM): per-role task queues with leased claims — the pilot flag,
-  // the lease TTL, the per-agent ceiling and the sweep interval, changed from
+  // myrmidon(1.6-SWARM): the swarm (self-organisation) — the on/off switch, the
+  // lease TTL, the per-agent ceiling and the sweep interval, changed from
   // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
-  // the default (the pilot is off)".
+  // the built-in default".
   swarmClaim: swarmClaimSettingsSchema.optional(),
-  // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
-  // pilot settings (who changed what, and when), kept by the settings service
+  // myrmidon(1.6.5 F-26 T5 + T10): the swarm block — one namespace for the
+  // swarm family. T5 owns the wake guard (run-without-task gate and the
+  // exponential cooling of stale wake candidates, design 1.6.5 §3.7, §4.3);
+  // T10 owns `general.swarm.scent` (classifier model, weights, switch).
+  // Absent means the module defaults.
+  swarm: swarmSettingsSchema
+    .extend({
+      scent: scentSettingsSchema.optional(),
+    })
+    .optional(),
+  // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm
+  // settings (who changed what, and when), kept by the settings service
   // under `general.swarmClaimJournal` and read by GET /api/myrmidon/swarm-claim.
   // Stored passthrough, never validated here beyond being a list-shaped value
   // the service re-reads defensively.
@@ -193,6 +267,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // per-agent overrides, changed from /api/myrmidon/companies/:id/wip-limit/settings;
   // absent means the feature counts but never signals (all limits null).
   wipLimit: wipLimitSettingsSchema.optional(),
+  // myrmidon(1.6.5-OWNER-DM-FILTER): the owner-DM delivery filter mode,
+  // changed from /api/myrmidon/owner-delivery; absent means the default
+  // "via_bot" (1.6.5-OWNER-VIA-BOT: no card, the author's message instead).
+  ownerDelivery: ownerDeliverySettingsSchema.optional(),
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
   // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.
   reviewRouting: reviewRoutingSettingsSchema.optional(),
@@ -200,6 +278,17 @@ export const instanceGeneralSettingsSchema = z.object({
   // task; review blocked until the PR head moves), changed from
   // /api/myrmidon/review-rework; absent means the defaults (the fix is on).
   reviewRework: reviewReworkSettingsSchema.optional(),
+  // myrmidon(F16): the issue-list agent defaults (compact view, limit 200/500,
+  // description omitted in compact), read at the list route; absent means the
+  // fix is ON — `{enabled: false}` restores the pre-feature agent behaviour
+  // byte-for-byte (see packages/shared/src/myrmidon-issue-list-agent-defaults.ts).
+  issuesListAgentDefaults: issueListAgentDefaultsSchema.optional(),
+  // myrmidon(PAUSE-GUARD): the forgotten-pause guard (enabled, threshold,
+  // interval, allowlist, per-pass ceiling), changed from
+  // /api/myrmidon/pause-guard; absent means "use the environment variable, then
+  // the defaults" (see packages/shared/src/myrmidon-pause-guard.ts). Lenient
+  // shape: a row saved before a key existed still parses.
+  pauseGuard: storedPauseGuardSettingsSchema.optional(),
   // myrmidon(REVIEW-REWORK): the change journal of the loop settings, kept by
   // the settings service under `general.reviewReworkJournal` and read by
   // GET /api/myrmidon/review-rework. Stored passthrough, like swarmClaimJournal.
@@ -238,6 +327,9 @@ export const instanceGeneralSettingsSchema = z.object({
   // from /api/myrmidon/agent-exchange/settings; absent means the defaults
   // (the room feature is off).
   agentExchange: agentExchangeSettingsSchema.optional(),
+  // myrmidon(1.7-AGENT-EXCHANGE-B): the feed of discussion rooms of the same
+  // general settings row.
+  agentExchangeFeed: agentExchangeFeedSettingsSchema.optional(),
   // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
   // from the instance settings page and PATCH /api/myrmidon/plugin-entitlement/keys;
   // absent means "no keys are registered" (no plugin is unlocked).
@@ -246,6 +338,12 @@ export const instanceGeneralSettingsSchema = z.object({
   // message (on/off and the minimum spacing between edits), changed from
   // /api/myrmidon/telegram-dm-progress; absent means the defaults.
   telegramDmProgress: telegramDmProgressSettingsSchema.optional(),
+  // myrmidon(1.6.5-TG-LOCALE-C): the instance-wide default language of the
+  // bridged Telegram DM (the fallback for a board user with no stored
+  // `user_ui_language` row), changed from Settings → Language and
+  // /api/myrmidon/bridge-language; absent means "use the environment force,
+  // then English".
+  bridgeLanguage: bridgeLanguageSettingsSchema.optional(),
   // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".
@@ -259,6 +357,16 @@ export const instanceGeneralSettingsSchema = z.object({
   // instance settings row; absent means the defaults (enabled, reset at 70% of
   // the model window, 200k fallback window, 24k history characters).
   longTaskContext: longTaskContextSettingsSchema.optional(),
+  // myrmidon(1.6.1-BOT-DISK-D): shared mount settings changed from the instance
+  // settings API; absent means "the shared mount is disabled" (deny by default).
+  sharedMount: sharedMountSettingsSchema.optional(),
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal — the last
+  // passes of every company (what each read, and which roles were skipped why),
+  // kept by the foraging pass under `general.foragingPassJournal` and read by
+  // GET /api/myrmidon/companies/:id/foraging/passes. Stored passthrough, never
+  // validated here beyond being a list-shaped value the service re-reads
+  // defensively.
+  foragingPassJournal: z.array(z.unknown()).optional(),
   // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings, changed
   // from /api/myrmidon/model-fallback/settings; absent means "use the
   // environment variable, then the default" (see
@@ -284,6 +392,26 @@ export const instanceGeneralSettingsSchema = z.object({
   // fields another part of the same feature stores there; absent (or an absent
   // count) means the default { api: 1, worker: 0 } = today's single process.
   processes: storedBoardProcessesSettingsSchema.optional(),
+  // myrmidon(PROCS-1.8): committed task-drain state shared across processes.
+  taskDrain: z.object({
+    draining: z.boolean(),
+    startedAt: z.string().datetime().nullable(),
+    expiresAt: z.string().datetime().nullable(),
+  }).optional(),
+  // myrmidon(1.7-BUDGET-CONFIG A): the global "signal only" flag of the
+  // per-level spend limits, changed from PATCH …/budget-limits/signal-only;
+  // absent means the default (signal only ON — limits never stop work).
+  budgetLimits: budgetLimitsSettingsSchema.optional(),
+  // myrmidon(DB-PERF-C-P4): TTL of the in-process cache behind the tool
+  // gateway's policy, profile, binding and profile-entry reads, changed from
+  // GET/PATCH /api/myrmidon/tool-policy-cache; absent means the default (30 s)
+  // and `0` switches the cache off (every read is a fresh query).
+  toolPolicyCache: toolPolicyCacheSettingsSchema.optional(),
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE): whether foraging runs only when the
+  // role is idle (empty queue + a free agent), changed from
+  // /api/myrmidon/foraging/idle-gate; absent means the environment variable,
+  // then the default (on).
+  foragingIdleGate: foragingIdleGateSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

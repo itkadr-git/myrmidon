@@ -10,6 +10,10 @@ import { useTranslation } from "@/i18n";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { ApiError } from "@/api/client";
+import { agentsApi } from "@/api/agents";
+import { issuesApi } from "@/api/issues";
+import { queryKeys } from "@/lib/queryKeys";
+import { casteCounts } from "./casteCounts";
 import {
   castesApi,
   castesQueryKey,
@@ -76,8 +80,37 @@ export function CastesScreen() {
     // myrmidon(1.6.1 CUSTOM-CASTES C annex): the DELETE may carry
     // { reassignTo } to move live agents to another caste first; without a
     // target the server 409s and the view tier demands the target.
+    // myrmidon(1.6.5 F-26 T3): a caste that holds the company default demands
+    // the same target — the flag moves with the agents, in one transaction.
     mutationFn: (input: { key: string; reassignTo: string | null }) =>
       castesApi.remove(companyId, input.key, input.reassignTo),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+
+  // myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): the "agents / queue / free"
+  // column. The supervisor overview (F-26 T4) will serve these numbers; until
+  // that endpoint is in the tree they come from the two lists the company
+  // already caches — the full roster and the unclaimed queue (see casteCounts).
+  const agentsQuery = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+    enabled: companyId.length > 0,
+  });
+  const queueQuery = useQuery({
+    // A key of its own: the main issues screen caches ["issues", companyId, …]
+    // with a different queryFn, and two queryFns must never share one key.
+    queryKey: [...queryKeys.issues.list(companyId), "myrmidon-castes-queue"],
+    queryFn: () => issuesApi.listAll(companyId, { status: "todo" }),
+    enabled: companyId.length > 0,
+  });
+
+  const defaultMutation = useMutation({
+    // PATCH { isDefault: true } moves the flag off the previous holder inside
+    // the server's transaction, so the matcher reads the new default on its
+    // very next pass — no restart, no cache to drop here.
+    mutationFn: (key: string) => castesApi.update(companyId, key, { isDefault: true }),
     onSuccess: () => {
       void invalidate();
     },
@@ -124,9 +157,14 @@ export function CastesScreen() {
             : readable(removeMutation.error)
           : updateMutation.isError
             ? readable(updateMutation.error)
-            : null
+            : defaultMutation.isError
+              ? readable(defaultMutation.error)
+              : null
       }
       removeNeedsTarget={removeMutation.isError ? isCasteInUse(removeMutation.error) : false}
+      onSetDefault={(key) => defaultMutation.mutate(key)}
+      defaulting={defaultMutation.isPending}
+      counts={casteCounts(castes, agentsQuery.data ?? [], queueQuery.data ?? [])}
     />
   );
 }

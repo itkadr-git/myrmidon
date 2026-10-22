@@ -21,6 +21,9 @@ type allowedEntry struct {
 	Template string   `json:"template"`
 	Suffixes []string `json:"suffixes,omitempty"`
 	Mounts   []string `json:"mounts,omitempty"`
+	// NoPrefix marks a route that is not under the API prefix (A14): its
+	// Template is the whole request-target without the leading slash.
+	NoPrefix bool `json:"noPrefix,omitempty"`
 }
 
 var allowedTable = []allowedEntry{
@@ -37,10 +40,18 @@ var allowedTable = []allowedEntry{
 	{ID: A8, Method: "GET", Template: "containers/{name}/logs?stdout=true&stderr=true&tail=20", Suffixes: []string{".helper"}},
 	{ID: A9, Method: "DELETE", Template: "containers/{name}?force=true&v=true", Suffixes: []string{"", ".next", ".helper"}},
 	{ID: A10, Method: "POST", Template: "containers/{name}/stop?t=30", Suffixes: []string{""}},
+	{ID: A17, Method: "POST", Template: "containers/{name}/stop?t=30&myrmidon-idle=true", Suffixes: []string{""}},
 	{ID: A11, Method: "POST", Template: "containers/{name}/restart?t=30", Suffixes: []string{""}},
+	{ID: A18, Method: "POST", Template: "containers/{name}/update", Suffixes: []string{""}},
 	{ID: A12, Method: "POST", Template: "containers/{name}/rename?name={mainName}", Suffixes: []string{".next"}},
 	{ID: A13, Method: "GET", Template: "containers/{name}/archive?" + cloneReportQuery, Suffixes: []string{""}},
 	{ID: A13, Method: "GET", Template: "containers/{name}/archive?" + LegacyCloneReportQuery, Suffixes: []string{""}},
+	// A16: the bot skills read of BOT-SKILL-BACKIMPORT (1.6.5, OPE-6401): the
+	// driver reads hermes/skills of the main container in all three root shapes.
+	{ID: A16, Method: "GET", Template: "containers/{name}/archive?" + skillsReadQuery, Suffixes: []string{""}},
+	{ID: A16, Method: "GET", Template: "containers/{name}/archive?" + LegacySkillsReadQuery, Suffixes: []string{""}},
+	// A14: the partition and the project quotas; not a Docker call, so no API prefix.
+	{ID: A14, Method: "GET", Template: strings.TrimPrefix(DiskTarget, "/"), NoPrefix: true},
 }
 
 const fixtureRelPath = "../../contract/allowed-routes.json"
@@ -54,6 +65,9 @@ func instantiate(e allowedEntry, suffix, mount string, images Images) string {
 		for p := range images {
 			t = p
 		}
+	}
+	if e.NoPrefix {
+		return "/" + t
 	}
 	return APIPrefix + t
 }
@@ -77,6 +91,23 @@ func TestAllowedTableMatchesParse(t *testing.T) {
 		if e.ID == A1 {
 			allowed[""] = true
 		}
+		if e.NoPrefix {
+			// No bot in the target: one instance, no suffix to vary.
+			target := instantiate(e, "", "", images)
+			r, derr := Parse(e.Method, target, images)
+			if derr != nil || r.ID != e.ID {
+				t.Errorf("%s %s: %+v %v", e.ID, target, r, derr)
+			}
+			for _, m := range []string{"GET", "POST", "PUT", "DELETE"} {
+				if m == e.Method {
+					continue
+				}
+				if r, derr := Parse(m, target, images); derr == nil {
+					t.Errorf("%s %s: allowed as %+v, the table lists only %s", m, target, r, e.Method)
+				}
+			}
+			continue
+		}
 		for _, mount := range mounts {
 			if e.ID == A1 {
 				r, derr := Parse(e.Method, instantiate(e, "", mount, images), images)
@@ -98,7 +129,7 @@ func TestAllowedTableMatchesParse(t *testing.T) {
 			}
 		}
 	}
-	for _, id := range []string{A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13} {
+	for _, id := range []string{A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A16} {
 		if !seen[id] {
 			t.Errorf("route %s is not in the allowed table", id)
 		}
