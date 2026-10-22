@@ -897,15 +897,18 @@ describeEmbeddedPostgres("tool access service", () => {
     await tempDb?.cleanup();
   });
 
-  async function waitForBlockedMembershipUpdate() {
-    for (let attempt = 0; attempt < 80; attempt += 1) {
+  // Polls pg_stat_activity until some backend is blocked on a row lock by a
+  // `SELECT ... FOR UPDATE` over `table`. Used as a barrier to fix the queue
+  // order of racing transactions instead of sleeping and hoping.
+  async function waitForBlockedRowLock(table: string) {
+    for (let attempt = 0; attempt < 400; attempt += 1) {
       const [waiting] = await db.execute<{ waiting: boolean }>(sql`
         SELECT EXISTS (
           SELECT 1
           FROM pg_stat_activity
           WHERE state = 'active'
             AND wait_event_type = 'Lock'
-            AND query ILIKE '%company_memberships%'
+            AND query ILIKE ${`%${table}%`}
             AND query ILIKE '%for update%'
         ) AS waiting
       `);
@@ -913,6 +916,10 @@ describeEmbeddedPostgres("tool access service", () => {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     return false;
+  }
+
+  function waitForBlockedMembershipUpdate() {
+    return waitForBlockedRowLock("company_memberships");
   }
 
   it("mints generic exchange connection tokens through the agent route and stores only hashes", async () => {
@@ -2002,10 +2009,10 @@ describeEmbeddedPostgres("tool access service", () => {
         }
       });
 
-      // The first replacement still owns the departing member lock, so this
-      // gives cleanup time to queue for that lock before the empty replacement
-      // queues for the grant lock.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // The first replacement still owns the departing member lock. Wait until
+      // cleanup is actually queued behind it (not a fixed delay) so the queue
+      // order is cleanup first, empty replacement second.
+      expect(await waitForBlockedMembershipUpdate()).toBe(true);
       let replacementSettled = false;
       const replacement = replacementService
         .replaceConnectionGrantMembers(connection.id, grant.id, [])
@@ -2016,7 +2023,9 @@ describeEmbeddedPostgres("tool access service", () => {
         .finally(() => {
           replacementSettled = true;
         });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // The empty replacement is blocked on the grant row lock held by the
+      // first replacement.
+      expect(await waitForBlockedRowLock("connection_grants")).toBe(true);
       expect(replacementSettled).toBe(false);
 
       releaseFirstReplacement();
