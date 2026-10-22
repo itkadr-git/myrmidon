@@ -23,18 +23,6 @@ A track writes only into its own section. A row is added in the same PR as the s
 - **What it does** — in one phrase.
 - **How to disable / special** — for example, "`0` — no limit".
 
-## Behavior settings API
-
-The runtime behavior-settings API exposes the effective values and their definitions without a restart. All routes are under `/api/myrmidon/behavior-settings`:
-
-- `GET /definitions` returns the definition registry. Each definition includes its key, type, scope (`instance` or `company`), default, source metadata, and any type-specific limits or choices.
-- `GET /` returns instance-scoped effective values. `GET /key/:key` returns one instance-scoped value.
-- `PATCH /` and `PUT /` accept a JSON object of key/value pairs and write instance-scoped settings. The caller must be an instance administrator; agents receive `403`.
-- `GET /company/:companyId` returns company-scoped effective values. `PATCH /company/:companyId` accepts the same JSON object and writes only company-scoped settings. The caller must be an instance administrator, and the caller's company access is checked.
-- The legacy `GET|PATCH /:companyId` company aliases have the same behavior as the `/company/:companyId` routes.
-
-A successful write returns the updated effective values. A malformed value, unknown key, or key submitted to the wrong scope is rejected with `400`; cross-company access is rejected rather than falling back to instance values. Values may originate from the UI, environment, or definition default. The definition's type and constraints are authoritative: booleans accept booleans, numbers accept only the documented range, strings accept the documented format, and enum values must be one of the listed choices. Environment values provide the initial fallback; a saved UI value overrides that fallback until it is cleared.
-
 ## Track 1 — platform
 
 | Variable | Function | Default | What it does | How to disable / special |
