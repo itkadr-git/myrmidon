@@ -4,7 +4,7 @@ Status: preliminary evaluation proposal, not a completed benchmark or final sele
 
 ## Evidence ledger and decision status
 
-Verified repository facts (checked 2026-10-22): this repository contains this document but does not contain `tools/redact-eval/benchmark.py` or a benchmark corpus. Therefore the command, corpus, metrics, and gates below are proposals; no scores, candidate performance, or CI artifacts are reported here. The repository check is reproducible with `test ! -e tools/redact-eval/benchmark.py` at PR head `d1acf766a1d84f9606052bcc6427341c4cdbc096`.
+Verified repository facts (checked 2026-10-22): this repository contains this document but does not contain `tools/redact-eval/benchmark.py` or a benchmark corpus. Therefore the command, corpus, metrics, and gates below are proposals; no scores, candidate performance, or CI artifacts are reported here. The repository check is reproducible in the branch under review with `git ls-tree --name-only HEAD tools/redact-eval/benchmark.py` returning no path, or `test ! -e tools/redact-eval/benchmark.py` in a checkout of that branch.
 
 Verified upstream documentation claims are not service measurements. The dated primary-source revisions are listed in each candidate row. Provisional hypothesis: Presidio is a plausible primary integration candidate because its documented recognizer and anonymizer extension points could accommodate domain-specific needs. This hypothesis is not a selection and has no measured support. The release owner must not treat it as approved until the future run passes the gates below.
 
