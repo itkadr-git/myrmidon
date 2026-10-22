@@ -65,8 +65,10 @@ Myrmidon — система управления компаниями из ИИ-
 
 | Файл | О чём |
 |---|---|
+| [guides/features-page.md](guides/features-page.md) | Страница Instance → Features: реестр возможностей форка, их настройки и живое здоровье, сигнал во внимание, как добавить возможность |
 | [guides/run-limits.md](guides/run-limits.md) | Лимиты допуска прогонов: четыре лимита, источники значений, изменение из UI и API; причины ожидания queued-прогонов (`waitReason`) и отмена нестартуемых (F-09) |
 | [guides/queued-run-stall.md](guides/queued-run-stall.md) | Сигнал о застрявшем queued-прогоне (F-09): карточка внимания `queue_stall`, пороги, действия оператора |
+| [guides/backup-retention.md](guides/backup-retention.md) | Хранение резервных копий БД: тиры daily/weekly/monthly, режим «хранить только последнюю копию» (1.6.5) с проверкой дампа перед удалением старых, чистка сирот `.sql` |
 | [guides/run-stall.md](guides/run-stall.md) | Обнаружение зависших прогонов: что считается прогрессом, прерывание `run_stalled`, возврат задачи в `todo`, настройки |
 | [guides/stale-block.md](guides/stale-block.md) | Гард причины-ссылки при переходе в blocked (STALE-BLOCK A) и сторож мёртвых блоков (часть B): какие причины мертвы, снятие блока с системным комментарием, карточка `stale_block` в attention-фиде, настройки |
 | [guides/workspace-cleanup.md](guides/workspace-cleanup.md) | Очистка рабочих копий после слияния и сигнал о застрявшей копии |
@@ -89,6 +91,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/bridge-extension.md](guides/bridge-extension.md) | Браузерный мост, расширение (части C и D): действия open/read/click/fill/download/screenshot, шаг подтверждения человеком, сопряжение кодом, сборка и load-unpacked |
 | [guides/browser-bridge-gateway.md](guides/browser-bridge-gateway.md) | Браузерный мост, шлюз (EXTCASE-B): исходящее WSS-соединение расширения, сопряжение кодом, allowlist, политика подписи, журнал |
 | [guides/connector-panel.md](guides/connector-panel.md) | Панель коннекторов (Company settings → Connectors): устройства, выдача кодов, allowlist, политика подписи, журнал |
+| [guides/chat-endpoint-setup.md](guides/chat-endpoint-setup.md) | Настройка чат-эндпоинта: прямое завершение `verifying` после тестового диалога и нейтральный сигнал `verifyingStale` |
 | [guides/ocr.md](guides/ocr.md) | Путь OCR: PDF в текст в workspace бота — инструмент `ocr.pdf`, бэкенды, лимиты, журнал |
 | [guides/owner-telegram-cards.md](guides/owner-telegram-cards.md) | Как решения владельца доходят до его Telegram-лички с агентом-автором: режим `via_bot` по умолчанию (сообщение бота, ответ текстом) или карточки с кнопками (U2) |
 | [guides/cto-chat-planner.md](guides/cto-chat-planner.md) | Планировщик чата с доской (CTO-CHAT B): текст владельца — в предложенный эпик с задачами и критериями приёмки, карточка согласования, вход из Telegram DM, коды ошибок |
@@ -118,6 +121,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/github-shared-identity.md](guides/github-shared-identity.md) | Авторизоваться в GitHub один раз на весь сервер (GITHUB-SHARED-IDENTITY): свои GitHub App вместо облачного коннектора вендора, токены установки на один репозиторий выпускает доска, выбор приложения по целевому репозиторию, авторство агента, аудит, выключатель коннектора вендора |
 | [guides/autonomy-matrix-tool-gateway.md](guides/autonomy-matrix-tool-gateway.md) | Матрица автономии в шлюзе инструментов (1.6.3 AUTONOMY-GW): точка проверки до вызова провайдера, вердикт agent > role > default, сопоставление инструмента с классом действия (merge/deploy/external_message), pre-access 403 autonomy_forbidden и холдинг approval_required, настройка через instance_settings |
 | [guides/debate-asym.md](guides/debate-asym.md) | Движок асимметричных дебатов (1.7 DEBATE-ASYM A): генератор/критик/судья из разных семейств моделей, независимые первые ответы, ≤3 круга, потолок токенов, остановка по `[AGREE]`; документ `debate-result` на задаче со стоимостью, cost-события на уровне задачи, живые настройки и запуск по API через матрицу автономии |
+| [guides/debate-asym-castes.md](guides/debate-asym-castes.md) | Дебаты на касту (1.7 DEBATE-ASYM B): вкл/выкл, модели ролей, инструкция на роль, круги и потолок токенов на каждую касту поверх конфигурации инстанса; кнопка «Обсудить» в очереди роли на «Надзор за роем» с показом вердикта, остановки, расхода и документа результата; пилот — каста маркетинга |
 | [guides/guardrails-ci-corpus.md](guides/guardrails-ci-corpus.md) | GUARDRAILS (1.7-GRD-CI): eval ложных срабатываний по эталонному корпусу как шаг CI — скоринг precision/recall по правилу, ложный блок на чистой фикстуре красит проверку, закоммиченный артефакт `report.json`/`report.md` со сторожем расхождения, pending-режим детекторов части A до их мержа |
 | [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции |
 | [guides/parallel-helpers.md](guides/parallel-helpers.md) | Параллельные помощники (1.6 PARALLEL-HELPERS): секция «Parallel helpers» в карточке агента (вкл/выкл, лимит, модель, бюджет ходов), потолок и умолчание компании с подсказкой о ёмкости в настройках инстанса, секция `delegation` в профиле бота, встроенный навык |

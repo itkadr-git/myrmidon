@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Check,
   Copy,
   ExternalLink,
   Loader2,
@@ -40,6 +41,7 @@ import { formatDateTime } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link, Navigate, useNavigate, useParams } from "@/lib/router";
+import { ApiError } from "@/api/client";
 
 const tabs = ["settings", "access", "conversations", "activity"] as const;
 type ChatTab = (typeof tabs)[number];
@@ -229,6 +231,33 @@ export function ChatEndpointDetail() {
   });
   const endpoint = endpointQuery.data;
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+  const finishSetup = useMutation({
+    mutationFn: () => chatEndpointsApi.test(endpoint!.id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.chatEndpoints.detail(endpointId),
+      });
+    },
+    onError: (error: unknown) => {
+      const roundTripIncomplete =
+        error instanceof ApiError &&
+        error.status === 409 &&
+        ((error.body as { code?: string } | null)?.code ===
+          "chat_test_round_trip_incomplete" ||
+          error.message.includes("round trip"));
+      pushToast({
+        title: roundTripIncomplete ? "Setup not finished" : "Finish setup failed",
+        body: roundTripIncomplete
+          ? "Wait for the agent to reply to the test conversation, then try again."
+          : error instanceof Error
+            ? error.message
+            : "Try again.",
+        tone: roundTripIncomplete ? "warn" : "error",
+      });
+    },
+  });
 
   useEffect(() => {
     if (!endpoint || !activeTab) return;
@@ -271,6 +300,12 @@ export function ChatEndpointDetail() {
   const setupIncomplete =
     endpoint.setup?.step !== "complete" &&
     ["draft", "verifying", "attention", "revoked"].includes(endpoint.status);
+  // myrmidon(1.6.5-F10-B): when the wizard already reached its `test` stage the
+  // operator can finish setup with one action here instead of re-walking the
+  // wizard (server complete: POST /chat-endpoints/:id/test, same call the last
+  // wizard step uses).
+  const canFinishSetupHere =
+    endpoint.status === "verifying" && endpoint.setup?.step === "test";
 
   return (
     <div className="max-w-5xl space-y-6 pb-12">
@@ -282,6 +317,12 @@ export function ChatEndpointDetail() {
           <p className="mt-1 text-sm text-muted-foreground">
             {endpoint.providerAccountLabel ?? "Chat connection"}
           </p>
+          {endpoint.verifyingStale && (
+            <p className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-amber-500/25 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-900 dark:text-amber-100">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Verifying over 24 hours with live traffic
+            </p>
+          )}
           {endpoint.provider === "imessage-photon" && endpoint.botExternalId && endpoint.photonAllocation !== "shared" && (
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
               <span>{endpoint.botExternalId}</span>
@@ -294,6 +335,20 @@ export function ChatEndpointDetail() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          {canFinishSetupHere ? (
+            <Button
+              variant="outline"
+              disabled={finishSetup.isPending}
+              onClick={() => finishSetup.mutate()}
+            >
+              {finishSetup.isPending ? (
+                <Loader2 className="animate-spin" />
+              ) : (
+                <Check />
+              )}
+              Finish setup
+            </Button>
+          ) : null}
           {setupIncomplete ? (
             <Button
               variant="outline"

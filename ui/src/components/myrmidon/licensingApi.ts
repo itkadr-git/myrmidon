@@ -29,6 +29,11 @@ export interface ModuleLicenseStatus {
   state: ModuleLicenseState;
   reason: string;
   expires: number | null;
+  /** `wrong_instance` only: the installation id the license was issued for. */
+  licenseInstanceId?: string;
+  /** `wrong_instance` only: the installation id of this board. */
+  boardInstanceId?: string;
+  message?: string;
 }
 
 export interface LicensingStatus {
