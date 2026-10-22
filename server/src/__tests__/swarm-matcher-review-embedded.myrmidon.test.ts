@@ -222,6 +222,50 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
   // Item 1: the loop on the release path.
   // -------------------------------------------------------------------------
   describe("the freed agent is not sent back to the task it just finished", () => {
+    // OPE-7707 S4 (T9): the E2→E5 bridge — a task the recovery freed (owner off)
+    // is picked up by a free engineer of its caste on the next tick, oldest
+    // first, through the same matchAgent path the freed-agent event drives.
+    it("hands the freed task to a free engineer of its caste on the next tick, oldest first", async () => {
+      const companyId = await seedCompany();
+      const freed = await seedAgent(companyId, "agent-freed");
+      const older = await seedTask(companyId, "TASK-OLDER");
+      const newer = await seedTask(companyId, "TASK-NEWER");
+      await db.update(issues).set({ createdAt: new Date(NOW.getTime() - 2 * 60 * 60 * 1000) }).where(eq(issues.id, older));
+      const wakes: Wake[] = [];
+
+      const pair = await matchAgent(matcherDeps(wakes), freed);
+
+      expect(pair?.issueId).toBe(older);
+      expect(pair?.agentId).toBe(freed);
+      expect(wakes).toEqual([{ agentId: freed, issueId: older }]);
+      expect(await assigneeOf(older)).toBe(freed);
+      expect(await assigneeOf(newer)).toBeNull();
+    });
+
+    // OPE-7707 S4 (T10): the pickup never takes somebody else's in_progress,
+    // and a cooling task waits its window out instead of being re-claimed.
+    it("leaves another agent's in_progress alone and lets a cooling task wait", async () => {
+      const companyId = await seedCompany();
+      const freed = await seedAgent(companyId, "agent-freed");
+      const busy = await seedAgent(companyId, "agent-busy");
+      const busyTask = await seedTask(companyId, "TASK-BUSY", busy);
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, busyTask));
+      const cooled = await seedTask(companyId, "TASK-COOLED");
+      await seedRun(companyId, freed, cooled, {
+        status: "failed",
+        finishedAt: new Date(NOW.getTime() - 2 * MIN),
+        livenessState: "failed",
+      });
+      const wakes: Wake[] = [];
+
+      const pair = await matchAgent(matcherDeps(wakes), freed);
+
+      expect(pair).toBeNull();
+      expect(wakes).toEqual([]);
+      expect(await assigneeOf(busyTask)).toBe(busy);
+      expect(await assigneeOf(cooled)).toBeNull();
+    });
+
     it("does not wake the agent for the issue whose run has just ended", async () => {
       const companyId = await seedCompany();
       const agentId = await seedAgent(companyId);
@@ -500,6 +544,7 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
         agentId,
         role: "engineer",
         runId: null,
+        origin: "auto_match",
         claimedAt: new Date(NOW.getTime() - 60 * MIN),
         heartbeatAt: new Date(NOW.getTime() - 60 * MIN),
         expiresAt: new Date(NOW.getTime() - MIN),
@@ -568,6 +613,7 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
         agentId,
         role: "engineer",
         runId: null,
+        origin: "auto_match",
         claimedAt: new Date(NOW.getTime() - 60 * MIN),
         heartbeatAt: new Date(NOW.getTime() - 60 * MIN),
         expiresAt: new Date(NOW.getTime() - MIN),

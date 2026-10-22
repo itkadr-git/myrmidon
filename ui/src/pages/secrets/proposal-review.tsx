@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Copy, Fingerprint, KeyRound, Link2, ShieldAlert, Variable, ServerCog } from "lucide-react";
+import { Copy, Fingerprint, KeyRound, Link2, RotateCcw, ShieldAlert, Variable, ServerCog } from "lucide-react";
 import type {
   CompanySecretProviderConfig,
   SecretProposalAgentRef,
@@ -169,6 +169,22 @@ export function ProposedBadge({ className }: { className?: string }) {
   );
 }
 
+/** Pill marking a secret-kind proposal whose approval rotates an existing secret. */
+export function RotateTargetBadge({ className }: { className?: string }) {
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "h-5 gap-1 px-1.5 text-(length:--text-nano) font-medium",
+        "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+        className,
+      )}
+    >
+      <RotateCcw className="size-3" /> Rotates existing
+    </Badge>
+  );
+}
+
 /** The env KEY / access ALIAS a binding proposal delivers under, e.g. `GITHUB_TOKEN`. */
 export function bindingEnvKey(proposal: SecretProposalView): string {
   return aliasFromConfigPath(proposal.configPath);
@@ -244,6 +260,18 @@ export function useProposalReview(
     mutationFn: (draft: ApproveDraft) => {
       const { proposal } = draft;
       if (proposal.kind === "secret") {
+        if (proposal.rotationTargetSecretId) {
+          // Rotation proposal: the live secret's name and key stay fixed, so
+          // identity overrides are not sent — the server would reject them.
+          // An empty vault means "keep the secret's current vault", so it is
+          // omitted rather than sent as null (null would reset it to the
+          // instance default).
+          return secretsApi.approveProposal(companyId!, proposal.id, {
+            ...(draft.providerConfigId
+              ? { overrides: { providerConfigId: draft.providerConfigId } }
+              : {}),
+          });
+        }
         const name = draft.folder.trim()
           ? `${draft.folder.trim().replace(/\/+$/, "")}/${draft.leaf.trim()}`
           : draft.leaf.trim();
@@ -261,10 +289,14 @@ export function useProposalReview(
     },
     onSuccess: (result) => {
       pushToast({
-        title: result.kind === "secret" ? "Secret approved" : "Binding approved",
+        title: result.kind === "secret"
+          ? (result.rotationTargetSecretId ? "Secret rotated" : "Secret approved")
+          : "Binding approved",
         body:
           result.kind === "secret"
-            ? (result.proposedName ?? "Secret created")
+            ? (result.rotationTargetSecretId
+              ? `${result.rotationTargetName ?? result.proposedName ?? "Secret"} → new latest version`
+              : (result.proposedName ?? "Secret created"))
             : `${result.target?.name ?? "Agent"} · ${bindingEnvKey(result) || "binding"}`,
         tone: "success",
       });
@@ -303,10 +335,15 @@ export function useProposalReview(
         leaf,
         description: proposal.proposedDescription ?? "",
         // "" = deployment default vault; the dialog dropdown lets the approver pick one.
-        providerConfigId:
-          providerConfigs.find(
-            (config) => config.provider === "local_encrypted" && config.isDefault,
-          )?.id ?? "",
+        // For a rotation proposal "" means "keep the secret's current vault",
+        // so it must start empty there.
+        providerConfigId: proposal.rotationTargetSecretId
+          ? ""
+          : (
+            providerConfigs.find(
+              (config) => config.provider === "local_encrypted" && config.isDefault,
+            )?.id ?? ""
+          ),
         // A binding on a still-pending secret proposal REQUIRES cascade to land.
         cascade: Boolean(proposal.secretProposalId),
       });
@@ -382,13 +419,14 @@ function ApproveDialog({
   onConfirm: () => void;
 }) {
   const isSecret = draft?.proposal.kind === "secret";
+  const isRotation = draft?.proposal.kind === "secret" && Boolean(draft.proposal.rotationTargetSecretId);
   const previewName = draft
     ? draft.folder.trim()
       ? `${draft.folder.trim().replace(/\/+$/, "")}/${draft.leaf.trim()}`
       : draft.leaf.trim()
     : "";
   const localConfigs = providerConfigs.filter((config) => config.provider === "local_encrypted");
-  const canConfirm = isSecret ? Boolean(draft && draft.leaf.trim()) : true;
+  const canConfirm = isSecret && !isRotation ? Boolean(draft && draft.leaf.trim()) : true;
 
   return (
     <Dialog open={Boolean(draft)} onOpenChange={(open) => !open && onCancel()}>
@@ -397,10 +435,14 @@ function ApproveDialog({
           <>
             <DialogHeader>
               <DialogTitle>
-                {isSecret ? "Approve & create secret" : "Approve binding"}
+                {isRotation
+                  ? "Approve & rotate secret"
+                  : isSecret ? "Approve & create secret" : "Approve binding"}
               </DialogTitle>
               <DialogDescription>
-                {isSecret
+                {isRotation
+                  ? "The proposed value becomes the next version of the existing secret. Agents bound at @latest pick it up on their next wake."
+                  : isSecret
                   ? "The value is created as the proposing agent recorded it. Re-folder or rename it before it lands."
                   : "Grant the target agent access to this secret. This runs with your permissions."}
               </DialogDescription>
@@ -415,7 +457,58 @@ function ApproveDialog({
               <ProposalJustification justification={draft.proposal.justification} />
             </div>
 
-            {isSecret ? (
+            {isRotation ? (
+              <div className="space-y-3">
+                <div className="space-y-2 rounded-md border border-border p-3 text-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-muted-foreground">Rotates secret</span>
+                    <SecretPathName
+                      name={draft.proposal.rotationTargetName ?? "existing secret"}
+                      className="font-medium"
+                    />
+                  </div>
+                  {draft.proposal.rotationTargetStatus && draft.proposal.rotationTargetStatus !== "active" ? (
+                    <p className="text-xs text-destructive" role="alert">
+                      The target secret is {draft.proposal.rotationTargetStatus}; approving this proposal will
+                      fail until it is active again.
+                    </p>
+                  ) : (
+                    <p className="text-(length:--text-micro) text-muted-foreground">
+                      The live name and key stay fixed. Verify the fingerprint below against the value you
+                      expect before rotating.
+                    </p>
+                  )}
+                </div>
+
+                {localConfigs.length > 0 ? (
+                  <div className="space-y-1">
+                    <Label htmlFor="approve-rotation-provider-config">Provider vault</Label>
+                    <select
+                      id="approve-rotation-provider-config"
+                      value={draft.providerConfigId}
+                      onChange={(event) =>
+                        onChange({ ...draft, providerConfigId: event.target.value })
+                      }
+                      className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                    >
+                      <option value="">Keep current vault</option>
+                      {localConfigs.map((config) => (
+                        <option key={config.id} value={config.id}>
+                          {config.displayName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+
+                <div className="rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-muted-foreground">
+                  <FingerprintChip
+                    fingerprint={draft.proposal.valueFingerprintSha256}
+                    length={draft.proposal.valueLength}
+                  />
+                </div>
+              </div>
+            ) : isSecret ? (
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1">
@@ -505,7 +598,9 @@ function ApproveDialog({
               <Button onClick={onConfirm} disabled={pending || !canConfirm}>
                 {pending
                   ? "Approving…"
-                  : isSecret
+                  : isRotation
+                    ? "Approve & rotate"
+                    : isSecret
                     ? "Approve & create"
                     : draft.cascade
                       ? "Approve secret & bind"

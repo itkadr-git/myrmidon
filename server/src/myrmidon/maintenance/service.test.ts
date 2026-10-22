@@ -176,6 +176,46 @@ describeEmbeddedPostgres("maintenance service and API", () => {
     expect((await svc.status()).active).toBe(false);
   }, 30_000);
 
+  it("does not mark maintenance on when scheduled retry promotion fails", async () => {
+    const { agentId } = await seed("setTimeout(() => process.exit(0), 30_000)");
+    await wake(agentId);
+    await waitFor(async () => (await runStatuses(agentId)).includes("running"));
+
+    const heartbeat = heartbeatService(db);
+    let clock = new Date();
+    const svc = maintenanceService(db, {
+      heartbeat: {
+        ...heartbeat,
+        interruptRunForMaintenance: async (runId, windowId) => {
+          const stopped = await heartbeat.cancelRun(runId, "maintenance test interrupt", {
+            errorCode: "myrmidon_maintenance_interrupted",
+            resultJson: { myrmidonMaintenance: { windowId } },
+            suppressImmediateRecovery: true,
+          });
+          if (stopped?.status === "running" || stopped?.status === "queued") {
+            throw new Error(`run ${runId} remains ${stopped.status}`);
+          }
+          return heartbeat.scheduleBoundedRetry(runId, {
+            retryReason: "myrmidon_maintenance",
+            wakeReason: "myrmidon_maintenance_retry",
+            delayMs: 0,
+          }).then((retry) => ({ retryScheduled: retry.outcome === "scheduled" }));
+        },
+        promoteDueScheduledRetries: async () => { throw new Error("retry promotion failed"); },
+      },
+      now: () => clock,
+    });
+    await svc.enter({ scope: { type: "instance" }, reason: "deploy", drainTimeoutSec: 1, onTimeout: "interrupt_and_retry" }, ADMIN);
+    clock = new Date(clock.getTime() + 2_000);
+    await svc.tick();
+    await waitFor(async () => (await runStatuses(agentId)).includes("scheduled_retry"));
+
+    clock = new Date(clock.getTime() + 1_000);
+    await svc.tick();
+    expect((await svc.status()).instance?.state).toBe("entering");
+    expect((await runStatuses(agentId)).sort()).toEqual(["cancelled", "scheduled_retry"]);
+  }, 30_000);
+
   it("reports a drain timeout once and keeps waiting with onTimeout=wait", async () => {
     const { agentId } = await seed("setTimeout(() => process.exit(0), 3000)");
     await wake(agentId);

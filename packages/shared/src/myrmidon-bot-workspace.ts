@@ -150,6 +150,10 @@ export const myrWsOpenResultSchema = z.object({
   base: z.string().min(1).optional(),
   /** True when the copy already existed (`open` is idempotent). */
   reused: z.boolean(),
+  /** Original full clone retained here after safe legacy conversion. */
+  recoveryPath: z.string().min(1).optional(),
+  /** Original HEAD retained in this ref in the class-D base. */
+  recoveryRef: z.string().min(1).optional(),
 });
 export type MyrWsOpenResult = z.infer<typeof myrWsOpenResultSchema>;
 
@@ -326,6 +330,12 @@ export const wsReportActionSchema = z.object({
 });
 export type WsReportAction = z.infer<typeof wsReportActionSchema>;
 
+/** Stable bot-disk gauges emitted with each report. */
+export const wsDiskReportMetricsSchema = z.object({
+  copies_without_assignee: z.number().int().nonnegative(),
+});
+export type WsDiskReportMetrics = z.infer<typeof wsDiskReportMetricsSchema>;
+
 /** Why a copy does not match the registry/desired state. */
 export const wsForeignSignSchema = z.enum([
   "promisor",
@@ -365,6 +375,7 @@ export const wsDiskReportSchema = z.object({
   actions: z.array(wsReportActionSchema),
   foreign: z.array(wsReportForeignSchema),
   foreignUid: wsReportForeignUidSchema.nullable().optional(),
+  metrics: wsDiskReportMetricsSchema.optional(),
 });
 export type WsDiskReport = z.infer<typeof wsDiskReportSchema>;
 

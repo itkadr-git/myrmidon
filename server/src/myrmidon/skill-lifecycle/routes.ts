@@ -25,6 +25,9 @@ import type { SkillLifecycleActor, SkillLifecycleService } from "./service.js";
 const promoteSchema = z.object({ approvalId: z.string().min(1) });
 const promoteRequestSchema = z.object({ note: z.string().max(2000).optional().nullable() });
 const deprecateSchema = z.object({ reason: z.string().max(2000).optional().nullable() });
+const pilotAgentsSchema = z.object({
+  agentIds: z.array(z.string().trim().min(1).max(120)).max(500),
+});
 
 export interface SkillLifecycleRoutesDeps {
   service: SkillLifecycleService;
@@ -63,6 +66,26 @@ export function skillLifecycleRoutes(deps: SkillLifecycleRoutesDeps) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json({ skills: await deps.service.list(companyId) });
+  });
+
+  // myrmidon(1.6.6 KNOWLEDGE-2.0 K-7): the pilot agent set is a board setting.
+  // GET reports the effective set and where it came from (board setting or the
+  // MYRMIDON_SKILL_PILOT_AGENTS env fallback); PUT stores the company list
+  // (an empty list is an explicit "no pilot"). Registered before the `:skillId`
+  // routes so "pilot-agents" is never read as a skill id. Writing is board-only,
+  // reading needs company access, the same rule as the rest of the panel.
+  router.get(`${base}/pilot-agents`, async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await deps.service.pilotAgents(companyId));
+  });
+
+  router.put(`${base}/pilot-agents`, validate(pilotAgentsSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const agentIds = (req.body as { agentIds: string[] }).agentIds;
+    res.json(await deps.service.setPilotAgents(companyId, agentIds, actorOf(req)));
   });
 
   router.get(`${base}/:skillId`, async (req, res) => {
