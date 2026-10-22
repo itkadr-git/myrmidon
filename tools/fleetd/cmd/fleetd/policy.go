@@ -73,8 +73,6 @@ var botVolumes = []struct{ suffix, containerPath string }{
 	{"scratch", "/scratch"},
 }
 
-const botUID = 10001
-
 // binds returns the Docker bind list for a container: the bot's own volume
 // directories (read-write, so the profile written by writeProfile reaches the
 // container) and the extra mounts, which are always read-only. It has no side
