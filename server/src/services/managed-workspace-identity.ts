@@ -14,6 +14,7 @@
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { authUsers, companyMemberships, type Db } from "@paperclipai/db";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
 import type { WorkspaceReadiness, WorkspaceReadinessProbeResult } from "@paperclipai/shared";
 import {
   deriveWorkspaceHandoffKey,
@@ -302,7 +303,7 @@ export type WorkspaceReadinessGateMode = "auto" | "strict";
 export function resolveWorkspaceReadinessGateMode(
   env: NodeJS.ProcessEnv = process.env,
 ): WorkspaceReadinessGateMode {
-  return env.PAPERCLIP_WORKSPACE_READINESS_GATE?.trim().toLowerCase() === "strict" ? "strict" : "auto";
+  return readProductEnvFrom(env, "WORKSPACE_READINESS_GATE")?.trim().toLowerCase() === "strict" ? "strict" : "auto";
 }
 
 /**

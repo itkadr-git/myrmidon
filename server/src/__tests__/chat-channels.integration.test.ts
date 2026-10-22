@@ -14437,15 +14437,35 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await recovery.service.shutdown();
   });
 
-  // 20.10 OPE-8404: the drain waits the real 750 ms ingress reorder window before it creates the conversation;
-  // vi.waitFor's default 1 s left ~250 ms for DB work, which CI load did not always give. Wait for the condition longer.
+  // OPE-8809: the competing sweep used to run right after the drain was started. Whether it ran before the
+  // 750 ms reorder window closed (nothing due, no-op) or after (it raced the webhook process's drain for the
+  // conversation lease and, if it won, rebuilt the messages from the ledger with a different runtime) depended
+  // on CI speed. The sweep now runs while the deferred drain provably owns the lease, and the end of the drain
+  // is detected by its lease release rather than by guessing which side effect lands last.
   it("reorders rapid Slack callbacks by provider time before one conversation drain", async () => {
     const fixture = await seedCompany();
     const runtime = new FakeChatSdkRuntime();
     const deferred: Array<() => void> = [];
     const wakeup = vi.fn(async () => ({ accepted: true }));
+    let reachChecks = 0;
+    let signalDrainHoldsLease!: () => void;
+    let releaseDrain!: () => void;
+    const drainHoldsLease = new Promise<void>((resolve) => {
+      signalDrainHoldsLease = resolve;
+    });
+    const drainReleased = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
     const service = chatChannelService(db, {
       deferWebhookProcessing: true,
+      // Entered from the drain's first task mutation: the reorder window has
+      // closed and the drain owns the conversation lease. Hold it there.
+      reachAuthorizationBarrier: async () => {
+        reachChecks += 1;
+        if (reachChecks !== 1) return;
+        signalDrainHoldsLease();
+        await drainReleased;
+      },
       fetch: fakeSlackFetch() as typeof globalThis.fetch,
       heartbeat: { wakeup: receiptBackedWakeup(wakeup) },
       publicBaseUrl: "https://paperclip.example",
@@ -14569,27 +14589,38 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       runtime: new FakeChatSdkRuntime() as unknown as ChatSdkRuntime,
     });
     deferred.shift()?.();
-    // Simulate another server process reconciling the same durable rows at
-    // the same time as the webhook process's deferred drain.
+    await drainHoldsLease;
+    // Simulate another server process reconciling the same durable rows while
+    // the webhook process's drain is mid-conversation. It must yield to the
+    // lease holder and leave the work to it.
     await competingService.processPendingDeliveries();
-    await vi.waitFor(async () => {
-      const rows = await db
+    expect(
+      await db
         .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id));
-      expect(rows).toHaveLength(1);
+        .from(chatEndpointLeases)
+        .where(eq(chatEndpointLeases.endpointId, endpoint.id)),
+    ).toHaveLength(1);
+    releaseDrain();
+    // The lease is released in the drain's `finally`, after its last wake:
+    // its disappearance (it was held above) marks the end of the drain.
+    await vi.waitFor(async () => {
+      expect(
+        await db
+          .select()
+          .from(chatEndpointLeases)
+          .where(eq(chatEndpointLeases.endpointId, endpoint.id)),
+      ).toHaveLength(0);
     }, { timeout: INGRESS_REORDER_WAIT_MS });
     const [conversation] = await db
       .select()
       .from(chatConversations)
       .where(eq(chatConversations.endpointId, endpoint.id));
-    await vi.waitFor(async () => {
-      const rows = await db
+    expect(
+      await db
         .select({ id: issueComments.id })
         .from(issueComments)
-        .where(eq(issueComments.issueId, conversation.issueId));
-      expect(rows).toHaveLength(8);
-    }, { timeout: INGRESS_REORDER_WAIT_MS });
+        .where(eq(issueComments.issueId, conversation.issueId)),
+    ).toHaveLength(8);
     const comments = await db
       .select({ id: issueComments.id, body: issueComments.body })
       .from(issueComments)
@@ -14605,30 +14636,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "follow-up 7",
       "follow-up 8",
     ]);
-    // Comment admission commits before the durable wake. Wait for this
-    // company's last wake too, not merely its already-visible last comment.
-    // The competing sweep may legitimately reconcile another fixture company.
-    await vi.waitFor(() => {
-      const calls = wakeup.mock.calls.filter(
-        (call) => call[0] === fixture.assignedAgentId,
-      );
-      expect(calls).toHaveLength(8);
-      expect(calls.map((call) => call[1]?.payload?.wakeCommentId)).toEqual(
-        comments.map((comment) => comment.id),
-      );
-    });
-    // The last comment and wakeup commit inside the lease. Under full-suite
-    // load the assertions above can observe those effects one microtask before
-    // the deferred owner's `finally` deletes its lease. Require prompt eventual
-    // release; a real leak would remain for the much longer lease TTL.
-    await vi.waitFor(async () => {
-      expect(
-        await db
-          .select()
-          .from(chatEndpointLeases)
-          .where(eq(chatEndpointLeases.endpointId, endpoint.id)),
-      ).toHaveLength(0);
-    }, { timeout: INGRESS_REORDER_WAIT_MS });
+    // The lease is gone, so the drain has finished: every wake has been issued.
+    const calls = wakeup.mock.calls.filter(
+      (call) => call[0] === fixture.assignedAgentId,
+    );
+    expect(calls).toHaveLength(8);
+    expect(calls.map((call) => call[1]?.payload?.wakeCommentId)).toEqual(
+      comments.map((comment) => comment.id),
+    );
     await competingService.shutdown();
     await service.shutdown();
   });

@@ -55,7 +55,12 @@ describe("icon URL versioning", () => {
   });
 });
 
-describe("ui branding", () => {
+describe("worktree UI branding", () => {
+  it("resolves branding variables from canonical names before aliases", () => {
+    expect(getWorktreeUiBranding({ MYRMIDON_IN_WORKTREE: "true", MYRMIDON_WORKTREE_NAME: "new", PAPERCLIP_WORKTREE_NAME: "old" })).toMatchObject({ name: "new" });
+    expect(getWorktreeUiBranding({ PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_WORKTREE_NAME: "old" })).toMatchObject({ enabled: true, name: "old" });
+    expect(getWorktreeUiBranding({ MYRMIDON_IN_WORKTREE: "true", MYRMIDON_WORKTREE_NAME: "", PAPERCLIP_WORKTREE_NAME: "old" })).toMatchObject({ name: "worktree" });
+  });
   it("detects worktree mode from PAPERCLIP_IN_WORKTREE", () => {
     expect(isWorktreeUiBrandingEnabled({ PAPERCLIP_IN_WORKTREE: "true" })).toBe(true);
     expect(isWorktreeUiBrandingEnabled({ PAPERCLIP_IN_WORKTREE: "1" })).toBe(true);

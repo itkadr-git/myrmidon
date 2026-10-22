@@ -354,7 +354,7 @@ function issuePriorityRank(priority: string | null | undefined): number {
  * no execution hold (HOLD-READY). The remaining checks (live run, queued wake) need per-issue lookups and
  * run in the loop in `idlePickupForAgent`.
  */
-function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
+export function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
   return db
     .select({
       id: issues.id,
@@ -367,6 +367,9 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
       and(
         eq(issues.companyId, companyId),
         eq(issues.assigneeAgentId, agentId),
+        // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): NOT project-gated. A task already
+        // assigned to this agent (by hand or by a gated claim) stays theirs —
+        // the scope applies where a task is handed out (matcher, role queue).
         isNull(issues.assigneeUserId),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
