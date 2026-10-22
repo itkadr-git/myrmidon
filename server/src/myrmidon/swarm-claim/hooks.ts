@@ -73,10 +73,15 @@ export async function recordSwarmClaimOnCheckoutImpl(
     agentId: input.agent.id,
     role: input.agent.role,
     runId: input.run.id,
+    origin: "checkout",
     now,
     settings,
   });
-  const claim = await insertClaim(deps.db, { companyId: input.run.companyId, ...plan });
+  const claim = await insertClaim(deps.db, {
+    companyId: input.run.companyId,
+    ...plan,
+    origin: plan.origin ?? "checkout",
+  });
   if (claim) {
     await logActivityService(deps.db, {
       companyId: input.run.companyId,

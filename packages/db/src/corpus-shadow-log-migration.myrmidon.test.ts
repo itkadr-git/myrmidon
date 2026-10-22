@@ -13,7 +13,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "./migrations/0403_corpus_shadow_log.sql";
+const MIGRATION_FILE = "./migrations/0409_corpus_shadow_log.sql";
 const COLUMNS = [
   "id",
   "ts",
@@ -59,19 +59,19 @@ describe("corpus shadow log migration (static checks)", () => {
     const journal = JSON.parse(
       await readFile(fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url)), "utf8"),
     ) as { entries: Array<{ idx: number; tag: string; when: number }> };
-    const position = journal.entries.findIndex((e) => e.tag === "0403_corpus_shadow_log");
+    const position = journal.entries.findIndex((e) => e.tag === "0409_corpus_shadow_log");
     expect(position).toBeGreaterThan(0);
     const entry = journal.entries[position];
-    expect(entry?.idx).toBe(403);
+    expect(entry?.idx).toBe(409);
     const previous = journal.entries[position - 1];
-    expect(previous?.idx).toBe(402);
+    expect(previous?.idx).toBe(408);
     expect(entry!.when).toBeGreaterThan(previous!.when);
 
     const snapshot = JSON.parse(
-      await readFile(fileURLToPath(new URL("./migrations/meta/0403_snapshot.json", import.meta.url)), "utf8"),
+      await readFile(fileURLToPath(new URL("./migrations/meta/0409_snapshot.json", import.meta.url)), "utf8"),
     ) as { id: string; prevId: string; tables: Record<string, unknown> };
     const prevSnapshot = JSON.parse(
-      await readFile(fileURLToPath(new URL("./migrations/meta/0402_snapshot.json", import.meta.url)), "utf8"),
+      await readFile(fileURLToPath(new URL("./migrations/meta/0408_snapshot.json", import.meta.url)), "utf8"),
     ) as { id: string };
     expect(snapshot.prevId).toBe(prevSnapshot.id);
     expect(snapshot.id).not.toBe(prevSnapshot.id);

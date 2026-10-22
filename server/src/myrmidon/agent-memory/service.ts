@@ -22,6 +22,8 @@ import { instanceSettingsService, secretService } from "../../services/index.js"
 import { createMemoryHindsightClient, type MemoryHindsightClient } from "./hindsight-client.js";
 import { normalizeAgentMemorySettings } from "@paperclipai/shared";
 import { readMemoryUiSettings, type MemoryUiSettings } from "./settings.js";
+import { AGENT_MEMORY_FEATURE_KEY } from "../features/reporters.js"; // myrmidon(FEATURES)
+import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
 
 const HINDSIGHT_PLUGIN_KEY = "paperclip-plugin-hindsight";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -138,7 +140,7 @@ export function agentMemoryService(deps: MemoryServiceDeps) {
       const value = await deps.readSecretValue(companyId, current.keySecret);
       apiKey = value ?? undefined;
     }
-    return deps.client(current.baseUrl, apiKey);
+    return trackedClient(deps.client(current.baseUrl, apiKey));
   }
 
   async function status(agentId: string, companyId: string): Promise<MemoryCardStatus> {
@@ -286,6 +288,35 @@ export class MemoryUiError extends Error {
 
 function readableError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * myrmidon(FEATURES): every call to the memory service reports its outcome to
+ * the features page, so an unreachable service or a rejected key shows there
+ * and not only in the card that happened to be open.
+ */
+function trackedClient(client: MemoryHindsightClient): MemoryHindsightClient {
+  async function track<T>(call: () => Promise<T>): Promise<T> {
+    try {
+      const result = await call();
+      recordFeatureOutcome(AGENT_MEMORY_FEATURE_KEY, { ok: true, effect: 1 });
+      return result;
+    } catch (err) {
+      // A 4xx means the service answered (unknown memory id, bad request): it is up.
+      const status = (err as { status?: unknown } | null)?.status;
+      if (typeof status === "number" && status < 500) {
+        recordFeatureOutcome(AGENT_MEMORY_FEATURE_KEY, { ok: true, effect: 1 });
+      } else {
+        recordFeatureOutcome(AGENT_MEMORY_FEATURE_KEY, { ok: false, error: readableError(err) });
+      }
+      throw err;
+    }
+  }
+  return {
+    list: (bankId, opts) => track(() => client.list(bankId, opts)),
+    invalidate: (bankId, memoryId, reason) => track(() => client.invalidate(bankId, memoryId, reason)),
+    clear: (bankId) => track(() => client.clear(bankId)),
+  };
 }
 
 /** The real wiring: company secret store, global fetch. */
