@@ -72,8 +72,6 @@ function settingsRow(general: Record<string, unknown>) {
   };
 }
 
-const JOURNAL_ENTRY = { at: "2026-10-08T01:00:00.000Z", companyId: "company-a" };
-
 /**
  * Seed the stub table with the pre-existing row, then return the test handle.
  * The seed goes through the stub `insert` (the `getOrCreateRow` create path),
@@ -90,7 +88,6 @@ async function stubSeededDb(row: Record<string, unknown>) {
   await insert().values(row).onConflictDoUpdate().returning();
   return stub;
 }
-
 
 describe("myrmidon(OPE-7898) the IDLE-STOP policy through the general settings", () => {
   it("getGeneral returns the stored policy", async () => {
