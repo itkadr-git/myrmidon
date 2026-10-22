@@ -14,7 +14,7 @@ export interface FleetSiteProfile {
   boardExtraHost?: string;
   volumeRoot?: string;
   network?: string;
-  imageAllowlist?: string[];
+  imageAllowlist?: string[] | readonly string[];
   egressProfile?: string;
 }
 
@@ -35,6 +35,7 @@ export const myrmidonFleetSites = pgTable(
     tokenSecret: text("token_secret"),
     caCert: text("ca_cert"),
     caCertFingerprint: text("ca_cert_fingerprint"),
+    clientCert: text("client_cert"),
     clientCertSecretKey: text("client_cert_secret_key"),
     clientCertNotAfter: timestamp("client_cert_not_after", { withTimezone: true }),
     status: text("status").notNull().default("active"),

@@ -47,6 +47,7 @@ export function botContainerAgentReader(db: Db): (agentId: string) => Promise<Bo
     const row = await db
       .select({
         agentId: agents.id,
+        companyId: agents.companyId,
         adapterType: agents.adapterType,
         adapterConfig: agents.adapterConfig,
       })
