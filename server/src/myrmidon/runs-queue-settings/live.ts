@@ -7,8 +7,8 @@ function envOverride<T>(
   envName: string,
   parse: (raw: string) => T | null,
 ): T | null {
-  const raw = env[envName]?.trim();
-  if (!raw) return null;
+  const raw = env[envName];
+  if (raw === undefined || raw === "") return null;
   return parse(raw);
 }
 
