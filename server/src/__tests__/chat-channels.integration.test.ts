@@ -21697,6 +21697,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(delivery).toMatchObject({ state: "received" });
         expect(deferred.length).toBeGreaterThan(0);
       });
+      // The opening message's receipt reaction is posted after its delivery is
+      // marked processed; let it land so it is not counted as the reply's.
+      await new Promise((resolve) => setTimeout(resolve, 300));
       wakeupsBefore = wakeup.mock.calls.length;
       reactionsBefore = runtime.endpoints.get(endpoint.id)?.reactions.length ?? 0;
       lockTransaction = holdEndpointLock();
@@ -21723,29 +21726,54 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
 
     // The main code retries a refused wakeup admission in process
-    // (retryChatControlAdmission) instead of failing the delivery into a
-    // durable backoff, so once the lock is gone the same attempt completes:
-    // one delivery, one wakeup action, one wakeup and one receipt reaction
-    // for the reply - nothing lost, nothing duplicated.
+    // (retryChatControlAdmission: up to 50 x 100 ms) instead of failing the
+    // delivery into a durable backoff, so once the lock is gone the same
+    // attempt completes: exactly one wakeup action for the reply delivery, one
+    // wakeup and one receipt reaction - nothing lost, nothing duplicated.
+    //
+    // Not covered here: the durable branch (the contention outlasts the
+    // in-process retry, the delivery goes to `retry` and a second attempt
+    // succeeds). While the row is held, the drain already blocks before the
+    // delivery claim (attempts stays 0 in CI), so a row lock cannot reach the
+    // wakeup-admission window without a product hook, and a lock held longer
+    // than the retry budget would only stall the claim. That branch is covered
+    // by "retries an accepted inbound wake outbox in FIFO order without
+    // blocking other conversations", where the wakeup action settles as
+    // `inbound_wakeup_retry` and is re-run after its retryAt.
     await vi.waitFor(
       async () => {
         expect(await replyDelivery()).toMatchObject({ state: "processed" });
-        const actions = await db
-          .select()
-          .from(chatActions)
-          .where(
-            and(
-              eq(chatActions.endpointId, endpoint.id),
-              eq(chatActions.kind, "inbound_wakeup"),
-              eq(chatActions.status, "processed"),
-            ),
-          );
-        expect(actions.length).toBeGreaterThan(0);
         expect(wakeup.mock.calls.length).toBe(wakeupsBefore + 1);
+        expect(runtime.endpoints.get(endpoint.id)?.reactions.length ?? 0).toBe(
+          reactionsBefore + 1,
+        );
       },
       { timeout: 8_000 },
     );
+    const replyDeliveryId = (await replyDelivery())!.id;
+    const replyActions = async () =>
+      db
+        .select()
+        .from(chatActions)
+        .where(
+          and(
+            eq(chatActions.endpointId, endpoint.id),
+            eq(chatActions.kind, "inbound_wakeup"),
+            eq(chatActions.deliveryId, replyDeliveryId),
+          ),
+        );
+    expect(await replyActions()).toHaveLength(1);
+    expect((await replyActions())[0]).toMatchObject({ status: "processed" });
+    // A further drain pass must change nothing: a lost effect would show above,
+    // a repeated one shows here.
     await service.processPendingDeliveries();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await service.processPendingDeliveries();
+    expect(await replyActions()).toHaveLength(1);
+    expect(wakeup.mock.calls.length).toBe(wakeupsBefore + 1);
+    expect(runtime.endpoints.get(endpoint.id)?.reactions.length ?? 0).toBe(
+      reactionsBefore + 1,
+    );
     const replyDeliveries = (
       await db
         .select()
@@ -21755,10 +21783,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       JSON.stringify(candidate.normalizedEvent).includes(reply.id),
     );
     expect(replyDeliveries).toHaveLength(1);
-    expect(wakeup.mock.calls.length).toBe(wakeupsBefore + 1);
-    expect(runtime.endpoints.get(endpoint.id)?.reactions.length ?? 0).toBeLessThanOrEqual(
-      reactionsBefore + 1,
-    );
     await service.shutdown();
   });
 
