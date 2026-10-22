@@ -17,6 +17,7 @@ on:
       - "**/package.json"
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
+      - .github/workflows/myrmidon-image.yml
   workflow_dispatch:
 
 permissions: {}
