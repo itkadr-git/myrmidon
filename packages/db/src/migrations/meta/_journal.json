@@ -2394,7 +2394,21 @@
       "idx": 404,
       "version": "7",
       "when": 1792395504000,
-      "tag": "0404_knowledge_rules",
+      "tag": "0404_install_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 405,
+      "version": "7",
+      "when": 1792395505000,
+      "tag": "0405_fleet_sites_client_cert",
+      "breakpoints": true
+    },
+    {
+      "idx": 406,
+      "version": "7",
+      "when": 1792395506000,
+      "tag": "0406_knowledge_rules",
       "breakpoints": true
     }
   ]

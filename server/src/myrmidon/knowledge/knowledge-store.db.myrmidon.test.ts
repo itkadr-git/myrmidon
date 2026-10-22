@@ -743,6 +743,9 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
     // here deliberately.
     expect(sources).toEqual([
       "domain.ts",
+      "git-export-git.ts",
+      "git-export-job.ts",
+      "git-export.ts",
       "index.ts",
       "lint.ts",
       "rules.ts",

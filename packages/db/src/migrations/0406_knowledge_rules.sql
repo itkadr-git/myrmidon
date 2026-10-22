@@ -1,4 +1,4 @@
--- packages/db/src/migrations/0404_knowledge_rules.sql
+-- packages/db/src/migrations/0406_knowledge_rules.sql
 --
 -- myrmidon(1.6.6 KNOWLEDGE-2.0 K-3, §3.1 `rules` + §6 K-3): one carrier of
 -- rules, one place where the approver is decided.
