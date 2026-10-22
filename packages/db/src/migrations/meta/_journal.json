@@ -2424,6 +2424,13 @@
       "when": 1792395508000,
       "tag": "0408_knowledge_suggestion_trust",
       "breakpoints": true
+    },
+    {
+      "idx": 409,
+      "version": "7",
+      "when": 1792555600000,
+      "tag": "0409_pool_chat_module_instance",
+      "breakpoints": true
     }
   ]
 }
