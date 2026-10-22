@@ -50,7 +50,8 @@ export interface FleetHostConfig {
   imageAllowlist?: readonly string[];
 }
 
-const NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+export const FLEET_HOST_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+const NAME_PATTERN = FLEET_HOST_NAME_PATTERN;
 /** A DNS name a container may resolve: labels of the same shape, dot-separated. */
 const HOSTNAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
 
@@ -171,4 +172,15 @@ export function cardFleetHost(card: { container?: unknown }): string | null {
   const trimmed = host.trim();
   if (trimmed === "local") throw new Error('container.host "local" is not a host: omit container.host for the local driver');
   return trimmed;
+}
+
+/** Whether a bot's placement is pinned to its host (no automatic rebalance/move). */
+export function cardFleetHostPinned(card: { container?: unknown }): boolean {
+  const container = isRecord(card.container) ? card.container : {};
+  const pinned = container.hostPinned;
+  if (pinned === undefined || pinned === null) return false;
+  if (typeof pinned !== "boolean") {
+    throw new Error(`container.hostPinned must be a boolean (got ${JSON.stringify(pinned)})`);
+  }
+  return pinned;
 }

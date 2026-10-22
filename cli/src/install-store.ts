@@ -8,6 +8,19 @@ export const MANAGED_STORE_MARKER = "paperclipai managed install store v1\n";
 export const PATH_BLOCK_START = "# >>> paperclipai managed PATH >>>";
 export const PATH_BLOCK_END = "# <<< paperclipai managed PATH <<<";
 
+/**
+ * myrmidon(DB4): the CLI package is now named "myrmidon" (the "paperclipai"
+ * bin stays as a deprecated synonym). Payloads installed from the npm registry
+ * (before the rename is published) still land in node_modules/paperclipai, so
+ * resolve whichever package directory exists.
+ */
+export function resolvePayloadPackageDir(payloadPath: string): string {
+  const modules = path.join(payloadPath, "node_modules");
+  const current = path.join(modules, "myrmidon");
+  if (fs.existsSync(current)) return current;
+  return path.join(modules, "paperclipai");
+}
+
 export type InstallSource = "npm" | "git";
 export type InstallChannel = "latest" | "canary" | "pinned";
 
@@ -402,7 +415,7 @@ export function writeManagedShim(paths = resolveInstallStorePaths()): void {
   fs.mkdirSync(localDir, { recursive: true, mode: 0o755 });
   fs.mkdirSync(path.dirname(paths.shimPath), { recursive: true, mode: 0o755 });
   assertManagedShimWritable(paths);
-  const entrypoint = path.join(paths.currentPath, "node_modules", "paperclipai", "dist", "index.js");
+  const entrypoint = path.join(resolvePayloadPackageDir(paths.currentPath), "dist", "index.js");
   // ACP servers and package-manager shims use /usr/bin/env node. Pin their
   // runtime too, even when systemd/launchd supplies a different PATH.
   const contents = `#!/bin/sh\n# ${MANAGED_SHIM_MARKER}\nset -eu\nexport PATH=${shellQuote(path.dirname(process.execPath))}:"\${PATH:-/usr/local/bin:/usr/bin:/bin}"\nexec ${shellQuote(process.execPath)} ${shellQuote(entrypoint)} "\$@"\n`;

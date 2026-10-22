@@ -372,7 +372,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
           );
         }
       } catch {
-        // CONSTANT errorKind only (the exception can carry a credential).
+        // Keep exception details out of logs; errors may carry credentials.
         logger.warn(
           { errorKind: "swarm_match_failed" },
           "swarm matcher pass failed; the next tick retries",
@@ -579,6 +579,13 @@ function matcherDeps(
     hostGateOpen,
     now,
     casteDirectory: deps.castes,
+    resolveTaskCaste: deps.resolveTaskCaste,
+    agentNests: deps.agentNests,
+    isIssueCoolingDown: deps.isIssueCoolingDown,
+    coolingSettings: deps.coolingSettings,
+    isAgentAvailable: deps.isAgentAvailable,
+    isTaskBudgetBlocked: deps.isTaskBudgetBlocked,
+    pickAgentForTask: deps.pickAgentForTask,
     logActivity: deps.logActivity,
   };
 }

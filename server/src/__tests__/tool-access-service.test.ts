@@ -3536,7 +3536,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(res.body).toMatchObject({
       reasonCode: "signing_secret_unconfigured",
-      error: expect.stringContaining("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET"),
+      error: expect.stringContaining("MYRMIDON_TOOL_ACTION_SIGNING_SECRET"),
     });
     const [actionRequest] = await db
       .select()

@@ -3,6 +3,8 @@ import {
   connectionEventDeliveries,
   connectionGrants,
   externalObjects,
+  issueWorkProducts,
+  issues,
   toolConnections,
   type Db,
 } from "@paperclipai/db";
@@ -19,6 +21,7 @@ import {
   type SealedConnectorEvents,
 } from "./paperclip-cloud-connector.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
@@ -118,6 +121,21 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
       baseSha: commitSha(payload.baseSha),
     });
   }
+  if (event.event === "workflow_run" || event.event === "check_suite") {
+    return compact({
+      ...base,
+      action: boundedString(payload.action, 100),
+      repository: boundedString(payload.repository, 300),
+      number: positiveInteger(payload.number),
+      pullRequestNumber: positiveInteger(payload.pullRequestNumber),
+      headSha: commitSha(payload.headSha),
+      conclusion: boundedString(payload.conclusion, 40),
+      status: boundedString(payload.status, 40),
+      runId: identifier(payload.runId),
+      checkSuiteId: identifier(payload.checkSuiteId),
+      htmlUrl: githubUrl(payload.htmlUrl),
+    });
+  }
   if (event.event === "installation_repositories") {
     const repositoryIds = (value: unknown) => Array.isArray(value)
       ? value.slice(0, 1_000).flatMap((item) => identifier(item) ?? [])
@@ -214,6 +232,7 @@ export function githubConnectionEventService(
     env?: NodeJS.ProcessEnv;
     now?: () => Date;
     wakeup?: NonNullable<Parameters<typeof issueThreadInteractionService>[1]>["wakeup"];
+    assignmentWakeup?: IssueAssignmentWakeupDeps["wakeup"];
   } = {},
 ) {
   const now = options.now ?? (() => new Date());
@@ -233,6 +252,64 @@ export function githubConnectionEventService(
         eq(toolConnections.enabled, true),
       ));
     return bindingRows(rows);
+  }
+
+  async function applyCiCompletionEvent(companyId: string, event: LeasedEvent) {
+    if (!options.assignmentWakeup || (event.event !== "workflow_run" && event.event !== "check_suite")) return;
+    const payload = normalizeLeasedPayload(event);
+    const status = stringValue(payload.status);
+    const conclusion = stringValue(payload.conclusion);
+    if (status && status !== "completed") return;
+    if (!conclusion) return;
+    const repository = stringValue(payload.repository);
+    const pullRequestNumber = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number);
+    const headSha = commitSha(payload.headSha);
+    const runId = identifier(payload.runId) ?? identifier(payload.checkSuiteId) ?? event.id;
+    if (!repository || !pullRequestNumber || !headSha) return;
+
+    const products = await db.select({ product: issueWorkProducts, issue: issues })
+      .from(issueWorkProducts)
+      .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
+      .where(and(
+        eq(issueWorkProducts.companyId, companyId),
+        eq(issueWorkProducts.type, "pull_request"),
+        eq(issueWorkProducts.provider, "github"),
+      ));
+    const matching = products.find(({ product }: { product: typeof issueWorkProducts.$inferSelect }) => {
+      const metadata = record(product.metadata);
+      const repo = stringValue(metadata.repo) ?? stringValue(metadata.repository);
+      const number = positiveInteger(metadata.number) ?? Number(product.externalId);
+      return repo?.toLowerCase() === repository.toLowerCase() && number === pullRequestNumber;
+    });
+    if (!matching?.issue.assigneeAgentId) return;
+
+    await options.assignmentWakeup(matching.issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "ci_completed",
+      payload: {
+        issueId: matching.issue.id,
+        repository,
+        pullRequestNumber,
+        headSha,
+        conclusion,
+        runId,
+        event: event.event,
+        deliveryId: event.id,
+      },
+      idempotencyKey: `ci_completed:${event.event}:${runId}:${headSha}`,
+      requestedByActorType: "system",
+      requestedByActorId: "system:github-ci",
+      contextSnapshot: {
+        issueId: matching.issue.id,
+        source: "github_ci_completion",
+        repository,
+        pullRequestNumber,
+        headSha,
+        conclusion,
+        runId,
+      },
+    });
   }
 
   async function applyPullRequestEvent(companyId: string, event: LeasedEvent) {
@@ -371,6 +448,7 @@ export function githubConnectionEventService(
     try {
       const applyAndFinalize = async (database: Db) => {
         if (event.event === "pull_request") await applyPullRequestEvent(companyId, normalizedEvent);
+        await applyCiCompletionEvent(companyId, normalizedEvent);
         if (event.event === "installation" || event.event === "installation_repositories") {
           for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
         } else {

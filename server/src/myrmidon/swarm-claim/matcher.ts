@@ -83,6 +83,7 @@ import {
   swarmQueueOrderBy,
   type SwarmQueueOrderOptions,
 } from "./effective-pheromone.js";
+import { projectMemberAgentIds } from "../project-membership.js";
 import { unassignedTaskRoutedToRole } from "./queue.js";
 import { insertClaim, releaseClaimsForIssue, revertIdleClaimAssignment } from "./store.js";
 
@@ -341,6 +342,15 @@ async function pairTaskWithPool(
 ): Promise<SwarmMatcherAgent | "lost" | null> {
   const pick = deps.pickAgentForTask ?? pickBySmallestId;
   let candidates = pool.filter((agent) => !failed.has(agent.agentId));
+  // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): a task that belongs to a project is
+  // offered only to a member of that project (its lead or a joined member);
+  // a projectless task stays open to the company. Same rule as the SQL gate of
+  // the claim API's role queue (`projectScopedClaimGate`).
+  if (task.projectId && candidates.length > 0) {
+    const members = await projectMemberAgentIds(deps.db, companyId, task.projectId);
+    candidates = candidates.filter((agent) => members.has(agent.agentId));
+    if (candidates.length === 0) return null;
+  }
   // The task's own project budget blocks a run on it: the wake would be refused
   // for every agent alike. The task waits — no lease, no wake, no rollback —
   // and the agents stay free for the rest of the queue (ADM review).
@@ -826,8 +836,19 @@ export async function matchAgent(
   }
 
   // The pool read is already in the queue order (`swarmQueueOrderBy`).
+  // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): project → membership of this agent,
+  // read once per project for the loop.
+  const memberOf = new Map<string, boolean>();
   for (const candidate of pair.queue) {
     if (candidate.assigneeAgentId) continue;
+    if (candidate.projectId) {
+      let member = memberOf.get(candidate.projectId);
+      if (member === undefined) {
+        member = (await projectMemberAgentIds(deps.db, agentRow.companyId, candidate.projectId)).has(agentId);
+        memberOf.set(candidate.projectId, member);
+      }
+      if (!member) continue;
+    }
     if (await isCooling(deps, agentRow.companyId, candidate.issueId)) continue;
     const task: SwarmMatcherTask = {
       issueId: candidate.issueId,
