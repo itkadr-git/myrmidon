@@ -22,6 +22,11 @@ divergence-section: Трек 6 — безопасность и модели
   the license was issued for and the id of this board, on the screen and in the
   API (`licenseInstanceId`, `boardInstanceId`, `message`).
 - `MYR_LICENSE_STATE_DIR` is no longer used by the board.
+- `deploy.sh` and `install.sh` check the license directory before changing
+  anything (also in `--dry-run`): an `issuer` subdirectory, `*.pem` or
+  `*ed25519*` files in it, or a compose issuer mount inside it stop the run with
+  a message to move the issuing key to `/etc/myrmidon-license-issuer`. The
+  directory is mounted into the module containers.
 
 ## changelog-ru
 
@@ -43,6 +48,11 @@ divergence-section: Трек 6 — безопасность и модели
   идентификатора: на какой она выдана и идентификатор этой доски, на экране и в
   API (`licenseInstanceId`, `boardInstanceId`, `message`).
 - `MYR_LICENSE_STATE_DIR` доска больше не использует.
+- `deploy.sh` и `install.sh` до любых изменений (и в `--dry-run`) проверяют
+  каталог лицензии: подкаталог `issuer`, файлы `*.pem` или `*ed25519*` в нём либо
+  монтирование issuer из compose внутрь него останавливают запуск с просьбой
+  перенести ключ выпуска в `/etc/myrmidon-license-issuer`. Каталог монтируется в
+  контейнеры модулей.
 
 ## divergence
 

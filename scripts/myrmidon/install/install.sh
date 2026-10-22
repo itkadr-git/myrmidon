@@ -239,7 +239,21 @@ cpu_supports_x86_64_v2() {
 # -------------------------------------------------------------- preflight -----
 # Every requirement is a fact read from the machine, not an assumption: the
 # script names what is missing instead of failing later inside docker.
+# LICENSE-DIR: the license directory is mounted into the containers of the
+# closed modules, so the license issuing key must not live in it.
+preflight_license_dir() {
+  local dir="$MYRMIDON_LICENSE_DIR" hit=""
+  [[ -d "$dir" ]] || return 0
+  if [[ -e "$dir/issuer" ]]; then
+    hit="$dir/issuer"
+  else
+    hit="$(find "$dir" -maxdepth 3 \( -name '*.pem' -o -name '*ed25519*' \) -print -quit 2>/dev/null || true)"
+  fi
+  [[ -z "$hit" ]] || die "ключ выпуска лежит в каталоге лицензии ($hit) — перенесите: sudo mv $dir/issuer ${dir}-issuer и поправьте монтирование issuer в compose доски (the license issuing key must not be in the license directory)"
+}
+
 preflight() {
+  preflight_license_dir
   local os_id="" os_ver="" arch cpu mem_mb free_mb free_kb
 
   [[ -r /etc/os-release ]] || die "/etc/os-release is missing: unknown operating system"
