@@ -6,7 +6,7 @@ divergence-section: Трек 2 — ядро побудок и прогонов
 
 ### Assessment: heartbeat preflight budget caps are already covered (OPE-8647)
 
-- Evaluated Paperclip PR [#8347](https://github.com/paperclipai/paperclip/pull/8347),
+- Evaluated upstream PR [#8347](https://github.com/paperclipai/paperclip/pull/8347),
   merged 2026-06-20 as commit `631b7806ed92c43bd6b5666ad8b1406635d1ab18`.
 - Upstream adds per-agent daily run and spend caps checked before enqueue and
   again at claim, clean cancellation of capped queued runs with issue-lock release
@@ -23,7 +23,7 @@ divergence-section: Трек 2 — ядро побудок и прогонов
 
 ### Оценка: лимиты heartbeat до запуска уже реализованы (OPE-8647)
 
-- Проверен PR Paperclip [#8347](https://github.com/paperclipai/paperclip/pull/8347),
+- Проверен PR upstream [#8347](https://github.com/paperclipai/paperclip/pull/8347),
   влитый 20.06.2026 коммитом `631b7806ed92c43bd6b5666ad8b1406635d1ab18`.
 - Вендор добавил дневные лимиты запусков и расходов с проверкой перед постановкой
   в очередь и повторной проверкой при захвате запуска, безопасную отмену
@@ -39,4 +39,4 @@ divergence-section: Трек 2 — ядро побудок и прогонов
 
 ## divergence
 
-| OPE-8647-HEARTBEAT-PREFLIGHT-CAPS | Evaluated Paperclip PR #8347 / commit 631b780 (daily run and cost cap checks before enqueue and again at claim; queued-run cancellation with issue-lock release/deferred wake promotion) against Myrmidon's existing heartbeat policy. The global/per-agent idle skip, admission and claim-time cap checks, skipped wake metadata, lock release and deferred wake promotion are already implemented; no functional port is recommended. Documentation only | `server/src/services/heartbeat.ts`, `server/src/myrmidon/heartbeat-idle-skip.ts`, `server/src/__tests__/heartbeat-stale-queue-invalidation.test.ts` | A blind cherry-pick risks duplicate policy gates and regressions to coalescing, issue locks, deferred wakes, recovery, or proactive timer behavior | Inspect existing admission, claim-time caps, cancellation, lock release and deferred promotion; related regression cases already exist in heartbeat stale-queue tests | No implementation recommended; open a follow-up only if a concrete path lacks coverage | https://github.com/paperclipai/paperclip/pull/8347 |
+| OPE-8647-HEARTBEAT-PREFLIGHT-CAPS | Evaluated upstream PR #8347 / commit 631b780 (daily run and cost cap checks before enqueue and again at claim; queued-run cancellation with issue-lock release/deferred wake promotion) against Myrmidon's existing heartbeat policy. The global/per-agent idle skip, admission and claim-time cap checks, skipped wake metadata, lock release and deferred wake promotion are already implemented; no functional port is recommended. Documentation only | `server/src/services/heartbeat.ts`, `server/src/myrmidon/heartbeat-idle-skip.ts`, `server/src/__tests__/heartbeat-stale-queue-invalidation.test.ts` | A blind cherry-pick risks duplicate policy gates and regressions to coalescing, issue locks, deferred wakes, recovery, or proactive timer behavior | Inspect existing admission, claim-time caps, cancellation, lock release and deferred promotion; related regression cases already exist in heartbeat stale-queue tests | No implementation recommended; open a follow-up only if a concrete path lacks coverage | https://github.com/paperclipai/paperclip/pull/8347 |
