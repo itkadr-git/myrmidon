@@ -22,6 +22,16 @@ export const UI2_LOCALES: readonly Ui2Locale[] = ["en", "ru"] as const;
 export const UI2_DEFAULT_LOCALE: Ui2Locale = "en";
 
 const en = {
+  "ui2.screens.fleet.title": "Server fleet",
+  "ui2.screens.fleet.subtitle": "Live status of hosts and services.",
+  "ui2.screens.fleet.empty": "No fleet resources yet",
+  "ui2.screens.fleet.emptyBody": "Hosts and services will appear here when they are registered.",
+  "ui2.screens.fleet.hosts": "Hosts",
+  "ui2.screens.fleet.services": "Services",
+  "ui2.screens.fleet.metrics": "CPU {{cpu}}% · memory {{memory}}% · disk {{disk}}%",
+  "ui2.screens.fleet.states.running": "Running",
+  "ui2.screens.fleet.states.stopped": "Stopped",
+  "ui2.screens.fleet.states.unknown": "Unknown",
   "ui2.common.loading": "Loading…",
   "ui2.common.error": "Could not load this data. Try again.",
   "ui2.common.retry": "Retry",
@@ -383,6 +393,16 @@ const en = {
 export type Ui2MessageKey = keyof typeof en;
 
 const ru: Record<Ui2MessageKey, string> = {
+  "ui2.screens.fleet.title": "Флот серверов",
+  "ui2.screens.fleet.subtitle": "Текущий статус узлов и служб.",
+  "ui2.screens.fleet.empty": "Ресурсов флота пока нет",
+  "ui2.screens.fleet.emptyBody": "Зарегистрированные узлы и службы появятся здесь.",
+  "ui2.screens.fleet.hosts": "Узлы",
+  "ui2.screens.fleet.services": "Службы",
+  "ui2.screens.fleet.metrics": "ЦП {{cpu}}% · память {{memory}}% · диск {{disk}}%",
+  "ui2.screens.fleet.states.running": "Работает",
+  "ui2.screens.fleet.states.stopped": "Остановлена",
+  "ui2.screens.fleet.states.unknown": "Неизвестно",
   "ui2.common.loading": "Загрузка…",
   "ui2.common.error": "Не удалось загрузить данные. Попробуйте ещё раз.",
   "ui2.common.retry": "Повторить",

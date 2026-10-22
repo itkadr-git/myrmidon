@@ -61,6 +61,7 @@ import {
   type KnowledgeRevisionStatus,
   type KnowledgeRevisionLang,
   type KnowledgeSourceKind,
+  type KnowledgeSuggestionTrust,
   type KnowledgeTreePage,
   type SearchIndex,
 } from "./domain.js";
@@ -1088,6 +1089,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       targetSlug?: string | null;
       sourceKind?: KnowledgeSourceKind;
       sourceRef?: string | null;
+      /** Provenance trust (1.7 L-5): set by the callers that propose foreign url content. */
+      trust?: KnowledgeSuggestionTrust;
     },
   ): Promise<{ id: string; targetItemId: string | null; status: string; createdAt: string }> {
     assertSingleLine(input.body, "Suggestion body");
@@ -1106,6 +1109,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         rationale: input.rationale ?? null,
         sourceKind: input.sourceKind ?? null,
         sourceRef: input.sourceRef ?? null,
+        trust: input.trust ?? null,
         status: "pending",
         createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
         createdByUserId: actor.actorType === "user" ? (actor.actorId ?? null) : null,
@@ -1152,7 +1156,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     return { id: row.id, status: input.decision };
   }
 
-  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending"): Promise<Array<{ id: string; targetItemId: string | null; body: string; status: string; createdAt: string }>> {
+  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending"): Promise<Array<{ id: string; targetItemId: string | null; body: string; status: string; trust: string | null; createdAt: string }>> {
     const conditions = [eq(knowledgeSuggestions.nestId, nestId)];
     if (status !== "all") conditions.push(eq(knowledgeSuggestions.status, status));
     const rows = await db.select().from(knowledgeSuggestions).where(and(...conditions)).orderBy(asc(knowledgeSuggestions.createdAt));
@@ -1161,6 +1165,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       targetItemId: row.targetItemId,
       body: row.body,
       status: row.status,
+      trust: row.trust ?? null,
       createdAt: row.createdAt.toISOString(),
     }));
   }

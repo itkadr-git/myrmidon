@@ -257,6 +257,7 @@ describe("myrmidon(1.6-SWARM) leases", () => {
       agentId: "33333333-3333-4333-8333-333333333333",
       role: "eng",
       runId: null,
+      origin: "auto_match",
       now: NOW,
       settings,
     });

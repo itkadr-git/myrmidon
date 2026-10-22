@@ -364,6 +364,17 @@ export const en = {
         placeholderTitle: "This screen arrives with 2.0",
         placeholderBody: "The 2.0 layout for this area is not wired yet; the working screen below keeps the flow.",
         placeholderLegacyLink: "Back to the current layout",
+        fleet: {
+          title: "Fleet",
+          subtitle: "Live infrastructure health from the configured monitoring sources.",
+          hosts: "Hosts",
+          services: "Services",
+          empty: "No fleet data",
+          emptyBody: "No hosts or services were returned for this company.",
+          error: "Fleet data is unavailable.",
+          metrics: "CPU {{cpu}}% · memory {{memory}}% · disk {{disk}}%",
+          states: { running: "Running", stopped: "Stopped", unknown: "Unknown" },
+        },
       },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning
@@ -731,6 +742,7 @@ export type Ui2Catalog = {
       placeholderTitle: string;
       placeholderBody: string;
       placeholderLegacyLink: string;
+      fleet: { title: string; subtitle: string; hosts: string; services: string; empty: string; emptyBody: string; error: string; metrics: string; states: { running: string; stopped: string; unknown: string } };
     },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning
