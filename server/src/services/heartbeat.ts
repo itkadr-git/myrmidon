@@ -26143,6 +26143,7 @@ export function heartbeatService(
                     runtime: runtimeForAdapter,
                     config: runtimeConfig,
                     context: adapterContext,
+                    paperclipCancellation: executionControl.cancellation,
                     executionContinuation: executionContinuation ?? null,
                     runtimeCommandSpec:
                       adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
@@ -31299,6 +31300,8 @@ export function heartbeatService(
     terminationGraceMs?: number;
     /** Caller is immediately scheduling an explicit successor path. */
     suppressImmediateRecovery?: boolean;
+    cancellationSource?: { code: string; endpoint?: string; actor?: string };
+    correlationId?: string;
   };
 
   function cancellationTerminationGraceMs(
@@ -31342,6 +31345,9 @@ export function heartbeatService(
       return run;
     const agent = await getAgent(run.agentId);
     const errorCode = options.errorCode ?? "cancelled";
+    const correlationId = options.correlationId ?? randomUUID();
+    const cancellationSource = options.cancellationSource ?? { code: "control_plane", actor: "system" };
+    logger.info({ runId: run.id, agentId: run.agentId, correlationId, cancellationSource, reason }, "heartbeat run cancellation requested");
 
     const pendingProcessCancellation = processRunCancellationSettlements.get(
       run.id,
@@ -31376,6 +31382,7 @@ export function heartbeatService(
               baseUrl,
               apiKey,
               gatewayRunId: run.externalRunId,
+              cancellation: { correlationId, source: cancellationSource, reason },
             });
             logger.info(
               { runId: run.id, externalRunId: run.externalRunId, stopped: stopped.stopped },
@@ -31455,14 +31462,17 @@ export function heartbeatService(
                 resultJson: {
                   ...parseObject(run.resultJson),
                   ...resultJson,
-                  ...(!running
-                    ? {
-                        executionCancellation: {
-                          state: "requested",
-                          requestedAt: new Date().toISOString(),
-                        },
-                      }
-                    : {}),
+                  executionCancellation: {
+                    ...parseObject(parseObject(run.resultJson).executionCancellation),
+                    ...(resultJson ? parseObject(resultJson.executionCancellation) : {}),
+                    correlationId,
+                    source: cancellationSource,
+                    reason,
+                    requestedAt: new Date().toISOString(),
+                    ...(!running && !parseObject(resultJson?.executionCancellation).state
+                      ? { state: "requested" }
+                      : {}),
+                  },
                 },
                 updatedAt: new Date(),
               })
@@ -31472,6 +31482,7 @@ export function heartbeatService(
                   eq(heartbeatRuns.status, "running"),
                 ),
               );
+            control.cancellation.current = { correlationId, source: cancellationSource, reason };
             control.controller.abort(new Error(reason));
           }
           let terminationSettled = false;
@@ -31546,6 +31557,15 @@ export function heartbeatService(
                     resultJson: {
                       ...persistedCancellationResult,
                       ...(resultJson ?? {}),
+                      executionCancellation: {
+                        ...parseObject(persistedCancellationResult.executionCancellation),
+                        ...(resultJson
+                          ? parseObject(resultJson.executionCancellation)
+                          : {}),
+                        correlationId,
+                        source: cancellationSource,
+                        reason,
+                      },
                       // A scheduler placeholder has no process to acknowledge.
                       // Preserve its normal release policy instead of treating
                       // it as an operator stop of provider work.
@@ -31556,7 +31576,7 @@ export function heartbeatService(
                         ? mergeRunStopMetadataForAgent(agent, "cancelled", {
                             resultJson: {
                               ...resultJson,
-                              executionCancellation: { state: "acknowledged", acknowledgedAt: finishedAt.toISOString() },
+                              executionCancellation: { state: "acknowledged", acknowledgedAt: finishedAt.toISOString(), correlationId, source: cancellationSource, reason },
                             },
                             errorCode, errorMessage: reason,
                           })
