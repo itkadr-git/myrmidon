@@ -512,7 +512,7 @@ async function startServerWithDatabaseTeardown(
         image: null,
         createdAt: now,
         updatedAt: now,
-      });
+      }).onConflictDoNothing(); // two replicas booting together race on this check-then-insert
     }
   
     const role = await db
@@ -524,7 +524,7 @@ async function startServerWithDatabaseTeardown(
       await db.insert(instanceUserRoles).values({
         userId: LOCAL_BOARD_USER_ID,
         role: "instance_admin",
-      });
+      }).onConflictDoNothing();
     }
   
     const companyRows = await db.select({ id: companies.id }).from(companies);
@@ -547,7 +547,7 @@ async function startServerWithDatabaseTeardown(
         principalId: LOCAL_BOARD_USER_ID,
         status: "active",
         membershipRole: "owner",
-      });
+      }).onConflictDoNothing();
     }
   }
   
