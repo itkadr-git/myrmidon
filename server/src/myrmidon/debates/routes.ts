@@ -4,7 +4,14 @@
 //
 //   GET    /api/myrmidon/debate/settings
 //   PATCH  /api/myrmidon/debate/settings                      (instance admin)
+//   GET    /api/myrmidon/companies/:companyId/debates/castes/:casteKey/settings
+//   PATCH  /api/myrmidon/companies/:companyId/debates/castes/:casteKey/settings   (instance admin)
 //   POST   /api/myrmidon/companies/:companyId/debates/issues/:issueId/run
+//
+// The per-caste pair is part B (1.7-DEBATE-ASYM-B): the same configuration
+// shape at the caste level — the switch, the role models, the custom role
+// guidance, the rounds and the token ceiling — stored beside the instance
+// configuration and read at run time.
 //
 // The settings pair follows BUDGET-CONFIG-B: GET reports the effective
 // configuration and where the value came from (stored row, forced env
@@ -20,9 +27,9 @@
 // approval code (the same interim shape the AUTONOMY-MATRIX routes use until
 // the held-action follow-up exists for invocation-less routes).
 
-import { Router } from "express";
-import { eq } from "drizzle-orm";
-import { issues, type Db } from "@paperclipai/db";
+import { Router, type Response } from "express";
+import { and, eq } from "drizzle-orm";
+import { agentCastes, agents, issues, type Db } from "@paperclipai/db";
 import type { DebateSettings } from "@paperclipai/shared";
 import { dbAutonomyGate } from "../autonomy/gate.js";
 import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
@@ -39,7 +46,8 @@ import {
   debateGatewayProblem,
   readDebateGatewaySettings,
 } from "./gateway.js";
-import { readDebateSettings } from "./settings.js";
+import { DEBATE_SETTINGS_KEY, readDebateSettings } from "./settings.js";
+import { readCasteDebate, withPreservedCastes, writeCasteDebate, type CasteDebateStoreDeps } from "./castes.js";
 import { debateService, DebateConfigError, type DebateService } from "./service.js";
 
 export const DEBATE_ACTOR_ID = "myrmidon-debates";
@@ -49,14 +57,43 @@ interface DebateSettingsPatchBody {
   settings?: DebateSettings | null;
 }
 
-function parseRunBody(body: unknown): { question?: string } | { error: string } {
+function parseRunBody(body: unknown): { question?: string; casteKey?: string } | { error: string } {
   if (body === undefined || body === null) return {};
   if (typeof body !== "object" || Array.isArray(body)) return { error: "body must be a JSON object" };
   const b = body as Record<string, unknown>;
   if (b.question !== undefined && b.question !== null && typeof b.question !== "string") {
     return { error: "question must be a string" };
   }
-  return typeof b.question === "string" ? { question: b.question } : {};
+  if (b.casteKey !== undefined && b.casteKey !== null && typeof b.casteKey !== "string") {
+    return { error: "casteKey must be a string" };
+  }
+  return {
+    ...(typeof b.question === "string" ? { question: b.question } : {}),
+    ...(typeof b.casteKey === "string" ? { casteKey: b.casteKey } : {}),
+  };
+}
+
+/** The HTTP status of a refused debate action (the codes the service raises). */
+function debateErrorStatus(code: string): number {
+  switch (code) {
+    case "debate_key_missing":
+      return 503;
+    case "debate_issue_not_found":
+    case "debate_caste_not_found":
+      return 404;
+    case "debate_config_rejected":
+    case "debate_caste_disabled":
+      return 422;
+    default:
+      return 400;
+  }
+}
+
+/** Answer a DebateConfigError; false when the error is something else entirely. */
+function answerDebateError(res: Response, error: unknown): boolean {
+  if (!(error instanceof DebateConfigError)) return false;
+  res.status(debateErrorStatus(error.code)).json({ error: error.message, code: error.code });
+  return true;
 }
 
 export function debateRoutes(db: Db, service: DebateService, env: NodeJS.ProcessEnv = process.env) {
@@ -91,6 +128,57 @@ export function debateRoutes(db: Db, service: DebateService, env: NodeJS.Process
         res.status(422).json({ error: error.message, code: error.code });
         return;
       }
+      throw error;
+    }
+  });
+
+  // ── The per-caste configuration (1.7-DEBATE-ASYM-B) ─────────────────────
+  //
+  // The caste level of the same configuration: whether debates may run for a
+  // caste, which model each role uses, the extra guidance each role gets, the
+  // rounds and the token ceiling. The entry is stored beside the instance
+  // configuration (`general.debate.castes.<key>`, pinned to the company) and
+  // read at run time, so a save reaches the next debate without a restart.
+
+  router.get("/myrmidon/companies/:companyId/debates/castes/:casteKey/settings", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const casteKey = req.params.casteKey as string;
+    // Board-readable like the instance pair: the value carries model names and
+    // prompts, never a secret.
+    assertCompanyAccess(req, companyId);
+    try {
+      const view = await service.casteSettingsView({ companyId, casteKey });
+      const gateway = readDebateGatewaySettings(env);
+      res.json({
+        ...view,
+        gateway: { configured: gateway.enabled, problem: debateGatewayProblem(gateway) },
+      });
+    } catch (error) {
+      if (answerDebateError(res, error)) return;
+      throw error;
+    }
+  });
+
+  router.patch("/myrmidon/companies/:companyId/debates/castes/:casteKey/settings", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const casteKey = req.params.casteKey as string;
+    // Instance admin, not board: the entry lands in the instance settings
+    // value, which is what the instance-level PATCH protects the same way.
+    assertInstanceAdmin(req);
+    const body = (req.body ?? {}) as { settings?: unknown | null };
+    const actor = getActorInfo(req);
+    try {
+      const view = await service.saveCasteSettings(
+        { companyId, casteKey, raw: body.settings ?? null },
+        {
+          agentId: actor.actorType === "agent" ? actor.agentId : null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          runId: actor.runId,
+        },
+      );
+      res.json(view);
+    } catch (error) {
+      if (answerDebateError(res, error)) return;
       throw error;
     }
   });
@@ -137,7 +225,7 @@ export function debateRoutes(db: Db, service: DebateService, env: NodeJS.Process
     const actor = getActorInfo(req);
     try {
       const result = await service.run(
-        { companyId, issueId, question: parsed.question },
+        { companyId, issueId, question: parsed.question, casteKey: parsed.casteKey },
         {
           agentId: actor.actorType === "agent" ? actor.agentId : null,
           userId: actor.actorType === "user" ? actor.actorId : null,
@@ -146,20 +234,15 @@ export function debateRoutes(db: Db, service: DebateService, env: NodeJS.Process
       );
       res.json({
         issueId: result.issueId,
+        // The caste the debate ran for (1.7-DEBATE-ASYM-B): the UI captions the
+        // result with it, and the result document carries it too.
+        casteKey: result.outcome.casteKey ?? null,
         documentKey: result.documentKey,
         costRecorded: result.costRecorded,
         outcome: result.outcome,
       });
     } catch (error) {
-      if (error instanceof DebateConfigError) {
-        if (error.code === "debate_key_missing") {
-          res.status(503).json({ error: error.message, code: error.code });
-          return;
-        }
-        const status = error.code === "debate_issue_not_found" ? 404 : error.code === "debate_config_rejected" ? 422 : 400;
-        res.status(status).json({ error: error.message, code: error.code });
-        return;
-      }
+      if (answerDebateError(res, error)) return;
       // Gateway/model failures are upstream problems, not caller errors.
       res.status(502).json({ error: (error as Error).message });
     }
@@ -171,21 +254,49 @@ export function debateRoutes(db: Db, service: DebateService, env: NodeJS.Process
 /** The production service wired to the database, the gateway contour and instance settings. */
 export function debateServiceForDb(db: Db, env: NodeJS.ProcessEnv = process.env): DebateService {
   const settings = instanceSettingsService(db);
+  const store: CasteDebateStoreDeps = {
+    getGeneral: () => settings.getGeneral(),
+    updateGeneral: (patch) => settings.updateGeneral(patch),
+  };
   return debateService({
     loadIssue: async (issueId) =>
       db
-        .select({ id: issues.id, companyId: issues.companyId, identifier: issues.identifier, title: issues.title })
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          // The task's caste (1.7-DEBATE-ASYM-B) is the assignee agent's role;
+          // an unrouted task has none and keeps the instance-level debate path.
+          casteKey: agents.role,
+        })
         .from(issues)
+        .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null),
     readSettings: () => readDebateSettings({ getGeneral: () => settings.getGeneral(), env }),
     writeSettings: async (value: DebateSettings | null) => {
       // updateGeneral merges { debate: value } into the row; the preserve key
       // in instance-settings.ts keeps it alive across every later vendor
-      // write. A null clears the row (the env/default level applies again).
-      await settings.updateGeneral({ debate: value });
+      // write. A null clears the row (the env/default level applies again) —
+      // but the per-caste map of part B lives in the same value, so it is
+      // carried over: clearing the instance level must not delete a caste's
+      // entry (with no map left, the null really does clear the row).
+      const stored = (await settings.getGeneral())?.[DEBATE_SETTINGS_KEY];
+      await settings.updateGeneral({ [DEBATE_SETTINGS_KEY]: withPreservedCastes(value, stored) });
       return readDebateSettings({ getGeneral: () => settings.getGeneral(), env });
     },
+    readCasteSettings: async (input) => {
+      const read = await readCasteDebate(store, input);
+      return { resolution: read.resolution, stored: read.stored, foreign: read.foreign };
+    },
+    writeCasteSettings: (input) => writeCasteDebate(store, input),
+    casteExists: async ({ companyId, casteKey }) =>
+      db
+        .select({ key: agentCastes.key })
+        .from(agentCastes)
+        .where(and(eq(agentCastes.companyId, companyId), eq(agentCastes.key, casteKey)))
+        .then((rows) => rows.length > 0),
     callModel: async (companyId) => {
       const contour = readDebateGatewaySettings(env);
       const secrets = secretService(db);

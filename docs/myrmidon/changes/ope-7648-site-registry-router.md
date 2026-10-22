@@ -7,7 +7,7 @@ settings-section: Bot containers (G-series, the 28.09 "option B" plan)
 
 ### Remote sites T1 registry, mTLS routing driver, and startup wiring (OPE-7648)
 
-- Added `myrmidon_fleet_sites`, `myrmidon_fleet_affinity`, and `myrmidon_fleet_moves` database schemas and migrations `0403` and `0404`.
+- Added `myrmidon_fleet_sites`, `myrmidon_fleet_affinity`, and `myrmidon_fleet_moves` database schemas and migrations `0403` and `0405`.
 - Implemented `site-registry.ts` with environment bootstrap (`MYRMIDON_FLEET_HOSTS`), site CRUD, affinity CRUD, and `FleetClientManager` with mTLS agent caching, client certificate and private key resolution.
 - Wrapped local driver into `fleetRoutingDriver` at startup, routing by bot card container host, with hot-reload of the clients (registry version or 30 s TTL), no silent local fallback when the agent read fails, and secret-value fingerprints.
 
@@ -15,7 +15,7 @@ settings-section: Bot containers (G-series, the 28.09 "option B" plan)
 
 ### Удалённые площадки T1: реестр площадок, mTLS роутер и подключение в startup (OPE-7648)
 
-- Добавлены схемы БД `myrmidon_fleet_sites`, `myrmidon_fleet_affinity` и `myrmidon_fleet_moves`, миграции `0403` и `0404`.
+- Добавлены схемы БД `myrmidon_fleet_sites`, `myrmidon_fleet_affinity` и `myrmidon_fleet_moves`, миграции `0403` и `0405`.
 - Реализован `site-registry.ts` с bootstrap из окружения (`MYRMIDON_FLEET_HOSTS`), CRUD площадок и аффинити, менеджер клиентов `FleetClientManager` с кэшированием mTLS-клиентов и безопасным резолвом сертификатов/ключей.
 - Подключён `fleetRoutingDriver` в `startup.ts` поверх локального драйвера с маршрутизацией по хосту карточки контейнера бота горячим обновлением клиентов (версия реестра или TTL 30 с), без тихого отката на локальный драйвер при сбое чтения агента и отпечатками по значениям секретов.
 
