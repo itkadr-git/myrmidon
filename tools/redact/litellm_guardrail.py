@@ -9,10 +9,14 @@ from __future__ import annotations
 
 import json
 import asyncio
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.request import Request, urlopen
+
+
+logger = logging.getLogger(__name__)
 
 
 class RedactGuardrailBlocked(RuntimeError):
@@ -87,8 +91,14 @@ class LiteLLMRedactGuardrail:
         return score
 
     def _apply(self, text: str, *, stage: str) -> str:
-        result = self._scan(text, stage=stage)
-        score = self._score(result)
+        try:
+            result = self._scan(text, stage=stage)
+            score = self._score(result)
+        except Exception:
+            if self.config.mode == "block":
+                raise
+            logger.exception("RD1 %s scan failed; passing payload unchanged", stage)
+            return text
         if self.config.mode == "block" and score >= self.config.threshold:
             raise RedactGuardrailBlocked(
                 f"myrmidon-redact blocked {stage} payload (score={score:.3f})"
@@ -117,7 +127,9 @@ class LiteLLMRedactGuardrail:
         payload["messages"] = messages
         return payload
 
-    async def async_post_call_success_hook(self, data: dict[str, Any], response: Any) -> Any:
+    async def async_post_call_success_hook(
+        self, data: dict[str, Any], user_api_key_dict: Any, response: Any
+    ) -> Any:
         """Scan provider output; mask it when configured, or block by score."""
         text = _response_text(response)
         if text is None:

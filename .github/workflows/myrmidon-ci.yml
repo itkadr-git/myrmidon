@@ -111,6 +111,21 @@ jobs:
           path: ${{ runner.temp }}/plan.json
           retention-days: 3
 
+  redact-tests:
+    name: redact adapter tests
+    needs: plan
+    if: ${{ needs.plan.outputs.tier != 'docs' }}
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Run LiteLLM guardrail adapter tests
+        working-directory: tools/redact
+        run: python3 -m unittest discover -s . -p 'test_*.py'
+
   typecheck:
     name: typecheck + build
     # typecheck and build share one checkout, install and Rust cache; the build
