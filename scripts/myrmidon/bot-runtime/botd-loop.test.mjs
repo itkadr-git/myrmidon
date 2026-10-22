@@ -533,6 +533,21 @@ describe("botd report: contract", () => {
     assert.ok(Buffer.byteLength(JSON.stringify(rep)) <= 1024 * 1024);
     assert.deepEqual(validateReport(rep), { ok: true });
   });
+
+  it("reports reassigned copies without an active assignee", async () => {
+    const r = rig({
+      desired: { ok: true, state: desiredState({
+        workspaces: [{ key: "ABC-099", state: "closing", since: "2026-10-06T14:00:00Z", prState: "none" }],
+      }) },
+      gatherParts: {
+        copies: [{ path: "/workspace/ABC-099", class: "E", key: "ABC-099", clean: true, pushed: true, sizeBytes: 1000, ageSec: 3600 }],
+        foreign: [], bases: [], archives: [], selfChecks: {},
+      },
+      plan: () => ({ actions: [] }),
+    });
+    await r.loop.runOnce();
+    assert.equal(r.board.calls[0].body.metrics.copies_without_assignee, 1);
+  });
 });
 
 describe("botd entry", () => {

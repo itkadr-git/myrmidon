@@ -15,13 +15,14 @@ import { isUi2RouteElementAPlaceholder } from "../routes";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
 
 describe("myrmidon(UI2) route table integration", () => {
-  it("ships exactly the contract entries, the commander chat and the knowledge screens", () => {
+  it("ships exactly the contract entries, the fleet, the commander chat and the knowledge screens", () => {
     expect(UI2_ROUTE_TABLE.map((entry) => entry.key).sort()).toEqual([
       "agent-overview",
       "agents-fleet",
       "commander-chat",
       "costs",
       "decisions",
+      "fleet",
       "knowledge",
       "knowledge-page",
       "settings-autonomy-regulations",
@@ -38,9 +39,11 @@ describe("myrmidon(UI2) route table integration", () => {
     }
   });
 
-  it("keeps the fleet route reachable from both desktop and phone navigation", () => {
+  it("keeps the agents and servers routes reachable from both desktop and phone navigation", () => {
     expect(UI2_NAV_GROUPS.flatMap((group) => group.items).filter((item) => item.to === "/agents")).toHaveLength(1);
     expect(UI2_PHONE_TABS.filter((item) => item.to === "/agents")).toHaveLength(1);
+    expect(UI2_NAV_GROUPS.flatMap((group) => group.items).filter((item) => item.to === "/fleet")).toHaveLength(1);
+    expect(UI2_PHONE_TABS.filter((item) => item.to === "/fleet")).toHaveLength(1);
     expect(UI2_PHONE_TABS.some((item) => item.to === "/agents/all")).toBe(true);
   });
 
@@ -56,6 +59,7 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(byKey.get("decisions")?.path).toBe("decisions");
     expect(byKey.get("costs")?.path).toBe("activity/costs");
     expect(byKey.get("agent-overview")?.path).toBe("agents/:agentId/overview");
+    expect(byKey.get("fleet")?.path).toBe("fleet");
     expect(byKey.get("agents-fleet")?.path).toBe("agents");
     expect(byKey.get("settings-runs-queue")?.path).toBe("company/settings/runs-queue");
     expect(byKey.get("settings-system")?.path).toBe("company/settings/system");
