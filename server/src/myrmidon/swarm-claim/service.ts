@@ -53,6 +53,11 @@ import {
   releaseClaimsForIssue,
 } from "./store.js";
 import type { swarmClaimSettingsService } from "./settings.js";
+import type { SwarmMatcherDeps } from "./matcher.js";
+import type {
+  SwarmAgentAvailability,
+  SwarmTaskBudgetBlock,
+} from "./availability.js";
 
 /** The wake admission path (heartbeat.ts) — reuses every limit and gate. */
 export type SwarmClaimEnqueueWakeup = (
@@ -95,6 +100,19 @@ export interface SwarmClaimServicePorts {
     entityId: string;
     details: Record<string, unknown>;
   }) => Promise<void>;
+  /**
+   * The periodic matcher's gates, forwardable by a test that does not stand up
+   * the wake-layer dependencies (maintenance, budgets, the cooling rule's own
+   * tables). Absent, the matcher reads the real ones per call. The sweeper hands
+   * them through `matcherDeps` unchanged — the same seam the event matcher uses.
+   */
+  isIssueCoolingDown?: SwarmMatcherDeps["isIssueCoolingDown"];
+  coolingSettings?: SwarmMatcherDeps["coolingSettings"];
+  isAgentAvailable?: SwarmAgentAvailability;
+  isTaskBudgetBlocked?: SwarmTaskBudgetBlock;
+  resolveTaskCaste?: SwarmMatcherDeps["resolveTaskCaste"];
+  agentNests?: SwarmMatcherDeps["agentNests"];
+  pickAgentForTask?: SwarmMatcherDeps["pickAgentForTask"];
   env?: Record<string, string | undefined>;
 }
 

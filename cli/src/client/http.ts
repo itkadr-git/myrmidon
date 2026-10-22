@@ -234,7 +234,7 @@ function buildConnectionErrorMessage(input: {
     `This usually means the ${PRODUCT_NAME} server is not running, the configured URL is wrong, or the request is being blocked before it reaches ${PRODUCT_NAME}.`,
     "",
     "Try:",
-    "- Start Paperclip with `pnpm dev` (from a source checkout) or `npx paperclipai run`.",
+    "- Start Myrmidon with `pnpm dev` (from a source checkout) or `npx myrmidon run`.",
     `- Verify the server is reachable with \`curl ${healthUrl}\`.`,
     `- If Paperclip is running elsewhere, pass \`--api-base ${input.apiBase.replace(/\/+$/, "")}\` or set \`PAPERCLIP_API_URL\`.`,
   );

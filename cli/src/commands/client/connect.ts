@@ -56,10 +56,10 @@ export function registerConnectCommand(program: Command): void {
 
 async function connectWizard(opts: ConnectOptions) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error("`paperclipai connect` is interactive. For scripts, pass --api-base/--api-key or use context set/token commands.");
+    throw new Error("`myrmidon connect` is interactive. For scripts, pass --api-base/--api-key or use context set/token commands.");
   }
 
-  p.intro(pc.bgCyan(pc.black(" paperclipai connect ")));
+  p.intro(pc.bgCyan(pc.black(" myrmidon connect ")));
 
   const context = readContext(opts.context);
   const resolvedProfile = resolveProfile(context, opts.profile);
@@ -78,7 +78,7 @@ async function connectWizard(opts: ConnectOptions) {
     apiBase,
     requestedAccess: "board",
     requestedCompanyId: opts.companyId ?? resolvedProfile.profile.companyId ?? null,
-    command: "paperclipai connect",
+    command: "myrmidon connect",
   });
   const boardApi = new PaperclipApiClient({ apiBase, apiKey: boardLogin.token });
   const companies = (await boardApi.get<Company[]>("/api/companies")) ?? [];

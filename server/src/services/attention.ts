@@ -87,6 +87,8 @@ import {
 import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2/1.6.5 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+// myrmidon(FEATURES): an enabled feature that stays misconfigured or failing raises one operator card
+import { readFeatureAttentionSignals } from "../myrmidon/features/attention.js";
 // myrmidon(1.6.6 OPE-7198): Codex/ChatGPT pool banned/exhausted role signals
 import { readPoolAccountSignals } from "../myrmidon/model-providers/signals.js";
 // myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
@@ -177,6 +179,17 @@ import {
   decisionRetentionSyncScheduler,
   type DecisionRetentionSyncSink,
 } from "./decision-retention-sync.js";
+import { createHash as createFeatureSubjectHash } from "node:crypto"; // myrmidon(FEATURES)
+
+/**
+ * myrmidon(FEATURES): a stable uuid-shaped subject id per (company, feature),
+ * for the same reason the tracing card has one: the attention enrichment joins
+ * subject ids against uuid columns.
+ */
+function featureHealthSubjectId(companyId: string, key: string): string {
+  const hex = createFeatureSubjectHash("sha1").update(`${companyId}:${key}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
 
 const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "approval",
@@ -2968,7 +2981,7 @@ async function buildAttentionFeedSnapshot(
             companyId,
             title: signal.title ?? "Task",
             identifier: signal.identifier,
-            status: "in_progress",
+            status: signal.targetStatus ?? "in_progress",
             href: signal.identifier ? `/${prefix}/issues/${signal.identifier}` : null,
             metadata: {
               liftedAt: signal.liftedAt,
@@ -3882,6 +3895,47 @@ async function buildAttentionFeedSnapshot(
             }));
           }
         }
+      }
+
+      // myrmidon(FEATURES): a feature that is enabled and has been
+      // misconfigured or failing for over 30 minutes raises ONE card on the
+      // operator desk (the Features page holds the detail). The signals come
+      // from the process-level clock the health pass feeds (features/
+      // attention.ts); the card disappears when the feature is healthy again.
+      for (const feature of readFeatureAttentionSignals()) {
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent",
+            id: featureHealthSubjectId(companyId, feature.key),
+            companyId,
+            title: feature.title,
+            identifier: null,
+            status: feature.status,
+            href: `/${prefix}/company/settings/instance/features`,
+            metadata: { featureHealth: true, featureKey: feature.key, status: feature.status },
+          },
+          whyNow: feature.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the Features page." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "an enabled feature has been misconfigured or failing for more than 30 minutes.",
+          exitRule: "the feature is healthy, off or unknown again, or the row is dismissed.",
+          dedupKey: feature.dedupKey,
+          severity: feature.severity,
+          activityAt: feature.activityAt,
+          createdAt: feature.activityAt,
+          updatedAt: feature.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(feature.whyNow),
+            images: [],
+          },
+        }));
       }
 
       const deduped = new Map<string, AttentionItem>();

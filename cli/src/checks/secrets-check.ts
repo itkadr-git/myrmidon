@@ -61,7 +61,7 @@ export function secretsCheck(config: PaperclipConfig, configPath?: string): Chec
       status: "fail",
       message: `${provider} is configured, but this build only supports local_encrypted and aws_secrets_manager`,
       canRepair: false,
-      repairHint: "Run `paperclipai configure --section secrets` and choose local_encrypted or aws_secrets_manager",
+      repairHint: "Run `myrmidon configure --section secrets` and choose local_encrypted or aws_secrets_manager",
     };
   }
 

@@ -52,6 +52,7 @@ import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import {
+  companies,
   activityLog,
   agentWakeupRequests,
   agents,
@@ -182,8 +183,8 @@ import {
   agentService,
   budgetService,
   companySkillService,
-  companyService,
   companySearchService,
+  companyService,
   executionWorkspaceService,
   enrichWorkProductMetadataWithDiff,
   goalService,
@@ -337,6 +338,7 @@ import { parseIssueExecutionWorkspaceSettings } from "../services/execution-work
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
+  buildLowTrustQuarantineNotice,
   isLowTrustQuarantined,
   redactQuarantinedBodyForHigherTrust,
   resolveActorSourceTrustForIssue,
@@ -406,6 +408,9 @@ import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
+// myrmidon(HANDOFF-CAS): guarded agent-to-agent task handoff mechanics for the
+// PATCH /api/issues/{id} path, ported from vendor paperclipai/paperclip#13686.
+import * as handoffCas from "../myrmidon/handoff-cas.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 // myrmidon(STALE-BLOCK): updateIssueSchema now carries a superRefine; zod
@@ -413,6 +418,19 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 // in the shared schema, so the refine is preserved via superRefine here.
 const updateIssueRouteSchema = updateIssueSchema.safeExtend({
   interrupt: z.boolean().optional(),
+  // myrmidon(HANDOFF-CAS): guarded agent-to-agent handoff through the general
+  // PATCH path. When `expectedAssigneeAgentId`/`expectedStatusVersion` are
+  // present and the update changes the assignee, the handoff runs as
+  // compare-and-set: the compare and the commit happen under the row lock, the
+  // old owner's live run must be confirmed stopped before the commit, the
+  // commit writes a `issue.reassigned` receipt, and a failed commit after a
+  // confirmed stop wakes the previous owner back. Requests without these
+  // fields keep the previous behavior. `reason`/`handoffIdempotencyKey` are
+  // only consumed on a guarded handoff and never reach the column patch.
+  expectedAssigneeAgentId: z.string().trim().min(1).nullable().optional(),
+  expectedStatusVersion: z.number().int().nonnegative().optional(),
+  reason: z.string().trim().min(1).max(2000).optional(),
+  handoffIdempotencyKey: z.string().trim().min(1).max(200).optional(),
 });
 const queuedCommentMutationTargetSchema = z.object({
   queueId: z.string().min(1),
@@ -1506,6 +1524,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "issue_execution_same_name",
   "issue_monitor_recovery",
   "issue_monitor_recovery_issue",
+  "issue_reassignment_rollback",
   "issue_recovery_action_restored",
   "issue_review_path_lost",
   "issue_rewake_throttled",
@@ -4028,10 +4047,30 @@ export function issueRoutes(
       companyId: string;
       projectId?: string | null;
       executionPolicy?: unknown;
+      responsibleUserId?: string | null;
     },
     actor: ReturnType<typeof getActorInfo>,
+    requirePromotionOwner = false,
   ) {
-    return resolveActorSourceTrustForIssue({ db, issue, actor });
+    const company = await companiesSvc.getById(issue.companyId);
+    const promotionOwnerUserId =
+      issue.responsibleUserId ??
+      (actor.actorType === "user" ? actor.actorId : null) ??
+      company?.defaultResponsibleUserId ??
+      null;
+    const sourceTrust = await resolveActorSourceTrustForIssue({
+      db,
+      issue: { ...issue, responsibleUserId: promotionOwnerUserId },
+      actor,
+      requirePromotionOwner,
+    });
+    if (!sourceTrust || sourceTrust.disposition !== "quarantined") {
+      return sourceTrust;
+    }
+    if (requirePromotionOwner && !promotionOwnerUserId) {
+      throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+    }
+    return { ...sourceTrust, promotionOwnerUserId };
   }
 
   async function assertCrossIssueInfluenceWithinRunCap(
@@ -9801,6 +9840,45 @@ export function issueRoutes(
               commentBody: resolutionNote ?? null,
             });
             Object.assign(updateFields, transition.patch);
+            if (transition.recoveryInteraction) {
+              await issueThreadInteractionService(tx as unknown as Db).create(
+                lockedIssue,
+                {
+                  kind: "ask_user_questions",
+                  idempotencyKey: transition.recoveryInteraction.idempotencyKey,
+                  resolverPolicy: "human_only",
+                  addresseeUserId: lockedIssue.responsibleUserId ?? lockedIssue.createdByUserId ?? null,
+                  continuationPolicy: "none",
+                  sourceRunId: actor.runId ?? undefined,
+                  title: transition.recoveryInteraction.title,
+                  summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
+                  payload: {
+                    version: 1,
+                    title: transition.recoveryInteraction.title,
+                    submitLabel: "Acknowledge recovery",
+                    questions: [{
+                      id: "recovery_acknowledged",
+                      prompt: `${transition.recoveryInteraction.summary} Please acknowledge ownership by ${transition.recoveryInteraction.queue}.`,
+                      selectionMode: "single",
+                      options: [{ id: "acknowledged", label: "Acknowledged" }],
+                    }],
+                  },
+                },
+                {
+                  identityContextId: req.actor.identityContextId,
+                  agentId: actor.agentId,
+                  userId: actor.actorType === "user" ? actor.actorId : null,
+                },
+              );
+            }
+            if (transition.escalationMetric) {
+              getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+                issue_id: lockedIssue.id,
+                policy_revision:
+                  executionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+                target_type: "user",
+              });
+            }
             if (transition.decision) {
               const decisionId = randomUUID();
               const nextExecutionState = updateFields.executionState;
@@ -10685,7 +10763,7 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
-      const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+      const sourceTrust = await sourceTrustForActorWrite(issue, actor, true);
       const referenceSummaryBefore =
         await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const result = await documentsSvc.upsertIssueDocument({
@@ -11495,7 +11573,8 @@ export function issueRoutes(
       )
         return;
       const actor = getActorInfo(req);
-      if (await sourceTrustForActorWrite(issue, actor)) {
+      const issueSourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor });
+      if (issueSourceTrust) {
         res.status(403).json({
           error: "Low-trust actors cannot promote quarantined output",
         });
@@ -11516,7 +11595,6 @@ export function issueRoutes(
         });
         return;
       }
-
       const promotedAt = new Date();
       const promotionTrust = buildPromotedSourceTrust({
         sourceIssueId: issue.id,
@@ -11525,6 +11603,7 @@ export function issueRoutes(
         promotedByActorType: actor.actorType,
         promotedByActorId: actor.actorId,
         promotedAt,
+        promotionOwnerUserId: sourceTrust.promotionOwnerUserId,
       });
       const product = await db.transaction(async (tx) => {
         const markPromoted = {
@@ -11699,7 +11778,7 @@ export function issueRoutes(
           return;
         }
       }
-      const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+      const sourceTrust = await sourceTrustForActorWrite(issue, actor, true);
       const product = await workProductsSvc.update(id, {
         ...patch,
         ...(sourceTrust ? { sourceTrust } : {}),
@@ -12361,15 +12440,26 @@ export function issueRoutes(
         Boolean(executionPolicy?.monitor),
       );
       const issueId = randomUUID();
+      const company = await companiesSvc.getById(companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : null) ??
+        company?.defaultResponsibleUserId ??
+        null;
       const sourceTrust = await sourceTrustForActorWrite(
         {
           id: issueId,
           companyId,
           projectId: createBody.projectId ?? null,
           executionPolicy,
+          responsibleUserId: promotionOwnerUserId,
         },
         actor,
+        true,
       );
+      if (sourceTrust?.disposition === "quarantined" && !promotionOwnerUserId) {
+        throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+      }
       let deduplicationReason: "idempotency_key" | "recent_open_title" | null =
         null;
       const createInput = {
@@ -12383,7 +12473,8 @@ export function issueRoutes(
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         actorRunId: actor.runId,
-        actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        actorResponsibleUserId:
+          authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
         trustExplicitResponsibleUserId: actor.actorType === "user",
         watchdogActorRunId: actor.runId,
         onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
@@ -12710,20 +12801,29 @@ export function issueRoutes(
         Boolean(executionPolicy?.monitor),
       );
       const issueId = randomUUID();
+      const company = await companiesSvc.getById(parent.companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : parent.responsibleUserId) ??
+        company?.defaultResponsibleUserId ??
+        null;
       const sourceTrust = await sourceTrustForActorWrite(
         {
           id: issueId,
           companyId: parent.companyId,
           projectId: createBody.projectId ?? parent.projectId ?? null,
           executionPolicy,
+          responsibleUserId: promotionOwnerUserId,
         },
         actor,
+        true,
       );
       const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
         ...createBody,
         ...(taskBridgeOriginForActor(req) ?? {}),
         id: issueId,
         executionPolicy,
+        ...(sourceTrust ? { sourceTrust } : {}),
         ...(currentSerializedChild
           ? {
               status: "blocked",
@@ -12733,11 +12833,11 @@ export function issueRoutes(
               ),
             }
           : {}),
-        ...(sourceTrust ? { sourceTrust } : {}),
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         actorRunId: actor.runId,
-        actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        actorResponsibleUserId:
+          authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
         trustExplicitResponsibleUserId: actor.actorType === "user",
         actorAgentId: actor.agentId,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -12920,6 +13020,13 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
+      const company = await companiesSvc.getById(sourceIssue.companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : null) ??
+        sourceIssue.responsibleUserId ??
+        company?.defaultResponsibleUserId ??
+        null;
       const normalizedChildren = [];
       for (const child of requestedChildren) {
         const executionPolicy = applyActorMonitorScheduledBy(
@@ -12940,9 +13047,14 @@ export function issueRoutes(
             companyId: sourceIssue.companyId,
             projectId: child.projectId ?? sourceIssue.projectId ?? null,
             executionPolicy,
+            responsibleUserId: promotionOwnerUserId,
           },
           actor,
+          true,
         );
+        if (sourceTrust?.disposition === "quarantined" && !promotionOwnerUserId) {
+          throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+        }
         normalizedChildren.push({
           ...child,
           id: childIssueId,
@@ -12951,7 +13063,8 @@ export function issueRoutes(
           createdByAgentId: actor.agentId,
           createdByUserId: actor.actorType === "user" ? actor.actorId : null,
           actorRunId: actor.runId,
-          actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+          actorResponsibleUserId:
+            authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
           trustExplicitResponsibleUserId: actor.actorType === "user",
           actorAgentId: actor.agentId,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -13387,6 +13500,13 @@ export function issueRoutes(
         hiddenAt: hiddenAtRaw,
         blockerMetadata: blockerMetadataRaw,
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
+        // myrmidon(HANDOFF-CAS): the guarded-handoff inputs are consumed by
+        // the route only — destructuring them out here keeps them from
+        // riding `...updateFields` into the service column patch.
+        expectedAssigneeAgentId: handoffExpectedAssigneeAgentId,
+        expectedStatusVersion: handoffExpectedStatusVersion,
+        reason: handoffReason,
+        handoffIdempotencyKey: handoffIdempotencyKeyRaw,
         ...updateFields
       } = req.body;
       if (existing.conversationAgentId && req.actor.type === "board" && commentBody) {
@@ -13741,6 +13861,11 @@ export function issueRoutes(
         monitorExplicitlyUpdated:
           req.body.executionPolicy !== undefined && monitorChanged,
       });
+      // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
+      const monitorClearNotice = transition.patch.monitorClearNotice as
+        | { reason?: string | null; notes?: string | null }
+        | undefined;
+      delete transition.patch.monitorClearNotice;
       const decisionId = transition.decision ? randomUUID() : null;
       if (decisionId) {
         const nextExecutionState = transition.patch.executionState;
@@ -13755,6 +13880,44 @@ export function issueRoutes(
         };
       }
       Object.assign(updateFields, transition.patch);
+      if (transition.recoveryInteraction) {
+        await issueThreadInteractionService(db).create(
+          existing,
+          {
+            kind: "ask_user_questions",
+            idempotencyKey: transition.recoveryInteraction.idempotencyKey,
+            resolverPolicy: "human_only",
+            addresseeUserId: existing.responsibleUserId ?? existing.createdByUserId ?? null,
+            continuationPolicy: "none",
+            title: transition.recoveryInteraction.title,
+            summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
+            payload: {
+              version: 1,
+              title: transition.recoveryInteraction.title,
+              submitLabel: "Acknowledge recovery",
+              questions: [{
+                id: "recovery_acknowledged",
+                prompt: `${transition.recoveryInteraction.summary} Please acknowledge ownership by ${transition.recoveryInteraction.queue}.`,
+                selectionMode: "single",
+                options: [{ id: "acknowledged", label: "Acknowledged" }],
+              }],
+            },
+          },
+          {
+            identityContextId: req.actor.identityContextId,
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+        );
+      }
+      if (transition.escalationMetric) {
+        getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+          issue_id: existing.id,
+          policy_revision:
+            nextExecutionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+          target_type: "user",
+        });
+      }
 
       const nextStatus = updateFields.status ?? existing.status;
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
@@ -14049,6 +14212,263 @@ export function issueRoutes(
       const assigneeWillChange =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
         nextAssigneeUserId !== existing.assigneeUserId;
+
+      // myrmidon(HANDOFF-CAS): guarded agent-to-agent handoff, ported from
+      // vendor paperclipai/paperclip#13686. Activates only when the request
+      // carries CAS expectations AND changes the assignee; requests without
+      // the fields keep the previous behavior.
+      const handoffCasRequested =
+        handoffExpectedAssigneeAgentId !== undefined ||
+        handoffExpectedStatusVersion !== undefined;
+      if (
+        handoffCasRequested &&
+        (handoffExpectedAssigneeAgentId === undefined ||
+          handoffExpectedStatusVersion === undefined)
+      ) {
+        throw unprocessable(
+          "A guarded handoff requires both expectedAssigneeAgentId and expectedStatusVersion",
+        );
+      }
+      const handoffGuarded = handoffCasRequested && assigneeWillChange;
+      if (handoffGuarded && deferWakeForGoal === true) {
+        throw unprocessable(
+          "A guarded handoff cannot defer the new owner's wake",
+        );
+      }
+      const handoffCommandId = handoffIdempotencyKeyRaw ?? randomUUID();
+      const handoffExpected = {
+        expectedAssigneeAgentId: handoffExpectedAssigneeAgentId!,
+        expectedStatusVersion: handoffExpectedStatusVersion!,
+      };
+      const handoffFingerprint = handoffCasRequested
+        ? handoffCas.buildHandoffFingerprint({
+            issueId: id,
+            expectedAssigneeAgentId: handoffExpected.expectedAssigneeAgentId,
+            expectedStatusVersion: handoffExpected.expectedStatusVersion,
+            nextAssigneeAgentId,
+            nextAssigneeUserId,
+            reason: handoffReason ?? null,
+          })
+        : "";
+      // Idempotency pre-check outside the lock (no new index or migration —
+      // the query rides the existing company/activity columns, template L4).
+      // It runs before the assignee-change requirement so that a resend of a
+      // completed handoff — whose assignee change no longer applies — still
+      // answers with the stored duplicate receipt instead of mutating or
+      // erroring. A different fingerprint under the same command id is a
+      // conflict.
+      if (handoffCasRequested) {
+        const priorReceipt = await handoffCas.findHandoffReceiptByCommand(db, {
+          companyId: existing.companyId,
+          issueId: id,
+          commandId: handoffCommandId,
+        });
+        if (priorReceipt) {
+          if (priorReceipt.fingerprint !== handoffFingerprint) {
+            throw conflict(
+              "The handoff command id was already used with a different payload",
+              { code: "idempotency_conflict", commandId: handoffCommandId },
+            );
+          }
+          res.status(200).json({
+            id: existing.id,
+            identifier: existing.identifier,
+            changes: {},
+            comment: null,
+            handoffReceipt: { ...priorReceipt, disposition: "duplicate" },
+          });
+          return;
+        }
+        if (!assigneeWillChange) {
+          throw unprocessable(
+            "A guarded handoff requires an assignee change",
+          );
+        }
+      }
+      const handoffNewOwnerWakeKey = handoffGuarded
+        ? handoffCas.handoffNewOwnerWakeKey(handoffCommandId, id)
+        : "";
+      const handoffRollbackWakeKey = handoffGuarded
+        ? handoffCas.handoffRollbackWakeKey(handoffCommandId, id)
+        : "";
+      let handoffStopConfirmed =
+        handoffGuarded && existing.assigneeAgentId === null;
+      let handoffRunStopped = false;
+      let handoffRollbackAttempted = false;
+      let handoffCommitted = false;
+      // Set inside the transaction body, but only trusted once the transaction
+      // has returned: a later throw in the body rolls the whole commit back.
+      let handoffReceiptWrittenInTx = false;
+      let handoffStateRevision: number | null = null;
+      let handoffRevisionInTx: number | null = null;
+      let handoffLockedRow: handoffCas.HandoffLockedRow | null = null;
+      const handoffActorType =
+        req.actor.type === "board"
+          ? ("board" as const)
+          : (actor.actorType as "user" | "agent" | "system");
+      const recordHandoffDisposition = (
+        disposition: handoffCas.HandoffReceiptDetails["disposition"],
+        stateRevision: number,
+        extra?: Partial<handoffCas.HandoffReceiptDetails>,
+      ) =>
+        handoffCas.insertHandoffReceipt(db, {
+          companyId: existing.companyId,
+          issueId: id,
+          actorType: handoffActorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId ?? null,
+          runId: actor.runId ?? null,
+          agentApiKeyId: actor.agentApiKeyId ?? null,
+          details: {
+            commandId: handoffCommandId,
+            fingerprint: handoffFingerprint,
+            disposition,
+            stateRevision,
+            scheduledWakeKeys: [],
+            expectedAssigneeAgentId: handoffExpected.expectedAssigneeAgentId,
+            expectedStatusVersion: handoffExpected.expectedStatusVersion,
+            fromAssigneeAgentId: existing.assigneeAgentId,
+            toAssigneeAgentId: nextAssigneeAgentId,
+            reason: handoffReason ?? null,
+            interruptedRunId: null,
+            ...extra,
+          },
+        });
+      // myrmidon(HANDOFF-CAS): guarded rollback — when the previous owner's
+      // run was already stopped under confirmation but the commit phase
+      // failed (thrown error or a rolled-back null result), the previous
+      // owner gets a guarded wake back so their work resumes, and the
+      // rollback lands as an `issue.reassigned` receipt with disposition
+      // `rollback`. Restore errors are aggregated into the receipt and
+      // logged loudly — never swallowed into the original rejection.
+      const runHandoffRollbackIfNeeded = async () => {
+        // Roll back only when the previous owner's live run was actually
+        // stopped under confirmation and the commit did not land. A failure
+        // before the stop (CAS mismatch, validation) leaves the old owner
+        // running — nothing to restore.
+        if (!handoffGuarded || !handoffRunStopped || handoffCommitted) return;
+        if (handoffRollbackAttempted) return;
+        handoffRollbackAttempted = true;
+        const rollbackErrors: string[] = [];
+        const previousOwnerAgentId = existing.assigneeAgentId;
+        if (previousOwnerAgentId) {
+          try {
+            await heartbeat.wakeup(previousOwnerAgentId, {
+              source: "assignment",
+              triggerDetail: "system",
+              reason: "issue_reassignment_rollback",
+              idempotencyKey: handoffRollbackWakeKey,
+              payload: {
+                issueId: id,
+                mutation: "update",
+                handoffRollback: true,
+                handoffCommandId,
+              },
+              requestedByActorType:
+                handoffActorType === "board" ? "system" : handoffActorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: id,
+                taskId: id,
+                source: "issue.handoff.rollback",
+                handoffRollback: true,
+                // Vendor restoreInterruptedWork guards: previous owner still
+                // holds the issue, status is todo/in_progress, previous
+                // executionRunId unchanged, no pending execution stage. The
+                // rolled-back commit left the version where it was.
+                expectedExecutionRunId: existing.executionRunId ?? null,
+              },
+              issueStateGuard: {
+                statuses: ["todo", "in_progress"],
+                assigneeAgentId: previousOwnerAgentId,
+                statusVersion: existing.statusVersion,
+              },
+            });
+          } catch (rollbackErr) {
+            rollbackErrors.push(
+              rollbackErr instanceof Error
+                ? rollbackErr.message
+                : String(rollbackErr),
+            );
+          }
+        }
+        try {
+          await recordHandoffDisposition(
+            "rollback",
+            existing.statusVersion,
+            {
+              interruptedRunId: interruptedRunId ?? null,
+              ...(rollbackErrors.length > 0
+                ? { rollbackError: rollbackErrors.join("; ") }
+                : {}),
+            },
+          );
+        } catch (receiptErr) {
+          logger.error(
+            { err: receiptErr, issueId: id, commandId: handoffCommandId },
+            "handoff rollback receipt failed to persist",
+          );
+        }
+        if (rollbackErrors.length > 0) {
+          logger.error(
+            { issueId: id, commandId: handoffCommandId, rollbackErrors },
+            "handoff rollback wake could not be delivered; the previous owner needs recovery",
+          );
+        }
+      };
+
+      if (handoffGuarded) {
+        // Forbidden handoff states (vendor parity): a handoff may not strand
+        // a review, a closed issue, a conversation issue, or an issue with a
+        // pending execution stage.
+        const forbiddenReason = handoffCas.handoffForbiddenStateReason({
+          status: existing.status,
+          conversationAgentId: existing.conversationAgentId,
+          pendingExecutionStage:
+            parseIssueExecutionState(existing.executionState)?.status ===
+            "pending",
+        });
+        if (forbiddenReason) {
+          await recordHandoffDisposition(
+            "conflict",
+            existing.statusVersion,
+            { reason: forbiddenReason },
+          ).catch((err) =>
+            logger.warn({ err, issueId: id }, "handoff conflict receipt failed"),
+          );
+          throw conflict(
+            "The issue is in a state that forbids guarded reassignment",
+            { code: "issue_reassignment_conflict", mismatch: forbiddenReason, issueId: id },
+          );
+        }
+        // Cheap pre-lock CAS check; the authoritative compare runs again
+        // under SELECT ... FOR UPDATE inside the commit transaction.
+        const preMismatch = handoffCas.handoffCasMismatch(
+          {
+            assigneeAgentId: existing.assigneeAgentId,
+            assigneeUserId: existing.assigneeUserId,
+            statusVersion: existing.statusVersion,
+          },
+          handoffExpected,
+          { nextAssigneeAgentId, nextAssigneeUserId },
+        );
+        if (preMismatch) {
+          await recordHandoffDisposition(
+            "conflict",
+            existing.statusVersion,
+            { reason: preMismatch },
+          ).catch((err) =>
+            logger.warn({ err, issueId: id }, "handoff conflict receipt failed"),
+          );
+          throw handoffCas.handoffCasConflict(preMismatch, id);
+        }
+        // Vendor demote: a handed-off in_progress task goes back to todo for
+        // the new owner. An explicit caller status always wins.
+        if (existing.status === "in_progress" && updateFields.status === undefined) {
+          updateFields.status = "todo";
+        }
+      }
+
       const isAgentReturningIssueToCreator =
         req.actor.type === "agent" &&
         !!req.actor.agentId &&
@@ -14117,6 +14537,12 @@ export function issueRoutes(
             );
           }
           interruptedRunId = cancelled.id;
+          // myrmidon(HANDOFF-CAS): the confirmed stop releases the commit
+          // fence for the guarded handoff transaction.
+          if (handoffGuarded) {
+            handoffStopConfirmed = true;
+            handoffRunStopped = true;
+          }
 
           // Cancel any deferred executions for the old assignee related to this issue
           if (svc.cancelDeferredExecutionsForAgentOnReassignment) {
@@ -14127,6 +14553,10 @@ export function issueRoutes(
               db
             );
           }
+        } else if (handoffGuarded) {
+          // Nothing was live to stop; the transaction fence still re-checks
+          // for runs that start between this point and the commit.
+          handoffStopConfirmed = true;
         }
       }
 
@@ -14394,10 +14824,28 @@ export function issueRoutes(
         ((updateFields.status === "in_review" || existing.status === "in_review") &&
           assigneeWillChange) ||
         reviewPolicySensitiveMutationRequested ||
-        humanUnblockPossible;
+        humanUnblockPossible ||
+        // myrmidon(HANDOFF-CAS): the guarded commit needs the row lock.
+        handoffGuarded;
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            // myrmidon(HANDOFF-CAS): the authoritative compare — re-read the
+            // row under SELECT ... FOR UPDATE, re-check CAS expectations and
+            // the stopped-run fence (executionRunId unchanged, no live run)
+            // before anything is written.
+            if (handoffGuarded) {
+              const gate = await handoffCas.assertHandoffCommitAllowed(tx, {
+                issueId: id,
+                companyId: existing.companyId,
+                expected: handoffExpected,
+                nextAssigneeAgentId,
+                nextAssigneeUserId,
+                stopConfirmed: handoffStopConfirmed,
+                executionRunIdAtPreparation: existing.executionRunId,
+              });
+              handoffLockedRow = gate.locked;
+            }
             if (
               reviewPolicySensitiveMutationRequested &&
               !(await assertLockedReviewPolicyAllowsMutation(tx))
@@ -14405,6 +14853,60 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
+            if (handoffGuarded && handoffLockedRow) {
+              // Fresh-revision invariant: a committed handoff always moves
+              // statusVersion by one. The DB trigger
+              // (paperclip_issue_status_version_trigger) already bumps the
+              // column inside this very UPDATE whenever the commit changed
+              // the status (the vendor demote in_progress -> todo), so a
+              // blind pre-bump would double-count (4 -> 6 instead of 5).
+              // Read the committed row back and only bump explicitly when
+              // the trigger left the revision untouched (no status change).
+              const committedRevision = await tx
+                .select({ statusVersion: issueRows.statusVersion })
+                .from(issueRows)
+                .where(eq(issueRows.id, id))
+                .then(
+                  (rows: Array<{ statusVersion: number }>) =>
+                    rows[0]?.statusVersion ?? null,
+                );
+              handoffRevisionInTx =
+                committedRevision !== null &&
+                committedRevision > handoffLockedRow.statusVersion
+                  ? committedRevision
+                  : await handoffCas.bumpHandoffStatusVersion(tx, id);
+              handoffStateRevision = handoffRevisionInTx;
+            }
+            if (handoffGuarded && handoffLockedRow && handoffRevisionInTx !== null) {
+              // The receipt commits in the same transaction as the ownership
+              // write, so a committed handoff always has its receipt.
+              await handoffCas.insertHandoffReceipt(tx, {
+                companyId: existing.companyId,
+                issueId: id,
+                actorType: handoffActorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId ?? null,
+                runId: actor.runId ?? null,
+                agentApiKeyId: actor.agentApiKeyId ?? null,
+                details: {
+                  commandId: handoffCommandId,
+                  fingerprint: handoffFingerprint,
+                  disposition: "applied",
+                  stateRevision: handoffRevisionInTx,
+                  scheduledWakeKeys: [handoffNewOwnerWakeKey],
+                  expectedAssigneeAgentId:
+                    handoffExpected.expectedAssigneeAgentId,
+                  expectedStatusVersion:
+                    handoffExpected.expectedStatusVersion,
+                  fromAssigneeAgentId: handoffLockedRow.assigneeAgentId,
+                  toAssigneeAgentId: nextAssigneeAgentId,
+                  reason: handoffReason ?? null,
+                  interruptedRunId: interruptedRunId ?? null,
+                },
+              });
+              handoffReceiptWrittenInTx = true;
+            }
+
             if (
               updated.status === "in_review" &&
               (enteringReviewRequested || assigneeWillChange)
@@ -14562,9 +15064,17 @@ export function issueRoutes(
             "issue update rejected with 422",
           );
         }
+        // myrmidon(HANDOFF-CAS): a commit-phase failure after the previous
+        // owner's run was stopped under confirmation wakes them back before
+        // the rejection leaves the route. No-op unless a rollback is due.
+        await runHandoffRollbackIfNeeded();
         throw err;
       }
+      if (issue && handoffReceiptWrittenInTx) handoffCommitted = true;
       if (!issue) {
+        // myrmidon(HANDOFF-CAS): a transaction that returned null rolled
+        // everything back — the same rollback duty applies.
+        await runHandoffRollbackIfNeeded();
         res.status(404).json({ error: "Issue not found" });
         return;
       }
@@ -15062,6 +15572,15 @@ export function issueRoutes(
             notes: previousMonitor.notes,
           },
         });
+        // myrmidon(MON-RESTORE): post one best-effort notice on the activity-log clear edge.
+        if (issue.status !== "done" && issue.status !== "cancelled" && monitorClearNotice) {
+          await svc.addComment(
+            issue.id,
+            `Monitor cleared (${monitorClearNotice.reason ?? "manual"}).${monitorClearNotice.notes ? ` ${monitorClearNotice.notes}` : ""}`,
+            {},
+            { authorType: "system", presentation: { kind: "system_notice", tone: "warning", title: "Issue monitor cleared", detailsDefaultOpen: false, density: "compact" } },
+          ).catch((err) => logger.warn({ err, issueId: issue.id }, "failed to post monitor clear notice"));
+        }
       }
 
       if (issue.status === "done" && existing.status !== "done") {
@@ -15121,13 +15640,20 @@ export function issueRoutes(
         attachmentComment;
       let goalCommentSteered = false;
       let lostReviewPathRef: string | null = null;
-      if (commentBody) {
+      // myrmidon(HANDOFF-CAS): the handoff reason is recorded in the thread
+      // like an ordinary update comment; without one the caller's own
+      // commentBody still applies.
+      const handoffCommentBody =
+        handoffGuarded && handoffReason && !commentBody
+          ? handoffReason
+          : commentBody;
+      if (handoffCommentBody) {
         const commentReferenceSummaryBefore =
           updateReferenceSummaryAfter ??
           (await issueReferencesSvc.listIssueReferenceSummary(issue.id));
         comment ??= await svc.addComment(
           id,
-          commentBody,
+          handoffCommentBody,
           {
             agentId: actor.agentId ?? undefined,
             userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -15411,11 +15937,22 @@ export function issueRoutes(
             source: "assignment",
             triggerDetail: "system",
             reason: "issue_assigned",
-            ...(issue.status === "in_review"
+            ...(handoffGuarded
               ? {
-                  idempotencyKey: `issue-review-admission:${issue.id}:${issue.assigneeAgentId}`,
+                  idempotencyKey: handoffNewOwnerWakeKey,
+                  issueStateGuard: {
+                    statuses: ["todo"],
+                    assigneeAgentId: nextAssigneeAgentId as string,
+                    ...(handoffStateRevision !== null
+                      ? { statusVersion: handoffStateRevision }
+                      : {}),
+                  },
                 }
-              : {}),
+              : issue.status === "in_review"
+                ? {
+                    idempotencyKey: `issue-review-admission:${issue.id}:${issue.assigneeAgentId}`,
+                  }
+                : {}),
             payload: {
               issueId: issue.id,
               ...(comment ? { commentId: comment.id } : {}),
@@ -15806,6 +16343,21 @@ export function issueRoutes(
 
       await queueTaskWatchdogEvaluation(issue, actor.runId);
       const changes = issueResponse.changes ?? {};
+      // myrmidon(HANDOFF-CAS): expose the applied handoff receipt so the
+      // caller can confirm commandId/stateRevision without a second query.
+      const handoffResponse =
+        handoffGuarded && handoffCommitted
+          ? {
+              handoffReceipt: {
+                commandId: handoffCommandId,
+                fingerprint: handoffFingerprint,
+                disposition: "applied",
+                stateRevision: handoffStateRevision,
+                toAssigneeAgentId: nextAssigneeAgentId,
+                scheduledWakeKeys: [handoffNewOwnerWakeKey],
+              },
+            }
+          : {};
       if (prefersMinimalIssueUpdateResponse(req)) {
         res.setHeader("Preference-Applied", "return=minimal");
         res.json({
@@ -15814,10 +16366,11 @@ export function issueRoutes(
           updatedAt: issueResponse.updatedAt,
           changes,
           comment,
+          ...handoffResponse,
         });
         return;
       }
-      res.json({ ...issueResponse, changes, comment });
+      res.json({ ...issueResponse, changes, comment, ...handoffResponse });
     },
   );
 
@@ -18534,6 +19087,14 @@ export function issueRoutes(
           commentBody: req.body.body,
         });
         const decisionId = transition.decision ? randomUUID() : null;
+        if (transition.escalationMetric) {
+          getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+            issue_id: currentIssue.id,
+            policy_revision:
+              currentExecutionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+            target_type: "user",
+          });
+        }
         if (decisionId) {
           const nextExecutionState = transition.patch.executionState;
           if (!nextExecutionState || typeof nextExecutionState !== "object") {
@@ -18558,7 +19119,10 @@ export function issueRoutes(
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         };
 
-        const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
+        const sourceTrust =
+          actor.actorType === "agent"
+            ? await sourceTrustForActorWrite(currentIssue, actor, true)
+            : null;
         const commentOptions = {
           authorType:
             req.body.authorType ??
@@ -18612,6 +19176,36 @@ export function issueRoutes(
             // has been concurrently deleted between the initial fetch and the in-transaction update.
             if (!updated) throw new AutoApprovalIssueMissingError();
 
+            if (transition.recoveryInteraction) {
+              await issueThreadInteractionService(tx as unknown as Db).create(
+                currentIssue,
+                {
+                  kind: "ask_user_questions",
+                  idempotencyKey: transition.recoveryInteraction.idempotencyKey,
+                  resolverPolicy: "human_only",
+                  addresseeUserId: currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null,
+                  continuationPolicy: "none",
+                  title: transition.recoveryInteraction.title,
+                  summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
+                  payload: {
+                    version: 1,
+                    title: transition.recoveryInteraction.title,
+                    submitLabel: "Acknowledge recovery",
+                    questions: [{
+                      id: "recovery_acknowledged",
+                      prompt: `${transition.recoveryInteraction.summary} Please acknowledge ownership by ${transition.recoveryInteraction.queue}.`,
+                      selectionMode: "single",
+                      options: [{ id: "acknowledged", label: "Acknowledged" }],
+                    }],
+                  },
+                },
+                {
+                  identityContextId: req.actor.identityContextId,
+                  agentId: actor.agentId,
+                  userId: actor.actorType === "user" ? actor.actorId : null,
+                },
+              );
+            }
             if (transition.decision && decisionId) {
               await tx.insert(issueExecutionDecisions).values({
                 id: decisionId,
@@ -18680,12 +19274,17 @@ export function issueRoutes(
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           authorizationReason: commentAuthorizationReason,
-          sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
+          sourceTrust: await sourceTrustForActorWrite(currentIssue, actor, true),
         };
         const add = (dbOrTx: Db = db) =>
           svc.addComment(
             id,
-            req.body.body,
+            commentOptions.sourceTrust?.disposition === "quarantined"
+              ? buildLowTrustQuarantineNotice({
+                  promotionOwnerUserId:
+                    commentOptions.sourceTrust.promotionOwnerUserId ?? null,
+                })
+              : req.body.body,
             {
               agentId: actor.agentId ?? undefined,
               userId: actor.actorType === "user" ? actor.actorId : undefined,
