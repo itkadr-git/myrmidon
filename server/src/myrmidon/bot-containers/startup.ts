@@ -47,6 +47,13 @@ import { reportBotContainerEvent } from "../features/reporters.js"; // myrmidon(
 import { startSiteScheduler } from "./site-scheduler-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
+import {
+  createFleetClientManager,
+  bootstrapFleetSitesFromEnv,
+  type FleetClientManager,
+  type FleetClientManagerDeps,
+} from "./site-registry.js";
+import { fleetRoutingDriver } from "./fleetd-routing.js";
 
 export const BOT_RECONCILE_INTERVAL_ENV = "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC";
 const MIN_RECONCILE_INTERVAL_SEC = 5;
@@ -64,9 +71,10 @@ export function readBotReconcileIntervalMs(env: NodeJS.ProcessEnv = process.env)
   return value * 1000;
 }
 
-/** The two server-log calls this module makes (the pino logger satisfies it). */
+/** The server-log calls this module makes (the pino logger satisfies it). */
 export interface BotContainersLog {
   info(fields: object, message: string): void;
+  warn?(fields: object, message: string): void;
   error(fields: object, message: string): void;
 }
 
@@ -117,6 +125,8 @@ export interface BotContainersStartupPorts {
    * real one. Its stop is folded into the stop of this run.
    */
   startCloneReportCollection?: typeof startCloneReportCollection;
+  createFleetClientManager?: (deps: FleetClientManagerDeps) => FleetClientManager;
+  bootstrapFleetSitesFromEnv?: typeof bootstrapFleetSitesFromEnv;
   /**
    * myrmidon(1.6.6 REMOTE-SITES-T5): the site-scheduler lane (30 s). Opt-in
    * (MYRMIDON_SITE_SCHEDULER=1): without the flag it reads and starts nothing.
@@ -151,6 +161,8 @@ const defaultPorts: BotContainersStartupPorts = {
   currentRuntime: getBotContainerRuntime,
   startReconciliation: startBotContainerReconciliation,
   startCloneReportCollection,
+  createFleetClientManager,
+  bootstrapFleetSitesFromEnv,
   startSiteScheduler,
   log: logger,
 };
@@ -175,7 +187,7 @@ export function startBotContainers(
   const intervalMs = readBotReconcileIntervalMs(env);
   const started = build(db, env, intervalMs, ports);
   if (!started) return () => {};
-  const { runtime, stopSweep } = started;
+  const { runtime, stopSweep, clientManager } = started;
   ports.registerRuntime(runtime);
   ports.log.info({ intervalMs, network: runtime.network }, "bot container reconciliation started");
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the collector needs a registered
@@ -191,6 +203,7 @@ export function startBotContainers(
     stopped = true;
     stopSweep();
     stopCollector?.();
+    clientManager.close();
     stopSiteScheduler?.();
     // Only clear the registry entry this run put there.
     if (ports.currentRuntime() === runtime) ports.registerRuntime(null);
@@ -206,14 +219,50 @@ function build(
   env: NodeJS.ProcessEnv,
   intervalMs: number,
   ports: BotContainersStartupPorts,
-): { runtime: BotContainerRuntimeDeps; stopSweep: () => void } | null {
+): { runtime: BotContainerRuntimeDeps; stopSweep: () => void; clientManager: FleetClientManager } | null {
   try {
     const driverConfig = ports.readDriverConfig(env);
     const activity = ports.activitySink();
     const { compile, beginProfilePass, endProfilePass, syncCard, releaseStrayGateways, exportMediaAcl } =
       ports.profileWiring(db, { activity, env });
+
+    const localDriver = ports.createDriver(driverConfig, db);
+    const clientManager = (ports.createFleetClientManager ?? createFleetClientManager)({
+      db,
+      log: ports.log,
+    });
+
+    const bootstrap = ports.bootstrapFleetSitesFromEnv ?? bootstrapFleetSitesFromEnv;
+    Promise.resolve(bootstrap(db, env, ports.log))
+      .catch((err) => {
+        ports.log.error({ err }, "failed to bootstrap fleet sites from MYRMIDON_FLEET_HOSTS");
+      })
+      .then(() => clientManager.refresh())
+      .catch((err) => {
+        ports.log.error({ err }, "failed to refresh fleet clients from registry");
+      });
+
+    const readAgentFn = ports.readAgent(db);
+    const routingDriver = fleetRoutingDriver(
+      {
+        local: localDriver,
+        fleet: () => clientManager.getClients(),
+        ready: () => clientManager.ensureFresh(),
+      },
+      async (botKey: string) => {
+        // A failed agent read must surface as a reconcile error: swallowing it
+        // would route a bot with container.host to the local driver.
+        const agent = await readAgentFn(botKey);
+        if (!agent) return undefined;
+        return {
+          companyId: agent.companyId,
+          adapterConfig: agent.adapterConfig as { container?: unknown },
+        };
+      },
+    );
+
     const runtime: BotContainerRuntimeDeps = {
-      driver: ports.createDriver(driverConfig, db),
+      driver: routingDriver,
       compile,
       // myrmidon(PERF-DIET-G): the sweep shares one pass between the bots it
       // reconciles (index.ts); the wiring supplies the pair beside compile.
@@ -265,7 +314,7 @@ function build(
       },
     };
     const stopSweep = ports.startReconciliation(ports.listAgents(db), runtime, { intervalMs, env });
-    return { runtime, stopSweep };
+    return { runtime, stopSweep, clientManager };
   } catch (err) {
     ports.log.error({ err }, "bot containers are enabled but the runtime could not be built; reconciliation is not started");
     return null;
