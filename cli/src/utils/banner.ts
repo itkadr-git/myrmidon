@@ -25,3 +25,6 @@ export function printPaperclipCliBanner(): void {
 
   console.log(lines.join("\n"));
 }
+
+// Keep the Myrmidon command imports working while preserving vendor callers.
+export const printMyrmidonCliBanner = printPaperclipCliBanner;
