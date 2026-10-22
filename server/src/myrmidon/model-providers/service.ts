@@ -845,10 +845,20 @@ export function createModelProviderCatalogPort(): ModelProviderCatalogPort {
           messages: [{ role: "user", content: "Reply with a tool call." }],
           tools: [{ type: "function", function: { name: "compatibility_probe", parameters: { type: "object" } } }],
           tool_choice: { type: "function", function: { name: "compatibility_probe" } },
-          max_tokens: 1,
+          max_tokens: 64,
         }),
+        signal: AbortSignal.timeout(30_000),
       });
       if (!response.ok) throw new Error(`provider answered ${response.status}`);
+      // A 200 alone is not compatibility: some resellers answer but substitute their own
+      // tools. The reply must carry a tool call for the function we declared.
+      const payload = (await response.json().catch(() => null)) as {
+        choices?: Array<{ message?: { tool_calls?: Array<{ function?: { name?: string } }> } }>;
+      } | null;
+      const calls = payload?.choices?.[0]?.message?.tool_calls ?? [];
+      if (!calls.some((call) => call.function?.name === "compatibility_probe")) {
+        throw new Error("provider answered without the requested tool call");
+      }
     },
 
     async listAccounts({ baseUrl, apiKey }) {
