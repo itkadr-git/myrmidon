@@ -76,7 +76,8 @@
         "work": "Work"
       },
       "center": "Command center",
-      "fleet": "Server fleet",
+      "agents": "Agents",
+      "servers": "Servers",
       "costs": "Costs",
       "quality": "Quality",
       "waiting": "Wait for me",
