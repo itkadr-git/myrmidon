@@ -33,6 +33,8 @@ export function DeployJobsPanelView({
   onAbort,
   pending,
   error,
+  filterValues,
+  onFilterChange,
 }: {
   state: DeployJobState | null | undefined;
   preview: DeployImagePreview | null;
@@ -41,8 +43,19 @@ export function DeployJobsPanelView({
   onAbort: (job: DeployJobView) => void;
   pending: boolean;
   error: string | null;
+  filterValues?: { mode?: string; status?: string; outcome?: string };
+  onFilterChange?: (filters: { mode?: string; status?: string; outcome?: string }) => void;
 }) {
   const [reference, setReference] = useState("");
+  const [localFilters, setLocalFilters] = useState({ mode: "", status: "", outcome: "" });
+  const modeFilter = filterValues?.mode ?? localFilters.mode;
+  const statusFilter = filterValues?.status ?? localFilters.status;
+  const outcomeFilter = filterValues?.outcome ?? localFilters.outcome;
+  const setFilter = (name: "mode" | "status" | "outcome", value: string) => {
+    const next = { ...localFilters, [name]: value };
+    setLocalFilters(next);
+    onFilterChange?.({ mode: next.mode || undefined, status: next.status || undefined, outcome: next.outcome || undefined });
+  };
   const [confirmStart, setConfirmStart] = useState(false);
   const problem = digestProblemClient(reference);
   const job = state?.job ?? null;
@@ -108,16 +121,31 @@ export function DeployJobsPanelView({
         {preview ? <PreviewCard preview={preview} /> : null}
       </div>
 
-      {state?.history?.length ? (
+      {state?.history ? (
         <details className="text-sm">
           <summary className="cursor-pointer text-muted-foreground">Previous deploys ({state.history.length})</summary>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <select aria-label="Update mode" value={modeFilter} onChange={(event) => setFilter("mode", event.target.value)}>
+              <option value="">All modes</option><option value="manual">Manual</option><option value="auto">Automatic</option><option value="canary">Canary</option>
+            </select>
+            <select aria-label="Update status" value={statusFilter} onChange={(event) => setFilter("status", event.target.value)}>
+              <option value="">All statuses</option><option value="succeeded">Deployed</option><option value="auto_rolled_back">Rolled back automatically</option><option value="failed_rollback">Rollback failed</option><option value="failed_health">Health check failed</option><option value="aborted">Cancelled</option><option value="failed_verification">Image refused</option><option value="maintenance_failed">Maintenance failed</option>
+            </select>
+            <select aria-label="Update outcome" value={outcomeFilter} onChange={(event) => setFilter("outcome", event.target.value)}>
+              <option value="">All outcomes</option><option value="succeeded">Succeeded</option><option value="rollback">Rollback</option><option value="aborted">Cancelled</option>
+            </select>
+          </div>
           <ul className="mt-2 space-y-1">
-            {state.history.map((entry) => (
+            {state.history.filter((entry) => (!modeFilter || entry.mode === modeFilter) && (!statusFilter || entry.status === statusFilter) && (!outcomeFilter || (outcomeFilter === "rollback" ? entry.status.includes("rollback") : entry.status === outcomeFilter))).map((entry) => (
               <li key={entry.id} className="text-muted-foreground">
-                {new Date(entry.createdAt).toLocaleString()} — {describeDeployStatus(entry.status)} — {entry.digest.slice(0, 19)}…
+                {new Date(entry.createdAt).toLocaleString()} — {entry.mode} — {describeDeployStatus(entry.status)} — {entry.digest.slice(0, 19)}…
+                {entry.version ? ` — version ${entry.version}` : ""}
+                {entry.commit ? ` — commit ${entry.commit.slice(0, 12)}` : ""}
+                {entry.window ? ` — ${entry.window}` : ""}
                 {entry.failureReason ? ` — ${entry.failureReason}` : ""}
               </li>
             ))}
+            {!state.history.length ? <li className="text-muted-foreground">No completed updates yet.</li> : null}
           </ul>
         </details>
       ) : null}
@@ -199,9 +227,10 @@ export function DeployJobsPanel() {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<DeployImagePreview | null>(null);
+  const [filters, setFilters] = useState<{ mode?: string; status?: string; outcome?: string }>({});
   const { data } = useQuery({
-    queryKey: deployJobsQueryKey,
-    queryFn: () => deployJobsApi.get(),
+    queryKey: [...deployJobsQueryKey, filters],
+    queryFn: () => deployJobsApi.get(filters),
     refetchInterval: 10_000,
     retry: false,
   });
@@ -244,6 +273,8 @@ export function DeployJobsPanel() {
       onAbort={(job) => abort.mutate(job.id)}
       pending={pending}
       error={error}
+      filterValues={filters}
+      onFilterChange={setFilters}
     />
   );
 }

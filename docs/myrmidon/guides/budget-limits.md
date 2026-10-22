@@ -55,6 +55,7 @@ DELETE .../budget-limits/limits/:level/:ref       remove (board)
 GET    .../budget-limits/journal          change journal, newest first
 GET    .../budget-limits/usage            per-limit spent + overLimit
 GET    .../budget-limits/signal-only      effective flag + source
+GET    .../budget-limits/effective/:issueId  effective limit for an issue
 PATCH  .../budget-limits/signal-only      turn enforcement on/off (board)
 ```
 
@@ -94,3 +95,14 @@ Migration `0312` adds two tables, both additive (no vendor table is touched):
 The signal-only flag does not need a table: it lives in
 `instance_settings.general.budgetLimits` (the same JSON-column pattern the
 WIP limit and STT runtime settings use).
+
+## Effective issue limit
+
+`GET .../budget-limits/effective/:issueId` resolves the active limit for the
+issue on every request. It returns `amountCents`, `period`, `mode`,
+`sourceLevel`, `sourceRef`, and `sourceLimitId`; the source is selected by
+issue, foraging, caste, project nest, then company nest precedence. The route
+returns 404 when the issue is not in the requested company.
+
+PUT rejects project and issue references that do not belong to the requested
+company, so a syntactically valid UUID cannot create a cross-company limit.

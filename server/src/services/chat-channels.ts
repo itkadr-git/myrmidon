@@ -263,6 +263,8 @@ import {
 } from "../myrmidon/channel-allowlist/service.js";
 import { handleChannelAccessRefusalGuarded } from "../myrmidon/channel-allowlist/refusal.js";
 import { readChannelAccessMode } from "../myrmidon/channel-allowlist/settings.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the bridged-DM theme is reached through the
+// bridge seam, so a channel connector can serve it.
 import {
   afterTelegramDmMessage,
   decideTelegramDmBinding,
@@ -447,6 +449,7 @@ import {
   classifyChatWait,
   type ChatWaitReason,
 } from "../myrmidon/chat-holds/wait-notice.js";
+// myrmidon(1.6.5 OWNER-CHAT-ADMISSION): gate the notice on owner-turn admission.
 import { currentOwnerChatTurnGate } from "../myrmidon/run-admission.js";
 // myrmidon(1.6.6 CH-CONNECTOR-D): the DM switches are reached through the
 // bridge seam, so a channel connector can serve them.
@@ -2131,7 +2134,8 @@ async function editOrPostProviderPublication<T>(
   }
 }
 
-function safeCardForPublication(
+// myrmidon(U2): exported so the owner Telegram text-only provider payload can be asserted.
+export function safeCardForPublication(
   payload: SafeChatPublicationPayload,
   provider: ChatProvider,
 ) {

@@ -44,6 +44,12 @@ divergence-section: KNOWLEDGE-2.0 — единый модуль знаний
   сигнал, авто-принятие только `glossary`/`releases`/«как сделано»).
 - Прогон не создаёт страниц: только предложения в гнезде K-1 и числовой
   отчёт в Журнале знаний (`knowledge.distill.pass`).
+- Параметры окружения дистиллятора: `MYRMIDON_DISTILL_ENABLED`,
+  `MYRMIDON_DISTILL_INTERVAL_SEC`, `MYRMIDON_DISTILL_WINDOW_SEC`,
+  `MYRMIDON_DISTILL_MAX_INPUT_TOKENS`, `MYRMIDON_DISTILL_MAX_DURATION_SEC`,
+  `MYRMIDON_DISTILL_MAX_TASKS`, `MYRMIDON_DISTILL_MODEL`,
+  `MYRMIDON_DISTILL_GATEWAY_URL`, `MYRMIDON_DISTILL_KEY_SECRET`,
+  `MYRMIDON_DISTILL_AUTO_ACCEPT`.
 - Навык `knowledge-distill` (каста curator) заменяет плагинный
   `paperclip-distill`.
 

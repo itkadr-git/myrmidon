@@ -9992,9 +9992,23 @@ export function issueService(db: Db) {
               trustExplicitResponsibleUserId === true,
           },
         );
-
+        if (issueData.sourceTrust?.disposition === "quarantined") {
+          if (!responsibleUserId) {
+            throw unprocessable(
+              "Low-trust output cannot be quarantined without a promotion owner",
+            );
+          }
+        }
         const values = {
           ...issueData,
+          ...(issueData.sourceTrust?.disposition === "quarantined"
+            ? {
+                sourceTrust: {
+                  ...issueData.sourceTrust,
+                  promotionOwnerUserId: responsibleUserId,
+                },
+              }
+            : {}),
           // myrmidon(S5): issue descriptions are stored with secret values masked.
           // Applied here (the single write point for create) so every creation
           // path — board, agent, API — stores the masked description.
@@ -10979,6 +10993,12 @@ export function issueService(db: Db) {
           }
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
+            // myrmidon(DEFERRED-WAKE-LEAK): cancel all deferred executions for terminal issue
+            await cancelDeferredExecutionsForTerminalIssue(
+              updated.id,
+              updated.companyId,
+              tx,
+            );
             // myrmidon(CHANNEL-TASK-CLOSE): the assigned agent's status-only
             // close of a channel-bound (Telegram-born) task must notify the
             // bound conversation the same way the chat-side /close command
@@ -13358,8 +13378,42 @@ export function issueService(db: Db) {
       companyId: string,
       dbOrTx?: any,
     ) => Promise<number>;
+    cancelDeferredExecutionsForTerminalIssue: (
+      issueId: string,
+      companyId: string,
+      dbOrTx?: any,
+    ) => Promise<number>;
   };
   const serviceApi = service as IssueServiceApi;
+
+  // myrmidon(DEFERRED-WAKE-LEAK): Cancel deferred executions for issue when it transitions to done/cancelled
+  async function cancelDeferredExecutionsForTerminalIssue(
+    issueId: string,
+    companyId: string,
+    dbOrTx: any = db,
+  ): Promise<number> {
+    const now = new Date();
+    const result = await dbOrTx
+      .update(agentWakeupRequests)
+      .set({
+        status: "cancelled",
+        error: "issue_closed",
+        finishedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          wakeRequestTargetsIssue(issueId),
+        ),
+      )
+      .returning({ id: agentWakeupRequests.id });
+
+    return result.length;
+  }
+
+  serviceApi.cancelDeferredExecutionsForTerminalIssue = cancelDeferredExecutionsForTerminalIssue;
 
   // A company-scoped wrapper around `update`. It passes the company as a
   // guard on every read, lock, and write predicate, so a caller with only
