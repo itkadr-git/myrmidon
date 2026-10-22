@@ -14,10 +14,11 @@ it("publishes both CLI aliases to the same entrypoint", () => {
 });
 
 it("prints a deprecation warning only for the legacy binary", () => {
-  const source = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
-  expect(source).toContain('basename(process.argv[1] ?? "")');
-  expect(source).toContain('replace(/\\.(cmd|exe)$/i, "") === "paperclipai"');
-  expect(source).toContain("paperclipai is deprecated, use myrmidon");
+  const index = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
+  const legacy = readFileSync(new URL("../legacy-bin.ts", import.meta.url), "utf8");
+  expect(index).toContain("warnIfLegacyBinaryName()");
+  expect(legacy).toContain('LEGACY_BINARY_NAME = "paperclipai"');
+  expect(legacy).toContain("paperclipai is deprecated, use myrmidon");
 });
 
 it("runs the built entrypoint under both aliases and warns once only for paperclipai", () => {
