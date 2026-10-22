@@ -94,6 +94,9 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/caste-directory")).toBe("castes");
     expect(getCompanySettingsTab("/PAP/company/settings/caste-directory")).toBe("castes");
     expect(getCompanySettingsTab("/company/settings/castes")).toBe("castes");
+    // myrmidon(1.7 BUDGET-CONFIG D): the Budgets section.
+    expect(getCompanySettingsTab("/company/settings/budgets")).toBe("budgets");
+    expect(getCompanySettingsTab("/PAP/company/settings/budgets")).toBe("budgets");
     // myrmidon(1.6.6 CORPUS E): the knowledge corpus tab.
     expect(getCompanySettingsTab("/company/settings/corpus")).toBe("corpus");
     expect(getCompanySettingsTab("/PAP/company/settings/corpus")).toBe("corpus");
@@ -150,6 +153,7 @@ describe("CompanySettingsNav", () => {
           { value: "autonomy", label: "Autonomy" }, // myrmidon(1.6 AUTONOMY-MATRIX B)
           { value: "wip-limit", label: "WIP limit" }, // myrmidon(1.6.1 WIP-LIMIT B)
           { value: "review-routing", label: "Review routing" }, // myrmidon(REVIEW-ROUTING)
+          { value: "budgets", label: "Budgets" }, // myrmidon(1.7 BUDGET-CONFIG D)
 
           { value: "castes", label: "Agent castes" }, // myrmidon(1.6.5 F-26 T3)
           { value: "models", label: "Models & providers" }, // myrmidon(1.6.5 F-26 T3)
@@ -205,6 +209,7 @@ describe("CompanySettingsNav", () => {
       "autonomy", // myrmidon(1.6 AUTONOMY-MATRIX B)
       "wip-limit", // myrmidon(1.6.1 WIP-LIMIT B)
       "review-routing", // myrmidon(REVIEW-ROUTING)
+      "budgets", // myrmidon(1.7 BUDGET-CONFIG D)
 
       "castes", // myrmidon(1.6.5 F-26 T3)
       "models", // myrmidon(1.6.5 F-26 T3)

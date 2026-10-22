@@ -133,6 +133,7 @@ import {
 import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
+import { startInstallId } from "./myrmidon/licensing/install-id.js"; // myrmidon(OPE-8836)
 import { startMaintenanceMode } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
 import { startDeployJobs } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
@@ -179,8 +180,9 @@ import { startModelProviderPoolSweep, stopModelProviderPoolSweep } from "./myrmi
 import { startBotCanary, stopBotCanary } from "./myrmidon/bot-containers/canary-index.js"; // myrmidon(R5-B)
 import { startStackCheckSweep } from "./myrmidon/stack-registry/index.js"; // myrmidon(SUB)
 // myrmidon(1.6.1-TG-NOTIFY-B): daily digest and escalation jobs over the owner Telegram notify settings (all off by default)
-import { startTelegramNotifyJobs } from "./myrmidon/telegram-notify/index.js";
-import { startTgNotifySweep, dbErrorChannelSettingsSource } from "./myrmidon/telegram-notify/index.js"; // myrmidon(1.6-TG-NOTIFY-C)
+// myrmidon(1.6.6 CH-CONNECTOR-D): the notify jobs entry is reached through the bridge seam.
+import { startTelegramNotifyJobs } from "./myrmidon/channel-connectors/bridge/notify.js";
+import { startTgNotifySweep, dbErrorChannelSettingsSource } from "./myrmidon/channel-connectors/bridge/notify.js"; // myrmidon(1.6-TG-NOTIFY-C)
 import { startScentQueue } from "./myrmidon/scent/index.js"; // myrmidon(1.6.5 F-26 T10 SCENT)
 import { interactionContinuationOutboxService } from "./myrmidon/interaction-continuation-outbox.js"; // myrmidon(O1)
 import { createWorkspaceHygieneScheduler } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
@@ -2236,6 +2238,12 @@ async function startServerWithDatabaseTeardown(
     await startRuntimeLimits(db as any); // myrmidon(C0): stored run admission limits in force before the scheduler starts runs
     await startBehaviorSettings(db as any); // myrmidon(SETTINGS-CORE): stored behavior settings in force without a restart
     await startRunPriority(db as any); // myrmidon(1.6.5 RUN-PRIORITY A): stored run queue priority in force before the scheduler starts runs
+    // myrmidon(OPE-8836): fix the installation id in the database and publish it for the modules; never blocks startup
+    try {
+      await startInstallId(db as any);
+    } catch (err) {
+      logger.warn({ err }, "licensing: cannot determine the installation id at startup");
+    }
     await startMaintenanceMode(db as any); // myrmidon(R3): load open maintenance windows before startup recovery starts runs
     startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
     startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
