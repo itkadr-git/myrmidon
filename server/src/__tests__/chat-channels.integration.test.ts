@@ -21610,7 +21610,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .select({ id: chatEndpoints.id })
           .from(chatEndpoints)
           .where(eq(chatEndpoints.id, endpoint.id))
-          .for("update");
+          // NO KEY UPDATE conflicts with the drain's own NO KEY UPDATE NOWAIT
+          // claim, but not with the foreign-key KEY SHARE check of the
+          // conversation lease insert. FOR UPDATE would also block that lease
+          // insert, so the drain would wait behind the lock instead of
+          // meeting the NOWAIT contention this case is about.
+          .for("no key update");
         lockEntered();
         await holdLock;
       });
