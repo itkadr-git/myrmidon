@@ -44,3 +44,12 @@ export {
   KNOWLEDGE_MCP_TOOL_NAMES,
   type KnowledgeMcpDeps,
 } from "./mcp.js";
+
+export {
+  buildKnowledgeGitTree,
+  readKnowledgeExportSettings,
+  KNOWLEDGE_EXPORT_DEFAULT_BRANCH,
+  type KnowledgeExportSettings,
+  type KnowledgeGitTree,
+} from "./git-export.js";
+export { startKnowledgeExport, stopKnowledgeExport, runKnowledgeExportPass } from "./git-export-job.js";
