@@ -98,8 +98,8 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
   afterEach(async () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     await db.delete(issueRecoveryActions);
-    await db.delete(agentWakeupRequests);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
