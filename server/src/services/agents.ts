@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import { resolveStatusOnResume } from "../myrmidon/pause-drain.js";
+import { versionKeyEtag } from "../middleware/version-key-etag.js";
 import type { Db } from "@paperclipai/db";
 import { listAgentProjectIds } from "../myrmidon/project-membership.js";
 import {
@@ -544,6 +545,49 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     return new Map(rows.map((row) => [row.agentId, Number(row.spentMonthlyCents ?? 0)]));
   }
 
+  // myrmidon(PERF-DIET-T): cheap version aggregate for the agents list ETag.
+  // Captures everything that can change the projected list: row content
+  // (updatedAt), row set (count), the per-month spend hydration, and the UTC
+  // month boundary that rolls the spend window. Actors may additionally filter
+  // rows per request; those callers pass their filtered shape through
+  // `actorShape` (see routes/agents.ts) so 304s never go stale per-actor.
+  async function listSummariesVersionKey(
+    companyId: string,
+    actorShape: string = "all",
+  ): Promise<string> {
+    const { start } = currentUtcMonthWindow();
+    const [agg] = await db
+      .select({
+        rowCount: sql<number>`count(*)::int`,
+        maxUpdatedAt: sql<string | null>`max(${agents.updatedAt})`,
+        maxStatus: sql<string | null>`max(${agents.status})`,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    const [spendAgg] = await db
+      .select({
+        spendSum: sql<string | null>`coalesce(sum(${costEvents.costCents}), 0)::text`,
+        spendRowCount: sql<number>`count(*)::int`,
+      })
+      .from(costEvents)
+      .where(
+        and(
+          eq(costEvents.companyId, companyId),
+          gte(costEvents.occurredAt, start),
+        ),
+      );
+    return versionKeyEtag("agents-list", [
+      companyId,
+      actorShape,
+      agg?.rowCount ?? 0,
+      agg?.maxUpdatedAt ?? null,
+      agg?.maxStatus ?? null,
+      spendAgg?.spendSum ?? "0",
+      spendAgg?.spendRowCount ?? 0,
+      start.toISOString().slice(0, 10),
+    ]);
+  }
+
   async function hydrateAgentSpend<T extends { id: string; companyId: string; spentMonthlyCents: number }>(rows: T[]) {
     const agentIds = rows.map((row) => row.id);
     const companyId = rows[0]?.companyId;
@@ -1007,6 +1051,9 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     // `list` above stays the full-row reader for every other caller (configs,
     // internal flows); this one never loads adapter_config.
     listSummaries: listAgentSummaries,
+
+    // myrmidon(PERF-DIET-T): cheap version-key for the list's ETag/304 path.
+    listSummariesVersionKey,
 
     getById,
 

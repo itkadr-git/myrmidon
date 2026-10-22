@@ -6,12 +6,20 @@
 package main
 
 import (
+	"archive/tar"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hash"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -78,13 +86,20 @@ type siteHealth struct {
 // config is the JSON configuration (see docs/myrmidon/fleetd-vmexec.md).
 // Unknown keys are rejected at load time, the same discipline as dockergate.
 type config struct {
-	SiteId   string        `json:"siteId,omitempty"`
-	Epoch    int64         `json:"epoch,omitempty"`
-	Listen   string        `json:"listen"`
-	Token    string        `json:"token"`
-	Upstream string        `json:"upstream"`
-	Bots     []bot         `json:"bots"`
-	Memory   *memoryConfig `json:"memory,omitempty"`
+	SiteId     string        `json:"siteId,omitempty"`
+	Epoch      int64         `json:"epoch,omitempty"`
+	Listen     string        `json:"listen"`
+	Token      string        `json:"token"`
+	Upstream   string        `json:"upstream"`
+	VolumeRoot string        `json:"volumeRoot,omitempty"`
+	Bots       []bot         `json:"bots"`
+	Memory     *memoryConfig `json:"memory,omitempty"`
+
+	// mTLS material for the site API. All three are set together; serving
+	// requires them (requireTLS), --check-config does not.
+	SiteCA     string `json:"siteCA,omitempty"`
+	ServerCert string `json:"serverCert,omitempty"`
+	ServerKey  string `json:"serverKey,omitempty"`
 }
 
 type bot struct {
@@ -129,18 +144,85 @@ func main() {
 		fmt.Println("configuration is valid")
 		return
 	}
+	if err := requireTLS(&cfg); err != nil {
+		log.Fatalf("config is invalid: %v", err)
+	}
+	tlsConf, err := buildTLSConfig(&cfg)
+	if err != nil {
+		log.Fatalf("TLS setup failed: %v", err)
+	}
 	memory, err := newMemoryClient(cfg.Memory)
 	if cfg.Memory != nil && cfg.Memory.Enabled && err != nil {
 		log.Fatalf("config is invalid: %v", err)
 	}
 	srv := &server{cfg: &cfg, memory: memory}
-	http.HandleFunc("/v1/health", srv.requireAuth(srv.health))
-	http.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
-	http.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
-	http.HandleFunc("/v1/memory/recall", srv.requireAuth(srv.memoryRecall))
-	http.HandleFunc("/v1/memory/retain", srv.requireAuth(srv.memoryRetain))
-	log.Printf("fleetd listening on %s", cfg.Listen)
-	log.Fatal(http.ListenAndServe(cfg.Listen, nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/health", srv.requireAuth(srv.health))
+	mux.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
+	mux.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
+	mux.HandleFunc("/v1/memory/recall", srv.requireAuth(srv.memoryRecall))
+	mux.HandleFunc("/v1/memory/retain", srv.requireAuth(srv.memoryRetain))
+	log.Printf("fleetd listening on %s (mTLS)", cfg.Listen)
+	log.Fatal((&http.Server{
+		Addr:              cfg.Listen,
+		Handler:           mux,
+		TLSConfig:         tlsConf,
+		ReadHeaderTimeout: 5 * time.Second,
+	}).ListenAndServeTLS("", ""))
+}
+
+// requireTLS is the serving-time check: the site API is mTLS-only, so the CA
+// and the server key pair must be configured, absolute and readable.
+func requireTLS(cfg *config) error {
+	if cfg.SiteCA == "" || cfg.ServerCert == "" || cfg.ServerKey == "" {
+		return fmt.Errorf("siteCA, serverCert and serverKey are required")
+	}
+	return checkTLSPaths(cfg)
+}
+
+// checkTLSPaths rejects a partial TLS block and non-absolute paths.
+func checkTLSPaths(cfg *config) error {
+	set := 0
+	for _, p := range []string{cfg.SiteCA, cfg.ServerCert, cfg.ServerKey} {
+		if p != "" {
+			set++
+		}
+	}
+	if set == 0 {
+		return nil
+	}
+	if set != 3 {
+		return fmt.Errorf("siteCA, serverCert and serverKey must be set together")
+	}
+	for name, p := range map[string]string{"siteCA": cfg.SiteCA, "serverCert": cfg.ServerCert, "serverKey": cfg.ServerKey} {
+		if !filepath.IsAbs(p) {
+			return fmt.Errorf("%s path must be absolute", name)
+		}
+	}
+	return nil
+}
+
+// buildTLSConfig returns a server config that demands a client certificate
+// signed by the site CA. Errors carry no key material.
+func buildTLSConfig(cfg *config) (*tls.Config, error) {
+	pair, err := tls.LoadX509KeyPair(cfg.ServerCert, cfg.ServerKey)
+	if err != nil {
+		return nil, fmt.Errorf("load server certificate")
+	}
+	caPEM, err := os.ReadFile(cfg.SiteCA)
+	if err != nil {
+		return nil, fmt.Errorf("read site CA")
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("site CA contains no certificates")
+	}
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{pair},
+		ClientCAs:    pool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+	}, nil
 }
 
 func validate(cfg *config) error {
@@ -160,6 +242,9 @@ func validate(cfg *config) error {
 	}
 	if len(cfg.Token) < 32 {
 		return fmt.Errorf("token must be at least 32 characters")
+	}
+	if err := checkTLSPaths(cfg); err != nil {
+		return err
 	}
 	if cfg.Upstream == "" {
 		cfg.Upstream = "/var/run/docker.sock"
@@ -357,6 +442,12 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, map[string]bool{"drift": false})
+	case action == "snapshot" && r.Method == http.MethodPost:
+		s.handleSnapshot(w, r, botKey)
+	case action == "restore" && r.Method == http.MethodPost:
+		s.handleRestore(w, r, botKey)
+	case action == "quarantine" && r.Method == http.MethodPost:
+		s.handleQuarantine(w, r, botKey)
 	default:
 		if r.Method == http.MethodPost || r.Method == http.MethodPut {
 			http.Error(w, "route_not_allowed", http.StatusForbidden)
@@ -364,6 +455,391 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *server) volumeRoot() string {
+	if s.cfg.VolumeRoot != "" {
+		return s.cfg.VolumeRoot
+	}
+	return "/srv/myrmidon-bots"
+}
+
+// snapshotManifestName is the last entry of every snapshot archive. It is
+// written only after the whole datadir was archived, so an archive without it
+// is a snapshot that broke off, and restore refuses it.
+const snapshotManifestName = ".fleetd-snapshot-manifest"
+
+// snapshotManifest describes the archived datadir: the number of entries, the
+// total size of the regular files and a SHA-256 over names, sizes, link targets
+// and file contents in archive order. Restore recomputes it from what it
+// actually extracted.
+type snapshotManifest struct {
+	Version int    `json:"version"`
+	Entries int64  `json:"entries"`
+	Bytes   int64  `json:"bytes"`
+	SHA256  string `json:"sha256"`
+}
+
+type manifestHasher struct {
+	h       hash.Hash
+	entries int64
+	bytes   int64
+}
+
+func newManifestHasher() *manifestHasher {
+	return &manifestHasher{h: sha256.New()}
+}
+
+// entry records one archive entry; file contents are fed to m.h by the caller
+// right after the entry.
+func (m *manifestHasher) entry(kind byte, name string, size int64, link string) {
+	fmt.Fprintf(m.h, "%c\x00%s\x00%d\x00%s\x00", kind, name, size, link)
+	m.entries++
+	m.bytes += size
+}
+
+func (m *manifestHasher) manifest() snapshotManifest {
+	return snapshotManifest{
+		Version: 1,
+		Entries: m.entries,
+		Bytes:   m.bytes,
+		SHA256:  hex.EncodeToString(m.h.Sum(nil)),
+	}
+}
+
+// abortResponse breaks off the response without a proper end: the client sees a
+// failed transfer, not a snapshot that merely looks complete. A variable so a
+// test can observe the call.
+var abortResponse = func() {
+	panic(http.ErrAbortHandler)
+}
+
+// writeSnapshot streams the datadir as a tar inside a zstd frame (raw blocks,
+// no compression yet) followed by the manifest entry. On any error it returns
+// at once WITHOUT closing the tar and zstd writers, so the stream never ends
+// in a valid-looking footer.
+func writeSnapshot(out io.Writer, dir string) error {
+	zw := newZstdRawWriter(out)
+	tw := tar.NewWriter(zw)
+	mh := newManifestHasher()
+
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		name := filepath.ToSlash(rel)
+		if name == snapshotManifestName {
+			return fmt.Errorf("datadir contains the reserved entry %q", name)
+		}
+		mode := info.Mode()
+		link := ""
+		switch {
+		case mode.IsRegular() || mode.IsDir():
+		case mode&os.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			link = target
+		case mode&(os.ModeSocket|os.ModeNamedPipe) != 0:
+			// Runtime endpoints carry no state; they are not archived.
+			log.Printf("snapshot: skipping %s (%s)", name, mode.Type())
+			return nil
+		default:
+			return fmt.Errorf("unsupported file type %s at %s", mode.Type(), name)
+		}
+		hdr, err := tar.FileInfoHeader(info, link)
+		if err != nil {
+			return err
+		}
+		hdr.Name = name
+		hdr.Uid = 10001
+		hdr.Gid = 10001
+		hdr.Uname = ""
+		hdr.Gname = ""
+		switch {
+		case mode.IsDir():
+			mh.entry('d', name, 0, "")
+		case link != "":
+			mh.entry('l', name, 0, link)
+		default:
+			mh.entry('f', name, hdr.Size, "")
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if !mode.IsRegular() {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		n, err := io.Copy(io.MultiWriter(tw, mh.h), f)
+		if err != nil {
+			return err
+		}
+		if n != hdr.Size {
+			return fmt.Errorf("%s changed while archived: %d of %d bytes", name, n, hdr.Size)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	body, err := json.Marshal(mh.manifest())
+	if err != nil {
+		return err
+	}
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     snapshotManifestName,
+		Typeflag: tar.TypeReg,
+		Mode:     0600,
+		Size:     int64(len(body)),
+		Uid:      10001,
+		Gid:      10001,
+	}); err != nil {
+		return err
+	}
+	if _, err := tw.Write(body); err != nil {
+		return err
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	return zw.Close()
+}
+
+func (s *server) handleSnapshot(w http.ResponseWriter, r *http.Request, botKey string) {
+	dir := filepath.Join(s.volumeRoot(), botKey)
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() {
+		http.Error(w, "datadir_not_found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-tar+zstd")
+	if err := writeSnapshot(w, dir); err != nil {
+		log.Printf("snapshot error for %s: %v", botKey, err)
+		abortResponse()
+	}
+}
+
+// checkNoSymlinkParents refuses to write below a symlink: restore creates
+// links as plain entries and must never follow one.
+func checkNoSymlinkParents(root, target string) error {
+	rel, err := filepath.Rel(root, filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+	cur := root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		fi, err := os.Lstat(cur)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path_through_symlink_denied")
+		}
+	}
+	return nil
+}
+
+// extractSnapshot unpacks the archive into the empty directory dir and checks
+// it against the manifest. It returns the HTTP status for a failure.
+func extractSnapshot(src io.Reader, dir string) (int, error) {
+	tr := tar.NewReader(src)
+	mh := newManifestHasher()
+	var manifest *snapshotManifest
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return http.StatusBadRequest, fmt.Errorf("invalid archive: %v", err)
+		}
+		if manifest != nil {
+			return http.StatusBadRequest, fmt.Errorf("invalid archive: entries after the manifest")
+		}
+		if hdr.Name == snapshotManifestName {
+			body, err := io.ReadAll(io.LimitReader(tr, 1<<20))
+			if err != nil {
+				return http.StatusBadRequest, fmt.Errorf("invalid archive: %v", err)
+			}
+			var m snapshotManifest
+			if err := json.Unmarshal(body, &m); err != nil {
+				return http.StatusBadRequest, fmt.Errorf("invalid manifest: %v", err)
+			}
+			manifest = &m
+			continue
+		}
+
+		clean := filepath.Clean(filepath.FromSlash(hdr.Name))
+		if clean == "." || clean == ".." || filepath.IsAbs(clean) ||
+			strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return http.StatusBadRequest, fmt.Errorf("path_traversal_denied")
+		}
+		name := filepath.ToSlash(clean)
+		target := filepath.Join(dir, clean)
+		if err := checkNoSymlinkParents(dir, target); err != nil {
+			return http.StatusBadRequest, err
+		}
+
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, hdr.FileInfo().Mode().Perm()|0700); err != nil {
+				return http.StatusInternalServerError, fmt.Errorf("mkdir failed: %v", err)
+			}
+			mh.entry('d', name, 0, "")
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return http.StatusInternalServerError, fmt.Errorf("mkdir parent failed: %v", err)
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, hdr.FileInfo().Mode().Perm())
+			if err != nil {
+				return http.StatusInternalServerError, fmt.Errorf("create file failed: %v", err)
+			}
+			mh.entry('f', name, hdr.Size, "")
+			n, err := io.Copy(io.MultiWriter(f, mh.h), tr)
+			closeErr := f.Close()
+			if err != nil {
+				return http.StatusBadRequest, fmt.Errorf("write file failed: %v", err)
+			}
+			if closeErr != nil {
+				return http.StatusInternalServerError, fmt.Errorf("close file failed: %v", closeErr)
+			}
+			if n != hdr.Size {
+				return http.StatusBadRequest, fmt.Errorf("short file %s: %d of %d bytes", name, n, hdr.Size)
+			}
+		case tar.TypeSymlink:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return http.StatusInternalServerError, fmt.Errorf("mkdir parent failed: %v", err)
+			}
+			if err := os.Symlink(hdr.Linkname, target); err != nil {
+				return http.StatusInternalServerError, fmt.Errorf("symlink failed: %v", err)
+			}
+			mh.entry('l', name, 0, hdr.Linkname)
+		default:
+			// Hard links are not produced by snapshot (they are archived as
+			// separate files) and devices are never valid in a bot datadir.
+			return http.StatusBadRequest, fmt.Errorf("unsupported entry type %d for %s", hdr.Typeflag, name)
+		}
+	}
+
+	if manifest == nil {
+		return http.StatusBadRequest, fmt.Errorf("incomplete snapshot: manifest missing")
+	}
+	got := mh.manifest()
+	if manifest.Version != got.Version || manifest.Entries != got.Entries ||
+		manifest.Bytes != got.Bytes || manifest.SHA256 != got.SHA256 {
+		return http.StatusBadRequest, fmt.Errorf(
+			"snapshot verification failed: manifest %d entries/%d bytes, extracted %d entries/%d bytes",
+			manifest.Entries, manifest.Bytes, got.Entries, got.Bytes)
+	}
+	return http.StatusOK, nil
+}
+
+// botUID is the uid/gid the bot container runs as (BOT_CONTAINER_UID on the board).
+const botUID = 10001
+
+// lchown is replaceable in tests (they do not run as root).
+var lchown = os.Lchown
+
+// chownTree gives every entry below root (not root itself) to the bot user.
+// fleetd runs as root, so without this a restored datadir would be root-owned
+// with 0600/0700 modes and the bot could not read its sessions. The datadir root
+// stays root-owned, as the volume rules require; Lchown never follows symlinks.
+func chownTree(root string) error {
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		return lchown(path, botUID, botUID)
+	})
+}
+
+// handleRestore unpacks into a staging directory next to the datadir and swaps
+// it in only after the archive passed verification. An existing datadir is
+// renamed aside (".replaced-<bot>-<ts>"), never merged into, so no stale file
+// of an older state survives and a failed restore changes nothing.
+func (s *server) handleRestore(w http.ResponseWriter, r *http.Request, botKey string) {
+	root := s.volumeRoot()
+	if err := os.MkdirAll(root, 0700); err != nil {
+		http.Error(w, fmt.Sprintf("cannot create volume root: %v", err), http.StatusInternalServerError)
+		return
+	}
+	stamp := time.Now().UnixNano()
+	staging := filepath.Join(root, fmt.Sprintf(".restore-%s-%d", botKey, stamp))
+	if err := os.Mkdir(staging, 0700); err != nil {
+		http.Error(w, fmt.Sprintf("cannot create staging dir: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if status, err := extractSnapshot(newZstdRawReader(r.Body), staging); err != nil {
+		_ = os.RemoveAll(staging)
+		http.Error(w, err.Error(), status)
+		return
+	}
+	if err := chownTree(staging); err != nil {
+		_ = os.RemoveAll(staging)
+		http.Error(w, fmt.Sprintf("cannot hand the restored datadir to the bot user: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	dir := filepath.Join(root, botKey)
+	if _, err := os.Lstat(dir); err == nil {
+		aside := filepath.Join(root, fmt.Sprintf(".replaced-%s-%d", botKey, stamp))
+		if err := os.Rename(dir, aside); err != nil {
+			_ = os.RemoveAll(staging)
+			http.Error(w, fmt.Sprintf("cannot move the old datadir aside: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := os.Rename(staging, dir); err != nil {
+		_ = os.RemoveAll(staging)
+		http.Error(w, fmt.Sprintf("cannot put the restored datadir in place: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "restored"})
+}
+
+func (s *server) handleQuarantine(w http.ResponseWriter, r *http.Request, botKey string) {
+	dir := filepath.Join(s.volumeRoot(), botKey)
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() {
+		writeJSON(w, map[string]string{"status": "quarantined"})
+		return
+	}
+
+	target := filepath.Join(s.volumeRoot(), fmt.Sprintf(".quarantined-%s-%d", botKey, time.Now().Unix()))
+	if err := os.Rename(dir, target); err != nil {
+		http.Error(w, fmt.Sprintf("quarantine rename failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "quarantined", "path": target})
 }
 
 func (s *server) enrolled(botKey string) bool {

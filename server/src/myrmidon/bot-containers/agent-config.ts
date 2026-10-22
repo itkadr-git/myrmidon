@@ -10,6 +10,7 @@ import type { BotContainerSpec, BotExtraMount, BotSharedMount } from "./driver.j
 import { BOT_KEY_PATTERN } from "./template.js";
 import type { SharedMountSettings } from "@paperclipai/shared";
 import { resolveBotSharedMount } from "./shared-mount.js";
+import { FLEET_HOST_NAME_PATTERN } from "./fleetd-hosts.js";
 
 export const BOT_CONTAINERS_ENV = "MYRMIDON_BOT_CONTAINERS";
 
@@ -62,6 +63,19 @@ export function botContainerCardSaveProblem(
   if (typeof pidsLimit !== "number" || !Number.isInteger(pidsLimit) || pidsLimit <= 0) missing.push("pidsLimit (a positive integer)");
   if (missing.length > 0) {
     return `adapterConfig.container is enabled but lacks ${missing.join(", ")}; defaults are memoryMb ${BOT_CONTAINER_DEFAULTS.memoryMb}, cpus ${BOT_CONTAINER_DEFAULTS.cpus}, pidsLimit ${BOT_CONTAINER_DEFAULTS.pidsLimit}`;
+  }
+  if (raw.host !== undefined && raw.host !== null) {
+    if (typeof raw.host !== "string" || !FLEET_HOST_NAME_PATTERN.test(raw.host.trim())) {
+      return `adapterConfig.container.host must be a host name matching ${FLEET_HOST_NAME_PATTERN} (got ${JSON.stringify(raw.host)})`;
+    }
+    if (raw.host.trim() === "local") {
+      return 'adapterConfig.container.host "local" is not a host: omit container.host for the local driver';
+    }
+  }
+  if (raw.hostPinned !== undefined && raw.hostPinned !== null) {
+    if (typeof raw.hostPinned !== "boolean") {
+      return `adapterConfig.container.hostPinned must be a boolean (got ${JSON.stringify(raw.hostPinned)})`;
+    }
   }
   return null;
 }
@@ -116,6 +130,10 @@ export interface BotContainerAgentConfig {
   /** myrmidon(1.6.1-BOT-DISK-D): the shared directory this bot gets at `/shared`;
    *  absent when the instance setting is off or the bot is not allowlisted. */
   sharedMount?: BotSharedMount;
+  /** Named fleet host or undefined for local driver. */
+  host?: string;
+  /** Whether the host assignment is pinned. */
+  hostPinned?: boolean;
 }
 
 export type BotContainerAgentConfigResult =
@@ -179,6 +197,27 @@ export function readBotContainerAgentConfig(
   const diskQuotaMb =
     typeof c.diskQuotaMb === "number" && Number.isInteger(c.diskQuotaMb) && c.diskQuotaMb > 0 ? c.diskQuotaMb : undefined;
   const sharedMount = resolveBotSharedMount(agentId, sharedMountSettings);
+
+  let host: string | undefined;
+  if (c.host !== undefined && c.host !== null) {
+    if (typeof c.host !== "string" || !FLEET_HOST_NAME_PATTERN.test(c.host.trim())) {
+      return { ok: false, reason: `container.host must be a host name matching ${FLEET_HOST_NAME_PATTERN} (got ${JSON.stringify(c.host)})` };
+    }
+    const trimmed = c.host.trim();
+    if (trimmed === "local") {
+      return { ok: false, reason: 'container.host "local" is not a host: omit container.host for the local driver' };
+    }
+    host = trimmed;
+  }
+
+  let hostPinned: boolean | undefined;
+  if (c.hostPinned !== undefined && c.hostPinned !== null) {
+    if (typeof c.hostPinned !== "boolean") {
+      return { ok: false, reason: `container.hostPinned must be a boolean (got ${JSON.stringify(c.hostPinned)})` };
+    }
+    hostPinned = c.hostPinned;
+  }
+
   return {
     ok: true,
     config: {
@@ -189,6 +228,8 @@ export function readBotContainerAgentConfig(
       extraMounts: extraMounts.mounts,
       ...(diskQuotaMb !== undefined ? { diskQuotaMb } : {}),
       ...(sharedMount ? { sharedMount } : {}),
+      ...(host !== undefined ? { host } : {}),
+      ...(hostPinned !== undefined ? { hostPinned } : {}),
     },
   };
 }
