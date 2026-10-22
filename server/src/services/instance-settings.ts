@@ -55,6 +55,8 @@ import {
   preserveAutonomyGeneralKey,
   preserveAutonomyToolMappingGeneralKey,
 } from "../myrmidon/autonomy/store.js";
+// myrmidon(1.6.6 K-7): preserve the skill lifecycle pilot list across vendor writes.
+import { preserveSkillPilotAgentsGeneralKey } from "../myrmidon/skill-lifecycle/pilot-agents-store.js";
 // myrmidon(1.6-TG-PROACTIVITY-E, 1.6.1-TG-NOTIFY-B): keep the telegram-notify state across vendor writes of `general`
 import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
 import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
@@ -264,6 +266,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
       keyboardShortcuts: parsed.data.keyboardShortcuts ?? false,
+      ...(parsed.data.taskDrain ? { taskDrain: parsed.data.taskDrain } : {}),
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
@@ -289,6 +292,11 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.processes ? { processes: parsed.data.processes } : {}),
       // myrmidon(BOT-DISK E): the stored host disk threshold survives every general write
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
+      // myrmidon(1.6.6 MODEL-MENU B): the stored grouped /model menu survives
+      // every general write. Without this line the vendor write path silently
+      // drops the key, so the tree the owner edits in the web interface would
+      // never roundtrip and /model would keep showing the automatic groups.
+      ...(parsed.data.modelMenu ? { modelMenu: parsed.data.modelMenu } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
       // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
@@ -798,6 +806,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
               ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
               ...preserveAutonomyToolMappingGeneralKey(current.general), // myrmidon(1.6-AUTONOMY-GW)
+              ...preserveSkillPilotAgentsGeneralKey(current.general), // myrmidon(1.6.6 K-7)
               ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
               ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
               ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
@@ -825,6 +834,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveBehaviorSettingsGeneralKeys(current.general), // myrmidon(SETTINGS-CORE)
               ...preserveDebateGeneralKey(current.general), // myrmidon(1.7-DEBATE-ASYM-A)
               ...preserveBoardProcessesGeneralKey(current.general), // myrmidon(1.6.6 PROCS-J)
+              // myrmidon(PROCS-1.8): preserve DB-owned task-drain state unless explicitly changed.
+              ...(patch.taskDrain === undefined && storedRawGeneral.taskDrain !== undefined
+                ? { taskDrain: storedRawGeneral.taskDrain }
+                : {}),
               // The preserve line above restores the stored row: a patch that carries
               // the counts wins (the same rule as DM-PROGRESS), and it is validated
               // where every other read of the key is — at startup.

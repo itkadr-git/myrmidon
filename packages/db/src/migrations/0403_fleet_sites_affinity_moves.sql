@@ -6,7 +6,6 @@ CREATE TABLE IF NOT EXISTS "myrmidon_fleet_sites" (
 	"token_secret" text,
 	"ca_cert" text,
 	"ca_cert_fingerprint" text,
-	"client_cert" text,
 	"client_cert_secret_key" text,
 	"client_cert_not_after" timestamp with time zone,
 	"status" text DEFAULT 'active' NOT NULL,

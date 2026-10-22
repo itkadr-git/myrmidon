@@ -473,7 +473,7 @@ describe("site-registry — hot-reload and client lifecycle", () => {
 });
 
 describe("site-registry — env bootstrap tenant scope", () => {
-  const HOSTS = JSON.stringify([{ name: "myr-vm1", url: "https://myr-vm1.example.test:9443", tokenSecret: "tok" }]);
+  const HOSTS = JSON.stringify([{ name: "myr-vm1", url: "http://myr-vm1.example.test:9443", tokenSecret: "tok" }]);
   const mkDb = (companyIds: string[]) => {
     const inserted: Array<{ companyId: string }> = [];
     const db = {
