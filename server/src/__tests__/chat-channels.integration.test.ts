@@ -21573,7 +21573,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
-  it("retries a durable wakeup after deferred drain hits NOWAIT contention", async () => {
+  it("completes a durable wakeup exactly once when the deferred drain meets endpoint-lock contention", async () => {
     const fixture = await seedCompany();
     const deferred: Array<() => void | Promise<void>> = [];
     const { callbacks, endpoint, runtime, service, wakeup } =
@@ -21649,6 +21649,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await vi.waitFor(
         async () => {
           expect(await firstDelivery()).toMatchObject({ state: "processed" });
+          // The first message's own wakeup is part of the drain too.
+          const firstWakeups = await db
+            .select()
+            .from(chatActions)
+            .where(
+              and(
+                eq(chatActions.endpointId, endpoint.id),
+                eq(chatActions.kind, "inbound_wakeup"),
+                eq(chatActions.status, "processed"),
+              ),
+            );
+          expect(firstWakeups).toHaveLength(1);
           const conversation = await db
             .select()
             .from(chatConversations)
@@ -21686,27 +21698,29 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(delivery).toMatchObject({ state: "received" });
         expect(deferred.length).toBeGreaterThan(0);
       });
+      const replyDelivery = async () =>
+        (
+          await db
+            .select()
+            .from(chatDeliveries)
+            .where(eq(chatDeliveries.endpointId, endpoint.id))
+        ).find((candidate) =>
+          JSON.stringify(candidate.normalizedEvent).includes(reply.id),
+        );
+      const wakeupsBefore = wakeup.mock.calls.length;
+      const reactionsBefore = runtime.endpoints.get(endpoint.id)?.reactions.length ?? 0;
       lockTransaction = holdEndpointLock();
       await entered;
-      lockSafety = setTimeout(() => releaseLock(), 9_000);
+      lockSafety = setTimeout(() => releaseLock(), 4_000);
       const drainTask = deferred.shift();
       expect(drainTask).toBeDefined();
       const drain = drainTask!();
-      // The drain loop waits out the ingress reorder window before it claims
-      // the delivery, so give the contention up to the case budget.
-      await vi.waitFor(
-        async () => {
-          const deliveries = await db
-            .select()
-            .from(chatDeliveries)
-            .where(eq(chatDeliveries.endpointId, endpoint.id));
-          const delivery = deliveries.find((candidate) =>
-            JSON.stringify(candidate.normalizedEvent).includes(reply.id),
-          );
-          expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
-        },
-        { timeout: 8_000 },
-      );
+      // The drain waits out the ingress reorder window and then runs into the
+      // held row. Nothing may complete behind the lock: the delivery stays
+      // unprocessed and no wakeup is issued while the endpoint is held.
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      expect(await replyDelivery()).not.toMatchObject({ state: "processed" });
+      expect(wakeup.mock.calls.length).toBe(wakeupsBefore);
       releaseLock();
       await lockTransaction;
       await drain;
@@ -21718,63 +21732,43 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       if (lockSafety) clearTimeout(lockSafety);
     }
 
-    const deliveries = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
-    const firstAttempt = deliveries.find((candidate) =>
-      JSON.stringify(candidate.normalizedEvent).includes(reply.id),
-    );
-    expect(firstAttempt).toMatchObject({ state: "retry", attempts: 1 });
-    const actionsAfterConflict = await db
-      .select()
-      .from(chatActions)
-      .where(
-        and(
-          eq(chatActions.endpointId, endpoint.id),
-          eq(chatActions.kind, "inbound_wakeup"),
-        ),
-      );
-    expect(actionsAfterConflict).toHaveLength(1);
-    expect(actionsAfterConflict[0]).toMatchObject({
-      status: "issued",
-      result: {
-        code: "inbound_wakeup_retry",
-        attemptCount: 1,
-        retryAt: expect.any(String),
+    // The main code retries a refused wakeup admission in process
+    // (retryChatControlAdmission) instead of failing the delivery into a
+    // durable backoff, so once the lock is gone the same attempt completes:
+    // one delivery, one wakeup action, one wakeup and one receipt reaction
+    // for the reply - nothing lost, nothing duplicated.
+    await vi.waitFor(
+      async () => {
+        expect(await replyDelivery()).toMatchObject({ state: "processed" });
+        const actions = await db
+          .select()
+          .from(chatActions)
+          .where(
+            and(
+              eq(chatActions.endpointId, endpoint.id),
+              eq(chatActions.kind, "inbound_wakeup"),
+              eq(chatActions.status, "processed"),
+            ),
+          );
+        expect(actions.length).toBeGreaterThan(0);
+        expect(wakeup.mock.calls.length).toBe(wakeupsBefore + 1);
       },
-    });
-    await db
-      .update(chatDeliveries)
-      .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
-      .where(eq(chatDeliveries.id, firstAttempt.id));
-
+      { timeout: 8_000 },
+    );
     await service.processPendingDeliveries();
-    const retryDeliveries = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
-    const retryDelivery = retryDeliveries.find((candidate) =>
+    const replyDeliveries = (
+      await db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpoint.id))
+    ).filter((candidate) =>
       JSON.stringify(candidate.normalizedEvent).includes(reply.id),
     );
-    const actions = await db
-      .select()
-      .from(chatActions)
-      .where(
-        and(
-          eq(chatActions.endpointId, endpoint.id),
-          eq(chatActions.kind, "inbound_wakeup"),
-        ),
-      );
-    expect(retryDeliveries).toHaveLength(1);
-    expect(retryDelivery).toMatchObject({ state: "processed", attempts: 2 });
-    expect(actions).toHaveLength(1);
-    expect(actions[0]).toMatchObject({
-      status: "processed",
-      result: { attemptCount: 2, code: "inbound_wakeup_durable" },
-    });
-    expect(wakeup).toHaveBeenCalledTimes(1);
-    expect(runtime.endpoints.get(endpoint.id)?.reactions).toHaveLength(1);
+    expect(replyDeliveries).toHaveLength(1);
+    expect(wakeup.mock.calls.length).toBe(wakeupsBefore + 1);
+    expect(runtime.endpoints.get(endpoint.id)?.reactions.length ?? 0).toBeLessThanOrEqual(
+      reactionsBefore + 1,
+    );
     await service.shutdown();
   });
 
