@@ -269,7 +269,10 @@ jobs:
           - { label: "server 1/3", mode: general, group: general-server, shard_index: 0, shard_count: 3 }
           - { label: "server 2/3", mode: general, group: general-server, shard_index: 1, shard_count: 3 }
           - { label: "server 3/3", mode: general, group: general-server, shard_index: 2, shard_count: 3 }
-          - { label: "workspaces-a", mode: general, group: general-workspaces-a }
+          # Split the UI-heavy lane to keep each Vitest process below the
+          # GitHub runner's Node heap limit.
+          - { label: "workspaces-a (1/2)", mode: general, group: general-workspaces-a, shard_index: 0, shard_count: 2 }
+          - { label: "workspaces-a (2/2)", mode: general, group: general-workspaces-a, shard_index: 1, shard_count: 2 }
           - { label: "workspaces-b", mode: general, group: general-workspaces-b }
           - { label: "serialized 1/2", mode: serialized, shard_index: 0, shard_count: 2 }
           - { label: "serialized 2/2", mode: serialized, shard_index: 1, shard_count: 2 }
