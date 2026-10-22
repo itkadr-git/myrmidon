@@ -1,5 +1,5 @@
 {
-  "id": "a7e6858f-6c99-43ae-b023-4a152cd3ac13",
+  "id": "092a1f4b-cf6a-4533-9c4d-290e5847b7c9",
   "prevId": "65fb8a87-cfd0-4446-80c9-cc0b04810311",
   "version": "7",
   "dialect": "postgresql",
@@ -10729,12 +10729,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "rotation_target_secret_id": {
-          "name": "rotation_target_secret_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -10948,19 +10942,6 @@
             "id"
           ],
           "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "company_secret_proposals_rotation_target_secret_id_company_secrets_id_fk": {
-          "name": "company_secret_proposals_rotation_target_secret_id_company_secrets_id_fk",
-          "tableFrom": "company_secret_proposals",
-          "tableTo": "company_secrets",
-          "columnsFrom": [
-            "rotation_target_secret_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },

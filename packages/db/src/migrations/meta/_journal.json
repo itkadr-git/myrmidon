@@ -2380,7 +2380,21 @@
       "idx": 402,
       "version": "7",
       "when": 1792395502000,
-      "tag": "0402_secret_proposal_rotation_target",
+      "tag": "0402_skill_lifecycle_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 403,
+      "version": "7",
+      "when": 1792395503000,
+      "tag": "0403_fleet_sites_affinity_moves",
+      "breakpoints": true
+    },
+    {
+      "idx": 404,
+      "version": "7",
+      "when": 1792395504000,
+      "tag": "0404_secret_proposal_rotation_target",
       "breakpoints": true
     }
   ]
