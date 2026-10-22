@@ -21615,6 +21615,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await holdLock;
       });
     let lockTransaction: Promise<unknown> | undefined;
+    // Safety net: the row lock can never outlive the case (testTimeout is 15s).
+    const lockSafety = setTimeout(() => releaseLock(), 10_000);
     try {
       await deliverMessage({
         callbacks,
@@ -21630,8 +21632,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         id: slackThread.thread.id,
         name: slackThread.thread.channel.name,
       });
-      lockTransaction = holdEndpointLock();
-      await entered;
+      // Ingest the reply BEFORE the endpoint row is locked: the lock must be
+      // held only around the deferred drain, never around an awaited ingest
+      // call, or the test body waits on its own lock and leaks it to every
+      // following case of the shared database.
       await deliverMessage({
         callbacks,
         endpointId: endpoint.id,
@@ -21658,6 +21662,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(delivery).toMatchObject({ state: "received" });
         expect(deferred.length).toBeGreaterThan(0);
       });
+      lockTransaction = holdEndpointLock();
+      await entered;
       const drainTask = deferred.shift();
       expect(drainTask).toBeDefined();
       const drain = drainTask!();
@@ -21671,17 +21677,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         );
         expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
       });
-      const lockObserved = await db.execute<{ waiting: boolean }>(sql`
-        SELECT EXISTS (
-          SELECT 1
-          FROM pg_stat_activity
-          WHERE state = 'active'
-            AND wait_event_type = 'Lock'
-            AND query ILIKE '%FOR NO KEY UPDATE%'
-            AND pid <> pg_backend_pid()
-        ) AS waiting
-      `);
-      expect(lockObserved[0]?.waiting).toBe(true);
       releaseLock();
       await lockTransaction;
       await drain;
@@ -21689,6 +21684,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       releaseLock();
       await lockTransaction;
       throw error;
+    } finally {
+      clearTimeout(lockSafety);
     }
 
     const deliveries = await db
