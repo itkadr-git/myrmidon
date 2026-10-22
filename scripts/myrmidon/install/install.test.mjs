@@ -526,6 +526,27 @@ describe("install.sh", () => {
     assert.match(envFile(custom), /^MYRMIDON_LICENSE_DIR=\/srv\/licenses$/m);
   });
 
+  it("stops when the license issuing key sits in the license directory", () => {
+    for (const make of [
+      (d) => fs.mkdirSync(path.join(d, "issuer")),
+      (d) => fs.writeFileSync(path.join(d, "signing.pem"), "x"),
+      (d) => fs.writeFileSync(path.join(d, "key_ed25519"), "x"),
+    ]) {
+      const sb = sandbox();
+      const licDir = path.join(sb.dir, "lic");
+      fs.mkdirSync(licDir);
+      make(licDir);
+      const result = run(sb, ["--dry-run"], { MYRMIDON_LICENSE_DIR: licDir });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ключ выпуска лежит в каталоге лицензии/);
+    }
+    const clean = sandbox();
+    const licDir = path.join(clean.dir, "lic");
+    fs.mkdirSync(licDir);
+    fs.writeFileSync(path.join(licDir, "license.key"), "MYR1.x\n");
+    assert.equal(run(clean, ["--dry-run"], { MYRMIDON_LICENSE_DIR: licDir }).status, 0);
+  });
+
   it("mounts the database volume at the path the PostgreSQL 18 image declares", () => {
     // PG18 keeps the cluster at /var/lib/postgresql/18/docker and the image
     // declares VOLUME /var/lib/postgresql. Mounting .../data would leave the
