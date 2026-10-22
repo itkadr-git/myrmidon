@@ -1,3 +1,4 @@
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
 /**
  * Deliberate boot refusals and whether they should page Sentry.
  *
@@ -83,6 +84,6 @@ export function shouldReportStartupFailure(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   if (!(error instanceof StartupRefusalError)) return true;
-  const cloudOrigin = env.PAPERCLIP_CLOUD_API_ORIGIN?.trim();
+  const cloudOrigin = readProductEnvFrom(env, "CLOUD_API_ORIGIN")?.trim();
   return !cloudOrigin;
 }

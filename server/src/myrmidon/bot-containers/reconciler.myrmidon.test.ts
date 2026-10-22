@@ -45,7 +45,7 @@ function fakeDriver(
   opts: {
     drift?: boolean;
     driftFields?: TemplateDriftField[];
-    fail?: Partial<Record<"create" | "recreate" | "writeProfile" | "start" | "restart", string>>;
+    fail?: Partial<Record<"create" | "recreate" | "writeProfile" | "start" | "restart" | "updateResources", string>>;
   } = {},
 ): FakeDriver {
   const calls: string[] = [];
@@ -83,6 +83,10 @@ function fakeDriver(
       calls.push("recreate");
       maybeFail("recreate");
       current = { ...current, state: "stopped" };
+    },
+    async updateResources() {
+      calls.push("updateResources");
+      maybeFail("updateResources");
     },
     async writeProfile(_botKey, compiled) {
       calls.push("writeProfile");
@@ -566,6 +570,39 @@ describe("reconcileBot", () => {
       });
     });
 
+    it("applies resource drift without recreating the running container", async () => {
+      const applied = profile();
+      const driver = fakeDriver(
+        { botKey: "agent-a", state: "running", ...hashesOf(applied) },
+        { drift: true, driftFields: [{ field: "HostConfig.Memory", expected: 1024, actual: 2048 }] },
+      );
+      const outcome = await run(driver, fakeMaintenance([0]));
+      expect(outcome).toEqual({ kind: "applied_files" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "updateResources"]);
+      expect(driver.current().state).toBe("running");
+    });
+    it("resource drift plus a restart-class profile change: updates limits, then restarts in the window", async () => {
+      const driver = fakeDriver(
+        { botKey: "agent-a", state: "running", restartHash: "restart-old", filesHash: "files-1" },
+        { drift: true, driftFields: [{ field: "HostConfig.Memory", expected: 1024, actual: 2048 }] },
+      );
+      const maintenance = fakeMaintenance([0]);
+      const outcome = await run(driver, maintenance, { compile: async () => profile({ restartHash: "restart-new" }) });
+      expect(outcome).toEqual({ kind: "applied_restart" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "updateResources", "writeProfile", "restart"]);
+      expect(driver.current().restartHash).toBe("restart-new");
+      expect(maintenance.exitCalls).toHaveLength(1);
+    });
+    it("resource drift on an unhealthy container: updates limits, then restarts it", async () => {
+      const applied = profile();
+      const driver = fakeDriver(
+        { botKey: "agent-a", state: "unhealthy", ...hashesOf(applied) },
+        { drift: true, driftFields: [{ field: "HostConfig.PidsLimit", expected: 512, actual: 256 }] },
+      );
+      const outcome = await run(driver, fakeMaintenance([0]));
+      expect(outcome).toEqual({ kind: "applied_restart" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "updateResources", "restart"]);
+    });
     it("logs which field drifted, with both values, before it recreates anything", async () => {
       const applied = profile();
       const driver = fakeDriver(
