@@ -184,12 +184,16 @@ describeDb("leader-lease protocol (PROCS-1.7)", () => {
     la.start();
     await until(() => expect(la.isLeader()).toBe(true));
 
-    // Force a loss: delete the row, let the contender take it; the next renew
-    // of the old holder must not return a row → onLost with aborted signal.
+    // Freeze A's timer before deleting the row. Otherwise A can renew and
+    // recreate its row before B's first acquire pass under CPU load.
+    la.setTiming(300, 60_000);
     await db.delete(boardLeases);
     const lb = b.lease("scheduler");
     lb.start();
     await until(() => expect(lb.isLeader()).toBe(true));
+
+    // Now allow A's next pass to observe B and report the lost lease.
+    la.setTiming(300, 50);
     await until(() => expect(lostSignal).not.toBeNull());
     lb.stop();
     la.stop();
