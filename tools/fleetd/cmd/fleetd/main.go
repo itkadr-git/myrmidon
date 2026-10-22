@@ -521,6 +521,7 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fields := s.driftFields(body.Spec, &x)
+		writeJSON(w, map[string]any{"drift": len(fields) > 0, "fields": fields})
 	case action == "snapshot" && r.Method == http.MethodPost:
 		s.handleSnapshot(w, r, botKey)
 	case action == "restore" && r.Method == http.MethodPost:
