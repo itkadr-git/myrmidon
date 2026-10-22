@@ -228,10 +228,10 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
       server.close();
     }
 
-    // Protocol validation: rejects unix sockets and file URLs; https (site-agent over TLS) is accepted
-    expect(() => parseFleetdEndpoint("unix:///var/run/docker.sock")).toThrow(/must be http:\/\/ or https:\/\//);
-    expect(() => parseFleetdEndpoint("file:///host/dev")).toThrow(/must be http:\/\/ or https:\/\//);
-    expect(parseFleetdEndpoint("https://fleetd.example.com").protocol).toBe("https:");
+    // Protocol validation: only http(s); rejects unix sockets, ftp, file URLs
+    expect(() => parseFleetdEndpoint("unix:///var/run/docker.sock")).toThrow(/must be http:\/\//);
+    expect(() => parseFleetdEndpoint("file:///host/dev")).toThrow(/must be http:\/\//);
+    expect(() => parseFleetdEndpoint("ftp://fleetd.example.com")).toThrow(/must be http:\/\//);
     expect(() => parseFleetdEndpoint("http://fleetd.example.com:0")).toThrow(/port is invalid/);
     expect(() => parseFleetdEndpoint("http://fleetd.example.com:99999")).toThrow();
   });
@@ -370,7 +370,7 @@ describe("OPE-8137: fleet routing completely isolates fleet-placed bots from loc
     const routed = fleetRoutingDriver(deps, () => routedAgent);
 
     await expect(routed.status("bot-a")).rejects.toThrow(
-      'container.host "non-existent-host" names no configured fleet host (check MYRMIDON_FLEET_HOSTS or fleet sites registry)',
+      'container.host "non-existent-host" names no configured fleet host (check MYRMIDON_FLEET_HOSTS)',
     );
     expect(localDriver.status).not.toHaveBeenCalled();
   });

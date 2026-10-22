@@ -83,6 +83,20 @@ describe("readBotContainerAgentConfig", () => {
     ).toBe(false);
   });
 
+  it("parses container.site, which a card may carry beside the legacy host", () => {
+    const result = readBotContainerAgentConfig("hermes_gateway", {
+      container: { ...VALID_CONTAINER_CONFIG, site: "myr-vm1" },
+    });
+    expect(result.ok && result.config.site).toBe("myr-vm1");
+    expect(result.ok && result.config.host).toBeUndefined();
+  });
+
+  it("refuses a malformed container.site or the reserved name local", () => {
+    for (const site of ["INVALID SITE!", "local", 42]) {
+      expect(readBotContainerAgentConfig("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, site } }).ok).toBe(false);
+    }
+  });
+
   it("refuses non-boolean hostPinned", () => {
     expect(
       readBotContainerAgentConfig("hermes_gateway", {
@@ -252,6 +266,16 @@ describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
     expect(
       botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, pidsLimit: 1.5 } }),
     ).toContain("pidsLimit");
+  });
+
+  it("validates container.site at save like the host", () => {
+    expect(botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, site: "myr-vm1" } })).toBeNull();
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, site: "Bad Site" } }),
+    ).toContain("site must be a host name");
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, site: "local" } }),
+    ).toContain('"local" is not a host');
   });
 
   it("validates host and hostPinned when provided", () => {

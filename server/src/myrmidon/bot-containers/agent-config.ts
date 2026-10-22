@@ -63,12 +63,15 @@ export function botContainerCardSaveProblem(
   if (missing.length > 0) {
     return `adapterConfig.container is enabled but lacks ${missing.join(", ")}; defaults are memoryMb ${BOT_CONTAINER_DEFAULTS.memoryMb}, cpus ${BOT_CONTAINER_DEFAULTS.cpus}, pidsLimit ${BOT_CONTAINER_DEFAULTS.pidsLimit}`;
   }
-  if (raw.host !== undefined && raw.host !== null) {
-    if (typeof raw.host !== "string" || !FLEET_HOST_NAME_PATTERN.test(raw.host.trim())) {
-      return `adapterConfig.container.host must be a host name matching ${FLEET_HOST_NAME_PATTERN} (got ${JSON.stringify(raw.host)})`;
+  // `site` (the fleet sites registry name) and the legacy `host` are the same kind of name.
+  for (const field of ["site", "host"] as const) {
+    const value = raw[field];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "string" || !FLEET_HOST_NAME_PATTERN.test(value.trim())) {
+      return `adapterConfig.container.${field} must be a host name matching ${FLEET_HOST_NAME_PATTERN} (got ${JSON.stringify(value)})`;
     }
-    if (raw.host.trim() === "local") {
-      return 'adapterConfig.container.host "local" is not a host: omit container.host for the local driver';
+    if (value.trim() === "local") {
+      return `adapterConfig.container.${field} "local" is not a host: omit container.${field} for the local driver`;
     }
   }
   if (raw.hostPinned !== undefined && raw.hostPinned !== null) {
@@ -129,7 +132,9 @@ export interface BotContainerAgentConfig {
   /** myrmidon(1.6.1-BOT-DISK-D): the shared directory this bot gets at `/shared`;
    *  absent when the instance setting is off or the bot is not allowlisted. */
   sharedMount?: BotSharedMount;
-  /** Named fleet host or undefined for local driver. */
+  /** Named site of the fleet sites registry (1.6.6) or undefined for the local driver; wins over `host`. */
+  site?: string;
+  /** Legacy fleet host name (MYRMIDON_FLEET_HOSTS) or undefined for the local driver. */
   host?: string;
   /** Whether the host assignment is pinned. */
   hostPinned?: boolean;
@@ -197,16 +202,18 @@ export function readBotContainerAgentConfig(
     typeof c.diskQuotaMb === "number" && Number.isInteger(c.diskQuotaMb) && c.diskQuotaMb > 0 ? c.diskQuotaMb : undefined;
   const sharedMount = resolveBotSharedMount(agentId, sharedMountSettings);
 
-  let host: string | undefined;
-  if (c.host !== undefined && c.host !== null) {
-    if (typeof c.host !== "string" || !FLEET_HOST_NAME_PATTERN.test(c.host.trim())) {
-      return { ok: false, reason: `container.host must be a host name matching ${FLEET_HOST_NAME_PATTERN} (got ${JSON.stringify(c.host)})` };
+  const placement: { site?: string; host?: string } = {};
+  for (const field of ["site", "host"] as const) {
+    const value = c[field];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "string" || !FLEET_HOST_NAME_PATTERN.test(value.trim())) {
+      return { ok: false, reason: `container.${field} must be a host name matching ${FLEET_HOST_NAME_PATTERN} (got ${JSON.stringify(value)})` };
     }
-    const trimmed = c.host.trim();
+    const trimmed = value.trim();
     if (trimmed === "local") {
-      return { ok: false, reason: 'container.host "local" is not a host: omit container.host for the local driver' };
+      return { ok: false, reason: `container.${field} "local" is not a host: omit container.${field} for the local driver` };
     }
-    host = trimmed;
+    placement[field] = trimmed;
   }
 
   let hostPinned: boolean | undefined;
@@ -227,7 +234,8 @@ export function readBotContainerAgentConfig(
       extraMounts: extraMounts.mounts,
       ...(diskQuotaMb !== undefined ? { diskQuotaMb } : {}),
       ...(sharedMount ? { sharedMount } : {}),
-      ...(host !== undefined ? { host } : {}),
+      ...(placement.site !== undefined ? { site: placement.site } : {}),
+      ...(placement.host !== undefined ? { host: placement.host } : {}),
       ...(hostPinned !== undefined ? { hostPinned } : {}),
     },
   };
