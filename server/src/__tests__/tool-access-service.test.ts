@@ -2002,10 +2002,9 @@ describeEmbeddedPostgres("tool access service", () => {
         }
       });
 
-      // The first replacement still owns the departing member lock, so this
-      // gives cleanup time to queue for that lock before the empty replacement
-      // queues for the grant lock.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Confirm cleanup is queued behind the first replacement's membership
+      // lock before starting the competing empty replacement.
+      expect(await waitForBlockedMembershipUpdate()).toBe(true);
       let replacementSettled = false;
       const replacement = replacementService
         .replaceConnectionGrantMembers(connection.id, grant.id, [])
@@ -2016,7 +2015,6 @@ describeEmbeddedPostgres("tool access service", () => {
         .finally(() => {
           replacementSettled = true;
         });
-      await new Promise((resolve) => setTimeout(resolve, 50));
       expect(replacementSettled).toBe(false);
 
       releaseFirstReplacement();
