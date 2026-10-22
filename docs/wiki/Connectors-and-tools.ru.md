@@ -55,6 +55,13 @@
 один раз на весь сервер своим собственным приложением GitHub App вместо
 персональных OAuth-учёток.
 
+## Плагины и права доступа
+
+Плагины работают как изолированные процессы с явно объявленными возможностями
+(capabilities). При оркестрации задач возможность `issue.attachments.write`
+позволяет фоновым процессам загружать ограниченные файлы (подтверждения, отчёты,
+логи) без передачи прямых ключей администратора доски или доступа к БД.
+
 ## Подробнее
 
 - [Мост браузера: шлюз и сопряжение](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/browser-bridge-gateway.md)
@@ -68,3 +75,4 @@
 - [Общие медиа- и офисные инструменты](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/media-tools.md)
 - [Путь OCR: PDF в текст](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/ocr.md)
 - [Общая учётная запись GitHub](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/github-shared-identity.md)
+- [Возможности плагинов](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/plugin-capabilities.ru.md)

@@ -67,6 +67,47 @@ describe("issue done pull-request gate", () => {
     }
   });
 
+  it("says the board has no repository access when the PR cannot be read for lack of rights", async () => {
+    const denied = vi.fn<PullRequestMergeDetailsResolver>(async () => ({
+      state: "unknown",
+      access: "denied",
+      headRef: null,
+      headSha: null,
+    }));
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([product({ id: "wp-1", number: 12 })]),
+      companyId,
+      issueId,
+      denied,
+    );
+    try {
+      assertIssueDonePullRequestsSettled(snapshot);
+      throw new Error("Expected the completion gate to block");
+    } catch (error) {
+      expect(error).toMatchObject({
+        status: 409,
+        message: "Не удаётся прочитать PR https://github.com/acme/project/pull/12: у доски нет доступа к репозиторию acme/project (настройте GitHub App/PAT)",
+        details: {
+          code: ISSUE_DONE_PULL_REQUEST_GATE,
+          reason: "repository_access_unavailable",
+          repository: "acme/project",
+          pullRequestUrl: "https://github.com/acme/project/pull/12",
+          retryable: true,
+        },
+      });
+    }
+  });
+
+  it("keeps the generic message for an unknown PR state without an access problem", async () => {
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([product({ id: "wp-1", number: 12 })]),
+      companyId,
+      issueId,
+      resolver({ 12: "unknown" }),
+    );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrow(/Cannot mark this task done until/);
+  });
+
   it("returns a retryable gate conflict if the issue company changed during validation", async () => {
     const { assertIssueDoneSnapshotUnchanged } = await import("./guard.js");
     const snapshot = await inspectIssueDonePullRequests(

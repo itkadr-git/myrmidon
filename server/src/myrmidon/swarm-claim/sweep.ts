@@ -50,6 +50,8 @@ import {
   type SwarmClaimSettings,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
+import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
+import { SWARM_CLAIM_SWEEP_FEATURE_KEY } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { currentHostCpuGate, currentHostMemoryGate, type HostCpuGate, type HostMemoryGate } from "../run-admission.js";
 import { matchCompany, matchIssue, type SwarmMatcherDeps } from "./matcher.js";
 import type { SwarmClaimServicePorts } from "./service.js";
@@ -59,6 +61,26 @@ import {
   listExpiredClaims,
   releaseClaim,
 } from "./store.js";
+
+/**
+ * myrmidon(FEATURES): one pass of the sweeper reported to the features page —
+ * "the loop is alive", what it woke, and what the idle pass saw. A release that
+ * threw or an idle pass that failed is a failed pass.
+ */
+function recordSwarmPass(result: SwarmClaimSweepResult, failure: string | null): void {
+  const detail = {
+    idleRoles: result.idleRoles,
+    idleFreeAgents: result.idleFreeAgents,
+    idleWoken: result.idleWoken,
+    idleSkippedReason: result.idleSkippedReason,
+  };
+  const effect = result.woken + result.idleWoken;
+  const error = failure ?? (result.failed > 0 ? `${result.failed} claim release(s) failed` : null);
+  recordFeatureOutcome(
+    SWARM_CLAIM_SWEEP_FEATURE_KEY,
+    error ? { ok: false, error, effect, detail } : { ok: true, effect, detail },
+  );
+}
 
 /** The sweep inspects at most this many claims per pass. */
 export const SWARM_CLAIM_SWEEP_PAGE_SIZE = 50;
@@ -337,7 +359,10 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         }
       }
 
-      if (!hostGateOpen) return result;
+      if (!hostGateOpen) {
+        recordSwarmPass(result, null); // myrmidon(FEATURES): a closed host gate is a skipped pass, not a failed one
+        return result;
+      }
       try {
         const matched = await runMatcherPass(deps, settings, now, hostGateOpen);
         result.idleClaimed += matched.claimed;
@@ -357,12 +382,16 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
           );
         }
       } catch {
-        // CONSTANT errorKind only (the exception can carry a credential).
+        // Keep exception details out of logs; errors may carry credentials.
         logger.warn(
           { errorKind: "swarm_match_failed" },
           "swarm matcher pass failed; the next tick retries",
         );
+        // myrmidon(FEATURES): constant text too, the exception can carry a credential.
+        recordSwarmPass(result, "the idle wake pass failed");
+        return result;
       }
+      recordSwarmPass(result, null); // myrmidon(FEATURES)
       return result;
     },
   };
@@ -610,6 +639,13 @@ function matcherDeps(
     hostGateOpen,
     now,
     casteDirectory: deps.castes,
+    resolveTaskCaste: deps.resolveTaskCaste,
+    agentNests: deps.agentNests,
+    isIssueCoolingDown: deps.isIssueCoolingDown,
+    coolingSettings: deps.coolingSettings,
+    isAgentAvailable: deps.isAgentAvailable,
+    isTaskBudgetBlocked: deps.isTaskBudgetBlocked,
+    pickAgentForTask: deps.pickAgentForTask,
     logActivity: deps.logActivity,
   };
 }

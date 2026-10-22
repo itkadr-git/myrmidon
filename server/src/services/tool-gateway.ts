@@ -152,6 +152,9 @@ import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime
 import { resolveToolAutonomyMapping } from "../myrmidon/autonomy/tool-mapping-store.js";
 import { dbAutonomyVerdictForAgent } from "../myrmidon/autonomy/gate.js";
 import { commitToolActionReview } from "./tool-action-review.js";
+// myrmidon(1.6-AUTONOMY): a held autonomy action is decided by our executor.
+import { isAutonomyToolName } from "../myrmidon/autonomy/action-execution.js";
+import { decideHeldAutonomyAction } from "../myrmidon/autonomy/action-decision.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
   createToolRuntimeSupervisor,
@@ -192,6 +195,7 @@ import {
 } from "./tool-content-guards.js";
 import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.js";
 import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { browserConsoleMcpPauseForEndpoint } from "../myrmidon/browser-console/mcp-guard.js"; // myrmidon(BROWSER-CONSOLE-B)
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
@@ -5982,6 +5986,16 @@ export function createToolGatewayService(
     let endpoint =
       composioSession?.url ??
       (await resolvedRemoteEndpoint(session, connection, grant));
+    // Pause live-browser MCP calls while an owner screen session is open.
+    const browserPause = await browserConsoleMcpPauseForEndpoint(endpoint);
+    if (browserPause) {
+      throw new ToolGatewayHttpError(
+        423,
+        browserPause.message,
+        "browser_console_mcp_paused",
+        { browserId: browserPause.browserId },
+      );
+    }
     // Method-defined headers are trusted catalog configuration. Treat them as
     // managed headers so callers cannot override the scope that was reviewed
     // during tools/list. Credentials remain authoritative on collisions.
@@ -9636,6 +9650,28 @@ export function createToolGatewayService(
           "Tool invocation not found",
           "invocation_not_found",
         );
+      }
+      // myrmidon(1.6-AUTONOMY): a held autonomy action is not a gateway tool —
+      // no connection, no catalog entry and no signed arguments — so the
+      // conveyor below cannot carry it (it would refuse to verify it and cancel
+      // the request). Decide it through the autonomy executor, which replays it
+      // exactly once; the recovery sweep reaches the same branch.
+      if (isAutonomyToolName(invocation.toolName)) {
+        const decided = await decideHeldAutonomyAction({
+          db,
+          companyId: input.companyId,
+          actionRequestId: input.actionRequestId,
+          decision: "approved",
+          actor: { userId: input.actor.userId ?? null, agentId: null },
+        });
+        if (decided.kind === "decided") {
+          const [settledAutonomy] = await db
+            .select()
+            .from(toolActionRequests)
+            .where(eq(toolActionRequests.id, input.actionRequestId))
+            .limit(1);
+          return actionRequestResolution(settledAutonomy ?? actionRequest);
+        }
       }
       if (input.issueId !== undefined || input.interactionId !== undefined) {
         if (

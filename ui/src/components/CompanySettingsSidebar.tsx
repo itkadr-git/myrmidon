@@ -6,6 +6,7 @@ import {
   Download,
   FlaskConical,
   KeyRound,
+  ListChecks,
   MonitorCog,
   Puzzle,
   Shield,
@@ -130,6 +131,9 @@ export function CompanySettingsSidebar() {
               end
             />
           )}
+          {showPage("instance.access") && (
+            <SidebarNavItem to="/company/settings/users" label="Users" icon={Users} end />
+          )}
           {companySettingsPluginSlots
             .filter((slot) => slot.routePath)
             .map((slot) => (
@@ -206,6 +210,12 @@ export function CompanySettingsSidebar() {
               icon={FlaskConical}
             />
           )}
+          {/* myrmidon(FEATURES): fork features with live health */}
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/features`}
+            label="Features"
+            icon={ListChecks}
+          />
           {showPlugins && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}

@@ -545,6 +545,9 @@ func (d *Daemon) container(w http.ResponseWriter, r *http.Request, call Call, re
 		c.Status = "running"
 		d.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
+	case tail == "update" && call.Method == "POST":
+		d.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"Warnings": []string{}})
 	case tail == "rename" && call.Method == "POST":
 		nn := q.Get("name")
 		if _, taken := d.byName[nn]; taken {

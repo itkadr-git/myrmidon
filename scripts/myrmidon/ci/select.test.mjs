@@ -5,7 +5,7 @@ import { applyReleaseFast, classifyChanges, importSpecifiers, selectTests, MAX_F
 const packages = [
   { name: "@paperclipai/server", dir: "server" },
   { name: "@paperclipai/ui", dir: "ui" },
-  { name: "paperclipai", dir: "cli" },
+  { name: "myrmidon", dir: "cli" },
   { name: "@paperclipai/adapter-a-local", dir: "packages/adapters/a-local" },
   { name: "@paperclipai/adapter-b-local", dir: "packages/adapters/b-local" },
 ];
@@ -58,6 +58,30 @@ describe("classifyChanges", () => {
 
   it("treats vendor docs read by tests as code", () => {
     assert.equal(classifyChanges(["docs/api/issues.md"]).tier, "fast");
+  });
+
+  it("includes shared-source guard suites when app.ts changes", () => {
+    for (const changedFile of [
+      "server/src/app.ts",
+      "server/src/myrmidon/app-plugin.ts",
+      "docs/myrmidon/SETTINGS.md",
+    ]) {
+      const result = selectTests(
+        [changedFile],
+        [{ name: "@paperclipai/server", dir: "server", vitestProject: true }],
+        [
+          { file: "server/src/__tests__/app-private-hostname-gate.test.ts", source: "" },
+          { file: "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts", source: "" },
+        ],
+      );
+      assert.deepEqual(result.files, [{
+        package: "@paperclipai/server",
+        files: [
+          "server/src/__tests__/app-private-hostname-gate.test.ts",
+          "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts",
+        ],
+      }]);
+    }
   });
 
   it("honours a forced full run", () => {
