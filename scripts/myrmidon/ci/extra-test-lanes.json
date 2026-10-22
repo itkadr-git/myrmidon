@@ -2,6 +2,10 @@
   "$comment": "Workspace packages whose tests scripts/run-vitest-stable.mjs (pnpm test:run) does not run. The full tier runs all of them in the `tests (other packages)` lane; the fast tier runs the ones a PR touches. Keep in sync: scripts/myrmidon/ci/coverage.test.mjs fails when a package with tests is covered by neither.",
   "lanes": [
     {
+      "package": "myrmidon",
+      "kind": "vitest-project"
+    },
+    {
       "package": "@paperclipai/adapter-cursor-cloud",
       "kind": "vitest-project"
     },

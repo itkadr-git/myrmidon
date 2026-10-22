@@ -173,6 +173,25 @@ describe("install.sh", () => {
     const urls = fs.readFileSync(path.join(sb.dir, "curl.log"), "utf8");
     assert.ok(urls.includes("/releases/latest/download/release-components.json"), urls);
     assert.ok(!urls.includes("api.github.com"), `no anonymous API call expected, got: ${urls}`);
+    // The board refuses every Host header it was not told about, the machine's
+    // own address included, so the allow list travels with the install.
+    assert.match(env, /MYRMIDON_ALLOWED_HOSTNAMES=\S+/);
+    assert.match(compose, /PAPERCLIP_ALLOWED_HOSTNAMES: "\$\{MYRMIDON_ALLOWED_HOSTNAMES:?/);
+  });
+
+  it("opens the board by IP and names that address in the allow list", () => {
+    const sb = sandbox();
+    // The address the installer prints has to reach the board on the first
+    // click: a bare hostname only resolves for whoever has DNS for it.
+    const r = run(sb, [], { MYRMIDON_ALLOWED_HOSTS: "board.test,203.0.113.7" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(envFile(sb), /MYRMIDON_ALLOWED_HOSTNAMES=board\.test,203\.0\.113\.7/);
+    assert.match(envFile(sb), /MYRMIDON_PUBLIC_URL=http:\/\/203\.0\.113\.7:3100/);
+    assert.match(r.stdout, /Address:\s+http:\/\/203\.0\.113\.7:3100/);
+    assert.match(
+      fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8"),
+      /PAPERCLIP_ALLOWED_HOSTNAMES: "\$\{MYRMIDON_ALLOWED_HOSTNAMES:?/,
+    );
   });
 
   it("refuses a manifest that does not name a board digest", () => {
@@ -484,6 +503,48 @@ describe("install.sh", () => {
       ["BETTER_AUTH_SECRET"],
       "only the one required secret fails when nothing is set",
     );
+  });
+
+  it("gives the board the one shared license directory, read-write, at the module path", () => {
+    // The antigravity adapter runs inside the board and reads
+    // /etc/myrmidon-license/license.key there; host modules read the same host
+    // file. The licensing screen must write that one file, so the board mounts
+    // the host directory read-write and points MYR_LICENSE_PATH at it.
+    const sb = sandbox();
+    assert.equal(run(sb).status, 0);
+    const env = envFile(sb);
+    assert.match(env, /^MYRMIDON_LICENSE_DIR=\/etc\/myrmidon-license$/m);
+    const compose = fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8");
+    assert.match(compose, /^      MYR_LICENSE_PATH: "\/etc\/myrmidon-license\/license\.key"$/m);
+    assert.match(compose, /^      - \$\{MYRMIDON_LICENSE_DIR:-\/etc\/myrmidon-license\}:\/etc\/myrmidon-license$/m);
+    const { errors, interpolated } = composeInterpolation(compose, composeEnvVars(env));
+    assert.deepEqual(errors, []);
+    assert.ok(interpolated.includes("- /etc/myrmidon-license:/etc/myrmidon-license\n"), "mounted read-write, not :ro");
+
+    const custom = sandbox();
+    assert.equal(run(custom, [], { MYRMIDON_LICENSE_DIR: "/srv/licenses" }).status, 0);
+    assert.match(envFile(custom), /^MYRMIDON_LICENSE_DIR=\/srv\/licenses$/m);
+  });
+
+  it("stops when the license issuing key sits in the license directory", () => {
+    for (const make of [
+      (d) => fs.mkdirSync(path.join(d, "issuer")),
+      (d) => fs.writeFileSync(path.join(d, "signing.pem"), "x"),
+      (d) => fs.writeFileSync(path.join(d, "key_ed25519"), "x"),
+    ]) {
+      const sb = sandbox();
+      const licDir = path.join(sb.dir, "lic");
+      fs.mkdirSync(licDir);
+      make(licDir);
+      const result = run(sb, ["--dry-run"], { MYRMIDON_LICENSE_DIR: licDir });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ключ выпуска лежит в каталоге лицензии/);
+    }
+    const clean = sandbox();
+    const licDir = path.join(clean.dir, "lic");
+    fs.mkdirSync(licDir);
+    fs.writeFileSync(path.join(licDir, "license.key"), "MYR1.x\n");
+    assert.equal(run(clean, ["--dry-run"], { MYRMIDON_LICENSE_DIR: licDir }).status, 0);
   });
 
   it("mounts the database volume at the path the PostgreSQL 18 image declares", () => {

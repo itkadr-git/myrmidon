@@ -13,6 +13,7 @@ const browsersApiMock = vi.hoisted(() => ({
   heartbeat: vi.fn(),
   done: vi.fn(),
   clearSiteData: vi.fn(),
+  consoleToken: vi.fn(),
 }));
 
 const bridgeApiMock = vi.hoisted(() => ({
@@ -27,7 +28,7 @@ vi.mock("../connectorPanelApi", () => ({
   bridgeSettingsQueryKey: ["myrmidon", "browser-bridge", "settings"],
 }));
 
-import { BrowserScreenPanelView, type ScreenPanelState } from "./BrowserScreenPanel";
+import { BrowserScreenPanel, BrowserScreenPanelView, type ScreenPanelState } from "./BrowserScreenPanel";
 import { BrowsersSettingsPageView } from "./BrowsersSettingsPage";
 import type { BridgeSettings } from "../connectorPanelApi";
 import type { BrowserConsoleStatus } from "@paperclipai/shared/myrmidon-browser-console";
@@ -150,6 +151,47 @@ describe("BrowserScreenPanelView", () => {
     expect(container.querySelector('[data-testid="myrmidon-browser-screen-closed-browser-a"]')?.textContent).toContain("Bots resumed");
   });
 });
+
+
+describe("BrowserScreenPanel (live screen, part B)", () => {
+  it("asks the server for the console token once the session is live and renders the frame", async () => {
+    browsersApiMock.heartbeat.mockResolvedValue({
+      active: true,
+      screenSessionId: "node-1",
+      autoCloseAt: new Date(Date.now() + 120_000).toISOString(),
+      warnAt: null,
+      closedBy: null,
+    });
+    browsersApiMock.consoleToken.mockResolvedValue({
+      screenSessionId: "node-1",
+      token: "blob",
+      consoleUrl: "https://guac.invalid/#/?data=blob",
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    });
+    render(withClient(<BrowserScreenPanel browser={browser({ sessionActive: true })} companyId={COMPANY_ID} />));
+    await flush();
+    expect(browsersApiMock.consoleToken).toHaveBeenCalledWith("browser-a", COMPANY_ID);
+    const frame = container.querySelector<HTMLIFrameElement>('[data-testid="myrmidon-browser-screen-frame-browser-a"]');
+    expect(frame).not.toBeNull();
+    expect(frame!.getAttribute("src")).toBe("https://guac.invalid/#/?data=blob");
+  });
+
+  it("shows the server error when the console is not configured", async () => {
+    browsersApiMock.heartbeat.mockResolvedValue({
+      active: true,
+      screenSessionId: "node-1",
+      autoCloseAt: new Date(Date.now() + 120_000).toISOString(),
+      warnAt: null,
+      closedBy: null,
+    });
+    browsersApiMock.consoleToken.mockRejectedValue(new Error("The instance has no VNC target configured"));
+    render(withClient(<BrowserScreenPanel browser={browser({ sessionActive: true })} companyId={COMPANY_ID} />));
+    await flush();
+    expect(container.querySelector('[data-testid="myrmidon-browser-screen-frame-browser-a"]')).toBeNull();
+    expect(container.textContent).toContain("no VNC target configured");
+  });
+});
+
 
 describe("BrowsersSettingsPageView", () => {
   it("lists the registry with id, display name, egress and occupancy", async () => {

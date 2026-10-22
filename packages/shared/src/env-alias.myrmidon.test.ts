@@ -54,10 +54,10 @@ describe("readProductEnv", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("treats an empty new-name value as unset and falls back to the old name", () => {
+  it("preserves an empty new-name value instead of falling back to the old name", () => {
     const env: NodeJS.ProcessEnv = { MYRMIDON_LOG_LEVEL: "", PAPERCLIP_LOG_LEVEL: "info" };
-    expect(readProductEnv("LOG_LEVEL", { env, warn })).toBe("info");
-    expect(warn).toHaveBeenCalledTimes(1);
+    expect(readProductEnv("LOG_LEVEL", { env, warn })).toBe("");
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("returns undefined when neither name is set", () => {
@@ -90,6 +90,13 @@ describe("readProductEnvFrom", () => {
     expect(readProductEnvFrom({ PAPERCLIP_API_URL: "old" }, "API_URL")).toBe("old");
     expect(readProductEnvFrom({}, "API_URL")).toBeUndefined();
   });
+
+  it("preserves empty canonical values and does not fall back", () => {
+    expect(readProductEnvFrom({ MYRMIDON_API_URL: "", PAPERCLIP_API_URL: "legacy" }, "API_URL")).toBe("");
+    expect(readProductEnvFrom({ PAPERCLIP_API_URL: "" }, "API_URL")).toBe("");
+    expect(readProductEnvFrom({ MYRMIDON_API_URL: "" }, "API_URL")).toBe("");
+  });
+
 });
 
 describe("materializeProductEnv", () => {

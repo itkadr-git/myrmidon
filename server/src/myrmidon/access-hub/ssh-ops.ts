@@ -26,6 +26,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
 import type { DeployPort } from "./ssh-deploy.js";
 
 const execFileAsync = promisify(execFile);
@@ -72,10 +73,10 @@ export function readSshOpsSettings(env: NodeJS.ProcessEnv = process.env): SshOps
 }
 
 /** Which scratch directory the key file goes to. The Paperclip runtime sets
- * TMPDIR/PAPERCLIP_RUN_SCRATCH_DIR to the run directory; the fallback is the
+ * TMPDIR/MYRMIDON_RUN_SCRATCH_DIR to the run directory; the fallback is the
  * OS tmpdir. */
 function defaultScratchDir(env: NodeJS.ProcessEnv): string {
-  return env["PAPERCLIP_RUN_SCRATCH_DIR"] || env["TMPDIR"] || env["PAPERCLIP_SCRATCH_DIR"] || tmpdir();
+  return readProductEnvFrom(env, "RUN_SCRATCH_DIR") || env["TMPDIR"] || readProductEnvFrom(env, "SCRATCH_DIR") || tmpdir();
 }
 
 interface RunSshInput {

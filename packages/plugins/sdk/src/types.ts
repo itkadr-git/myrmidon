@@ -1417,6 +1417,7 @@ export interface PluginIssueAttachmentContent {
  * - `issue.interactions.read` for `listInteractions`
  * - `issue.interactions.respond` for `respondInteraction`
  * - `issue.attachments.read` for `listAttachments` and `getAttachmentContent`
+ * - `issue.attachments.write` for `uploadAttachment`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
  */
@@ -1618,6 +1619,15 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { maxBytes?: number | null },
   ): Promise<PluginIssueAttachmentContent | null>;
+  /** Upload bounded bytes to an issue through the credential-isolated host bridge. Requires `issue.attachments.write`. */
+  uploadAttachment(input: {
+    issueId: string;
+    companyId: string;
+    filename: string;
+    contentType: string;
+    contentBase64: string;
+    actor?: PluginIssueMutationActor;
+  }): Promise<IssueAttachment>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
   /** Read and write blocker relationships. */

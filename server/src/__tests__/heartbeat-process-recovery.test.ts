@@ -235,6 +235,7 @@ import {
   resolveHotRestartReportPath,
   writeHotRestartIntent,
 } from "../services/hot-restart.ts";
+import { logger } from "../middleware/logger.ts";
 import { secretService } from "../services/secrets.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
@@ -5891,7 +5892,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("converts a continuation parked for review into a dependency wait on its open sub-tasks", async () => {
+  it("converts a continuation parked for review into a dependency wait on explicitly linked open sub-tasks", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "cancelled",
@@ -5935,6 +5936,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         issueNumber: 12,
         identifier: `${issuePrefix}-12`,
       },
+    ]);
+    await db.insert(issueRelations).values([
+      { companyId, issueId: openChildTodoId, relatedIssueId: issueId, type: "blocks" },
+      { companyId, issueId: openChildInProgressId, relatedIssueId: issueId, type: "blocks" },
+      { companyId, issueId: doneChildId, relatedIssueId: issueId, type: "blocks" },
     ]);
 
     const heartbeat = heartbeatService(db);
@@ -6021,6 +6027,54 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).toBe(true);
   });
 
+  it("does not recreate a removed blocker when converting a continuation into dependency wait", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting for review/approval",
+    });
+    const removedBlockerId = randomUUID();
+    await db.insert(issues).values({
+      id: removedBlockerId,
+      companyId,
+      title: "Former blocker",
+      status: "in_progress",
+      priority: "medium",
+      issueNumber: 30,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-30`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: removedBlockerId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    // Model the operator removing the blocker before reconciliation runs.
+    await db
+      .delete(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.issueId, removedBlockerId),
+          eq(issueRelations.relatedIssueId, issueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.waitingOnReviewResolved).toBe(0);
+    expect(await sourceBlockerIssueIds(companyId, issueId)).toEqual([]);
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).not.toBe("blocked");
+  });
+
   it("does not fail recovery when the dependency wait would close a cycle with a child it blocks", async () => {
     const { companyId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -6041,7 +6095,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issueNumber: 30,
       identifier: `${issuePrefix}-30`,
     });
-    // parent blocks its own open child: making the parent wait on the child would be a cycle
+    // Parent blocks its own child: waiting on it would create a cycle.
     await db.insert(issueRelations).values({
       companyId,
       issueId,
@@ -6049,8 +6103,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       type: "blocks",
     });
 
-    const heartbeat = heartbeatService(db);
-    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
 
     expect(result.waitingOnReviewResolved).toBe(0);
     const [parent] = await db.select().from(issues).where(eq(issues.id, issueId));
@@ -7928,6 +7981,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runningProcesses.has(runId)).toBe(false);
   });
 
+  it("logs and persists the cancellation source and correlation id", async () => {
+    const { runId, agentId } = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+    });
+    const info = vi.spyOn(logger, "info");
+    try {
+      const cancelled = await heartbeatService(db).cancelRun(runId, "Cancelled by a board operator", {
+        correlationId: "corr-test-1",
+        cancellationSource: { code: "board_operator", endpoint: "POST /api/heartbeat-runs/:runId/cancel", actor: "user-7" },
+      });
+      expect(cancelled?.resultJson).toMatchObject({
+        executionCancellation: {
+          correlationId: "corr-test-1",
+          source: { code: "board_operator", endpoint: "POST /api/heartbeat-runs/:runId/cancel", actor: "user-7" },
+          reason: "Cancelled by a board operator",
+        },
+      });
+      expect(info).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId,
+          agentId,
+          correlationId: "corr-test-1",
+          cancellationSource: expect.objectContaining({ code: "board_operator", actor: "user-7" }),
+        }),
+        "heartbeat run cancellation requested",
+      );
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it("records manual cancellation stop metadata", async () => {
     const { runId } = await seedRunFixture({
       agentStatus: "running",
@@ -7942,6 +8027,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       effectiveTimeoutSec: 0,
       timeoutConfigured: false,
       timeoutFired: false,
+      executionCancellation: {
+        correlationId: expect.any(String),
+        source: { code: "control_plane", actor: "system" },
+        reason: "Cancelled by control plane",
+      },
     });
   });
 

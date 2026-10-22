@@ -58,10 +58,18 @@ function renderView(overrides: Partial<Parameters<typeof ChannelSettingsPanelVie
   const onSave = vi.fn();
   act(() => {
     root.render(
-      <ChannelSettingsPanelView view={VIEW} onSave={onSave} pending={false} error={null} {...overrides} />,
+      <ChannelSettingsPanelView view={VIEW} onSave={onSave} pending={false} error={null} saved={false} {...overrides} />,
     );
   });
   return { onSave };
+}
+
+function renderPanel(overrides: Partial<Parameters<typeof ChannelSettingsPanelView>[0]> = {}) {
+  act(() => {
+    root.render(
+      <ChannelSettingsPanelView view={VIEW} onSave={() => {}} pending={false} error={null} saved={false} {...overrides} />,
+    );
+  });
 }
 
 function input(id: string) {
@@ -135,6 +143,13 @@ describe("parseChannelSettingsDraft", () => {
 });
 
 describe("ChannelSettingsPanelView", () => {
+  it("shows the save success state", () => {
+    renderPanel({ saved: true });
+    expect(container.querySelector("[data-testid='channel-settings-saved']")?.textContent).toBe(
+      "Channel settings saved.",
+    );
+  });
+
   it("renders the effective values, sources and the deployment-only base URL", () => {
     renderView();
     expect(input("channel-settings-telegramDmConversations").value).toBe("chat-1, chat-2");

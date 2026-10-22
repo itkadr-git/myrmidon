@@ -16,7 +16,7 @@ export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
         status: "fail",
         message: `local_trusted requires loopback binding (found ${bind})`,
         canRepair: false,
-        repairHint: "Run `paperclipai configure --section server` and choose Local trusted / loopback reachability",
+        repairHint: "Run `myrmidon configure --section server` and choose Local trusted / loopback reachability",
       };
     }
     return {
@@ -45,7 +45,7 @@ export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
       status: "fail",
       message: "auth.baseUrlMode=explicit requires auth.publicBaseUrl",
       canRepair: false,
-      repairHint: "Run `paperclipai configure --section server` and provide a base URL",
+      repairHint: "Run `myrmidon configure --section server` and provide a base URL",
     };
   }
 
@@ -56,7 +56,7 @@ export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
         status: "fail",
         message: "authenticated/public requires explicit auth.publicBaseUrl",
         canRepair: false,
-        repairHint: "Run `paperclipai configure --section server` and select public exposure",
+        repairHint: "Run `myrmidon configure --section server` and select public exposure",
       };
     }
     try {
@@ -76,7 +76,7 @@ export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
         status: "fail",
         message: "auth.publicBaseUrl is not a valid URL",
         canRepair: false,
-        repairHint: "Run `paperclipai configure --section server` and provide a valid URL",
+        repairHint: "Run `myrmidon configure --section server` and provide a valid URL",
       };
     }
   }
