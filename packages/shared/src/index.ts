@@ -2793,6 +2793,9 @@ export * from "./ai-connections.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";
 export * from "./announcements.js";
+// myrmidon(1.6.6 NOTIF-PREFS): per-agent notification preferences for
+// event-shaped wakes (assignment / mention / review), read at wake generation.
+export * from "./notification-prefs.js";
 
 // myrmidon(WORKSPACE-HYGIENE): workspace quota values and the measurement record shared by the
 // server, the sweep and the settings validator.
@@ -2948,12 +2951,13 @@ export * from "./myrmidon-telegram-dm-progress.js";
 
 // myrmidon(1.6.1 MODEL-PROVIDERS): provider secret names, defaults and API schemas.
 export * from "./myrmidon-model-providers.js";
-
 // myrmidon(1.6.5-TG-LOCALE-C): instance-wide default language of the bridged
 // Telegram DM — storage key, precedence and resolver.
 export * from "./myrmidon-bridge-language.js";
 // myrmidon(FEATURES): the Instance -> Features page contract (registry view, health report).
 export * from "./myrmidon-features.js";
+// myrmidon(1.6.6 MODEL-MENU A): the model menu tree, its defaults and its resolution.
+export * from "./myrmidon-model-menu.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter
 // in_review with no reviewer — settings contract and activity actions.
 export * from "./myrmidon-review-routing.js";
