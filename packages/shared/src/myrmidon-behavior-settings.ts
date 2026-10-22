@@ -114,7 +114,7 @@ const dSettings: Array<{
   { key: "chatCrossChannelTotalChars", envName: "MYRMIDON_CHAT_CROSS_CHANNEL_TOTAL_CHARS", default: 4000, section: "channels", validate: positiveInteger(true) },
   { key: "chatCrossChannelLookbackHours", envName: "MYRMIDON_CHAT_CROSS_CHANNEL_LOOKBACK_HOURS", default: 168, section: "channels", validate: positiveInteger(true) },
   { key: "chatReconcileIntervalMs", envName: "MYRMIDON_CHAT_RECONCILE_INTERVAL_MS", default: null, section: "channels", validate: (value) => value === null ? null : positiveInteger()(value) },
-  { key: "litellmCostIntervalSec", envName: "MYRMIDON_LITELLM_COST_INTERVAL_SEC", default: 30, section: "models", validate: positiveInteger() },
+  { key: "litellmCostIntervalSec", envName: "MYRMIDON_LITELLM_COST_INTERVAL_SEC", default: 300, section: "models", validate: positiveInteger() },
   { key: "botCompressionThresholdTokens", envName: "MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS", default: 100000, section: "models", validate: positiveInteger(true) },
   { key: "botModelContextLengths", envName: "MYRMIDON_BOT_MODEL_CONTEXT_LENGTH", default: {}, section: "models", validate: (value) => typeof value === "object" && value !== null ? value : null },
   { key: "botAuxTitleModel", envName: "MYRMIDON_BOT_AUX_TITLE_MODEL", default: "", section: "models", validate: nonEmptyString },
