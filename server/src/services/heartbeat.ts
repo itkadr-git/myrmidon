@@ -34,6 +34,7 @@ import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./nativ
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
+import { versionKeyEtag } from "../middleware/version-key-etag.js";
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
@@ -657,6 +658,11 @@ import {
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 // myrmidon(1.6.5-BOT-DISK-H4b): general.botDisk.defaultRepo rides the run context.
 import { normalizeStoredBotDiskSettings } from "@paperclipai/shared";
+// myrmidon(1.6.6 NOTIF-PREFS): notification-class filter applied at wake generation.
+import {
+  classifyNotificationWakeReason,
+  notificationWakeAllowed,
+} from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
@@ -1609,7 +1615,7 @@ export function computeTaskDrain(opts: { ttlMs?: number | null } = {}): {
 export function applyTaskDrain(drain: {
   startedAt: Date;
   expiresAt: Date | null;
-}): void {
+} | null): void {
   taskDrainState = drain;
 }
 
@@ -28173,6 +28179,25 @@ export function heartbeatService(
       }
     }
 
+
+    // myrmidon(1.6.6 NOTIF-PREFS): apply the agent's notification preferences
+    // at wake generation. An event-shaped wake (assignment, mention, review)
+    // the agent muted never becomes a run. Manual board wakes bypass the
+    // filter — an operator override is not a notification. Other wake reasons
+    // belong to no configurable class and always pass.
+    if (!opts.manualUserWake) {
+      const notificationClass = classifyNotificationWakeReason(reason);
+      if (
+        notificationClass &&
+        !notificationWakeAllowed(agent.runtimeConfig, reason)
+      ) {
+        logger.info(
+          { agentId, issueId, reason, notificationClass },
+          "wake suppressed by agent notification preferences",
+        );
+        return null;
+      }
+    }
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
       if (isConversation(conversation)) {
@@ -31714,6 +31739,42 @@ export function heartbeatService(
         await new Promise((resolve) => setTimeout(resolve, intervalMs));
       }
     },
+    // myrmidon(PERF-DIET-T): cheap version aggregate for the heartbeat-runs
+    // list ETag. Same predicate shapes as `list` (company, optional agent) but
+    // only aggregates, so an If-None-Match hit answers 304 without fetching
+    // the body. Uses the (companyId, status, updatedAt) index prefix. The
+    // route adds the authorized actor and redacted response shape to this key.
+    listVersionKey: async (
+      companyId: string,
+      agentId?: string,
+      limit?: number,
+      summary?: boolean,
+      actorShape?: string,
+    ): Promise<string> => {
+      const [agg] = await db
+        .select({
+          rowCount: sql<number>`count(*)::int`,
+          maxUpdatedAt: sql<string | null>`max(${heartbeatRuns.updatedAt})`,
+        })
+        .from(heartbeatRuns)
+        .where(
+          agentId
+            ? and(
+                eq(heartbeatRuns.companyId, companyId),
+                eq(heartbeatRuns.agentId, agentId),
+              )
+            : eq(heartbeatRuns.companyId, companyId),
+        );
+      return versionKeyEtag("heartbeat-runs-list", [
+        companyId,
+        agentId ?? "all",
+        limit ?? "default",
+        summary ? "summary" : "full",
+        actorShape ?? "all",
+        agg?.rowCount ?? 0,
+        agg?.maxUpdatedAt ?? null,
+      ]);
+    },
     list: async (
       companyId: string,
       agentId?: string,
@@ -32007,6 +32068,7 @@ export function heartbeatService(
         ),
       });
     },
+    enqueueWakeup,
     insertReviewAdmissionWakeup,
     dispatchPendingNativeStatusWakeups,
     triggerIssueMonitor,
