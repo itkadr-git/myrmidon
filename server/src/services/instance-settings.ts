@@ -58,8 +58,9 @@ import {
 // myrmidon(1.6.6 K-7): preserve the skill lifecycle pilot list across vendor writes.
 import { preserveSkillPilotAgentsGeneralKey } from "../myrmidon/skill-lifecycle/pilot-agents-store.js";
 // myrmidon(1.6-TG-PROACTIVITY-E, 1.6.1-TG-NOTIFY-B): keep the telegram-notify state across vendor writes of `general`
-import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
-import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the notify preservation keys are reached through the bridge seam.
+import { preserveTelegramNotifyGeneralKey } from "../myrmidon/channel-connectors/bridge/notify-policy.js";
+import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/channel-connectors/bridge/notify-settings-store.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
 // myrmidon(1.6.6 PROCS-J): keep the board's process counts across vendor writes of `general`
