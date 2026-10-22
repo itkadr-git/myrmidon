@@ -60,23 +60,23 @@ function readPositiveInt(raw: string | undefined, fallback: number, max: number)
  * documented way to leave the planner closed; everything else degrades to its
  * default instead of disabling the path.
  */
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
+
 export function readCtoChatSettings(env: NodeJS.ProcessEnv = process.env): CtoChatSettings {
   const baseUrl = env[CTO_CHAT_BASE_URL_ENV]?.trim() || null;
   const keySecret = env[CTO_CHAT_KEY_SECRET_ENV]?.trim() || null;
-  const timeoutSec = readPositiveInt(
-    env[CTO_CHAT_TIMEOUT_SEC_ENV],
-    DEFAULT_CTO_CHAT_TIMEOUT_SEC,
-    MAX_TIMEOUT_SEC,
-  );
+  const timeoutRaw = env[CTO_CHAT_TIMEOUT_SEC_ENV] ?? (liveBehaviorSetting<number>("ctoChatTimeoutSec")).toString();
+  const maxTasksRaw = env[CTO_CHAT_MAX_TASKS_ENV] ?? (liveBehaviorSetting<number>("ctoChatMaxTasks")).toString();
+  const timeoutSec = readPositiveInt(timeoutRaw, DEFAULT_CTO_CHAT_TIMEOUT_SEC, MAX_TIMEOUT_SEC);
   const maxTasks = Math.min(
-    readPositiveInt(env[CTO_CHAT_MAX_TASKS_ENV], DEFAULT_CTO_CHAT_MAX_TASKS, CTO_CHAT_ABSOLUTE_MAX_TASKS),
+    readPositiveInt(maxTasksRaw, DEFAULT_CTO_CHAT_MAX_TASKS, CTO_CHAT_ABSOLUTE_MAX_TASKS),
     CTO_CHAT_ABSOLUTE_MAX_TASKS,
   );
   return {
     enabled: Boolean(baseUrl && keySecret),
     baseUrl,
     keySecret,
-    model: env[CTO_CHAT_MODEL_ENV]?.trim() || DEFAULT_CTO_CHAT_MODEL,
+    model: env[CTO_CHAT_MODEL_ENV]?.trim() || liveBehaviorSetting<string>("ctoChatModel") || DEFAULT_CTO_CHAT_MODEL,
     timeoutMs: Math.max(timeoutSec, MIN_TIMEOUT_SEC) * 1000,
     maxTasks,
   };
