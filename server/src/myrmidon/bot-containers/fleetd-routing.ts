@@ -22,8 +22,8 @@ import type { CompiledProfile } from "./types.js";
 export interface FleetRoutingDeps {
   /** The local docker driver (default host). */
   local: BotContainerDriver;
-  /** A fleetd client per configured host name. */
-  fleet: ReadonlyMap<string, BotContainerDriver>;
+  /** A fleetd client per configured host name, or a dynamic map provider. */
+  fleet: ReadonlyMap<string, BotContainerDriver> | (() => ReadonlyMap<string, BotContainerDriver>);
 }
 
 /** The per-bot agent record the routing needs: the container block of the card. */
@@ -31,16 +31,22 @@ export interface RoutedBotAgent {
   adapterConfig: { container?: unknown };
 }
 
-function driverFor(
+function resolveFleetMap(deps: FleetRoutingDeps): ReadonlyMap<string, BotContainerDriver> {
+  return typeof deps.fleet === "function" ? deps.fleet() : deps.fleet;
+}
+
+async function driverFor(
   deps: FleetRoutingDeps,
-  agent: RoutedBotAgent | undefined,
-): BotContainerDriver {
+  agentOrPromise: RoutedBotAgent | undefined | Promise<RoutedBotAgent | undefined>,
+): Promise<BotContainerDriver> {
+  const agent = await agentOrPromise;
   const host = agent ? cardFleetHost(agent.adapterConfig) : null;
   if (host === null) return deps.local;
-  const driver = deps.fleet.get(host);
+  const fleetMap = resolveFleetMap(deps);
+  const driver = fleetMap.get(host);
   if (!driver) {
     throw new Error(
-      `container.host "${host}" names no configured fleet host (check MYRMIDON_FLEET_HOSTS)`,
+      `container.host "${host}" names no configured fleet host (check MYRMIDON_FLEET_HOSTS or fleet sites registry)`,
     );
   }
   return driver;
@@ -49,39 +55,53 @@ function driverFor(
 /** A driver whose every call is routed by the bot's card host. */
 export function fleetRoutingDriver(
   deps: FleetRoutingDeps,
-  agentOf: (botKey: string) => RoutedBotAgent | undefined,
+  agentOf: (botKey: string) => RoutedBotAgent | undefined | Promise<RoutedBotAgent | undefined>,
 ): BotContainerDriver {
   return {
     async status(botKey: string): Promise<BotContainerStatus> {
-      return driverFor(deps, agentOf(botKey)).status(botKey);
+      const driver = await driverFor(deps, agentOf(botKey));
+      return driver.status(botKey);
     },
     async list(botKeys: readonly string[]): Promise<BotContainerStatus[]> {
+      const fleetMap = resolveFleetMap(deps);
       // A routed list is the union of all hosts' own lists.
       const results = await Promise.all(
-        [deps.local, ...deps.fleet.values()].map((driver) => driver.list(botKeys)),
+        [deps.local, ...fleetMap.values()].map((driver) => driver.list(botKeys)),
       );
       return results.flat();
     },
     async templateDrift(spec: BotContainerSpec, knownStatus?: BotContainerStatus): Promise<TemplateDriftReport> {
-      return driverFor(deps, agentOf(spec.botKey)).templateDrift(spec, knownStatus);
+      const driver = await driverFor(deps, agentOf(spec.botKey));
+      return driver.templateDrift(spec, knownStatus);
+    },
+    async updateResources(spec: BotContainerSpec): Promise<void> {
+      const driver = driverFor(deps, agentOf(spec.botKey));
+      if (driver.updateResources) await driver.updateResources(spec);
+      else await driver.recreate(spec);
     },
     async create(spec: BotContainerSpec): Promise<void> {
-      await driverFor(deps, agentOf(spec.botKey)).create(spec);
+      const driver = await driverFor(deps, agentOf(spec.botKey));
+      await driver.create(spec);
     },
     async recreate(spec: BotContainerSpec): Promise<void> {
-      await driverFor(deps, agentOf(spec.botKey)).recreate(spec);
+      const driver = await driverFor(deps, agentOf(spec.botKey));
+      await driver.recreate(spec);
     },
     async writeProfile(botKey: string, profile: CompiledProfile): Promise<void> {
-      await driverFor(deps, agentOf(botKey)).writeProfile(botKey, profile);
+      const driver = await driverFor(deps, agentOf(botKey));
+      await driver.writeProfile(botKey, profile);
     },
     async start(botKey: string): Promise<void> {
-      await driverFor(deps, agentOf(botKey)).start(botKey);
+      const driver = await driverFor(deps, agentOf(botKey));
+      await driver.start(botKey);
     },
     async restart(botKey: string): Promise<void> {
-      await driverFor(deps, agentOf(botKey)).restart(botKey);
+      const driver = await driverFor(deps, agentOf(botKey));
+      await driver.restart(botKey);
     },
     async stop(botKey: string): Promise<void> {
-      await driverFor(deps, agentOf(botKey)).stop(botKey);
+      const driver = await driverFor(deps, agentOf(botKey));
+      await driver.stop(botKey);
     },
   };
 }
