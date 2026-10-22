@@ -50,6 +50,13 @@ function observeHolder() {
   return { seen, hooks: { onLeaderChanged: (holder: string) => { seen.push(holder); } } };
 }
 
+/** §5.3: handover within 1 s at a 50 ms contender cadence = 20 passes. */
+const HANDOVER_BUDGET_PASSES = 1_000 / 50;
+
+/** Number of completed passes of an observer that still found `holder` in charge. */
+const passesSeeing = (seen: string[], holder: string, from = 0) =>
+  seen.slice(from).filter((h) => h === holder).length;
+
 describeDb("leader-lease protocol (PROCS-1.7)", () => {
   let db: Db;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -152,10 +159,18 @@ describeDb("leader-lease protocol (PROCS-1.7)", () => {
     expect(lb.isLeader()).toBe(false); // live lease, not yet expired
 
     await la.release();
+    const afterRelease = obsB.seen.length;
     // The TTL is 60 s, so b can only get the lease through the release path
     // on one of its own passes (§5.3), never through expiry.
     await until(() => expect(lb.isLeader()).toBe(true));
     lb.stop();
+    // §5.3 «≤ 1 s handover», measured in passes, not wall clock: b passes
+    // every 50 ms, so 1 s is 20 passes. After the row is deleted the very next
+    // pass takes over; only passes already in flight at release time can still
+    // see the old holder.
+    expect(passesSeeing(obsB.seen, a.bootId, afterRelease)).toBeLessThanOrEqual(
+      HANDOVER_BUDGET_PASSES,
+    );
   });
 
   it("lost renew fires onLost with an aborted signal (§5.4 stop-semantics)", async () => {
@@ -202,23 +217,32 @@ describeDb("leader-lease T2 (two live contenders)", () => {
     await db.delete(boardLeases);
     const a = leaderLeaseService(db, { ttlMs: 2_000, renewIntervalMs: 100 });
     const b = leaderLeaseService(db, { ttlMs: 2_000, renewIntervalMs: 100 });
-    const leasesA = BOARD_LEASE_NAMES.map((n) => a.lease(n));
-    const leasesB = BOARD_LEASE_NAMES.map((n) => b.lease(n));
+    const obsA = BOARD_LEASE_NAMES.map(() => observeHolder());
+    const obsB = BOARD_LEASE_NAMES.map(() => observeHolder());
+    const leasesA = BOARD_LEASE_NAMES.map((n, i) => a.lease(n, obsA[i].hooks));
+    const leasesB = BOARD_LEASE_NAMES.map((n, i) => b.lease(n, obsB[i].hooks));
     for (const l of [...leasesA, ...leasesB]) l.start();
-    // Wait until every lease name has settled: a row exists and exactly one of
-    // the two contenders believes it is the leader.
-    await until(async () => {
-      const rows = await db.select().from(boardLeases);
-      for (const name of BOARD_LEASE_NAMES) {
-        const row = rows.find((r) => r.name === name);
-        expect(row).toBeDefined();
-        const holders = [a.bootId, b.bootId];
-        expect(holders).toContain(row!.holderBootId);
-        const leaderA = leasesA.find((l) => l.name === name)!.isLeader();
-        const leaderB = leasesB.find((l) => l.name === name)!.isLeader();
-        expect(leaderA !== leaderB).toBe(true);
-      }
+    // Wait until every lease name has a winner AND the loser has run a pass
+    // that lost: only then is «exactly one leader» a statement about the
+    // protocol and not about which contender has not started yet.
+    await until(() => {
+      BOARD_LEASE_NAMES.forEach((_, i) => {
+        const aWon = leasesA[i].isLeader() && obsB[i].seen.includes(a.bootId);
+        const bWon = leasesB[i].isLeader() && obsA[i].seen.includes(b.bootId);
+        expect(aWon || bWon).toBe(true);
+      });
     });
+    const rows = await db.select().from(boardLeases);
+    for (const name of BOARD_LEASE_NAMES) {
+      const row = rows.find((r) => r.name === name);
+      expect(row).toBeDefined();
+      const holders = [a.bootId, b.bootId];
+      expect(holders).toContain(row!.holderBootId);
+      const leaderA = leasesA.find((l) => l.name === name)!.isLeader();
+      const leaderB = leasesB.find((l) => l.name === name)!.isLeader();
+      // exactly one of the two contenders believes it is the leader
+      expect(leaderA !== leaderB).toBe(true);
+    }
     for (const l of [...leasesA, ...leasesB]) l.stop();
     for (const l of [...leasesA, ...leasesB]) await l.release();
   });
@@ -237,11 +261,15 @@ describeDb("leader-lease T2 (two live contenders)", () => {
     expect(lb.isLeader()).toBe(false);
 
     await la.release();
-    // TTL is 30 s: only the release path can hand the lease over here, on b's
-    // next 50 ms pass (§5.3). Wall-clock handover speed is not asserted: it is
-    // a property of the runner, not of the protocol.
+    const afterRelease = obsB.seen.length;
+    // TTL is 30 s: only the release path can hand the lease over here, on one
+    // of b's 50 ms passes (§5.3).
     await until(() => expect(lb.isLeader()).toBe(true));
     lb.stop();
+    // «within 1 s» in passes: 20 passes at the 50 ms cadence.
+    expect(passesSeeing(obsB.seen, a.bootId, afterRelease)).toBeLessThanOrEqual(
+      HANDOVER_BUDGET_PASSES,
+    );
     await lb.release();
   });
 
@@ -251,7 +279,8 @@ describeDb("leader-lease T2 (two live contenders)", () => {
     const a = leaderLeaseService(db, { ttlMs: TTL, renewIntervalMs: 100 });
     const b = leaderLeaseService(db, { ttlMs: TTL, renewIntervalMs: 50 });
     const la = a.lease("scheduler");
-    const lb = b.lease("scheduler");
+    const obsB = observeHolder();
+    const lb = b.lease("scheduler", obsB.hooks);
     la.start();
     await until(() => expect(la.isLeader()).toBe(true));
     la.stop(); // kill -9: no release, no renew
@@ -261,6 +290,12 @@ describeDb("leader-lease T2 (two live contenders)", () => {
     // expiry is the only way in.
     await until(() => expect(lb.isLeader()).toBe(true));
     lb.stop();
+    // «within the TTL» in passes: a's row can only be seen alive for TTL after
+    // its last renew, and b starts a pass at most every 50 ms (plus its
+    // immediate first pass and one in flight), so no more than
+    // TTL/50 + 2 passes can have found a still in charge. A slow runner makes
+    // that count smaller, never larger.
+    expect(passesSeeing(obsB.seen, a.bootId)).toBeLessThanOrEqual(TTL / 50 + 2);
     await lb.release();
   });
 
@@ -278,15 +313,21 @@ describeDb("leader-lease T2 (two live contenders)", () => {
     // the manager pushes the new timing into the running lease.
     la.setTiming(1_000, 100);
     expect(la.currentTtlMs()).toBe(1_000);
-    // Wait for a renew pass at the new TTL to land: the row's remaining life
-    // drops from ~30 s to at most the new 1 s TTL (plus a little read slack).
-    // The write is what we wait for, not a fixed delay; a pass still at the
-    // old TTL would leave ~30 s and keep polling.
-    await until(async () => {
-      const rowAfter = await db.select().from(boardLeases);
-      const renewWindow = rowAfter[0]!.expiresAt.getTime() - Date.now();
-      expect(renewWindow).toBeLessThanOrEqual(5_000); // ≈ new TTL, not 30 s
-    });
+    // Wait for a renew pass at the new TTL to land: the row's own TTL
+    // (expires_at - acquired_at, both stamped by the same UPDATE) drops from
+    // 30 s to the new 1 s. A pass still at the old TTL keeps polling.
+    const rowAfter = await vi.waitFor(
+      async () => {
+        const [row] = await db.select().from(boardLeases);
+        expect(row!.expiresAt.getTime() - row!.acquiredAt.getTime()).toBeLessThan(5_000);
+        return row!;
+      },
+      { timeout: 10_000, interval: 10 },
+    );
+    // Whatever the delay in reading it, the remaining life can only be shorter
+    // than the new TTL.
+    const renewWindow = rowAfter.expiresAt.getTime() - Date.now();
+    expect(renewWindow).toBeLessThanOrEqual(1_000 + 250); // ≈ new TTL, not 30 s
     expect(ttlBefore).toBeGreaterThan(10_000);
     expect(la.isLeader()).toBe(true); // leadership kept across the TTL change
     await la.release();

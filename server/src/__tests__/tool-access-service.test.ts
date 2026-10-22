@@ -901,7 +901,7 @@ describeEmbeddedPostgres("tool access service", () => {
   // `SELECT ... FOR UPDATE` over `table`. Used as a barrier to fix the queue
   // order of racing transactions instead of sleeping and hoping.
   async function waitForBlockedRowLock(table: string) {
-    for (let attempt = 0; attempt < 400; attempt += 1) {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
       const [waiting] = await db.execute<{ waiting: boolean }>(sql`
         SELECT EXISTS (
           SELECT 1
@@ -1971,110 +1971,117 @@ describeEmbeddedPostgres("tool access service", () => {
         membershipLocked = resolve;
       });
 
-      const firstReplacement = firstReplacementDb.transaction(async (tx) => {
-        const service = createTestToolAccessService(
-          tx as unknown as ReturnType<typeof createDb>,
-        );
-        await service.replaceConnectionGrantMembers(connection.id, grant.id, [
-          "departing-user",
-        ]);
-        firstReplacementStaged();
-        await firstReplacementMayCommit;
-      });
-      await firstReplacementIsStaged;
-
-      const cleanup = cleanupDb.transaction(async (tx) => {
-        await tx
-          .select({ id: companyMemberships.id })
-          .from(companyMemberships)
-          .where(eq(companyMemberships.id, departingMembership.id))
-          .for("update");
-        membershipLocked();
-        await cleanupMayFinish;
-
-        const access = accessService(
-          tx as unknown as ReturnType<typeof createDb>,
-        );
-        if (cleanupKind === "suspend") {
-          await access.updateMemberAndPermissions(
-            company.id,
-            departingMembership.id,
-            { status: "suspended", grants: [] },
-            "owner",
+      try {
+        const firstReplacement = firstReplacementDb.transaction(async (tx) => {
+          const service = createTestToolAccessService(
+            tx as unknown as ReturnType<typeof createDb>,
           );
-        } else if (cleanupKind === "archive") {
-          await access.archiveMember(company.id, departingMembership.id);
-        } else {
-          await access.setUserCompanyAccess("departing-user", []);
-        }
-      });
-
-      // The first replacement still owns the departing member lock. Wait until
-      // cleanup is actually queued behind it (not a fixed delay) so the queue
-      // order is cleanup first, empty replacement second.
-      expect(await waitForBlockedMembershipUpdate()).toBe(true);
-      let replacementSettled = false;
-      const replacement = replacementService
-        .replaceConnectionGrantMembers(connection.id, grant.id, [])
-        .then(
-          (value) => ({ value, error: null }),
-          (error: unknown) => ({ value: null, error }),
-        )
-        .finally(() => {
-          replacementSettled = true;
+          await service.replaceConnectionGrantMembers(connection.id, grant.id, [
+            "departing-user",
+          ]);
+          firstReplacementStaged();
+          await firstReplacementMayCommit;
         });
-      // The empty replacement is blocked on the grant row lock held by the
-      // first replacement.
-      expect(await waitForBlockedRowLock("connection_grants")).toBe(true);
-      expect(replacementSettled).toBe(false);
+        await firstReplacementIsStaged;
 
-      releaseFirstReplacement();
-      await firstReplacement;
-      await membershipIsLocked;
-      expect(replacementSettled).toBe(false);
-      releaseCleanup();
-      await cleanup;
-      const replacementResult = await replacement;
-      expect(replacementResult.value).toBeNull();
-      expect(replacementResult.error).toEqual(
-        expect.objectContaining({
-          message:
-            "Replace inactive audience members before widening access to the whole company",
-          status: 409,
-          details: {
-            code: "audience_widening_blocked",
-            inactiveUserIds: ["departing-user"],
-          },
-        }),
-      );
-      expect(
-        await db
-          .select()
-          .from(connectionGrantMembers)
-          .where(eq(connectionGrantMembers.grantId, grant.id)),
-      ).toEqual([
-        expect.objectContaining({
-          subjectType: "user",
-          subjectId: "departing-user",
-        }),
-      ]);
+        const cleanup = cleanupDb.transaction(async (tx) => {
+          await tx
+            .select({ id: companyMemberships.id })
+            .from(companyMemberships)
+            .where(eq(companyMemberships.id, departingMembership.id))
+            .for("update");
+          membershipLocked();
+          await cleanupMayFinish;
 
-      const fetchMock = vi
-        .spyOn(globalThis, "fetch")
-        .mockResolvedValue(
-          mcpHttpResponse({ token: "unexpected-company-wide-token" }),
+          const access = accessService(
+            tx as unknown as ReturnType<typeof createDb>,
+          );
+          if (cleanupKind === "suspend") {
+            await access.updateMemberAndPermissions(
+              company.id,
+              departingMembership.id,
+              { status: "suspended", grants: [] },
+              "owner",
+            );
+          } else if (cleanupKind === "archive") {
+            await access.archiveMember(company.id, departingMembership.id);
+          } else {
+            await access.setUserCompanyAccess("departing-user", []);
+          }
+        });
+
+        // The first replacement still owns the departing member lock. Wait until
+        // cleanup is actually queued behind it (not a fixed delay) so the queue
+        // order is cleanup first, empty replacement second.
+        expect(await waitForBlockedMembershipUpdate()).toBe(true);
+        let replacementSettled = false;
+        const replacement = replacementService
+          .replaceConnectionGrantMembers(connection.id, grant.id, [])
+          .then(
+            (value) => ({ value, error: null }),
+            (error: unknown) => ({ value: null, error }),
+          )
+          .finally(() => {
+            replacementSettled = true;
+          });
+        // The empty replacement is blocked on the grant row lock held by the
+        // first replacement.
+        expect(await waitForBlockedRowLock("connection_grants")).toBe(true);
+        expect(replacementSettled).toBe(false);
+
+        releaseFirstReplacement();
+        await firstReplacement;
+        await membershipIsLocked;
+        expect(replacementSettled).toBe(false);
+        releaseCleanup();
+        await cleanup;
+        const replacementResult = await replacement;
+        expect(replacementResult.value).toBeNull();
+        expect(replacementResult.error).toEqual(
+          expect.objectContaining({
+            message:
+              "Replace inactive audience members before widening access to the whole company",
+            status: 409,
+            details: {
+              code: "audience_widening_blocked",
+              inactiveUserIds: ["departing-user"],
+            },
+          }),
         );
-      const denied = await request(
-        createRouteApp(db, agentJwtActor(company.id, agent.id, run.id)),
-      )
-        .post(`/api/agents/me/connections/${connection.id}/token`)
-        .send({});
-      expect(denied.status).toBe(403);
-      expect(denied.body).toMatchObject({
-        code: "grant_audience_denied",
-        grantId: grant.id,
-      });
-      expect(fetchMock).not.toHaveBeenCalled();
+        expect(
+          await db
+            .select()
+            .from(connectionGrantMembers)
+            .where(eq(connectionGrantMembers.grantId, grant.id)),
+        ).toEqual([
+          expect.objectContaining({
+            subjectType: "user",
+            subjectId: "departing-user",
+          }),
+        ]);
+
+        const fetchMock = vi
+          .spyOn(globalThis, "fetch")
+          .mockResolvedValue(
+            mcpHttpResponse({ token: "unexpected-company-wide-token" }),
+          );
+        const denied = await request(
+          createRouteApp(db, agentJwtActor(company.id, agent.id, run.id)),
+        )
+          .post(`/api/agents/me/connections/${connection.id}/token`)
+          .send({});
+        expect(denied.status).toBe(403);
+        expect(denied.body).toMatchObject({
+          code: "grant_audience_denied",
+          grantId: grant.id,
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        // Never leave the staged transactions holding row locks if an
+        // assertion above fails.
+        releaseFirstReplacement();
+        releaseCleanup();
+      }
     },
   );
 
