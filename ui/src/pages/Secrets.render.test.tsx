@@ -430,8 +430,7 @@ describe("Secrets page layout", () => {
         </MemoryRouter>,
       );
     });
-    await flushReact();
-    await flushReact();
+    await waitForReact(() => container.querySelector('[data-testid="provider-usage-remaining"]') !== null);
 
     const widget = container.querySelector('[data-testid="provider-usage-remaining"]');
     expect(widget).not.toBeNull();

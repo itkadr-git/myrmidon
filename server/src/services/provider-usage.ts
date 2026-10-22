@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gt, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { instanceSettings, providerUsageEventReceipts, providerUsageSnapshots, providerUsageWarningDeliveries, issueComments } from "@paperclipai/db";
 import { invalidateAttentionFeedCache } from "./attention.js";
@@ -58,7 +58,7 @@ export function providerUsageService(db: Db) {
           sourceEventId: event.eventId,
           ownerIssueId: ownerIssueId ? sql`coalesce(${providerUsageSnapshots.ownerIssueId}, ${ownerIssueId})` : providerUsageSnapshots.ownerIssueId,
           updatedAt: new Date() },
-        setWhere: sql`${providerUsageSnapshots.observedAt} < ${observedAt}`,
+        setWhere: lt(providerUsageSnapshots.observedAt, observedAt),
       });
 
       const rows = await tx.select().from(providerUsageSnapshots).where(and(
@@ -102,7 +102,7 @@ export function providerUsageService(db: Db) {
     const thresholdPercent = await thresholdForCompany(companyId);
     const rows = await db.select().from(providerUsageSnapshots).where(and(
       eq(providerUsageSnapshots.companyId, companyId),
-      sql`${providerUsageSnapshots.resetsAt} > ${now}`,
+      gt(providerUsageSnapshots.resetsAt, now),
     ));
     // One snapshot per (credential, window) is enforced by a unique index, so aggregate
     // row by row and carry each row's own owner issue instead of matching by position.
@@ -128,8 +128,8 @@ export function providerUsageService(db: Db) {
 
   async function deliverPendingWarnings(now = new Date()): Promise<{ delivered: number; failed: number }> {
     const snapshots = await db.select().from(providerUsageSnapshots).where(and(
-      sql`${providerUsageSnapshots.resetsAt} > ${now}`,
-      sql`${providerUsageSnapshots.ownerIssueId} is not null`,
+      gt(providerUsageSnapshots.resetsAt, now),
+      isNotNull(providerUsageSnapshots.ownerIssueId),
     ));
     const thresholds = new Map<string, number>();
     for (const snapshot of snapshots) {
@@ -148,8 +148,8 @@ export function providerUsageService(db: Db) {
       }).onConflictDoNothing();
     }
     const pending = await db.select().from(providerUsageWarningDeliveries).where(and(
-      sql`${providerUsageWarningDeliveries.deliveredAt} is null`,
-      sql`${providerUsageWarningDeliveries.nextAttemptAt} <= ${now}`,
+      isNull(providerUsageWarningDeliveries.deliveredAt),
+      lte(providerUsageWarningDeliveries.nextAttemptAt, now),
     ));
     let delivered = 0;
     let failed = 0;
