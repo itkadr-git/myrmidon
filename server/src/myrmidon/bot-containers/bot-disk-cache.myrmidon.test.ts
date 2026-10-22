@@ -235,7 +235,7 @@ describe("myrmidon(1.6.1-BOT-DISK-B) fleetd driver and the shared package cache"
     const warn = vi.fn();
     const request = vi.fn(async () => ({ status: 204, body: Buffer.alloc(0) }));
     const driver = fleetdBotContainerDriver(
-      { baseUrl: "https://fleet.example.com:8080", token: "fake-token", ca: "ca", cert: "cert", key: "key" },
+      { baseUrl: "http://fleet.example.com:8080", token: "fake-token" },
       { request, readSharedPackageCachePath: async () => path, log: { warn } },
     );
     return { driver, warn, request };

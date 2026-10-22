@@ -119,7 +119,7 @@ function createFakeFleetdServer(
 
 describe("OPE-8137: board/fleetd path operates without /host or docker.sock", () => {
   it("fleetdBotContainerDriver executes all lifecycle operations via pure HTTP without local docker.sock or /host", async () => {
-    const { server, baseUrl: httpBaseUrl, calls } = await createFakeFleetdServer((req, res) => {
+    const { server, baseUrl, calls } = await createFakeFleetdServer((req, res) => {
       res.setHeader("Content-Type", "application/json");
       if (req.method === "GET" && req.url === "/v1/bots/bot-reg-test/status") {
         res.end(JSON.stringify({ botKey: "bot-reg-test", state: "running", restartHash: "rh-1", filesHash: "fh-1" }));
@@ -146,18 +146,8 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
     });
 
     try {
-      const driver = fleetdBotContainerDriver({
-        baseUrl: `https://${httpBaseUrl.slice("http://".length)}`,
-        token: "test-fleetd-auth-token-32-chars-long",
-        ca: "test CA placeholder", cert: "test certificate placeholder", key: "test private key placeholder",
-      }, { request: async ({ method, path, body, headers }) => {
-        const response = await fetch(httpBaseUrl + "/v1" + path, {
-          method,
-          headers,
-          body: body ? new Uint8Array(body) : undefined,
-        });
-        return { status: response.status, body: Buffer.from(await response.arrayBuffer()) };
-      }});
+      const config: FleetdDriverConfig = { baseUrl, token: "test-fleetd-auth-token-32-chars-long" };
+      const driver = fleetdBotContainerDriver(config);
 
       // Status
       const status = await driver.status("bot-reg-test");
@@ -194,7 +184,7 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
   });
 
   it("fleetdBotContainerDriver explicitly skips mounting board-host shared package cache and logs notice", async () => {
-    const { server, baseUrl: httpBaseUrl } = await createFakeFleetdServer((_req, res) => {
+    const { server, baseUrl } = await createFakeFleetdServer((_req, res) => {
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ ok: true }));
     });
@@ -207,18 +197,8 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
     };
 
     try {
-      const driver = fleetdBotContainerDriver({
-        baseUrl: `https://${httpBaseUrl.slice("http://".length)}`,
-        token: "test-fleetd-auth-token-32-chars-long",
-        ca: "test CA placeholder", cert: "test certificate placeholder", key: "test private key placeholder",
-      }, { request: async ({ method, path, body, headers }) => {
-        const response = await fetch(httpBaseUrl + "/v1" + path, {
-          method,
-          headers,
-          body: body ? new Uint8Array(body) : undefined,
-        });
-        return { status: response.status, body: Buffer.from(await response.arrayBuffer()) };
-      },
+      const config: FleetdDriverConfig = { baseUrl, token: "test-fleetd-auth-token-32-chars-long" };
+      const driver = fleetdBotContainerDriver(config, {
         readSharedPackageCachePath: async () => "/srv/cache/pnpm",
         log: mockLog,
       });
@@ -232,15 +212,15 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
     }
   });
 
-  it("fleetdBotContainerDriver masks error bodies and rejects non-https baseUrls without filesystem checks", async () => {
-    const { server, baseUrl: httpBaseUrl } = await createFakeFleetdServer((_req, res) => {
+  it("fleetdBotContainerDriver masks error bodies and rejects non-http baseUrls without filesystem checks", async () => {
+    const { server, baseUrl } = await createFakeFleetdServer((_req, res) => {
       res.statusCode = 403;
       res.end("bot_not_enrolled\n");
     });
 
     try {
-      const config: FleetdDriverConfig = { baseUrl: "https://fleetd.invalid", token: "test-token-at-least-32-characters", ca: "test CA", cert: "test cert", key: "test key" };
-      const driver = fleetdBotContainerDriver(config, { request: async () => ({ status: 403, body: Buffer.from("bot_not_enrolled") }) });
+      const config: FleetdDriverConfig = { baseUrl, token: "test-token-at-least-32-characters" };
+      const driver = fleetdBotContainerDriver(config);
 
       await expect(driver.status("unknown-bot")).rejects.toThrow(FleetdDriverError);
       await expect(driver.status("unknown-bot")).rejects.toThrow("fleetd 403 bot_not_enrolled");
@@ -248,11 +228,12 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
       server.close();
     }
 
-    expect(() => parseFleetdEndpoint("unix:///var/run/docker.sock")).toThrow(/must be https:\/\//);
-    expect(() => parseFleetdEndpoint("file:///host/dev")).toThrow(/must be https:\/\//);
-    expect(() => parseFleetdEndpoint("http://fleetd.example.com")).toThrow(/must be https:\/\//);
-    expect(() => parseFleetdEndpoint("https://fleetd.example.com:0")).toThrow(/port is invalid/);
-    expect(() => parseFleetdEndpoint("https://fleetd.example.com:99999")).toThrow();
+    // Protocol validation: rejects unix sockets and file URLs; https (site-agent over TLS) is accepted
+    expect(() => parseFleetdEndpoint("unix:///var/run/docker.sock")).toThrow(/must be http:\/\/ or https:\/\//);
+    expect(() => parseFleetdEndpoint("file:///host/dev")).toThrow(/must be http:\/\/ or https:\/\//);
+    expect(parseFleetdEndpoint("https://fleetd.example.com").protocol).toBe("https:");
+    expect(() => parseFleetdEndpoint("http://fleetd.example.com:0")).toThrow(/port is invalid/);
+    expect(() => parseFleetdEndpoint("http://fleetd.example.com:99999")).toThrow();
   });
 });
 
@@ -389,7 +370,7 @@ describe("OPE-8137: fleet routing completely isolates fleet-placed bots from loc
     const routed = fleetRoutingDriver(deps, () => routedAgent);
 
     await expect(routed.status("bot-a")).rejects.toThrow(
-      'container.host "non-existent-host" names no configured fleet host (check MYRMIDON_FLEET_HOSTS)',
+      'container.host "non-existent-host" names no configured fleet host (check MYRMIDON_FLEET_HOSTS or fleet sites registry)',
     );
     expect(localDriver.status).not.toHaveBeenCalled();
   });
@@ -397,8 +378,8 @@ describe("OPE-8137: fleet routing completely isolates fleet-placed bots from loc
 
 describe("OPE-8137: fleet placement and host parsing boundaries", () => {
   it("fleetGatewayApiBaseUrl derives gateway URL purely in memory without socket or filesystem access", () => {
-    expect(fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 8080)).toBe("https://fleetd.internal:8080");
-    expect(fleetGatewayApiBaseUrl("https://fleetd2.example.com:9100", 3001)).toBe("https://fleetd2.example.com:3001");
+    expect(fleetGatewayApiBaseUrl("http://fleetd.internal:9100", 8080)).toBe("http://fleetd.internal:8080");
+    expect(fleetGatewayApiBaseUrl("http://fleetd2.example.com:9100", 3001)).toBe("http://fleetd2.example.com:3001");
 
     expect(() => fleetGatewayApiBaseUrl("http://fleetd.internal:9100", undefined)).toThrow(
       /fleetd did not report a gateway port/,
@@ -409,8 +390,8 @@ describe("OPE-8137: fleet placement and host parsing boundaries", () => {
     expect(() => fleetGatewayApiBaseUrl("http://fleetd.internal:9100", 70000)).toThrow(
       /fleetd reported an invalid gateway port/,
     );
-    expect(() => fleetGatewayApiBaseUrl("http://fleetd.internal:9100", 8080)).toThrow(
-      /fleetd url must be https:\/\//,
+    expect(() => fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 8080)).toThrow(
+      /fleetd url must be http:\/\//,
     );
   });
 
@@ -423,14 +404,14 @@ describe("OPE-8137: fleet placement and host parsing boundaries", () => {
       JSON.stringify([
         {
           name: "site-worker",
-          url: "https://site-worker.internal:9100",
+          url: "http://site-worker.internal:9100",
           tokenSecret: "site-token",
         },
       ]),
     );
     expect(parsed.get("site-worker")).toEqual({
       name: "site-worker",
-      url: "https://site-worker.internal:9100",
+      url: "http://site-worker.internal:9100",
       tokenSecret: "site-token",
     });
 
@@ -439,12 +420,12 @@ describe("OPE-8137: fleet placement and host parsing boundaries", () => {
         JSON.stringify([
           {
             name: "bad-protocol",
-            url: "http://site-worker.internal:9100",
+            url: "https://site-worker.internal:9100",
             tokenSecret: "site-token",
           },
         ]),
       ),
-    ).toThrow(/url must be https/);
+    ).toThrow(/url must be http/);
   });
 });
 
