@@ -17,6 +17,7 @@ import { laneInterval, recordLaneDbQuery } from "./myrmidon/monitoring/board-loa
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
+import type { Db } from "@paperclipai/db";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -263,6 +264,9 @@ export interface StartedServer {
   listenPort: number;
   apiUrl: string;
   databaseUrl: string;
+  db: Db;
+  processRole: ProcessRoleProfile["role"];
+  ownsBackgroundWork: boolean;
   shutdown: (signal?: "SIGINT" | "SIGTERM") => Promise<void>;
 }
 
@@ -2035,8 +2039,11 @@ async function startServerWithDatabaseTeardown(
     const boundBoardAddress =
       typeof server.address === "function" ? server.address() : null;
     startBoardProcessRegistry(db as any, {
-      apiPort:
-        typeof boundBoardAddress === "object" && boundBoardAddress
+      // Worker processes expose only the loopback control listener; their
+      // public board port is not an API endpoint in the process registry.
+      apiPort: processRoleProfile.role === "worker"
+        ? null
+        : typeof boundBoardAddress === "object" && boundBoardAddress
           ? boundBoardAddress.port
           : listenPort,
       onError: (error, phase) =>
@@ -2272,6 +2279,8 @@ async function startServerWithDatabaseTeardown(
     startTelegramNotifyJobs(db as any); // myrmidon(1.6.1-TG-NOTIFY-B): digest/escalation jobs; a no-op unless the owner settings enable them
     startTgNotifySweep({ db: db as any, settings: dbErrorChannelSettingsSource(db as any) }); // myrmidon(1.6-TG-NOTIFY-C): board errors → Telegram chat/topic; a no-op unless the owner settings enable it
     startScentQueue(db as any); // myrmidon(1.6.5 F-26 T10 SCENT): the markup queue on its own timer — never a heartbeat pass; a no-op unless general.swarm.scent.enabled
+    // myrmidon(1.6.6 PROCS-1.5 ч.H): api children do not own heartbeat work.
+    if (heartbeat) {
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
@@ -2768,6 +2777,7 @@ async function startServerWithDatabaseTeardown(
         logger.error({ err }, "heartbeat scheduler tick failed");
       }));
     });
+    }
   } else if (processRoleProfile.runsBackground) {
     // myrmidon(PROCS-1.1): the sweeps in this branch belong to the background
     // role — an api process whose heartbeat is disabled schedules none of them,
@@ -3066,6 +3076,9 @@ async function startServerWithDatabaseTeardown(
     listenPort,
     apiUrl: configuredApiUrl,
     databaseUrl: activeDatabaseConnectionString,
+    db,
+    processRole: processRoleProfile.role,
+    ownsBackgroundWork: processRoleProfile.runsBackground,
     shutdown: (signal = "SIGTERM") => shutdown(signal, false),
   };
   } catch (error) {
