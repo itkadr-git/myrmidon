@@ -264,6 +264,31 @@ describe("execute — gateway run reattach (HERMES-RUN-REATTACH)", () => {
     ]);
   });
 
+  it("stopGatewayRunForBoard forwards cancellation provenance headers", async () => {
+    let requestHeaders: Record<string, string> = {};
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestHeaders = Object.fromEntries(new Headers(init?.headers).entries());
+      return new Response(JSON.stringify({ stopped: true }), { status: 200 });
+    }));
+
+    await stopGatewayRunForBoard({
+      baseUrl: "http://127.0.0.1:8642",
+      apiKey: "board-key",
+      gatewayRunId: "gw-run-9",
+      cancellation: {
+        correlationId: "corr-9",
+        source: { code: "issue_comment_interrupt", endpoint: "POST /api/issues/:id/comments", actor: "user-7" },
+        reason: "operator interrupt",
+      },
+    });
+
+    expect(requestHeaders).toMatchObject({
+      "x-paperclip-correlation-id": "corr-9",
+      "x-paperclip-cancellation-source": "issue_comment_interrupt",
+      "x-paperclip-cancellation-actor": "user-7",
+    });
+  });
+
   it("stopGatewayRunForBoard reports not-stopped without throwing when the gateway forgot the run", async () => {
     const fetchMock = vi.fn(async () => new Response("gone", { status: 404 }));
     vi.stubGlobal("fetch", fetchMock);

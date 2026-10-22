@@ -8,6 +8,7 @@
 // Number parsing follows the same rule as the agent-chat-bridge settings:
 // unset or blank falls back to the default; anything that is not a
 // non-negative integer also falls back to the default.
+import { liveBehaviorSetting } from "./behavior-settings/live.js";
 
 export const TELEGRAM_DM_STATUS_ENV = "MYRMIDON_TELEGRAM_DM_STATUS";
 export const TELEGRAM_SPLIT_MAX_PARTS_ENV =
@@ -22,9 +23,10 @@ export const TELEGRAM_SPLIT_MAX_PARTS_ENV =
 export function telegramDmStatusEnabled(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  const raw = env[TELEGRAM_DM_STATUS_ENV]?.trim().toLowerCase();
-  if (!raw) return false;
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+  const raw = env[TELEGRAM_DM_STATUS_ENV];
+  const value = raw === undefined ? liveBehaviorSetting<boolean>("telegramDmStatus") : raw.trim().toLowerCase();
+  if (typeof value === "boolean") return value;
+  return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
 /**
@@ -36,9 +38,10 @@ export function telegramDmStatusEnabled(
 export function telegramSplitMaxParts(
   env: NodeJS.ProcessEnv = process.env,
 ): number {
-  const raw = env[TELEGRAM_SPLIT_MAX_PARTS_ENV]?.trim();
-  if (!raw) return 0;
-  if (!/^\d+$/.test(raw)) return 0;
-  const value = Number(raw);
+  const raw = env[TELEGRAM_SPLIT_MAX_PARTS_ENV] ?? String(liveBehaviorSetting<number>("telegramSplitMaxParts"));
+  const normalized = raw.trim();
+  if (!normalized) return 0;
+  if (!/^\d+$/.test(normalized)) return 0;
+  const value = Number(normalized);
   return Number.isSafeInteger(value) ? value : 0;
 }
