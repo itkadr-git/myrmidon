@@ -13,6 +13,7 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueRecoveryActions,
   issues,
@@ -98,6 +99,7 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
   afterEach(async () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     await db.delete(issueRecoveryActions);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
