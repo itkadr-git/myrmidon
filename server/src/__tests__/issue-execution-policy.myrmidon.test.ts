@@ -1899,7 +1899,7 @@ describe("issue execution policy transitions", () => {
       expect(() =>
         applyIssueExecutionPolicyTransition({
           issue: {
-            status: "blocked",
+            status: "todo",
             assigneeAgentId: coderAgentId,
             assigneeUserId: null,
             executionPolicy: null,
