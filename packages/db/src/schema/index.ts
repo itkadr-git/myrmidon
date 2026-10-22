@@ -232,6 +232,9 @@ export {
   myrmidonScopeAgentPrefs,
 } from "./myrmidon_bot_scope.js";
 export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
+export { myrmidonFleetSites, fleetSites, type FleetSiteCapacity, type FleetSiteProfile } from "./myrmidon_fleet_sites.js";
+export { myrmidonFleetAffinity, fleetAffinity } from "./myrmidon_fleet_affinity.js";
+export { myrmidonFleetMoves, type FleetMovePhaseLogEntry } from "./myrmidon_fleet_moves.js";
 // myrmidon(1.6-SWARM): leases of the per-role task queues.
 export { issueClaims } from "./issue_claims.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards and the round grid of answers.
@@ -289,11 +292,13 @@ export {
   knowledgeEvents,
   KNOWLEDGE_KINDS,
   KNOWLEDGE_ITEM_STATUSES,
+  KNOWLEDGE_REVISION_LANGS,
   KNOWLEDGE_REVISION_STATUSES,
   KNOWLEDGE_SOURCE_KINDS,
   KNOWLEDGE_SUGGESTION_STATUSES,
   type KnowledgeKind,
   type KnowledgeItemStatus,
+  type KnowledgeRevisionLang,
   type KnowledgeRevisionStatus,
   type KnowledgeSourceKind,
   type KnowledgeSuggestionStatus,

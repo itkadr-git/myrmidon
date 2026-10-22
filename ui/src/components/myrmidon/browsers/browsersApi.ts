@@ -4,6 +4,7 @@
 import { api } from "@/api/client";
 import type {
   BrowserConsoleStatus,
+  BrowserScreenConsoleTokenResponse,
   BrowserScreenOpenResponse,
   BrowserScreenStatusResponse,
   BrowserSessionJournalEntry,
@@ -24,6 +25,12 @@ export const browsersApi = {
     ),
   done: (browserId: string, companyId: string) =>
     api.post<{ done: boolean }>(`/myrmidon/browsers/${encodeURIComponent(browserId)}/screen/done?companyId=${encodeURIComponent(companyId)}`, {}),
+  // Part B: the signed Guacamole auth-JSON for the open screen session.
+  consoleToken: (browserId: string, companyId: string) =>
+    api.post<BrowserScreenConsoleTokenResponse>(
+      `/myrmidon/browsers/${encodeURIComponent(browserId)}/screen/console-token?companyId=${encodeURIComponent(companyId)}`,
+      {},
+    ),
   clearSiteData: (browserId: string, companyId: string, domain: string) =>
     api.delete<{ cleared: boolean; domain: string }>(
       `/myrmidon/browsers/${encodeURIComponent(browserId)}/data?companyId=${encodeURIComponent(companyId)}`,

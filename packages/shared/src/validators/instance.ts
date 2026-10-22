@@ -11,6 +11,7 @@ import { shapeWithoutDefaults } from "./partial.js";
 // myrmidon(WORKSPACE-HYGIENE): workspace disk quotas that can be changed while the server runs
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
+import { storedModelMenuSettingsSchema } from "../myrmidon-model-menu.js"; // myrmidon(1.6.6 MODEL-MENU B)
 import { alertRecoverySettingsSchema } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings, lenient stored shape
 import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
@@ -137,6 +138,24 @@ export const backupRetentionPolicySchema = z.object({
   keepLastOnly: z.boolean().optional(),
 });
 
+// myrmidon(1.6.6 PROCS-1.7 part A): the lease-relevant half of
+// `general.processes`. The counts half (api/worker) is owned by PROCS-J in
+// `packages/shared/src/myrmidon-board-processes.ts`; the stored row is shared
+// between both, so this schema passthrough-accepts the fields it does not own
+// (api, worker, and anything a later part adds). Every field has a default
+// and the defaults are the single-process board: nothing changes until an
+// operator explicitly switches `mode` to `split`.
+export const boardProcessesSettingsSchema = z
+  .object({
+    mode: z.enum(["single", "split"]).default("single"),
+    apiCount: z.number().int().min(1).max(4).default(1),
+    leaderLeaseTtlSec: z.number().int().min(5).max(300).default(30),
+    liveEventsBus: z.enum(["local", "pg"]).default("local"),
+    admissionStore: z.enum(["memory", "db"]).default("memory"),
+    singletonProxy: z.boolean().default(true),
+  })
+  .passthrough();
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
@@ -186,6 +205,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/datastore-care; absent means "use the environment
   // variable, then the default" (see packages/shared/src/myrmidon-datastore-care.ts).
   datastoreCare: datastoreCareSettingsSchema.optional(),
+  // myrmidon(1.6.6 MODEL-MENU B): the grouped /model menu, changed from
+  // /api/myrmidon/model-menu; absent means "group by provider family
+  // automatically". Lenient: a hand-edited row without the key, with unknown
+  // keys or with an invalid value still parses (see myrmidon-model-menu.ts).
+  modelMenu: storedModelMenuSettingsSchema,
   // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle (enabled, idle TTL),
   // changed from /api/myrmidon/bot-disk; absent means "use the environment
   // variable, then the default". Lenient: a row without the key, with unknown
@@ -368,6 +392,12 @@ export const instanceGeneralSettingsSchema = z.object({
   // fields another part of the same feature stores there; absent (or an absent
   // count) means the default { api: 1, worker: 0 } = today's single process.
   processes: storedBoardProcessesSettingsSchema.optional(),
+  // myrmidon(PROCS-1.8): committed task-drain state shared across processes.
+  taskDrain: z.object({
+    draining: z.boolean(),
+    startedAt: z.string().datetime().nullable(),
+    expiresAt: z.string().datetime().nullable(),
+  }).optional(),
   // myrmidon(1.7-BUDGET-CONFIG A): the global "signal only" flag of the
   // per-level spend limits, changed from PATCH …/budget-limits/signal-only;
   // absent means the default (signal only ON — limits never stop work).

@@ -112,7 +112,10 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-export function instanceSettingsRoutes(db: Db) {
+export function instanceSettingsRoutes(
+  db: Db,
+  options: { processBus?: { publish(channel: "settings_changed", payload: unknown): Promise<void> } } = {},
+) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
@@ -216,7 +219,28 @@ export function instanceSettingsRoutes(db: Db) {
         () => svc.getGeneral(),
         (field) => hidden.has(`instance.general.${field}`),
       );
+      const patch = req.body as Record<string, unknown>;
+      const taskDrainPatch = Object.prototype.hasOwnProperty.call(patch, "taskDrain")
+        ? patch.taskDrain as { draining: boolean; startedAt: string | null; expiresAt: string | null }
+        : undefined;
       const updated = await svc.updateGeneral(req.body);
+      if (taskDrainPatch) {
+        if (taskDrainPatch.draining && taskDrainPatch.startedAt) {
+          heartbeat.applyTaskDrain({
+            startedAt: new Date(taskDrainPatch.startedAt),
+            expiresAt: taskDrainPatch.expiresAt ? new Date(taskDrainPatch.expiresAt) : null,
+          });
+        } else {
+          heartbeat.applyTaskDrain(null);
+        }
+      }
+      const changedKeys = Object.keys(req.body).sort();
+      // Failure is non-fatal because periodic settings readers are the fallback.
+      if (options.processBus) {
+        void options.processBus.publish("settings_changed", { changedKeys }).catch((err: unknown) => {
+          logger.warn({ err }, "settings change committed but process notification failed");
+        });
+      }
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
       await Promise.all(
@@ -339,6 +363,18 @@ export function instanceSettingsRoutes(db: Db) {
             ),
           ),
         );
+        await svc.updateGeneral({
+          taskDrain: {
+            draining: true,
+            startedAt: computed.startedAt instanceof Date ? computed.startedAt.toISOString() : computed.startedAt,
+            expiresAt: computed.expiresAt instanceof Date ? computed.expiresAt.toISOString() : computed.expiresAt,
+          },
+        });
+        if (options.processBus) {
+          void options.processBus.publish("settings_changed", { changedKeys: ["taskDrain"] }).catch((err: unknown) => {
+            logger.warn({ err }, "task drain committed but process notification failed");
+          });
+        }
         heartbeat.applyTaskDrain(computed);
         // The audit record already committed, so a failure to publish it
         // here is not a reason to undo the drain: reverting the in-memory
@@ -391,6 +427,12 @@ export function instanceSettingsRoutes(db: Db) {
           ),
         ),
       );
+      await svc.updateGeneral({ taskDrain: { draining: false, startedAt: null, expiresAt: null } });
+      if (options.processBus) {
+        void options.processBus.publish("settings_changed", { changedKeys: ["taskDrain"] }).catch((err: unknown) => {
+          logger.warn({ err }, "task drain stop committed but process notification failed");
+        });
+      }
       heartbeat.stopTaskDrain();
       // See the POST handler above for why a publish failure here is
       // swallowed instead of failing the route: the audit record already

@@ -29,6 +29,37 @@ export { preserveMaintenanceGeneralKey } from "./store.js";
 export { MAINTENANCE_INTERRUPT_ERROR_CODE } from "./domain.js";
 export { maintenanceService } from "./service.js";
 
+const RETRY_SCHEDULE_ATTEMPTS = 4;
+const RETRY_SCHEDULE_BACKOFF_MS = 50;
+
+function isDeadlock(err: unknown): boolean {
+  for (let cause: unknown = err, depth = 0; cause && depth < 5; depth += 1) {
+    const e = cause as { code?: unknown; message?: unknown; cause?: unknown };
+    if (e.code === "40P01" || (typeof e.message === "string" && e.message.includes("deadlock detected"))) return true;
+    cause = e.cause;
+  }
+  return false;
+}
+
+/**
+ * The retry claim locks the issue row and then the run row, while a run that is
+ * still starting up locks them in the other order, so Postgres can pick the
+ * claim as the deadlock victim. By then the run is already cancelled and the
+ * window never looks at it again, so a lost claim would leave the task without
+ * its retry. A deadlock aborts the whole claim transaction, so repeating it is
+ * safe; any other failure is not retried.
+ */
+async function scheduleRetryAfterDeadlock<T>(schedule: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await schedule();
+    } catch (err) {
+      if (attempt >= RETRY_SCHEDULE_ATTEMPTS || !isDeadlock(err)) throw err;
+      await new Promise((resolve) => setTimeout(resolve, RETRY_SCHEDULE_BACKOFF_MS * attempt));
+    }
+  }
+}
+
 /** Heartbeat operations for the mode, on top of the vendor cancel and bounded-retry paths. */
 export function maintenanceHeartbeatPort(heartbeat: ReturnType<typeof heartbeatService>): MaintenanceHeartbeatPort {
   return {
@@ -37,6 +68,12 @@ export function maintenanceHeartbeatPort(heartbeat: ReturnType<typeof heartbeatS
       // instead of waiting for the vendor's periodic tick.
       await heartbeat.promoteDueScheduledRetries();
       await heartbeat.resumeQueuedRuns();
+    },
+    // myrmidon(L6-PROFILE-UPDATE-STARVATION): the maintenance tick promotes
+    // due scheduled retries once its owned interrupts have torn down, so the
+    // drain completes instead of the window sitting in `entering`.
+    async promoteDueScheduledRetries() {
+      await heartbeat.promoteDueScheduledRetries();
     },
     async interruptRunForMaintenance(runId, windowId) {
       const stopped = await heartbeat.cancelRun(runId, "Interrupted by maintenance mode; retried after maintenance ends", {
@@ -53,11 +90,13 @@ export function maintenanceHeartbeatPort(heartbeat: ReturnType<typeof heartbeatS
       if (stopped && (stopped.status === "running" || stopped.status === "queued")) {
         throw new Error(`run ${runId} is still ${stopped.status} after the maintenance interrupt`);
       }
-      const retry = await heartbeat.scheduleBoundedRetry(runId, {
-        retryReason: MAINTENANCE_RETRY_REASON,
-        wakeReason: MAINTENANCE_RETRY_WAKE_REASON,
-        delayMs: 0,
-      });
+      const retry = await scheduleRetryAfterDeadlock(() =>
+        heartbeat.scheduleBoundedRetry(runId, {
+          retryReason: MAINTENANCE_RETRY_REASON,
+          wakeReason: MAINTENANCE_RETRY_WAKE_REASON,
+          delayMs: 0,
+        }),
+      );
       return { retryScheduled: retry.outcome === "scheduled" };
     },
   };

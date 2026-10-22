@@ -73,8 +73,14 @@ export function parseParallelHelpersDraft(draft: Record<NumberKey, string>): Dra
   const patch: Partial<ParallelHelpersSettings> = {};
   if (parsed.maxPerAgent !== null) patch.maxPerAgent = parsed.maxPerAgent;
   if (parsed.defaultMaxPerAgent !== null) patch.defaultMaxPerAgent = parsed.defaultMaxPerAgent;
-  if (parsed.buildSlots !== null) patch.buildSlots = parsed.buildSlots;
-  if (parsed.hostMemoryMb !== null) patch.hostMemoryMb = parsed.hostMemoryMb;
+  // Empty host-capacity inputs are explicit clears; optional helper defaults
+  // still remain unchanged when their fields are blank.
+  if (draft.buildSlots.trim() === "" || parsed.buildSlots !== null) {
+    patch.buildSlots = parsed.buildSlots;
+  }
+  if (draft.hostMemoryMb.trim() === "" || parsed.hostMemoryMb !== null) {
+    patch.hostMemoryMb = parsed.hostMemoryMb;
+  }
   return { patch, errors };
 }
 

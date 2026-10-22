@@ -145,6 +145,57 @@ describe("prometheus exposition format", () => {
     expect(text).not.toContain("myrmidon_board_lane_busy_seconds_total{");
   });
 
+
+  // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback chain of the bridge seam counts
+  // per reason (design OPE-6985), so the exposition must show one sample per
+  // reason when the counters were read, and the family with HELP/TYPE alone
+  // when the collector has none.
+  it("renders one sample per reason for the bridge fallback family", () => {
+    const text = renderMetricsText(
+      snapshot({
+        adapterFallbacks: [
+          { reason: "error", count: 3 },
+          { reason: "timeout", count: 1 },
+        ],
+      }),
+    );
+
+    expect(text).toContain('myrmidon_adapter_fallback_total{reason="error"} 3');
+    expect(text).toContain('myrmidon_adapter_fallback_total{reason="timeout"} 1');
+  });
+
+  it("renders the fallback family without samples when the counters were not read", () => {
+    const text = renderMetricsText(snapshot());
+
+    expect(text).toContain("# TYPE myrmidon_adapter_fallback_total counter");
+    expect(text).toContain("# HELP myrmidon_adapter_fallback_total ");
+    expect(text).not.toContain("myrmidon_adapter_fallback_total{");
+  });
+
+  // myrmidon(1.6.6 CONNECTOR-IN): the ingress counter rides the same scrape.
+  // Both paths render whenever the counter was read — zero included, so the
+  // operator reads "nothing goes through a connector yet" off the graph
+  // instead of guessing it from a missing series.
+  it("renders the ingress counter per path, zero included", () => {
+    const read = renderMetricsText(snapshot({ chatIngress: { adapter: 3, direct: 4 } }));
+
+    expect(read).toContain("# TYPE myrmidon_chat_ingress_total counter");
+    expect(read).toContain('myrmidon_chat_ingress_total{path="adapter"} 3');
+    expect(read).toContain('myrmidon_chat_ingress_total{path="direct"} 4');
+
+    const idle = renderMetricsText(snapshot({ chatIngress: { adapter: 0, direct: 0 } }));
+
+    expect(idle).toContain('myrmidon_chat_ingress_total{path="adapter"} 0');
+    expect(idle).toContain('myrmidon_chat_ingress_total{path="direct"} 0');
+  });
+
+  it("renders the ingress family without samples when the counter was not read", () => {
+    const text = renderMetricsText(snapshot());
+
+    expect(text).toContain("# HELP myrmidon_chat_ingress_total ");
+    expect(text).not.toContain("myrmidon_chat_ingress_total{");
+  });
+
   it("renders the process families without samples when there is no process read", () => {
     const text = renderMetricsText(snapshot({ process: null }));
     expect(text).toContain("# TYPE myrmidon_board_event_loop_lag_seconds summary");

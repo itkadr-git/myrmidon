@@ -64,6 +64,7 @@ import {
   agentCommitIdentity,
   defaultGitHubSharedIdentitySettings,
   githubAppsFor,
+  githubPatsFor,
   isRepositoryAllowed,
   normalizeGitHubAppPermissions,
   normalizeGitHubRepository,
@@ -141,6 +142,16 @@ describe("GitHub App identity: pure policy", () => {
     expect(normalizeGitHubRepository("https://example.com/owner-a/repo-a")).toBeNull();
     expect(normalizeGitHubRepository("../../etc/passwd")).toBeNull();
     expect(normalizeGitHubRepository(42)).toBeNull();
+  });
+
+  it("selects PAT identities only for explicit agents and repositories", () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    const settings = { ...defaultGitHubSharedIdentitySettings(), enabled: true, pats: [
+      { id: randomUUID(), name: "Well", tokenSecretId: randomUUID(), agentIds: [agentId], allowedRepos: ["BastionPrime/well*"] },
+    ] };
+    expect(githubPatsFor(settings, agentId, "bastionprime/wellboard")).toHaveLength(1);
+    expect(githubPatsFor(settings, agentId, "itkadr-git/myrmidon")).toHaveLength(0);
+    expect(githubPatsFor(settings, randomUUID(), "BastionPrime/wellboard")).toHaveLength(0);
   });
 
   it("matches owner/repo patterns with a literal owner", () => {
@@ -444,6 +455,30 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(github.calls).toEqual([]);
   });
 
+  it("routes Well repositories to an explicitly scoped PAT while Myrmidon remains on the App", async () => {
+    const input = await seed();
+    const appSecret = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-app", repos: ["itkadr-git/myrmidon"] });
+    const patSecret = randomUUID();
+    const patToken = "test-well-pat-token";
+    await db.insert(companySecrets).values({ id: patSecret, companyId: input.companyId, key: patSecret, name: "Well PAT", scope: "company" });
+    vaultState.values.set(patSecret, patToken);
+    const app = entry(appSecret, { allowedRepos: ["itkadr-git/myrmidon"] });
+    const pat = { id: randomUUID(), name: "Well", tokenSecretId: patSecret, agentIds: [input.agentId], allowedRepos: ["BastionPrime/well*"] };
+    await writeGitHubSharedIdentitySettings(db, input.companyId, rules([app], { pats: [pat] }));
+
+    const well = await resolveGitHubOperationCredentials(db, { ...input, repository: "BastionPrime/wellboard" });
+    expect(well).toMatchObject({ status: "available", source: "pat", login: "Well", env: { GH_TOKEN: patToken } });
+    expect(github.calls).toEqual([]);
+    const myrmidon = await resolveGitHubOperationCredentials(db, { ...input, repository: "itkadr-git/myrmidon" });
+    expect(myrmidon).toMatchObject({ status: "available", source: "app" });
+    expect(myrmidon.env.GH_TOKEN).toBe("tok-app-myrmidon");
+    const stranger = await resolveGitHubOperationCredentials(db, { ...input, repository: "other-owner/private" });
+    expect(stranger).toMatchObject({ status: "absent", env: {} });
+    expect(vault.resolveSecretValue).toHaveBeenCalledTimes(2);
+    expect(vault.resolveSecretValue.mock.calls.map(([ , id]) => id)).toContain(patSecret);
+    expect(JSON.stringify(await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.runId, input.runId)))).not.toContain(patToken);
+  });
+
   it("fails closed when GitHub refuses, and stays absent outside the rules or without a repository", async () => {
     const input = await seed("designer");
     const secretId = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-a", repos: ["owner-a/repo-a"] });
@@ -616,6 +651,7 @@ const support = await getEmbeddedPostgresTestSupport();
           // Partial list normalized to complete: the defaults fill the rest.
           permissions: normalizeGitHubAppPermissions({ workflows: "write", issues: "read" }),
         }],
+        pats: [],
         commitEmailDomain: "example.com",
       };
       expect(saved.body.settings).toEqual(expected);

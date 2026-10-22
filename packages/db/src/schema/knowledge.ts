@@ -47,11 +47,13 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
-/** The knowledge kinds of the 2.0 model (§3.2). */
-export const KNOWLEDGE_KINDS = ["note", "wiki", "answer", "task_outcome", "rule"] as const;
+/** The knowledge kinds of the 2.0 model (§3.2). `skill_card` is the skill's
+ *  knowledge card written by the K-7 backfill and kept by the lifecycle. */
+export const KNOWLEDGE_KINDS = ["note", "wiki", "answer", "task_outcome", "rule", "skill_card"] as const;
 export type KnowledgeKind = (typeof KNOWLEDGE_KINDS)[number];
 
 /** Item workflow statuses (§2.4): draft → in_review → published → archived/superseded. */
@@ -61,6 +63,10 @@ export type KnowledgeItemStatus = (typeof KNOWLEDGE_ITEM_STATUSES)[number];
 /** Revision statuses: a revision is drafted, submitted for approval, approved, or rejected. */
 export const KNOWLEDGE_REVISION_STATUSES = ["draft", "submitted", "approved", "rejected"] as const;
 export type KnowledgeRevisionStatus = (typeof KNOWLEDGE_REVISION_STATUSES)[number];
+
+/** Languages supported by the knowledge translation contract. */
+export const KNOWLEDGE_REVISION_LANGS = ["en", "ru"] as const;
+export type KnowledgeRevisionLang = (typeof KNOWLEDGE_REVISION_LANGS)[number];
 
 /** Source kinds a claim may cite. */
 export const KNOWLEDGE_SOURCE_KINDS = ["task", "pr", "issue", "run", "document", "decision", "url"] as const;
@@ -135,6 +141,8 @@ export const knowledgeRevisions = pgTable(
     /** 1-based, strictly increasing within the item (S2). */
     revisionNumber: integer("revision_number").notNull(),
     status: text("status").$type<KnowledgeRevisionStatus>().notNull().default("draft"),
+    lang: text("lang").$type<KnowledgeRevisionLang>().notNull().default("en"),
+    translationOf: uuid("translation_of").references((): AnyPgColumn => knowledgeRevisions.id, { onDelete: "set null" }),
     content: text("content").notNull(),
     /** What changed, free text — shown in the revision diff (K-4 UI). */
     changeSummary: text("change_summary"),
@@ -153,6 +161,7 @@ export const knowledgeRevisions = pgTable(
     itemRevisionUq: uniqueIndex("knowledge_revisions_item_revision_uq").on(table.itemId, table.revisionNumber),
     nestIdx: index("knowledge_revisions_nest_idx").on(table.nestId),
     companyIdx: index("knowledge_revisions_company_idx").on(table.companyId),
+    translationIdx: index("knowledge_revisions_translation_idx").on(table.translationOf),
   }),
 );
 

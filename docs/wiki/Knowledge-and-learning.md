@@ -14,6 +14,26 @@ draft → approved revisions and a change log. An approved regulation is what
 agents of that role are expected to follow; editing one is a deliberate,
 reviewed act, not a quiet file change.
 
+Knowledge revisions can be labelled English or Russian and linked to a
+canonical revision as its translation. Reads and search prefer an approved
+translation in the requested language; when none is available, they fall back
+to the canonical revision. This links existing content without duplicating the
+knowledge item. The current interface and import flow do not provide translation
+editing; this is a storage and read-selection capability.
+
+## Seeded decisions and product knowledge
+
+The knowledge base is initially populated with 46 dated owner decisions in
+`decisions/` and four curated pages in `product/`: the product vision,
+principles P1-P14, the colony-model map and the open-core model. Decision
+records carry the decision maker, date, verbatim quote and a source pointer to
+the decision registry. Product pages retain their own source references.
+
+The seeder creates knowledge items in a nest and publishes them. It skips
+existing slugs on rerun, and applies supersede links in a second pass so that
+both records exist first; superseded decisions remain available as history.
+The seed corpus and seeder are part of release 1.6.6.
+
 ## Foraging: gathering fresh knowledge
 
 Foraging lets the colony collect fresh knowledge from approved external

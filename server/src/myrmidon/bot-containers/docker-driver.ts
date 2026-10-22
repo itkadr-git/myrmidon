@@ -56,7 +56,10 @@
 
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { randomBytes } from "node:crypto";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import path from "node:path";
 import http from "node:http";
+import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import {
   RATE_LIMIT_MAX_RETRIES,
   backoffDelayMs,
@@ -126,7 +129,9 @@ export const BOT_CONTAINER_UID = 10001;
 const DOCKER_API_VERSION = "v1.45";
 /** Seconds Docker waits after SIGTERM before SIGKILL on stop/restart. */
 export const BOT_STOP_TIMEOUT_SEC = 30;
-const DEFAULT_START_HEALTH_TIMEOUT_MS = 120_000;
+const DEFAULT_START_HEALTH_TIMEOUT_MS = 180_000;
+// Developer images run slow cache/devbuild diagnostics during container init.
+const DEFAULT_HEALTH_START_GRACE_MS = 90_000;
 // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): 1 s polling of a container's health was
 // the rollout's second storm source — a 120 s wait meant up to 120 A2 inspects
 // per bot, and dockergate bills every one against the per-bot inspect bucket and
@@ -167,7 +172,15 @@ export interface DockerDriverConfig {
    *  0 disables the client-side bucket; absent (a config built in tests, not by
    *  readDockerDriverConfig) means the same: pacing off. */
   maxRps?: number;
+  /**
+   * State directory where driver-owned instance state (e.g. idle-stopped marks)
+   * is stored on the board's own data volume, rather than the host's volumeRoot.
+   */
+  stateDir?: string;
 }
+
+/** MYRMIDON_BOT_STATE_DIR: data directory for driver state (defaults to instance root). */
+export const BOT_STATE_DIR_ENV = "MYRMIDON_BOT_STATE_DIR";
 
 /** MYRMIDON_DOCKERGATE_MAX_RPS: 0..50 requests/s, default 20 (half the gate's
  *  global bucket: a second caller — fleetd, a future collector — shares it). */
@@ -185,6 +198,9 @@ export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): Do
     const value = Number(rawRps);
     if (Number.isFinite(value) && value >= 0 && value <= 50) maxRps = value;
   }
+  const stateDir =
+    env[BOT_STATE_DIR_ENV]?.trim() ||
+    path.join(resolvePaperclipInstanceRoot(), "bot-containers", "idle-stopped");
   return {
     socketPath: env[BOT_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_BOT_DOCKER_SOCKET,
     volumeRoot,
@@ -195,6 +211,7 @@ export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): Do
     mountSources: parseMountSourceAllowlist(env[BOT_MOUNT_SOURCES_ENV]),
     devbuild: parseDevbuildSettings(env),
     maxRps,
+    stateDir,
   };
 }
 
@@ -224,6 +241,8 @@ export interface DockerDriverOptions {
    */
   clock?: () => number;
   rng?: () => number;
+  /** Monotonic source for startup-health elapsed time and deadlines. */
+  monotonicClock?: () => number;
   /**
    * myrmidon(1.6.1-BOT-DISK-B): the shared package cache path from the
    * instance settings (`general.botDisk`), or undefined when none is set. Read
@@ -267,6 +286,8 @@ export interface DockerDriverOptions {
     check(args: { botKey: string; from: ScopeLayout; to: ScopeLayout }): Promise<void>;
     run(args: { botKey: string; from: ScopeLayout; to: ScopeLayout }): Promise<void>;
   };
+  /** State directory override; tests pass a temporary directory. */
+  stateDir?: string;
 }
 
 export interface DockerCreateContainerBody {
@@ -289,6 +310,12 @@ export interface DockerCreateContainerBody {
     Binds: string[];
     Privileged: boolean;
   };
+}
+
+export interface DockerUpdateContainerBody {
+  Memory: number;
+  MemorySwap: number;
+  PidsLimit: number;
 }
 
 /**
@@ -811,7 +838,7 @@ interface DockerInspect {
   Id: string;
   /** Image id the container runs (sha256:…). */
   Image: string;
-  Config?: { Image?: string; Labels?: Record<string, string> };
+  Config?: { Image?: string; Labels?: Record<string, string>; Env?: string[] };
   State?: { Status?: string; ExitCode?: number; Health?: { Status?: string } };
   HostConfig?: { Memory?: number; NanoCpus?: number; PidsLimit?: number; NetworkMode?: string; Binds?: string[] };
 }
@@ -1121,6 +1148,7 @@ export function dockerBotContainerDriver(
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the clock and jitter source of the
   // pacing layer (dockergate-pacing.ts); tests drive them to assert the schedule.
   const clock = options.clock ?? (() => Date.now());
+  const monotonicClock = options.monotonicClock ?? options.clock ?? (() => performance.now());
   const rng = options.rng ?? Math.random;
   const limiter: RateLimiter = createRateLimiter({ ratePerSec: config.maxRps ?? 0, clock, sleep });
   const readSharedPackageCachePath = options.readSharedPackageCachePath ?? (async () => undefined);
@@ -1509,11 +1537,51 @@ export function dockerBotContainerDriver(
       return null;
     }
   }
+  const stateDir =
+    options.stateDir ??
+    config.stateDir ??
+    path.join(resolvePaperclipInstanceRoot(), "bot-containers", "idle-stopped");
+
+  async function idleStoppedStatePath(botKey: string): Promise<string> {
+    return path.join(stateDir, `${botKey}.json`);
+  }
+
+  async function readIdleStopped(botKey: string): Promise<boolean> {
+    try {
+      const raw = await readFile(await idleStoppedStatePath(botKey), "utf8");
+      const state = JSON.parse(raw) as { botKey?: unknown; idleStopped?: unknown };
+      return state.botKey === botKey && state.idleStopped === true;
+    } catch (error) {
+      if (
+        (error as NodeJS.ErrnoException).code === "ENOENT" ||
+        (error as NodeJS.ErrnoException).code === "ENOTDIR"
+      ) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async function writeIdleStopped(botKey: string, idleStopped: boolean): Promise<void> {
+    const file = await idleStoppedStatePath(botKey);
+    if (!idleStopped) {
+      await unlink(file).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+      });
+      return;
+    }
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    const temporary = `${file}.${process.pid}.${newNonce()}.tmp`;
+    await writeFile(temporary, JSON.stringify({ botKey, idleStopped: true }), { mode: 0o600 });
+    await rename(temporary, file);
+  }
+
   async function status(botKey: string): Promise<BotContainerStatus> {
     const name = containerNameFor(botKey);
     const info = await inspectByName(name);
     if (!info) return { botKey, state: "missing" };
     const marker = await readAppliedMarker(botKey, info);
+    const idleStopped = await readIdleStopped(botKey);
     return {
       botKey,
       state: botStateFromInspect(info),
@@ -1525,6 +1593,7 @@ export function dockerBotContainerDriver(
       // already asked for the status (the reconciler, once per bot per pass)
       // can hand it to templateDrift instead of paying a second inspect.
       inspect: info,
+      idleStopped,
     };
   }
 
@@ -1575,6 +1644,21 @@ export function dockerBotContainerDriver(
     const existing = (knownStatus?.inspect as DockerInspect | undefined) ?? (await inspectByName(containerNameFor(spec.botKey)));
     if (!existing) return { drifted: false, fields: [] };
     return templateDriftOf(existing, spec);
+  }
+
+  async function updateResources(spec: BotContainerSpec): Promise<void> {
+    const body: DockerUpdateContainerBody = {
+      Memory: Math.round(spec.memoryMb * 1024 * 1024),
+      MemorySwap: Math.round(spec.memoryMb * 2 * 1024 * 1024),
+      PidsLimit: spec.pidsLimit,
+    };
+    const res = await requestWithRateLimitRetry({
+      method: "POST",
+      path: `/containers/${nameSegment(containerNameFor(spec.botKey))}/update`,
+      body: Buffer.from(JSON.stringify(body)),
+      headers: { "Content-Type": "application/json" },
+    });
+    if (res.status >= 400) throw describeFailure(`docker update ${spec.botKey}`, res);
   }
 
   /** myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): status and drift from ONE inspect
@@ -1663,28 +1747,43 @@ export function dockerBotContainerDriver(
 
   async function waitForHealthy(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
-    const deadline = clock() + startHealthTimeoutMs;
+    const startedAt = monotonicClock();
+    const deadline = startedAt + startHealthTimeoutMs;
+    let unhealthySince: number | undefined;
     for (;;) {
       const info = await inspectByName(name);
       if (!info) throw new Error(`${name} disappeared while waiting for it to become healthy`);
       const state = info.State?.Status ?? "unknown";
       const health = info.State?.Health?.Status;
-      if (state === "running" && (health === undefined || health === "healthy")) return;
-      if (state === "running" && health === "unhealthy") throw new Error(`${name} reports unhealthy after start`);
+      if (state === "running" && health === "healthy") return;
+      if (state === "running" && health === "unhealthy") {
+        const isDeveloperContainer = (info.Config?.Env ?? []).some((entry) => entry.startsWith("DEVBUILD_BOT_NAME="));
+        const healthGrace = isDeveloperContainer ? Math.min(startHealthTimeoutMs, DEFAULT_HEALTH_START_GRACE_MS) : 0;
+        if (healthGrace > 0) {
+          unhealthySince ??= monotonicClock();
+          if (monotonicClock() - unhealthySince >= healthGrace) throw new Error(`${name} reports unhealthy after start`);
+        } else {
+          throw new Error(`${name} reports unhealthy after start`);
+        }
+      } else {
+        unhealthySince = undefined;
+      }
       if (state === "exited" || state === "dead") {
         throw new Error(`${name} ${state} (exit code ${info.State?.ExitCode ?? "unknown"}) instead of becoming healthy`);
       }
-      if (clock() >= deadline) {
+      if (monotonicClock() >= deadline) {
         throw new Error(
           `${name} did not become healthy within ${startHealthTimeoutMs}ms (last state: ${health ? `${state}/${health}` : state})`,
         );
       }
-      await sleep(healthPollIntervalMs);
+      await sleep(Math.min(healthPollIntervalMs, Math.max(0, deadline - monotonicClock())));
     }
   }
 
   async function start(botKey: string): Promise<void> {
-    await startByName(containerNameFor(botKey)); // 304 (already running) is not an error
+    const name = containerNameFor(botKey);
+    await startByName(name); // 304 (already running) is not an error
+    await writeIdleStopped(botKey, false);
     await waitForHealthy(botKey);
   }
 
@@ -1701,7 +1800,21 @@ export function dockerBotContainerDriver(
 
   async function stop(botKey: string): Promise<void> {
     await stopByName(containerNameFor(botKey));
+    await writeIdleStopped(botKey, false).catch(() => undefined);
   }
 
-  return { status, list, listRunning, templateDrift, statusWithDrift, create, recreate, writeProfile, start, restart, stop, readCloneReport, readBotSkills };
+  async function stopIdle(botKey: string): Promise<void> {
+    const name = containerNameFor(botKey);
+    const res = await requestWithRateLimitRetry({ method: "POST", path: `/containers/${nameSegment(name)}/stop?t=${BOT_STOP_TIMEOUT_SEC}&myrmidon-idle=true` });
+    if (res.status >= 400) throw describeFailure(`docker idle stop ${name}`, res);
+    try {
+      await writeIdleStopped(botKey, true);
+    } catch (writeErr) {
+      // Отказ записи — ошибка стопа (контейнер не оставлять остановленным без отметки).
+      await startByName(name).catch(() => undefined);
+      throw new Error(`Failed to record idle-stopped state for bot ${botKey}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
+    }
+  }
+
+  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, stopIdle, readCloneReport, readBotSkills };
 }
