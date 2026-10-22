@@ -235,6 +235,7 @@ import {
   resolveHotRestartReportPath,
   writeHotRestartIntent,
 } from "../services/hot-restart.ts";
+import { logger } from "../middleware/logger.ts";
 import { secretService } from "../services/secrets.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
@@ -7980,6 +7981,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runningProcesses.has(runId)).toBe(false);
   });
 
+  it("logs and persists the cancellation source and correlation id", async () => {
+    const { runId, agentId } = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+    });
+    const info = vi.spyOn(logger, "info");
+    try {
+      const cancelled = await heartbeatService(db).cancelRun(runId, "Cancelled by a board operator", {
+        correlationId: "corr-test-1",
+        cancellationSource: { code: "board_operator", endpoint: "POST /api/heartbeat-runs/:runId/cancel", actor: "user-7" },
+      });
+      expect(cancelled?.resultJson).toMatchObject({
+        executionCancellation: {
+          correlationId: "corr-test-1",
+          source: { code: "board_operator", endpoint: "POST /api/heartbeat-runs/:runId/cancel", actor: "user-7" },
+          reason: "Cancelled by a board operator",
+        },
+      });
+      expect(info).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId,
+          agentId,
+          correlationId: "corr-test-1",
+          cancellationSource: expect.objectContaining({ code: "board_operator", actor: "user-7" }),
+        }),
+        "heartbeat run cancellation requested",
+      );
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it("records manual cancellation stop metadata", async () => {
     const { runId } = await seedRunFixture({
       agentStatus: "running",
@@ -7994,6 +8027,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       effectiveTimeoutSec: 0,
       timeoutConfigured: false,
       timeoutFired: false,
+      executionCancellation: {
+        correlationId: expect.any(String),
+        source: { code: "control_plane", actor: "system" },
+        reason: "Cancelled by control plane",
+      },
     });
   });
 
