@@ -62,6 +62,9 @@ describe("resolveProcessRole", () => {
     expect(processRole({ [PROCESS_ROLE_ENV]: "api" }).source).toBe("env");
     expect(processRole({}).role).toBe("all");
     expect(processRole({}).source).toBe("default");
+    expect(processRole({ MYRMIDON_PROCESS_ROLE: "worker", PAPERCLIP_PROCESS_ROLE: "api" }).role).toBe("worker");
+    expect(processRole({ MYRMIDON_PROCESS_ROLE: "", PAPERCLIP_PROCESS_ROLE: "api" }).role).toBe("all");
+    expect(processRole({ PAPERCLIP_PROCESS_ROLE: "api" }).role).toBe("api");
   });
 });
 

@@ -8,7 +8,6 @@ import type { Db } from "@paperclipai/db";
 import { ownerDeliveryRoutes } from "./routes.js";
 
 export * from "./settings.js";
-export * from "./owner-card-text.js";
 export * from "./classify.js";
 export { type OwnerDeliveryPublicationItem } from "./publications-journal.js";
 
