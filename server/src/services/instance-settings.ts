@@ -293,6 +293,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
+      // myrmidon(OPE-7898): the stored IDLE-STOP policy survives every general read and write.
+      // Without this line the normalizer drops the key: the board setting never roundtrips.
+      ...(parsed.data.idleStop ? { idleStop: parsed.data.idleStop } : {}),
       // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
       ...(parsed.data.botDiskQuota ? { botDiskQuota: parsed.data.botDiskQuota } : {}),
       // myrmidon(BOT-ROLLOUT): the stored release bot-image rollout settings survive every general write
@@ -795,7 +798,6 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveBrowserConsoleGeneralKey(current.general), // myrmidon(BROWSER-CONSOLE)
               ...preserveStackGeneralKey(current.general), // myrmidon(SUA)
               ...preserveBotCanaryGeneralKey(current.general), // myrmidon(R5-B)
-              ...(current.general.idleStop !== undefined ? { idleStop: current.general.idleStop } : {}), // myrmidon(OPE-7898)
               ...preserveBotRolloutDeferredGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
               ...preserveAccessHubHostsGeneralKey(current.general), // myrmidon(SEC1)
               ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
