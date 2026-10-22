@@ -1,0 +1,2 @@
+-- Pool-chat schema is deployed by the preceding adapter migration.
+-- This compatibility entry preserves already-installed 0402 journals.
