@@ -1,50 +1,39 @@
 # REDACT step 0: candidate evaluation
 
-Status: decision record, before implementation.
+Status: preliminary evaluation proposal, not a completed benchmark or final selection. No candidate has measured scores in this document. The evidence below was checked against linked upstream documentation and repository contents on 2026-10-22; upstream claims should be rechecked when dependencies are pinned.
 
-## Decision
+## Verified facts and provisional hypothesis
 
-Select Microsoft Presidio as the detection and anonymization core, with a thin Myrmidon adapter. Add only domain-specific recognizers that the candidate does not provide: Russian legal/bank identifiers with checksum validation, tenant dictionaries, tenant policy, and LiteLLM/MCP/HTTP adapters. Use the existing Presidio anonymizer operators for irreversible and reversible transformations. Keep the default policy in report-only mode until the synthetic corpus meets the release thresholds.
+Verified repository fact: at PR head `0e05d3c8f3632afedee5089aa49414b45b458ecb`, the repository contains this evaluation document but does not contain `tools/redact-eval/benchmark.py` or a benchmark corpus. The benchmark command, corpus design, and metric protocol below are proposed work, not an available harness or completed evaluation. No scores, candidate performance, or CI artifacts are reported here.
 
-LLM Guard is a useful optional composition for prompt-specific scanning and its Vault/deanonymization flow, but it is not the primary core: its documented language coverage is English and Chinese, while this service requires Russian legal and bank identifiers. Natasha/spaCy ru are complementary NER components, not complete redaction engines. Gitleaks and detect-secrets are secret scanners intended primarily for source/repository scanning; they are narrow complements rather than the PII engine.
+Verified documentation facts: Presidio documents configurable recognizers and anonymizer operators, including encryption/de-anonymization; see the dated upstream links in its candidate row. These docs do not establish performance with Myrmidon's Russian identifiers or models.
 
-## Reproducible corpus
+Provisional hypothesis only: Presidio is a plausible primary integration candidate because its documented recognizer/anonymizer extension points could accommodate Myrmidon's Russian/domain-specific needs. This is not an evidence-backed selection yet. LLM Guard, Natasha/spaCy ru, gitleaks, and detect-secrets are comparison candidates or potential complements, not rejected by measured results. Validate actual language/model support and behavior at pinned versions before choosing.
 
-The benchmark uses synthetic values only. It contains one positive and one hard-negative case for each required class, plus a mixed 4 KiB payload for latency. Run it after installing the candidate dependencies in the CI image:
+## Proposed reproducible benchmark (not yet implemented)
 
-```text
-python tools/redact-eval/benchmark.py --json results.json
-```
+Before claiming results, implement and review a harness and versioned synthetic corpus as separate follow-up work. Pin candidate package versions and all local model assets; prohibit network access. Use fixed seeded inputs with labeled positive and hard-negative examples per required class (INN, OGRN, bank accounts, BIK, cards, secrets), and a fixed mixed 4 KiB payload. Publish corpus revision, exact candidate/model versions, invocation, environment, and raw JSON artifact. Define span normalization and exact-span scoring in advance; report per-class precision, recall, F1, and false-positive rate with denominators. Measure p50/p95 latency after a documented warm-up over a fixed number of repeated local runs. Test reversible transformation for byte-for-byte round trip and report-only mode for non-blocking behavior. Unsupported classes/dependencies must be marked unsupported/unavailable, never scored as zero or represented by fabricated measurements.
 
-The harness is deliberately an adapter contract rather than a home-grown recognizer. It records candidates, spans, precision/recall/F1, false-positive rate, p50/p95 latency, package versions, and unavailable dependencies. It must fail closed for missing dependencies instead of presenting fabricated scores.
-
-Required gates from the issue:
-
-| Metric | Gate |
-|---|---:|
-| Recall: INN, OGRN, bank accounts, BIK, cards, secrets | >= 0.95 |
-| False-positive rate | <= 0.02 |
-| Guardrail latency, 4 KiB | <= 150 ms |
-| Reversible round trip | byte-for-byte equality |
-| Report-only mode | does not block |
-| Network access | none |
+Proposed acceptance gates stated in the REDACT issue (checked 2026-10-22; not observed results): recall >= 0.95 for each required class; false-positive rate <= 0.02; guardrail latency <= 150 ms for 4 KiB; reversible round trip is byte-for-byte equal; report-only does not block; and no network access. A future benchmark PR must confirm exact metric denominators and sample size with the REDACT owner before treating these thresholds as reproducible gates.
 
 ## Candidate comparison
 
-| Candidate | PII / Russian | Legal and bank identifiers | Reversible transform | Secrets | Offline | Role | Evidence |
-|---|---|---|---|---|---|---|---|
-| Microsoft Presidio | Analyzer plus configurable NLP engines; Russian model must be supplied | Custom recognizers and PatternRecognizer validation are supported; checksum rules are an adapter responsibility | Anonymizer supports replace, redact, mask, hash, encrypt, and de-anonymization | Not its primary scope | Yes with models vendored in the image | Primary engine and extension point | [analyzer recognizers](https://github.com/microsoft/presidio/blob/main/docs/analyzer/developing_recognizers.md), [anonymization](https://github.com/microsoft/presidio/blob/main/docs/text_anonymization.md) |
-| Protect AI LLM Guard | Documented Anonymize scanner is English/Chinese oriented | Not a Russian legal/bank solution; custom patterns are possible but would duplicate the thin layer | Vault plus Deanonymize scanner | Secrets scanner delegates to detect-secrets | Yes when models/config are local | Optional prompt scanner / vault | [Anonymize](https://github.com/protectai/llm-guard/blob/main/docs/input_scanners/anonymize.md), [Deanonymize](https://github.com/protectai/llm-guard/blob/main/docs/output_scanners/deanonymize.md), [Secrets](https://llm-guard.com/input_scanners/secrets/) |
-| Natasha / spaCy ru | Natasha provides Russian PER/LOC/ORG NER and address extraction; spaCy supplies the NLP runtime | No complete legal/bank identifier validator | No service-level anonymization vault | No | Yes with local models | Complementary Russian NER | [Natasha](https://github.com/natasha/natasha), [Presidio NLP engines](https://github.com/microsoft/presidio/blob/main/docs/analyzer/developing_recognizers.md) |
-| gitleaks | No general PII | No | No | Strong repository/file/stdin secret rules and custom rules | Yes | Secret-scanning complement | [official site](https://gitleaks.org/), [Go docs](https://pkg.go.dev/github.com/gitleaks/gitleaks) |
-| detect-secrets | No general PII | No | No | Plugin-based secret detectors and baselines | Yes | Secret-scanning complement | [repository](https://github.com/Yelp/detect-secrets), [plugins](https://github.com/Yelp/detect-secrets/blob/master/docs/plugins.md) |
+All performance/quality measurements below are NOT MEASURED as of 2026-10-22. Capability summaries are upstream documentation claims, not tests of pinned packages in this service. License identifiers are based on linked license files as checked 2026-10-22; recheck exact versions before adoption.
 
-## Risks and validation plan
+| Candidate | Documented capability / proposed scope | Measured vs. unmeasured | Evidence checked 2026-10-22 |
+|---|---|---|---|
+| Microsoft Presidio | Configurable analyzer recognizers and anonymizer operators are documented. Russian model compatibility, identifiers, checksum handling, service integration, and offline behavior remain to be validated. | No measurements. Future run: all required classes, exact-span metrics, 4 KiB latency, offline and reversible round-trip checks using pinned local model. | [Recognizer docs](https://github.com/microsoft/presidio/blob/main/docs/analyzer/developing_recognizers.md); [anonymization docs](https://github.com/microsoft/presidio/blob/main/docs/text_anonymization.md); [MIT license](https://github.com/microsoft/presidio/blob/main/LICENSE) |
+| Protect AI LLM Guard | Anonymize/Vault and Deanonymize scanners are documented. Suitability for Russian/domain identifiers is unverified here. | No measurements. Future run: compatible subset only; explicitly list unsupported classes; assess secret scanner separately and test vault round trip. | [Anonymize](https://github.com/protectai/llm-guard/blob/main/docs/input_scanners/anonymize.md); [Deanonymize](https://github.com/protectai/llm-guard/blob/main/docs/output_scanners/deanonymize.md); [license](https://github.com/protectai/llm-guard/blob/main/LICENSE) |
+| Natasha / spaCy ru | Natasha documents Russian NLP capabilities; evaluated here as an NER component, not assumed to be a complete redaction engine. | No measurements. Future run: NER-supported classes only; report unsupported identifiers and no service-level vault claim. | [Natasha repository](https://github.com/natasha/natasha); [Presidio NLP engine docs](https://github.com/microsoft/presidio/blob/main/docs/analyzer/developing_recognizers.md) |
+| gitleaks | Secret-scanning candidate, not assumed to provide general PII detection. | No measurements. Future run: labeled synthetic secrets subset; report false positives and unsupported PII classes. | [Official site](https://gitleaks.org/); [license](https://github.com/gitleaks/gitleaks/blob/master/LICENSE) |
+| detect-secrets | Plugin-based secret-scanning candidate, not assumed to provide general PII detection. | No measurements. Future run: labeled synthetic secrets subset; report false positives and unsupported PII classes. | [Repository](https://github.com/Yelp/detect-secrets); [plugins](https://github.com/Yelp/detect-secrets/blob/main/docs/plugins.md); [license](https://github.com/Yelp/detect-secrets/blob/main/LICENSE.md) |
 
-1. Presidio's Russian quality depends on the selected local model. Pin the model in the image and measure it rather than assuming English defaults transfer.
-2. Built-in entity presence must not block by itself. Apply entity-specific confidence thresholds and keep report-only as the default during rollout.
-3. Legal and bank identifiers need checksum-aware thin recognizers and negative fixtures. Do not accept a regex-only match.
-4. Secret scanners can over-report high entropy strings. Measure them separately and preserve tenant allowlists.
-5. Keep benchmark values synthetic and prohibit network calls in the benchmark job.
+## Follow-ups and risks
 
-This is a selection decision, not an implementation claim. Scores are produced only by the benchmark harness in CI once dependencies and model assets are installed.
+- Benchmark/corpus follow-up: no owner or merged implementation is evidenced by this document; the REDACT implementation owner must be assigned and agree corpus, metric protocol, and pinned dependencies before results can be claimed. This is a prerequisite to any final candidate decision, not a blocker to this documentation correction.
+- Russian model quality and local/offline behavior must be tested with the exact pinned model; English/default behavior is not a proxy.
+- Legal and bank identifier recognition needs checksum-aware validation and negative fixtures; regex presence alone is insufficient.
+- Secret scanners may over-report high-entropy values; evaluate their secret subset separately.
+- Keep any future benchmark corpus synthetic and deny network access in its CI job.
+
+Until the benchmark follow-up produces reproducible artifacts and the release owner records a decision, Presidio remains a provisional hypothesis only. This document does not establish current runtime behavior or authorize enforcement; report-only is a proposed safe rollout posture pending implementation and verification.
