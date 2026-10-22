@@ -90,6 +90,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/bridge-extension.md](guides/bridge-extension.md) | Браузерный мост, расширение (части C и D): действия open/read/click/fill/download/screenshot, шаг подтверждения человеком, сопряжение кодом, сборка и load-unpacked |
 | [guides/browser-bridge-gateway.md](guides/browser-bridge-gateway.md) | Браузерный мост, шлюз (EXTCASE-B): исходящее WSS-соединение расширения, сопряжение кодом, allowlist, политика подписи, журнал |
 | [guides/connector-panel.md](guides/connector-panel.md) | Панель коннекторов (Company settings → Connectors): устройства, выдача кодов, allowlist, политика подписи, журнал |
+| [guides/chat-endpoint-setup.md](guides/chat-endpoint-setup.md) | Настройка чат-эндпоинта: прямое завершение `verifying` после тестового диалога и нейтральный сигнал `verifyingStale` |
 | [guides/ocr.md](guides/ocr.md) | Путь OCR: PDF в текст в workspace бота — инструмент `ocr.pdf`, бэкенды, лимиты, журнал |
 | [guides/owner-telegram-cards.md](guides/owner-telegram-cards.md) | Как решения владельца доходят до его Telegram-лички с агентом-автором: режим `via_bot` по умолчанию (сообщение бота, ответ текстом) или карточки с кнопками (U2) |
 | [guides/cto-chat-planner.md](guides/cto-chat-planner.md) | Планировщик чата с доской (CTO-CHAT B): текст владельца — в предложенный эпик с задачами и критериями приёмки, карточка согласования, вход из Telegram DM, коды ошибок |
