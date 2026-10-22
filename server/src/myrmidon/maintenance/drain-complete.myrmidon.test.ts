@@ -10,7 +10,7 @@
 
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentRuntimeState,
@@ -179,21 +179,28 @@ describeEmbeddedPostgres("maintenance drain completion (L6)", () => {
     const interrupted = await run(runId);
     expect(interrupted).toMatchObject({ status: "cancelled" });
 
-    // The vendor's teardown lands: the cancelled run is gone from "running".
-    await heartbeatService(db).drainActiveRunExecutions();
+    // Retries remain scheduled until every run interrupted by this window
+    // has completed teardown. The window must not be marked on early.
+    await svc.tick();
+    expect((await svc.status({ type: "agent", id: agentId })).windows[0]).toMatchObject({
+      state: "entering",
+      runningRuns: 1,
+    });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))[0]!.status).toBe("scheduled_retry");
 
-    // The next tick (if the drain had not already completed) promotes the
-    // scheduled retry (queued, gated by admission while the window is open)
-    // and the window turns `on`. On unfixed main the window stays `entering`
-    // and this expectation fails — the update never applies.
+    // The vendor teardown completes; only now can the tick promote retry and
+    // finish draining. The tick may observe teardown immediately after the
+    // interrupt, so only assert the gated state if teardown was still pending.
+    if ((await svc.status({ type: "agent", id: agentId })).windows[0]?.state === "entering") {
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))[0]!.status).toBe("scheduled_retry");
+    }
+    await heartbeatService(db).drainActiveRunExecutions();
     await svc.tick();
     const window = (await svc.status({ type: "agent", id: agentId })).windows[0]!;
     expect(window).toMatchObject({ state: "on", runningRuns: 0, interruptedRuns: 1 });
     const retry = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))[0]!;
-    expect(["queued", "scheduled_retry"]).toContain(retry.status);
+    expect(retry.status).toBe("queued");
 
-    // The retry does NOT start while the window gates admission.
-    await heartbeatService(db).promoteDueScheduledRetries();
     await heartbeatService(db).resumeQueuedRuns();
     expect((await run(retry.id)).status).not.toBe("running");
 
@@ -309,7 +316,8 @@ describeEmbeddedPostgres("maintenance drain completion (L6)", () => {
     await waitFor(async () => (await run(runId)).status === "running");
 
     // A `wait` window whose run never finishes: the tick has nothing to do.
-    const svc = service(() => new Date("2026-10-02T12:00:00.000Z"));
+    const onExited = vi.fn(async () => undefined);
+    const svc = service(() => new Date("2026-10-02T12:00:00.000Z"), { onExited });
     await svc.enter(
       { scope: { type: "agent", id: agentId }, reason: "agent upgrade", drainTimeoutSec: 60, onTimeout: "wait" },
       ADMIN,
@@ -323,11 +331,14 @@ describeEmbeddedPostgres("maintenance drain completion (L6)", () => {
 
     // Past deadline + grace: retired with an error record, so a later
     // same-scope enter is not blocked (the 02.10 pile-up shape).
-    const stuckSvc = service(() => new Date(new Date("2026-10-02T12:00:00.000Z").getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000));
+    // The close goes through finishLeaving: the exit hook runs and `exited` is audited.
+    const stuckSvc = service(() => new Date(new Date("2026-10-02T12:00:00.000Z").getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000), { onExited });
     await stuckSvc.tick();
+    expect(onExited).toHaveBeenCalledTimes(1);
     expect((await svc.status({ type: "agent", id: agentId })).windows).toHaveLength(0);
     const actions = (await db.select({ action: activityLog.action }).from(activityLog)).map((a) => a.action);
     expect(actions).toContain("myrmidon.maintenance.stuck_window_retired");
+    expect(actions).toContain("myrmidon.maintenance.exited");
 
     // A same-scope enter now succeeds instead of getting 409/being blocked.
     const reentered = await svc.enter({ scope: { type: "agent", id: agentId }, reason: "agent upgrade" }, ADMIN);
