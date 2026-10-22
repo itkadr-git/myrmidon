@@ -20102,6 +20102,9 @@ export function heartbeatService(
         desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
       // A run that is still alive owns the next turn; its own release drains.
       if (!latestOfAgent || !isHeartbeatRunTerminalStatus(latestOfAgent.status)) continue;
+      // Recovery bookkeeping for a fresh failure is written asynchronously;
+      // judge only a run old enough that its hold, if any, already exists.
+      if (!latestOfAgent.finishedAt || latestOfAgent.finishedAt > new Date(now - 10 * 60_000)) continue;
       const [live] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, wake.companyId),
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
@@ -20119,6 +20122,7 @@ export function heartbeatService(
       revisited++;
       await releaseIssueExecutionAndPromote(latestOfAgent, {
         suppressImmediateRecovery: true, deferredWakesPostdateRun: postdatesRun,
+        ignoreUnrecordedReconciliation: true,
       }).catch(err => {
         logger.warn({ err, wakeId: wake.id, issueId }, "failed to advance stranded deferred wake");
       });
@@ -28055,7 +28059,11 @@ export function heartbeatService(
 
   async function releaseIssueExecutionAndPromote(
     run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
-    options: { suppressImmediateRecovery?: boolean; deferredWakesPostdateRun?: boolean } = {},
+    options: {
+      suppressImmediateRecovery?: boolean;
+      deferredWakesPostdateRun?: boolean;
+      ignoreUnrecordedReconciliation?: boolean;
+    } = {},
   ) {
     // myrmidon(1.6-SWARM): the run is done holding its issue — release the
     // claim so the task returns to its role queue and the next agent wakes.
@@ -28072,6 +28080,7 @@ export function heartbeatService(
         now: new Date(),
         suppressImmediateRecovery: options.suppressImmediateRecovery,
         deferredWakesPostdateRun: options.deferredWakesPostdateRun,
+        ignoreUnrecordedReconciliation: options.ignoreUnrecordedReconciliation,
       });
       await applyWakeQueuePostCommitEffects(postCommitEffects);
     } catch (error) {

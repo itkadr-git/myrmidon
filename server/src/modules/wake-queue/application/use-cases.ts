@@ -127,6 +127,12 @@ export type ReleaseIssueExecutionInput = {
    * Stop is new work and is not covered by it (OPE-8268).
    */
   deferredWakesPostdateRun?: boolean;
+  /**
+   * Set by the stranded-wake sweep: a failed or cancelled legacy run that has
+   * no recorded execution hold does not by itself stop the drain. A recorded
+   * hold still does, through the execution-blocker gate in the lock adapter.
+   */
+  ignoreUnrecordedReconciliation?: boolean;
 };
 
 type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts"]>>;
@@ -1002,6 +1008,7 @@ export function createReleaseIssueExecution(deps: {
       {
         companyId: input.companyId, runId: input.runId, now: input.now,
         ...(input.deferredWakesPostdateRun ? { deferredWakesPostdateRun: true } : {}),
+        ...(input.ignoreUnrecordedReconciliation ? { ignoreUnrecordedReconciliation: true } : {}),
       },
       (locked, ports) => runReleaseDrain(locked, ports, input),
     );
