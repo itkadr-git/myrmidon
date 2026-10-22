@@ -96,8 +96,9 @@ patch verdict) comes from the release check: the scheduled sweep behind
 `MYRMIDON_STACK_CHECK_INTERVAL_SEC` (off by default; see
 [SETTINGS.md](../SETTINGS.md)) or the manual `POST /api/myrmidon/stack/check`
 (the **Check releases** button). For every component with a
-`github-releases`/`github-tags` source it reads the anonymous release or tag
-list, records the latest, the number of releases ahead of our version and the
+`github-releases`/`github-tags` source it reads the release or tag list
+(anonymous by default; see the optional GitHub token below), records the
+latest, the number of releases ahead of our version and the
 notable note lines (security/breaking/CVE, top 5, each truncated), and
 evaluates the «is our carried patch closed upstream» rule through the GitHub
 compare API. A network or transport failure answers **503** and keeps the
@@ -180,12 +181,29 @@ so a settings save from the UI cannot drop the registry cache.
 
 ## Configuration
 
-One variable, [`MYRMIDON_STACK_DOCKER_SOCKET`](../SETTINGS.md): the path to
-the Docker unix socket the image probes use. Default `/var/run/docker.sock`;
-read on every refresh, so a change takes effect on the next
-`POST /api/myrmidon/stack/refresh` without a server restart. If the board
-server cannot reach a Docker socket at all, leave the default — refreshes will
-answer 503 and the seed view (or the last good cache) stays readable.
+Two variables, both read on every run so a change takes effect without a
+server restart.
+
+[`MYRMIDON_STACK_DOCKER_SOCKET`](../SETTINGS.md): the path to the Docker unix
+socket the image probes use. Default `/var/run/docker.sock`; read on every
+refresh, so a change takes effect on the next
+`POST /api/myrmidon/stack/refresh`. If the board server cannot reach a Docker
+socket at all, leave the default — refreshes will answer 503 and the seed view
+(or the last good cache) stays readable.
+
+[`MYRMIDON_STACK_GITHUB_TOKEN`](../SETTINGS.md) (secret class): an optional
+read-only GitHub token — a fine-grained PAT with access to public
+repositories, no scopes needed — for the release check (scheduled and manual
+alike). Unset, empty or whitespace-only means anonymous requests: the GitHub
+budget of 60 requests per hour per egress IP. With a token set, every
+api.github.com request of the check — the release/tag lists and the compare
+API go through one shared JSON port — carries an `authorization: Bearer`
+header and the budget rises to 5000 requests per hour. The value is trimmed,
+read on every check run, never logged and never returned by any route. An
+invalid or revoked token needs no cleanup: GitHub answers 401/403, the status
+is recorded per component as an HTTP error and the previous cache is kept —
+exactly like any other HTTP status, and anonymous behaviour returns the
+moment the variable is cleared.
 
 ## Operator notes
 

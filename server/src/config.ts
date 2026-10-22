@@ -29,7 +29,7 @@ import {
   validateConfiguredBindMode,
 } from "@paperclipai/shared";
 import {
-  resolveDefaultBackupDir,
+  resolveDatabaseBackupDir,
   resolveDefaultEmbeddedPostgresDir,
   resolveDefaultSecretsKeyFilePath,
   resolveDefaultStorageDir,
@@ -283,11 +283,9 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.retentionDays ||
       7,
   );
-  const databaseBackupDir = resolveHomeAwarePath(
-    readProductEnv("DB_BACKUP_DIR") ??
-      fileDatabaseBackup?.dir ??
-      resolveDefaultBackupDir(),
-  );
+  const databaseBackupDir = resolveDatabaseBackupDir({ config: {
+    database: { backup: fileDatabaseBackup },
+  } });
   // The terminal-workspace reaper waits this many days after an issue tree
   // becomes terminal before it archives the workspace. A person can reopen the
   // work inside this window. A value of 0 disables the cooldown and restores

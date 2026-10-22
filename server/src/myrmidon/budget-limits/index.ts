@@ -11,7 +11,7 @@ import { budgetLimitsRoutes } from "./routes.js";
 import { createForagingBudgetStatePort } from "./foraging-port.js";
 
 export * from "./settings.js";
-export { createBudgetLimitStore, validateBudgetLimitRef } from "./store.js";
+export { createBudgetLimitStore, resolveEffectiveBudgetLimit, validateBudgetLimitRef } from "./store.js";
 export type { BudgetLimitStore, BudgetLimitRow, BudgetLimitActor, BudgetLimitAction } from "./store.js";
 export { computeBudgetLimitUsage, issueIdsOfRole } from "./usage.js";
 export type { BudgetLimitUsage, BudgetLimitUsageDeps } from "./usage.js";

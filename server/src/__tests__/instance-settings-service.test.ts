@@ -237,6 +237,31 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({ enableBetaSkills: true }).enableBetaSkills).toBe(true);
   });
 
+  it("accepts canonical worktree runtime env and prefers it over the legacy alias", () => {
+    const activatedAt = new Date("2026-07-10T12:00:00.000Z");
+    const activate = (runtimeEnv: Record<string, string | undefined>) =>
+      applyExperimentalSettingsPatch(
+        { enableWorktreeRunExecution: false },
+        { enableWorktreeRunExecution: true },
+        { now: () => activatedAt, runtimeEnv },
+      );
+
+    for (const runtimeEnv of [
+      { MYRMIDON_IN_WORKTREE: "true" },
+      { PAPERCLIP_IN_WORKTREE: "true" },
+      { MYRMIDON_IN_WORKTREE: "true", PAPERCLIP_IN_WORKTREE: "false" },
+    ]) {
+      expect(activate(runtimeEnv).worktreeRunExecutionActivatedAt).toBe(activatedAt.toISOString());
+    }
+    for (const runtimeEnv of [
+      {},
+      { MYRMIDON_IN_WORKTREE: "" , PAPERCLIP_IN_WORKTREE: "true" },
+      { MYRMIDON_IN_WORKTREE: "false", PAPERCLIP_IN_WORKTREE: "true" },
+    ]) {
+      expect(activate(runtimeEnv).worktreeRunExecutionActivatedAt).toBeNull();
+    }
+  });
+
   it("sets worktree run execution activation fields on a false to true transition", () => {
     const activatedAt = new Date("2026-07-10T12:00:00.000Z");
 

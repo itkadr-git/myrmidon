@@ -24,7 +24,7 @@ import { agents, companySecrets, type Db } from "@paperclipai/db";
 import { logActivity } from "../../services/activity-log.js";
 import type { GitCredential } from "../../services/git-credentials.js";
 import { readGitHubSharedIdentitySettings } from "./store.js";
-import { agentCommitIdentity, githubAppsFor, normalizeGitHubRepository } from "./settings.js";
+import { agentCommitIdentity, githubAppsFor, githubPatsFor, normalizeGitHubRepository } from "./settings.js";
 import { GitHubAppTokenError, mintGitHubAppInstallationToken } from "./app-token.js";
 
 /** The secret-store surface this module needs (a subset of secretService). */
@@ -112,7 +112,26 @@ export async function resolveGitHubAppCredential(
     .from(agents)
     .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)));
   if (!agent) return { kind: "not_applicable" };
-  const matches = githubAppsFor(settings, agent, repository);
+  const patMatches = githubPatsFor(settings, agent.id, repository);
+  const appMatches = githubAppsFor(settings, agent, repository);
+  // PATs and Apps are separate account boundaries: an overlap must fail closed
+  // before resolving either credential, even when one side is the PAT.
+  if (patMatches.length + appMatches.length > 1) {
+    await journal(db, { companyId: input.companyId, agentId: agent.id, runId: input.runId, action: "myrmidon.github_app.denied", details: { repository, reason: "ambiguous", entries: [...patMatches.map((item) => item.id), ...appMatches.map((item) => item.id)] } });
+    return { kind: "ambiguous", repository, entries: [...patMatches.map((item) => item.name), ...appMatches.map((item) => item.name)] };
+  }
+  if (patMatches.length === 1) {
+    const entry = patMatches[0]!;
+    const [secret] = await db.select({ id: companySecrets.id, name: companySecrets.name }).from(companySecrets).where(and(eq(companySecrets.id, entry.tokenSecretId), eq(companySecrets.companyId, input.companyId), eq(companySecrets.scope, "company"), eq(companySecrets.status, "active"), isNull(companySecrets.deletedAt)));
+    if (!secret) return { kind: "error", repository, entryId: entry.id, name: entry.name, reason: "The GitHub PAT secret is missing or inactive" };
+    try {
+      const token = await secrets.resolveSecretValue(input.companyId, secret.id, "latest", { accessContext: { consumerType: "system", consumerId: "workspace-git-credential", configPath: `github_pat:${repository}`, actorType: "agent", actorId: agent.id, issueId: input.issueId ?? null, heartbeatRunId: input.runId, responsibleUserId: input.responsibleUserId ?? null } });
+      return { kind: "issued", repository, entryId: entry.id, name: entry.name, installationId: "", expiresAt: "", credential: { token, source: "company_secret", secretName: secret.name, identitySource: "pat", commitIdentity: agentCommitIdentity(agent, settings) } };
+    } catch {
+      return { kind: "error", repository, entryId: entry.id, name: entry.name, reason: "The GitHub PAT secret could not be read" };
+    }
+  }
+  const matches = appMatches;
   if (matches.length === 0) return { kind: "not_applicable" };
   if (matches.length > 1) {
     await journal(db, {
@@ -180,21 +199,22 @@ export async function resolveGitHubAppCredential(
   } catch (error) {
     return fail(error instanceof GitHubAppTokenError ? error.message : "GitHub App token minting failed");
   }
-  await journal(db, {
-    companyId: input.companyId,
-    agentId: agent.id,
-    runId: input.runId,
-    action: "myrmidon.github_app.issued",
-    details: {
-      repository,
-      entryId: entry.id,
-      appId: entry.appId,
-      installationId: minted.installationId,
-      expiresAt: minted.expiresAt,
-      reused: minted.reused,
-      permissions: entry.permissions,
-    },
-  });
+  if (!minted.reused) {
+    await journal(db, {
+      companyId: input.companyId,
+      agentId: agent.id,
+      runId: input.runId,
+      action: "myrmidon.github_app.issued",
+      details: {
+        repository,
+        entryId: entry.id,
+        appId: entry.appId,
+        installationId: minted.installationId,
+        expiresAt: minted.expiresAt,
+        permissions: entry.permissions,
+      },
+    });
+  }
   return {
     kind: "issued",
     repository,

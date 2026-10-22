@@ -756,4 +756,9 @@ describe("manifest", () => {
     assert.deepEqual(field.enum, ["always", "new-issue", "never"]);
     assert.equal(field.default, "new-issue");
   });
+
+  it("declares the API key field as a secret-ref", () => {
+    const properties = manifest.instanceConfigSchema?.["properties"] as Record<string, { format?: string }>;
+    assert.equal(properties["hindsightApiKeyRef"]?.format, "secret-ref");
+  });
 });

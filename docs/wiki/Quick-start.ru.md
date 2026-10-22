@@ -6,10 +6,10 @@
 [Системные требования](System-requirements.ru)):
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.7/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.11/install.sh | sudo bash
 ```
 
-Команда закрепляет текущий выпуск-кандидат 1.6.6-rc.7 (о выборе версии — в разделе
+Команда закрепляет текущий выпуск-кандидат 1.6.6-rc.11 (о выборе версии — в разделе
 [Установка](Installation.ru)). Установщик
 проверит машину, поставит Docker, если его нет, скачает выпуск, создаст все
 секреты и запустит службу. В конце он напечатает адрес доски.

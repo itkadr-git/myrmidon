@@ -33,6 +33,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 import type {
   PaperclipPluginManifestV1,
   PluginLauncherDeclaration,
@@ -336,6 +337,9 @@ export interface PluginInstallOptions {
    * Ignored when localPath is set.
    */
   version?: string;
+
+  /** Capabilities explicitly approved for an upgrade escalation. */
+  approvedCapabilities?: string[];
 
   /**
    * Plugin install directory where packages are managed.
@@ -794,8 +798,8 @@ function formatLocalPluginManualBuildHint(
   const manualBuildCommand = buildLocalPluginRecoveryCommand(packageRoot, pkgJson, { repoRoot: options.repoRoot });
   if (!manualBuildCommand) return "";
 
-  const autoBuildDisabled = (options.processEnv ?? process.env)["PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD"] === "1"
-    ? " Auto-build is disabled by PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD=1."
+  const autoBuildDisabled = readProductEnvFrom(options.processEnv ?? process.env, "DISABLE_PLUGIN_AUTOBUILD") === "1"
+    ? " Auto-build is disabled by the plugin autobuild compatibility setting."
     : "";
 
   return `${autoBuildDisabled} Run \`${manualBuildCommand}\` from the repo root and retry.`;
@@ -889,7 +893,7 @@ export async function ensureLocalPluginBuilt(
   } = {},
 ): Promise<void> {
   const processEnv = options.processEnv ?? process.env;
-  if (processEnv["PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD"] === "1") return;
+  if (readProductEnvFrom(processEnv, "DISABLE_PLUGIN_AUTOBUILD") === "1") return;
   if (!isRepoBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) return;
 
   const missingEntrypoints = listMissingDeclaredPluginEntrypoints(packageRoot, pkgJson);
@@ -1208,7 +1212,7 @@ export function pluginLoader(
   async function fetchAndValidate(
     installOptions: PluginInstallOptions,
   ): Promise<DiscoveredPlugin> {
-    const { packageName, localPath, version, installDir } = installOptions;
+    const { packageName, localPath, version, installDir, approvedCapabilities } = installOptions;
 
     if (!packageName && !localPath) {
       throw new Error("Either packageName or localPath must be provided");
@@ -1809,6 +1813,7 @@ export function pluginLoader(
         // the caller to re-supply the path every time.
         localPath = plugin.packagePath ?? undefined,
         version,
+        approvedCapabilities,
       } = upgradeOptions;
 
       log.info(
@@ -1822,6 +1827,7 @@ export function pluginLoader(
         localPath,
         version,
         installDir: localPluginDir,
+        approvedCapabilities,
       });
 
       const newManifest = discovered.manifest!;
@@ -1838,16 +1844,23 @@ export function pluginLoader(
       const newCaps = newManifest.capabilities ?? [];
       const escalated = newCaps.filter((c) => !oldCaps.has(c));
 
+      const approvalError =
+        `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
+        `The previous version declared [${[...oldCaps].join(", ")}]. ` +
+        `Please review and approve the capability escalation before upgrading.`;
       if (escalated.length > 0) {
-        log.warn(
-          { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
-          "plugin-loader: upgrade introduces new capabilities — requires admin approval",
-        );
-        throw new Error(
-          `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
-            `The previous version declared [${[...oldCaps].join(", ")}]. ` +
-            `Please review and approve the capability escalation before upgrading.`,
-        );
+        if (approvedCapabilities === undefined) {
+          log.warn(
+            { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
+            "plugin-loader: upgrade introduces new capabilities — requires admin approval",
+          );
+          throw new Error(approvalError);
+        }
+        const approved = [...new Set(approvedCapabilities)].sort();
+        const escalatedList = [...escalated].sort();
+        if (approved.length !== approvedCapabilities.length || approved.join("\u0000") !== escalatedList.join("\u0000")) {
+          throw new Error(approvalError);
+        }
       }
 
       // 4. Update the existing record

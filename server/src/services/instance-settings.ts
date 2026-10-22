@@ -1,5 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
 
 /**
  * A `Db` or an open transaction handle — the subset of query builders the
@@ -54,9 +55,12 @@ import {
   preserveAutonomyGeneralKey,
   preserveAutonomyToolMappingGeneralKey,
 } from "../myrmidon/autonomy/store.js";
+// myrmidon(1.6.6 K-7): preserve the skill lifecycle pilot list across vendor writes.
+import { preserveSkillPilotAgentsGeneralKey } from "../myrmidon/skill-lifecycle/pilot-agents-store.js";
 // myrmidon(1.6-TG-PROACTIVITY-E, 1.6.1-TG-NOTIFY-B): keep the telegram-notify state across vendor writes of `general`
-import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
-import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the notify preservation keys are reached through the bridge seam.
+import { preserveTelegramNotifyGeneralKey } from "../myrmidon/channel-connectors/bridge/notify-policy.js";
+import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/channel-connectors/bridge/notify-settings-store.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
 // myrmidon(1.6.6 PROCS-J): keep the board's process counts across vendor writes of `general`
@@ -132,7 +136,7 @@ export function isTruthyRuntimeEnvValue(value: string | undefined) {
 }
 
 function getRuntimeInstanceId(env: Record<string, string | undefined>) {
-  const instanceId = env.PAPERCLIP_INSTANCE_ID?.trim();
+  const instanceId = readProductEnvFrom(env, "INSTANCE_ID")?.trim();
   return instanceId ? instanceId : null;
 }
 
@@ -180,7 +184,7 @@ export function applyExperimentalSettingsPatch(
   }
 
   const runtimeEnv = options.runtimeEnv ?? process.env;
-  if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) {
+  if (!isTruthyRuntimeEnvValue(readProductEnvFrom(runtimeEnv, "IN_WORKTREE"))) {
     return nextExperimental;
   }
 
@@ -244,7 +248,7 @@ export async function resolveWorktreeRunExecutionActivationState(options: {
   runtimeEnv?: Record<string, string | undefined>;
 }): Promise<WorktreeRunExecutionActivationState> {
   const runtimeEnv = options.runtimeEnv ?? process.env;
-  if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) {
+  if (!isTruthyRuntimeEnvValue(readProductEnvFrom(runtimeEnv, "IN_WORKTREE"))) {
     return suppressWorktreeRunExecution("not_worktree_runtime");
   }
   try {
@@ -263,6 +267,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
       keyboardShortcuts: parsed.data.keyboardShortcuts ?? false,
+      ...(parsed.data.taskDrain ? { taskDrain: parsed.data.taskDrain } : {}),
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
@@ -288,6 +293,11 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.processes ? { processes: parsed.data.processes } : {}),
       // myrmidon(BOT-DISK E): the stored host disk threshold survives every general write
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
+      // myrmidon(1.6.6 MODEL-MENU B): the stored grouped /model menu survives
+      // every general write. Without this line the vendor write path silently
+      // drops the key, so the tree the owner edits in the web interface would
+      // never roundtrip and /model would keep showing the automatic groups.
+      ...(parsed.data.modelMenu ? { modelMenu: parsed.data.modelMenu } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
       // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
@@ -630,6 +640,30 @@ export function stripCloudCatalogDefaultEchoes(
   return result as Partial<InstanceExperimentalSettings>;
 }
 
+const SWARM_WAKE_KEYS = ["runWithoutTaskGate", "cooldownBaseMin", "cooldownCeilingHours"] as const;
+
+/**
+ * myrmidon(OPE-6894): merge a `general.swarm` PATCH over the stored one.
+ * Wake block (gate + cooling keys): replaced wholesale when the patch carries
+ * any of its keys, so an omitted key resets to the default; otherwise kept.
+ * `scent` block: replaced when the patch carries it, otherwise kept.
+ */
+export function mergeSwarmBlocks(
+  stored: Record<string, unknown> | undefined | null,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const base = stored ?? {};
+  const out: Record<string, unknown> = {};
+  const patchHasWake = SWARM_WAKE_KEYS.some((key) => patch[key] !== undefined);
+  for (const key of SWARM_WAKE_KEYS) {
+    const value = patchHasWake ? patch[key] : base[key];
+    if (value !== undefined) out[key] = value;
+  }
+  const scent = patch.scent !== undefined ? patch.scent : base.scent;
+  if (scent !== undefined) out.scent = scent;
+  return out;
+}
+
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
   // Fail closed: a malformed PAPERCLIP_MANAGED_CONFIG throws here (and at
   // boot in index.ts) rather than silently running without the overlay.
@@ -763,7 +797,19 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         // so changing or unsetting the variable later still takes effect.
         const nextGeneral = stripOperatorGeneralEchoes(
           storedGeneral,
-          normalizeGeneralSettings({ ...storedGeneral, ...patch }),
+          normalizeGeneralSettings({
+            ...storedGeneral,
+            ...patch,
+            // myrmidon(OPE-6894): `general.swarm` is shared by sibling blocks
+            // (the wake-guard/cooling block and T10 `scent`); a PATCH carrying
+            // one block must not erase the other, so each block is replaced
+            // as a whole only when the patch names it. Inside the wake block
+            // an absent key means "back to the default" (the panel omits a
+            // cleared field), so a stored value does not outlive its reset.
+            ...(patch.swarm !== undefined
+              ? { swarm: mergeSwarmBlocks(storedGeneral.swarm, patch.swarm) }
+              : {}),
+          }),
           operatorDefaults,
         );
         // OPE-6406: a PATCH rewrites the whole `general` document, so it must
@@ -797,6 +843,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
               ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
               ...preserveAutonomyToolMappingGeneralKey(current.general), // myrmidon(1.6-AUTONOMY-GW)
+              ...preserveSkillPilotAgentsGeneralKey(current.general), // myrmidon(1.6.6 K-7)
               ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
               ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
               ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
@@ -824,6 +871,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveBehaviorSettingsGeneralKeys(current.general), // myrmidon(SETTINGS-CORE)
               ...preserveDebateGeneralKey(current.general), // myrmidon(1.7-DEBATE-ASYM-A)
               ...preserveBoardProcessesGeneralKey(current.general), // myrmidon(1.6.6 PROCS-J)
+              // myrmidon(PROCS-1.8): preserve DB-owned task-drain state unless explicitly changed.
+              ...(patch.taskDrain === undefined && storedRawGeneral.taskDrain !== undefined
+                ? { taskDrain: storedRawGeneral.taskDrain }
+                : {}),
               // The preserve line above restores the stored row: a patch that carries
               // the counts wins (the same rule as DM-PROGRESS), and it is validated
               // where every other read of the key is — at startup.

@@ -14,6 +14,7 @@ import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm } from "./AgentConfigForm";
 import { botContainerApi, type BotContainerStatus } from "./myrmidon/botContainerApi";
 import { ApiError } from "../api/client";
+import { BOT_CONTAINER_DEFAULTS } from "./myrmidon/botContainerConfig";
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(),
@@ -198,7 +199,7 @@ const CAPABILITIES = getEnvironmentCapabilities(["claude_local", "codex_local"],
   },
 });
 
-const CARD = { enabled: true, image: "bot-image:1", memoryMb: 2048, cpus: 1, pidsLimit: 512 };
+const CARD = { enabled: true, image: "bot-image:1", memoryMb: 1024, cpus: 1, pidsLimit: 512 };
 
 const STATUS: BotContainerStatus = {
   enabled: true,
@@ -213,6 +214,7 @@ const STATUS: BotContainerStatus = {
   gatewayConcurrency: { board: 3, applied: 3, diverged: false, checkedAt: "2026-01-01T00:00:00.000Z" },
   gatewayConcurrencyNote: null,
   gatewayConcurrencyWarning: null,
+  profileUpdatePendingSince: null,
 };
 
 async function act(callback: () => void | Promise<void>) {
@@ -351,7 +353,7 @@ describe("myrmidon(W2b) agent form container section", () => {
 
     expect(buttonByText(result.container, "Container")).toBeTruthy();
     expect((byId(result.container, "image") as HTMLInputElement).value).toBe("bot-image:1");
-    expect((byId(result.container, "memoryMb") as HTMLInputElement).value).toBe("2048");
+    expect((byId(result.container, "memoryMb") as HTMLInputElement).value).toBe("1024");
     expect(statusSpy).toHaveBeenCalledWith("agent-1");
     expect(byId(result.container, "status")?.textContent).toBe("Running (bot-image:1)");
     expect((byId(result.container, "apply") as HTMLButtonElement).disabled).toBe(false);
@@ -383,7 +385,8 @@ describe("myrmidon(W2b) agent form container section", () => {
     expect(result.onSave).toHaveBeenCalledWith(
       expect.objectContaining({
         replaceAdapterConfig: true,
-        adapterConfig: expect.objectContaining({ container: CARD }),
+        // the section fills in BOT_CONTAINER_DEFAULTS; memory default is 1024 MB since #1480
+        adapterConfig: expect.objectContaining({ container: { ...CARD, memoryMb: BOT_CONTAINER_DEFAULTS.memoryMb } }),
       }),
     );
   });
