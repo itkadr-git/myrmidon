@@ -23,6 +23,7 @@ import { RunQueuePrioritySettingsPanel } from "@/components/myrmidon/RunQueuePri
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
+import { ModelMenuSettingsPanel } from "@/components/myrmidon/ModelMenuSettingsPanel"; // myrmidon(1.6.6 MODEL-MENU B)
 import { PromptBudgetSettingsPanel } from "@/components/myrmidon/PromptBudgetSettingsPanel"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
 import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
@@ -164,6 +165,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
+      <ModelMenuSettingsPanel /> {/* myrmidon(1.6.6 MODEL-MENU B) */}
       <PromptBudgetSettingsPanel /> {/* myrmidon(1.6.3 PROMPT-BUDGET B) */}
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
       <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
