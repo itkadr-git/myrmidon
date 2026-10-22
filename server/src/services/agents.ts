@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import { resolveStatusOnResume } from "../myrmidon/pause-drain.js";
 import type { Db } from "@paperclipai/db";
+import { listAgentProjectIds } from "../myrmidon/project-membership.js";
 import {
   agents,
   toolConnectionInstalls,
@@ -480,6 +481,9 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     ]);
     const hydrated = await hydrateAgentSpend<(typeof rows)[number]>(rows);
     const eligibilityAgents = allCompanyRows.map(toEligibilityAgent);
+    // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): one membership read for the whole
+    // roster — lead projects + joined project_memberships (OPE-7282 contract).
+    const projectIdsByAgent = await listAgentProjectIds(db, companyId);
     // Field-by-field on purpose: the projection is the contract, so a column
     // added to AgentListItem must be added here too (or the build breaks).
     return hydrated.map((row) => ({
@@ -495,6 +499,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
       capabilities: row.capabilities,
       adapterType: row.adapterType as AgentListItem["adapterType"],
       adapterModel: row.adapterModel,
+      projectIds: projectIdsByAgent.get(row.id) ?? [],
       runtimeConfig: row.runtimeConfig as AgentListItem["runtimeConfig"],
       defaultEnvironmentId: row.defaultEnvironmentId,
       budgetMonthlyCents: row.budgetMonthlyCents,

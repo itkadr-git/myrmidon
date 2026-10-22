@@ -1995,6 +1995,7 @@ async function startServerWithDatabaseTeardown(
   };
   const githubConnectionEvents = githubConnectionEventService(db as any, {
     wakeup: environmentLeaseCleanupHeartbeat.wakeup,
+    assignmentWakeup: environmentLeaseCleanupHeartbeat.wakeup,
   });
   const tools = toolAccessService(db as any, {
     deploymentMode: config.deploymentMode,

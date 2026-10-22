@@ -416,11 +416,19 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     // probe listener closes, the children serve the public port.
     await waitFor(
       async () => {
+        const slots = supervisor!.children();
+        if (slots.length < 2 || !slots.every((s) => typeof s.pid === "number" && s.pid > 0 && s.ready)) {
+          return `${slots.length} slots, ${slots.filter((s) => s.ready).length} ready`;
+        }
+        const pids = slots.map((s) => s.pid!);
         const rows = await db
-          .select({ bootId: boardProcesses.bootId })
+          .select({ bootId: boardProcesses.bootId, pid: boardProcesses.pid })
           .from(boardProcesses)
           .where(eq(boardProcesses.role, "api"));
-        if (rows.length < 2) return `${rows.length} api rows in board_processes`;
+        const registeredPids = rows.map((r) => r.pid);
+        if (!pids.every((pid) => registeredPids.includes(pid))) {
+          return `waiting for initial children [${pids.join(", ")}] in board_processes, have [${registeredPids.join(", ")}]`;
+        }
         if (supervisor!.state() !== "split") return `supervisor state: ${supervisor!.state()}`;
         if (probeServer?.listening) return "probe listener still open";
         return true;
@@ -435,6 +443,22 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
       .map((s) => s.pid)
       .filter((pid): pid is number => typeof pid === "number" && pid > 0);
     expect(initialPids.length, "two initial running child pids").toBe(2);
+
+    // Warm up the public port so both children have compiled routes, initialized
+    // connection pools, and cached git metadata before measuring drain load:
+    await waitFor(
+      async () => {
+        const res = await heartbeat();
+        return res.ok ? true : `warmup heartbeat failed: ${res.error}`;
+      },
+      { timeoutMs: 30_000, label: "api children serving /api/health" },
+    );
+    for (let i = 0; i < 20; i++) {
+      const res = await heartbeat();
+      if (!res.ok) {
+        throw new Error(`warmup heartbeat ${i} failed: ${res.error}`);
+      }
+    }
 
     // Heartbeat load over the shared port; mid-load, shrink the split to one
     // api child. The supervisor sends the IPC drain (30 s grace, §7.2) to one
@@ -560,6 +584,21 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
       .where(eq(boardProcesses.pid, victimPid));
     expect(victimRow?.bootId, "victim bootId is registered in board_processes").toBeDefined();
     const victimBootId = victimRow!.bootId;
+
+    // Warm up the grown child so both children are actively serving /api/health before load:
+    await waitFor(
+      async () => {
+        const res = await heartbeat();
+        return res.ok ? true : `warmup heartbeat failed: ${res.error}`;
+      },
+      { timeoutMs: 30_000, label: "grown api child serving /api/health" },
+    );
+    for (let i = 0; i < 20; i++) {
+      const res = await heartbeat();
+      if (!res.ok) {
+        throw new Error(`warmup heartbeat ${i} before kill failed: ${res.error}`);
+      }
+    }
 
     // Seed a real in-flight background run leased to the victim child:
     const failoverCompanyId = randomUUID();

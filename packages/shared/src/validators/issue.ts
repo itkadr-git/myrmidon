@@ -487,6 +487,36 @@ export const issueExecutionPolicySchema = z.object({
     .optional()
     .nullable()
     .default(null),
+  reviewEscalationPolicy: z.object({
+    maxReviewRounds: z.number().int().positive().max(100).optional(),
+    participantRoles: z.array(z.enum(["lead", "architect", "secondary_reviewer"])).min(1).max(3),
+    fallbackQueue: z.string().trim().min(1).max(200),
+    timeoutAt: z.string().datetime().nullable(),
+    policyRevision: z.string().trim().min(1).max(200),
+    participants: z.object({
+      lead: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+      architect: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+      secondary_reviewer: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+    }).strict().optional(),
+  }).strict().nullable().optional(),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({
@@ -554,6 +584,11 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
   changesRequestedCount: z.number().int().nonnegative().optional().default(0),
+  reviewCycleId: z.string().min(1).max(200).nullable().optional().default(null),
+  escalationPolicyRevision: z.string().min(1).max(200).nullable().optional().default(null),
+  escalationReason: z.literal("review_round_limit").nullable().optional().default(null),
+  escalationFromParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
+  escalationToParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({
