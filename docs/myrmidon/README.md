@@ -127,6 +127,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/parallel-helpers.md](guides/parallel-helpers.md) | Параллельные помощники (1.6 PARALLEL-HELPERS): секция «Parallel helpers» в карточке агента (вкл/выкл, лимит, модель, бюджет ходов), потолок и умолчание компании с подсказкой о ёмкости в настройках инстанса, секция `delegation` в профиле бота, встроенный навык |
 | [guides/custom-castes.md](guides/custom-castes.md) | Свои касты (CUSTOM-CASTES): справочник ролей компании в базе, двенадцать встроенных каст при первом чтении, поля касты, REST API с переводом агентов при удалении, живое чтение без перезапуска |
 | [guides/issue-list-agent-defaults.md](guides/issue-list-agent-defaults.md) | Умолчания списка задач для агентов (1.6.5 F-16 A): compact без `view`, limit 200 по умолчанию / максимум 500 с 400-подсказкой про пагинацию, без `description` в compact, полный вид только `view=full&limit<=100`, настройка `issuesListAgentDefaults`, доска без изменений |
+| [guides/instance-users.md](guides/instance-users.md) | Instance users: поиск пользователей по всему инстансу, доступ только администраторам инстанса, состояния загрузки/пустого результата/ошибки и отказ 403 |
 
 ## Сборка и запуск
 
