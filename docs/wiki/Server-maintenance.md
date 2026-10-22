@@ -39,6 +39,16 @@ anything warned about it. The BOT-DISK parts are the layered answer:
 
 ## Monitoring
 
+### Optional centralized memory on fleet sites
+
+`fleetd` can expose authenticated `/v1/memory/recall` and
+`/v1/memory/retain` routes for bots at a remote site. Configure the optional
+`memory` block (`enabled`, `url`, `token`, `bank`, `timeoutMs`) to enable the
+HTTP(S)-only client. With the block absent or disabled, both routes return
+`503 centralized_memory_disabled` and make no upstream request. The timeout
+defaults to 15000 ms (range 100-120000 ms); responses are size-capped. This
+does not require host filesystem access. See the fleetd configuration reference in the operator guide.
+
 - The board serves its own `/metrics` endpoint in Prometheus text format
   (0.0.4). Access is one bearer token from a company secret or
   `MYRMIDON_METRICS_TOKEN`; without a configured token the endpoint answers
@@ -50,6 +60,10 @@ anything warned about it. The BOT-DISK parts are the layered answer:
 - The **LLM tracing health** check makes a silent break of the
   LiteLLM → Langfuse pipeline visible as a status card and an operator
   signal instead of empty tables discovered days later.
+- The **fleet dashboard data API** reads the fleet's hosts, bot containers,
+  the LiteLLM proxy and the build VPS from VictoriaMetrics and Zabbix (both
+  read-only) into one snapshot, with per-company connection settings and a
+  selfcheck probe per source.
 - The team-liveness stand scenario is the check that lets the operator
   watchdog be switched off: the board brings the team back by itself after
   the gateway dies mid-run.
@@ -73,6 +87,7 @@ anything warned about it. The BOT-DISK parts are the layered answer:
 - [Host disk usage signal](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/host-disk.md)
 - [Workspace cleanup after merge](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/workspace-cleanup.md)
 - [Stack registry](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/stack-registry.md)
+- [Fleet dashboard data: VictoriaMetrics + Zabbix connections, snapshot API, selfcheck](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/fleet-dashboard-monitoring.md)
 - [Maintenance banner](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/maintenance-banner.md)
 - [Server console](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/server-console.md)
 - [Automatic rollback by health](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/deploy-auto-rollback.md)

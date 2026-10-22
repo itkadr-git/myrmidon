@@ -10,6 +10,7 @@ import {
   type DeploymentMode,
 } from "@paperclipai/shared";
 import type { AuthConfig, ServerConfig } from "./schema.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
 
@@ -25,7 +26,7 @@ export function inferConfiguredBind(server?: Partial<ServerConfig>): BindMode {
 }
 
 export function detectTailnetBindHost(): string | undefined {
-  const explicit = process.env.PAPERCLIP_TAILNET_BIND_HOST?.trim();
+  const explicit = readProductEnv("TAILNET_BIND_HOST")?.trim();
   if (explicit) return explicit;
 
   try {

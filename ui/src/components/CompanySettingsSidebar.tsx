@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
+  BadgeCheck, // myrmidon(LICENSING)
   Cpu,
   Download,
   FlaskConical,
@@ -28,6 +29,8 @@ import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { usePluginSlots } from "@/plugins/slots";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { useAccessHubAvailability } from "@/components/myrmidon/access-hub/accessHubAvailability";
+import { LICENSES_PATH, useIsInstanceAdmin } from "@/components/myrmidon/licensingApi"; // myrmidon(LICENSING)
+import { useTranslation } from "@/i18n"; // myrmidon(LICENSING)
 import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
 import { primarySidebarStyles } from "./primary-sidebar-styles";
 
@@ -44,6 +47,8 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
 }
 
 export function CompanySettingsSidebar() {
+  const { t } = useTranslation(); // myrmidon(LICENSING)
+  const isInstanceAdmin = useIsInstanceAdmin(); // myrmidon(LICENSING)
   const { selectedCompanyId } = useCompany();
   const { hidden: hiddenSettings } = useHiddenSettings();
   const showPage = (pageKey: string) => !hiddenSettings.has(pageKey);
@@ -125,6 +130,9 @@ export function CompanySettingsSidebar() {
               end
             />
           )}
+          {showPage("instance.access") && (
+            <SidebarNavItem to="/company/settings/users" label="Users" icon={Users} end />
+          )}
           {companySettingsPluginSlots
             .filter((slot) => slot.routePath)
             .map((slot) => (
@@ -138,6 +146,14 @@ export function CompanySettingsSidebar() {
             ))}
           {showPage("company.secrets") && (
             <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+          )}
+          {showPage("company.secrets") && (
+            <SidebarNavItem
+              to="/company/settings/channel-allowlist"
+              label="Channel allowlist"
+              icon={Users}
+              end
+            />
           )}
           {showPage("company.secrets") && (
             <SidebarNavItem
@@ -166,6 +182,10 @@ export function CompanySettingsSidebar() {
               icon={Shield}
               end
             />
+          )}
+          {/* myrmidon(LICENSING): closed-module licenses, instance admin only */}
+          {isInstanceAdmin && (
+            <SidebarNavItem to={LICENSES_PATH} label={t("licensing.title")} icon={BadgeCheck} end />
           )}
           {/* myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management */}
           {showPage("instance.access") && (

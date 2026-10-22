@@ -113,7 +113,12 @@ async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createD
       const isLateCommentRace =
         error instanceof Error &&
         error.message.includes("issue_comments_issue_id_issues_id_fk");
-      if (!isLateCommentRace || attempt === 9) {
+      // Postgres aborts one side of a lock-order deadlock with 40P01; the
+      // other transaction then finishes, so the TRUNCATE is safe to retry.
+      const isDeadlock =
+        (error as { code?: string } | null)?.code === "40P01" ||
+        (error as { cause?: { code?: string } } | null)?.cause?.code === "40P01";
+      if (!(isLateCommentRace || isDeadlock) || attempt === 9) {
         throw error;
       }
 
@@ -179,6 +184,16 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       model: "test-model",
     }));
     runningProcesses.clear();
+    // A finished run releases its issue lock and hands the freed agent to idle
+    // pickup, which can enqueue and start a follow-up run in the background.
+    // Polling run statuses alone cannot see that hand-off (there is a window
+    // with no queued/running row), so await the service's own tracking of
+    // wakeups and run executions before truncating; otherwise the TRUNCATE
+    // can deadlock against a transaction that is still writing.
+    await Promise.race([
+      heartbeat.drainActiveRunExecutions(),
+      new Promise((resolve) => setTimeout(resolve, 15_000)),
+    ]);
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const runs = await db
@@ -1071,6 +1086,31 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         observed: 1,
         limit: 1,
       },
+    });
+  });
+
+  it("does not repeat assignment wakes after a daily cap skip", async () => {
+    const { agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: { maxDailyRuns: 0 },
+    });
+
+    expect(await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+    })).toBeNull();
+    expect(await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+    })).toBeNull();
+
+    const wakes = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.daily_run_limit",
     });
   });
 

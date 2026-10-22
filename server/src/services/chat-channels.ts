@@ -164,11 +164,13 @@ import {
   telegramMediaNeedsIdentification,
 } from "./chat-telegram-media-intake.js";
 // myrmidon(1.6.1 VOICE-STT B): inbound transcription of Telegram voice/audio.
+// myrmidon(1.6.6 CH-CONNECTOR-D): the voice intake theme is reached through the
+// bridge seam, so a channel connector can serve it.
 import {
   transcribeTelegramVoiceIntake,
   type TelegramVoiceSttCompanyGate,
   type TelegramVoiceTranscriber,
-} from "../myrmidon/telegram-voice-stt-intake/index.js";
+} from "../myrmidon/channel-connectors/bridge/voice-stt.js";
 import { normalizeTelegramRichMessage } from "./chat-telegram-rich-intake.js";
 import {
   TELEGRAM_DRAFT_ACTION_KIND,
@@ -204,6 +206,13 @@ import {
   unprocessable,
 } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+// myrmidon(1.6.5-F10-A): real traffic can finish the wizard's `test` step for an
+// endpoint its owner never came back to; see
+// server/src/myrmidon/chat-live-traffic-activation.ts.
+import {
+  activateChatEndpointFromLiveTraffic,
+  listVerifyingStaleEndpoints,
+} from "../myrmidon/chat-live-traffic-activation.js";
 import { redactSensitiveText } from "../redaction.js";
 import type { StorageService } from "../storage/types.js";
 import {
@@ -242,29 +251,60 @@ import {
   type IssueAssignmentWakeupDeps,
 } from "./issue-assignment-wakeup.js";
 import { issueService } from "./issues.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the bridged-DM theme is reached through the
+// bridge seam, so a channel connector can serve it.
+// myrmidon(CA-A): the channel allowlist — the board-decided list of who may
+// write to the bots (channel identity, board account optional), the one-line
+// refusal and the owner's access-request card. Telegram is the first
+// consumer of this general channel-layer mechanism.
+import {
+  admitChannelPrincipal,
+  admitChannelWriter,
+} from "../myrmidon/channel-allowlist/service.js";
+import { handleChannelAccessRefusalGuarded } from "../myrmidon/channel-allowlist/refusal.js";
+import { readChannelAccessMode } from "../myrmidon/channel-allowlist/settings.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the bridged-DM theme is reached through the
+// bridge seam, so a channel connector can serve it.
 import {
   afterTelegramDmMessage,
   decideTelegramDmBinding,
+  editedBridgedCommandText,
   ensureTelegramDmBinding,
   handleTelegramDmCommand,
   refuseUnlinkedTelegramDm,
   type TelegramDmBridgeDeps,
-} from "../myrmidon/agent-chat-bridge/bridge.js";
+} from "../myrmidon/channel-connectors/bridge/agent-bridge.js";
+// myrmidon(F06-D): the buttons under a `/model` or `/think` list.
+import {
+  CHOOSER_BUTTONS_PER_ROW,
+  handleChooserPick,
+  isChooserActionId,
+  isChooserCardActions,
+} from "../myrmidon/agent-chat-bridge/chooser-actions.js";
 // myrmidon(X9b): @<alias> addressing — addressee resolution for the bridge
 // call site and the leading-token strip for an addressed turn's body (reply
 // prefixing and the mention quote live in issues.ts / cross-channel.ts; the
 // addressed reply rides the normal publication lane).
-import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/agent-chat-bridge/addressing.js";
-import { resolveBridgedAddressee } from "../myrmidon/agent-chat-bridge/bridge.js";
-import type { TelegramAddressee } from "../myrmidon/agent-chat-bridge/addressing.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the addressing theme is reached through the
+// bridge seam, so a channel connector can serve it.
+import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/channel-connectors/bridge/addressing.js";
+import { resolveBridgedAddressee } from "../myrmidon/channel-connectors/bridge/agent-bridge.js";
+import type { TelegramAddressee } from "../myrmidon/channel-connectors/bridge/addressing.js";
 // myrmidon(U2): company-wide interaction lookup for callbacks on cards
 // delivered to the owner's Telegram conversation from other tasks.
 import { listInteractionForCallback } from "../myrmidon/owner-delivery/callback-interaction-lookup.js";
+// myrmidon(1.6.5-F21-AUTOCLOSE): the owner's own message in a task's chat
+// closes that task's single open owner decision, without an agent run.
+import { autoCloseOwnerDecisionOnOwnerComment } from "../myrmidon/owner-delivery/owner-autoclose.js";
+// myrmidon(1.6.5-F21-A): the wording→decision mapping that writer uses. Same
+// parse as the task-comment hook, so «2) да» means option 2 in either place.
+import { classifyOwnerReplyText } from "../myrmidon/owner-reply/owner-reply-classifier.js";
 import {
   authorizeNativeChatReviewPresentation,
   NativeChatReviewPresentationContentionError,
 } from "./native-runtime/native-chat-review-presentation.js";
 import { isExternalChatWaitAuthorizationContention } from "./native-runtime/chat-attachment-reuse.js";
+import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
 import {
@@ -384,7 +424,22 @@ import {
   telegramAttachmentOmissionNotice,
 } from "../myrmidon/chat-attachment-omission.js";
 import { TELEGRAM_DM_COMMANDS, telegramDmCommandsForLocale } from "../myrmidon/agent-chat-bridge/commands/index.js";
+import {
+  buildAgentsExpiredScreen,
+  resolveAgentsButtonClick,
+  runAgentsButtonAction,
+  stageAgentsScreenPublication,
+  type AgentsScreen,
+} from "../myrmidon/agent-chat-bridge/commands/agents-buttons.js";
 import { telegramDmMenuLocale } from "../myrmidon/agent-chat-bridge/locales/index.js";
+// myrmidon(HUB): the connector hub and the inbound read of the webhook path.
+// See server/src/myrmidon/channel-connectors/ingress.ts and
+// docs/myrmidon/design/chat-channel-connector.md, section 4.
+import { myrmidonChannelConnectorHub } from "../myrmidon/channel-connectors/hub.js";
+import {
+  channelLogSinkOf,
+  readInboundEventThroughConnector,
+} from "../myrmidon/channel-connectors/ingress.js";
 // myrmidon(CHAT-HOLD): no silent queue in a bridged Telegram chat.
 import {
   chatNoticeLanguage,
@@ -394,27 +449,32 @@ import {
   classifyChatWait,
   type ChatWaitReason,
 } from "../myrmidon/chat-holds/wait-notice.js";
-import { currentHostMemoryGate } from "../myrmidon/run-admission.js";
+// myrmidon(1.6.5 OWNER-CHAT-ADMISSION): gate the notice on owner-turn admission.
+import { currentOwnerChatTurnGate } from "../myrmidon/run-admission.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the DM switches are reached through the
+// bridge seam, so a channel connector can serve them.
 import {
   telegramDmConversationsConfigured,
   telegramDmConversationsEnabled,
-} from "../myrmidon/agent-chat-bridge/settings.js";
+} from "../myrmidon/channel-connectors/bridge/dm-conversations.js";
 // myrmidon(TG-NOTIFY-D): inbound topic settings + gate for Telegram forum
 // topics (server/src/myrmidon/telegram-notify/). Off by default: the
 // settings document lives in instance settings; the gate only relaxes the
 // vendor's addressed requirement when the owner enabled topic inbound. The
 // reader lives in its own module, so the track's contract module
 // (`telegram-notify/settings.ts`, part B) stays untouched.
+// myrmidon(1.6.6 CH-CONNECTOR-D): the topic-inbound settings are reached
+// through the bridge seam, so a channel connector can serve them.
 import {
   readTelegramNotifyInbound,
   type TelegramNotifyInboundSettings,
-} from "../myrmidon/telegram-notify/topic-inbound-settings.js";
+} from "../myrmidon/channel-connectors/bridge/topic-inbound-settings.js";
 // myrmidon(TG-NOTIFY-D): pure gate/title/body helpers for topic inbound.
 import {
   topicInboundAdmitted,
   topicTaskBody,
   topicTaskTitle,
-} from "../myrmidon/telegram-notify/topic-inbound.js";
+} from "../myrmidon/channel-connectors/bridge/topic-inbound.js";
 // myrmidon(U1): settings for the editable DM status message and inline split
 // (release 1.4, item 3).
 import {
@@ -2074,7 +2134,8 @@ async function editOrPostProviderPublication<T>(
   }
 }
 
-function safeCardForPublication(
+// myrmidon(U2): exported so the owner Telegram text-only provider payload can be asserted.
+export function safeCardForPublication(
   payload: SafeChatPublicationPayload,
   provider: ChatProvider,
 ) {
@@ -2099,7 +2160,18 @@ function safeCardForPublication(
         })
       : LinkButton({ label: action.label, url: action.url }),
   );
-  if (actions.length) children.push(Actions(actions));
+  if (actions.length) {
+    // myrmidon(F06-D): a `/model` or `/think` list carries a dozen or more
+    // buttons with long ids — they go to the keyboard a few to a row, not as
+    // one row Telegram would refuse.
+    if (isChooserCardActions(payload.card.actions)) {
+      for (let index = 0; index < actions.length; index += CHOOSER_BUTTONS_PER_ROW) {
+        children.push(Actions(actions.slice(index, index + CHOOSER_BUTTONS_PER_ROW)));
+      }
+    } else {
+      children.push(Actions(actions));
+    }
+  }
   return Card({ title: payload.card.title, children });
 }
 
@@ -2450,6 +2522,29 @@ function telegramMessageSequence(raw: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0
     ? value
     : null;
+}
+
+/**
+ * myrmidon(F06-D): the message a Telegram message replies to, as the
+ * `<chat id>:<message id>` provider message id the outbound links use.
+ */
+function telegramReplyTargetMessageId(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = raw as {
+    chat?: { id?: unknown };
+    reply_to_message?: { message_id?: unknown };
+  };
+  const chatId = value.chat?.id;
+  const targetId = value.reply_to_message?.message_id;
+  if (
+    (typeof chatId !== "string" && typeof chatId !== "number") ||
+    typeof targetId !== "number" ||
+    !Number.isSafeInteger(targetId) ||
+    targetId <= 0
+  ) {
+    return null;
+  }
+  return `${chatId}:${targetId}`;
 }
 
 function telegramMessageId(raw: unknown): string | null {
@@ -3095,6 +3190,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   >();
   const persistence = createChatSdkStatePersistence(db);
+  // myrmidon(HUB): the only connection between the vendor chat service and our
+  // channel connectors. Everything channel-specific lives in
+  // server/src/myrmidon/channel-connectors/.
+  const channelHubLog = channelLogSinkOf(logger);
+  const channelHub = myrmidonChannelConnectorHub(db, { logger: channelHubLog });
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const publicBaseUrl = absoluteBaseUrl(options.publicBaseUrl);
   const webhookPublicBaseUrl =
@@ -4464,7 +4564,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 credentials.botToken,
                 "setMyCommands",
                 {
-                  commands: telegramDmCommandsForLocale(telegramDmMenuLocale()),
+                  commands: telegramDmCommandsForLocale(await telegramDmMenuLocale(db)),
                   scope: { type: "all_private_chats" },
                 },
               );
@@ -6035,8 +6135,20 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
   }
 
+  // myrmidon(1.6.5-F10-A): ids of endpoints idling in the wizard's `test` stage
+  // while traffic flows through them (part A's attention signal, exposed as the
+  // `verifyingStale` flag of the endpoint responses below).
+  async function staleVerifyingEndpointIds(
+    companyId: string,
+    endpointIds: string[],
+  ): Promise<Set<string>> {
+    const stale = await listVerifyingStaleEndpoints(db, companyId, endpointIds);
+    return new Set(stale.map((endpoint) => endpoint.id));
+  }
+
   function serializeEndpoint(
     row: Awaited<ReturnType<typeof endpointRecord>>,
+    verifyingStale = false,
   ): ChatEndpoint {
     if (!row) throw notFound("Chat endpoint not found");
     const endpoint = row.endpoint;
@@ -6081,6 +6193,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       },
       healthMessage: endpoint.healthMessage,
       lastError: endpoint.lastError,
+      // myrmidon(1.6.5-F10-A): a `verifying` endpoint that live traffic has been
+      // flowing through for over a day — an attention signal, not an error.
+      verifyingStale,
       lastActivityAt: iso(endpoint.lastEventAt),
       lastPublicationAt: iso(endpoint.lastPublicationAt),
       activatedAt: iso(endpoint.activatedAt),
@@ -6120,11 +6235,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       )
       .orderBy(desc(chatEndpoints.updatedAt));
-    return rows.map((row) => serializeEndpoint(row));
+    // myrmidon(1.6.5-F10-A): one extra read for the whole page.
+    const stale = await staleVerifyingEndpointIds(
+      companyId,
+      rows.map((row) => row.endpoint.id),
+    );
+    return rows.map((row) =>
+      serializeEndpoint(row, stale.has(row.endpoint.id)),
+    );
   }
 
   async function get(endpointId: string) {
-    return serializeEndpoint(await endpointRecord(endpointId));
+    const row = await endpointRecord(endpointId);
+    if (!row) throw notFound("Chat endpoint not found");
+    const stale = await staleVerifyingEndpointIds(row.endpoint.companyId, [
+      row.endpoint.id,
+    ]);
+    return serializeEndpoint(row, stale.has(row.endpoint.id));
   }
 
   async function create(
@@ -10152,6 +10279,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         if (!record) throw notFound("Chat endpoint not found");
         const endpoint = record.endpoint;
         if (endpoint.status !== "verifying" || endpoint.setup.step !== "test") {
+          // myrmidon(F-10): a Telegram endpoint leaves the wizard on its
+          // first successful delivery, so the manual test step is already
+          // settled. Treat a completion request as a no-op instead of a
+          // conflict; the activation proof was the delivery itself.
+          if (
+            endpoint.provider === "telegram" &&
+            endpoint.status === "active" &&
+            endpoint.setup.step === "complete"
+          ) {
+            return get(endpointId);
+          }
           throw conflict("This connection is not waiting for a setup test", {
             code: "chat_endpoint_not_testing",
           });
@@ -10336,6 +10474,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     );
   }
 
+  // myrmidon(1.6.5-F10-A): finishing a setup from live traffic follows an ingest
+  // or a delivered reply, so it must never fail either: the automatic completion
+  // is called only here, and a failure is logged and swallowed.
+  async function tryLiveTrafficActivation(
+    endpointId: string,
+    options: { inboundObserved?: boolean } = {},
+  ) {
+    try {
+      await activateChatEndpointFromLiveTraffic(db, { endpointId, ...options });
+    } catch (error) {
+      logger.warn(
+        { err: error, endpointId },
+        "chat live-traffic activation failed",
+      );
+    }
+  }
+
   async function ensurePrincipal(
     endpoint: EndpointRow,
     author: Author,
@@ -10501,6 +10656,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         linkedDenied: !allowed,
         userId: allowed ? link.userId : null,
       };
+    }
+    // myrmidon(CA-A): in "allowlist" mode the board list — not guest
+    // sponsorship — answers for unlinked senders, at the mutation boundary
+    // exactly as at admission. Re-read inside this transaction (the advisory
+    // lock above already serialized the identity's link changes) so a board
+    // revocation cannot race the inbound snapshot. The "sponsor" mode keeps
+    // the vendor path byte-for-byte.
+    if (
+      await readChannelAccessMode(tx as unknown as Db) === "allowlist"
+    ) {
+      const admitted = await admitChannelPrincipal(tx as unknown as Db, {
+        companyId: endpoint.companyId,
+        provider: endpoint.provider,
+        endpointId: endpoint.id,
+        principalId,
+      });
+      return { allowed: admitted, linkedDenied: false, userId: null };
     }
     if (!endpoint.allowUnlinkedPeople) {
       return { allowed: false, linkedDenied: false, userId: null };
@@ -14554,7 +14726,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     runId: string,
   ): Promise<void> {
     try {
-      if (currentHostMemoryGate().state !== "closed") return;
+      // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the owner's own turn is admitted
+      // by the server container's own floor (`minFreeMemoryMb`); the host
+      // ceilings pace the automatic runs only. So a closed host floor is no
+      // longer a reason to tell the owner their answer waits — the notice is
+      // staged only while the container floor itself holds the turn back.
+      if (currentOwnerChatTurnGate().state !== "closed") return;
       const [run] = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
@@ -14570,7 +14747,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     } catch (error) {
       logger.warn(
         { error: redactError(error) },
-        "chat host-memory notice was not staged",
+        "chat queue-notice was not staged",
       );
     }
   }
@@ -14707,8 +14884,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         });
         return true;
       }
-      const context = await db.transaction((tx) =>
-        authorizeInboundWakeup(tx, claimed),
+      const context = await retryChatControlAdmission(() =>
+        db.transaction((tx) => authorizeInboundWakeup(tx, claimed)),
       );
       if (context.delivery.state !== "processed")
         throw new Error("chat_inbound_wakeup_acceptance_not_committed");
@@ -15767,7 +15944,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // fails, keep the delivery retryable; the committed message link makes
         // the retry resume here without duplicating the task or comment.
         if (addressed && !thread.isDM) await thread.subscribe();
-        await acceptInboundWakeup(activeDelivery.id, attachmentResult);
+        // authorizeInboundWakeup takes the endpoint row NOWAIT (the issue lock is
+        // already held, so waiting would invert the ingress lock order). A
+        // concurrent ingress transaction is a rolled-back, transient refusal:
+        // retry it here instead of failing the delivery into a >=2s durable
+        // backoff that also burns one of its five attempts.
+        await retryChatControlAdmission(() =>
+          acceptInboundWakeup(activeDelivery.id, attachmentResult),
+        );
         // myrmidon(P7): send the notice once the wakeup no longer needs the endpoint lock
         const wakeProcessed = await processInboundWakeup(activeDelivery.id);
         sendOmissionNotice?.();
@@ -16016,9 +16200,34 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         endpoint.allowUnlinkedPeople
           ? await sponsorAllowsGuest(endpoint)
           : false;
-      const principalAllowed =
-        !principalResolution.linkedDenied &&
-        (principalResolution.userId !== null || guestSponsorAllowed);
+      // myrmidon(CA-A): the board channel allowlist — the owner's rule that
+      // who may write to the bots is a setting on the board, by channel
+      // identity, with no board account required. When the access mode is
+      // "allowlist", an unlinked sender is served only if the allowlist
+      // admits them: guest sponsorship no longer admits anyone (the card
+      // flow answers the rest with one line to the sender and an
+      // access-request to the owner). Linked board members keep the vendor
+      // path untouched. The mode is read live (no restart), and every other
+      // provider keeps the pre-change behavior while the mode is "sponsor".
+      let allowlistAdmitted = false;
+      const channelAccessMode = await readChannelAccessMode(db);
+      if (
+        channelAccessMode === "allowlist" &&
+        principalResolution.userId === null &&
+        !principalResolution.linkedDenied
+      ) {
+        allowlistAdmitted = await admitChannelWriter(db, {
+          companyId: endpoint.companyId,
+          provider: endpoint.provider,
+          externalId: principalResolution.principal.externalId,
+          handle: principalResolution.principal.handle,
+          endpointId: endpoint.id,
+        });
+      }
+      const principalAllowed = !principalResolution.linkedDenied && (
+        channelAccessMode === "allowlist"
+          ? principalResolution.userId !== null || allowlistAdmitted
+          : principalResolution.userId !== null || guestSponsorAllowed);
       const activationAllowed = addressed || existingConversation !== null;
       const allowed =
         endpointAllowed &&
@@ -16091,10 +16300,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             : principalResolution.linkedDenied
               ? "Linked Myrmidon account is not currently permitted"
               : !principalAllowed
-                ? endpoint.allowUnlinkedPeople
+              ? channelAccessMode === "allowlist"
+                ? "External identity is not on the channel allowlist"
+                : endpoint.allowUnlinkedPeople
                   ? "Endpoint sponsor can no longer authorize external guests"
                   : "External identity must be linked to a Myrmidon account"
-                : "Message did not address the agent or an active task thread";
+              : "Message did not address the agent or an active task thread";
         await db
           .update(chatDeliveries)
           .set({
@@ -16116,7 +16327,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           telegramDmConversationsEnabled(endpoint.id) &&
           endpointAllowed &&
           destinationAllowed &&
-          !principalAllowed
+          !principalAllowed &&
+          channelAccessMode !== "allowlist"
         ) {
           const effectContext =
             runtimeContext ??
@@ -16133,6 +16345,43 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             deliveryId: activeDelivery.id,
             resourceId: resource.id,
             runtimeContext: effectContext,
+          });
+        }
+        // myrmidon(CA-A): in "allowlist" mode, a sender nobody admits gets
+        // the one-line refusal and the owner an access-request card (once
+        // per sender per UTC day). In this mode the older X8b "ask an
+        // administrator" notice is switched off above — the allowlist
+        // answers instead, with the card as the owner's action point.
+        if (
+          channelAccessMode === "allowlist" &&
+          endpointAllowed &&
+          destinationAllowed &&
+          !principalAllowed &&
+          !principalResolution.linkedDenied &&
+          principalResolution.userId === null
+        ) {
+          const caEffectContext =
+            runtimeContext ??
+            runtimeContextForRecord(
+              (await endpointRecord(endpoint.id)) ??
+                (() => {
+                  throw new Error("Chat endpoint is unavailable");
+                })(),
+            );
+          await handleChannelAccessRefusalGuarded(db, x8TelegramDmBridgeDeps, {
+            companyId: endpoint.companyId,
+            endpoint,
+            thread,
+            addressed,
+            principalId: principalResolution.principal.id,
+            provider: endpoint.provider,
+            externalId: principalResolution.principal.externalId,
+            handle: principalResolution.principal.handle,
+            displayName: principalResolution.principal.displayName,
+            deliveryId: activeDelivery.id,
+            resourceId: resource.id,
+            runtimeContext: caEffectContext,
+            sendNotice: true,
           });
         }
         return;
@@ -16202,6 +16451,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           // migration).
           releaseConversationId: x8Dm.releaseConversationId,
           migratedFromIssueId: x8Dm.migratedFromIssueId,
+          // myrmidon(F06-D): a reply to a `/model` or `/think` list picks from it.
+          replyToProviderMessageId:
+            endpoint.provider === "telegram"
+              ? telegramReplyTargetMessageId(message.raw)
+              : null,
         });
         if (dmCommand.done) return;
         x8MessageBody = dmCommand.body;
@@ -17065,6 +17319,31 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         publishActivity(publication);
       }
       const { actorUserId, comment, conversation, issue } = taskMutation;
+      // myrmidon(1.6.5-F10-A): this ingest is the inbound half of a wizard test
+      // round trip; the automatic completion needs the outbound half too, so an
+      // endpoint with only inbound traffic stays in `verifying`.
+      await tryLiveTrafficActivation(endpoint.id, { inboundObserved: true });
+      // myrmidon(1.6.5-F21-AUTOCLOSE): the owner's own message in the task's
+      // chat closes the single open owner decision of that task (F-21, the
+      // pre-via_bot path). Placed before processInboundWakeup below so the
+      // agent's run already sees the card resolved, and it never throws — a
+      // refusal is reported, not raised into the ingest.
+      if (actorUserId) {
+        await autoCloseOwnerDecisionOnOwnerComment({
+          db,
+          companyId: endpoint.companyId,
+          issueId: issue.id,
+          ownerUserId: actorUserId,
+          commentId: comment.id,
+          replyText: comment.body ?? "",
+          commentCreatedAt: comment.createdAt,
+          commentSourceTrust: comment.sourceTrust ?? null,
+          // myrmidon(1.6.5-F21-A): read the words with the owner-reply parser
+          // (numbers, letters, the card's recommended option) instead of the
+          // writer's built-in free-text fallback.
+          deps: { heartbeat: options.heartbeat, classifyReply: classifyOwnerReplyText },
+        });
+      }
       // myrmidon(X8b): resume a paused bridged conversation on a literal
       // "/new" comment (the web /new route does the same), and deliver any
       // queued bridged-command notice or one-time migration notice. Runs
@@ -17132,7 +17411,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // processed. A retry reuses the committed message link above and tries
       // this idempotent subscription again before completing the delivery.
       if (addressed && !thread.isDM) await thread.subscribe();
-      await acceptInboundWakeup(activeDelivery.id, attachmentResult);
+      // authorizeInboundWakeup takes the endpoint row NOWAIT (the issue lock is
+      // already held, so waiting would invert the ingress lock order). A
+      // concurrent ingress transaction is a rolled-back, transient refusal:
+      // retry it here instead of failing the delivery into a >=2s durable
+      // backoff that also burns one of its five attempts.
+      await retryChatControlAdmission(() =>
+        acceptInboundWakeup(activeDelivery.id, attachmentResult),
+      );
       // myrmidon(P7): send the notice once the wakeup no longer needs the endpoint lock
       const wakeProcessed = await processInboundWakeup(activeDelivery.id);
       sendOmissionNotice?.();
@@ -18459,6 +18745,183 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       : null;
   }
 
+  /**
+   * myrmidon(F06-D): an EDITED bridged-DM command (`/modle` fixed to `/model`,
+   * `/model` made `/model 3`) runs as a new command instead of ending as a
+   * silently filtered "original message was not admitted" lifecycle row.
+   *
+   * The edit is trusted exactly as far as a new message would be: the runtime
+   * fence of the delivery must be current, the editor must be a linked, active,
+   * non-bot member, the DM must still be the standing bridged conversation, and
+   * the command must be one that may be re-run (editedBridgedCommandText). The
+   * command runs through the same handler as a fresh message, with this
+   * lifecycle delivery as its delivery (so the reply is published once, keyed
+   * to the edit). Returns true when the delivery is finished.
+   */
+  async function runEditedBridgedCommand(
+    endpoint: EndpointRow,
+    delivery: DeliveryRow,
+    lifecycle: { actor: { externalId: string } | null; messageId: string; targetProviderEventId: string; text: string; threadId: string },
+  ): Promise<boolean> {
+    if (
+      endpoint.provider !== "telegram" ||
+      delivery.eventKind !== "message_updated" ||
+      !lifecycle.actor
+    )
+      return false;
+    const commandText = editedBridgedCommandText(lifecycle.text);
+    if (!commandText) return false;
+    const fence = lifecycleRuntimeFence(delivery);
+    if (!fence) return false;
+    const currentEndpoint = await db.transaction((tx) =>
+      // Same statuses the lifecycle delivery itself is admitted under: a
+      // connection still verifying runs its test conversation's commands too.
+      runtimeCallbackEndpoint(tx, endpoint.id, fence, ["verifying", "active"]),
+    );
+    if (!currentEndpoint || !currentEndpoint.allowDirectMessages) return false;
+
+    // An edit of a message that became a task comment is an ordinary edit.
+    const inboundLink = await db
+      .select({ id: chatMessageLinks.id })
+      .from(chatMessageLinks)
+      .where(
+        and(
+          eq(chatMessageLinks.companyId, currentEndpoint.companyId),
+          eq(chatMessageLinks.endpointId, currentEndpoint.id),
+          eq(chatMessageLinks.providerMessageId, lifecycle.messageId),
+          eq(chatMessageLinks.direction, "inbound"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (inboundLink) return false;
+    // The original still being processed: let the standard path wait for it.
+    const original = await db
+      .select({ state: chatDeliveries.state })
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, currentEndpoint.id),
+          eq(chatDeliveries.providerEventId, lifecycle.targetProviderEventId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (original && ["received", "processing", "retry"].includes(original.state))
+      return false;
+
+    const conversation = await db
+      .select()
+      .from(chatConversations)
+      .where(
+        and(
+          eq(chatConversations.companyId, currentEndpoint.companyId),
+          eq(chatConversations.endpointId, currentEndpoint.id),
+          eq(chatConversations.externalThreadId, lifecycle.threadId),
+        ),
+      )
+      .orderBy(desc(chatConversations.sessionGeneration))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (
+      !conversation ||
+      !conversation.isDirectMessage ||
+      !["active", "waiting"].includes(conversation.state) ||
+      !conversation.resourceId
+    )
+      return false;
+
+    const principal = await db
+      .select({
+        id: chatExternalPrincipals.id,
+        isBot: chatExternalPrincipals.isBot,
+        kind: chatExternalPrincipals.kind,
+      })
+      .from(chatExternalPrincipals)
+      .where(
+        and(
+          eq(chatExternalPrincipals.companyId, currentEndpoint.companyId),
+          eq(chatExternalPrincipals.provider, currentEndpoint.provider),
+          eq(
+            chatExternalPrincipals.providerAccountId,
+            currentEndpoint.providerAccountId ?? "unknown",
+          ),
+          eq(chatExternalPrincipals.externalId, lifecycle.actor.externalId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!principal || principal.kind !== "user" || principal.isBot) return false;
+    const authorization = await db.transaction((tx) =>
+      lockCurrentPrincipalAuthorization(tx, currentEndpoint, principal.id),
+    );
+    if (!authorization.allowed || !authorization.userId) return false;
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, currentEndpoint.companyId),
+          eq(issues.id, conversation.issueId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return false;
+    const binding = await decideTelegramDmBinding(db, {
+      endpoint: {
+        provider: currentEndpoint.provider,
+        id: currentEndpoint.id,
+        assignedAgentId: currentEndpoint.assignedAgentId,
+      },
+      isDirectMessage: true,
+      boardUserId: authorization.userId,
+      existingConversation: { id: conversation.id, state: conversation.state },
+      existingIssue: {
+        id: issue.id,
+        conversationAgentId: issue.conversationAgentId,
+        conversationUserId: issue.conversationUserId,
+      },
+    });
+    // Only a conversation that is already this person's standing one; a
+    // migration or release is the business of a fresh message.
+    if (!binding.applies || binding.detachExisting) return false;
+
+    const resource = await db
+      .select({ id: chatEndpointResources.id, label: chatEndpointResources.label })
+      .from(chatEndpointResources)
+      .where(
+        and(
+          eq(chatEndpointResources.companyId, currentEndpoint.companyId),
+          eq(chatEndpointResources.endpointId, currentEndpoint.id),
+          eq(chatEndpointResources.id, conversation.resourceId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!resource) return false;
+
+    const outcome = await handleTelegramDmCommand({
+      db,
+      deps: x8TelegramDmBridgeDeps,
+      endpoint: currentEndpoint,
+      resource: { id: resource.id, label: resource.label },
+      thread: {
+        id: conversation.externalThreadId,
+        channelId: conversation.externalConversationId,
+      },
+      providerUrl: conversation.providerUrl,
+      boardUserId: authorization.userId,
+      deliveryId: delivery.id,
+      principalId: principal.id,
+      text: commandText,
+      current: conversation,
+      latestConversation: conversation,
+    });
+    return outcome.done;
+  }
+
   async function processLifecycleDelivery(
     endpoint: EndpointRow,
     candidate: DeliveryRow,
@@ -18496,6 +18959,34 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .where(and(...claimConditions))
       .returning();
     if (!activeDelivery) return;
+
+    // myrmidon(F06-D): an edited `/model …` runs as a command, not silently
+    // filtered. A failure here retries the delivery like the standard path does.
+    try {
+      if (await runEditedBridgedCommand(endpoint, activeDelivery, lifecycle)) return;
+    } catch (error) {
+      const terminal = activeDelivery.attempts >= 5;
+      await db
+        .update(chatDeliveries)
+        .set({
+          state: terminal ? "failed" : "retry",
+          nextAttemptAt: terminal
+            ? null
+            : new Date(
+                Date.now() +
+                  Math.min(60_000, 1000 * 2 ** activeDelivery.attempts),
+              ),
+          redactedError: redactError(error),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(chatDeliveries.id, activeDelivery.id),
+            eq(chatDeliveries.state, "processing"),
+          ),
+        );
+      throw error;
+    }
 
     try {
       await db.transaction(async (tx) => {
@@ -20810,6 +21301,118 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return processed;
   }
 
+  // myrmidon(1.6.5 OPE-6318 part B): runs one /agents button and answers with
+  // the next screen as a new message of the same conversation. Who may click:
+  // the linked board user who owns this very bridged Telegram conversation
+  // (checked again by the bridge's own command context), under the same
+  // current-authorization lock as every other executable chat action.
+  async function handleAgentsButtonClick(
+    record: { endpoint: EndpointRow },
+    event: ChatSdkCallbackEvent<ActionEvent>,
+    runtimeContext: LifecycleRuntimeFence,
+    sender: { userId: string; principalId: string },
+    deny: (safelyKnown?: {
+      conversationId?: string | null;
+      principalId?: string | null;
+    }) => Promise<void>,
+  ): Promise<void> {
+    const endpoint = record.endpoint;
+    const resolution = await resolveAgentsButtonClick(db, {
+      endpointId: endpoint.id,
+      companyId: endpoint.companyId,
+      actionId: event.event.actionId,
+      threadId: event.event.threadId,
+      messageId: event.event.messageId,
+      rawData:
+        event.event.raw && typeof event.event.raw === "object" && "data" in event.event.raw
+          ? (event.event.raw as { data?: unknown }).data
+          : null,
+      value: event.event.value,
+      threadMatches: (actionThreadId, conversationThreadId) =>
+        actionThreadMatchesConversation(
+          event.provider,
+          actionThreadId,
+          conversationThreadId,
+        ),
+    });
+    if (resolution.kind === "deny") {
+      return deny({
+        conversationId: resolution.conversationId,
+        principalId: sender.principalId,
+      });
+    }
+    const { conversation, token } = resolution;
+    const known = {
+      conversationId: conversation.id,
+      principalId: sender.principalId,
+    };
+    const authorize = async (tx: DbTransaction) =>
+      requireCurrentExternalActionAuthorization(tx, {
+        conversationId: conversation.id,
+        endpointId: endpoint.id,
+        expectedUserId: sender.userId,
+        principalId: sender.principalId,
+        runtimeContext,
+      });
+    try {
+      await db.transaction(authorize);
+    } catch (error) {
+      if (isExternalActionAuthorizationChange(error)) return deny(known);
+      throw error;
+    }
+
+    let screen: AgentsScreen;
+    if (resolution.expired) {
+      await db
+        .update(chatActions)
+        .set({
+          status: "expired",
+          result: { code: "agents_button_token_expired" },
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(chatActions.id, token.id), eq(chatActions.status, "issued")),
+        );
+      screen = await buildAgentsExpiredScreen(db, sender.userId);
+    } else {
+      screen = await runAgentsButtonAction({
+        db,
+        companyId: endpoint.companyId,
+        conversationAgentId: endpoint.assignedAgentId,
+        conversationIssueId: conversation.issueId,
+        boardUserId: sender.userId,
+        action: resolution.action,
+        cancelRun:
+          x8TelegramDmBridgeDeps.cancelRun ??
+          (async () => {
+            throw new Error("chat_cancel_unavailable");
+          }),
+      });
+    }
+    try {
+      await db.transaction(async (tx) => {
+        await authorize(tx);
+        await stageAgentsScreenPublication({
+          tx: tx as unknown as Db,
+          stage: stageAuthorizedTaskControlPublication,
+          companyId: endpoint.companyId,
+          endpointId: endpoint.id,
+          conversationId: conversation.id,
+          issueId: conversation.issueId,
+          principalId: sender.principalId,
+          idempotencyKey: `control:agents-button:${token.id}:${randomUUID()}`,
+          screen,
+        });
+      });
+    } catch (error) {
+      if (isExternalActionAuthorizationChange(error)) return deny(known);
+      throw error;
+    }
+    scheduleMessageProcessing(async () => {
+      await processPendingPublications();
+    });
+  }
+
   async function handleAction(
     event: ChatSdkCallbackEvent<ActionEvent>,
     runtimeContext: RuntimeContext,
@@ -20868,6 +21471,79 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       principal.principal.isBot
     ) {
       return deny({ principalId: principal.principal.id });
+    }
+    // myrmidon(1.6.5 OPE-6318 part B): a click on an /agents button of the
+    // bridged Telegram DM. The token is its own `agents_button` row; every
+    // other action id falls through to the question/confirmation path below.
+    if (
+      event.provider === "telegram" &&
+      event.event.actionId.startsWith("pca:")
+    ) {
+      return await handleAgentsButtonClick(
+        record,
+        event,
+        runtimeContext,
+        {
+          userId: principal.userId!,
+          principalId: principal.principal.id,
+        },
+        deny,
+      );
+    }
+    // myrmidon(F06-D): a press under a `/model` or `/think` list is not an
+    // issue-interaction answer; it has its own token kind and handler.
+    if (isChooserActionId(event.event.actionId)) {
+      if (event.provider !== "telegram") return deny({ principalId: principal.principal.id });
+      const chooserCallbackData =
+        event.event.raw && typeof event.event.raw === "object" && "data" in event.event.raw
+          ? (event.event.raw as { data?: unknown }).data
+          : null;
+      if (
+        typeof chooserCallbackData !== "string" ||
+        Buffer.byteLength(chooserCallbackData, "utf8") > TELEGRAM_CALLBACK_DATA_LIMIT_BYTES ||
+        chooserCallbackData !== telegramChatSdkCallbackData(event.event.actionId) ||
+        event.event.value !== undefined
+      ) {
+        return deny({ principalId: principal.principal.id });
+      }
+      let chooserOutcome: Awaited<ReturnType<typeof handleChooserPick>>;
+      try {
+        chooserOutcome = await handleChooserPick({
+          db,
+          companyId: record.endpoint.companyId,
+          endpointId: record.endpoint.id,
+          actionId: event.event.actionId,
+          messageId: event.event.messageId,
+          userId: principal.userId!,
+          principalId: principal.principal.id,
+          threadMatches: (conversationThreadId) =>
+            actionThreadMatchesConversation(event.provider, event.event.threadId, conversationThreadId),
+          assertStillAuthorized: (tx, conversationId) =>
+            requireCurrentExternalActionAuthorization(tx as unknown as DbTransaction, {
+              conversationId,
+              endpointId: record.endpoint.id,
+              expectedUserId: principal.userId!,
+              principalId: principal.principal.id,
+              runtimeContext,
+            }),
+          stageTaskControlPublication: stageAuthorizedTaskControlPublication,
+        });
+      } catch (error) {
+        if (isExternalActionAuthorizationChange(error)) {
+          return deny({ principalId: principal.principal.id });
+        }
+        throw error;
+      }
+      if (chooserOutcome.kind === "denied") {
+        return deny({
+          conversationId: chooserOutcome.principalConversationId,
+          principalId: principal.principal.id,
+        });
+      }
+      scheduleMessageProcessing(async () => {
+        await processPendingPublications();
+      });
+      return;
     }
     const isCorrection = isDiscordQuestionFormCorrectionId(
       event.event.actionId,
@@ -27744,6 +28420,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (preflight === "invalid_signature") {
         return new Response("Invalid signature", { status: 401 });
       }
+    }
+    // myrmidon(HUB): the inbound flow of this endpoint. When a connector is
+    // registered for the provider it reads the update and answers whether the
+    // turn enters our pipeline; a turn it refuses — including its own
+    // `duplicate` answer — stops here, so one update cannot be delivered twice
+    // and an update it read as no message for us never reaches the queue.
+    if (
+      await readInboundEventThroughConnector(channelHub, { endpoint, request }, { logger: channelHubLog })
+    ) {
+      return new Response("ignored", { status: 200 });
     }
     const lifecycleInspection = request.clone();
     const slackCallbackInspection =
@@ -38184,6 +38870,71 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                         sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${currentPublicationRuntimeContext.generation}`,
                       ),
                     );
+                  // myrmidon(F-10): a Telegram endpoint that is still inside
+                  // the setup wizard has now survived a real provider send —
+                  // the same proof the manual "test" step demands. Settle the
+                  // wizard in this commit: setup.step → complete and status →
+                  // active, in the same transaction as the delivery receipt.
+                  // The WHERE clause re-checks the live row (verifying status +
+                  // runtime generation, matching the manual path's `step ===
+                  // "test"` precondition), so a concurrent reconnect or an
+                  // already-completed setup makes this a no-op.
+                  if (
+                    authorizationClaim.endpoint.provider === "telegram" &&
+                    authorizationClaim.endpoint.status === "verifying" &&
+                    authorizationClaim.endpoint.setup.step === "test"
+                  ) {
+                    const activated = await tx
+                      .update(chatEndpoints)
+                      .set({
+                        status: "active",
+                        // jsonb merge on the live row: setup keys written
+                        // during the network send are kept, not overwritten
+                        // by the snapshot read before it.
+                        setup: sql`coalesce(${chatEndpoints.setup}, '{}'::jsonb) || ${JSON.stringify({ step: "complete", testStartedAt: null })}::jsonb`,
+                        healthMessage: "Connected",
+                        activatedAt:
+                          authorizationClaim.endpoint.activatedAt ??
+                          committedAt,
+                        updatedAt: committedAt,
+                      })
+                      .where(
+                        and(
+                          eq(chatEndpoints.id, authorizationClaim.endpoint.id),
+                          eq(chatEndpoints.status, "verifying"),
+                          sql`${chatEndpoints.setup}->>'step' = 'test'`,
+                          sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${runtimeGeneration(authorizationClaim.endpoint.setup)}`,
+                          typeof authorizationClaim.endpoint.setup.testStartedAt ===
+                            "string"
+                            ? sql`${chatEndpoints.setup}->>'testStartedAt' = ${authorizationClaim.endpoint.setup.testStartedAt}`
+                            : undefined,
+                        ),
+                      )
+                      .returning({ id: chatEndpoints.id });
+                    // The manual test step settles the tool connection only
+                    // when the endpoint actually flipped to active; a guarded
+                    // update that matched zero rows must leave the connection
+                    // untouched so endpoint and connection never diverge.
+                    if (activated.length > 0) {
+                      await tx
+                        .update(toolConnections)
+                        .set({
+                          status: "active",
+                          enabled: true,
+                          healthStatus: "healthy",
+                          healthMessage: "Connected",
+                          lastError: null,
+                          healthCheckedAt: committedAt,
+                          updatedAt: committedAt,
+                        })
+                        .where(
+                          eq(
+                            toolConnections.id,
+                            authorizationClaim.endpoint.connectionId,
+                          ),
+                        );
+                    }
+                  }
                 }
                 if (authorizationActionId) {
                   const processedAuthorization = await tx
@@ -38253,6 +39004,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                   processReceiptReaction(actionId),
                 );
               }
+              // myrmidon(1.6.5-F10-A): the outbound half of a wizard test round
+              // trip is committed now; the inbound half decides. Never let this
+              // follow-up turn a successful delivery into a failure.
+              await tryLiveTrafficActivation(authorizationClaim.endpoint.id);
             } catch (error) {
               // Authentication, membership, and destination failures mutate
               // endpoint/runtime state. Settle them before releasing the

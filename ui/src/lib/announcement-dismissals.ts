@@ -1,8 +1,9 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { announcementIdSchema } from "@paperclipai/shared";
 
 const memory = new Map<string, boolean>();
 export function announcementStoragePrefix(userId: string) {
-  return `paperclip.announcement-dismissals.v1:${encodeURIComponent(userId)}:`;
+  return `myrmidon.announcement-dismissals.v1:${encodeURIComponent(userId)}:`;
 }
 
 export function readAnnouncementDismissals(userId: string): Map<string, boolean> {

@@ -316,6 +316,24 @@ describe("HTTP logger redaction", () => {
     expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-xsrf-token"]');
     expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-api-key"]');
     expect(HTTP_LOG_REDACT_PATHS).toContain(
+      'req.headers["x-paperclip-api-key"]',
+    );
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-agent-key"]');
+    expect(HTTP_LOG_REDACT_PATHS).toContain(
+      'req.headers["x-paperclip-cloud-tenant-token"]',
+    );
+    expect(HTTP_LOG_REDACT_PATHS).toContain(
+      'req.headers["x-paperclip-signature"]',
+    );
+    expect(HTTP_LOG_REDACT_PATHS).toContain(
+      'req.headers["x-hub-signature-256"]',
+    );
+    expect(HTTP_LOG_REDACT_PATHS).toContain(
+      'req.headers["x-paperclip-tool-gateway-token"]',
+    );
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-openclaw-token"]');
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-openclaw-auth"]');
+    expect(HTTP_LOG_REDACT_PATHS).toContain(
       'req.headers["x-telegram-bot-api-secret-token"]',
     );
     expect(HTTP_LOG_REDACT_PATHS).toContain("reqBody.credentials");
@@ -360,6 +378,14 @@ describe("HTTP logger redaction", () => {
               "set-cookie": "proxy-secret",
               "x-telegram-bot-api-secret-token":
                 "telegram-webhook-canary-534c28",
+              "x-paperclip-api-key": "paperclip-api-key-canary-71b3",
+              "x-agent-key": "agent-key-canary-4d0f",
+              "x-paperclip-cloud-tenant-token": "tenant-token-canary-9ae1",
+              "x-paperclip-signature": "signature-canary-2c87",
+              "x-hub-signature-256": "hub-signature-canary-5f42",
+              "x-paperclip-tool-gateway-token": "tool-gateway-canary-8b60",
+              "x-openclaw-token": "openclaw-token-canary-3e19",
+              "x-openclaw-auth": "openclaw-auth-canary-6a74",
             },
           },
           (res) => {
@@ -380,7 +406,7 @@ describe("HTTP logger redaction", () => {
 
     const output = chunks.join("");
     expect(output).not.toMatch(
-      /auth-secret|request-secret|proxy-secret|response-secret|telegram-webhook-canary-534c28/,
+      /auth-secret|request-secret|proxy-secret|response-secret|telegram-webhook-canary-534c28|paperclip-api-key-canary-71b3|agent-key-canary-4d0f|tenant-token-canary-9ae1|signature-canary-2c87|hub-signature-canary-5f42|tool-gateway-canary-8b60|openclaw-token-canary-3e19|openclaw-auth-canary-6a74/,
     );
 
     const log = JSON.parse(output.trim()) as {
@@ -393,6 +419,18 @@ describe("HTTP logger redaction", () => {
     expect(log.req.headers["x-telegram-bot-api-secret-token"]).toBe(
       "[Redacted]",
     );
+    expect(log.req.headers["x-paperclip-api-key"]).toBe("[Redacted]");
+    expect(log.req.headers["x-agent-key"]).toBe("[Redacted]");
+    expect(log.req.headers["x-paperclip-cloud-tenant-token"]).toBe(
+      "[Redacted]",
+    );
+    expect(log.req.headers["x-paperclip-signature"]).toBe("[Redacted]");
+    expect(log.req.headers["x-hub-signature-256"]).toBe("[Redacted]");
+    expect(log.req.headers["x-paperclip-tool-gateway-token"]).toBe(
+      "[Redacted]",
+    );
+    expect(log.req.headers["x-openclaw-token"]).toBe("[Redacted]");
+    expect(log.req.headers["x-openclaw-auth"]).toBe("[Redacted]");
     expect(log.res.headers["set-cookie"]).toBe("[Redacted]");
   });
 

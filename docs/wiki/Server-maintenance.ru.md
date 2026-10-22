@@ -40,6 +40,17 @@
 
 ## Мониторинг
 
+### Необязательная централизованная память на узлах флота
+
+`fleetd` может предоставлять ботам удалённого узла защищённые
+аутентификацией маршруты `/v1/memory/recall` и `/v1/memory/retain`. Для
+включения задайте необязательный блок `memory` (`enabled`, `url`, `token`,
+`bank`, `timeoutMs`); клиент использует только HTTP(S). Если блока нет или он
+отключён, оба маршрута отвечают `503 centralized_memory_disabled` и не
+обращаются к upstream. Таймаут по умолчанию — 15000 мс (диапазон 100–120000),
+размер ответа ограничен. Доступ к файловой системе хоста не требуется.
+См. справочник конфигурации fleetd в руководстве оператора.
+
 - Доска отдаёт собственный endpoint `/metrics` в текстовом формате Prometheus
   (0.0.4). Доступ — один bearer-токен из секрета компании или
   `MYRMIDON_METRICS_TOKEN`; без настроенного токена endpoint отвечает 401
@@ -51,6 +62,10 @@
 - **Проверка здоровья трассировки LLM** показывает молчаливую поломку
   конвейера LiteLLM → Langfuse карточкой статуса и сигналом оператору —
   вместо пустых таблиц, которые замечают только через дни.
+- **API данных дашборда флота** собирает хосты флота, контейнеры ботов,
+  прокси LiteLLM и сборочный VPS из VictoriaMetrics и Zabbix (оба — только
+  чтение) в один снимок; подключения настраиваются на компанию, а
+  самопроверка проверяет каждый источник.
 - Стенд-сценарий живучести команды — проверка, позволяющая выключить
   внешний сторож оператора: доска сама поднимает команду после гибели шлюза
   посреди запуска.
@@ -74,6 +89,7 @@
 - [Сигнал заполнения диска хоста](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/host-disk.md)
 - [Очистка рабочих областей после слияния](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/workspace-cleanup.md)
 - [Реестр стека](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/stack-registry.md)
+- [Данные дашборда флота: подключения VictoriaMetrics + Zabbix, API снимка, самопроверка](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/fleet-dashboard-monitoring.md)
 - [Баннер обслуживания](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/maintenance-banner.md)
 - [Консоль сервера](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/server-console.md)
 - [Автоматический откат по здоровью](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/deploy-auto-rollback.md)

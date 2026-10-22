@@ -68,6 +68,9 @@ function defaultDeps(db: Db): RuntimeLimitsServiceDeps {
     // myrmidon(1.6.5 C0-ui): the host and container memory the load screen is
     // about, read by the same admission that gates on it.
     memorySnapshot: () => sharedRunAdmission().memorySnapshot(),
+    // myrmidon(1.6.5 F-09): the admission denial counters the queue/limits
+    // screen reports next to the live queue snapshot.
+    admissionDenials: () => sharedRunAdmission().admissionDenials(),
   };
 }
 

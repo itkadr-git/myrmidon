@@ -38,6 +38,8 @@ export const AGENT_ADAPTER_TYPES = [
   "kimi_local",
   "opencode_local",
   "pi_local",
+  // myrmidon(OMP-LOCAL): Oh My Pi local adapter
+  "omp_local",
   "cursor",
   "openclaw_gateway",
 ] as const;
@@ -952,6 +954,9 @@ export const LIVE_EVENT_TYPES = [
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
+  // myrmidon(1.6.6 PROCS-1.7, design OPE-5394 §5.4.4): a board lease changed
+  // holder — payload carries { lease, holderBootId, epoch }.
+  "board.leader_changed",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -1022,6 +1027,11 @@ export const PERMISSION_KEYS = [
   "tasks:manage_active_checkouts",
   "pipelines:write",
   "joins:approve",
+  // myrmidon(1.6.5-F-23): lets the grant holder (an agent without an active
+  // run, e.g. the administrative role acting from an operator session) read
+  // its own secret metadata via GET /agents/me/secrets. Always issued with an
+  // expiresAt (default +30 days); every such read is audited with offRun=true.
+  "secrets:read_off_run",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
@@ -1359,6 +1369,8 @@ export const PLUGIN_CAPABILITIES = [
   // Read issue attachment metadata and, via the capability-scoped host
   // bridge, attachment content bytes (bytes-only, company-scoped, audit-logged).
   "issue.attachments.read",
+  // Upload bounded issue attachments through the host's scoped storage path.
+  "issue.attachments.write",
   // Read company approvals (list + get). The host redacts approval payloads to
   // match the web app's own approval read surface.
   "approvals.read",
@@ -1667,6 +1679,7 @@ export const PLUGIN_JOB_STATUSES = [
   "active",
   "paused",
   "failed",
+  "running",
 ] as const;
 export type PluginJobStatus = (typeof PLUGIN_JOB_STATUSES)[number];
 
@@ -1751,6 +1764,7 @@ export const PLUGIN_BRIDGE_ERROR_CODES = [
   "INVOCATION_SCOPE_DENIED",
   "WORKER_ERROR",
   "TIMEOUT",
+  "UNKNOWN_ACTION",
   "UNKNOWN",
 ] as const;
 export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];

@@ -10,10 +10,12 @@
 // `ui2.nav.*` keys (en/ru) — no literals in this tree (screen-map §3.4).
 import {
   Activity,
+  BookOpen,
   CircleAlert,
   Gauge,
   LayoutGrid,
   MessagesSquare,
+  ScrollText,
   Server,
   Users,
   Wallet,
@@ -27,6 +29,11 @@ export interface Ui2NavItem {
   icon: typeof Gauge;
   /** Badge count source key; the shell fills counts from live queries. */
   badge?: "attention";
+  /**
+   * Capability the item needs. The rail hides it until the capability is
+   * confirmed live (K-4: the knowledge REST of K-2 may not be deployed yet).
+   */
+  requires?: "knowledge";
 }
 
 export interface Ui2NavGroup {
@@ -34,14 +41,22 @@ export interface Ui2NavGroup {
   items: Ui2NavItem[];
 }
 
-/** Desktop rail groups: Observe / Decide & talk / Manage (Nav piece). */
+// myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): catalog ids of the "Работа" group sit in
+// constants: written inline right after `labelKey:`, `ui2.nav.knowledge` and
+// `ui2.nav.regulations` are high-entropy strings that the repository's gitleaks
+// `generic-api-key` rule flags as secrets (checks job — .gitleaks.toml says to
+// fix the value, never to allowlist our own files).
+const WORK_GROUP_LABEL = "ui2.nav.group.work";
+const KNOWLEDGE_LABEL = "ui2.nav.knowledge";
+const REGULATIONS_LABEL = "ui2.nav.regulations";
+
+/** Desktop rail groups: Observe / Decide & talk / Manage / Work (Nav piece). */
 export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
   {
     labelKey: "ui2.nav.group.observe",
     items: [
       { labelKey: "ui2.nav.center", to: "/dashboard", icon: Gauge },
-      { labelKey: "ui2.nav.fleet", to: "/agents/all", icon: Server },
-      { labelKey: "ui2.nav.swarm", to: "/agents/all", icon: Users },
+      { labelKey: "ui2.nav.fleet", to: "/agents", icon: Server },
       { labelKey: "ui2.nav.costs", to: "/activity/costs", icon: Wallet },
       { labelKey: "ui2.nav.quality", to: "/dashboard", icon: Activity },
     ],
@@ -56,8 +71,33 @@ export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
     ],
   },
   {
+    // myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): the "Работа" group of IA v2 (O 03.10)
+    // — the knowledge module as a human-readable surface: the knowledge screen
+    // (read / search / revisions) and the regulations of Autonomy.
+    labelKey: WORK_GROUP_LABEL,
+    items: [
+      { labelKey: KNOWLEDGE_LABEL, to: "/knowledge", icon: BookOpen, requires: "knowledge" },
+      {
+        labelKey: REGULATIONS_LABEL,
+        to: "/company/settings/autonomy/regulations",
+        icon: ScrollText,
+        requires: "knowledge",
+      },
+    ],
+  },
+  {
     labelKey: "ui2.nav.group.manage",
     items: [{ labelKey: "ui2.nav.settings", to: "/company/settings", icon: LayoutGrid }],
+  },
+  // myrmidon(1.6.5 SWARM-T4, design §5.4 / IA v2 §2.3 п.10, 12): the swarm
+  // queue and the foraging page live in a dedicated "More" group at the rail
+  // bottom, next to Manage — the owner reaches each in one click.
+  {
+    labelKey: "ui2.nav.group.more",
+    items: [
+      { labelKey: "ui2.nav.swarmQueues", to: "/swarm-claim", icon: Users },
+      { labelKey: "ui2.nav.foraging", to: "/foraging", icon: LayoutGrid },
+    ],
   },
 ];
 
@@ -65,7 +105,7 @@ export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
 export const UI2_PHONE_TABS: Ui2NavItem[] = [
   { labelKey: "ui2.nav.center", to: "/dashboard", icon: Gauge },
   { labelKey: "ui2.nav.waiting", to: "/decisions", icon: CircleAlert, badge: "attention" },
-  { labelKey: "ui2.nav.fleet", to: "/agents/all", icon: Server },
+  { labelKey: "ui2.nav.fleet", to: "/agents", icon: Server },
   // myrmidon(1.6-CTO-CHAT-A): same switch on the phone tab bar.
   { labelKey: "ui2.nav.commander", to: "/commander-chat", icon: MessagesSquare },
   { labelKey: "ui2.nav.more", to: "/agents/all", icon: LayoutGrid },

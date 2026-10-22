@@ -37,6 +37,7 @@ export interface FleetHostConfig {
   hindsightUrl?: string;
   /** LLM gateway base URL as seen from this host (`http://…`); instance-wide value when omitted. */
   llmBaseUrl?: string;
+  mcpEndpoints?: readonly string[];
   /** Name the bot container on this host resolves the board by (docker `--add-host`
    *  target). The instance-wide board URL name by default; the board's own
    *  hostname allowlist is never widened by this field. */
@@ -49,7 +50,8 @@ export interface FleetHostConfig {
   imageAllowlist?: readonly string[];
 }
 
-const NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+export const FLEET_HOST_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+const NAME_PATTERN = FLEET_HOST_NAME_PATTERN;
 /** A DNS name a container may resolve: labels of the same shape, dot-separated. */
 const HOSTNAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
 
@@ -59,6 +61,7 @@ const ALLOWED_KEYS = new Set([
   "tokenSecret",
   "hindsightUrl",
   "llmBaseUrl",
+  "mcpEndpoints",
   "boardExtraHost",
   "volumeRoot",
   "network",
@@ -145,6 +148,10 @@ export function parseFleetHosts(raw: string | undefined): Map<string, FleetHostC
     if (hindsightUrl !== undefined) host.hindsightUrl = hindsightUrl;
     const llmBaseUrl = optionalHttpUrl(entry, "llmBaseUrl", name);
     if (llmBaseUrl !== undefined) host.llmBaseUrl = llmBaseUrl;
+    if (entry.mcpEndpoints !== undefined && (!Array.isArray(entry.mcpEndpoints) || entry.mcpEndpoints.some((value) => typeof value !== "string" || value.trim() === ""))) {
+      throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" field "mcpEndpoints" must be an array of non-empty strings`);
+    }
+    if (entry.mcpEndpoints !== undefined) host.mcpEndpoints = (entry.mcpEndpoints as string[]).map((value) => value.trim());
     if (boardExtraHost !== undefined) host.boardExtraHost = boardExtraHost;
     if (volumeRoot !== undefined) host.volumeRoot = volumeRoot;
     if (network !== undefined) host.network = network;
@@ -165,4 +172,15 @@ export function cardFleetHost(card: { container?: unknown }): string | null {
   const trimmed = host.trim();
   if (trimmed === "local") throw new Error('container.host "local" is not a host: omit container.host for the local driver');
   return trimmed;
+}
+
+/** Whether a bot's placement is pinned to its host (no automatic rebalance/move). */
+export function cardFleetHostPinned(card: { container?: unknown }): boolean {
+  const container = isRecord(card.container) ? card.container : {};
+  const pinned = container.hostPinned;
+  if (pinned === undefined || pinned === null) return false;
+  if (typeof pinned !== "boolean") {
+    throw new Error(`container.hostPinned must be a boolean (got ${JSON.stringify(pinned)})`);
+  }
+  return pinned;
 }

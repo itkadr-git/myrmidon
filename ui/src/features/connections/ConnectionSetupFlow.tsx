@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
 import { ConnectionChoiceList } from "./ConnectionChoiceList";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
@@ -110,7 +111,7 @@ type EnrollmentAccessState = {
 };
 
 function enrollmentAccessStorageKey(appKey: string): string {
-  return `paperclip.connector-enrollment-access:${appKey}`;
+  return `myrmidon.connector-enrollment-access:${appKey}`;
 }
 
 function validEnrollmentAccessState(value: unknown): value is EnrollmentAccessState {
@@ -1026,7 +1027,7 @@ export function ConnectionSetupFlow({
     onSuccess: (status) => {
       if (!status.verificationUrl) {
         closeEnrollmentPopup();
-        setConnectorEnrollmentError("Myrmidon Cloud did not return an enrollment link. Try again.");
+        setConnectorEnrollmentError("The managed cloud service did not return an enrollment link. Try again.");
         return;
       }
       openConnectorEnrollment(status.verificationUrl);
@@ -1034,7 +1035,7 @@ export function ConnectionSetupFlow({
     onError: (error) => {
       closeEnrollmentPopup();
       setConnectorEnrollmentError(
-        error instanceof Error ? error.message : "Couldn’t reach Myrmidon Cloud. Try again.",
+        error instanceof Error ? error.message : "Couldn’t reach the managed cloud service. Try again.",
       );
     },
   });
@@ -2153,7 +2154,7 @@ export function ConnectionSetupFlow({
         <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
           <h2 className="text-lg font-semibold text-foreground">{entry.name} sign-in is unavailable</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            This instance is connected to Myrmidon Cloud, but {entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.
+            This instance is connected to a managed cloud service, but {entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.
           </p>
           <div className="mt-6 flex items-center justify-between gap-3">
             <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>Back</Button>
@@ -2172,17 +2173,17 @@ export function ConnectionSetupFlow({
               </div>
               <div className="min-w-0">
                 <h2 className="text-lg font-semibold text-foreground">
-                  Connect with Myrmidon Cloud
+                  Connect with managed cloud service
                 </h2>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  You must connect this instance to Myrmidon Cloud to connect to {entry.name} (you only need to do this once).
+                  You must connect this instance to a managed cloud service to connect to {entry.name} (you only need to do this once).
                 </p>
               </div>
             </div>
 
             {connectorEnrollmentQuery.isError || connectorEnrollmentError ? (
               <InlineBanner tone="danger" className="mt-4">
-                {connectorEnrollmentError ?? "Myrmidon couldn’t check Cloud registration. Try again."}
+                {connectorEnrollmentError ?? "The managed cloud service could not check registration. Try again."}
               </InlineBanner>
             ) : null}
 
@@ -2213,7 +2214,7 @@ export function ConnectionSetupFlow({
                 {startConnectorEnrollment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {connectorEnrollmentQuery.data?.status === "pending"
                   ? "Continue"
-                  : "Connect with Myrmidon Cloud"}
+                  : "Connect with managed cloud service"}
               </Button>
             </div>
           </div>

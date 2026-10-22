@@ -1,10 +1,15 @@
 export {
   createDb,
+  createPostgresJsClient,
   closeRegisteredClients,
   getPostgresDataDirectory,
   ensurePostgresDatabase,
   resetPostgresDatabase,
   inspectMigrations,
+  listMigrationChain,
+  type MigrationChainEntry,
+  loadMigrationTargetSchema,
+  type MigrationTargetSchema,
   applyPendingMigrations,
   reconcilePendingMigrationHistory,
   type MigrationState,
@@ -25,6 +30,9 @@ export {
   runDatabaseRestore,
   formatDatabaseBackupResult,
   BackupVerificationError,
+  BackupClientVersionError,
+  parsePgMajorVersion,
+  diagnosePgDumpClient,
   type BackupRetentionPolicy,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,
@@ -42,3 +50,24 @@ export { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecy
 export { issueRelations } from "./schema/issue_relations.js";
 export { issueReferenceMentions } from "./schema/issue_reference_mentions.js";
 export * from "./schema/index.js";
+
+// myrmidon(1.6.6 KNOWLEDGE-2.0 K-1): pg implementation of the knowledge
+// module's SearchIndex port (tsvector + pg_trgm + unaccent on
+// `knowledge_search`); the module stays free of dialect SQL by reaching the
+// index only through this adapter.
+export {
+  createPgKnowledgeSearchIndex,
+  type KnowledgeSearchIndex,
+  type KnowledgeSearchPage,
+  type KnowledgeSearchHit,
+} from "./knowledge-search.js";
+export {
+  runContextPersistenceFields,
+  runContextWritePatch,
+  readRunContextColumnValues,
+  heartbeatRunListContextColumnProjections,
+  attentionRunIssueTaskColumns,
+  HEARTBEAT_RUN_CONTEXT_SUMMARY_MAX_CHARS,
+  RUN_CONTEXT_CONTINUATION_KEY,
+  type HeartbeatRunContextColumnValues,
+} from "./run-context-columns.js";

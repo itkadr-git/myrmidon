@@ -23,6 +23,7 @@ export const FULL_TRIGGERS = [
   { pattern: /^scripts\/__tests__\//, reason: "root build and test scripts" },
   { pattern: /^\.github\/workflows\/myrmidon-ci\.yml$/, reason: "CI workflow" },
   { pattern: /^scripts\/myrmidon\/ci\//, reason: "CI test selection" },
+  { pattern: /^scripts\/myrmidon\/deploy\/predeploy-board-check\.(sh|test\.mjs)$/, reason: "predeploy compatibility gate" },
   { pattern: /^packages\/db\//, reason: "database package" },
   { pattern: /^packages\/shared\//, reason: "shared package" },
   { pattern: /^packages\/plugins\/sdk\//, reason: "plugin SDK" },
@@ -43,8 +44,72 @@ const LIGHT = [
 // Large packages are never tested whole in the fast tier: only their tests that
 // changed or directly import the change. Above this many selected files a
 // package gets the full tier instead.
-export const SELECTIVE_PACKAGES = ["@paperclipai/server", "@paperclipai/ui", "paperclipai"];
+export const SELECTIVE_PACKAGES = ["@paperclipai/server", "@paperclipai/ui", "myrmidon"];
 export const MAX_FAST_FILES_PER_PACKAGE = 60;
+
+// These suites read shared source or documentation directly, so import-based
+// affected selection cannot discover them.
+export const SHARED_GUARD_TESTS = [
+  "server/src/__tests__/app-private-hostname-gate.test.ts",
+  "server/src/myrmidon/channel-connectors/bridge/bridge.myrmidon.test.ts",
+  "server/src/myrmidon/flags-killswitch.myrmidon.test.ts",
+  "server/src/myrmidon/monitoring/alerts/guard.myrmidon.test.ts",
+  "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts",
+  "server/src/myrmidon/monitoring/metrics/guard.myrmidon.test.ts",
+  "server/src/myrmidon/swarm-claim/app-wiring.myrmidon.test.ts",
+  "server/src/myrmidon/tracing-health/app-wiring.myrmidon.test.ts",
+  "server/src/myrmidon/host-disk/wiring.myrmidon.test.ts",
+];
+
+const SHARED_GUARD_TRIGGERS = [
+  "server/src/app.ts",
+  "server/src/index.ts",
+  "server/src/myrmidon/app-plugin.ts",
+  "docs/myrmidon/FLAGS.md",
+  "docs/myrmidon/SETTINGS.md",
+];
+
+/**
+ * Applies the release-branch fast mode to a plan.
+ *
+ * Release branches (rel/*): PRs touching shared foundations run only the tests
+ * their change touches, so a full-classified plan is lowered to fast. The
+ * release branch itself still gets one full run before the release tag
+ * (manual run or the `full-ci` label), and the fast mode applies only while
+ * every package's selection stays within MAX_FAST_FILES_PER_PACKAGE: above
+ * the limit the affected set no longer fits the fast job, so the plan
+ * escalates back to full. A full run before the tag is never cancelled by
+ * this helper.
+ *
+ * plan:      the classifyChanges result ({ tier, reasons, ... })
+ * selection: the selectTests result for the change ({ files: [{ package, files }] })
+ * options:   { releaseFast, forceFull } — the CLI flags
+ *
+ * Returns the plan to use (a new object when the tier changes) plus, for a
+ * surviving fast tier, the selection attached.
+ */
+export function applyReleaseFast(plan, selection, { releaseFast = false, forceFull = false } = {}) {
+  const releaseFastActive = releaseFast && !forceFull && plan.tier === "full";
+  if (releaseFastActive) {
+    plan = {
+      tier: "fast",
+      reasons: [`release branch PR: affected tests only (was full: ${plan.reasons.slice(0, 3).join("; ")})`],
+      ...(plan.changed ? { changed: plan.changed } : {}),
+    };
+  }
+  if (plan.tier !== "fast") return plan;
+  const tooMany = (selection?.files ?? []).filter((entry) => entry.files.length > MAX_FAST_FILES_PER_PACKAGE);
+  if (tooMany.length > 0) {
+    return {
+      tier: "full",
+      reasons: tooMany.map(
+        (e) => `${e.files.length} ${e.package} test files import the change (limit ${MAX_FAST_FILES_PER_PACKAGE})`,
+      ),
+      ...(plan.changed ? { changed: plan.changed } : {}),
+    };
+  }
+  return { ...plan, selection };
+}
 
 export function classifyChanges(files, { forceFull = false } = {}) {
   if (forceFull) return { tier: "full", reasons: ["full run requested"] };
@@ -115,6 +180,14 @@ export function selectTests(changedFiles, packages, testFiles, { selective = SEL
     if (!selected.has(pkg.name)) selected.set(pkg.name, { pkg, files: new Map() });
     selected.get(pkg.name).files.set(file, why);
   };
+
+  if (changedFiles.some((file) => SHARED_GUARD_TRIGGERS.includes(file))) {
+    const testFilesByPath = new Set(testFiles.map((testFile) => testFile.file));
+    const server = packages.find((pkg) => pkg.name === "@paperclipai/server");
+    for (const file of SHARED_GUARD_TESTS) {
+      if (testFilesByPath.has(file)) add(server, file, "shared-source guard");
+    }
+  }
 
   for (const { file, source } of testFiles) {
     const pkg = ownerOf(file, packages);

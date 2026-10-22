@@ -216,7 +216,7 @@ async function buildInstructionsPrefix(
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
   const keys = Object.keys(env)
-    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .filter((key) => key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_")) // myrmidon(REBRAND-C)
     .sort();
   if (keys.length === 0) return "";
   return [

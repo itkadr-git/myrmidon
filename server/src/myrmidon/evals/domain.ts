@@ -23,12 +23,27 @@ export function isEvalVerdict(value: unknown): value is EvalVerdict {
   return typeof value === "string" && (EVAL_VERDICTS as readonly string[]).includes(value);
 }
 
-/** The kind of a reference task; `code` tasks also take a CI pass rate input. */
+/**
+ * The kind of a reference task; `code` tasks also take a CI pass rate input.
+ */
 export const EVAL_TASK_KINDS = ["general", "code"] as const;
 export type EvalTaskKind = (typeof EVAL_TASK_KINDS)[number];
 
 export function isEvalTaskKind(value: unknown): value is EvalTaskKind {
   return typeof value === "string" && (EVAL_TASK_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * myrmidon(1.6.6 KNOWLEDGE-2.0 K-9): the kinds of knowledge item a run can
+ * gate. Publishing/approving one of these opens the evals gate (§4.2 step 7);
+ * the run records what it judged so the knowledge journal can answer "which
+ * eval_run gated this item, and with what delta".
+ */
+export const EVAL_SUBJECT_KINDS = ["rule", "skill", "page"] as const;
+export type EvalSubjectKind = (typeof EVAL_SUBJECT_KINDS)[number];
+
+export function isEvalSubjectKind(value: unknown): value is EvalSubjectKind {
+  return typeof value === "string" && (EVAL_SUBJECT_KINDS as readonly string[]).includes(value);
 }
 
 /**

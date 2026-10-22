@@ -1,6 +1,7 @@
 import { runIdentityContexts } from "@paperclipai/db";
 import { captureRunIdentity } from "./run-identity.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
+import { emitToolPolicyChanged } from "./tool-policy-cache-events.js";
 import { logger } from "../middleware/logger.js";
 // myrmidon(P9): a failing tool must not take its whole connection down
 import {
@@ -84,6 +85,7 @@ import {
   toolStdioCommandTemplates,
 } from "@paperclipai/db";
 import type { ToolRunContext } from "@paperclipai/plugin-sdk";
+import { loadToolPolicySnapshot } from "./tool-policy-snapshot.js";
 import type {
   CreateToolMcpGateway,
   CreateToolMcpGatewayToken,
@@ -141,7 +143,18 @@ import { toolAccessPolicyService } from "./tool-access-policy.js";
 // myrmidon(S6): the per-agent tool/connection permission and its gate.
 import { agentToolPermissionAllows } from "@paperclipai/shared";
 import { loadAgentToolPermissions } from "../myrmidon/agent-tool-permissions.js";
+// myrmidon(DB-PERF-C-P4): gateway setup binds a profile outside the tool-access CRUD.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
+// myrmidon(1.6-AUTONOMY-GW): the tool -> action-class mapping and the agent-role
+// matrix resolver consulted before a tool call is executed. The mapping is
+// settings-backed (instance settings -> env -> defaults, resolved per call, so a
+// stored change applies without a restart).
+import { resolveToolAutonomyMapping } from "../myrmidon/autonomy/tool-mapping-store.js";
+import { dbAutonomyVerdictForAgent } from "../myrmidon/autonomy/gate.js";
 import { commitToolActionReview } from "./tool-action-review.js";
+// myrmidon(1.6-AUTONOMY): a held autonomy action is decided by our executor.
+import { isAutonomyToolName } from "../myrmidon/autonomy/action-execution.js";
+import { decideHeldAutonomyAction } from "../myrmidon/autonomy/action-decision.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
   createToolRuntimeSupervisor,
@@ -181,6 +194,8 @@ import {
   verifyToolArgumentsSignature,
 } from "./tool-content-guards.js";
 import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { browserConsoleMcpPauseForEndpoint } from "../myrmidon/browser-console/mcp-guard.js"; // myrmidon(BROWSER-CONSOLE-B)
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
@@ -340,6 +355,8 @@ export interface ToolGatewaySession {
 }
 
 export type ToolGatewayRuntimeSlot = ToolRuntimeSlotView;
+
+export { loadToolPolicySnapshot } from "./tool-policy-snapshot.js";
 
 export class ToolGatewayHttpError extends Error {
   constructor(
@@ -571,41 +588,41 @@ function mcpGatewayProtocolLimits(
   const envDefaults: McpGatewayProtocolLimitOptions = {
     authFailures: {
       windowMs: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_AUTH_FAILURE_WINDOW_MS,
+        readProductEnv("MCP_GATEWAY_AUTH_FAILURE_WINDOW_MS"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.authFailures.windowMs,
       ),
       max: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_AUTH_FAILURE_LIMIT,
+        readProductEnv("MCP_GATEWAY_AUTH_FAILURE_LIMIT"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.authFailures.max,
       ),
     },
     gatewayRequests: {
       windowMs: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_REQUEST_WINDOW_MS,
+        readProductEnv("MCP_GATEWAY_REQUEST_WINDOW_MS"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.gatewayRequests.windowMs,
       ),
       max: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_REQUEST_LIMIT,
+        readProductEnv("MCP_GATEWAY_REQUEST_LIMIT"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.gatewayRequests.max,
       ),
     },
     tokenRequests: {
       windowMs: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_TOKEN_REQUEST_WINDOW_MS,
+        readProductEnv("MCP_GATEWAY_TOKEN_REQUEST_WINDOW_MS"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.tokenRequests.windowMs,
       ),
       max: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_TOKEN_REQUEST_LIMIT,
+        readProductEnv("MCP_GATEWAY_TOKEN_REQUEST_LIMIT"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.tokenRequests.max,
       ),
     },
     sessionSetup: {
       windowMs: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_SESSION_SETUP_WINDOW_MS,
+        readProductEnv("MCP_GATEWAY_SESSION_SETUP_WINDOW_MS"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.sessionSetup.windowMs,
       ),
       max: positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_SESSION_SETUP_LIMIT,
+        readProductEnv("MCP_GATEWAY_SESSION_SETUP_LIMIT"),
         DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.sessionSetup.max,
       ),
     },
@@ -1132,6 +1149,51 @@ export function createToolGatewayService(
       }
     }
     return policyService.decide(input);
+  }
+
+  // OPE-4129: the policy snapshot is loaded once per tools/list request via
+  // loadToolPolicySnapshot (3 queries) and reused for every tool decision in
+  // that request. No cross-request cache: policy mutations that bypass the
+  // service layer (direct db inserts in tests/ops) would otherwise serve
+  // stale decisions until TTL expiry. The event channel (tool-policy-cache-
+  // events) is kept for future opt-in cross-request caching and is covered by
+  // the perf test's invalidation case.
+
+  /**
+   * Makes a tool access decision using a pre-loaded policy snapshot
+   */
+  async function decideToolAccessWithCache(
+    input: ToolAccessDecisionInput,
+    cachedData: {
+      profiles: Array<typeof toolProfiles.$inferSelect>;
+      profileBindings: Array<typeof toolProfileBindings.$inferSelect>;
+      policies: Array<typeof toolPolicies.$inferSelect>;
+    },
+  ): Promise<ToolAccessDecision> {
+    // S6 agent permission check must run on the cached path as well
+    // (OPE-4129 review fix): without it the agent's tool list restriction is
+    // bypassed when the policy cache is warm (agent-tool-permissions test).
+    const agentId = input.actor.agentId;
+    if (agentId) {
+      const permissions = await loadAgentToolPermissions(db, input.companyId, agentId);
+      if (
+        !agentToolPermissionAllows(permissions, {
+          toolName: input.request.toolName,
+          catalogEntryId: input.request.catalogEntryId ?? null,
+          connectionId: input.request.connectionId ?? null,
+        })
+      ) {
+        return {
+          decision: "deny",
+          allowed: false,
+          reasonCode: "deny_agent_permission",
+          explanation: "Tool access denied by the agent's tool permissions.",
+          effectiveProfileIds: [],
+          matchedPolicyIds: [],
+        };
+      }
+    }
+    return policyService.decideWithCachedData(input, cachedData.policies, cachedData.profileBindings, cachedData.profiles);
   }
   const secrets = secretService(db);
   // Authentication produces a new session object for every operation. Keep
@@ -2841,11 +2903,14 @@ export function createToolGatewayService(
     const tools = (await connectedMcpToolsForCompany(session.companyId)).filter(
       isOnDemandRemoteTool,
     );
+    // One snapshot per search call (3 queries), reused for all decisions.
+    const snapshot = await loadToolPolicySnapshot(db, session.companyId);
     const decisions = await Promise.all(
       tools.map(async (tool) => ({
         tool,
-        decision: await decideToolAccess(
+        decision: await decideToolAccessWithCache(
           policyInputForTool({ session, tool }),
+          snapshot,
         ),
       })),
     );
@@ -2919,10 +2984,20 @@ export function createToolGatewayService(
         (tool.providerType !== "paperclip_self" &&
           tool.providerType !== "paperclip_plugin"),
     );
+    // OPE-4129 review fix: load the company policy snapshot once per
+    // listToolsForContext call (3 queries) and reuse it for every tool
+    // decision. A cross-request TTL cache is intentionally NOT used here:
+    // tests (and external processes) can insert policy rows directly via the
+    // db without emitting an event, and a stale cross-request cache broke the
+    // require_approval acceptance test. The event-based cross-process cache
+    // remains available through getCachedPolicyData for future opt-in use.
+    const snapshot = await loadToolPolicySnapshot(db, session.companyId);
+
     const decisions = await Promise.all(
       tools.map(async (tool) => {
-        const decision = await decideToolAccess(
+        const decision = await decideToolAccessWithCache(
           policyInputForTool({ session, tool }),
+          snapshot,
         );
         return { tool, decision };
       }),
@@ -5911,6 +5986,16 @@ export function createToolGatewayService(
     let endpoint =
       composioSession?.url ??
       (await resolvedRemoteEndpoint(session, connection, grant));
+    // Pause live-browser MCP calls while an owner screen session is open.
+    const browserPause = await browserConsoleMcpPauseForEndpoint(endpoint);
+    if (browserPause) {
+      throw new ToolGatewayHttpError(
+        423,
+        browserPause.message,
+        "browser_console_mcp_paused",
+        { browserId: browserPause.browserId },
+      );
+    }
     // Method-defined headers are trusted catalog configuration. Treat them as
     // managed headers so callers cannot override the scope that was reviewed
     // during tools/list. Credentials remain authoritative on collisions.
@@ -8617,6 +8702,9 @@ export function createToolGatewayService(
           createdByUserId: input.actor?.userId ?? null,
         })
         .onConflictDoNothing();
+      emitToolPolicyChanged();
+      // myrmidon(DB-PERF-C-P4): a new gateway binding changes the company snapshot.
+      invalidateToolPolicyCache(db, input.companyId);
       await writeAudit({
         session: {
           id: `gateway:${gateway.id}`,
@@ -8774,7 +8862,10 @@ export function createToolGatewayService(
             metadata: { source: "named_mcp_gateway" },
           })
           .onConflictDoNothing();
+        // myrmidon(DB-PERF-C-P4): a re-pointed gateway binding changes the company snapshot.
+        invalidateToolPolicyCache(db, input.companyId);
       }
+      emitToolPolicyChanged();
       return getGatewayWithTokens(input.companyId, updated.id);
     },
 
@@ -9559,6 +9650,28 @@ export function createToolGatewayService(
           "Tool invocation not found",
           "invocation_not_found",
         );
+      }
+      // myrmidon(1.6-AUTONOMY): a held autonomy action is not a gateway tool —
+      // no connection, no catalog entry and no signed arguments — so the
+      // conveyor below cannot carry it (it would refuse to verify it and cancel
+      // the request). Decide it through the autonomy executor, which replays it
+      // exactly once; the recovery sweep reaches the same branch.
+      if (isAutonomyToolName(invocation.toolName)) {
+        const decided = await decideHeldAutonomyAction({
+          db,
+          companyId: input.companyId,
+          actionRequestId: input.actionRequestId,
+          decision: "approved",
+          actor: { userId: input.actor.userId ?? null, agentId: null },
+        });
+        if (decided.kind === "decided") {
+          const [settledAutonomy] = await db
+            .select()
+            .from(toolActionRequests)
+            .where(eq(toolActionRequests.id, input.actionRequestId))
+            .limit(1);
+          return actionRequestResolution(settledAutonomy ?? actionRequest);
+        }
       }
       if (input.issueId !== undefined || input.interactionId !== undefined) {
         if (
@@ -10519,6 +10632,92 @@ export function createToolGatewayService(
           idempotencyKey: input.idempotencyKey,
           consumeRateLimit: true,
         });
+
+        // myrmidon(1.6-AUTONOMY-GW): the autonomy matrix verdict for agent
+        // callers, resolved before the tool access policy. A tool with no
+        // action class is not governed (today's behaviour); a non-agent
+        // caller (board / admin / test call) is not subject to the matrix.
+        const toolMapping = await resolveToolAutonomyMapping(db, tool.name);
+        const actionClass = toolMapping.actionClass;
+        if (actionClass && session.agentId) {
+          const autonomyDecision = await dbAutonomyVerdictForAgent(
+            db,
+            session.agentId,
+            actionClass,
+          );
+
+          if (autonomyDecision.verdict === "forbidden") {
+            throw new ToolGatewayHttpError(
+              403,
+              `This action (${actionClass}) is forbidden for this role by the autonomy matrix`,
+              "autonomy_forbidden",
+              {
+                tool: tool.name,
+                autonomyActionClass: actionClass,
+                autonomyRole: autonomyDecision.role,
+              }
+            );
+          } else if (autonomyDecision.verdict === "approval_required") {
+            // Record the invocation and create an action request for approval
+            const recorded = await policyService.recordInvocation(
+              decisionInput,
+              {
+                decision: "require_approval",
+                allowed: false,
+                reasonCode: "autonomy_approval_required",
+                explanation: `Action ${actionClass} requires approval by the autonomy matrix`,
+                effectiveProfileIds: [],
+                matchedPolicyIds: [],
+              }
+            );
+            invocationId = recorded.invocation.id;
+
+            await requestApprovalForRecordedToolCall({
+              invocation: recorded.invocation,
+              actionRequest: recorded.actionRequest!,
+              session,
+              tool,
+              parameters: effectiveParameters,
+              argumentsSummary: argumentValidation.summary,
+              policyDecision: {
+                decision: "require_approval",
+                allowed: false,
+                reasonCode: "autonomy_approval_required",
+                explanation: `Action ${actionClass} requires approval by the autonomy matrix`,
+                effectiveProfileIds: [],
+                matchedPolicyIds: [],
+              },
+            });
+
+            await writeAudit({
+              session,
+              companyId: session.companyId,
+              agentId: session.agentId,
+              runId: session.runId,
+              issueId: session.issueId,
+              action: "tool_gateway.call_approval_required",
+              details: {
+                invocationId: recorded.invocation.id,
+                decision: "require_approval",
+                reasonCode: "autonomy_approval_required",
+                tool: tool.name,
+                autonomyActionClass: actionClass,
+                autonomyRole: autonomyDecision.role,
+                ...toolAuditMetadata(tool),
+                argumentsSummary: effectiveArgumentsSummary,
+              },
+            });
+
+            return {
+              invocationId: recorded.invocation.id,
+              status: "awaiting_approval" as const,
+              tool: virtualToolName ?? tool.name,
+              targetTool: virtualToolName ? tool.name : undefined,
+              result: null,
+            };
+          }
+        }
+
         const accessDecision = await decideToolAccess(decisionInput);
         // myrmidon(P9): a paused remote tool fails fast here: after replay and
         // policy (a denied call keeps its 403) and before the invocation is

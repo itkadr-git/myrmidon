@@ -57,6 +57,7 @@ const view: GitHubSharedIdentityView = {
   settings: {
     version: 1,
     enabled: true,
+    pats: [],
     apps: [
       {
         id: ENTRY_A,
@@ -98,19 +99,28 @@ function button(text: string): HTMLButtonElement {
   return [...container.querySelectorAll("button")].find((el) => el.textContent?.includes(text))!;
 }
 
-/** Async-safe button lookup: poll until the control appears. The container
- * renders after several data queries resolve, and CI runners are slow enough
- * that a fixed number of ticks is not reliable. */
-async function waitForButton(text: string, attempts = 50): Promise<HTMLButtonElement> {
-  for (let i = 0; i < attempts; i++) {
-    const found = [...container.querySelectorAll("button")].find((el) => el.textContent?.includes(text));
-    if (found) return found as HTMLButtonElement;
-    // A macrotask, not a microtask: react-query delivers a resolved query to
-    // the component through a setTimeout(0) batch, so microtask ticks alone
-    // never let the data (and the buttons that depend on it) arrive.
-    await act(async () => new Promise<void>((resolve) => setTimeout(resolve, 0)));
-  }
-  throw new Error(`button not found: ${text}`);
+/** Async-safe button lookup: wait on the condition, not on a fixed number of
+ * turns. A hand-rolled microtask loop is ample on an idle machine and not when
+ * the suite runs many workers in parallel: it gives up after N turns and
+ * reports a failure on behaviour that works. The release-branch full run did
+ * exactly that — `button not found: Install on repositories` on a test that
+ * passes on its own. `vi.waitFor` retries against a time budget, so a loaded
+ * worker gets more turns instead.
+ *
+ * Same replacement as the routing tests, which fixed the shorter-budget
+ * instances of this. */
+async function waitForButton(text: string): Promise<HTMLButtonElement> {
+  let found: HTMLButtonElement | undefined;
+  await vi.waitFor(
+    () => {
+      found = [...container.querySelectorAll("button")].find((el) =>
+        el.textContent?.includes(text),
+      ) as HTMLButtonElement | undefined;
+      if (!found) throw new Error(`button not found: ${text}`);
+    },
+    { timeout: 4_000 },
+  );
+  return found as HTMLButtonElement;
 }
 
 function byLabel<T extends HTMLElement>(label: string): T {
@@ -185,6 +195,7 @@ describe("GitHubSharedIdentityPanelView", () => {
     expect(onSave).toHaveBeenCalledWith({
       enabled: true,
       commitEmailDomain: null,
+      pats: [],
       apps: [
         view.settings.apps[0],
         {
@@ -237,6 +248,7 @@ describe("GitHubSharedIdentityPanelView", () => {
       bodyFromDraft({
         enabled: false,
         commitEmailDomain: " example.com ",
+        pats: [{ id: "pat-1", name: " PAT ", tokenSecretId: " secret-1 ", allowedRepos: "BastionPrime/wellboard, BastionPrime/wellmagram", agentIds: [" agent-1 "] }],
         apps: [
           {
             id: ENTRY_A,
@@ -254,6 +266,7 @@ describe("GitHubSharedIdentityPanelView", () => {
     ).toEqual({
       enabled: false,
       commitEmailDomain: "example.com",
+      pats: [{ id: "pat-1", name: "PAT", tokenSecretId: "secret-1", allowedRepos: ["BastionPrime/wellboard", "BastionPrime/wellmagram"], agentIds: ["agent-1"] }],
       apps: [
         {
           id: ENTRY_A,
@@ -381,6 +394,7 @@ describe("GitHubSharedIdentityPanelView — manifest flow", () => {
     expect(onSave).toHaveBeenCalledWith({
       enabled: true,
       commitEmailDomain: null,
+      pats: [],
       apps: [
         view.settings.apps[0],
         {
@@ -459,10 +473,16 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
       root.render(createElement(QueryClientProvider, { client }, createElement(GitHubSharedIdentityPanel))),
     );
     // Flush the three data queries (identity, agents, secrets) before the
-    // caller interacts: poll for the panel instead of guessing tick counts.
-    for (let i = 0; i < 50 && !container.querySelector("[data-testid='myrmidon-github-shared-identity'] input"); i++) {
-      await act(async () => Promise.resolve());
-    }
+    // caller interacts: wait on the panel instead of guessing tick counts, so a
+    // loaded worker gets the turns it needs (see waitForButton).
+    await vi.waitFor(
+      () => {
+        if (!container.querySelector("[data-testid='myrmidon-github-shared-identity'] input")) {
+          throw new Error("the GitHub shared identity panel did not render");
+        }
+      },
+      { timeout: 4_000 },
+    );
   }
 
   beforeEach(() => {
@@ -470,7 +490,7 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
     apiMocks.get.mockReset();
     apiMocks.beginAppManifest.mockReset();
     apiMocks.getAppInstallUrl.mockReset();
-    apiMocks.get.mockResolvedValue({ settings: { version: 1, enabled: true, apps: [], commitEmailDomain: null }, vendorConnectorEnabled: false });
+    apiMocks.get.mockResolvedValue({ settings: { version: 1, enabled: true, pats: [], apps: [], commitEmailDomain: null }, vendorConnectorEnabled: false });
     apiMocks.beginAppManifest.mockResolvedValue({
       manifestUrl: "https://github.com/settings/apps/new",
       manifest: { name: "my-app" },
