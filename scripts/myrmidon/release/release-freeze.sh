@@ -125,6 +125,18 @@ tag_ci_verdict() {
                else (map(.conclusion) | unique | if length == 1 then .[0] else "mixed" end) end)' 2>/dev/null)" \
     || verdict="missing"
   verdict="${verdict//\"/}"
+  # 22.10: the head_sha filter of /actions/runs is not reliable — for myr-v1.6.6-rc.12 the
+  # same query alternated between 14 runs and 0 within seconds, which read as "missing" and
+  # froze main for good. Before concluding "missing", ask the commit's check runs, which do
+  # not depend on that filter: a completed green "CI result" on the tagged commit is green.
+  if [[ "$verdict" == "missing" ]]; then
+    local checks
+    checks="$(gh api "repos/$repo/commits/$sha/check-runs?check_name=CI%20result&per_page=100" \
+        --jq '[.check_runs[]? | select(.status == "completed") | .conclusion] | unique | join(",")' 2>/dev/null)" || checks=""
+    case "$checks" in
+      success) printf 'success\n'; return ;;
+    esac
+  fi
   if [[ "$verdict" == "missing" ]]; then
     status="$(gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
         --jq '[.workflow_runs[]? | select('"$sel"')] | .[0].status // "missing"' 2>/dev/null)" \
