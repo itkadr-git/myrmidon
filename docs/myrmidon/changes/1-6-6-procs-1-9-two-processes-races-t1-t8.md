@@ -12,6 +12,8 @@
   - T7: The real process supervisor moves single -> split (two real api children) -> single under a steady request load against the shared port, with zero 5xx; the budget is at most one connection error per transition (same as the drain/failover suite). It runs as a second suite in the same file with its own database.
   - T8: A real `SIGKILL` of an api process holding a run lease: the survivor keeps serving, the dead process's registry row stays until the reaper window, the live lease is not stolen, and after it expires the reattach sweep re-claims the run exactly once. The reaper's 2 minute window is not waited for.
 
+- Fixed a lost update found by T5: `PATCH /api/myrmidon/processes` read, merged and wrote the processes settings outside any cross-process lock, so two processes saving different keys at once could drop one of them. The whole read-merge-write now runs under a database advisory lock.
+
 ## changelog-ru
 
 ### Интеграционный стенд «два процесса, одна БД» и тесты гонок Т1–Т8 (PROCS-1.9, OPE-5415)
@@ -25,3 +27,4 @@
   - Т6: Две настоящие шины `ProcessBus` со своими LISTEN-соединениями на общей базе: `live_event`, опубликованный в одном процессе, доходит до другого, origin-фильтр не возвращает его обратно, сообщение другого канала не доставляется. (Покрыта сама шина; в этой сборке live-события в неё ещё не публикуются.)
   - Т7: Настоящий супервизор процессов переводит single -> split (два настоящих api-потомка) -> single под ровной нагрузкой на общий порт: 0 ответов 5xx, допуск — не более одной ошибки соединения на переход (как в наборе drain/failover). Идёт вторым набором в том же файле на своей базе.
   - Т8: Настоящий `SIGKILL` api-процесса, держащего аренду прогона: выживший продолжает отвечать, строка мёртвого процесса остаётся до окна reaper, живая аренда не отбирается, после её истечения свип reattach подхватывает прогон ровно один раз. Окно reaper в 2 минуты не ждётся.
+- Исправлена потерянная правка, найденная Т5: `PATCH /api/myrmidon/processes` читал, сливал и писал настройки процессов вне межпроцессной блокировки, поэтому два процесса, одновременно сохраняющие разные ключи, могли затереть один из них. Теперь весь цикл чтение-слияние-запись идёт под advisory-блокировкой базы.

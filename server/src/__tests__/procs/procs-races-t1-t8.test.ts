@@ -767,8 +767,15 @@ describeProcs("PROCS-1.9 T7: single <-> split under load (the real supervisor, r
       ).catch((error) => {
         throw new Error(`${error instanceof Error ? error.message : String(error)}${failureContext()}`);
       });
-      const rows = await db.select({ role: boardProcesses.role }).from(boardProcesses).where(eq(boardProcesses.role, "api"));
-      expect(rows.length, "both children registered in board_processes").toBeGreaterThanOrEqual(2);
+      // IPC readiness precedes the registry write of a child: wait for the rows.
+      await waitFor(
+        "both children registered in board_processes",
+        async () => {
+          const rows = await db.select({ role: boardProcesses.role }).from(boardProcesses).where(eq(boardProcesses.role, "api"));
+          return rows.length >= 2;
+        },
+        60_000,
+      );
       await new Promise((resolve) => setTimeout(resolve, 2_000)); // load now served by the children alone
       const inSplit = { ...load.tally };
 
