@@ -16,12 +16,12 @@ import {
   poolChatRequests,
   principalPermissionGrants,
 } from "@paperclipai/db";
-import { errorHandler } from "../../middleware/index.js";
-import { useEmbeddedPostgres } from "../../__tests__/helpers/route-test-harness.js";
-import { getEmbeddedPostgresTestSupport } from "../../__tests__/helpers/embedded-postgres.js";
-import { poolChatRoutes } from "./routes.js";
-import { estimateReservationUnits, poolChatService } from "./service.js";
-import type { PoolChatTransport } from "./transports.js";
+import { errorHandler } from "../middleware/index.js";
+import { useEmbeddedPostgres } from "./helpers/route-test-harness.js";
+import { getEmbeddedPostgresTestSupport } from "./helpers/embedded-postgres.js";
+import { poolChatRoutes } from "../myrmidon/pool-chat/routes.js";
+import { estimateReservationUnits, poolChatService } from "../myrmidon/pool-chat/service.js";
+import type { PoolChatTransport } from "../myrmidon/pool-chat/transports.js";
 
 type Db = ReturnType<typeof useEmbeddedPostgres>["db"];
 
