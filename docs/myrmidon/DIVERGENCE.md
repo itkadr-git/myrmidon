@@ -490,6 +490,11 @@
 
 ## 1.6.2 — BASELINE: сравнение текущего окна с закреплённым снимком (часть C)
 
+### OPE-4041-A — stalled-review-decision: агентский путь записи не существует by design
+
+`POST /api/issues/{id}/stalled-review-decision` доступен только board-акторам; агентский путь записи не существует by design. Агентский выход из stalled review — verdict-комментарий участника стадии либо PATCH дрейфа (см. OPE-4032).
+
+
 | ID | Что изменено | Файлы | Зачем | Тесты | Когда снимать | Ссылка |
 |---|---|---|---|---|---|---|
 | 1.6.2-BASELINE-C | Новый API endpoint `GET /api/myrmidon/companies/:companyId/baseline/compare` для сравнения метрик текущего окна с закреплённым снимком BASELINE: возвращает текущие метрики, снимок и дельты по каждому ключу `byProject` и `byRole` (процент — `null` при нулевом базисе; `reviewTimeP90` в дельтах нет — в контракте нет p90 времени ревью). | Наши файлы: `server/src/myrmidon/baseline/{routes.ts,service.ts}`, `server/src/myrmidon/baseline/compare.myrmidon.test.ts`, `ui/src/api/baseline.ts` (типизированный клиент сравнения) | 1.6.2 BASELINE: видеть, лучше или хуже стало после включения роя: время цикла, доля возвратов, стоимость задачи — по ролям и проектам против закреплённого снимка | `server/src/myrmidon/baseline/compare.myrmidon.test.ts` (точные числа дельт по ключам, отсутствие двойного счёта, процент `null` при нулевом базисе, нет `reviewTimeP90`, нет снимка — `differences: null`, выбор самого свежего снимка по компании на живой БД, маршрут с переопределённым снимком) | Никогда, наше поведение. Уходит вместе с остальной функциональностью BASELINE | (этот PR) |
