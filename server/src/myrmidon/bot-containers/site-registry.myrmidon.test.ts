@@ -515,6 +515,23 @@ describe("site-registry — env bootstrap tenant scope", () => {
     expect(inserted.map((r) => r.companyId)).toEqual(["c2"]);
   });
 
+  it("does not overwrite a site that exists in the registry (a CRUD edit survives a restart)", async () => {
+    const update = vi.fn();
+    const insert = vi.fn();
+    const edited = { id: "s1", companyId: "c1", name: "myr-vm1", url: "http://edited.example.test:9443", tokenSecret: "edited-tok" };
+    const db = {
+      select: () => ({
+        from: () => Object.assign(Promise.resolve([{ id: "c1" }]), { where: () => ({ limit: async () => [edited] }) }),
+      }),
+      update,
+      insert,
+    } as any;
+    const res = await bootstrapFleetSitesFromEnv(db, { MYRMIDON_FLEET_HOSTS: HOSTS } as any);
+    expect(res).toEqual({ inserted: 0, updated: 0 });
+    expect(update).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+  });
+
   it("bootstraps the only company of a single-company installation", async () => {
     const { db, inserted } = mkDb(["c1"]);
     const res = await bootstrapFleetSitesFromEnv(db, { MYRMIDON_FLEET_HOSTS: HOSTS } as any);

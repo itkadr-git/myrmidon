@@ -265,7 +265,7 @@ export async function bootstrapFleetSitesFromEnv(
   }
 
   let inserted = 0;
-  let updated = 0;
+  const updated = 0; // kept in the result shape: the env never updates an existing site
 
   for (const company of companyRows) {
     for (const host of hostConfigs.values()) {
@@ -280,12 +280,10 @@ export async function bootstrapFleetSitesFromEnv(
         if (host.imageAllowlist) profile.imageAllowlist = [...host.imageAllowlist];
 
         if (existing) {
-          await updateFleetSite(db, company.id, host.name, {
-            url: host.url,
-            tokenSecret: host.tokenSecret,
-            profile,
-          });
-          updated++;
+          // The env only seeds a missing site. A site that is already in the
+          // registry belongs to the registry (CRUD edits of url, tokenSecret
+          // and profile must survive a restart), so it is never overwritten.
+          continue;
         } else {
           await createFleetSite(db, {
             companyId: company.id,
