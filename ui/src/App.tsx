@@ -105,6 +105,7 @@ import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
 import { UsersAdmin } from "./pages/UsersAdmin";
+import { InstanceFeatures } from "./pages/InstanceFeatures"; // myrmidon(FEATURES)
 import { BoardApiKeysPage } from "./pages/BoardApiKeys";
 import { LicensesPage } from "./components/myrmidon/LicensesPage"; // myrmidon(LICENSING)
 import { ProfileSettings } from "./pages/ProfileSettings";
@@ -304,6 +305,8 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route element={<HiddenSettingsPageGate pageKey="instance.experimental" />}>
         <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />
       </Route>
+      {/* myrmidon(FEATURES): fork features with live health */}
+      <Route path="company/settings/instance/features" element={<InstanceFeatures />} />
       <Route element={<HiddenSettingsPageGate pageKey="instance.plugins" />}>
         <Route path="company/settings/instance/plugins" element={<PluginManager />} />
         <Route path="company/settings/instance/plugins/:pluginId" element={<PluginSettings />} />
