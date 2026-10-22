@@ -4,7 +4,7 @@
  * Lets an operator / gitops deployment force the instance onto the Kubernetes
  * sandbox provider purely via environment variables, with no manual product-API
  * calls. On startup we:
- *   1. Parse `PAPERCLIP_EXECUTION_MODE` (+ `PAPERCLIP_K8S_*`) from the env.
+ *   1. Parse `MYRMIDON_EXECUTION_MODE` (+ `MYRMIDON_K8S_*`) from the env.
  *   2. Persist `executionMode` into instance general settings (so the per-run
  *      heartbeat guard enforces it).
  *   3. Idempotently ensure a configured Kubernetes sandbox environment for every
@@ -23,8 +23,29 @@ import { logger } from "../middleware/logger.js";
 import { environmentService, type KubernetesEnvironmentConfigInput } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { parseAdapterRegistryEnv } from "./adapter-registry-bootstrap.js";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type ExecutionPolicyBootstrapEnv = Record<string, string | undefined>;
+
+const EXECUTION_ENV_NAMES = [
+  "EXECUTION_MODE",
+  "K8S_IN_CLUSTER",
+  "K8S_BACKEND",
+  "K8S_EGRESS_MODE",
+  "K8S_RUNTIME_CLASS_NAME",
+  "K8S_NAMESPACE_PREFIX",
+  "K8S_IMAGE_REGISTRY",
+  "K8S_RPC_TIMEOUT_MS",
+  "K8S_ADAPTER_TYPE",
+  "K8S_EGRESS_ALLOW_FQDNS",
+  "K8S_EGRESS_ALLOW_CIDRS",
+] as const;
+
+type ExecutionEnvName = (typeof EXECUTION_ENV_NAMES)[number];
+
+function readExecutionEnv(env: ExecutionPolicyBootstrapEnv, name: ExecutionEnvName) {
+  return readProductEnvFrom(env as NodeJS.ProcessEnv, name);
+}
 
 export interface ExecutionPolicyBootstrap {
   executionMode: Extract<InstanceExecutionMode, "kubernetes">;
@@ -39,14 +60,14 @@ function parseBool(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
-function parsePositiveIntMs(value: string | undefined): number | undefined {
+function parsePositiveIntMs(value: string | undefined, envName: string): number | undefined {
   if (value === undefined) return undefined;
   const trimmed = value.trim();
   if (trimmed.length === 0) return undefined;
   const parsed = Number(trimmed);
   if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(
-      `PAPERCLIP_K8S_RPC_TIMEOUT_MS must be a positive integer of milliseconds (got "${value}").`,
+      `${envName} must be a positive integer of milliseconds (got "${value}").`,
     );
   }
   return parsed;
@@ -63,66 +84,69 @@ function parseList(value: string | undefined): string[] | undefined {
 
 /**
  * Parse the forced-execution-mode env config. Returns null when execution is
- * unrestricted (no env, or `PAPERCLIP_EXECUTION_MODE=any`). Throws on an
+ * unrestricted (no env, or `MYRMIDON_EXECUTION_MODE=any`). Throws on an
  * unrecognized mode so a misconfigured deployment fails loudly instead of
  * silently allowing local execution.
  */
 export function parseExecutionPolicyBootstrapEnv(
   env: ExecutionPolicyBootstrapEnv,
 ): ExecutionPolicyBootstrap | null {
-  const raw = env.PAPERCLIP_EXECUTION_MODE?.trim();
-  if (!raw || raw === "any") return null;
-  if (raw !== "kubernetes") {
+  const raw = readExecutionEnv(env, "EXECUTION_MODE");
+  if (raw === undefined) return null;
+  const normalizedRaw = raw.trim();
+  if (!normalizedRaw || normalizedRaw === "any") return null;
+  if (normalizedRaw !== "kubernetes") {
     throw new Error(
-      `PAPERCLIP_EXECUTION_MODE must be "kubernetes" or "any" (got "${raw}").`,
+      `MYRMIDON_EXECUTION_MODE must be "kubernetes" or "any" (got "${normalizedRaw}").`,
     );
   }
 
+  const inClusterEnv = readExecutionEnv(env, "K8S_IN_CLUSTER");
   const kubernetesConfig: KubernetesEnvironmentConfigInput = {
-    // inCluster defaults to false (matches the plugin schema default); an
-    // in-cluster cloud deployment sets PAPERCLIP_K8S_IN_CLUSTER=true.
-    inCluster: parseBool(env.PAPERCLIP_K8S_IN_CLUSTER) ?? false,
+    // inCluster defaults to false, matching the plugin schema default.
+    inCluster: parseBool(inClusterEnv) ?? false,
   };
 
-  const backend = env.PAPERCLIP_K8S_BACKEND?.trim();
+  const backend = readExecutionEnv(env, "K8S_BACKEND")?.trim();
   if (backend) {
     if (backend !== "job" && backend !== "sandbox-cr") {
       throw new Error(
-        `PAPERCLIP_K8S_BACKEND must be "job" or "sandbox-cr" (got "${backend}").`,
+        `MYRMIDON_K8S_BACKEND must be "job" or "sandbox-cr" (got "${backend}").`,
       );
     }
     kubernetesConfig.backend = backend;
   }
 
-  const egressMode = env.PAPERCLIP_K8S_EGRESS_MODE?.trim();
+  const egressMode = readExecutionEnv(env, "K8S_EGRESS_MODE")?.trim();
   if (egressMode) {
     if (egressMode !== "cilium" && egressMode !== "standard") {
       throw new Error(
-        `PAPERCLIP_K8S_EGRESS_MODE must be "cilium" or "standard" (got "${egressMode}").`,
+        `MYRMIDON_K8S_EGRESS_MODE must be "cilium" or "standard" (got "${egressMode}").`,
       );
     }
     kubernetesConfig.egressMode = egressMode;
   }
 
-  const runtimeClassName = env.PAPERCLIP_K8S_RUNTIME_CLASS_NAME?.trim();
+  const runtimeClassName = readExecutionEnv(env, "K8S_RUNTIME_CLASS_NAME")?.trim();
   if (runtimeClassName) kubernetesConfig.runtimeClassName = runtimeClassName;
 
-  const namespacePrefix = env.PAPERCLIP_K8S_NAMESPACE_PREFIX?.trim();
+  const namespacePrefix = readExecutionEnv(env, "K8S_NAMESPACE_PREFIX")?.trim();
   if (namespacePrefix) kubernetesConfig.namespacePrefix = namespacePrefix;
 
-  const imageRegistry = env.PAPERCLIP_K8S_IMAGE_REGISTRY?.trim();
+  const imageRegistry = readExecutionEnv(env, "K8S_IMAGE_REGISTRY")?.trim();
   if (imageRegistry) kubernetesConfig.imageRegistry = imageRegistry;
 
-  const rpcTimeoutMs = parsePositiveIntMs(env.PAPERCLIP_K8S_RPC_TIMEOUT_MS);
+  const rpcTimeoutEnv = readExecutionEnv(env, "K8S_RPC_TIMEOUT_MS");
+  const rpcTimeoutMs = parsePositiveIntMs(rpcTimeoutEnv, "MYRMIDON_K8S_RPC_TIMEOUT_MS");
   if (rpcTimeoutMs !== undefined) kubernetesConfig.timeoutMs = rpcTimeoutMs;
 
-  const adapterType = env.PAPERCLIP_K8S_ADAPTER_TYPE?.trim();
+  const adapterType = readExecutionEnv(env, "K8S_ADAPTER_TYPE")?.trim();
   if (adapterType) kubernetesConfig.adapterType = adapterType;
 
-  const egressAllowFqdns = parseList(env.PAPERCLIP_K8S_EGRESS_ALLOW_FQDNS);
+  const egressAllowFqdns = parseList(readExecutionEnv(env, "K8S_EGRESS_ALLOW_FQDNS"));
   if (egressAllowFqdns) kubernetesConfig.egressAllowFqdns = egressAllowFqdns;
 
-  const egressAllowCidrs = parseList(env.PAPERCLIP_K8S_EGRESS_ALLOW_CIDRS);
+  const egressAllowCidrs = parseList(readExecutionEnv(env, "K8S_EGRESS_ALLOW_CIDRS"));
   if (egressAllowCidrs) kubernetesConfig.egressAllowCidrs = egressAllowCidrs;
 
   const adapters = parseAdapterRegistryEnv(env);

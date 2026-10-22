@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  BadgeCheck, // myrmidon(LICENSING)
   ChevronLeft,
   Clock3,
   Cpu,
   Download,
   FlaskConical,
   KeyRound,
+  ListChecks,
   MailPlus,
   MonitorCog,
   Puzzle,
@@ -31,6 +33,8 @@ import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { usePluginSlots } from "@/plugins/slots";
 import { SidebarNavItem } from "./SidebarNavItem.production";
 import { useAccessHubAvailability } from "@/components/myrmidon/access-hub/accessHubAvailability";
+import { LICENSES_PATH, useIsInstanceAdmin } from "@/components/myrmidon/licensingApi"; // myrmidon(LICENSING)
+import { useTranslation } from "@/i18n"; // myrmidon(LICENSING)
 
 /**
  * Sandbox-provider-only plugins (e.g. E2B, exe.dev, Modal) have no per-plugin
@@ -45,6 +49,8 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
 }
 
 export function CompanySettingsSidebar() {
+  const { t } = useTranslation(); // myrmidon(LICENSING)
+  const isInstanceAdmin = useIsInstanceAdmin(); // myrmidon(LICENSING)
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
   const { hidden: hiddenSettings } = useHiddenSettings();
@@ -168,6 +174,10 @@ export function CompanySettingsSidebar() {
               end
             />
           )}
+          {/* myrmidon(LICENSING): closed-module licenses, instance admin only */}
+          {isInstanceAdmin && (
+            <SidebarNavItem to={LICENSES_PATH} label={t("licensing.title")} icon={BadgeCheck} end />
+          )}
           {/* myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management */}
           {showPage("instance.access") && (
             <SidebarNavItem
@@ -198,6 +208,12 @@ export function CompanySettingsSidebar() {
               icon={FlaskConical}
             />
           )}
+          {/* myrmidon(FEATURES): fork features with live health */}
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/features`}
+            label="Features"
+            icon={ListChecks}
+          />
           {showPlugins && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}

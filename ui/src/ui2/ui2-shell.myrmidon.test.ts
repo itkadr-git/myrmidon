@@ -72,17 +72,21 @@ describe("ui2 clean-room boundary", () => {
 });
 
 describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
-  it("the route table exposes the UI-0c entries plus Commander chat and fleet", async () => {
+  it("the route table exposes the current UI2 screens", async () => {
     // myrmidon(1.6-CTO-CHAT-A): importing routes.tsx now also pulls in the
     // real Commander chat screen (api client, react-query, auth) — give the
     // module graph more than the default 5s to load.
     const { UI2_ROUTE_TABLE } = await import("./routes");
     expect(UI2_ROUTE_TABLE.map((e) => e.key).sort()).toEqual([
       "agent-overview",
+      "agents-fleet",
       "commander-chat",
       "costs",
       "decisions",
       "fleet",
+      "knowledge",
+      "knowledge-page",
+      "settings-autonomy-regulations",
       "settings-language",
       "settings-runs-queue",
       "settings-system",
@@ -93,12 +97,15 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     }
   }, 30_000);
 
-  it("keeps the Fleet destination on the dedicated route", async () => {
+  it("keeps Agents and Servers as two separate destinations on desktop and phone", async () => {
     const { UI2_NAV_GROUPS, UI2_PHONE_TABS } = await import("./navModel");
-    const fleetRail = UI2_NAV_GROUPS.flatMap((group) => group.items).find((item) => item.labelKey === "ui2.nav.fleet");
-    const fleetPhone = UI2_PHONE_TABS.find((item) => item.labelKey === "ui2.nav.fleet");
-    expect(fleetRail?.to).toBe("/fleet");
-    expect(fleetPhone?.to).toBe("/fleet");
+    const rail = UI2_NAV_GROUPS.flatMap((group) => group.items);
+    expect(rail.find((item) => item.labelKey === "ui2.nav.agents")?.to).toBe("/agents");
+    expect(rail.find((item) => item.labelKey === "ui2.nav.servers")?.to).toBe("/fleet");
+    expect(UI2_PHONE_TABS.find((item) => item.labelKey === "ui2.nav.agents")?.to).toBe("/agents");
+    expect(UI2_PHONE_TABS.find((item) => item.labelKey === "ui2.nav.servers")?.to).toBe("/fleet");
+    expect(rail.some((item) => item.labelKey === "ui2.nav.fleet")).toBe(false);
+    expect(UI2_PHONE_TABS.some((item) => item.labelKey === "ui2.nav.fleet")).toBe(false);
   });
 
   it("Ui2Root exists and mounts the shell (UI-0b's provider line)", async () => {
@@ -181,6 +188,8 @@ describe("ui2 i18n", () => {
       expect(messages.ui2).toBeDefined();
       expect(messages.ui2.nav.center).toBeTruthy();
       expect(messages.ui2.nav.commander).toBeTruthy();
+      expect(messages.ui2.nav.agents).toBeTruthy();
+      expect(messages.ui2.nav.servers).toBeTruthy();
       expect(messages.ui2.commander.placeholder).toBeTruthy();
       expect(messages.ui2.nests.all).toBeTruthy();
       expect(messages.ui2.screens.placeholderTitle).toBeTruthy();
@@ -193,5 +202,7 @@ describe("ui2 i18n", () => {
     expect(ru.ui2.nav.center).toBe("Командный центр");
     expect(ru.ui2.nav.commander).toBe("Полководец");
     expect(ru.ui2.nav.waiting).toBe("Ждёт меня");
+    expect(ru.ui2.nav.agents).toBe("Агенты");
+    expect(ru.ui2.nav.servers).toBe("Серверы");
   });
 });

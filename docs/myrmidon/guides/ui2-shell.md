@@ -20,7 +20,7 @@ tree renders inside the 2.0 frame instead of the vendor layout:
 
 - the desktop rail, top bar and settings side panel replace the vendor
   sidebar;
-- the mobile phone frame (header + five-tab bottom bar) replaces the vendor
+- the mobile phone frame (header + six-tab bottom bar) replaces the vendor
   mobile navigation;
 - the 2.0 screens re-skin the pages they cover (see below).
 
@@ -71,7 +71,7 @@ the whole instance on 2.0, and use `?ui=1` yourself to compare against the
 Desktop (viewport width 768 px and up):
 
 - A 232 px left rail with the Myrmidon logo, three groups of destinations —
-  Observe (Command center, Server fleet, Swarm, Costs, Quality), Decide &
+  Observe (Command center, Agents, Servers, Swarm, Costs, Quality), Decide &
   talk (Wait for me, Commander), Manage (Settings) — a badge on "Wait for me"
   counting decisions awaiting the owner (99+ past ninety-nine), and an owner
   footer showing the company name and the active channel ("Web · now").
@@ -87,8 +87,8 @@ Desktop (viewport width 768 px and up):
   Castes and models, System).
 
 Mobile (below 768 px): a phone frame — a 56 px header with the logo and
-"Owner · Web" status, and a five-tab bottom bar (Command center / Wait for
-me / Server fleet / Commander / More), tab items 60 px tall with touch
+"Owner · Web" status, and a six-tab bottom bar (Command center / Wait for
+me / Agents / Servers / Commander / More), tab items 60 px tall with touch
 targets of at least 44 px.
 
 Two shell parts are honest stubs for now:
@@ -113,12 +113,13 @@ The 2.0 screens re-skin these surfaces under the flag:
 | Decisions | `decisions` | The decisions page |
 | Costs | `activity/costs` | The costs page |
 | Agent overview | `agents/:agentId/overview` | The agent card |
-| Fleet | `fleet` | Monitoring dashboard hosts and services |
+| Servers | `fleet` | Monitoring dashboard hosts and services |
+| Agents | `agents` | The company agent list |
 | Runs and queue (settings) | `company/settings/runs-queue` | Instance run limits |
 | System (settings) | `company/settings/system` | Instance system settings |
 | Language (settings) | `company/settings/language` | The UI language setting |
 
-Every other page — tasks, agents, chats, the rest of company settings —
+Every other page — tasks, chats, the rest of company settings —
 renders as the existing page inside the 2.0 frame. Routing, data and access
 are unchanged in both cases: a 2.0 screen reads the same endpoints its 1.x
 counterpart reads.
@@ -150,6 +151,12 @@ details per screen are below.
   spend (twelve rows at most). A failed incident resolution shows the
   server's error next to the incident. The mock-only hierarchy
   (nest → caste → line), the forecast and the ticket limit stay hidden.
+- **Agents fleet** (route `agents`) — a company-scoped, scrollable agent tree
+  grouped by `reportsTo`, with each agent's name, role, canonical status and
+  latest live run. `active`/`idle` map to Idle, `running` to Running,
+  `paused` to Paused and `error` to Error. Live runs are bounded to 100 rows;
+  selecting a row opens that agent's detail page. Empty fleets show a localized
+  empty state.
 - **Agent overview** (route `agents/:agentId/overview`) — the agent's status,
   its policy (status `hard_stop`, `warning` or ok), recent runs from the last
   24 hours with cost, tokens and result, and the spend over the last 30 days.

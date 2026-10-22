@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -21,6 +26,8 @@ func fakeBearer() string {
 
 func testConfig() *config {
 	cfg := &config{
+		SiteId: "myr-vm1",
+		Epoch:  1,
 		Listen: "127.0.0.1:0",
 		Bots: []bot{
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
@@ -80,6 +87,10 @@ func routeRequest(s *server, method, path, token, body string) *httptest.Respons
 	}
 	rec := httptest.NewRecorder()
 	s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			s.health(w, r)
+			return
+		}
 		if r.URL.Path == "/v1/bots" {
 			s.list(w, r)
 			return
@@ -87,6 +98,24 @@ func routeRequest(s *server, method, path, token, body string) *httptest.Respons
 		s.route(w, r)
 	})(rec, req)
 	return rec
+}
+
+func TestHealthEndpoint(t *testing.T) {
+	s, _ := newServer(t)
+	rec := routeRequest(s, http.MethodGet, "/v1/health", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d", rec.Code)
+	}
+	var h siteHealth
+	if err := json.Unmarshal(rec.Body.Bytes(), &h); err != nil {
+		t.Fatalf("failed to decode health: %v", err)
+	}
+	if h.Status != "healthy" || h.Epoch != 1 || h.SiteId != "myr-vm1" || h.Version != "1.6.6" {
+		t.Fatalf("unexpected health payload: %+v", h)
+	}
+	if h.Capacity.MemoryMb <= 0 || !h.EgressCheck.Ok || h.EgressCheck.Timestamp == "" {
+		t.Fatalf("unexpected capacity or egress: %+v", h)
+	}
 }
 
 func TestAuth(t *testing.T) {
@@ -185,7 +214,30 @@ func TestValidateConfig(t *testing.T) {
 	if err := validate(cfg); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
+	cfgOmitDefaults := &config{
+		Listen: "127.0.0.1:0",
+		Bots: []bot{
+			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
+		},
+	}
+	cfgOmitDefaults.Token = fakeBearer()
+	if err := validate(cfgOmitDefaults); err != nil {
+		t.Fatalf("config with omitted siteId and epoch rejected: %v", err)
+	}
+	if cfgOmitDefaults.SiteId != "fleetd-local" || cfgOmitDefaults.Epoch != 1 {
+		t.Fatalf("defaults not populated: %+v", cfgOmitDefaults)
+	}
 	bad := testConfig()
+	bad.SiteId = "-invalid-site-"
+	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "siteId") {
+		t.Fatalf("bad siteId accepted: %v", err)
+	}
+	bad = testConfig()
+	bad.Epoch = -5
+	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "epoch") {
+		t.Fatalf("negative epoch accepted: %v", err)
+	}
+	bad = testConfig()
 	bad.Token = "short"
 	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "token") {
 		t.Fatalf("short token accepted: %v", err)
@@ -199,6 +251,19 @@ func TestValidateConfig(t *testing.T) {
 	bad.Bots[0].BotKey = "-leading-dash-"
 	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "botKey") {
 		t.Fatalf("bad key accepted: %v", err)
+	}
+}
+
+func TestValidSiteId(t *testing.T) {
+	for _, ok := range []string{"a", "myr-vm1", "site-01", "fleetd-local"} {
+		if !validSiteId(ok) {
+			t.Fatalf("%q rejected", ok)
+		}
+	}
+	for _, no := range []string{"", "-a", "a-", "A", "a_b", "a.b", strings.Repeat("a", 64)} {
+		if validSiteId(no) {
+			t.Fatalf("%q accepted", no)
+		}
 	}
 }
 
@@ -276,5 +341,346 @@ func TestValidateConfigUpstreamDefaultAndDisabledSafe(t *testing.T) {
 	cfg.Upstream = "http://127.0.0.1:2375"
 	if err := validate(cfg); err != nil {
 		t.Fatalf("valid config with custom upstream rejected: %v", err)
+	}
+}
+
+func TestSnapshotAndRestore(t *testing.T) {
+	tempRoot := t.TempDir()
+	s, _ := newServer(t)
+	s.cfg.VolumeRoot = tempRoot
+	key := s.cfg.Bots[0].BotKey
+
+	// Prepare bot source files
+	botDir := filepath.Join(tempRoot, key)
+	if err := os.MkdirAll(filepath.Join(botDir, "hermes"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "hermes", "session.db"), []byte("sqlite-data-mock-bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(botDir, "workspace"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "workspace", "code.txt"), []byte("hello workspace"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Snapshot
+	rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/snapshot", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot failed: %d %s", rec.Code, rec.Body.String())
+	}
+	archiveBytes := rec.Body.Bytes()
+	if len(archiveBytes) == 0 {
+		t.Fatal("empty snapshot archive")
+	}
+
+	// 2. Restore into a new volume root
+	targetRoot := t.TempDir()
+	targetServer, _ := newServer(t)
+	targetServer.cfg.VolumeRoot = targetRoot
+
+	restoreReq := httptest.NewRequest(http.MethodPost, "http://fleetd.example.com/v1/bots/"+key+"/restore", bytes.NewReader(archiveBytes))
+	restoreReq.Header.Set("Authorization", "Bearer "+targetServer.cfg.Token)
+	restoreRec := httptest.NewRecorder()
+	targetServer.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		targetServer.route(w, r)
+	})(restoreRec, restoreReq)
+
+	if restoreRec.Code != http.StatusOK {
+		t.Fatalf("restore failed: %d %s", restoreRec.Code, restoreRec.Body.String())
+	}
+
+	// Verify restored files
+	restoredDb, err := os.ReadFile(filepath.Join(targetRoot, key, "hermes", "session.db"))
+	if err != nil {
+		t.Fatalf("read restored db: %v", err)
+	}
+	if string(restoredDb) != "sqlite-data-mock-bytes" {
+		t.Fatalf("restored db mismatch: %q", string(restoredDb))
+	}
+
+	restoredCode, err := os.ReadFile(filepath.Join(targetRoot, key, "workspace", "code.txt"))
+	if err != nil {
+		t.Fatalf("read restored code: %v", err)
+	}
+	if string(restoredCode) != "hello workspace" {
+		t.Fatalf("restored code mismatch: %q", string(restoredCode))
+	}
+}
+
+func TestQuarantine(t *testing.T) {
+	tempRoot := t.TempDir()
+	s, _ := newServer(t)
+	s.cfg.VolumeRoot = tempRoot
+	key := s.cfg.Bots[0].BotKey
+
+	botDir := filepath.Join(tempRoot, key)
+	if err := os.MkdirAll(botDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "test.txt"), []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/quarantine", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("quarantine failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	if _, err := os.Stat(botDir); !os.IsNotExist(err) {
+		t.Fatalf("bot directory still exists at original path: %v", err)
+	}
+
+	// Check quarantined folder exists
+	entries, err := os.ReadDir(tempRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".quarantined-"+key+"-") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("quarantined directory not found in volume root")
+	}
+}
+
+// chownLog records the owner changes restore asks for; tests do not run as root,
+// so the real os.Lchown would be refused.
+var chownMu sync.Mutex
+var chownLog = map[string][2]int{}
+var chownErr error
+
+func init() {
+	lchown = func(path string, uid, gid int) error {
+		chownMu.Lock()
+		defer chownMu.Unlock()
+		if chownErr != nil {
+			return chownErr
+		}
+		chownLog[path] = [2]int{uid, gid}
+		return nil
+	}
+}
+
+func resetChownLog(err error) {
+	chownMu.Lock()
+	defer chownMu.Unlock()
+	chownLog = map[string][2]int{}
+	chownErr = err
+}
+
+// snapshotOf writes a small datadir for the bot and returns its snapshot archive.
+func snapshotOf(t *testing.T) (*server, string, []byte) {
+	t.Helper()
+	root := t.TempDir()
+	s, _ := newServer(t)
+	s.cfg.VolumeRoot = root
+	key := s.cfg.Bots[0].BotKey
+	botDir := filepath.Join(root, key)
+	if err := os.MkdirAll(filepath.Join(botDir, "workspace"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "workspace", "code.txt"), []byte("hello workspace"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("code.txt", filepath.Join(botDir, "workspace", "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/snapshot", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot failed: %d %s", rec.Code, rec.Body.String())
+	}
+	return s, key, rec.Body.Bytes()
+}
+
+func restoreInto(t *testing.T, root, key string, archive []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	target, _ := newServer(t)
+	target.cfg.VolumeRoot = root
+	req := httptest.NewRequest(http.MethodPost, "http://fleetd.example.com/v1/bots/"+key+"/restore", bytes.NewReader(archive))
+	req.Header.Set("Authorization", "Bearer "+target.cfg.Token)
+	rec := httptest.NewRecorder()
+	target.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		target.route(w, r)
+	})(rec, req)
+	return rec
+}
+
+func TestRestoreKeepsSymlinkAndRefusesTruncatedArchive(t *testing.T) {
+	_, key, archive := snapshotOf(t)
+
+	okRoot := t.TempDir()
+	if rec := restoreInto(t, okRoot, key, archive); rec.Code != http.StatusOK {
+		t.Fatalf("restore failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if got, err := os.Readlink(filepath.Join(okRoot, key, "workspace", "link.txt")); err != nil || got != "code.txt" {
+		t.Fatalf("symlink not restored: %q %v", got, err)
+	}
+
+	// A snapshot that broke off at any point must never restore.
+	for _, cut := range []int{1, 10, 40, len(archive) / 2} {
+		root := t.TempDir()
+		rec := restoreInto(t, root, key, archive[:len(archive)-cut])
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("cut %d: expected 400, got %d %s", cut, rec.Code, rec.Body.String())
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("cut %d: a failed restore left %d entries in the volume root", cut, len(entries))
+		}
+	}
+}
+
+func TestRestoreRefusesChangedContent(t *testing.T) {
+	_, key, archive := snapshotOf(t)
+	tampered := bytes.Replace(archive, []byte("hello workspace"), []byte("hellO workspace"), 1)
+	if bytes.Equal(tampered, archive) {
+		t.Fatal("test archive does not hold the file content in the clear")
+	}
+	root := t.TempDir()
+	rec := restoreInto(t, root, key, tampered)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "verification failed") {
+		t.Fatalf("expected a verification failure, got %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, key)); !os.IsNotExist(err) {
+		t.Fatalf("datadir exists after a refused restore: %v", err)
+	}
+}
+
+func TestRestoreReplacesDatadirInsteadOfMerging(t *testing.T) {
+	_, key, archive := snapshotOf(t)
+	root := t.TempDir()
+	old := filepath.Join(root, key)
+	if err := os.MkdirAll(old, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(old, "stale.txt"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if rec := restoreInto(t, root, key, archive); rec.Code != http.StatusOK {
+		t.Fatalf("restore failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(old, "stale.txt")); !os.IsNotExist(err) {
+		t.Fatalf("stale file survived the restore: %v", err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aside := false
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".replaced-"+key+"-") {
+			aside = true
+		}
+	}
+	if !aside {
+		t.Fatal("the replaced datadir was not kept aside")
+	}
+}
+
+type failingWriter struct{ left int }
+
+func (f *failingWriter) Write(p []byte) (int, error) {
+	if len(p) > f.left {
+		n := f.left
+		f.left = 0
+		return n, errors.New("disk full")
+	}
+	f.left -= len(p)
+	return len(p), nil
+}
+
+func TestSnapshotWriteErrorIsReturned(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "bot-example-one")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSnapshot(&failingWriter{left: 3}, dir); err == nil {
+		t.Fatal("a failed write must fail the snapshot")
+	}
+}
+
+func TestSnapshotAbortsResponseOnWalkError(t *testing.T) {
+	root := t.TempDir()
+	s, _ := newServer(t)
+	s.cfg.VolumeRoot = root
+	key := s.cfg.Bots[0].BotKey
+	dir := filepath.Join(root, key)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// The manifest name is reserved: the snapshot fails after the response started.
+	if err := os.WriteFile(filepath.Join(dir, snapshotManifestName), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	aborted := false
+	prev := abortResponse
+	abortResponse = func() { aborted = true }
+	defer func() { abortResponse = prev }()
+
+	routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/snapshot", s.cfg.Token, "")
+	if !aborted {
+		t.Fatal("a snapshot that failed midway must abort the response, not end it as a valid archive")
+	}
+}
+
+func TestRestoreHandsDatadirToBotUser(t *testing.T) {
+	_, key, archive := snapshotOf(t)
+	resetChownLog(nil)
+	root := t.TempDir()
+	if rec := restoreInto(t, root, key, archive); rec.Code != http.StatusOK {
+		t.Fatalf("restore failed: %d %s", rec.Code, rec.Body.String())
+	}
+	chownMu.Lock()
+	defer chownMu.Unlock()
+	// staging dir is renamed to the datadir after chown, so compare by relative path.
+	rel := map[string][2]int{}
+	for p, own := range chownLog {
+		i := strings.Index(p, string(filepath.Separator)+"workspace")
+		if i < 0 {
+			t.Fatalf("unexpected chown target %s", p)
+		}
+		rel[p[i:]] = own
+	}
+	for _, want := range []string{"/workspace", "/workspace/code.txt", "/workspace/link.txt"} {
+		got, ok := rel[filepath.FromSlash(want)]
+		if !ok || got != [2]int{botUID, botUID} {
+			t.Fatalf("%s: owner %v (found %v), want %d:%d", want, got, ok, botUID, botUID)
+		}
+	}
+	for p := range chownLog {
+		if !strings.Contains(p, string(filepath.Separator)+"workspace") {
+			t.Fatalf("datadir root must stay root-owned, but chown asked for %s", p)
+		}
+	}
+}
+
+func TestRestoreFailsWhenOwnerCannotBeSet(t *testing.T) {
+	_, key, archive := snapshotOf(t)
+	resetChownLog(errors.New("operation not permitted"))
+	defer resetChownLog(nil)
+	root := t.TempDir()
+	rec := restoreInto(t, root, key, archive)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d %s", rec.Code, rec.Body.String())
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("a failed restore left %d entries in the volume root", len(entries))
 	}
 }

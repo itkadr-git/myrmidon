@@ -8,6 +8,7 @@
 //   GET    /api/myrmidon/companies/:companyId/budget-limits/signal-only     (company access)
 //   PATCH  /api/myrmidon/companies/:companyId/budget-limits/signal-only     (board only)
 //   PUT    /api/myrmidon/companies/:companyId/budget-limits/limits/:level/:ref  (board only)
+//   GET    /api/myrmidon/companies/:companyId/budget-limits/effective/:issueId (company access)
 //   GET    /api/myrmidon/companies/:companyId/budget-limits/limits/:level/:ref  (company access)
 //   DELETE /api/myrmidon/companies/:companyId/budget-limits/limits/:level/:ref  (board only)
 //
@@ -34,7 +35,7 @@ import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
-import { createBudgetLimitStore, validateBudgetLimitRef } from "./store.js";
+import { createBudgetLimitStore, validateBudgetLimitRef, validateBudgetLimitScope } from "./store.js";
 import { computeBudgetLimitUsage } from "./usage.js";
 import { readResolvedSignalOnly, writeBudgetLimitsSignalOnly } from "./settings.js";
 
@@ -132,6 +133,14 @@ export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
     },
   );
 
+  router.get(`${base}/effective/:issueId`, async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const resolved = await store.effective(companyId, req.params.issueId as string);
+    if (!resolved) { res.status(404).json({ error: "Issue not found" }); return; }
+    res.json(resolved);
+  });
+
   router.get(`${base}/limits/:level/:ref`, async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -165,6 +174,11 @@ export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
       const refError = validateBudgetLimitRef(level, ref);
       if (refError) {
         res.status(400).json({ error: refError });
+        return;
+      }
+      const scopeError = await validateBudgetLimitScope(db, companyId, level, ref);
+      if (scopeError) {
+        res.status(400).json({ error: scopeError });
         return;
       }
       const body = req.body as z.infer<typeof budgetLimitUpsertSchema>;
