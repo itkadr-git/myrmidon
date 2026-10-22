@@ -90,6 +90,17 @@ export interface ModuleLicenseStatus {
   reason: VerifyReason;
   /** Unix seconds; null = no expiry or no valid license. */
   expires: number | null;
+  /** `wrong_instance` only: the installation id the license was issued for. */
+  licenseInstanceId?: string;
+  /** `wrong_instance` only: the id of this board. */
+  boardInstanceId?: string;
+  /** `wrong_instance` only: the same fact as text, both ids included. */
+  message?: string;
+}
+
+/** The text for a license issued for another installation: both ids. */
+export function instanceMismatchMessage(licenseInstanceId: string, boardInstanceId: string): string {
+  return `This license was issued for installation ${licenseInstanceId}; the installation id of this board is ${boardInstanceId}.`;
 }
 
 export function stateForReason(reason: VerifyReason, expires: number | null, nowSeconds: number): ModuleLicenseState {
@@ -129,7 +140,19 @@ export function moduleStatuses(input: {
       requiredModule: module,
     });
     const expires = result.valid ? (result.payload?.expires ?? null) : null;
-    return { module, installed, state: stateForReason(result.reason, expires, input.nowSeconds), reason: result.reason, expires };
+    const status: ModuleLicenseStatus = {
+      module,
+      installed,
+      state: stateForReason(result.reason, expires, input.nowSeconds),
+      reason: result.reason,
+      expires,
+    };
+    if (result.reason === "instance_mismatch" && result.licenseInstanceId) {
+      status.licenseInstanceId = result.licenseInstanceId;
+      status.boardInstanceId = input.installId;
+      status.message = instanceMismatchMessage(result.licenseInstanceId, input.installId);
+    }
+    return status;
   });
 }
 

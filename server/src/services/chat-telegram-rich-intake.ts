@@ -1,6 +1,16 @@
+// myrmidon(1.6.6 CH-CONNECTOR-D) batch 3 (OPE-6976, call map OPE-6629 point 77):
+// the direct path is deprecated. The core reaches
+// `normalizeTelegramRichMessage` through the bridge seam
+// `channel-connectors/bridge/telegram-rich.js` only; with the bridge flag on a
+// registered channel connector serves the theme and this module stays behind
+// the seam as the legacy fallback. Do not add a new direct importer; removal is
+// the follow-up step, not this PR.
 import { createHash } from "node:crypto";
 import type { Attachment } from "chat";
-import { bindTelegramRichAttachment } from "./chat-telegram-media-intake.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the attachment binding is reached through
+// the media seam, so a connector that serves the media theme also serves the
+// rich intake's own binding call (call map OPE-6629 point 54).
+import { bindTelegramRichAttachment } from "../myrmidon/channel-connectors/bridge/telegram-media.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 

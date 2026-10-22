@@ -15,7 +15,7 @@
 // unknown host must surface as a reconcile error, never fall back to the
 // local driver (a bot would silently run on the wrong machine).
 
-import { cardFleetHost, type FleetHostConfig } from "./fleetd-hosts.js";
+import { cardFleetHost, fleetSiteKey, type FleetHostConfig } from "./fleetd-hosts.js";
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftReport } from "./driver.js";
 import type { CompiledProfile } from "./types.js";
 
@@ -24,10 +24,18 @@ export interface FleetRoutingDeps {
   local: BotContainerDriver;
   /** A fleetd client per configured host name, or a dynamic map provider. */
   fleet: ReadonlyMap<string, BotContainerDriver> | (() => ReadonlyMap<string, BotContainerDriver>);
+  /**
+   * Awaited before every routing decision: lets a dynamic registry reload its
+   * clients (hot-reload) so a CRUD change applies without a server restart.
+   * A failure here must not break routing — the last good map is used.
+   */
+  ready?: () => Promise<void>;
 }
 
 /** The per-bot agent record the routing needs: the container block of the card. */
 export interface RoutedBotAgent {
+  /** The agent's company: when set, the host is looked up company-scoped (fleetSiteKey). */
+  companyId?: string;
   adapterConfig: { container?: unknown };
 }
 
@@ -35,15 +43,27 @@ function resolveFleetMap(deps: FleetRoutingDeps): ReadonlyMap<string, BotContain
   return typeof deps.fleet === "function" ? deps.fleet() : deps.fleet;
 }
 
+async function awaitReady(deps: FleetRoutingDeps): Promise<void> {
+  if (!deps.ready) return;
+  try {
+    await deps.ready();
+  } catch {
+    // keep routing on the last good client map
+  }
+}
+
 async function driverFor(
   deps: FleetRoutingDeps,
   agentOrPromise: RoutedBotAgent | undefined | Promise<RoutedBotAgent | undefined>,
 ): Promise<BotContainerDriver> {
+  await awaitReady(deps);
   const agent = await agentOrPromise;
   const host = agent ? cardFleetHost(agent.adapterConfig) : null;
   if (host === null) return deps.local;
   const fleetMap = resolveFleetMap(deps);
-  const driver = fleetMap.get(host);
+  // Tenant isolation: a named host resolves only inside the agent's own
+  // company; without a companyId the bare name is used (static env maps).
+  const driver = fleetMap.get(agent?.companyId ? fleetSiteKey(agent.companyId, host) : host);
   if (!driver) {
     throw new Error(
       `container.host "${host}" names no configured fleet host (check MYRMIDON_FLEET_HOSTS or fleet sites registry)`,
@@ -63,6 +83,7 @@ export function fleetRoutingDriver(
       return driver.status(botKey);
     },
     async list(botKeys: readonly string[]): Promise<BotContainerStatus[]> {
+      await awaitReady(deps);
       const fleetMap = resolveFleetMap(deps);
       // A routed list is the union of all hosts' own lists.
       const results = await Promise.all(
@@ -73,6 +94,11 @@ export function fleetRoutingDriver(
     async templateDrift(spec: BotContainerSpec, knownStatus?: BotContainerStatus): Promise<TemplateDriftReport> {
       const driver = await driverFor(deps, agentOf(spec.botKey));
       return driver.templateDrift(spec, knownStatus);
+    },
+    async updateResources(spec: BotContainerSpec): Promise<void> {
+      const driver = await driverFor(deps, agentOf(spec.botKey));
+      if (driver.updateResources) await driver.updateResources(spec);
+      else await driver.recreate(spec);
     },
     async create(spec: BotContainerSpec): Promise<void> {
       const driver = await driverFor(deps, agentOf(spec.botKey));

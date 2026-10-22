@@ -107,6 +107,8 @@ export type InstanceExecutionMode = "kubernetes" | "any";
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
   keyboardShortcuts: boolean;
+  /** myrmidon(PROCS-1.8): persisted task-drain state. */
+  taskDrain?: { draining: boolean; startedAt: string | null; expiresAt: string | null };
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
   /**

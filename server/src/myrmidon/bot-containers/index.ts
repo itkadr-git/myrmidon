@@ -135,6 +135,8 @@ export function realBotMaintenancePort(db: Db): BotMaintenancePort {
 
 export interface BotContainerAgent {
   agentId: string;
+  /** Owning company; the fleet router scopes a named host to it (set by readAgent). */
+  companyId?: string;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
 }

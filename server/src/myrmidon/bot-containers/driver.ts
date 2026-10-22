@@ -166,6 +166,8 @@ export interface BotContainerDriver {
    */
   templateDrift(spec: BotContainerSpec, knownStatus?: BotContainerStatus): Promise<TemplateDriftReport>;
   templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport>;
+  /** Applies mutable resource limits without restarting the container. Drivers that do not support live updates fall back to recreate. */
+  updateResources?(spec: BotContainerSpec): Promise<void>;
   /**
    * myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the one-inspect probe — `status` and
    * `templateDrift` from a SINGLE container inspect plus the marker read. The

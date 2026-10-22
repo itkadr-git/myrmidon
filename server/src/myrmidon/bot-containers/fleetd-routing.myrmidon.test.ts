@@ -163,3 +163,33 @@ describe("myrmidon(FLEETD-VMEXEC) fleet routing — every driver call goes by th
     expect(d.local.calls).toEqual(["local:start:local"]);
   });
 });
+
+describe("myrmidon(1.6.6 T1) fleet routing — tenant isolation", () => {
+  it("routes a named host only to the agent's own company's client", async () => {
+    const local = recordingDriver("local");
+    const a = recordingDriver("co-a");
+    const b = recordingDriver("co-b");
+    const fleet = new Map([
+      ["company-a/myr-vm1", a],
+      ["company-b/myr-vm1", b],
+    ]);
+    const routedB = fleetRoutingDriver({ local, fleet }, () => ({
+      companyId: "company-b",
+      adapterConfig: { container: { host: "myr-vm1" } },
+    }));
+    await routedB.start("bot-1");
+    expect(b.calls).toEqual(["co-b:start:bot-1"]);
+    expect(a.calls).toEqual([]);
+  });
+
+  it("does not fall back to another company's host of the same name", async () => {
+    const local = recordingDriver("local");
+    const a = recordingDriver("co-a");
+    const routed = fleetRoutingDriver({ local, fleet: new Map([["company-a/myr-vm1", a]]) }, () => ({
+      companyId: "company-b",
+      adapterConfig: { container: { host: "myr-vm1" } },
+    }));
+    await expect(routed.start("bot-1")).rejects.toThrow(/names no configured fleet host/);
+    expect(a.calls).toEqual([]);
+  });
+});
