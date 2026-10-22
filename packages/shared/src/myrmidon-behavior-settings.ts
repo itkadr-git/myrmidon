@@ -85,6 +85,9 @@ const positiveInteger = (allowZero = false) => (value: unknown): number | null =
 };
 const nonEmptyString = (value: unknown): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+// An optional text setting: a saved empty string is kept and means "not set".
+const optionalString = (value: unknown): string | null =>
+  typeof value === "string" ? value.trim() : null;
 const booleanSetting = (value: unknown): boolean | null => {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -107,8 +110,8 @@ const dSettings: Array<{
   { key: "telegramDmConversations", envName: "MYRMIDON_TELEGRAM_DM_CONVERSATIONS", default: "", section: "channels", validate: (value) => typeof value === "string" ? value : null },
   { key: "telegramDmStatus", envName: "MYRMIDON_TELEGRAM_DM_STATUS", default: false, section: "channels", validate: booleanSetting },
   { key: "telegramSplitMaxParts", envName: "MYRMIDON_TELEGRAM_SPLIT_MAX_PARTS", default: 0, section: "channels", validate: positiveInteger(true) },
-  { key: "telegramFileLimitBytes", envName: "MYRMIDON_TELEGRAM_FILE_LIMIT_BYTES", default: 25 * 1024 * 1024, section: "channels", validate: positiveInteger() },
-  { key: "paperclipAttachmentMaxBytes", envName: "PAPERCLIP_ATTACHMENT_MAX_BYTES", default: 20 * 1024 * 1024, section: "channels", validate: positiveInteger() },
+  { key: "telegramFileLimitBytes", envName: "MYRMIDON_TELEGRAM_FILE_LIMIT_BYTES", default: 10 * 1024 * 1024, section: "channels", validate: positiveInteger() },
+  { key: "paperclipAttachmentMaxBytes", envName: "PAPERCLIP_ATTACHMENT_MAX_BYTES", default: 10 * 1024 * 1024, section: "channels", validate: positiveInteger() },
   { key: "chatCrossChannelMessages", envName: "MYRMIDON_CHAT_CROSS_CHANNEL_MESSAGES", default: 12, section: "channels", validate: positiveInteger(true) },
   { key: "chatCrossChannelMessageChars", envName: "MYRMIDON_CHAT_CROSS_CHANNEL_MESSAGE_CHARS", default: 600, section: "channels", validate: positiveInteger(true) },
   { key: "chatCrossChannelTotalChars", envName: "MYRMIDON_CHAT_CROSS_CHANNEL_TOTAL_CHARS", default: 4000, section: "channels", validate: positiveInteger(true) },
@@ -117,8 +120,8 @@ const dSettings: Array<{
   { key: "litellmCostIntervalSec", envName: "MYRMIDON_LITELLM_COST_INTERVAL_SEC", default: 300, section: "models", validate: positiveInteger() },
   { key: "botCompressionThresholdTokens", envName: "MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS", default: 100000, section: "models", validate: positiveInteger(true) },
   { key: "botModelContextLengths", envName: "MYRMIDON_BOT_MODEL_CONTEXT_LENGTH", default: {}, section: "models", validate: (value) => typeof value === "object" && value !== null ? value : null },
-  { key: "botAuxTitleModel", envName: "MYRMIDON_BOT_AUX_TITLE_MODEL", default: "", section: "models", validate: nonEmptyString },
-  { key: "botAuxCompressionModel", envName: "MYRMIDON_BOT_AUX_COMPRESSION_MODEL", default: "", section: "models", validate: nonEmptyString },
+  { key: "botAuxTitleModel", envName: "MYRMIDON_BOT_AUX_TITLE_MODEL", default: null, section: "models", validate: optionalString },
+  { key: "botAuxCompressionModel", envName: "MYRMIDON_BOT_AUX_COMPRESSION_MODEL", default: null, section: "models", validate: optionalString },
   { key: "botHelperModel", envName: "MYRMIDON_BOT_HELPER_MODEL", default: "", section: "models", validate: nonEmptyString },
   { key: "ctoChatModel", envName: "MYRMIDON_CTO_CHAT_MODEL", default: "dashscope-qwen-flash", section: "models", validate: nonEmptyString },
   { key: "ctoChatTimeoutSec", envName: "MYRMIDON_CTO_CHAT_TIMEOUT_SEC", default: 90, section: "models", validate: positiveInteger() },
@@ -140,7 +143,14 @@ for (const setting of dSettings) {
     default: setting.default,
     scope: "instance",
     section: setting.section,
-    valueType: typeof setting.default === "boolean" ? "boolean" : typeof setting.default === "number" ? "number" : "string",
+    valueType:
+      typeof setting.default === "boolean"
+        ? "boolean"
+        : typeof setting.default === "number"
+          ? "number"
+          : setting.default !== null && typeof setting.default === "object"
+            ? "json"
+            : "string",
     validate: setting.validate,
   });
 }

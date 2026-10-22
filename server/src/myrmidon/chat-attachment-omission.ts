@@ -1,4 +1,5 @@
 import { formatAttachmentSize, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias";
 import { liveBehaviorSetting } from "./behavior-settings/live.js";
 
 // myrmidon(P7): tell a Telegram sender which attachments were dropped at import
@@ -71,7 +72,11 @@ export function effectiveTelegramAttachmentLimitBytes(
     0,
     Math.trunc(Number(env.MYRMIDON_TELEGRAM_FILE_LIMIT_BYTES ?? liveBehaviorSetting<number>("telegramFileLimitBytes"))),
   );
-  const boardLimit = boardLimitBytes ?? liveBehaviorSetting<number>("paperclipAttachmentMaxBytes");
+  // The deployment env ceiling (ATTACHMENT_MAX_BYTES) stays the override; the
+  // saved setting applies only when the env does not pin the limit.
+  const boardLimit =
+    boardLimitBytes ??
+    (Number(readProductEnv("ATTACHMENT_MAX_BYTES")) ? MAX_ATTACHMENT_BYTES : liveBehaviorSetting<number>("paperclipAttachmentMaxBytes"));
   const adapterLimit = configured || TELEGRAM_ADAPTER_DEFAULT_LIMIT_BYTES;
   const apiLimit = env.TELEGRAM_API_BASE_URL?.trim()
     ? Number.POSITIVE_INFINITY

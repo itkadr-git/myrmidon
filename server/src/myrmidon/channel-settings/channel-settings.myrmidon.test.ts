@@ -80,8 +80,8 @@ describe("myrmidon(1.7-SETTINGS-TO-UI) channel settings: resolving the document"
     expect(settings.telegramDmConversations.value).toBe("");
     expect(settings.telegramDmStatus.value).toBe(false);
     expect(settings.telegramSplitMaxParts.value).toBe(0);
-    expect(settings.telegramFileLimitBytes.value).toBe(25 * 1024 * 1024);
-    expect(settings.paperclipAttachmentMaxBytes.value).toBe(20 * 1024 * 1024);
+    expect(settings.telegramFileLimitBytes.value).toBe(10 * 1024 * 1024);
+    expect(settings.paperclipAttachmentMaxBytes.value).toBe(10 * 1024 * 1024);
     expect(settings.chatCrossChannelMessages.value).toBe(12);
     expect(settings.chatCrossChannelMessageChars.value).toBe(600);
     expect(settings.chatCrossChannelTotalChars.value).toBe(4000);
