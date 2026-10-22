@@ -21651,6 +21651,24 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .then((rows) => rows[0]);
         expect(conversation?.issueId).toBeTruthy();
       });
+      {
+        const snapshot = await db
+          .select()
+          .from(chatDeliveries)
+          .where(eq(chatDeliveries.endpointId, endpoint.id));
+        console.log(
+          "DIAG-OPE-7553 after reply ingest",
+          JSON.stringify({
+            deferred: deferred.length,
+            deliveries: snapshot.map((d) => ({
+              id: d.id,
+              state: d.state,
+              attempts: d.attempts,
+              hasReply: JSON.stringify(d.normalizedEvent).includes(reply.id),
+            })),
+          }),
+        );
+      }
       await vi.waitFor(async () => {
         const deliveries = await db
           .select()
