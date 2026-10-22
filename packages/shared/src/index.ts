@@ -2942,6 +2942,11 @@ export * from "./myrmidon-debate.js";
 // foraging pass journal (what each pass read, and which roles it skipped why).
 export * from "./myrmidon-foraging-pass-journal.js";
 
+// myrmidon(1.7-DEBATE-ASYM-B): the per-caste debate configuration — the stored
+// override entry (enabled, role models, prompts, rounds, token ceiling), the
+// resolution over the instance configuration and the run gate.
+export * from "./myrmidon-debate-castes.js";
+
 // myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
 export * from "./myrmidon-plugin-entitlement.js";
 
