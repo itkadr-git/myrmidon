@@ -21619,6 +21619,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         lockEntered();
         await holdLock;
       });
+    const replyDelivery = async () =>
+      (
+        await db
+          .select()
+          .from(chatDeliveries)
+          .where(eq(chatDeliveries.endpointId, endpoint.id))
+      ).find((candidate) =>
+        JSON.stringify(candidate.normalizedEvent).includes(reply.id),
+      );
+    let wakeupsBefore = 0;
+    let reactionsBefore = 0;
     let lockTransaction: Promise<unknown> | undefined;
     // Safety net: once taken, the row lock can never outlive the case.
     let lockSafety: ReturnType<typeof setTimeout> | undefined;
@@ -21686,17 +21697,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(delivery).toMatchObject({ state: "received" });
         expect(deferred.length).toBeGreaterThan(0);
       });
-      const replyDelivery = async () =>
-        (
-          await db
-            .select()
-            .from(chatDeliveries)
-            .where(eq(chatDeliveries.endpointId, endpoint.id))
-        ).find((candidate) =>
-          JSON.stringify(candidate.normalizedEvent).includes(reply.id),
-        );
-      const wakeupsBefore = wakeup.mock.calls.length;
-      const reactionsBefore = runtime.endpoints.get(endpoint.id)?.reactions.length ?? 0;
+      wakeupsBefore = wakeup.mock.calls.length;
+      reactionsBefore = runtime.endpoints.get(endpoint.id)?.reactions.length ?? 0;
       lockTransaction = holdEndpointLock();
       await entered;
       lockSafety = setTimeout(() => releaseLock(), 4_000);
