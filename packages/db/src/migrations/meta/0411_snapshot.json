@@ -1,6 +1,6 @@
 {
-  "id": "16ca93a7-872c-47b1-967c-bd61073b7188",
-  "prevId": "0c02710e-915e-4791-ab28-8d457b091c6e",
+  "id": "fc7ba8fc-f5c0-4430-99c7-d82f1156b80a",
+  "prevId": "515e0fb2-bd4c-41a2-b1ae-16e16c8b3521",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -35109,6 +35109,42 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rpm_limit": {
+          "name": "rpm_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "package_name": {
+          "name": "package_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_call_compatible": {
+          "name": "tool_call_compatible",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_call_checked_at": {
+          "name": "tool_call_checked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_call_check_error": {
+          "name": "tool_call_check_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {

@@ -2428,12 +2428,19 @@
     {
       "idx": 409,
       "version": "7",
+      "when": 1792400000000,
+      "tag": "0409_model_provider_key_compatibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 410,
+      "version": "7",
       "when": 1792400000001,
       "tag": "0410_provider_usage_snapshots",
       "breakpoints": true
     },
     {
-      "idx": 410,
+      "idx": 411,
       "version": "7",
       "when": 1792400000002,
       "tag": "0411_provider_usage_warning_deliveries",
