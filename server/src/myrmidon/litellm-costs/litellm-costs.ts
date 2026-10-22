@@ -49,6 +49,8 @@ import { reconcileUnpricedCostEvents } from "./reconcile.js";
 // after every model refresh; the attention feed turns the registry into a card.
 import { recordEmptyCatalogSweep } from "./attention.js";
 
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
+
 export const LITELLM_BASE_URL_ENV = "MYRMIDON_LITELLM_BASE_URL";
 export const LITELLM_KEY_SECRET_ENV = "MYRMIDON_LITELLM_KEY_SECRET";
 export const LITELLM_SWEEP_INTERVAL_ENV = "MYRMIDON_LITELLM_COST_INTERVAL_SEC";
@@ -105,8 +107,9 @@ export function readLitellmCostSettings(env: NodeJS.ProcessEnv = process.env): L
     }
   }
   let intervalSec = DEFAULT_SWEEP_INTERVAL_SEC;
-  const raw = env[LITELLM_SWEEP_INTERVAL_ENV]?.trim();
-  if (raw) {
+  const configuredInterval = env[LITELLM_SWEEP_INTERVAL_ENV] ?? liveBehaviorSetting<number | null>("litellmCostIntervalSec");
+  const raw = configuredInterval == null ? undefined : String(configuredInterval);
+  if (raw?.trim()) {
     const value = Number(raw);
     if (Number.isInteger(value) && value >= MIN_SWEEP_INTERVAL_SEC && value <= MAX_SWEEP_INTERVAL_SEC) {
       intervalSec = value;

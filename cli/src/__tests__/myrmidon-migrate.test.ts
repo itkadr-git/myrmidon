@@ -255,8 +255,25 @@ describe("myrmidon:migrate pure guards", () => {
       expect(ok.problems).toEqual([]);
       expect(ok.vendorOnly).toEqual([]);
       expect(ok.exclusions).toEqual([{ kind: "table", name: "browser_use_runs", reason: "absent in target and empty in source" }]);
+      expect(ok.skippedSourceData).toEqual([
+        { table: "browser_use_runs", rows: 0, vendorRelease: "v2026.1012.0", decision: "excluded-empty" },
+      ]);
       const required = new Map([["user", table("user", [col("id"), col("keyboard_shortcuts", { nullable: false })])]]);
       expect(checkCompatibility(analysis, required, index).problems).toEqual(["target-column-requires-value:user.keyboard_shortcuts"]);
+    });
+
+    it("reports a vendor-only column of an empty table as excluded-empty, as the dry-run does", () => {
+      const analysis = analysisOf(
+        [table("agents", [col("id"), col("appearance")]), table("user", [col("id"), col("surprise")])],
+        { agents: 0, user: 0 },
+      );
+      const target = new Map([["agents", table("agents", [col("id")])], ["user", table("user", [col("id")])]]);
+      const result = checkCompatibility(analysis, target, index);
+      // an unknown column of an empty table is still no problem; a known vendor-only one is reported
+      expect(result.problems).toEqual([]);
+      expect(result.skippedSourceData).toEqual([
+        { table: "agents", column: "appearance", rows: 0, vendorRelease: "v2026.1012.0", decision: "excluded-empty" },
+      ]);
     });
 
     it("treats columns dropped in migration chain as exclusions, not missing errors", () => {
@@ -273,6 +290,20 @@ describe("myrmidon:migrate pure guards", () => {
       expect(result.exclusions).toEqual([
         { kind: "column", name: "user.keyboard_shortcuts", reason: "dropped in migration chain; not needed in target" },
       ]);
+    });
+
+    it("accepts unknown tables when acceptUnknownSourceObjects is enabled", () => {
+      const analysis = analysisOf([table("custom_extension", [col("id")])], { custom_extension: 2 });
+      const target = new Map();
+      const rejected = checkCompatibility(analysis, target, index);
+      expect(rejected.problems).toEqual(["table-missing-in-target:custom_extension"]);
+
+      const vendorFlagOnly = checkCompatibility(analysis, target, index, { acceptVendorOnlyData: true });
+      expect(vendorFlagOnly.problems).toEqual(["table-missing-in-target:custom_extension"]);
+
+      const accepted = checkCompatibility(analysis, target, index, { acceptUnknownSourceObjects: true });
+      expect(accepted.problems).toEqual([]);
+      expect(accepted.exclusions).toEqual([{ kind: "table", name: "custom_extension", reason: "unknown source table accepted by flag" }]);
     });
   });
 

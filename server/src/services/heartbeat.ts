@@ -34,6 +34,7 @@ import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./nativ
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
+import { versionKeyEtag } from "../middleware/version-key-etag.js";
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
@@ -657,6 +658,11 @@ import {
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 // myrmidon(1.6.5-BOT-DISK-H4b): general.botDisk.defaultRepo rides the run context.
 import { normalizeStoredBotDiskSettings } from "@paperclipai/shared";
+// myrmidon(1.6.6 NOTIF-PREFS): notification-class filter applied at wake generation.
+import {
+  classifyNotificationWakeReason,
+  notificationWakeAllowed,
+} from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
@@ -753,6 +759,7 @@ import {
   recordSwarmClaimOnCheckoutImpl,
   releaseSwarmClaimsForRunImpl,
 } from "../myrmidon/swarm-claim/hooks.js";
+import { dbAdmissionAllowsClaim, usesDatabaseAdmission } from "../myrmidon/db-run-admission.js";
 import {
   // myrmidon(1.6.5 RUN-FAIRNESS): the fair-share rule and the sweep order.
   DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT,
@@ -1608,7 +1615,7 @@ export function computeTaskDrain(opts: { ttlMs?: number | null } = {}): {
 export function applyTaskDrain(drain: {
   startedAt: Date;
   expiresAt: Date | null;
-}): void {
+} | null): void {
   taskDrainState = drain;
 }
 
@@ -17409,6 +17416,24 @@ export function heartbeatService(
     companyAgents?: AgentOrgRow[],
   ) {
     if (run.status !== "queued") return run;
+    // Recheck at the last centralized queue boundary so sources that bypass
+    // maintenance-aware sweeps cannot start a run after a window opens.
+    const maintenanceWindows = await maintenanceWindowsForAgent(db, run.agentId);
+    if (maintenanceWindows.length > 0) {
+      const wake = run.wakeupRequestId
+        ? await db
+            .select({ requestedByActorType: agentWakeupRequests.requestedByActorType })
+            .from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const chatExempt = isChatWakeExemptFromBotProfileWindow(maintenanceWindows, {
+        contextSource: readNonEmptyString(parseObject(run.contextSnapshot).source) ?? null,
+        requestedByActorType: wake?.requestedByActorType ?? null,
+      });
+      if (!chatExempt) return null;
+    }
     const agent = await getAgent(run.agentId);
     if (!agent) {
       await cancelRunInternal(
@@ -17882,15 +17907,34 @@ export function heartbeatService(
       void emitAgentTaskRun(db, queuedCommentClaim.run);
       return null;
     }
+    // PROCS-2/T2.1: when admission is stored in Postgres, the counters and
+    // the queued->running transition must share one transaction lock. This
+    // keeps two worker processes from both observing the last slot.
+    const useDatabaseAdmission = queuedCommentClaim
+      ? false
+      : usesDatabaseAdmission(await instanceSettings.getGeneral());
+    const dbAdmissionLimits = useDatabaseAdmission
+      ? sharedRunAdmission().limits()
+      : null;
     const claimed = queuedCommentClaim
       ? queuedCommentClaim.run
-      : await withChatControlRecoveryGate(run, "claim", async (tx) =>
-          tx
+      : await withChatControlRecoveryGate(run, "claim", async (tx) => {
+          if (
+            useDatabaseAdmission &&
+            !(await dbAdmissionAllowsClaim(tx, {
+              agentId: run.agentId,
+              agentLimit: parseHeartbeatPolicy(agent).maxConcurrentRuns,
+              globalLimit: dbAdmissionLimits?.maxConcurrentRuns ?? null,
+            }))
+          ) {
+            return null;
+          }
+          return tx
             .update(heartbeatRuns)
             .set({
               status: "running",
               runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
-                    ...legacyControllerClaim(run.runtimeMode),
+              ...legacyControllerClaim(run.runtimeMode),
               responsibleUserId,
               startedAt: run.startedAt ?? claimedAt,
               updatedAt: claimedAt,
@@ -17902,8 +17946,8 @@ export function heartbeatService(
               ),
             )
             .returning()
-            .then((rows) => rows[0] ?? null),
-        );
+            .then((rows) => rows[0] ?? null);
+        });
     if (!claimed) return null;
 
     publishLiveEvent({
@@ -25820,9 +25864,9 @@ export function heartbeatService(
                         ...(nativeGitHubBridge
                           ? {
                               PAPERCLIP_GITHUB_BROKER_URL:
-                                nativeGitHubBridge.env.PAPERCLIP_API_URL,
+                                readProductEnvFrom(nativeGitHubBridge.env, "API_URL"),
                               PAPERCLIP_GITHUB_BRIDGE_TOKEN:
-                                nativeGitHubBridge.env.PAPERCLIP_API_KEY,
+                                readProductEnvFrom(nativeGitHubBridge.env, "API_KEY"),
                             }
                           : {}),
                         ...(nativeMcpServer
@@ -28135,6 +28179,25 @@ export function heartbeatService(
       }
     }
 
+
+    // myrmidon(1.6.6 NOTIF-PREFS): apply the agent's notification preferences
+    // at wake generation. An event-shaped wake (assignment, mention, review)
+    // the agent muted never becomes a run. Manual board wakes bypass the
+    // filter — an operator override is not a notification. Other wake reasons
+    // belong to no configurable class and always pass.
+    if (!opts.manualUserWake) {
+      const notificationClass = classifyNotificationWakeReason(reason);
+      if (
+        notificationClass &&
+        !notificationWakeAllowed(agent.runtimeConfig, reason)
+      ) {
+        logger.info(
+          { agentId, issueId, reason, notificationClass },
+          "wake suppressed by agent notification preferences",
+        );
+        return null;
+      }
+    }
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
       if (isConversation(conversation)) {
@@ -31676,6 +31739,42 @@ export function heartbeatService(
         await new Promise((resolve) => setTimeout(resolve, intervalMs));
       }
     },
+    // myrmidon(PERF-DIET-T): cheap version aggregate for the heartbeat-runs
+    // list ETag. Same predicate shapes as `list` (company, optional agent) but
+    // only aggregates, so an If-None-Match hit answers 304 without fetching
+    // the body. Uses the (companyId, status, updatedAt) index prefix. The
+    // route adds the authorized actor and redacted response shape to this key.
+    listVersionKey: async (
+      companyId: string,
+      agentId?: string,
+      limit?: number,
+      summary?: boolean,
+      actorShape?: string,
+    ): Promise<string> => {
+      const [agg] = await db
+        .select({
+          rowCount: sql<number>`count(*)::int`,
+          maxUpdatedAt: sql<string | null>`max(${heartbeatRuns.updatedAt})`,
+        })
+        .from(heartbeatRuns)
+        .where(
+          agentId
+            ? and(
+                eq(heartbeatRuns.companyId, companyId),
+                eq(heartbeatRuns.agentId, agentId),
+              )
+            : eq(heartbeatRuns.companyId, companyId),
+        );
+      return versionKeyEtag("heartbeat-runs-list", [
+        companyId,
+        agentId ?? "all",
+        limit ?? "default",
+        summary ? "summary" : "full",
+        actorShape ?? "all",
+        agg?.rowCount ?? 0,
+        agg?.maxUpdatedAt ?? null,
+      ]);
+    },
     list: async (
       companyId: string,
       agentId?: string,
@@ -31957,6 +32056,19 @@ export function heartbeatService(
       }),
 
     wakeup: trackWakeup,
+    // myrmidon(PROCS-1.8): apply committed team-liveness settings immediately
+    // when another process publishes settings_changed.
+    applyTeamLiveness: async () => {
+      const liveness = await teamLivenessRead();
+      idleWakeBudget.configure({
+        perMinute: liveness.settings.idlePickupWakeBudgetPerMin,
+        batch: Math.min(
+          liveness.settings.idlePickupWakeBatch,
+          liveness.settings.idlePickupWakeBudgetPerMin,
+        ),
+      });
+    },
+    enqueueWakeup,
     insertReviewAdmissionWakeup,
     dispatchPendingNativeStatusWakeups,
     triggerIssueMonitor,
