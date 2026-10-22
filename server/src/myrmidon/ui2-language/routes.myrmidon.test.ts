@@ -236,9 +236,9 @@ describe("myrmidon(UI2-I18N) ui2 language: writing the preference", () => {
     expect(get.body.catalogs.ru).toEqual(catalog);
   });
 
-  it("rejects invalid custom catalog locale and excessive payload", async () => {
+  it("rejects non-string catalog leaves and excessive payload", async () => {
     const h = harness();
-    await request(h.app).put("/api/myrmidon/ui2/language/me/catalog").send({ language: "fr", catalog: {} }).expect(400);
+    await request(h.app).put("/api/myrmidon/ui2/language/me/catalog").send({ language: "ru", catalog: { language: { label: 42 } } }).expect(400);
     await request(h.app).put("/api/myrmidon/ui2/language/me/catalog").send({ language: "ru", catalog: { a: "x".repeat(270000) } }).expect(400);
   });
 });

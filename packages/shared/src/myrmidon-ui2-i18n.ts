@@ -13,7 +13,14 @@ export const upsertUi2LanguageSchema = z.object({
   language: ui2LanguageSchema,
 });
 
-export const ui2CatalogSchema = z.record(z.string().min(1).max(160), z.unknown())
+const ui2CatalogValueSchema: z.ZodType<unknown> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.record(z.string().min(1).max(160), ui2CatalogValueSchema),
+  ]),
+);
+
+export const ui2CatalogSchema = z.record(z.string().min(1).max(160), ui2CatalogValueSchema)
   .refine((catalog: Record<string, unknown>) => JSON.stringify(catalog).length <= 256 * 1024, "Catalog exceeds 256 KiB")
   .refine((catalog: Record<string, unknown>) => !containsUnsafeKeys(catalog), "Unsafe catalog key");
 
