@@ -2394,7 +2394,28 @@
       "idx": 404,
       "version": "7",
       "when": 1792395504000,
-      "tag": "0404_secret_proposal_rotation_target",
+      "tag": "0404_install_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 405,
+      "version": "7",
+      "when": 1792395505000,
+      "tag": "0405_fleet_sites_client_cert",
+      "breakpoints": true
+    },
+    {
+      "idx": 406,
+      "version": "7",
+      "when": 1792395506000,
+      "tag": "0406_swarm_claim_origin",
+      "breakpoints": true
+    },
+    {
+      "idx": 407,
+      "version": "7",
+      "when": 1792395507000,
+      "tag": "0407_secret_proposal_rotation_target",
       "breakpoints": true
     }
   ]

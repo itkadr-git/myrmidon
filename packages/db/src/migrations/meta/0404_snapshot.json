@@ -1,5 +1,5 @@
 {
-  "id": "0d216c9e-48af-494c-a6a9-0897d5b7a233",
+  "id": "578e3cd6-10df-459d-a72c-92896a1914c6",
   "prevId": "7e3f7ef4-7de6-4184-8423-af78f5609d7f",
   "version": "7",
   "dialect": "postgresql",
@@ -10729,12 +10729,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "rotation_target_secret_id": {
-          "name": "rotation_target_secret_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -10948,19 +10942,6 @@
             "id"
           ],
           "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "company_secret_proposals_rotation_target_secret_id_company_secrets_id_fk": {
-          "name": "company_secret_proposals_rotation_target_secret_id_company_secrets_id_fk",
-          "tableFrom": "company_secret_proposals",
-          "tableTo": "company_secrets",
-          "columnsFrom": [
-            "rotation_target_secret_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -56421,6 +56402,45 @@
           "onUpdate": "no action"
         }
       },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.myrmidon_install_identity": {
+      "name": "myrmidon_install_identity",
+      "schema": "",
+      "columns": {
+        "singleton_key": {
+          "name": "singleton_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "'default'"
+        },
+        "install_id": {
+          "name": "install_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

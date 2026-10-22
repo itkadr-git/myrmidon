@@ -16,7 +16,7 @@ divergence-section: Трек 1 — платформа
 - A `kind=binding` proposal may retarget a path that already holds a company
   secret reference (only the secret part is compared); plain values and
   user-secret bindings still require an exact match.
-- Migration `0404_secret_proposal_rotation_target` adds the nullable column
+- Migration `0407_secret_proposal_rotation_target` adds the nullable column
   `company_secret_proposals.rotation_target_secret_id` with a foreign key.
 
 ## changelog-ru
@@ -32,9 +32,9 @@ divergence-section: Трек 1 — платформа
 - Пропозал `kind=binding` может перенацелить путь, где уже лежит ссылка на секрет
   компании (сравнивается только секретная часть); простые значения и пользовательские
   секреты по-прежнему требуют точного совпадения.
-- Миграция `0404_secret_proposal_rotation_target` добавляет nullable-колонку
+- Миграция `0407_secret_proposal_rotation_target` добавляет nullable-колонку
   `company_secret_proposals.rotation_target_secret_id` с внешним ключом.
 
 ## divergence
 
-| 1.6.6-SECRET-PROPOSAL-ROTATE | Ротация существующего секрета через пропозал (`rotateSecretId`), пре-чек конфликта имени, ретаргет binding-пропозала на secret_ref | `server/src/services/secret-proposals.ts`, `server/src/routes/secrets.ts`, `packages/db/src/schema/company_secret_proposals.ts`, миграция `0404_secret_proposal_rotation_target.sql` и мета, `ui/src/pages/secrets/proposal-review.tsx` | Агентский путь не мог довести ротацию до конца: approve падал 409, ротация только для board | `server/src/__tests__/secret-proposals-routes.test.ts`, `packages/db/src/company-secret-proposals-migration.test.ts` | Когда вендор сам добавит ротацию через пропозалы — удалить поле, колонку и ветки; миграция односторонняя | (этот PR) |
+| 1.6.6-SECRET-PROPOSAL-ROTATE | Ротация существующего секрета через пропозал (`rotateSecretId`), пре-чек конфликта имени, ретаргет binding-пропозала на secret_ref | `server/src/services/secret-proposals.ts`, `server/src/routes/secrets.ts`, `packages/db/src/schema/company_secret_proposals.ts`, миграция `0407_secret_proposal_rotation_target.sql` и мета, `ui/src/pages/secrets/proposal-review.tsx` | Агентский путь не мог довести ротацию до конца: approve падал 409, ротация только для board | `server/src/__tests__/secret-proposals-routes.test.ts`, `packages/db/src/company-secret-proposals-migration.test.ts` | Когда вендор сам добавит ротацию через пропозалы — удалить поле, колонку и ветки; миграция односторонняя | (этот PR) |

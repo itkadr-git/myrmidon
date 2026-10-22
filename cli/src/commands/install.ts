@@ -87,7 +87,7 @@ export function resolveGitInstallWorkspacePackages(checkoutPath: string): Releas
 
 export function assertSupportedNodeVersion(): void {
   if (!isSupportedNodeVersion(process.versions.node)) {
-    throw new Error(`Installing or updating Paperclip requires Node.js ${MINIMUM_NODE_VERSION} or newer (found ${process.version} at ${process.execPath}). Put a supported Node bin directory first on PATH and run 'npx paperclipai@latest install --yes' to re-pin an existing managed install.`);
+    throw new Error(`Installing or updating Myrmidon requires Node.js ${MINIMUM_NODE_VERSION} or newer (found ${process.version} at ${process.execPath}). Put a supported Node bin directory first on PATH and run 'npx myrmidon@latest install --yes' to re-pin an existing managed install.`);
   }
 }
 
@@ -121,7 +121,7 @@ function parseResolvedVersion(stdout: string): string {
 export async function resolvePublishedVersion(spec: string, runCommand: CommandRunner): Promise<string> {
   const result = await runCommand(
     "npm",
-    ["view", `paperclipai@${spec}`, "version", "--json", `--registry=${PUBLIC_NPM_REGISTRY}`],
+    ["view", `myrmidon@${spec}`, "version", "--json", `--registry=${PUBLIC_NPM_REGISTRY}`],
     { maxBuffer: 1024 * 1024 },
   );
   return parseResolvedVersion(result.stdout);
@@ -214,7 +214,7 @@ export async function installNpmPayload(
         "install",
         "--prefix",
         stagingPath,
-        `paperclipai@${version}`,
+        `myrmidon@${version}`,
         `--registry=${PUBLIC_NPM_REGISTRY}`,
         `--@paperclipai:registry=${PUBLIC_NPM_REGISTRY}`,
         "--no-audit",
@@ -379,13 +379,13 @@ export async function installCommand(
       writeManagedShim(paths); pruneInstallPayloads(nextManifest, paths); return payload;
     }, paths);
     await ensureShimOnPath(options);
-    console.log(pc.green(`${installed.reused ? "Activated cached" : "Installed"} paperclipai git payload ${sha.slice(0, 12)}.`));
+    console.log(pc.green(`${installed.reused ? "Activated cached" : "Installed"} myrmidon git payload ${sha.slice(0, 12)}.`));
     return;
   }
   const request = resolveNpmInstallRequest(options);
-  console.log(`Resolving paperclipai@${request.spec} from ${PUBLIC_NPM_REGISTRY}...`);
+  console.log(`Resolving myrmidon@${request.spec} from ${PUBLIC_NPM_REGISTRY}...`);
   const version = await resolvePublishedVersion(request.spec, runCommand);
-  console.log(`Installing paperclipai@${version}...`);
+  console.log(`Installing myrmidon@${version}...`);
 
   const paths = resolveInstallStorePaths();
   const installed = await withInstallStoreLock(async () => {
@@ -415,7 +415,7 @@ export async function installCommand(
   }, paths);
   await ensureShimOnPath(options);
 
-  console.log(pc.green(`${installed.reused ? "Activated cached" : "Installed"} paperclipai ${version} (${request.channel}).`));
+  console.log(pc.green(`${installed.reused ? "Activated cached" : "Installed"} myrmidon ${version} (${request.channel}).`));
   console.log(pc.dim(`Payload: ${installed.payloadPath}`));
-  console.log(`Run ${pc.cyan("paperclipai --version")} to verify the managed install.`);
+  console.log(`Run ${pc.cyan("myrmidon --version")} to verify the managed install.`);
 }
