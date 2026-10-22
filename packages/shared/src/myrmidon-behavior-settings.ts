@@ -82,7 +82,81 @@ export const behaviorSettingRegistry = new BehaviorSettingRegistry();
 // Register runs-and-queue settings before the server builds the live settings view.
 import "./myrmidon-runs-queue-settings.js";
 
-// Example settings for self-validation - these will be removed in production
+const positiveInteger = (allowZero = false) => (value: unknown): number | null => {
+  const num = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(num) && (allowZero ? num >= 0 : num > 0) ? num : null;
+};
+const nonEmptyString = (value: unknown): string | null =>
+  typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+const optionalString = (value: unknown): string | null =>
+  typeof value === "string" ? value.trim() : null;
+const booleanSetting = (value: unknown): boolean | null => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const raw = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(raw)) return true;
+    if (["false", "0", "no", "off"].includes(raw)) return false;
+  }
+  return null;
+};
+
+// SETTINGS-TO-UI D: behavior settings that are safe to edit at instance scope.
+// Service addresses and secret names remain deployment/secret-store owned.
+const dSettings: Array<{
+  key: string;
+  envName: string;
+  default: unknown;
+  section: "channels" | "models";
+  validate: (value: unknown) => unknown | null;
+}> = [
+  { key: "telegramDmConversations", envName: "MYRMIDON_TELEGRAM_DM_CONVERSATIONS", default: "", section: "channels", validate: (value) => typeof value === "string" ? value : null },
+  { key: "telegramDmStatus", envName: "MYRMIDON_TELEGRAM_DM_STATUS", default: false, section: "channels", validate: booleanSetting },
+  { key: "telegramSplitMaxParts", envName: "MYRMIDON_TELEGRAM_SPLIT_MAX_PARTS", default: 0, section: "channels", validate: positiveInteger(true) },
+  { key: "telegramFileLimitBytes", envName: "MYRMIDON_TELEGRAM_FILE_LIMIT_BYTES", default: 10 * 1024 * 1024, section: "channels", validate: positiveInteger() },
+  { key: "paperclipAttachmentMaxBytes", envName: "PAPERCLIP_ATTACHMENT_MAX_BYTES", default: 10 * 1024 * 1024, section: "channels", validate: positiveInteger() },
+  { key: "chatCrossChannelMessages", envName: "MYRMIDON_CHAT_CROSS_CHANNEL_MESSAGES", default: 12, section: "channels", validate: positiveInteger(true) },
+  { key: "chatCrossChannelMessageChars", envName: "MYRMIDON_CHAT_CROSS_CHANNEL_MESSAGE_CHARS", default: 600, section: "channels", validate: positiveInteger(true) },
+  { key: "chatCrossChannelTotalChars", envName: "MYRMIDON_CHAT_CROSS_CHANNEL_TOTAL_CHARS", default: 4000, section: "channels", validate: positiveInteger(true) },
+  { key: "chatCrossChannelLookbackHours", envName: "MYRMIDON_CHAT_CROSS_CHANNEL_LOOKBACK_HOURS", default: 168, section: "channels", validate: positiveInteger(true) },
+  { key: "chatReconcileIntervalMs", envName: "MYRMIDON_CHAT_RECONCILE_INTERVAL_MS", default: null, section: "channels", validate: (value) => value === null ? null : positiveInteger()(value) },
+  { key: "litellmCostIntervalSec", envName: "MYRMIDON_LITELLM_COST_INTERVAL_SEC", default: 300, section: "models", validate: positiveInteger() },
+  { key: "botCompressionThresholdTokens", envName: "MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS", default: 100000, section: "models", validate: positiveInteger(true) },
+  { key: "botModelContextLengths", envName: "MYRMIDON_BOT_MODEL_CONTEXT_LENGTH", default: {}, section: "models", validate: (value) => typeof value === "object" && value !== null ? value : null },
+  { key: "botAuxTitleModel", envName: "MYRMIDON_BOT_AUX_TITLE_MODEL", default: null, section: "models", validate: optionalString },
+  { key: "botAuxCompressionModel", envName: "MYRMIDON_BOT_AUX_COMPRESSION_MODEL", default: null, section: "models", validate: optionalString },
+  { key: "botHelperModel", envName: "MYRMIDON_BOT_HELPER_MODEL", default: "", section: "models", validate: nonEmptyString },
+  { key: "ctoChatModel", envName: "MYRMIDON_CTO_CHAT_MODEL", default: "dashscope-qwen-flash", section: "models", validate: nonEmptyString },
+  { key: "ctoChatTimeoutSec", envName: "MYRMIDON_CTO_CHAT_TIMEOUT_SEC", default: 90, section: "models", validate: positiveInteger() },
+  { key: "ctoChatMaxTasks", envName: "MYRMIDON_CTO_CHAT_MAX_TASKS", default: 8, section: "models", validate: positiveInteger() },
+  { key: "evalsModel", envName: "MYRMIDON_EVALS_MODEL", default: "", section: "models", validate: nonEmptyString },
+  { key: "evalsTimeoutSec", envName: "MYRMIDON_EVALS_TIMEOUT_SEC", default: 120, section: "models", validate: positiveInteger() },
+  { key: "evalsLangfuseExport", envName: "MYRMIDON_EVALS_LANGFUSE", default: false, section: "models", validate: booleanSetting },
+  { key: "ocrBackend", envName: "MYRMIDON_OCR_BACKEND", default: "ragflow", section: "models", validate: (value) => value === "ragflow" || value === "litellm" ? value : null },
+  { key: "ocrModel", envName: "MYRMIDON_OCR_MODEL", default: "", section: "models", validate: nonEmptyString },
+  { key: "ocrMaxBytes", envName: "MYRMIDON_OCR_MAX_BYTES", default: 32 * 1024 * 1024, section: "models", validate: positiveInteger() },
+  { key: "ocrMaxPages", envName: "MYRMIDON_OCR_MAX_PAGES", default: 500, section: "models", validate: positiveInteger() },
+  { key: "ocrMaxChars", envName: "MYRMIDON_OCR_MAX_CHARS", default: 2_000_000, section: "models", validate: positiveInteger() },
+  { key: "ocrTimeoutSec", envName: "MYRMIDON_OCR_TIMEOUT_SEC", default: 120, section: "models", validate: positiveInteger() },
+];
+for (const setting of dSettings) {
+  behaviorSettingRegistry.register({
+    key: setting.key,
+    envName: setting.envName,
+    default: setting.default,
+    scope: "instance",
+    section: setting.section,
+    valueType:
+      typeof setting.default === "boolean"
+        ? "boolean"
+        : typeof setting.default === "number"
+          ? "number"
+          : setting.default !== null && typeof setting.default === "object"
+            ? "json"
+            : "string",
+    validate: setting.validate,
+  });
+}
+
 behaviorSettingRegistry.register({
   key: "debug_mode",
   envName: "MYRMIDON_DEBUG_MODE",
