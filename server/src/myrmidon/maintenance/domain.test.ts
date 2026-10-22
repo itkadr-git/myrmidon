@@ -143,6 +143,8 @@ describe("maintenance tick decisions", () => {
   });
 
   describe("stuck open window backstop", () => {
+    // The backstop is for agent-scoped profile maintenance only.
+    const entering = window({ type: "agent", id: "agent-a" });
     it("an entering window past deadline + grace is stuck", () => {
       const past = new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000);
       expect(isStuckOpenWindow(entering, past)).toBe(true);
