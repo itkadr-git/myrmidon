@@ -140,6 +140,7 @@ import {
   lt,
   lte,
   ne,
+  not,
   notInArray,
   or,
   sql,
@@ -20026,6 +20027,108 @@ export function heartbeatService(
       : DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT;
   }
 
+  // myrmidon(OPE-8268 WAKE-STALL C): the invariant "a deferred wake waits only
+  // behind a live lock or an effective hold" had no owner once the lock was
+  // free. A wake could outlive its lock because (a) the lock was cleared by a
+  // path that does not drain the queue (watchdog, recovery resolution,
+  // reassignment, hold lifted later), (b) the task closed through a path that
+  // does not cancel waits, or (c) the wake was parked on an already closed
+  // task. The older stranded scan above only revisits comment-carrying wakes
+  // whose latest run is a legacy run, and the release drain stops at an
+  // acknowledged operator Stop. This pass is idempotent and bounded, so one
+  // pass after deploy is also the one-off cleanup of the records left behind.
+  async function reconcileStrandedDeferredWakes(): Promise<{ cancelledTerminal: number; revisited: number }> {
+    const now = Date.now();
+    const settleBefore = new Date(now - 2 * 60_000);
+    // Wakes of a closed task are dead input: the comment is saved on the task,
+    // the wake itself can only start work nobody wants. Cancel them like the
+    // close transition does (DEFERRED-WAKE-LEAK), with the same marker.
+    const closed = await db.update(agentWakeupRequests).set({
+      status: "cancelled", error: "issue_closed", finishedAt: new Date(), updatedAt: new Date(),
+    }).where(and(
+      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      isNull(agentWakeupRequests.runId),
+      lte(agentWakeupRequests.requestedAt, new Date(now - 10 * 60_000)),
+      exists(db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+        inArray(issues.status, ["done", "cancelled"]),
+        isNull(issues.executionRunId),
+      ))),
+    )).returning({ id: agentWakeupRequests.id });
+
+    // Open tasks: hand the free lock's queue to the ordinary release drain, so
+    // every gate (pause holds, handoff, liveness of comments, agent state)
+    // applies. A task under an effective "do not replay" hold is skipped here:
+    // it keeps waiting by design and is picked up in the first pass after the
+    // hold is lifted, with no separate wake-up.
+    const candidates = await db.select({ wake: agentWakeupRequests })
+      .from(agentWakeupRequests)
+      .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`))
+      .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
+      .where(and(
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        isNull(agentWakeupRequests.runId),
+        isNull(issues.executionRunId),
+        notInArray(issues.status, ["done", "cancelled"]),
+        sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+        lte(agentWakeupRequests.requestedAt, settleBefore),
+        lte(agentWakeupRequests.updatedAt, new Date(now - 30_000)),
+        not(exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, issues.companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
+          executionBlockerPredicate(),
+        )))),
+      ))
+      .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
+    const seen = new Set<string>();
+    let revisited = 0;
+    for (const { wake } of candidates) {
+      const issueId = String(wake.payload?.issueId);
+      if (seen.has(issueId)) continue;
+      seen.add(issueId);
+      // Move the cursor first so a task the drain cannot advance never starves
+      // the later ones in this bounded scan.
+      const [claimed] = await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
+        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        lte(agentWakeupRequests.updatedAt, new Date(now - 30_000)),
+      )).returning({ id: agentWakeupRequests.id });
+      if (!claimed) continue;
+      const runsOfIssue = db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, wake.companyId),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+      ));
+      const [latestOfAgent] = await runsOfIssue.orderBy(desc(sql`${heartbeatRuns.agentId} = ${wake.agentId}`),
+        desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+      // A run that is still alive owns the next turn; its own release drains.
+      if (!latestOfAgent || !isHeartbeatRunTerminalStatus(latestOfAgent.status)) continue;
+      const [live] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, wake.companyId),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+      )).limit(1);
+      if (live) continue;
+      const [oldest] = await db.select({ at: sql<Date>`min(${agentWakeupRequests.requestedAt})` })
+        .from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, wake.companyId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+        ));
+      const oldestAt = oldest?.at ? new Date(oldest.at) : null;
+      const postdatesRun = Boolean(oldestAt && latestOfAgent.finishedAt && oldestAt > latestOfAgent.finishedAt);
+      revisited++;
+      await releaseIssueExecutionAndPromote(latestOfAgent, {
+        suppressImmediateRecovery: true, deferredWakesPostdateRun: postdatesRun,
+      }).catch(err => {
+        logger.warn({ err, wakeId: wake.id, issueId }, "failed to advance stranded deferred wake");
+      });
+    }
+    if (closed.length || revisited) {
+      logger.info({ cancelledTerminal: closed.length, revisited }, "stranded deferred wake reconcile");
+    }
+    return { cancelledTerminal: closed.length, revisited };
+  }
+
   async function resumeQueuedRuns() {
     const schedulingSuppression = await getSchedulingSuppression();
     if (schedulingSuppression.suppressed) {
@@ -20092,6 +20195,10 @@ export function heartbeatService(
         logger.warn({ err, queueId: wake.id }, "failed to promote stranded legacy comments");
       });
     }
+
+    await reconcileStrandedDeferredWakes().catch(err => {
+      logger.warn({ err }, "stranded deferred wake reconcile failed");
+    });
 
     // The cancellation marker is durable intent. Retry while its exact queue
     // is still deferred, including after a failed cleanup promotion or restart.
@@ -27948,7 +28055,7 @@ export function heartbeatService(
 
   async function releaseIssueExecutionAndPromote(
     run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: { suppressImmediateRecovery?: boolean; deferredWakesPostdateRun?: boolean } = {},
   ) {
     // myrmidon(1.6-SWARM): the run is done holding its issue — release the
     // claim so the task returns to its role queue and the next agent wakes.
@@ -27964,6 +28071,7 @@ export function heartbeatService(
         runId: run.id,
         now: new Date(),
         suppressImmediateRecovery: options.suppressImmediateRecovery,
+        deferredWakesPostdateRun: options.deferredWakesPostdateRun,
       });
       await applyWakeQueuePostCommitEffects(postCommitEffects);
     } catch (error) {
@@ -32106,6 +32214,7 @@ export function heartbeatService(
     retryScheduledRetryNow,
 
     resumeQueuedRuns,
+    reconcileStrandedDeferredWakes,
 
     // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): one pass over the agents
     // that have a queued run and no running run. The 30 s worker timer calls

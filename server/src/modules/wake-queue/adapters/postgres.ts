@@ -1173,7 +1173,8 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           executionCancellationAcknowledged:
             run.status === "cancelled" &&
             (parseObject(run.resultJson?.executionCancellation).state === "acknowledged" || isAcknowledgedNativeStop(run)) &&
-            !interruptedQueue,
+            !interruptedQueue &&
+            !input.deferredWakesPostdateRun,
         };
         const preDrain = decidePreDrain(preDrainFacts);
 
