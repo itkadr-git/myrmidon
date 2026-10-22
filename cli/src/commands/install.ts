@@ -15,6 +15,7 @@ import {
   pruneInstallPayloads,
   readInstallManifest,
   resolveInstallStorePaths,
+  resolvePayloadPackageDir,
   withInstallStoreLock,
   writeInstallManifestAtomic,
   writeManagedShim,
@@ -166,7 +167,7 @@ export async function resolveGitHubRef(repo: string, ref: string, runCommand: Co
 }
 
 function payloadEntrypoint(payloadPath: string): string {
-  return path.join(payloadPath, "node_modules", "paperclipai", "dist", "index.js");
+  return path.join(resolvePayloadPackageDir(payloadPath), "dist", "index.js");
 }
 
 export async function smokePayload(payloadPath: string, expectedVersion: string, runCommand: CommandRunner): Promise<void> {
@@ -246,7 +247,7 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
   const identifier = sha.slice(0, 12);
   const payloadPath = payloadPathFor(paths, "git", identifier);
   if (fs.existsSync(payloadPath)) {
-    const metadata = JSON.parse(fs.readFileSync(path.join(payloadPath, "node_modules", "paperclipai", "package.json"), "utf8")) as { version: string };
+    const metadata = JSON.parse(fs.readFileSync(path.join(resolvePayloadPackageDir(payloadPath), "package.json"), "utf8")) as { version: string };
     await smokePayload(payloadPath, metadata.version, runCommand);
     return { payloadPath, reused: true, version: metadata.version };
   }

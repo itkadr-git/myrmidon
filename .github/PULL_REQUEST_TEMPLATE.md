@@ -88,14 +88,28 @@
   If no AI model was used, write "None — human-authored".
 -->
 
--
+Model: OpenAI GPT-6 Luna via Hermes Agent; exact provider model ID, context window, and capabilities are not exposed to this agent runtime and must be confirmed from the runtime configuration before submission.
 
 ## Checklist
 
+- [x] Thinking path included for this change.
+- [x] Model family/runtime specified; exact provider model ID, context window, and capabilities require confirmation from runtime configuration and are not asserted here.
+- [ ] ROADMAP.md checked for duplicates: not verified in this run.
+- [x] Related PR search run: #1343 and #1355 are duplicate open branches; #1355 will remain open until transfer to #1343 is verified.
+- [x] Tracking issue is internal; no internal issue URL is added to this public PR.
+- [x] Existing branch retained for the canonical PR; no third PR will be created.
+- [ ] Local tests were not run; project policy requires CI-only verification.
+- [x] Added endpoint regressions for authorization/redaction changes with the same If-None-Match value.
+- [x] Updated English/Russian operator documentation for 60-second polling.
+- [x] Documented stale-response risks and authorization behavior below.
+- [ ] CI for the updated head is pending.
+- [ ] Greptile status requires confirmation.
+- [ ] Reviewer findings will be addressed before merge.
+
 - [ ] I have included a thinking path that traces from project context to this change
 - [ ] I have specified the model used (with version and capability details)
-- [ ] I have checked ROADMAP.md and confirmed this PR does not duplicate planned core work
-- [ ] I have searched GitHub for duplicate or related PRs and linked them above
+- [ ] I have checked ROADMAP.md and confirmed this PR does not duplicate planned core work (record result and links above)
+- [ ] I have searched GitHub for duplicate or related PRs and linked them above (record result and links above)
 - [ ] I have either (a) linked existing issues with `Fixes: #` / `Closes #` / `Refs #` OR (b) described the issue in-PR following the relevant issue template
 - [ ] I have not referenced internal/instance-local Paperclip issues or links (only public GitHub `#NNN` / `github.com/paperclipai/paperclip` URLs)
 - [ ] My branch name describes the change (e.g. `docs/...`, `fix/...`) and contains no internal Paperclip ticket id or instance-derived details

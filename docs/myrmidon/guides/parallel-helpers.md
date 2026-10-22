@@ -48,8 +48,8 @@ with the previous and next values.
 |---|---|---|
 | **Helpers per agent (ceiling)** | The highest value any agent card may set; cards above it are clamped at compile time. The ceiling itself has no built-in upper bound (HELPERS-NO-CAP): the saved number is the limit, and a saved ceiling above 50 only shows a host-load warning on the settings page — it is never clamped or rejected. | `10` |
 | **Default helpers per agent** | What an agent gets when its card names no limit. New agents inherit it. Never resolved above the ceiling. | `2` |
-| **Shared build slots** | Concurrent build slots on the shared dev host — an input to the capacity hint only, it never clamps a card. Empty = unknown. | unset |
-| **Dev host memory, MB** | Memory of the host running the bots — also only an input to the capacity hint. Empty = unknown. | unset |
+| **Shared build slots** | Concurrent build slots on the shared dev host — an input to the capacity hint only, it never clamps a card. Empty = unknown; saving an empty field sends `null` and removes the stored hint. | unset |
+| **Dev host memory, MB** | Memory of the host running the bots — also only an input to the capacity hint. Empty = unknown; saving an empty field sends `null` and removes the stored hint. | unset |
 
 Leave a field empty to keep the built-in default. The panel shows the values
 in force («In force: ceiling …, default … per agent»).

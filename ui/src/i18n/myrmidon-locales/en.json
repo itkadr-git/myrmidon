@@ -320,6 +320,7 @@
     "export": "Export",
     "import": "Import",
     "members": "Members",
+    "users": "Users",
     "secrets": "Secrets",
     "profile": "Profile",
     "environments": "Environments",
@@ -839,6 +840,22 @@
     "archiving": "Archiving...",
     "alreadyArchived": "Already archived",
     "failedToArchive": "Failed to archive organization",
+    "policies": "Company policies",
+    "feedbackSharing": "Share feedback data",
+    "feedbackSharingHint": "Allow votes and feedback traces from this organization to be shared. Enabling records your consent.",
+    "responsibleUser": "Responsible user",
+    "responsibleUserHint": "Default owner for work that has no assignee.",
+    "responsibleUserNone": "Not set",
+    "responsibleUsersLoadFailed": "Could not load users",
+    "pauseHint": "Pausing stops all agents of this organization from starting new work. Resume to continue.",
+    "pausedNotice": "This organization is paused.",
+    "pauseOrganization": "Pause organization",
+    "resumeOrganization": "Resume organization",
+    "pauseConfirm": "Pause organization \"{{name}}\"? Agents will stop starting new work until it is resumed.",
+    "resumeConfirm": "Resume organization \"{{name}}\"?",
+    "pausing": "Pausing...",
+    "resuming": "Resuming...",
+    "failedToPauseResume": "Failed to change organization state",
     "deploymentAndAuth": "Deployment and auth",
     "localTrustedMode": "Local trusted mode is optimized for a local operator. Browser requests run as local board context and no sign-in is required.",
     "authenticatedPublicMode": "Authenticated public mode requires sign-in for board access and is intended for public URLs.",
@@ -1207,35 +1224,55 @@
     "saveFailed": "Could not save"
   },
   "licensing": {
-    "title": "Licensing",
-    "description": "Installation id and licenses of the closed connector modules. A client copies the license request and sends it to the owner; the owner signs a license here. The signing key stays on the server.",
-    "loading": "Loading licensing…",
+    "title": "Licenses",
+    "description": "Licenses of the closed connector modules installed on this server. Copy the license request and send it to the vendor; install the license you receive here — the modules on this server read it from the same file.",
+    "loading": "Loading licenses…",
+    "adminOnly": "Only the instance administrator can manage licenses.",
     "installId": "Installation id:",
     "sourceEnv": "The id is set by an environment override, not derived from the machine id. Make sure the modules use the same value.",
-    "sourceGenerated": "No machine id found: the id was generated and cached. Mount the host machine id read-only, otherwise a new install may get a new id and its license stops matching.",
-    "requestModules": "Modules in the request",
+    "sourceGenerated": "No machine id found: the id was generated and cached. Mount the host machine id read-only, otherwise a new installation may get a new id and the license will stop matching.",
+    "statusTitle": "License state",
+    "notInstalled": "not installed",
+    "licensePath": "License file: {{path}}",
+    "sourceIsEnv": "The license is set by the MYR_LICENSE variable of the board.",
+    "notShared": "{{path}} is inside the board container and not mounted from the host: modules on the host will not see a license saved here. Mount the host license directory into the board read-write (see the licensing guide).",
+    "state": {
+      "validForever": "Valid, no expiry",
+      "validUntil": "Valid until {{date}}",
+      "expiring": "Expires {{date}}",
+      "expired": "Expired",
+      "wrong_instance": "Not for this installation",
+      "missing": "No license",
+      "not_granted": "Not included in the license",
+      "bad_signature": "Invalid signature",
+      "invalid": "License damaged or unreadable"
+    },
+    "requestTitle": "Request a license",
+    "requestHint": "Pick the modules, copy the request and send it to the vendor in one message.",
     "requestLabel": "License request",
-    "copyRequest": "Copy license request",
+    "copyRequest": "Copy request",
     "copied": "Copied",
-    "issueTitle": "Issue a license",
-    "issuerNotConfigured": "The license signing key is not configured on this server (MYRMIDON_LICENSE_ISSUER_KEY_FILE). Issuing is unavailable.",
-    "pasteLabel": "License request from the client",
-    "notARequest": "This does not look like a license request. Ask the client to press \"Copy license request\" again.",
-    "manualId": "Or enter the installation id manually",
-    "modules": "Modules",
-    "days": "Term, days",
-    "noExpiry": "No expiry",
-    "client": "Client / watermark",
-    "issue": "Issue license",
-    "issuing": "Issuing…",
-    "issueFailed": "Could not issue the license. Check the fields and try again.",
-    "resultLabel": "License",
-    "copyLicense": "Copy license",
-    "download": "Download file",
-    "installHint": "Place the text into the license file of the modules on that installation.",
-    "issuedTitle": "Issued licenses",
-    "issuedEmpty": "No licenses issued yet.",
-    "until": "until {{date}}"
+    "installTitle": "Install a license",
+    "pasteLicense": "License (one line starting with MYR1.)",
+    "loadFile": "Load license.key file",
+    "save": "Save license",
+    "saving": "Saving…",
+    "saved": "License saved. The modules pick it up on their next check, no restart needed.",
+    "saveError": {
+      "badFormat": "This is not a license: expected one line starting with MYR1.",
+      "badPayload": "The license content is damaged. Ask the vendor for the file again.",
+      "badSignature": "The license signature is invalid: the text was changed or it was not issued by the vendor.",
+      "unsupportedRev": "This license format is not supported by this board version. Update the board.",
+      "instanceMismatch": "This license was issued for another installation: the installation id does not match. Send the vendor the request from this screen.",
+      "expired": "This license has already expired. Ask the vendor for a new one.",
+      "noCore": "This license does not allow any module to start.",
+      "envOverride": "The license is set by the MYR_LICENSE variable of the board, so a license cannot be saved here. Change the variable or remove it to use the license file.",
+      "unwritable": "Cannot write the license file {{path}}: the host license directory is not mounted into the board for writing (see the licensing guide).",
+      "fileUnreadable": "Cannot read the selected file.",
+      "generic": "Could not save the license. Try again."
+    },
+    "banner": "A closed module has no valid license: {{modules}}.",
+    "bannerLink": "Open Licenses"
   },
   "remoteSites": {
     "title": "Remote sites",
@@ -1271,6 +1308,101 @@
       "move": "Move",
       "drain": "Drain",
       "resume": "Resume"
+    }
+  },
+  "swarmClaim": {
+    "title": "Self-organization (swarm)",
+    "intro": "The board itself matches a free agent to each unassigned task by caste and scent, and wakes that agent on its own task. Every value applies without a restart — the server re-reads these settings on each claim and sweep tick. Turning the swarm off releases the live leases immediately; assignees are not touched. Environment variables stay forced overrides; each field shows whether the saved value or the override is in force.",
+    "enableLabel": "Enable the swarm",
+    "enableHelp": "One switch for the whole matching pipeline. When it is on, an unassigned task with a caste waits in that caste's queue until a free agent appears.",
+    "sourceSaved": "Saved here",
+    "sourceEnv": "Environment override",
+    "sourceDefault": "Default",
+    "statusLine": "{{queued}} unassigned task(s) waiting · {{claimed}} claimed in the last hour · {{cancelled}} cancelled in the last hour",
+    "pheromonesTitle": "Pheromones",
+    "pheromonesHelp": "The priority → strength mapping seeds a task's pheromone; waiting adds strength (aging) and failed runs subtract it (evaporation) until the task changes. The queue orders by the effective strength.",
+    "pheromone": {
+      "critical": {
+        "label": "Critical (P0) strength",
+        "help": "Strength a new critical (P0) task starts with."
+      },
+      "high": {
+        "label": "High strength",
+        "help": "Strength a new high task starts with."
+      },
+      "medium": {
+        "label": "Medium strength",
+        "help": "Strength a new medium task starts with."
+      },
+      "low": {
+        "label": "Low strength",
+        "help": "Strength a new low task starts with."
+      },
+      "agingStepHours": {
+        "label": "Aging step, hours",
+        "help": "How many hours of waiting make one aging step."
+      },
+      "agingStep": {
+        "label": "Aging increment",
+        "help": "Strength added per aging step."
+      },
+      "agingCap": {
+        "label": "Aging cap",
+        "help": "Total strength aging can add to one task."
+      },
+      "failPenalty": {
+        "label": "Evaporation penalty per failed run",
+        "help": "Strength subtracted per failed run since the last task change."
+      }
+    },
+    "p0Label": "P0 preempts the queue",
+    "p0Help": "On — a critical task is the top of the queue. Off — the queue is strictly by effective strength.",
+    "advanced": "Advanced",
+    "advancedLabel": {
+      "leaseTtlSec": "Lease TTL, seconds",
+      "maxActiveTasks": "Max active tasks per agent",
+      "sweepIntervalSec": "Sweep interval, seconds"
+    },
+    "help": {
+      "leaseTtlSec": "How long a claim on a task lasts before it expires and the task returns to the queue (60–86400 seconds).",
+      "maxActiveTasks": "Most tasks one agent may hold at once (1–100). Leave empty for no ceiling.",
+      "sweepIntervalSec": "How often the board sweeps for expired claims and re-matches tasks (5 seconds or more)."
+    },
+    "noCeilingPlaceholder": "No ceiling",
+    "requiredPlaceholder": "Required",
+    "saving": "Saving...",
+    "save": "Save self-organization settings",
+    "journalTitle": "Change journal",
+    "journalHelp": "Who changed the swarm settings, and when (newest first).",
+    "journalEmpty": "No changes recorded yet.",
+    "journalNoKeys": "(no keys)",
+    "loading": "Loading self-organization settings...",
+    "saveFailed": "Saving the self-organization settings failed.",
+    "loadFailed": "Failed to load the self-organization settings.",
+    "releasedNote": "Swarm switched off: {{released}} live lease(s) released.",
+    "err": {
+      "leaseTtlSec": "Enter a whole number from 60 to 86400",
+      "maxActiveTasks": "Enter a whole number from 1 to 100, or leave it empty for no ceiling",
+      "sweepIntervalSec": "Enter a whole number of at least 5",
+      "pheromone": "Enter a whole number from 0 to 100000, or leave it empty for the default"
+    },
+    "cooling": {
+      "title": "Task cooling",
+      "intro": "How long a task waits before its next automatic wake after a stale run. One rule for the whole board (the wake-task guard): base × 2^(attempts − 1), clamped to the ceiling. Applies without a restart; the swarm-claim settings above are untouched.",
+      "loading": "Loading the cooling settings...",
+      "gateLabel": "Drop wakes without a task",
+      "gateHelp": "On — an automatic wake that names no existing task closes as skipped before any run starts (0 tokens). Off — such wakes are recorded as before.",
+      "baseLabel": "Cooldown base, minutes",
+      "baseHelp": "The first cooling window after a stale automatic run (1–1440). Empty uses the default, 30.",
+      "ceilingLabel": "Cooldown ceiling, hours",
+      "ceilingHelp": "The largest window after repeated stale runs (1–168). Empty uses the default, 24.",
+      "save": "Save cooling settings",
+      "saveFailed": "Saving the cooling settings failed.",
+      "savedNote": "Cooling settings saved — they apply on the next wake, no restart.",
+      "err": {
+        "cooldownBaseMin": "Enter a whole number from 1 to 1440, or leave it empty for the default",
+        "cooldownCeilingHours": "Enter a whole number from 1 to 168, or leave it empty for the default"
+      }
     }
   }
 }

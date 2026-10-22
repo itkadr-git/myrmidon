@@ -178,11 +178,13 @@ export function ChannelSettingsPanelView({
   onSave,
   pending,
   error,
+  saved,
 }: {
   view: ChannelSettingsView | null | undefined;
   onSave: (patch: ChannelSettingsPatch) => void;
   pending: boolean;
   error: string | null;
+  saved: boolean;
 }) {
   const [draft, setDraft] = useState<StringDraft | null>(null);
 
@@ -232,8 +234,13 @@ export function ChannelSettingsPanelView({
         </p>
       </div>
 
+      {saved && !pending && !error ? (
+        <div role="status" data-testid="channel-settings-saved" className="text-sm text-muted-foreground">
+          Channel settings saved.
+        </div>
+      ) : null}
       {error ? (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <div role="alert" data-testid="channel-settings-save-error" className="text-sm text-destructive">
           {error}
         </div>
       ) : null}
@@ -339,6 +346,7 @@ export function ChannelSettingsPanelView({
 export function ChannelSettingsPanel() {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
   const query = useQuery({
     queryKey: channelSettingsQueryKey,
     queryFn: () => channelSettingsApi.get(),
@@ -346,11 +354,15 @@ export function ChannelSettingsPanel() {
   });
   const save = useMutation({
     mutationFn: channelSettingsApi.update,
-    onMutate: () => setError(null),
+    onMutate: () => {
+      setError(null);
+      setSaved(false);
+    },
     onError: (err) =>
       setError(err instanceof Error ? err.message : "Saving the channel settings failed."),
     onSuccess: async () => {
       setError(null);
+      setSaved(true);
       await queryClient.invalidateQueries({ queryKey: channelSettingsQueryKey });
     },
   });
@@ -369,6 +381,7 @@ export function ChannelSettingsPanel() {
       onSave={(patch) => save.mutate(patch)}
       pending={save.isPending}
       error={error}
+      saved={saved}
     />
   );
 }

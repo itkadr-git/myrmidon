@@ -1,4 +1,3 @@
-import { basename } from "node:path";
 import { registerEmailCommands } from "./commands/client/email.js";
 import { Command } from "commander";
 import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
@@ -48,6 +47,7 @@ import { registerManagedAgentCommands } from "./commands/managed-agent.js";
 import { registerAssetCommands } from "./commands/client/asset.js";
 import { registerSkillCommands } from "./commands/client/skill.js";
 import { cliVersion } from "./version.js";
+import { warnIfLegacyBinaryName } from "./legacy-bin.js";
 import { installCommand } from "./commands/install.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 import { updateCommand } from "./commands/update.js";
@@ -61,14 +61,14 @@ import {
   type TestDriveOptions,
 } from "./commands/test-drive.js";
 
+// myrmidon(DB4): the "paperclipai" binary stays as a deprecated synonym.
+warnIfLegacyBinaryName();
+
 const program = new Command();
-const DATA_DIR_OPTION_HELP = "Myrmidon data directory root (isolates state from ~/.paperclip)";
+const DATA_DIR_OPTION_HELP =
+  "Myrmidon data directory root (isolates state from ~/.paperclip)";
 
 program.enablePositionalOptions();
-
-if (basename(process.argv[1] ?? "").replace(/\.(cmd|exe)$/i, "") === "paperclipai") {
-  console.error("paperclipai is deprecated, use myrmidon");
-}
 
 program
   .name("myrmidon")
@@ -139,7 +139,7 @@ program
   .option("-y, --yes", "Accept quickstart defaults (trusted local loopback unless --bind is set) and start immediately", false)
   .option("--install-service", "Install and start the background service after onboarding")
   .option("--no-install-service", "Do not install or suggest the background service")
-  .option("--run", "Start Paperclip immediately after saving config", false)
+  .option("--run", "Start Myrmidon immediately after saving config", false)
   .action(onboard);
 
 program
@@ -200,7 +200,7 @@ program
 
 const run = program
   .command("run")
-  .description("Bootstrap local setup (onboard + doctor) and run Paperclip")
+  .description("Bootstrap local setup (onboard + doctor) and run Myrmidon")
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("-i, --instance <id>", "Local instance id (default: default)")
@@ -223,7 +223,7 @@ heartbeat
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("--context <path>", "Path to CLI context file")
   .option("--profile <name>", "CLI context profile name")
-  .option("--api-base <url>", "Base URL for the Paperclip server API")
+  .option("--api-base <url>", "Base URL for the Myrmidon server API")
   .option("--api-key <token>", "Bearer token for agent-authenticated calls")
   .option(
     "--source <source>",

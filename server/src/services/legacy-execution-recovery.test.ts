@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { legacyExecutionNeedsReconciliation } from "./legacy-execution-recovery.js";
+import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../myrmidon/maintenance/domain.js";
 
 const stopped = {
   runtimeMode: "legacy", status: "cancelled", errorCode: "cancelled",
@@ -8,6 +9,14 @@ const stopped = {
     executionRecovery: { kind: "interrupted", providerStopped: true, sessionPreserved: true, actionOutcomes: "settled" },
   },
 };
+
+it("does not hold maintenance-interrupted runs scheduled for retry", () => {
+  expect(legacyExecutionNeedsReconciliation({
+    runtimeMode: "legacy", status: "cancelled", errorCode: MAINTENANCE_INTERRUPT_ERROR_CODE,
+    scheduledRetryAttempt: 50, scheduledRetryReason: "myrmidon_maintenance",
+    contextSnapshot: { issueId: "issue-1", retryReason: "myrmidon_maintenance" }, resultJson: {},
+  })).toBe(false);
+});
 
 // myrmidon(CONTINUATION-WAIT-HOLD): a queued review/response wait is cancelled
 // before provider startup and must not create an execution reconciliation hold.
