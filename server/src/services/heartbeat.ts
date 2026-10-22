@@ -34,6 +34,7 @@ import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./nativ
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
+import { versionKeyEtag } from "../middleware/version-key-etag.js";
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
@@ -31737,6 +31738,42 @@ export function heartbeatService(
         }
         await new Promise((resolve) => setTimeout(resolve, intervalMs));
       }
+    },
+    // myrmidon(PERF-DIET-T): cheap version aggregate for the heartbeat-runs
+    // list ETag. Same predicate shapes as `list` (company, optional agent) but
+    // only aggregates, so an If-None-Match hit answers 304 without fetching
+    // the body. Uses the (companyId, status, updatedAt) index prefix. The
+    // route adds the authorized actor and redacted response shape to this key.
+    listVersionKey: async (
+      companyId: string,
+      agentId?: string,
+      limit?: number,
+      summary?: boolean,
+      actorShape?: string,
+    ): Promise<string> => {
+      const [agg] = await db
+        .select({
+          rowCount: sql<number>`count(*)::int`,
+          maxUpdatedAt: sql<string | null>`max(${heartbeatRuns.updatedAt})`,
+        })
+        .from(heartbeatRuns)
+        .where(
+          agentId
+            ? and(
+                eq(heartbeatRuns.companyId, companyId),
+                eq(heartbeatRuns.agentId, agentId),
+              )
+            : eq(heartbeatRuns.companyId, companyId),
+        );
+      return versionKeyEtag("heartbeat-runs-list", [
+        companyId,
+        agentId ?? "all",
+        limit ?? "default",
+        summary ? "summary" : "full",
+        actorShape ?? "all",
+        agg?.rowCount ?? 0,
+        agg?.maxUpdatedAt ?? null,
+      ]);
     },
     list: async (
       companyId: string,
