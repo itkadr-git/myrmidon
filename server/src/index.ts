@@ -137,6 +137,7 @@ import { startMaintenanceMode } from "./myrmidon/maintenance/index.js"; // myrmi
 import { startDeployJobs } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
 import { startProcessesSettings, createProcessSupervisor, reportReadyToSupervisor, wireSupervisorDrainHandler, type SupervisorListenerHandle } from "./myrmidon/processes/index.js"; // myrmidon(PROCS-1.1/1.2)
+import type { ProcessSupervisor } from "./myrmidon/processes/supervisor.js";
 import { resolveProcessesSettings } from "@paperclipai/shared";
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 // myrmidon(PAUSE-GUARD): resumes operator pauses left older than a threshold
@@ -157,6 +158,7 @@ import {
 } from "@paperclipai/shared"; // myrmidon(1.6.6 PROCS-J): the board's process composition
 import { readResolvedBoardProcesses } from "./myrmidon/board-processes/settings.js"; // myrmidon(1.6.6 PROCS-J)
 import { ProcessBus } from "./services/process-bus.js"; // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977)
+import { registerSettingsAppliers } from "./myrmidon/settings-appliers/index.js"; // myrmidon(PROCS-1.8)
 import {
   createLeaderLeaseManager,
   type LeaderLeaseManager,
@@ -168,6 +170,7 @@ import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseli
 import { startRunContextColumnsBackfill } from "./services/run-context-columns-backfill.js"; // OPE-5007 П2
 import { startForagingSweep, stopForagingSweep } from "./myrmidon/foraging/startup.js"; // myrmidon(1.6-FORAGE)
 import { startDistillSweep, stopDistillSweep } from "./myrmidon/distill/startup.js"; // myrmidon(1.6.6-K5)
+import { startKnowledgeExport, stopKnowledgeExport } from "./myrmidon/knowledge/git-export-job.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-8)
 import { startLessonDistillSweep, stopLessonDistillSweep } from "./myrmidon/lesson-distill/index.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-4)
 import { startAlertsSweep } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
 import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmidon/tracing-health/attention-sweep.js"; // myrmidon(TRACING-HEALTH)
@@ -1103,7 +1106,7 @@ async function startServerWithDatabaseTeardown(
   // client with max: 1 — `sql.listen` pins its connection for the lifetime of
   // the listener, and the client owns no other work. Single-process (the
   // default, role `all` or unset) has no bus: the dispatcher is inline.
-  const processRoleValue = process.env.PAPERCLIP_PROCESS_ROLE?.trim().toLowerCase() ?? "";
+  const processRoleValue = readProductEnv("PROCESS_ROLE")?.trim().toLowerCase() ?? "";
   const multiProcessDeployment = processRoleValue !== "" && processRoleValue !== "all";
   const processBus = multiProcessDeployment
     ? new ProcessBus(
@@ -1112,7 +1115,13 @@ async function startServerWithDatabaseTeardown(
         createPostgresJsClient(activeDatabaseConnectionString, { maxConnections: 1 }),
       )
     : null;
+  const settingsApplierDeps = {
+    db: db as any,
+    processSupervisor: null as ProcessSupervisor | null,
+    applyTeamLiveness: undefined as (() => Promise<void>) | undefined,
+  };
   if (processBus) {
+    registerSettingsAppliers(processBus, settingsApplierDeps);
     try {
       await processBus.start();
       logger.info({ role: processRoleValue }, "process bus started (PROCS-1.3)");
@@ -1195,6 +1204,10 @@ async function startServerWithDatabaseTeardown(
         },
       })
     : null;
+  settingsApplierDeps.processSupervisor = processSupervisor;
+  settingsApplierDeps.applyTeamLiveness = async () => {
+    await heartbeat?.applyTeamLiveness();
+  };
   if (processSupervisor) {
     logger.info("myrmidon(PROCS-1.2): process supervisor wired on the worker");
   }
@@ -1207,6 +1220,7 @@ async function startServerWithDatabaseTeardown(
     // background role.
     backgroundWork: processRoleProfile.runsBackground,
     processSupervisor,
+    processBus,
     storageService,
     feedbackExportService: feedback,
     databaseBackupService: {
@@ -1964,6 +1978,7 @@ async function startServerWithDatabaseTeardown(
   };
   const githubConnectionEvents = githubConnectionEventService(db as any, {
     wakeup: environmentLeaseCleanupHeartbeat.wakeup,
+    assignmentWakeup: environmentLeaseCleanupHeartbeat.wakeup,
   });
   const tools = toolAccessService(db as any, {
     deploymentMode: config.deploymentMode,
@@ -2237,6 +2252,7 @@ async function startServerWithDatabaseTeardown(
     startDatastoreCare(db as any); // myrmidon(DBC-4): hourly snapshots of the board's database plus their 90-day retention; a no-op unless MYRMIDON_DATASTORE_CARE_ENABLED=0
     startForagingSweep(db as any); // myrmidon(1.6-FORAGE): source comparison sweep; a no-op unless MYRMIDON_FORAGING_ENABLED=1
     startDistillSweep(db as any); // myrmidon(1.6.6-K5): knowledge distiller v2 pass; a no-op unless the distill setting (or MYRMIDON_DISTILL_ENABLED=1) is on
+    startKnowledgeExport(db as any); // myrmidon(1.7 KNOWLEDGE-2.0 L-8): no-op unless MYRMIDON_KNOWLEDGE_EXPORT_REPO is set
     startLessonDistillSweep({ db: db as any }); // myrmidon(1.7 KNOWLEDGE-2.0 L-4): hindsight lessons -> knowledge suggestions; a no-op unless MYRMIDON_LESSON_DISTILL_ENABLED=1
     startAlertsSweep(db as any); // myrmidon(1.6.6-ALERTS): dedup registry cleanup of closed alerts; a no-op unless MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC is set
     startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
@@ -2910,6 +2926,7 @@ async function startServerWithDatabaseTeardown(
     stopDatastoreCare(); // myrmidon(DBC-4)
     stopForagingSweep(); // myrmidon(1.6-FORAGE)
     stopDistillSweep(); // myrmidon(1.6.6-K5)
+    stopKnowledgeExport(); // myrmidon(1.7 KNOWLEDGE-2.0 L-8)
     stopLessonDistillSweep(); // myrmidon(1.7 KNOWLEDGE-2.0 L-4)
     stopTracingAttentionSweep(); // myrmidon(TRACING-HEALTH)
     stopModelProviderPoolSweep(); // myrmidon(1.6.6 OPE-7198)

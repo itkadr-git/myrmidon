@@ -93,6 +93,11 @@ export interface BotContainerStatus {
    *  field — "not reported", which the card shows as unknown, never as a match. */
   maxConcurrentRuns?: number;
   /**
+   * myrmidon(1.6.6-REMOTE-SITES): the gateway port allocated by the remote site
+   * driver (fleetd/site-agent). Required for building the bot card's gateway base URL.
+   */
+  gatewayPort?: number;
+  /**
    * myrmidon(OPE-4789): the raw container inspect behind this status, when the
    * driver has it (the local docker driver always does — the status IS an
    * inspect). Lets a caller that already paid for one inspect hand it to
@@ -161,6 +166,8 @@ export interface BotContainerDriver {
    */
   templateDrift(spec: BotContainerSpec, knownStatus?: BotContainerStatus): Promise<TemplateDriftReport>;
   templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport>;
+  /** Applies mutable resource limits without restarting the container. Drivers that do not support live updates fall back to recreate. */
+  updateResources?(spec: BotContainerSpec): Promise<void>;
   /**
    * myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the one-inspect probe — `status` and
    * `templateDrift` from a SINGLE container inspect plus the marker read. The

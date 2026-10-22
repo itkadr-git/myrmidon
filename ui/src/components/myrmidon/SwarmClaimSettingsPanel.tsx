@@ -6,15 +6,43 @@
 // Switching the swarm off frees the live leases at once (the PATCH response
 // reports how many); assignees are NOT touched.
 //
+// myrmidon(1.6.5 SWARM-PANEL-COOLING, OPE-6894):
+//   - the dead `pheromone.cooldownBaseMin` / `pheromone.cooldownCapMin`
+//     fields are gone — no server code ever read them;
+//   - the real task cooling (F-26 wake guard: `server/src/myrmidon/
+//     wake-task-guard.ts` reads `general.swarm`) is configured in the
+//     "Task cooling" block below: `cooldownBaseMin`, `cooldownCeilingHours`
+//     and the run-without-task gate, saved through the instance-general
+//     settings API without a restart. `updateGeneral` merges over the stored
+//     document, so `general.swarmClaim` survives the write;
+//   - every user-visible string runs through the fork i18n catalog
+//     (`swarmClaim` namespace, en/ru) — no hardcoded English in the JSX.
+//
 // Tokens only (DESIGN.md): Tailwind palette names, no raw values.
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ShieldCheck } from "lucide-react";
-import type { SwarmClaimSettingsPatch, SwarmClaimSettingSource } from "@paperclipai/shared";
+import { ShieldCheck, AlarmClock } from "lucide-react";
+import type {
+  SwarmClaimSettingsPatch,
+  SwarmClaimSettingSource,
+  SwarmSettings,
+} from "@paperclipai/shared";
+import {
+  SWARM_COOLDOWN_BASE_MIN_DEFAULT,
+  SWARM_COOLDOWN_BASE_MIN_MAX,
+  SWARM_COOLDOWN_BASE_MIN_MIN,
+  SWARM_COOLDOWN_CEILING_HOURS_DEFAULT,
+  SWARM_COOLDOWN_CEILING_HOURS_MAX,
+  SWARM_COOLDOWN_CEILING_HOURS_MIN,
+  SWARM_RUN_WITHOUT_TASK_GATE_DEFAULT,
+} from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { instanceSettingsApi } from "@/api/instanceSettings";
+import { queryKeys } from "@/lib/queryKeys";
+import { useTranslation } from "@/i18n";
 import {
   describeSwarmClaimSource,
   swarmClaimSettingsApi,
@@ -28,10 +56,16 @@ interface DraftParse {
   errors: Partial<Record<string, string>>;
 }
 
+/**
+ * myrmidon(OPE-6894): these maps carry i18n KEYS (fork catalog `swarmClaim`),
+ * rendered through `t(…)`. Values are English from en.json; ru.json ships the
+ * Russian wording. The dead `cooldownBaseMin` / `cooldownCapMin` pheromone
+ * fields were removed with the shared schema.
+ */
 const NUMBER_FIELD_HINTS = {
-  leaseTtlSec: "How long one lease lives without a heartbeat, in seconds (60–86400).",
-  maxActiveTasks: "Ceiling of live claims per agent; empty = no ceiling.",
-  sweepIntervalSec: "How often the expired-lease sweep runs, in seconds (minimum 5).",
+  leaseTtlSec: "swarmClaim.help.leaseTtlSec",
+  maxActiveTasks: "swarmClaim.help.maxActiveTasks",
+  sweepIntervalSec: "swarmClaim.help.sweepIntervalSec",
 } as const;
 
 /** myrmidon(1.6.5 SWARM-T4, design §5.1 / §2.3): pheromone field ids. */
@@ -43,11 +77,9 @@ export type PheromoneNumberKey =
   | "agingStepHours"
   | "agingStep"
   | "agingCap"
-  | "failPenalty"
-  | "cooldownBaseMin"
-  | "cooldownCapMin";
+  | "failPenalty";
 
-/** Pheromone fields: priority → strength mapping (4) and dynamics (6). */
+/** Pheromone fields: priority → strength mapping (4) and dynamics (4). */
 export const PHEROMONE_NUMBER_KEYS: readonly PheromoneNumberKey[] = [
   "critical",
   "high",
@@ -57,34 +89,28 @@ export const PHEROMONE_NUMBER_KEYS: readonly PheromoneNumberKey[] = [
   "agingStep",
   "agingCap",
   "failPenalty",
-  "cooldownBaseMin",
-  "cooldownCapMin",
 ] as const;
 
 const PHEROMONE_FIELD_LABELS: Record<PheromoneNumberKey, string> = {
-  critical: "Critical (P0) strength",
-  high: "High strength",
-  medium: "Medium strength",
-  low: "Low strength",
-  agingStepHours: "Aging step, hours",
-  agingStep: "Aging increment",
-  agingCap: "Aging cap",
-  failPenalty: "Evaporation penalty per failed run",
-  cooldownBaseMin: "Cooldown base, minutes",
-  cooldownCapMin: "Cooldown cap, minutes",
+  critical: "swarmClaim.pheromone.critical.label",
+  high: "swarmClaim.pheromone.high.label",
+  medium: "swarmClaim.pheromone.medium.label",
+  low: "swarmClaim.pheromone.low.label",
+  agingStepHours: "swarmClaim.pheromone.agingStepHours.label",
+  agingStep: "swarmClaim.pheromone.agingStep.label",
+  agingCap: "swarmClaim.pheromone.agingCap.label",
+  failPenalty: "swarmClaim.pheromone.failPenalty.label",
 };
 
 const PHEROMONE_FIELD_HELP: Record<PheromoneNumberKey, string> = {
-  critical: "Strength a new critical (P0) task starts with.",
-  high: "Strength a new high task starts with.",
-  medium: "Strength a new medium task starts with.",
-  low: "Strength a new low task starts with.",
-  agingStepHours: "How many hours of waiting make one aging step.",
-  agingStep: "Strength added per aging step.",
-  agingCap: "Total strength aging can add to one task.",
-  failPenalty: "Strength subtracted per failed run since the last task change.",
-  cooldownBaseMin: "How long a task with no matching agent cools down before another attempt.",
-  cooldownCapMin: "Upper bound of the cooldown after repeated failures.",
+  critical: "swarmClaim.pheromone.critical.help",
+  high: "swarmClaim.pheromone.high.help",
+  medium: "swarmClaim.pheromone.medium.help",
+  low: "swarmClaim.pheromone.low.help",
+  agingStepHours: "swarmClaim.pheromone.agingStepHours.help",
+  agingStep: "swarmClaim.pheromone.agingStep.help",
+  agingCap: "swarmClaim.pheromone.agingCap.help",
+  failPenalty: "swarmClaim.pheromone.failPenalty.help",
 };
 
 /** Defaults per design §5.1 / §2.3 — what an unset field falls back to. */
@@ -97,13 +123,12 @@ export const PHEROMONE_FIELD_DEFAULTS: Record<PheromoneNumberKey, number> = {
   agingStep: 1,
   agingCap: 5,
   failPenalty: 10,
-  cooldownBaseMin: 30,
-  cooldownCapMin: 720,
 };
 
 /**
  * Parse the numeric draft fields. An empty field means "no ceiling" for the
  * limit; everything else must be a whole number in the documented range.
+ * myrmidon(OPE-6894): errors are i18n keys rendered through `t(…)`.
  */
 export function parseSwarmClaimDraft(draft: {
   leaseTtlSec: string;
@@ -115,7 +140,7 @@ export function parseSwarmClaimDraft(draft: {
   const ttlRaw = draft.leaseTtlSec.trim();
   const ttl = ttlRaw ? Number(ttlRaw) : Number.NaN;
   if (!ttlRaw || !Number.isInteger(ttl) || ttl < 60 || ttl > 86400) {
-    errors.leaseTtlSec = "Enter a whole number from 60 to 86400";
+    errors.leaseTtlSec = "swarmClaim.err.leaseTtlSec";
   }
 
   const maxRaw = draft.maxActiveTasks.trim();
@@ -123,7 +148,7 @@ export function parseSwarmClaimDraft(draft: {
   if (maxRaw) {
     const value = Number(maxRaw);
     if (!Number.isInteger(value) || value < 1 || value > 100) {
-      errors.maxActiveTasks = "Enter a whole number from 1 to 100, or leave it empty for no ceiling";
+      errors.maxActiveTasks = "swarmClaim.err.maxActiveTasks";
     } else {
       maxActiveTasks = value;
     }
@@ -132,7 +157,7 @@ export function parseSwarmClaimDraft(draft: {
   const sweepRaw = draft.sweepIntervalSec.trim();
   const sweep = sweepRaw ? Number(sweepRaw) : Number.NaN;
   if (!sweepRaw || !Number.isInteger(sweep) || sweep < 5) {
-    errors.sweepIntervalSec = "Enter a whole number of at least 5";
+    errors.sweepIntervalSec = "swarmClaim.err.sweepIntervalSec";
   }
 
   if (Object.keys(errors).length > 0) return { patch: null, errors };
@@ -161,7 +186,7 @@ export function parsePheromoneField(
   if (!Number.isInteger(value) || value < 0 || value > 100000) {
     return {
       value: null,
-      error: "Enter a whole number from 0 to 100000, or leave it empty for the default",
+      error: "swarmClaim.err.pheromone",
     };
   }
   return { value, error: null };
@@ -190,8 +215,6 @@ export interface PheromoneDraft {
   agingStep: string;
   agingCap: string;
   failPenalty: string;
-  cooldownBaseMin: string;
-  cooldownCapMin: string;
 }
 
 export function toPheromoneDraft(view: SwarmClaimSettingsView | null | undefined): PheromoneDraft {
@@ -209,8 +232,6 @@ export function toPheromoneDraft(view: SwarmClaimSettingsView | null | undefined
     agingStep: entry("agingStep"),
     agingCap: entry("agingCap"),
     failPenalty: entry("failPenalty"),
-    cooldownBaseMin: entry("cooldownBaseMin"),
-    cooldownCapMin: entry("cooldownCapMin"),
   };
 }
 
@@ -228,6 +249,7 @@ export function SwarmClaimSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [draftNumbers, setDraftNumbers] = useState<ReturnType<typeof toDraftNumbers> | null>(null);
   const [draftEnabled, setDraftEnabled] = useState<boolean | null>(null);
   const [draftP0, setDraftP0] = useState<boolean | null>(null);
@@ -266,10 +288,12 @@ export function SwarmClaimSettingsPanelView({
 
   const source = (key: string) =>
     view
-      ? describeSwarmClaimSource(
-          (view.sources as Record<string, string | undefined>)[key] as
-            | SwarmClaimSettingSource
-            | undefined,
+      ? t(
+          describeSwarmClaimSource(
+            (view.sources as Record<string, string | undefined>)[key] as
+              | SwarmClaimSettingSource
+              | undefined,
+          ),
         )
       : "";
 
@@ -278,16 +302,9 @@ export function SwarmClaimSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Self-organization (swarm)</h2>
+          <h2 className="text-sm font-semibold">{t("swarmClaim.title")}</h2>
         </div>
-        <p className="max-w-2xl text-sm text-muted-foreground">
-          The board itself matches a free agent to each unassigned task by caste and scent,
-          and wakes that agent on its own task. Every value applies without a restart — the
-          server re-reads these settings on each claim and sweep tick. Turning the swarm off
-          releases the live leases immediately; assignees are not touched. Environment
-          variables stay forced overrides; each field shows whether the saved value or the
-          override is in force.
-        </p>
+        <p className="max-w-2xl text-sm text-muted-foreground">{t("swarmClaim.intro")}</p>
       </div>
 
       {error ? (
@@ -301,12 +318,8 @@ export function SwarmClaimSettingsPanelView({
           <div className="space-y-2 md:col-span-2">
             <div className="flex items-center justify-between gap-4">
               <div className="space-y-1">
-                <Label htmlFor="swarm-claim-enabled">Enable the swarm</Label>
-                <p className="text-xs text-muted-foreground">
-                  One switch for the whole matching pipeline. When it is on, an unassigned
-                  task with a caste waits in that caste&apos;s queue until a free agent
-                  appears.
-                </p>
+                <Label htmlFor="swarm-claim-enabled">{t("swarmClaim.enableLabel")}</Label>
+                <p className="text-xs text-muted-foreground">{t("swarmClaim.enableHelp")}</p>
                 <p className="text-xs text-muted-foreground">
                   <span data-testid="swarm-claim-source-enabled">{source("enabled")}</span>
                 </p>
@@ -329,16 +342,12 @@ export function SwarmClaimSettingsPanelView({
           </div>
 
           <fieldset className="space-y-3 md:col-span-2" data-testid="swarm-claim-pheromones">
-            <legend className="text-sm font-medium">Pheromones</legend>
-            <p className="text-xs text-muted-foreground">
-              The priority → strength mapping seeds a task&apos;s pheromone; waiting adds
-              strength (aging) and failed runs subtract it (evaporation) until the task
-              changes. The queue orders by the effective strength.
-            </p>
+            <legend className="text-sm font-medium">{t("swarmClaim.pheromonesTitle")}</legend>
+            <p className="text-xs text-muted-foreground">{t("swarmClaim.pheromonesHelp")}</p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {(["critical", "high", "medium", "low"] as const).map((key) => (
                 <div key={key} className="space-y-1">
-                  <Label htmlFor={`swarm-claim-pheromone-${key}`}>{PHEROMONE_FIELD_LABELS[key]}</Label>
+                  <Label htmlFor={`swarm-claim-pheromone-${key}`}>{t(PHEROMONE_FIELD_LABELS[key])}</Label>
                   <Input
                     id={`swarm-claim-pheromone-${key}`}
                     inputMode="numeric"
@@ -346,20 +355,20 @@ export function SwarmClaimSettingsPanelView({
                     value={pheromone[key]}
                     onChange={(event) => setDraftPheromone({ ...pheromone, [key]: event.target.value })}
                   />
-                  <p className="text-xs text-muted-foreground">{PHEROMONE_FIELD_HELP[key]}</p>
+                  <p className="text-xs text-muted-foreground">{t(PHEROMONE_FIELD_HELP[key])}</p>
                   {pheromoneParsed.pheromoneErrors[key] ? (
                     <p className="text-xs text-destructive" data-testid={`swarm-claim-error-pheromone-${key}`}>
-                      {pheromoneParsed.pheromoneErrors[key]}
+                      {t(pheromoneParsed.pheromoneErrors[key]!)}
                     </p>
                   ) : null}
                 </div>
               ))}
             </div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {(["agingStepHours", "agingStep", "agingCap", "failPenalty", "cooldownBaseMin", "cooldownCapMin"] as const).map(
+              {(["agingStepHours", "agingStep", "agingCap", "failPenalty"] as const).map(
                 (key) => (
                   <div key={key} className="space-y-1">
-                    <Label htmlFor={`swarm-claim-pheromone-${key}`}>{PHEROMONE_FIELD_LABELS[key]}</Label>
+                    <Label htmlFor={`swarm-claim-pheromone-${key}`}>{t(PHEROMONE_FIELD_LABELS[key])}</Label>
                     <Input
                       id={`swarm-claim-pheromone-${key}`}
                       inputMode="numeric"
@@ -367,10 +376,10 @@ export function SwarmClaimSettingsPanelView({
                       value={pheromone[key]}
                       onChange={(event) => setDraftPheromone({ ...pheromone, [key]: event.target.value })}
                     />
-                    <p className="text-xs text-muted-foreground">{PHEROMONE_FIELD_HELP[key]}</p>
+                    <p className="text-xs text-muted-foreground">{t(PHEROMONE_FIELD_HELP[key])}</p>
                     {pheromoneParsed.pheromoneErrors[key] ? (
                       <p className="text-xs text-destructive" data-testid={`swarm-claim-error-pheromone-${key}`}>
-                        {pheromoneParsed.pheromoneErrors[key]}
+                        {t(pheromoneParsed.pheromoneErrors[key]!)}
                       </p>
                     ) : null}
                   </div>
@@ -382,14 +391,11 @@ export function SwarmClaimSettingsPanelView({
           <div className="space-y-2 md:col-span-2">
             <div className="flex items-center justify-between gap-4">
               <div className="space-y-1">
-                <Label htmlFor="swarm-claim-p0">P0 preempts the queue</Label>
+                <Label htmlFor="swarm-claim-p0">{t("swarmClaim.p0Label")}</Label>
                 <p className="text-xs text-muted-foreground">
                   <span data-testid="swarm-claim-source-p0Preemption">{source("p0Preemption")}</span>
                 </p>
-                <p className="text-xs text-muted-foreground">
-                  On — a critical task is the top of the queue. Off — the queue is strictly
-                  by effective strength.
-                </p>
+                <p className="text-xs text-muted-foreground">{t("swarmClaim.p0Help")}</p>
               </div>
               <ToggleSwitch
                 id="swarm-claim-p0"
@@ -406,21 +412,17 @@ export function SwarmClaimSettingsPanelView({
             onToggle={(event) => setAdvancedOpen((event.target as HTMLDetailsElement).open)}
             data-testid="swarm-claim-advanced"
           >
-            <summary className="cursor-pointer text-sm font-medium">Advanced</summary>
+            <summary className="cursor-pointer text-sm font-medium">{t("swarmClaim.advanced")}</summary>
             <div className="mt-3 grid gap-3 sm:grid-cols-3">
               {(["leaseTtlSec", "maxActiveTasks", "sweepIntervalSec"] as const).map((key) => (
                 <div key={key} className="space-y-1">
                   <Label htmlFor={`swarm-claim-${key}`}>
-                    {key === "leaseTtlSec"
-                      ? "Lease TTL, seconds"
-                      : key === "maxActiveTasks"
-                        ? "Max active tasks per agent"
-                        : "Sweep interval, seconds"}
+                    {t(`swarmClaim.advancedLabel.${key}`)}
                   </Label>
                   <Input
                     id={`swarm-claim-${key}`}
                     inputMode="numeric"
-                    placeholder={key === "maxActiveTasks" ? "No ceiling" : "Required"}
+                    placeholder={key === "maxActiveTasks" ? t("swarmClaim.noCeilingPlaceholder") : t("swarmClaim.requiredPlaceholder")}
                     value={numbers ? numbers[key] : ""}
                     onChange={(event) =>
                       setDraftNumbers({ ...(numbers ?? toDraftNumbers(view.settings)), [key]: event.target.value })
@@ -430,11 +432,11 @@ export function SwarmClaimSettingsPanelView({
                     <span data-testid={`swarm-claim-source-${key}`}>{source(key)}</span>
                     {errors[key] ? (
                       <span data-testid={`swarm-claim-error-${key}`} className="ml-2 text-destructive">
-                        {errors[key]}
+                        {t(errors[key]!)}
                       </span>
                     ) : null}
                   </div>
-                  <p className="text-xs text-muted-foreground">{NUMBER_FIELD_HINTS[key]}</p>
+                  <p className="text-xs text-muted-foreground">{t(NUMBER_FIELD_HINTS[key])}</p>
                 </div>
               ))}
             </div>
@@ -449,17 +451,15 @@ export function SwarmClaimSettingsPanelView({
                 if (patch) onSave(patch);
               }}
             >
-              {pending ? "Saving..." : "Save self-organization settings"}
+              {pending ? t("swarmClaim.saving") : t("swarmClaim.save")}
             </Button>
           </div>
 
           <div className="space-y-1 md:col-span-2" data-testid="swarm-claim-journal">
-            <h3 className="text-sm font-medium">Change journal</h3>
-            <p className="text-xs text-muted-foreground">
-              Who changed the swarm settings, and when (newest first).
-            </p>
+            <h3 className="text-sm font-medium">{t("swarmClaim.journalTitle")}</h3>
+            <p className="text-xs text-muted-foreground">{t("swarmClaim.journalHelp")}</p>
             {view.journal.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No changes recorded yet.</p>
+              <p className="text-xs text-muted-foreground">{t("swarmClaim.journalEmpty")}</p>
             ) : (
               <ul className="space-y-1 text-xs text-muted-foreground">
                 {view.journal.slice(0, 10).map((entry) => (
@@ -470,7 +470,7 @@ export function SwarmClaimSettingsPanelView({
                       {entry.actorType}:{entry.actorId}
                     </span>
                     {" — "}
-                    {Object.keys(entry.patch).join(", ") || "(no keys)"}
+                    {Object.keys(entry.patch).join(", ") || t("swarmClaim.journalNoKeys")}
                   </li>
                 ))}
               </ul>
@@ -478,7 +478,169 @@ export function SwarmClaimSettingsPanelView({
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading self-organization settings...</p>
+        <p className="text-sm text-muted-foreground">{t("swarmClaim.loading")}</p>
+      )}
+    </section>
+  );
+}
+
+/**
+ * myrmidon(1.6.5 SWARM-PANEL-COOLING, OPE-6894): the "Task cooling" block —
+ * the ONE cooling rule the board applies (F-26 wake guard, general.swarm):
+ * after a stale automatic run of a task, its next automatic wake waits
+ * `cooldownBaseMin` × 2^(n-1), clamped to `cooldownCeilingHours`; the gate
+ * flag drops automatic wakes that name no existing task. Empty numbers mean
+ * "use the server default" (the same defaults the guard resolves). Saving
+ * PATCHes `general.swarm` through the instance-general settings API — no
+ * restart; the stored `general.swarmClaim` is preserved by the server's
+ * read-modify-write merge of `updateGeneral`.
+ */
+export interface CoolingDraft {
+  cooldownBaseMin: string;
+  cooldownCeilingHours: string;
+}
+
+export function toCoolingDraft(swarm: SwarmSettings | null | undefined): CoolingDraft {
+  return {
+    cooldownBaseMin: swarm?.cooldownBaseMin === undefined ? "" : String(swarm.cooldownBaseMin),
+    cooldownCeilingHours:
+      swarm?.cooldownCeilingHours === undefined ? "" : String(swarm.cooldownCeilingHours),
+  };
+}
+
+/** Parse one cooling draft field against the shared schema bounds. */
+export function parseCoolingField(
+  key: "cooldownBaseMin" | "cooldownCeilingHours",
+  raw: string,
+): { value: number | null; error: string | null } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { value: null, error: null };
+  const value = Number(trimmed);
+  const [min, max] =
+    key === "cooldownBaseMin"
+      ? ([SWARM_COOLDOWN_BASE_MIN_MIN, SWARM_COOLDOWN_BASE_MIN_MAX] as const)
+      : ([SWARM_COOLDOWN_CEILING_HOURS_MIN, SWARM_COOLDOWN_CEILING_HOURS_MAX] as const);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    return { value: null, error: `swarmClaim.cooling.err.${key}` };
+  }
+  return { value, error: null };
+}
+
+export function SwarmCoolingSettingsPanelView({
+  swarm,
+  loading,
+  saving,
+  error,
+  onSave,
+}: {
+  swarm: SwarmSettings | null | undefined;
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
+  onSave: (swarm: SwarmSettings) => void;
+}) {
+  const { t } = useTranslation();
+  const [draft, setDraft] = useState<CoolingDraft | null>(null);
+  const [draftGate, setDraftGate] = useState<boolean | null>(null);
+
+  const numbers = draft ?? toCoolingDraft(swarm);
+  const gate = draftGate ?? (swarm?.runWithoutTaskGate ?? SWARM_RUN_WITHOUT_TASK_GATE_DEFAULT);
+
+  const parsed = useMemo(() => {
+    const base = parseCoolingField("cooldownBaseMin", numbers.cooldownBaseMin);
+    const ceiling = parseCoolingField("cooldownCeilingHours", numbers.cooldownCeilingHours);
+    const errors: Partial<Record<keyof CoolingDraft, string>> = {};
+    if (base.error) errors.cooldownBaseMin = base.error;
+    if (ceiling.error) errors.cooldownCeilingHours = ceiling.error;
+    const patch: SwarmSettings = {
+      runWithoutTaskGate: gate,
+      ...(base.value !== null ? { cooldownBaseMin: base.value } : {}),
+      ...(ceiling.value !== null ? { cooldownCeilingHours: ceiling.value } : {}),
+    };
+    return { errors, hasErrors: Object.keys(errors).length > 0, patch };
+  }, [numbers, gate]);
+
+  return (
+    <section className="space-y-4" data-testid="myrmidon-swarm-cooling">
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <AlarmClock className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-sm font-semibold">{t("swarmClaim.cooling.title")}</h2>
+        </div>
+        <p className="max-w-2xl text-sm text-muted-foreground">{t("swarmClaim.cooling.intro")}</p>
+      </div>
+
+      {error ? (
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      ) : null}
+
+      {loading ? (
+        <p className="text-sm text-muted-foreground">{t("swarmClaim.cooling.loading")}</p>
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="space-y-2 md:col-span-2">
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-1">
+                <Label htmlFor="swarm-cooling-gate">{t("swarmClaim.cooling.gateLabel")}</Label>
+                <p className="text-xs text-muted-foreground">{t("swarmClaim.cooling.gateHelp")}</p>
+              </div>
+              <ToggleSwitch
+                id="swarm-cooling-gate"
+                checked={gate}
+                onCheckedChange={setDraftGate}
+                data-testid="swarm-cooling-gate-toggle"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <Label htmlFor="swarm-cooling-baseMin">{t("swarmClaim.cooling.baseLabel")}</Label>
+            <Input
+              id="swarm-cooling-baseMin"
+              inputMode="numeric"
+              placeholder={String(SWARM_COOLDOWN_BASE_MIN_DEFAULT)}
+              value={numbers.cooldownBaseMin}
+              onChange={(event) => setDraft({ ...numbers, cooldownBaseMin: event.target.value })}
+            />
+            <p className="text-xs text-muted-foreground">{t("swarmClaim.cooling.baseHelp")}</p>
+            {parsed.errors.cooldownBaseMin ? (
+              <p className="text-xs text-destructive" data-testid="swarm-cooling-error-baseMin">
+                {t(parsed.errors.cooldownBaseMin)}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="space-y-1">
+            <Label htmlFor="swarm-cooling-ceilingHours">{t("swarmClaim.cooling.ceilingLabel")}</Label>
+            <Input
+              id="swarm-cooling-ceilingHours"
+              inputMode="numeric"
+              placeholder={String(SWARM_COOLDOWN_CEILING_HOURS_DEFAULT)}
+              value={numbers.cooldownCeilingHours}
+              onChange={(event) => setDraft({ ...numbers, cooldownCeilingHours: event.target.value })}
+            />
+            <p className="text-xs text-muted-foreground">{t("swarmClaim.cooling.ceilingHelp")}</p>
+            {parsed.errors.cooldownCeilingHours ? (
+              <p className="text-xs text-destructive" data-testid="swarm-cooling-error-ceilingHours">
+                {t(parsed.errors.cooldownCeilingHours)}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="md:col-span-2">
+            <Button
+              type="button"
+              size="sm"
+              disabled={saving || parsed.hasErrors}
+              onClick={() => onSave(parsed.patch)}
+              data-testid="swarm-cooling-save"
+            >
+              {saving ? t("swarmClaim.saving") : t("swarmClaim.cooling.save")}
+            </Button>
+          </div>
+        </div>
       )}
     </section>
   );
@@ -486,6 +648,7 @@ export function SwarmClaimSettingsPanelView({
 
 export function SwarmClaimSettingsPanel() {
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
   const [error, setError] = useState<string | null>(null);
   const [releasedNote, setReleasedNote] = useState<string | null>(null);
   const query = useQuery({
@@ -500,35 +663,70 @@ export function SwarmClaimSettingsPanel() {
       setReleasedNote(null);
     },
     onError: (err) =>
-      setError(err instanceof Error ? err.message : "Saving the self-organization settings failed."),
+      setError(err instanceof Error ? err.message : t("swarmClaim.saveFailed")),
     onSuccess: async (data) => {
       setError(null);
       setReleasedNote(
         typeof data.releasedClaims === "number" && data.releasedClaims > 0
-          ? `Swarm switched off: ${data.releasedClaims} live lease(s) released.`
+          ? t("swarmClaim.releasedNote", { released: data.releasedClaims })
           : null,
       );
       await queryClient.invalidateQueries({ queryKey: swarmClaimSettingsQueryKey });
     },
   });
 
+  // myrmidon(OPE-6894): the cooling block reads and writes `general.swarm`
+  // through the instance-general settings API. `updateGeneral` merges over
+  // the stored document under a row lock, so `general.swarmClaim` survives.
+  const [coolingError, setCoolingError] = useState<string | null>(null);
+  const [coolingSavedNote, setCoolingSavedNote] = useState<string | null>(null);
+  const generalQuery = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+    retry: false,
+  });
+  const coolingSave = useMutation({
+    mutationFn: (swarm: SwarmSettings) => instanceSettingsApi.updateGeneral({ swarm }),
+    onMutate: () => {
+      setCoolingError(null);
+      setCoolingSavedNote(null);
+    },
+    onError: (err) =>
+      setCoolingError(err instanceof Error ? err.message : t("swarmClaim.cooling.saveFailed")),
+    onSuccess: async () => {
+      setCoolingError(null);
+      setCoolingSavedNote(t("swarmClaim.cooling.savedNote"));
+      await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
+    },
+  });
+
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load the self-organization settings."}
+        {query.error instanceof Error ? query.error.message : t("swarmClaim.loadFailed")}
       </div>
     );
   }
 
   const banner = error ?? releasedNote;
+  const coolingBanner = coolingError ?? coolingSavedNote;
 
   return (
-    <SwarmClaimSettingsPanelView
-      view={query.data}
-      status={swarmClaimStatusLine(query.data?.counters)}
-      onSave={(patch) => save.mutate(patch)}
-      pending={save.isPending}
-      error={banner}
-    />
+    <>
+      <SwarmClaimSettingsPanelView
+        view={query.data}
+        status={swarmClaimStatusLine(query.data?.counters, (key, options) => t(key, options))}
+        onSave={(patch) => save.mutate(patch)}
+        pending={save.isPending}
+        error={banner}
+      />
+      <SwarmCoolingSettingsPanelView
+        swarm={generalQuery.data?.swarm}
+        loading={generalQuery.isLoading}
+        saving={coolingSave.isPending}
+        error={coolingBanner}
+        onSave={(swarm) => coolingSave.mutate(swarm)}
+      />
+    </>
   );
 }
