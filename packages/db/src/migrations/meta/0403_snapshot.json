@@ -1,6 +1,6 @@
 {
-  "id": "8b31c0f3-879e-4f5d-9ca7-7d8bb2eea40e",
-  "prevId": "7b9a6d87-c3a4-4557-b45f-3959a109e645",
+  "id": "7e3f7ef4-7de6-4184-8423-af78f5609d7f",
+  "prevId": "092a1f4b-cf6a-4533-9c4d-290e5847b7c9",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -55965,8 +55965,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.provider_usage_snapshots": {
-      "name": "provider_usage_snapshots",
+    "public.myrmidon_fleet_sites": {
+      "name": "myrmidon_fleet_sites",
       "schema": "",
       "columns": {
         "id": {
@@ -55982,306 +55982,92 @@
           "primaryKey": false,
           "notNull": true
         },
-        "provider": {
-          "name": "provider",
+        "name": {
+          "name": "name",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "credential_ref": {
-          "name": "credential_ref",
+        "url": {
+          "name": "url",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "window_kind": {
-          "name": "window_kind",
+        "token_secret": {
+          "name": "token_secret",
           "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "window_started_at": {
-          "name": "window_started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "resets_at": {
-          "name": "resets_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "observed_at": {
-          "name": "observed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "used": {
-          "name": "used",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "limits": {
-          "name": "limits",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_event_id": {
-          "name": "source_event_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "owner_issue_id": {
-          "name": "owner_issue_id",
-          "type": "uuid",
           "primaryKey": false,
           "notNull": false
-        }
-      },
-      "indexes": {
-        "provider_usage_snapshots_window_uq": {
-          "name": "provider_usage_snapshots_window_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "credential_ref",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "window_kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "window_started_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         },
-        "provider_usage_snapshots_company_observed_idx": {
-          "name": "provider_usage_snapshots_company_observed_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "observed_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "provider_usage_snapshots_company_id_companies_id_fk": {
-          "name": "provider_usage_snapshots_company_id_companies_id_fk",
-          "tableFrom": "provider_usage_snapshots",
-          "tableTo": "companies",
-          "schemaTo": "",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "provider_usage_snapshots_owner_issue_id_issues_id_fk": {
-          "name": "provider_usage_snapshots_owner_issue_id_issues_id_fk",
-          "tableFrom": "provider_usage_snapshots",
-          "tableTo": "issues",
-          "schemaTo": "",
-          "columnsFrom": [
-            "owner_issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.provider_usage_event_receipts": {
-      "name": "provider_usage_event_receipts",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "event_id": {
-          "name": "event_id",
+        "ca_cert": {
+          "name": "ca_cert",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "received_at": {
-          "name": "received_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "provider_usage_event_receipts_company_event_uq": {
-          "name": "provider_usage_event_receipts_company_event_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "event_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "provider_usage_event_receipts_company_id_companies_id_fk": {
-          "name": "provider_usage_event_receipts_company_id_companies_id_fk",
-          "tableFrom": "provider_usage_event_receipts",
-          "tableTo": "companies",
-          "schemaTo": "",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.provider_usage_warning_deliveries": {
-      "name": "provider_usage_warning_deliveries",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "owner_issue_id": {
-          "name": "owner_issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "warning_key": {
-          "name": "warning_key",
+        "ca_cert_fingerprint": {
+          "name": "ca_cert_fingerprint",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "body": {
-          "name": "body",
+        "client_cert_secret_key": {
+          "name": "client_cert_secret_key",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "next_attempt_at": {
-          "name": "next_attempt_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "delivered_at": {
-          "name": "delivered_at",
+        "client_cert_not_after": {
+          "name": "client_cert_not_after",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
-        "last_error": {
-          "name": "last_error",
+        "status": {
+          "name": "status",
           "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "capacity": {
+          "name": "capacity",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{\"maxCpus\":8,\"maxMemoryMb\":32768}'::jsonb"
+        },
+        "profile": {
+          "name": "profile",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "labels": {
+          "name": "labels",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'{}'::jsonb"
+        },
+        "enrolled_at": {
+          "name": "enrolled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cert_rotated_at": {
+          "name": "cert_rotated_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -56301,8 +56087,23 @@
         }
       },
       "indexes": {
-        "provider_usage_warning_deliveries_warning_uq": {
-          "name": "provider_usage_warning_deliveries_warning_uq",
+        "myrmidon_fleet_sites_company_idx": {
+          "name": "myrmidon_fleet_sites_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "myrmidon_fleet_sites_company_name_uq": {
+          "name": "myrmidon_fleet_sites_company_name_uq",
           "columns": [
             {
               "expression": "company_id",
@@ -56311,7 +56112,7 @@
               "nulls": "last"
             },
             {
-              "expression": "warning_key",
+              "expression": "name",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -56321,18 +56122,113 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        }
+      },
+      "foreignKeys": {
+        "myrmidon_fleet_sites_company_id_companies_id_fk": {
+          "name": "myrmidon_fleet_sites_company_id_companies_id_fk",
+          "tableFrom": "myrmidon_fleet_sites",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.myrmidon_fleet_affinity": {
+      "name": "myrmidon_fleet_affinity",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
         },
-        "provider_usage_warning_deliveries_pending_idx": {
-          "name": "provider_usage_warning_deliveries_pending_idx",
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target_id": {
+          "name": "target_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "site_name": {
+          "name": "site_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "weight": {
+          "name": "weight",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 100
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "myrmidon_fleet_affinity_company_idx": {
+          "name": "myrmidon_fleet_affinity_company_idx",
           "columns": [
             {
-              "expression": "next_attempt_at",
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "myrmidon_fleet_affinity_scope_target_idx": {
+          "name": "myrmidon_fleet_affinity_scope_target_idx",
+          "columns": [
+            {
+              "expression": "scope",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "delivered_at",
+              "expression": "target_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -56345,11 +56241,10 @@
         }
       },
       "foreignKeys": {
-        "provider_usage_warning_deliveries_company_id_companies_id_fk": {
-          "name": "provider_usage_warning_deliveries_company_id_companies_id_fk",
-          "tableFrom": "provider_usage_warning_deliveries",
+        "myrmidon_fleet_affinity_company_id_companies_id_fk": {
+          "name": "myrmidon_fleet_affinity_company_id_companies_id_fk",
+          "tableFrom": "myrmidon_fleet_affinity",
           "tableTo": "companies",
-          "schemaTo": "",
           "columnsFrom": [
             "company_id"
           ],
@@ -56358,14 +56253,147 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.myrmidon_fleet_moves": {
+      "name": "myrmidon_fleet_moves",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
         },
-        "provider_usage_warning_deliveries_owner_issue_id_issues_id_fk": {
-          "name": "provider_usage_warning_deliveries_owner_issue_id_issues_id_fk",
-          "tableFrom": "provider_usage_warning_deliveries",
-          "tableTo": "issues",
-          "schemaTo": "",
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bot_key": {
+          "name": "bot_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "src_site": {
+          "name": "src_site",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "dst_site": {
+          "name": "dst_site",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "phase": {
+          "name": "phase",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "phase_log": {
+          "name": "phase_log",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_expires": {
+          "name": "lease_expires",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "myrmidon_fleet_moves_company_bot_idx": {
+          "name": "myrmidon_fleet_moves_company_bot_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "bot_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "myrmidon_fleet_moves_phase_idx": {
+          "name": "myrmidon_fleet_moves_phase_idx",
+          "columns": [
+            {
+              "expression": "phase",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "myrmidon_fleet_moves_company_id_companies_id_fk": {
+          "name": "myrmidon_fleet_moves_company_id_companies_id_fk",
+          "tableFrom": "myrmidon_fleet_moves",
+          "tableTo": "companies",
           "columnsFrom": [
-            "owner_issue_id"
+            "company_id"
           ],
           "columnsTo": [
             "id"

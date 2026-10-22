@@ -5,10 +5,14 @@ import type { Db } from "@paperclipai/db";
 const startRuntimeLimits = vi.hoisted(() => vi.fn());
 const resetMaintenanceGateCaches = vi.hoisted(() => vi.fn());
 const startProcessesSettings = vi.hoisted(() => vi.fn());
+const applyTaskDrain = vi.hoisted(() => vi.fn());
+const getGeneral = vi.hoisted(() => vi.fn());
 
 vi.mock("../runtime-limits/index.js", () => ({ startRuntimeLimits }));
 vi.mock("../maintenance/gate.js", () => ({ resetMaintenanceGateCaches }));
 vi.mock("../processes/index.js", () => ({ startProcessesSettings }));
+vi.mock("../../services/heartbeat.js", () => ({ applyTaskDrain }));
+vi.mock("../../services/instance-settings.js", () => ({ instanceSettingsService: () => ({ getGeneral }) }));
 
 import { applySettingsChanged, registerSettingsAppliers } from "./index.js";
 
@@ -36,6 +40,8 @@ describe("settings appliers", () => {
     startRuntimeLimits.mockReset().mockResolvedValue(undefined);
     resetMaintenanceGateCaches.mockReset();
     startProcessesSettings.mockReset().mockResolvedValue(undefined);
+    applyTaskDrain.mockReset();
+    getGeneral.mockReset();
   });
 
   it("applies only the changed keys, from the database", async () => {
@@ -63,6 +69,20 @@ describe("settings appliers", () => {
     expect(startRuntimeLimits).not.toHaveBeenCalled();
     expect(resetMaintenanceGateCaches).not.toHaveBeenCalled();
     expect(startProcessesSettings).not.toHaveBeenCalled();
+  });
+
+  it("re-reads task drain from the database", async () => {
+    getGeneral.mockResolvedValue({ taskDrain: {
+      draining: true,
+      startedAt: "2026-08-29T00:00:00.000Z",
+      expiresAt: null,
+    } });
+    await applySettingsChanged({ changedKeys: ["taskDrain"] }, { db });
+    expect(getGeneral).toHaveBeenCalledTimes(1);
+    expect(applyTaskDrain).toHaveBeenCalledWith({
+      startedAt: new Date("2026-08-29T00:00:00.000Z"),
+      expiresAt: null,
+    });
   });
 
   it("two subscribers on one bus both apply a change published once (process A -> process B)", async () => {

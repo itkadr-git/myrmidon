@@ -234,6 +234,9 @@ export {
   myrmidonScopeAgentPrefs,
 } from "./myrmidon_bot_scope.js";
 export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
+export { myrmidonFleetSites, fleetSites, type FleetSiteCapacity, type FleetSiteProfile } from "./myrmidon_fleet_sites.js";
+export { myrmidonFleetAffinity, fleetAffinity } from "./myrmidon_fleet_affinity.js";
+export { myrmidonFleetMoves, type FleetMovePhaseLogEntry } from "./myrmidon_fleet_moves.js";
 // myrmidon(1.6-SWARM): leases of the per-role task queues.
 export { issueClaims } from "./issue_claims.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards and the round grid of answers.
@@ -323,3 +326,5 @@ export {
 export { botApplyJobs, BOT_APPLY_JOB_STATUSES, type BotApplyJobStatus } from "./bot_apply_jobs.js";
 // myrmidon(1.6.5 PROCS-0.1): the process registry and leader leases of the board.
 export { boardProcesses, boardLeases } from "./board_processes.js";
+// myrmidon(OPE-8836): the single, permanent installation id of the board (licensing).
+export { myrmidonInstallIdentity } from "./myrmidon_install_identity.js";

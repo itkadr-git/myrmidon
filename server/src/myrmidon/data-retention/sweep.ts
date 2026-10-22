@@ -102,11 +102,19 @@ import {
   type DataRetentionTableStatus,
 } from "@paperclipai/shared";
 
-/** Rows per delete batch (the plugin-log-retention precedent). */
-export const DATA_RETENTION_DELETE_BATCH_SIZE = 5_000;
+/**
+ * Rows per delete batch. 5000 runs per transaction (events + a dozen FK
+ * nulling CTEs) overran the 60 s statement timeout on the live board
+ * (OPE-8354: deletedTotal stayed 0), so the batch is small and the sweep
+ * halves it further when a batch still times out.
+ */
+export const DATA_RETENTION_DELETE_BATCH_SIZE = 500;
+
+/** The floor of the adaptive batch: below it a timeout ends the group's pass. */
+export const DATA_RETENTION_MIN_BATCH_SIZE = 50;
 
 /** Batches per table per pass; the rest waits for the next tick. */
-export const DATA_RETENTION_MAX_BATCHES = 100;
+export const DATA_RETENTION_MAX_BATCHES = 200;
 
 /** The statement timeout the sweep transactions run under. */
 export const DATA_RETENTION_STATEMENT_TIMEOUT_MS = 60_000;
@@ -171,8 +179,15 @@ function cutoffFor(now: Date, days: number): string {
 }
 
 function isDeleteBlockedError(err: unknown): boolean {
-  const code = (err as { code?: unknown } | null | undefined)?.code;
-  return code === "57014" /* query_canceled: statement_timeout */ || code === "55P03";
+  // drizzle wraps the driver error: the SQLSTATE sits on err.cause.code
+  for (let e: unknown = err, depth = 0; e && depth < 4; depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (code === "57014" /* query_canceled: statement_timeout */ || code === "55P03") {
+      return true;
+    }
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
@@ -188,6 +203,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
   async function deleteRunsGroup(
     tx: Db,
     cutoff: string,
+    batchSize: number,
   ): Promise<{ deleted: number; freedBytes: number }> {
     const liveStatuses = sql.join(
       DATA_RETENTION_LIVE_RUN_STATUSES.map((status) => sql`${status}`),
@@ -275,7 +291,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               SELECT 1 FROM native_run_results nr WHERE nr.run_id = r.id
             )
           ORDER BY r.created_at
-          LIMIT ${DATA_RETENTION_DELETE_BATCH_SIZE}
+          LIMIT ${batchSize}
         ),
         -- plain (non-cascading, non-set-null) references into heartbeat_runs
         -- must let go first; the FKs otherwise refuse the delete
@@ -348,6 +364,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
   async function deleteActivityGroup(
     tx: Db,
     cutoff: string,
+    batchSize: number,
   ): Promise<{ deleted: number; freedBytes: number }> {
     // one batch per call — the caller wraps each batch in its own transaction
     let deleted = 0;
@@ -363,7 +380,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               SELECT 1 FROM heartbeat_runs r WHERE r.id = a2.run_id
             ))
           ORDER BY a2.created_at
-          LIMIT ${DATA_RETENTION_DELETE_BATCH_SIZE}
+          LIMIT ${batchSize}
         )
         RETURNING a.id, pg_column_size(a.id) AS size
       `);
@@ -377,6 +394,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
   async function deleteAccessGroup(
     tx: Db,
     cutoff: string,
+    batchSize: number,
   ): Promise<{ deleted: number; freedBytes: number }> {
     // one batch per table per call — the caller wraps each batch in its own
     // transaction
@@ -391,7 +409,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
             SELECT t2.id FROM ${tableSql} t2
             WHERE t2.created_at < ${cutoff}
             ORDER BY t2.created_at
-            LIMIT ${DATA_RETENTION_DELETE_BATCH_SIZE}
+            LIMIT ${batchSize}
           )
           RETURNING t.id, pg_column_size(t.id) AS size
         `);
@@ -428,6 +446,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           : deleteAccessGroup;
     let deleted = 0;
     let freedBytes = 0;
+    let batchSize = DATA_RETENTION_DELETE_BATCH_SIZE;
     for (let batch = 0; batch < DATA_RETENTION_MAX_BATCHES; batch++) {
       let batchResult: { deleted: number; freedBytes: number };
       try {
@@ -441,14 +460,13 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               `SET LOCAL statement_timeout = ${DATA_RETENTION_STATEMENT_TIMEOUT_MS}`,
             ),
           );
-          return run(tx as unknown as Db, cutoff);
+          return run(tx as unknown as Db, cutoff, batchSize);
         });
       } catch (err) {
         if (isDeleteBlockedError(err)) {
           // A batch hit the statement timeout (57014) or gave up its locks:
-          // the rest of the group waits for the next pass, and the stop
-          // goes into the journal — a swallowed timeout is invisible in
-          // the audit trail otherwise.
+          // the stop goes into the journal — a swallowed timeout is
+          // invisible in the audit trail otherwise.
           await deps
             .logThrottled({
               group: group.key,
@@ -457,13 +475,20 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               cutoff,
             })
             .catch(() => undefined);
+          if (batchSize > DATA_RETENTION_MIN_BATCH_SIZE) {
+            // Retry the same work with a smaller batch (OPE-8354): a batch
+            // that always times out would otherwise delete nothing, ever.
+            batchSize = Math.max(DATA_RETENTION_MIN_BATCH_SIZE, Math.floor(batchSize / 2));
+            continue;
+          }
+          // Already at the floor: the rest of the group waits for the next pass.
           break;
         }
         throw err;
       }
       deleted += batchResult.deleted;
       freedBytes += batchResult.freedBytes;
-      if (batchResult.deleted < DATA_RETENTION_DELETE_BATCH_SIZE) break;
+      if (batchResult.deleted < batchSize) break;
     }
     return { deleted, freedBytes };
   }

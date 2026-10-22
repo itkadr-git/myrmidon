@@ -17,6 +17,7 @@ on:
       - "**/package.json"
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
+      - .github/workflows/myrmidon-image.yml
   workflow_dispatch:
 
 permissions: {}
@@ -161,7 +162,12 @@ jobs:
           EXPECTED_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          docker pull --quiet "$REF"
+          # On a pull request the image was built with load: true and is already in
+          # the local daemon; nothing is published to ghcr, so pulling would fail
+          # with "manifest unknown".
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            docker pull --quiet "$REF"
+          fi
           # local_trusted returns full health details (version) without auth;
           # it requires a loopback bind, hence the host network.
           docker run -d --name myrmidon-smoke --network host \
@@ -190,6 +196,7 @@ jobs:
           [ "$commit" = "$EXPECTED_COMMIT" ] || { echo "::error::commit $commit, expected $EXPECTED_COMMIT"; exit 1; }
 
       - name: Tag the tested digest
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
@@ -202,6 +209,7 @@ jobs:
           docker buildx imagetools inspect "$IMAGE@$DIGEST"
 
       - name: Summary
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           VERSION: ${{ steps.version.outputs.expected }}
