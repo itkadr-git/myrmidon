@@ -55,6 +55,8 @@ const mockAgentService = vi.hoisted(() => ({
   list: vi.fn(),
   // myrmidon(PERF-DIET-G): the slim reader the company list route uses
   listSummaries: vi.fn(),
+  // myrmidon(PERF-DIET-T): version key used before list response hydration
+  listSummariesVersionKey: vi.fn(),
   create: vi.fn(),
   activatePendingApproval: vi.fn(),
   terminate: vi.fn(),
@@ -92,11 +94,17 @@ const mockBudgetService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
+  list: vi.fn(),
+  listVersionKey: vi.fn(),
   listTaskSessions: vi.fn(),
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
   cancelRun: vi.fn(),
   cancelInvocationsForAgents: vi.fn(),
+}));
+
+const mockRunRedactions = vi.hoisted(() => ({
+  redactForRuns: vi.fn(async (_companyId: string, runs: Array<Record<string, unknown>>) => runs),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -173,6 +181,10 @@ function registerModuleMocks() {
 
   vi.doMock("../services/heartbeat.js", () => ({
     heartbeatService: () => mockHeartbeatService,
+  }));
+
+  vi.doMock("../services/run-secret-redaction.js", () => ({
+    createRunSecretRedactionRegistry: () => mockRunRedactions,
   }));
 
   vi.doMock("../services/issue-approvals.js", () => ({
@@ -304,11 +316,13 @@ describe.sequential("agent permission routes", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    mockRunRedactions.redactForRuns.mockImplementation(async (_companyId, runs) => runs);
     mockAgentService.getById.mockReset();
     mockAgentService.getConfigRevision.mockReset();
     mockAgentService.listConfigRevisions.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.listSummaries.mockReset();
+    mockAgentService.listSummariesVersionKey.mockReset();
     mockAgentService.create.mockReset();
     mockAgentService.activatePendingApproval.mockReset();
     mockAgentService.terminate.mockReset();
@@ -331,6 +345,8 @@ describe.sequential("agent permission routes", () => {
     mockApprovalService.approve.mockReset();
     mockApprovalService.reject.mockReset();
     mockBudgetService.upsertPolicy.mockReset();
+    mockHeartbeatService.list.mockReset();
+    mockHeartbeatService.listVersionKey.mockReset();
     mockHeartbeatService.listTaskSessions.mockReset();
     mockHeartbeatService.resetRuntimeSession.mockReset();
     mockHeartbeatService.getRun.mockReset();
@@ -357,6 +373,8 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.listConfigRevisions.mockResolvedValue([]);
     mockAgentService.list.mockResolvedValue([baseAgent]);
     mockAgentService.listSummaries.mockResolvedValue([baseAgentListItem]);
+    mockAgentService.listSummariesVersionKey.mockResolvedValue('"vk-agents-list:test"');
+    mockHeartbeatService.listVersionKey.mockResolvedValue('"heartbeat-runs:v1"');
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
     mockAgentService.create.mockResolvedValue(baseAgent);
@@ -368,8 +386,15 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
     mockBuiltInAgentService.ensureCompanyDefaultAgentGrants.mockResolvedValue(0);
     mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant",
+    });
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
-      const allowed = Boolean(await mockAccessService.canUser());
+      const allowed = input.action === "company_scope:read"
+        ? true
+        : Boolean(await mockAccessService.canUser());
       return {
         allowed,
         reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
@@ -421,9 +446,9 @@ describe.sequential("agent permission routes", () => {
   it("redacts agent detail for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
-      allowed: input.action === "agent:read",
-      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
-      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+      allowed: input.action === "agent:read" || input.action === "company_scope:read",
+      reason: input.action === "agent:read" || input.action === "company_scope:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" || input.action === "company_scope:read" ? "Allowed by test read grant." : "Missing test grant.",
     }));
 
     const app = await createApp({
@@ -519,7 +544,13 @@ describe.sequential("agent permission routes", () => {
     );
 
     expect(res.status).toBe(200);
+    expect(res.headers.etag).toMatch(/^"vk-agents-list:/);
+    expect(res.headers["cache-control"]).toBe("private, must-revalidate");
     expect(mockAgentService.listSummaries).toHaveBeenCalledWith(companyId);
+    expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledWith(
+      companyId,
+      expect.stringContaining("board:board-user:admin"),
+    );
     expect(mockAgentService.list).not.toHaveBeenCalled();
     expect(res.body).toHaveLength(1);
     expect(Object.prototype.hasOwnProperty.call(res.body[0], "adapterConfig")).toBe(false);
@@ -534,8 +565,173 @@ describe.sequential("agent permission routes", () => {
     expect(JSON.stringify(res.body)).not.toContain("***REDACTED***");
   }, 20_000);
 
+  it("returns 304 for a matching agent-list ETag without fetching the response body", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+    mockAgentService.listSummariesVersionKey.mockResolvedValue('"vk-agents-list:authorized"');
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get(`/api/companies/${companyId}/agents`)
+        .set("If-None-Match", '"vk-agents-list:authorized"'),
+    );
+
+    expect(res.status).toBe(304);
+    expect(res.text).toBe("");
+    expect(mockAgentService.listSummaries).not.toHaveBeenCalled();
+    expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledOnce();
+  }, 20_000);
+
+  it("does not return a stale 304 when company access is revoked", async () => {
+    let hasCompanyAccess = true;
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "company_scope:read" ? hasCompanyAccess : true,
+      reason: hasCompanyAccess ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: hasCompanyAccess ? "Allowed by test grant" : "Company access revoked in test",
+    }));
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      companyIds: [companyId],
+    });
+
+    const first = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/agents`),
+    );
+    expect(first.status).toBe(200);
+    expect(first.headers.etag).toBeTruthy();
+
+    hasCompanyAccess = false;
+    const afterRevocation = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get(`/api/companies/${companyId}/agents`)
+        .set("If-None-Match", first.headers.etag),
+    );
+
+    expect(afterRevocation.status).toBe(403);
+    expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledOnce();
+  }, 20_000);
+
+  it("does not reuse an agent-list ETag when agent visibility changes", async () => {
+    const agentReadDecisions = new Map<string, boolean>([["builder-agent", true]]);
+    mockAccessService.decide.mockImplementation(async (input: { action?: string; resource?: { agentId?: string } }) => {
+      if (input.action === "company_scope:read") return { allowed: true };
+      if (input.action === "agent:read") {
+        return { allowed: agentReadDecisions.get(input.resource?.agentId ?? "") ?? false };
+      }
+      return { allowed: Boolean(await mockAccessService.canUser()) };
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "reader-agent",
+      companyId,
+      companyIds: [companyId],
+    });
+    mockAgentService.listSummaries.mockResolvedValue([
+      { ...baseAgentListItem, id: "builder-agent" },
+    ]);
+    mockAgentService.listSummariesVersionKey.mockImplementation(async () => (
+      agentReadDecisions.get("builder-agent")
+        ? '"vk-agents-list:visible"'
+        : '"vk-agents-list:hidden"'
+    ));
+    const first = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/agents`),
+    );
+    expect(first.status).toBe(200);
+    const etag = first.headers.etag;
+    expect(etag).toBeTruthy();
+
+    agentReadDecisions.set("builder-agent", false);
+    const afterVisibilityChange = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get(`/api/companies/${companyId}/agents`)
+        .set("If-None-Match", etag),
+    );
+
+    expect(afterVisibilityChange.status).toBe(200);
+    expect(afterVisibilityChange.headers.etag).not.toBe(etag);
+    expect(afterVisibilityChange.body).toEqual([]);
+  }, 20_000);
+
   // Mutation routes echo the stored row back, so they leak the same values the
   // GET paths redact.
+  it("returns 304 for a matching heartbeat-runs ETag without fetching or redacting the response body", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get(`/api/companies/${companyId}/heartbeat-runs`)
+        .set("If-None-Match", '"heartbeat-runs:v1"'),
+    );
+
+    expect(res.status).toBe(304);
+    expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledOnce();
+    expect(mockHeartbeatService.list).not.toHaveBeenCalled();
+    expect(mockRunRedactions.redactForRuns).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("does not reuse a heartbeat-runs ETag when redaction changes", async () => {
+    let redactionEnabled = false;
+    mockHeartbeatService.listVersionKey.mockImplementation(async () => (
+      redactionEnabled ? '"vk-heartbeat-runs:redacted"' : '"vk-heartbeat-runs:visible"'
+    ));
+    mockHeartbeatService.list.mockResolvedValue([{ id: "run-1", summary: "visible secret" }]);
+    mockRunRedactions.redactForRuns.mockImplementation(async (_companyId, runs) => runs.map((run) => ({
+      ...run,
+      summary: redactionEnabled && run.summary === "visible secret" ? "REDACTED_SECRET" : run.summary,
+    })));
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      companyIds: [companyId],
+    });
+    const first = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/heartbeat-runs`),
+    );
+    expect(first.status).toBe(200);
+    expect(first.headers.etag).toBe('"vk-heartbeat-runs:visible"');
+    expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
+      companyId,
+      undefined,
+      undefined,
+      false,
+      '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
+    );
+
+    redactionEnabled = true;
+    const afterRedactionChange = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get(`/api/companies/${companyId}/heartbeat-runs`)
+        .set("If-None-Match", first.headers.etag),
+    );
+
+    expect(afterRedactionChange.status).toBe(200);
+    expect(afterRedactionChange.body).toEqual([{ id: "run-1", summary: "REDACTED_SECRET" }]);
+    expect(mockHeartbeatService.list).toHaveBeenCalledTimes(2);
+    expect(mockRunRedactions.redactForRuns).toHaveBeenCalledTimes(2);
+    expect(mockHeartbeatService.listVersionKey).toHaveBeenLastCalledWith(
+      companyId,
+      undefined,
+      undefined,
+      false,
+      '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
+    );
+  }, 20_000);
+
   it("redacts env values in agent mutation responses", async () => {
     const plaintextValue = "mutation-value-must-not-leak";
     const storedAgent = {
@@ -653,9 +849,9 @@ describe.sequential("agent permission routes", () => {
   it("serves the slim company agent list to an authenticated company member without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
-      allowed: input.action === "agent:read",
-      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
-      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+      allowed: input.action === "agent:read" || input.action === "company_scope:read",
+      reason: input.action === "agent:read" || input.action === "company_scope:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" || input.action === "company_scope:read" ? "Allowed by test read grant." : "Missing test grant.",
     }));
 
     const app = await createApp({
@@ -685,9 +881,9 @@ describe.sequential("agent permission routes", () => {
   it("blanks the config-derived list fields for an agent actor without agent_config:read", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
-      allowed: input.action === "agent:read",
-      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
-      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+      allowed: input.action === "agent:read" || input.action === "company_scope:read",
+      reason: input.action === "agent:read" || input.action === "company_scope:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" || input.action === "company_scope:read" ? "Allowed by test read grant." : "Missing test grant.",
     }));
 
     const app = await createApp({
