@@ -1766,10 +1766,13 @@ async function startServerWithDatabaseTeardown(
   // myrmidon(O1): re-sends accept-continuation wakes whose post-commit dispatch was lost
   const interactionContinuationOutboxDeliveries =
     interactionContinuationOutboxService(db as any, backgroundHeartbeat);
+  // API role has no cleanup heartbeat: nothing to sweep, resolve an empty result.
+  const sweepEnvironmentLeaseCleanup = (backoffMs: number) => {
+    if (!environmentLeaseCleanupHeartbeat) return Promise.resolve({ swept: 0, destroyed: 0, capped: 0 });
+    return environmentLeaseCleanupHeartbeat.sweepPendingCleanupLeases({ backoffMs });
+  };
   const runEnvironmentLeaseCleanupSweep = (backoffMs: number) =>
-    (environmentLeaseCleanupHeartbeat
-      ? environmentLeaseCleanupHeartbeat.sweepPendingCleanupLeases({ backoffMs })
-      : Promise.resolve({ destroyed: 0, capped: 0 }))
+    sweepEnvironmentLeaseCleanup(backoffMs)
       .then((result) => {
         if (result.destroyed > 0 || result.capped > 0) {
           logger.info(result, "environment lease cleanup sweep retried orphan sandbox teardowns");
