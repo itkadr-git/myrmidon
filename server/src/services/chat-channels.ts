@@ -4239,7 +4239,26 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .orderBy(asc(chatActions.createdAt))
       .limit(limit);
-    for (const action of actions) await processReceiptReaction(action.id);
+    for (const action of actions) {
+      try {
+        await processReceiptReaction(action.id);
+      } catch (error) {
+        // The credential-mutation lease is a cross-process serialization
+        // point: a busy refusal is transient by design (the holder is working
+        // on the same endpoint). Skip this sweep pass instead of failing the
+        // caller; the action stays retryable and a later sweep or the holder
+        // itself completes the reaction.
+        if (
+          error instanceof HttpError &&
+          error.status === 409 &&
+          (error.details as { code?: string } | undefined)?.code ===
+            "chat_endpoint_credentials_busy"
+        ) {
+          continue;
+        }
+        throw error;
+      }
+    }
     return actions.length;
   }
 
