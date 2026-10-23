@@ -331,3 +331,5 @@ export { boardProcesses, boardLeases } from "./board_processes.js";
 export { corpusShadowLog } from "./corpus_shadow_log.js";
 // myrmidon(OPE-8836): the single, permanent installation id of the board (licensing).
 export { myrmidonInstallIdentity } from "./myrmidon_install_identity.js";
+// myrmidon(OPE-8985): users-admin-a — password-set tokens and the block list.
+export { userPasswordSetTokens, userBlocks } from "./user_password_set_tokens.js";
