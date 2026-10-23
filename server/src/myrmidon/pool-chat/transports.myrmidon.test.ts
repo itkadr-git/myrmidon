@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PoolChatMessage } from "./protocol.js";
-import { createPoolChatTransports, redactTransportError } from "./transports.js";
+import { createPoolChatHttpTransport, createPoolChatTransports, redactTransportError } from "./transports.js";
 
 const messages: PoolChatMessage[] = [
   { role: "user", content: "question" },
@@ -38,4 +38,46 @@ describe("pool-chat transports", () => {
       .toBe("provider_transport_failed");
     expect(redactTransportError({ token: "private" })).toBe("provider_transport_failed");
   });
+  it("translates pool-chat messages to the Gemini contents contract", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: "part 1" }, { text: "part 2" }] } }],
+        usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 3 },
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const transport = createPoolChatHttpTransport({ provider: "google", endpoint: "https://generativelanguage.test/generate", apiKey: "google-secret" });
+      const result = await transport.send({ model: "gemini-2.0-flash", messages, maxOutputTokens: 128 });
+      expect(result).toMatchObject({ text: "part 1part 2", inputUnits: 7, outputUnits: 3 });
+      const init = fetchMock.mock.calls[0]?.[1];
+      expect(init?.headers).toEqual({ "content-type": "application/json", "x-goog-api-key": "google-secret" });
+      expect(JSON.parse(String(init?.body))).toEqual({
+        contents: [
+          { role: "user", parts: [{ text: "question" }] },
+          { role: "model", parts: [{ text: "prior answer" }] },
+          { role: "user", parts: [{ text: "follow-up" }] },
+        ],
+        generationConfig: { maxOutputTokens: 128 },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("uses bearer auth and the OpenAI payload for ChatGPT", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => ({ ok: true, json: async () => ({ choices: [{ message: { content: "answer" } }] }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const transport = createPoolChatHttpTransport({ provider: "chatgpt", endpoint: "https://chatgpt.test/chat", apiKey: "chatgpt-secret" });
+      await transport.send({ model: "gpt-4o-mini", messages, maxOutputTokens: 64 });
+      const init = fetchMock.mock.calls[0]?.[1];
+      expect(init?.headers).toEqual({ "content-type": "application/json", authorization: "Bearer chatgpt-secret" });
+      expect(JSON.parse(String(init?.body))).toMatchObject({ model: "gpt-4o-mini", messages, max_tokens: 64 });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
 });
