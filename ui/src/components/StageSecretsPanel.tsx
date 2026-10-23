@@ -1,4 +1,6 @@
 import { KeyRound, Save } from "lucide-react";
+import { Trans } from "react-i18next";
+import { useTranslation } from "@/i18n";
 import type { CompanySecret, RoutineEnvConfig } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "./EmptyState";
@@ -45,6 +47,7 @@ export function StageSecretsPanel({
   saving,
   dirty,
 }: StageSecretsPanelProps) {
+  const { t } = useTranslation();
   // No backing automation/assignee → nothing can receive secrets at runtime.
   // Point the user at Automation instead of creating a hidden routine just
   // because the Secrets tab was opened.
@@ -52,14 +55,14 @@ export function StageSecretsPanel({
     return (
       <EmptyState
         icon={KeyRound}
-        message="Secrets are available only to step automation. Pick an agent to run this step, then add the secrets it needs."
-        action="Set up automation"
+        message={t("area.access-secrets-1.stage-secrets-panel.noAutomationMessage")}
+        action={t("area.access-secrets-1.stage-secrets-panel.setUpAutomation")}
         onAction={onSetupAutomation}
       />
     );
   }
 
-  const displayName = agentName?.trim() || "the responsible agent";
+  const displayName = agentName?.trim() || t("area.access-secrets-1.stage-secrets-panel.responsibleAgent");
 
   return (
     <div className="space-y-5">
@@ -70,15 +73,16 @@ export function StageSecretsPanel({
           <KeyRound className="h-3.5 w-3.5 mt-0.5 shrink-0" />
         )}
         <p>
-          These env vars are injected when{" "}
-          <span className="font-medium text-foreground">{displayName}</span> runs this step. They override
-          matching project and agent env on collisions. <span className="font-mono">PAPERCLIP_*</span> names
-          are reserved.
+          <Trans
+            i18nKey="area.access-secrets-1.stage-secrets-panel.injectedNote"
+            values={{ name: displayName }}
+            components={[<span key="name" className="font-medium text-foreground" />, <span key="reserved" className="font-mono" />]}
+          />
         </p>
       </div>
 
       {secretsLoading ? (
-        <p className="text-sm text-muted-foreground">Loading secrets…</p>
+        <p className="text-sm text-muted-foreground">{t("area.access-secrets-1.stage-secrets-panel.loadingSecrets")}</p>
       ) : (
         <EnvironmentVariablesEditor
           value={value}
@@ -91,9 +95,9 @@ export function StageSecretsPanel({
       <div className="flex items-center gap-3">
         <Button type="button" onClick={onSave} disabled={!dirty || saving}>
           <Save className="h-4 w-4 mr-1.5" />
-          {saving ? "Saving…" : "Save secrets"}
+          {saving ? t("area.access-secrets-1.stage-secrets-panel.saving") : t("area.access-secrets-1.stage-secrets-panel.saveSecrets")}
         </Button>
-        {dirty && !saving ? <span className="text-xs text-muted-foreground">Unsaved changes</span> : null}
+        {dirty && !saving ? <span className="text-xs text-muted-foreground">{t("area.access-secrets-1.stage-secrets-panel.unsavedChanges")}</span> : null}
       </div>
     </div>
   );
