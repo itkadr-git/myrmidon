@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { ApiError } from "@/api/client";
+import { i18n, useTranslation } from "@/i18n";
 import { browsersApi, browsersQueryKey, formatDuration } from "./browsersApi";
 import type {
   BrowserConsoleStatus,
@@ -26,9 +27,9 @@ const HEARTBEAT_MS = 30_000;
 const ACTIVITY_DEBOUNCE_MS = 5_000;
 
 function readable(error: unknown): string {
-  if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
+  if (error instanceof ApiError) return error.message || i18n.t("area.settings-integrations.browser-screen-panel.requestFailed", { status: error.status });
   if (error instanceof Error) return error.message;
-  return "Unexpected error";
+  return i18n.t("area.settings-integrations.browser-screen-panel.unexpectedError");
 }
 
 export interface ScreenPanelState {
@@ -216,11 +217,12 @@ export function BrowserScreenPanelView({
   onReconnect?: () => void;
   reconnectPending?: boolean;
 }) {
+  const { t } = useTranslation();
   if (!state.active) {
     if (state.closedBy === "done") {
       return (
         <p className="text-xs text-muted-foreground" data-testid={`myrmidon-browser-screen-closed-${browserId}`}>
-          Screen closed. Bots resumed.
+          {t("area.settings-integrations.browser-screen-panel.closed")}
         </p>
       );
     }
@@ -234,17 +236,17 @@ export function BrowserScreenPanelView({
       onKeyDown={onActivity}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm font-medium">Screen session</div>
+        <div className="text-sm font-medium">{t("area.settings-integrations.browser-screen-panel.sessionTitle")}</div>
         <Button size="sm" variant="default" disabled={donePending} onClick={onDone} data-testid={`myrmidon-browser-screen-done-${browserId}`}>
-          Done
+          {t("area.settings-integrations.browser-screen-panel.done")}
         </Button>
       </div>
       <div className="text-xs text-muted-foreground">
-        Auto-close in {formatDuration(state.remainingMs)} (idle or at the hard limit).
+        {t("area.settings-integrations.browser-screen-panel.autoClose", { time: formatDuration(state.remainingMs) })}
       </div>
       {warning && (
         <p className="text-xs text-amber-500" data-testid={`myrmidon-browser-screen-warning-${browserId}`}>
-          The screen closes soon. Press Done when you are finished.
+          {t("area.settings-integrations.browser-screen-panel.closingSoon")}
         </p>
       )}
       {screenUrl ? (
@@ -252,11 +254,11 @@ export function BrowserScreenPanelView({
           <iframe
             className="h-96 w-full rounded-md border border-border bg-background"
             src={screenUrl}
-            title={`Browser screen: ${browserId}`}
+            title={t("area.settings-integrations.browser-screen-panel.frameTitle", { id: browserId })}
             data-testid={`myrmidon-browser-screen-frame-${browserId}`}
           />
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-            <span>Token valid for {formatDuration(tokenRemainingMs)} (the open picture keeps streaming).</span>
+            <span>{t("area.settings-integrations.browser-screen-panel.tokenValid", { time: formatDuration(tokenRemainingMs) })}</span>
             <a
               className="underline"
               href={screenUrl}
@@ -264,13 +266,13 @@ export function BrowserScreenPanelView({
               rel="noreferrer"
               data-testid={`myrmidon-browser-screen-newtab-${browserId}`}
             >
-              Open in a new tab
+              {t("area.settings-integrations.browser-screen-panel.openInNewTab")}
             </a>
           </div>
         </div>
       ) : (
         <p className="text-xs text-muted-foreground" data-testid={`myrmidon-browser-screen-no-frame-${browserId}`}>
-          {state.error ? "The screen console could not be reached. Fix the settings, then reconnect." : "Requesting the screen console…"}
+          {state.error ? t("area.settings-integrations.browser-screen-panel.unreachable") : t("area.settings-integrations.browser-screen-panel.requesting")}
         </p>
       )}
       <div className="flex flex-wrap items-center gap-2">
@@ -282,11 +284,11 @@ export function BrowserScreenPanelView({
             onClick={onReconnect}
             data-testid={`myrmidon-browser-screen-reconnect-${browserId}`}
           >
-            Reconnect
+            {t("area.settings-integrations.browser-screen-panel.reconnect")}
           </Button>
         )}
         <Button size="sm" variant="outline" onClick={onActivity} data-testid={`myrmidon-browser-screen-activity-${browserId}`}>
-          Report activity
+          {t("area.settings-integrations.browser-screen-panel.reportActivity")}
         </Button>
       </div>
       {state.error && <p className="text-xs text-destructive">{state.error}</p>}
