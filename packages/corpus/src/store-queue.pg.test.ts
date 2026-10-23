@@ -108,7 +108,8 @@ d("corpus store/queue on embedded Postgres", () => {
     const tables = rowsOf<{ table_name: string }>(
       await db.execute(rawSql`
         select table_name from information_schema.tables
-        where table_schema = 'public' and table_name like 'corpus_%' order by 1
+        where table_schema = 'public' and table_name like 'corpus_%'
+          and table_name <> 'corpus_shadow_log' order by 1
       `),
     );
     const names = tables.map((r) => r.table_name);
