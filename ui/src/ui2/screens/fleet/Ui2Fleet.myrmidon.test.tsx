@@ -12,7 +12,7 @@ import { useCompany } from "@/context/CompanyContext";
 const mockFleetApi = vi.hoisted(() => ({ dashboard: vi.fn() }));
 vi.mock("@/api/fleet", () => ({ fleetApi: mockFleetApi }));
 vi.mock("@/context/CompanyContext", () => ({
-  useCompany: () => ({ selectedCompanyId: "company-1", selectedCompany: { id: "company-1" } }),
+  useCompany: vi.fn(() => ({ selectedCompanyId: "company-1", selectedCompany: { id: "company-1" } })),
 }));
 
 async function flushReact() {
@@ -88,7 +88,7 @@ describe("myrmidon(UI2) Ui2Fleet screen parity", () => {
   });
 
   it("keeps loading while no company is selected", async () => {
-    vi.mocked(useCompany).mockReturnValue({ selectedCompanyId: null, selectedCompany: null } as never);
+    vi.mocked(useCompany).mockReturnValueOnce({ selectedCompanyId: null, selectedCompany: null } as never);
     await renderScreen();
     expect(mockFleetApi.dashboard).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("No fleet resources yet");
