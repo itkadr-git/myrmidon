@@ -1,4 +1,6 @@
 import { useRef } from "react";
+import { useTranslation } from "@/i18n";
+import type { TFunction } from "i18next";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { cn } from "@/lib/utils";
@@ -43,13 +45,15 @@ function currentActivityStatusItems(
   return items.slice(boundaryIndex + 1);
 }
 
-function formatCompactDuration(ms: number | null): string | null {
+function formatCompactDuration(ms: number | null, t: TFunction): string | null {
   if (ms == null || !Number.isFinite(ms)) return null;
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  if (totalSeconds < 60) return `${totalSeconds}s`;
+  if (totalSeconds < 60) return t("area.task-chat-runner.task-chat-runner-turn.duration.seconds", { seconds: totalSeconds });
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+  return seconds === 0
+    ? t("area.task-chat-runner.task-chat-runner-turn.duration.minutes", { minutes })
+    : t("area.task-chat-runner.task-chat-runner-turn.duration.minutesSeconds", { minutes, seconds });
 }
 
 function terminalStatusFailed(status: string): boolean {
@@ -72,6 +76,7 @@ function RunnerTurnStatus({
   finishedAtMs?: number | null;
   continuedAfterSteering?: boolean;
 }) {
+  const { t } = useTranslation();
   const terminal = isTerminalRunStatus(status);
   useSecondTick(!terminal && startedAtMs != null);
   const elapsedMs =
@@ -81,17 +86,20 @@ function RunnerTurnStatus({
           0,
           (terminal ? (finishedAtMs ?? Date.now()) : Date.now()) - startedAtMs,
         );
-  const elapsed = formatCompactDuration(elapsedMs);
+  const elapsed = formatCompactDuration(elapsedMs, t);
 
   const failed = terminalStatusFailed(status);
-  const label = terminal ? (failed ? "Stopped" : "Worked") : "Working";
   const semanticLabel = terminal
     ? elapsed
-      ? `${label} ${failed ? "after" : "for"} ${elapsed}`
-      : label
-    : `${label} for ${elapsed ?? "0s"}`;
+      ? failed
+        ? t("area.task-chat-runner.task-chat-runner-turn.status.stoppedAfter", { elapsed })
+        : t("area.task-chat-runner.task-chat-runner-turn.status.workedFor", { elapsed })
+      : failed
+        ? t("area.task-chat-runner.task-chat-runner-turn.status.stopped")
+        : t("area.task-chat-runner.task-chat-runner-turn.status.worked")
+    : t("area.task-chat-runner.task-chat-runner-turn.status.workingFor", { elapsed: elapsed ?? formatCompactDuration(0, t) });
   const visibleLabel = continuedAfterSteering
-    ? `Continued after steering · ${semanticLabel}`
+    ? t("area.task-chat-runner.task-chat-runner-turn.status.continuedAfterSteering", { status: semanticLabel })
     : semanticLabel;
 
   return (
@@ -108,9 +116,10 @@ function RunnerTurnStatus({
 }
 
 function RunnerCurrentActivityTail({ status }: { status: string }) {
+  const { t } = useTranslation();
   if (isTerminalRunStatus(status)) return null;
   return <div className="mt-2 flex min-h-8 min-w-0 items-center gap-2 px-1 py-1 text-xs text-muted-foreground" data-testid="task-chat-current-activity" data-turn-position="tail">
-    <span className="shimmer-text shimmer-text-muted" aria-live="polite" data-testid="task-chat-current-activity-label">Thinking</span>
+    <span className="shimmer-text shimmer-text-muted" aria-live="polite" data-testid="task-chat-current-activity-label">{t("area.task-chat-runner.task-chat-runner-turn.thinking")}</span>
   </div>;
 }
 
@@ -146,6 +155,7 @@ export function TaskChatRunnerTurn({
     decision: TaskChatRuntimeRequestDecision,
   ) => void | Promise<void>;
 }) {
+  const { t } = useTranslation();
   const terminal = isTerminalRunStatus(status);
   const yielded = items.some(
     (item) =>
@@ -228,7 +238,7 @@ export function TaskChatRunnerTurn({
           role="status"
           data-testid="task-chat-activity-unavailable"
         >
-          Live runner activity is temporarily unavailable. Retrying…
+          {t("area.task-chat-runner.task-chat-runner-turn.activityUnavailable")}
         </div>
       ) : null}
       {timelineRows.length > 0 ? (
