@@ -433,9 +433,9 @@ export function SummarySlotCard({
               <Trans
                 i18nKey="area.inbox-status-cards-1.summary-slot-card.workingIn"
                 values={{ issue: issueLabel(generatingIssue) }}
-                components={{
-                  0: <Link className="underline" to={`/issues/${generatingIssue.identifier ?? generatingIssue.id}`} />,
-                }}
+                components={[
+                  <Link key="issue" className="underline" to={`/issues/${generatingIssue.identifier ?? generatingIssue.id}`} />,
+                ]}
               />
             </p>
           </div>
