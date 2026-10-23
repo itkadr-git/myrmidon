@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createSiteHealthMonitor } from "./site-health-monitor.js";
-import { createSiteHealthSnapshot } from "../../../../packages/shared/src/remote-sites/health-reducer.js";
+import { createSiteHealthSnapshot, type SiteHealthSnapshot } from "@paperclipai/shared/remote-sites/health-reducer";
 
 describe("createSiteHealthMonitor", () => {
   it("fences before failover and persists the reducer snapshot", async () => {
@@ -24,7 +24,7 @@ describe("createSiteHealthMonitor", () => {
   });
 
   it("keeps an unreachable site fenced after a successful probe", async () => {
-    const save = vi.fn(async () => undefined);
+    const save = vi.fn(async (_siteName: string, _snapshot: SiteHealthSnapshot) => undefined);
     const monitor = createSiteHealthMonitor({
       listSites: async () => [{ name: "primary", status: "unreachable", url: "https://primary" }],
       probe: async () => "success",
@@ -38,7 +38,7 @@ describe("createSiteHealthMonitor", () => {
     const result = await monitor.tick();
     monitor.stop();
     expect(result[0]?.state).toBe("unreachable");
-    expect(save.mock.calls[0]?.[1].missCount).toBe(0);
+    expect(save.mock.calls[0]?.[1]?.missCount).toBe(0);
   });
 
   it("does not run overlapping sweeps", async () => {

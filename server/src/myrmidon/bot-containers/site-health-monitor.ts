@@ -1,7 +1,7 @@
 // myrmidon(1.6.6 REMOTE-SITES-T5): health polling and fencing orchestration.
 // Network, persistence, and move execution stay behind injected ports.
 
-import { reduceSiteHealth, SITE_HEALTH_POLL_INTERVAL_MS, type SiteHealthResult, type SiteHealthSnapshot } from "../../../../packages/shared/src/remote-sites/health-reducer.js";
+import { reduceSiteHealth, SITE_HEALTH_POLL_INTERVAL_MS, type SiteHealthResult, type SiteHealthSnapshot } from "@paperclipai/shared/remote-sites/health-reducer";
 
 export interface MonitoredSite {
   name: string;
