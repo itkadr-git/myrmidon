@@ -1,6 +1,6 @@
 // myrmidon(OPE-8985): users-admin-a entry point. Stateless: nothing is held in
 // memory and there is no startup step.
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { usersAdminRoutes, type UsersAdminRoutesOptions } from "./routes.js";
 
 export * from "./service.js";

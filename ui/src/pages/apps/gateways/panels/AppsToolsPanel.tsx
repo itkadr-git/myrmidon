@@ -1,4 +1,4 @@
-import type { ToolProfileWithDetails } from "@paperclipai/shared";
+import type { ToolProfileWithDetails } from "@myrmidon/shared";
 import { useTranslation } from "@/i18n";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";

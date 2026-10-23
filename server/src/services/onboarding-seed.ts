@@ -1,8 +1,8 @@
 import { and, eq, ne, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, companyOnboardingSeeds, goals, issues, projects } from "@paperclipai/db";
-import type { ApplyOnboardingSeed } from "@paperclipai/shared";
-import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import type { Db } from "@myrmidon/db";
+import { agents, companyOnboardingSeeds, goals, issues, projects } from "@myrmidon/db";
+import type { ApplyOnboardingSeed } from "@myrmidon/shared";
+import { writePaperclipSkillSyncPreference } from "@myrmidon/adapter-utils/server-utils";
 import { findActiveServerAdapter } from "../adapters/registry.js";
 import { agentService } from "./agents.js";
 import { PAPERCLIP_CORE_SKILL_KEYS } from "./company-skills.js";
@@ -11,7 +11,7 @@ import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 /**
  * The project the seeded first task lands in, matching the name the tenant's

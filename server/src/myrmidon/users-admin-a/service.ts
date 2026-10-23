@@ -10,7 +10,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { hashPassword } from "better-auth/crypto";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   authAccounts,
   authSessions,
@@ -19,7 +19,7 @@ import {
   instanceUserRoles,
   userBlocks,
   userPasswordSetTokens,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 
 export const CREDENTIAL_ISSUER = "local:credential";
 export const MANAGED_EMAIL_DOMAIN = "myr.local";

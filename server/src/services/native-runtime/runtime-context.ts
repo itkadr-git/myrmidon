@@ -2,14 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
-import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
+import { heartbeatRuns, type Db } from "@myrmidon/db";
+import type { PaperclipSkillEntry } from "@myrmidon/adapter-utils/server-utils";
 // myrmidon(P9): run MCP selection ignores connection health
 import { isRunSelectableConnection } from "../../myrmidon/tool-gateway-run-selection.js";
 import {
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   resolvePaperclipDesiredSkillNames,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
   PAPERCLIP_EXECUTION_PROMPT,

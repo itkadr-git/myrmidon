@@ -13,7 +13,7 @@ import {
   ServerCog,
   X,
 } from "lucide-react";
-import type { SmokeRun, SmokeRunStep } from "@paperclipai/shared";
+import type { SmokeRun, SmokeRunStep } from "@myrmidon/shared";
 import { smokeLabApi } from "@/api/smokeLab";
 import { queryKeys } from "@/lib/queryKeys";
 import { useToast } from "@/context/ToastContext";

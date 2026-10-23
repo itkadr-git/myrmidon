@@ -10,7 +10,7 @@
 // env force → the person's preference → the instance setting → English.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { authUsers, instanceSettings, userUiLanguage, createDb } from "@paperclipai/db";
+import { authUsers, instanceSettings, userUiLanguage, createDb } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -28,7 +28,7 @@ import {
   type BridgeTextKey,
 } from "./locales/index.js";
 import { telegramDmCommandsForLocale } from "./commands/index.js";
-import { BRIDGE_LANGUAGE_SETTINGS_KEY } from "@paperclipai/shared";
+import { BRIDGE_LANGUAGE_SETTINGS_KEY } from "@myrmidon/shared";
 
 const support = await getEmbeddedPostgresTestSupport();
 

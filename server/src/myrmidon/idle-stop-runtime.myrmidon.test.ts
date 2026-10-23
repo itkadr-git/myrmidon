@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { idleStopRuntimeFromStatus } from "./idle-stop-runtime.js";
-import { patchIdleStopBotModesSchema } from "@paperclipai/shared";
+import { patchIdleStopBotModesSchema } from "@myrmidon/shared";
 
 describe("idleStopRuntimeFromStatus", () => {
   it("reads the last stop and start from the container inspect", () => {

@@ -11,7 +11,7 @@ import type {
   RoutineRevisionSnapshotTriggerV1,
   RoutineVariable,
   SecretVersionSelector,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   routinesApi,
   type RestoreRoutineRevisionResponse,

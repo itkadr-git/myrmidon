@@ -1,7 +1,7 @@
 import { KeyRound, Save } from "lucide-react";
 import { Trans } from "react-i18next";
 import { useTranslation } from "@/i18n";
-import type { CompanySecret, RoutineEnvConfig } from "@paperclipai/shared";
+import type { CompanySecret, RoutineEnvConfig } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "./EmptyState";
 import { EnvironmentVariablesEditor } from "./environment-variables-editor";

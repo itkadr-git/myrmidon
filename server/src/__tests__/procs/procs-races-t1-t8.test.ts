@@ -41,8 +41,8 @@ import {
   agents,
   heartbeatRuns,
   botApplyJobs,
-} from "@paperclipai/db";
-import { DEFAULT_PROCESSES_SETTINGS, type ProcessesSettings } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { DEFAULT_PROCESSES_SETTINGS, type ProcessesSettings } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

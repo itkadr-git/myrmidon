@@ -9,7 +9,7 @@ import {
   SWARM_CLAIM_ENV_KEYS,
   SWARM_CLAIM_SETTINGS_KEY,
   resolveSwarmClaimSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { swarmClaimSettingsService } from "../../swarm-claim/settings.js";
 import { entry, errorFields, healthOff, iso, latestOf, makeHealth } from "../health.js";

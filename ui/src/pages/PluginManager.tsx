@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Trans } from "react-i18next";
 import { i18n, useTranslation } from "@/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { PluginRecord } from "@paperclipai/shared";
+import type { PluginRecord } from "@myrmidon/shared";
 import { Link } from "@/lib/router";
 import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";

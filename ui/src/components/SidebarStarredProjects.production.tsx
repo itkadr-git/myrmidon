@@ -27,7 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { Project } from "@paperclipai/shared";
+import type { Project } from "@myrmidon/shared";
 
 // Sidebar star reveals with the row's own group, not the shared unnamed group.
 const STAR_ROW_REVEAL =

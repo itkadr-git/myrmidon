@@ -26,13 +26,13 @@ import {
   issues,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
-import type { ChatProvider } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { ChatProvider } from "@myrmidon/shared";
 import {
   OWNER_DELIVERY_SETTINGS_KEY,
   OWNER_MESSAGE_COMMENT_REASON,
   OWNER_MESSAGE_INTERACTION_LABEL,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { shouldQueueFollowupForRunningIssueWake } from "../services/heartbeat.js";
 import { decideWakeAdmission } from "../modules/wake-queue/domain/policy.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";

@@ -1,4 +1,4 @@
-import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
+import type { AdapterSessionCodec } from "@myrmidon/adapter-utils";
 
 export { execute, resolveSessionKey, readSessionGeneration, parseSseFramesForTest, mapFinalResultForTest, stopGatewayRunForBoard } from "./execute.js";
 export { testEnvironment } from "./test.js";

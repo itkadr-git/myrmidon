@@ -15,7 +15,7 @@
 // read no credentials and expose no company data — a role name, a boot id, a
 // count and three statuses — so they are safe to answer without an actor.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import express, { type Router } from "express";
 import {
   healthzVerdict,

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type AiProvider, type AiAuthMethod, type AiConnectionLoginIntent } from "@paperclipai/shared";
+import { type AiProvider, type AiAuthMethod, type AiConnectionLoginIntent } from "@myrmidon/shared";
 import { AgentProviderConnection } from "@/components/new-agent/AgentProviderConnection";
 import { ProviderApiKeyCard } from "@/components/AdapterLoginChrome";
 import { Button } from "@/components/ui/button";

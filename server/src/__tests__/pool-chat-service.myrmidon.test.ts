@@ -15,7 +15,7 @@ import {
   poolChatRequestAttempts,
   poolChatRequests,
   principalPermissionGrants,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { errorHandler } from "../middleware/index.js";
 import { describeEmbeddedPostgres, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
 import { poolChatRoutes } from "../myrmidon/pool-chat/routes.js";

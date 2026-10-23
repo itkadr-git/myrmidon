@@ -10,8 +10,8 @@
 
 import { Router, type Request } from "express";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
-import { companies } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { companies } from "@myrmidon/db";
 import { validate } from "../../middleware/validate.js";
 import { assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { logActivity } from "../../services/index.js";

@@ -5,14 +5,14 @@
 
 import { createHash } from "node:crypto";
 import https from "node:https";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   companies,
   myrmidonFleetSites,
   myrmidonFleetAffinity,
   type FleetSiteCapacity,
   type FleetSiteProfile,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { secretService } from "../../services/index.js";

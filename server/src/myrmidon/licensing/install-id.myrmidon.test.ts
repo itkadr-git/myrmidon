@@ -7,7 +7,7 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createDb, myrmidonInstallIdentity } from "@paperclipai/db";
+import { createDb, myrmidonInstallIdentity } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
 import {
   getEmbeddedPostgresTestSupport,

@@ -14,15 +14,15 @@ const producer = { id: 123, head_sha: sha, head_branch: "master", path: ".github
   head_repository: { id: 1170821064, full_name: "paperclipai/paperclip" }, event: "push", status: "completed", conclusion: "success" };
 function bundle() {
   const packages = {}; const files = new Map();
-  const entries = { "": { dependencies: { "@paperclipai/db": version } } };
+  const entries = { "": { dependencies: { "@myrmidon/db": version } } };
   for (const name of ["db", "shared"]) {
-    const metadata = previewManifest({ name: `@paperclipai/${name}`, dependencies: {} }, sha);
+    const metadata = previewManifest({ name: `@myrmidon/${name}`, dependencies: {} }, sha);
     const bytes = Buffer.from(JSON.stringify(metadata));
     const header = Buffer.alloc(512); header.write("package/package.json"); header.write(bytes.length.toString(8).padStart(11, "0"), 124, 11); header[156] = 48;
     const padded = Buffer.alloc(Math.ceil(bytes.length / 512) * 512); bytes.copy(padded);
     const archive = gzipSync(Buffer.concat([header, padded, Buffer.alloc(1024)]));
     const pin = descriptor(archive, "tgz"); packages[name] = pin; files.set(pin.url, archive);
-    entries[`node_modules/@paperclipai/${name}`] = { version, resolved: pin.url, integrity: pin.integrity, dependencies: metadata.dependencies };
+    entries[`node_modules/@myrmidon/${name}`] = { version, resolved: pin.url, integrity: pin.integrity, dependencies: metadata.dependencies };
   }
   const lock = Buffer.from(JSON.stringify({ lockfileVersion: 3, packages: entries }));
   const manifest = { version: 1, sourceSha: sha, packageVersion: version, packages, lockfile: descriptor(lock, "json") };

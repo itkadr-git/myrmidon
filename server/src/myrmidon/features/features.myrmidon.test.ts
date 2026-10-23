@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FEATURE_ATTENTION_AFTER_MS, isFeatureBroken, type FeatureView } from "@paperclipai/shared";
+import { FEATURE_ATTENTION_AFTER_MS, isFeatureBroken, type FeatureView } from "@myrmidon/shared";
 import { sweepBotVolume } from "../bot-containers/draft-lifecycle.js";
 import {
   observeFeatureHealth,

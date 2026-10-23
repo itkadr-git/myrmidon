@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 // myrmidon(B1c): product name in user-facing goal reasons; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 import {
@@ -10,7 +10,7 @@ import {
   agentTaskSessions,
   heartbeatRuns,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   RunnerGoalActionAccepted,
   RunnerGoalActionRequest,
@@ -18,7 +18,7 @@ import type {
   RunnerGoalPendingAction,
   RunnerGoalProjection,
   RunnerGoalSnapshot,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { queueLiveRunnerPrpCommand } from "../realtime/runner-prp-ws.js";
 import { dispatchLiveRunnerGoalControl } from "./runner-goal-control-broker.js";
 import { publishLiveEvent } from "./live-events.js";

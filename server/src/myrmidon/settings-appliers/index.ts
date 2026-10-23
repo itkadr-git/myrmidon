@@ -1,5 +1,5 @@
 // myrmidon(PROCS-1.8): committed-settings invalidation registry.
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { startRuntimeLimits } from "../runtime-limits/index.js";
 import { resetMaintenanceGateCaches } from "../maintenance/gate.js";
 import { MAINTENANCE_GENERAL_KEY } from "../maintenance/store.js";

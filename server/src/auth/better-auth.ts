@@ -3,14 +3,14 @@ import type { IncomingHttpHeaders } from "node:http";
 import { APIError, betterAuth, type Auth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { isUserBlocked } from "../myrmidon/users-admin-a/service.js"; // myrmidon(OPE-8985)
 import {
   authAccounts,
   authSessions,
   authUsers,
   authVerifications,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type { Config } from "../config.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
 import {
@@ -23,7 +23,7 @@ import {
   resolveWorkspaceHandoffLocalKey,
   resolveWorkspaceHandoffLocalWorkspaceId,
 } from "./workspace-login-handoff.js";
-import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type BetterAuthSessionUser = {
   id: string;

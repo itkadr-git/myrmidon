@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { HeartbeatRun } from "@paperclipai/shared";
+import type { HeartbeatRun } from "@myrmidon/shared";
 import { useNavigate } from "@/lib/router";
 import { useTranslation } from "@/i18n";
 import { issuesApi } from "../api/issues";

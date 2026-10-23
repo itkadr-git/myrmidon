@@ -5,7 +5,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Megaphone } from "lucide-react";
 import { i18n, useTranslation } from "@/i18n";
-import type { BudgetEnforcementMode, BudgetEnforcementPatch } from "@paperclipai/shared";
+import type { BudgetEnforcementMode, BudgetEnforcementPatch } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { RadioCardGroup } from "@/components/ui/radio-card";
 import {

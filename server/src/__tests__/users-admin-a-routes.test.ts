@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
-import { authSessions, authUsers, boardApiKeys, createDb, userPasswordSetTokens } from "@paperclipai/db";
+import { authSessions, authUsers, boardApiKeys, createDb, userPasswordSetTokens } from "@myrmidon/db";
 import { actorMiddleware } from "../middleware/auth.js";
 import { createBoardApiToken, hashBearerToken } from "../services/board-auth.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
