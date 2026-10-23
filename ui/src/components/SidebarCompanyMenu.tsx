@@ -379,9 +379,8 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           }
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
-            {isCloud
-              ? currentName ? <CurrentStackIcon displayName={currentName} company={selectedCompany} /> : null
-              : selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
+            {isCloud && currentName ? <CurrentStackIcon displayName={currentName} company={selectedCompany} /> : null}
+            {!isCloud && selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
             {/* The header has room for ~110px of name beside the collapse
                 control (~142px on mobile, which hides it) — search moved to
                 the nav to buy that width. A name that still

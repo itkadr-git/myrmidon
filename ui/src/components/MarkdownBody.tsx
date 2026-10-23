@@ -39,6 +39,7 @@ import {
 } from "../lib/external-objects";
 import { normalizeExternalObjectHref } from "../lib/external-object-href";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { i18n, useTranslation } from "@/i18n";
 import type {
   ExternalObjectLivenessState,
   ExternalObjectStatusCategory,
@@ -116,10 +117,13 @@ function MarkdownIssueLink({
     staleTime: 60_000,
   });
 
+  const { t } = useTranslation();
   const identifier = data?.identifier ?? issuePathId;
   const title = data?.title ?? identifier;
   const status = data?.status;
-  const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
+  const issueLabel = title !== identifier
+    ? t("area.documents-artifacts-2.markdown-body.issueLabelWithTitle", { identifier, title })
+    : t("area.documents-artifacts-2.markdown-body.issueLabel", { identifier });
 
   return (
     <Link
@@ -149,12 +153,13 @@ function MarkdownCaseLink({
   // Cases resolve via the get-by-identifier route; navigate there on click.
   // Kept boxless/underlined to match the issue mention treatment.
   const caseHref = useCaseHref();
+  const { t } = useTranslation();
   return (
     <Link
       to={caseHref(identifier)}
       data-mention-kind="case"
       className={cn("paperclip-markdown-case-ref", "font-normal underline")}
-      aria-label={`Case ${identifier}`}
+      aria-label={t("area.documents-artifacts-2.markdown-body.caseLabel", { identifier })}
     >
       {children}
     </Link>
@@ -584,8 +589,9 @@ function CodeBlock({
     }, 1500);
   }, [children]);
 
-  const copyLabel = failed ? "Copy failed" : copied ? "Copied!" : "Copy";
-  const wrapLabel = wrapLines ? "Unwrap lines" : "Wrap lines";
+  const { t } = useTranslation();
+  const copyLabel = failed ? t("area.documents-artifacts-2.markdown-body.copyFailed") : copied ? t("area.documents-artifacts-2.markdown-body.copied") : t("area.documents-artifacts-2.markdown-body.copy");
+  const wrapLabel = wrapLines ? t("area.documents-artifacts-2.markdown-body.unwrapLines") : t("area.documents-artifacts-2.markdown-body.wrapLines");
 
   return (
     <div className="paperclip-markdown-codeblock" data-wrap-lines={wrapLines || undefined}>
@@ -632,7 +638,7 @@ function CodeBlock({
         <button
           type="button"
           onClick={handleCopy}
-          aria-label="Copy code"
+          aria-label={t("area.documents-artifacts-2.markdown-body.copyCode")}
           title={copyLabel}
           className="paperclip-markdown-codeblock-action paperclip-markdown-codeblock-copy"
           style={codeBlockActionStyle}
@@ -652,6 +658,7 @@ function CodeBlock({
 }
 
 function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: boolean }) {
+  const { t } = useTranslation();
   const renderId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -679,7 +686,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
         const message =
           err instanceof Error && err.message
             ? err.message
-            : "Failed to render Mermaid diagram.";
+            : i18n.t("area.documents-artifacts-2.markdown-body.mermaidRenderFailed");
         setError(message);
       });
 
@@ -695,7 +702,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
       ) : (
         <>
           <p className={cn("paperclip-mermaid-status", error && "paperclip-mermaid-status-error")}>
-            {error ? `Unable to render Mermaid diagram: ${error}` : "Rendering Mermaid diagram..."}
+            {error ? t("area.documents-artifacts-2.markdown-body.mermaidError", { error }) : t("area.documents-artifacts-2.markdown-body.mermaidRendering")}
           </p>
           <pre className="paperclip-mermaid-source">
             <code className="language-mermaid">{source}</code>
@@ -785,7 +792,7 @@ function MarkdownBodyImpl({
       </blockquote>
     ),
     table: ({ node: _node, style: tableStyle, children: tableChildren, ...tableProps }) => (
-      <div className="paperclip-markdown-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
+      <div className="paperclip-markdown-table-scroll" role="region" aria-label={i18n.t("area.documents-artifacts-2.markdown-body.scrollableTable")} tabIndex={0}>
         <table {...tableProps} style={tableStyle as React.CSSProperties | undefined}>
           {tableChildren}
         </table>

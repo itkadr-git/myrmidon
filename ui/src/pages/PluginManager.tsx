@@ -5,6 +5,8 @@
  * @see PLUGIN_SPEC.md §9 — Plugin Marketplace / Manager
  */
 import { useEffect, useMemo, useState } from "react";
+import { Trans } from "react-i18next";
+import { i18n, useTranslation } from "@/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PluginRecord } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
@@ -40,7 +42,7 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
 }
 
 function getPluginErrorSummary(plugin: PluginRecord): string {
-  return firstNonEmptyLine(plugin.lastError) ?? "Plugin entered an error state without a stored error message.";
+  return firstNonEmptyLine(plugin.lastError) ?? i18n.t("area.adapters-plugins-2.plugin-manager.errorSummaryFallback");
 }
 
 function isExperimentalPluginIdentity(input: {
@@ -58,12 +60,13 @@ function isExperimentalPluginIdentity(input: {
 }
 
 function ExperimentalBadge() {
+  const { t } = useTranslation();
   return (
     <Badge
       variant="outline"
       className="border-amber-500/30 bg-amber-500/10 text-amber-700 hover:bg-amber-500/10 dark:text-amber-200"
     >
-      Experimental
+      {t("area.adapters-plugins-2.plugin-manager.experimental")}
     </Badge>
   );
 }
@@ -90,6 +93,7 @@ export function PluginManager() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
+  const { t } = useTranslation();
 
   const [installPackage, setInstallPackage] = useState("");
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
@@ -101,11 +105,11 @@ export function PluginManager() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Plugins" },
+      { label: selectedCompany?.name ?? t("area.adapters-plugins-2.plugin-manager.breadcrumbOrganization"), href: "/dashboard" },
+      { label: t("area.adapters-plugins-2.plugin-manager.breadcrumbSettings"), href: "/company/settings" },
+      { label: t("area.adapters-plugins-2.plugin-manager.breadcrumbPlugins") },
     ]);
-  }, [selectedCompany?.name, setBreadcrumbs]);
+  }, [selectedCompany?.name, setBreadcrumbs, t]);
 
   const { data: plugins, isLoading, error } = useQuery({
     queryKey: queryKeys.plugins.all,
@@ -130,10 +134,10 @@ export function PluginManager() {
       invalidatePluginQueries();
       setInstallDialogOpen(false);
       setInstallPackage("");
-      pushToast({ title: "Plugin installed successfully", tone: "success" });
+      pushToast({ title: t("area.adapters-plugins-2.plugin-manager.toast.installed"), tone: "success" });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Failed to install plugin", body: err.message, tone: "error" });
+      pushToast({ title: t("area.adapters-plugins-2.plugin-manager.toast.installFailed"), body: err.message, tone: "error" });
     },
   });
 
@@ -141,10 +145,10 @@ export function PluginManager() {
     mutationFn: (pluginId: string) => pluginsApi.uninstall(pluginId),
     onSuccess: () => {
       invalidatePluginQueries();
-      pushToast({ title: "Plugin uninstalled successfully", tone: "success" });
+      pushToast({ title: t("area.adapters-plugins-2.plugin-manager.toast.uninstalled"), tone: "success" });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Failed to uninstall plugin", body: err.message, tone: "error" });
+      pushToast({ title: t("area.adapters-plugins-2.plugin-manager.toast.uninstallFailed"), body: err.message, tone: "error" });
     },
   });
 
@@ -155,7 +159,7 @@ export function PluginManager() {
       invalidatePluginQueries();
       setUpgradePrompt(null);
       setUpgradeError(null);
-      pushToast({ title: "Plugin upgraded successfully", tone: "success" });
+      pushToast({ title: t("area.adapters-plugins-2.plugin-manager.toast.upgraded"), tone: "success" });
     },
     onError: (err: Error, input: { pluginId: string; approvedCapabilities?: string[] }) => {
       const match = err.message.match(/introduces new capabilities that require approval:\s*(.+?)\. The previous version declared/i);
@@ -175,10 +179,10 @@ export function PluginManager() {
     mutationFn: (pluginId: string) => pluginsApi.enable(pluginId),
     onSuccess: () => {
       invalidatePluginQueries();
-      pushToast({ title: "Plugin enabled", tone: "success" });
+      pushToast({ title: t("area.adapters-plugins-2.plugin-manager.toast.enabled"), tone: "success" });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Failed to enable plugin", body: err.message, tone: "error" });
+      pushToast({ title: t("area.adapters-plugins-2.plugin-manager.toast.enableFailed"), body: err.message, tone: "error" });
     },
   });
 
@@ -186,10 +190,10 @@ export function PluginManager() {
     mutationFn: (pluginId: string) => pluginsApi.disable(pluginId),
     onSuccess: () => {
       invalidatePluginQueries();
-      pushToast({ title: "Plugin disabled", tone: "info" });
+      pushToast({ title: t("area.adapters-plugins-2.plugin-manager.toast.disabled"), tone: "info" });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Failed to disable plugin", body: err.message, tone: "error" });
+      pushToast({ title: t("area.adapters-plugins-2.plugin-manager.toast.disableFailed"), body: err.message, tone: "error" });
     },
   });
 
@@ -207,52 +211,52 @@ export function PluginManager() {
       new Map(
         installedPlugins.map((plugin) => [plugin.id, getPluginErrorSummary(plugin)])
       ),
-    [installedPlugins]
+    [installedPlugins, t]
   );
 
-  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">Loading plugins...</div>;
-  if (error) return <div className="p-4 text-sm text-destructive">Failed to load plugins.</div>;
+  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">{t("area.adapters-plugins-2.plugin-manager.loading")}</div>;
+  if (error) return <div className="p-4 text-sm text-destructive">{t("area.adapters-plugins-2.plugin-manager.loadFailed")}</div>;
 
   return (
     <div className="max-w-6xl space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
-          <h1 className="text-xl font-semibold">Plugin Manager</h1>
+          <h1 className="text-xl font-semibold">{t("area.adapters-plugins-2.plugin-manager.title")}</h1>
         </div>
         
         <Dialog open={installDialogOpen} onOpenChange={setInstallDialogOpen}>
           <DialogTrigger asChild>
             <Button size="sm" className="gap-2">
               <Plus className="h-4 w-4" />
-              Install Plugin
+              {t("area.adapters-plugins-2.plugin-manager.install.button")}
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Install Plugin</DialogTitle>
+              <DialogTitle>{t("area.adapters-plugins-2.plugin-manager.install.title")}</DialogTitle>
               <DialogDescription>
-                Enter the npm package name of the plugin you wish to install.
+                {t("area.adapters-plugins-2.plugin-manager.install.description")}
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
-                <Label htmlFor="packageName">npm Package Name</Label>
+                <Label htmlFor="packageName">{t("area.adapters-plugins-2.plugin-manager.install.packageNameLabel")}</Label>
                 <Input
                   id="packageName"
-                  placeholder="@paperclipai/plugin-example"
+                  placeholder={t("area.adapters-plugins-2.plugin-manager.install.packageNamePlaceholder")}
                   value={installPackage}
                   onChange={(e) => setInstallPackage(e.target.value)}
                 />
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>Cancel</Button>
+              <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>{t("common.cancel")}</Button>
               <Button
                 onClick={() => installMutation.mutate({ packageName: installPackage })}
                 disabled={!installPackage || installMutation.isPending}
               >
-                {installMutation.isPending ? "Installing..." : "Install"}
+                {installMutation.isPending ? t("area.adapters-plugins-2.plugin-manager.install.installing") : t("area.adapters-plugins-2.plugin-manager.install.confirm")}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -263,9 +267,9 @@ export function PluginManager() {
         <div className="flex items-start gap-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
           <div className="space-y-1 text-sm">
-            <p className="font-medium text-foreground">Plugins are alpha.</p>
+            <p className="font-medium text-foreground">{t("area.adapters-plugins-2.plugin-manager.alphaNotice.title")}</p>
             <p className="text-muted-foreground">
-              The plugin runtime and API surface are still changing. Expect breaking changes while this feature settles.
+              {t("area.adapters-plugins-2.plugin-manager.alphaNotice.body")}
             </p>
           </div>
         </div>
@@ -274,8 +278,8 @@ export function PluginManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Available Plugins</h2>
-          <Badge variant="outline">Bundled</Badge>
+          <h2 className="text-base font-semibold">{t("area.adapters-plugins-2.plugin-manager.available.heading")}</h2>
+          <Badge variant="outline">{t("area.adapters-plugins-2.plugin-manager.available.bundled")}</Badge>
         </div>
 
         {installErrorMessage && (
@@ -285,12 +289,12 @@ export function PluginManager() {
         )}
 
         {bundledQuery.isLoading ? (
-          <div className="text-sm text-muted-foreground">Loading bundled plugins...</div>
+          <div className="text-sm text-muted-foreground">{t("area.adapters-plugins-2.plugin-manager.available.loading")}</div>
         ) : bundledQuery.error ? (
-          <div className="text-sm text-destructive">Failed to load bundled plugins.</div>
+          <div className="text-sm text-destructive">{t("area.adapters-plugins-2.plugin-manager.available.loadFailed")}</div>
         ) : bundledPlugins.length === 0 ? (
           <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
-            No bundled plugins were found in this checkout.
+            {t("area.adapters-plugins-2.plugin-manager.available.empty")}
           </div>
         ) : (
           <Card className="block py-0">
@@ -309,7 +313,7 @@ export function PluginManager() {
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium">{bundledPlugin.displayName}</span>
                         <Badge variant="outline">
-                          {bundledPlugin.tag === "first-party" ? "First-party" : "Example"}
+                          {bundledPlugin.tag === "first-party" ? t("area.adapters-plugins-2.plugin-manager.tagFirstParty") : t("area.adapters-plugins-2.plugin-manager.tagExample")}
                         </Badge>
                         {isExperimentalPluginIdentity({
                           packageName: bundledPlugin.packageName,
@@ -324,13 +328,13 @@ export function PluginManager() {
                             {installedPlugin.status}
                           </Badge>
                         ) : (
-                          <Badge variant="secondary">Not installed</Badge>
+                          <Badge variant="secondary">{t("area.adapters-plugins-2.plugin-manager.available.notInstalled")}</Badge>
                         )}
                       </div>
                       <p className="mt-1 text-sm text-muted-foreground">{bundledPlugin.description}</p>
                       <p className="mt-1 text-xs text-muted-foreground">{bundledPlugin.packageName}</p>
                       {installPending && !bundledPlugin.hasBuiltEntrypoints && (
-                        <p className="mt-2 text-xs text-muted-foreground">Building plugin...</p>
+                        <p className="mt-2 text-xs text-muted-foreground">{t("area.adapters-plugins-2.plugin-manager.available.building")}</p>
                       )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
@@ -343,12 +347,12 @@ export function PluginManager() {
                               disabled={enableMutation.isPending}
                               onClick={() => enableMutation.mutate(installedPlugin.id)}
                             >
-                              Enable
+                              {t("area.adapters-plugins-2.plugin-manager.enable")}
                             </Button>
                           )}
                           <Button variant="outline" size="sm" asChild>
                             <Link to={`/company/settings/instance/plugins/${installedPlugin.id}`}>
-                              {installedPlugin.status === "ready" ? "Open Settings" : "Review"}
+                              {installedPlugin.status === "ready" ? t("area.adapters-plugins-2.plugin-manager.available.openSettings") : t("area.adapters-plugins-2.plugin-manager.available.review")}
                             </Link>
                           </Button>
                         </>
@@ -363,7 +367,7 @@ export function PluginManager() {
                             })
                           }
                         >
-                          {installPending ? "Installing..." : "Install"}
+                          {installPending ? t("area.adapters-plugins-2.plugin-manager.install.installing") : t("area.adapters-plugins-2.plugin-manager.install.confirm")}
                         </Button>
                       )}
                     </div>
@@ -379,16 +383,16 @@ export function PluginManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <Puzzle className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Installed Plugins</h2>
+          <h2 className="text-base font-semibold">{t("area.adapters-plugins-2.plugin-manager.installed.heading")}</h2>
         </div>
 
         {!installedPlugins.length ? (
           <Card className="bg-muted/30">
             <CardContent className="flex flex-col items-center justify-center py-10">
               <Puzzle className="h-10 w-10 text-muted-foreground mb-4" />
-              <p className="text-sm font-medium">No plugins installed</p>
+              <p className="text-sm font-medium">{t("area.adapters-plugins-2.plugin-manager.installed.emptyTitle")}</p>
               <p className="text-xs text-muted-foreground mt-1">
-                Install a plugin to extend functionality.
+                {t("area.adapters-plugins-2.plugin-manager.installed.emptyHint")}
               </p>
             </CardContent>
           </Card>
@@ -410,8 +414,8 @@ export function PluginManager() {
                       {bundledByPackageName.has(plugin.packageName) && (
                         <Badge variant="outline">
                           {bundledByPackageName.get(plugin.packageName)?.tag === "first-party"
-                            ? "First-party"
-                            : "Example"}
+                            ? t("area.adapters-plugins-2.plugin-manager.tagFirstParty")
+                            : t("area.adapters-plugins-2.plugin-manager.tagExample")}
                         </Badge>
                       )}
                       {isExperimentalPluginIdentity({
@@ -427,7 +431,7 @@ export function PluginManager() {
                       </p>
                     </div>
                     <p className="text-sm text-muted-foreground truncate mt-0.5" title={plugin.manifestJson.description}>
-                      {plugin.manifestJson.description || "No description provided."}
+                      {plugin.manifestJson.description || t("area.adapters-plugins-2.plugin-manager.installed.noDescription")}
                     </p>
                     {plugin.status === "error" && (
                       <div className="mt-3 rounded-md border border-red-500/25 bg-red-500/[0.06] px-3 py-2">
@@ -435,7 +439,7 @@ export function PluginManager() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 text-sm font-medium text-red-700 dark:text-red-300">
                               <AlertTriangle className="h-4 w-4 shrink-0" />
-                              <span>Plugin error</span>
+                              <span>{t("area.adapters-plugins-2.plugin-manager.installed.pluginError")}</span>
                             </div>
                             <p
                               className="mt-1 text-sm text-red-700/90 dark:text-red-200/90 break-words"
@@ -450,7 +454,7 @@ export function PluginManager() {
                             className="border-red-500/30 bg-background/60 text-red-700 hover:bg-red-500/10 hover:text-red-800 dark:text-red-200 dark:hover:text-red-100"
                             onClick={() => setErrorDetailsPlugin(plugin)}
                           >
-                            View full error
+                            {t("area.adapters-plugins-2.plugin-manager.installed.viewFullError")}
                           </Button>
                         </div>
                       </div>
@@ -478,7 +482,7 @@ export function PluginManager() {
                           variant="outline"
                           size="icon-sm"
                           className="h-8 w-8"
-                          title={plugin.status === "ready" ? "Disable" : "Enable"}
+                          title={plugin.status === "ready" ? t("area.adapters-plugins-2.plugin-manager.disable") : t("area.adapters-plugins-2.plugin-manager.enable")}
                           onClick={() => {
                             if (plugin.status === "ready") {
                               disableMutation.mutate(plugin.id);
@@ -494,7 +498,7 @@ export function PluginManager() {
                           variant="outline"
                           size="icon-sm"
                           className="h-8 w-8 text-destructive hover:text-destructive"
-                          title="Uninstall"
+                          title={t("area.adapters-plugins-2.plugin-manager.uninstall.confirm")}
                           onClick={() => {
                             setUninstallPluginId(plugin.id);
                             setUninstallPluginName(plugin.manifestJson.displayName ?? plugin.packageName);
@@ -514,12 +518,12 @@ export function PluginManager() {
                             upgradeMutation.mutate({ pluginId: plugin.id });
                           }}
                         >
-                          Upgrade
+                          {t("area.adapters-plugins-2.plugin-manager.installed.upgrade")}
                         </Button>
                         <Button variant="outline" size="sm" className="h-8" asChild>
                           <Link to={`/company/settings/instance/plugins/${plugin.id}`}>
                             <Settings className="h-4 w-4" />
-                            Configure
+                            {t("area.adapters-plugins-2.plugin-manager.installed.configure")}
                           </Link>
                         </Button>
                       </div>
@@ -539,9 +543,9 @@ export function PluginManager() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Approve additional plugin capabilities?</DialogTitle>
+            <DialogTitle>{t("area.adapters-plugins-2.plugin-manager.upgradeDialog.title")}</DialogTitle>
             <DialogDescription>
-              This upgrade requests additional capabilities. Review them before approving and upgrading.
+              {t("area.adapters-plugins-2.plugin-manager.upgradeDialog.description")}
             </DialogDescription>
           </DialogHeader>
           <ul className="list-disc space-y-1 pl-5 text-sm">
@@ -549,7 +553,7 @@ export function PluginManager() {
           </ul>
           {upgradeError && <p className="text-sm text-destructive">{upgradeError}</p>}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setUpgradePrompt(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setUpgradePrompt(null)}>{t("common.cancel")}</Button>
             <Button
               disabled={!upgradePrompt || upgradeMutation.isPending}
               onClick={() => upgradePrompt && upgradeMutation.mutate({
@@ -557,7 +561,7 @@ export function PluginManager() {
                 approvedCapabilities: upgradePrompt.capabilities,
               })}
             >
-              {upgradeMutation.isPending ? "Upgrading..." : "Approve and upgrade"}
+              {upgradeMutation.isPending ? t("area.adapters-plugins-2.plugin-manager.upgradeDialog.upgrading") : t("area.adapters-plugins-2.plugin-manager.upgradeDialog.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -568,13 +572,17 @@ export function PluginManager() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Uninstall Plugin</DialogTitle>
+            <DialogTitle>{t("area.adapters-plugins-2.plugin-manager.uninstall.title")}</DialogTitle>
             <DialogDescription>
-              Are you sure you want to uninstall <strong>{uninstallPluginName}</strong>? This action cannot be undone.
+              <Trans
+                i18nKey="area.adapters-plugins-2.plugin-manager.uninstall.description"
+                values={{ name: uninstallPluginName }}
+                components={{ strong: <strong /> }}
+              />
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setUninstallPluginId(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setUninstallPluginId(null)}>{t("common.cancel")}</Button>
             <Button
               variant="destructive"
               disabled={uninstallMutation.isPending}
@@ -586,7 +594,7 @@ export function PluginManager() {
                 }
               }}
             >
-              {uninstallMutation.isPending ? "Uninstalling..." : "Uninstall"}
+              {uninstallMutation.isPending ? t("area.adapters-plugins-2.plugin-manager.uninstall.uninstalling") : t("area.adapters-plugins-2.plugin-manager.uninstall.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -598,9 +606,14 @@ export function PluginManager() {
       >
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Error Details</DialogTitle>
+            <DialogTitle>{t("area.adapters-plugins-2.plugin-manager.errorDialog.title")}</DialogTitle>
             <DialogDescription>
-              {errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? "Plugin"} hit an error state.
+{t("area.adapters-plugins-2.plugin-manager.errorDialog.description", {
+                name:
+                  errorDetailsPlugin?.manifestJson.displayName ??
+                  errorDetailsPlugin?.packageName ??
+                  t("area.adapters-plugins-2.plugin-manager.errorDialog.pluginFallback"),
+              })}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -609,24 +622,24 @@ export function PluginManager() {
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
                 <div className="space-y-1 text-sm">
                   <p className="font-medium text-red-700 dark:text-red-300">
-                    What errored
+                    {t("area.adapters-plugins-2.plugin-manager.errorDialog.whatErrored")}
                   </p>
                   <p className="text-red-700/90 dark:text-red-200/90 break-words">
-                    {errorDetailsPlugin ? getPluginErrorSummary(errorDetailsPlugin) : "No error summary available."}
+                    {errorDetailsPlugin ? getPluginErrorSummary(errorDetailsPlugin) : t("area.adapters-plugins-2.plugin-manager.errorDialog.noSummary")}
                   </p>
                 </div>
               </div>
             </div>
             <div className="space-y-2">
-              <p className="text-sm font-medium">Full error output</p>
+              <p className="text-sm font-medium">{t("area.adapters-plugins-2.plugin-manager.errorDialog.fullOutput")}</p>
               <pre className="max-h-(--sz-50vh) overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap break-words">
-                {errorDetailsPlugin?.lastError ?? "No stored error message."}
+                {errorDetailsPlugin?.lastError ?? t("area.adapters-plugins-2.plugin-manager.errorDialog.noStoredMessage")}
               </pre>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setErrorDetailsPlugin(null)}>
-              Close
+              {t("common.close")}
             </Button>
           </DialogFooter>
         </DialogContent>

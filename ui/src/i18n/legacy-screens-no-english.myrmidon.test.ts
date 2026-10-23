@@ -108,6 +108,18 @@ describe("guarded files carry no English literals", () => {
     expect(guardedFromLists.filter((rel) => !rel.endsWith(".tsx") || rel.startsWith("/") || rel.includes(".."))).toEqual([]);
   });
 
+  it("the scanner skips attribute values that are only a URL or path", () => {
+    const found = findEnglishLiterals(
+      '<Input placeholder="https://docs.google.com/spreadsheets/d/..." />\n<Input placeholder="wss://mcp.example.com/x" />\n<Input placeholder="/srv/data" />\n<Input placeholder="Paste https://example.com here" />',
+    ).map((o) => `${o.kind}:${o.text}`);
+    expect(found).toEqual(['attr:placeholder="Paste https://example.com here"']);
+  });
+  it("the scanner skips ternary code fragments between JSX tags", () => {
+    const found = findEnglishLiterals(
+      '<div>\n  <p>Ready</p>\n</div>\n    : repair ? repair.canReconnect ? <Step />\n    : <p>Not ready yet</p>',
+    ).map((o) => `${o.kind}:${o.text}`);
+    expect(found).toEqual(["text:Ready", "text:Not ready yet"]);
+  });
   it("the scanner catches multi-line text, {\"...\"} literals and textual attributes", () => {
     const found = findEnglishLiterals(
       '<div>\n  <Button\n    alt="x"\n    aria-label=\'Close it\'\n    data-testid="ok-id1"\n  >\n    Save the\n    changes\n  </Button>\n  {"Hello"}\n  <Foo aria-hidden="true" />\n</div>',
