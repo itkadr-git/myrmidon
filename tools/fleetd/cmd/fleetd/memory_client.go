@@ -212,15 +212,20 @@ func (c *memoryClient) export(ctx context.Context, bankID string) ([]byte, error
 			Status         string `json:"status"`
 			ResultMetadata struct {
 				DownloadURL string `json:"download_url"`
+				StorageKey  string `json:"storage_key"`
 			} `json:"result_metadata"`
-			Error string `json:"error"`
+			ErrorMessage string `json:"error_message"`
 		}
 		if err := json.Unmarshal(statusData, &status); err != nil {
 			return nil, fmt.Errorf("memory export status returned invalid response")
 		}
 		switch status.Status {
 		case "completed":
-			downloadURL, err := c.validateExportDownloadURL(status.ResultMetadata.DownloadURL)
+			rawURL := status.ResultMetadata.DownloadURL
+			if rawURL == "" && status.ResultMetadata.StorageKey != "" {
+				rawURL = "/v1/default/files/download/" + url.PathEscape(status.ResultMetadata.StorageKey)
+			}
+			downloadURL, err := c.validateExportDownloadURL(rawURL)
 			if err != nil {
 				return nil, err
 			}
@@ -233,7 +238,7 @@ func (c *memoryClient) export(ctx context.Context, bankID string) ([]byte, error
 			}
 			return c.doMemoryRequest(downloadReq, maxMemoryExport)
 		case "failed", "cancelled":
-			return nil, fmt.Errorf("memory export operation %s: %s", status.Status, status.Error)
+			return nil, fmt.Errorf("memory export operation %s: %s", status.Status, status.ErrorMessage)
 		case "pending", "processing", "running", "":
 			select {
 			case <-ctx.Done():
@@ -249,8 +254,13 @@ func (c *memoryClient) export(ctx context.Context, bankID string) ([]byte, error
 }
 
 func (c *memoryClient) validateExportDownloadURL(raw string) (string, error) {
-	parsed, err := url.Parse(raw)
 	base, _ := url.Parse(c.baseURL)
+	parsed, err := url.Parse(raw)
+	if err == nil && base != nil && raw != "" && parsed.Scheme == "" && parsed.Host == "" && strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") {
+		// API returns a server-relative path (/v1/default/files/download/{key}).
+		parsed = base.ResolveReference(parsed)
+		raw = parsed.String()
+	}
 	if err != nil || parsed == nil || base == nil || parsed.Scheme != base.Scheme || parsed.Host != base.Host || parsed.User != nil {
 		return "", fmt.Errorf("memory export returned an unsafe download URL")
 	}
