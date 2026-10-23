@@ -211,9 +211,9 @@ describe("myrmidon(1.6.6 T1) fleet routing — tenant isolation", () => {
         fleet: (companyId) => {
           seen.push(companyId);
           return companyId === "company-1"
-            ? new Map([["company-1/host-a", fleetA]])
+            ? new Map([["host-a", fleetA]])
             : companyId === "company-2"
-              ? new Map([["company-2/host-a", fleetB]])
+              ? new Map([["host-a", fleetB]])
               : new Map();
         },
       },
