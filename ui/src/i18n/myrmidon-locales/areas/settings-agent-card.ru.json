@@ -57,7 +57,16 @@
         "concurrencyTitle": "Лимит одновременных прогонов",
         "concurrencyDiverged": "Расходится с доской",
         "statusRequestFailed": "Не удалось запросить статус.",
-        "applyNoAnswer": "сервер не вернул ни идентификатор применения, ни результат."
+        "applyNoAnswer": "сервер не вернул ни идентификатор применения, ни результат.",
+        "idleStopMode": "Остановка при простое",
+        "idleStopHint": "Контейнеры в режиме «Всегда включён» не останавливаются при простое. По умолчанию — «По запросу».",
+        "idleStopOnDemand": "По запросу",
+        "idleStopAlwaysOn": "Всегда включён",
+        "idleStopContainer": "Контейнер: {{state}}",
+        "idleStopStoppedOnIdle": "остановлен при простое",
+        "idleStopUnknown": "неизвестно",
+        "idleStopLastStopped": "; последняя остановка {{at}}",
+        "idleStopLastStarted": "; последний запуск {{at}}"
       },
       "agent-card-egress-fields": {
         "title": "Исходящие соединения",
