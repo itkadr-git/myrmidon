@@ -12,20 +12,31 @@ import {
 } from "@paperclipai/db";
 import type { ProviderUsageReportedEventV1 } from "@paperclipai/shared";
 import { providerUsageService } from "../../services/provider-usage.js";
+import { issueService } from "../../services/issues.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 
 const mockAddComment = vi.hoisted(() => vi.fn());
+const mockRejectFirstComment = vi.hoisted(() => ({ value: false }));
 vi.mock("../../services/issues.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../services/issues.js")>();
   return {
     ...actual,
-    issueService: (db: Parameters<typeof actual.issueService>[0]) => ({
-      ...actual.issueService(db),
-      addComment: (...args: Parameters<ReturnType<typeof actual.issueService>["addComment"]>) => mockAddComment(...args),
-    }),
+    issueService: (db: Parameters<typeof actual.issueService>[0]) => {
+      const service = actual.issueService(db);
+      return {
+        ...service,
+        addComment: (...args: Parameters<typeof service.addComment>) => {
+          if (mockRejectFirstComment.value) {
+            mockRejectFirstComment.value = false;
+            return Promise.reject(new Error("temporary comment failure"));
+          }
+          return service.addComment(...args);
+        },
+      };
+    },
   };
 });
 
@@ -48,17 +59,11 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
     await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(companies);
+    mockRejectFirstComment.value = false;
     mockAddComment.mockReset();
-    mockAddComment.mockImplementation(async (issueId, body, actor, options) => {
-      const [comment] = await db.insert(issueComments).values({
-        companyId: (await db.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, issueId)))[0]!.companyId,
-        issueId,
-        body,
-        authorType: options.authorType,
-        createdByRunId: actor.runId ?? null,
-        clientRequestId: options.clientRequestId ?? null,
-      }).returning();
-      return comment!;
+    mockAddComment.mockImplementation(async (...args: Parameters<ReturnType<typeof issueService>["addComment"]>) => {
+      const comment = await issueService(db).addComment(...args);
+      return comment;
     });
   });
 
@@ -118,8 +123,10 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
     await svc.deliverPendingWarnings(now);
     await svc.deliverPendingWarnings(new Date(now.getTime() + 60_000));
 
+    expect(mockAddComment).toHaveBeenCalledTimes(1);
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, ownerId));
-    expect(comments).toHaveLength(0);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Provider usage warning");
   });
 
   it("sweep creates a warning from a stale snapshot as the window nears reset, once", async () => {
@@ -144,7 +151,7 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
     const now = new Date("2026-10-14T09:00:00Z");
     await svc.ingest(companyId, report(companyId, "evt-retry", "cred-retry", 90), now, ownerId);
 
-    mockAddComment.mockRejectedValueOnce(new Error("temporary comment failure"));
+    mockRejectFirstComment.value = true;
 
     const failed = await svc.deliverPendingWarnings(now);
     expect(failed).toEqual({ delivered: 0, failed: 1 });
