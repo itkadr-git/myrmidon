@@ -287,9 +287,12 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     const operatorActor = { ...boardActor };
     await request(app(deps, operatorActor)).post(`${base}/import`).set("Content-Type", "application/gzip").send(Buffer.from("x")).expect(200);
     expect(deps.module.importTree).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), { approverKind: "operator" });
+    // a viewer is refused before the module
     const viewerActor = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "viewer" }] };
-    await request(app(deps, viewerActor)).post(`${base}/import`).set("Content-Type", "application/gzip").send(Buffer.from("x")).expect(200);
-    expect(deps.module.importTree).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), { approverKind: null });
+    deps.module.importTree.mockClear();
+    const viewerRes = await request(app(deps, viewerActor)).post(`${base}/import`).set("Content-Type", "application/gzip").send(Buffer.from("x"));
+    expect(viewerRes.status).toBe(403);
+    expect(deps.module.importTree).not.toHaveBeenCalled();
   });
 
   it("write gate: a payload flagged by the injection scanner is 422 before the store", async () => {
