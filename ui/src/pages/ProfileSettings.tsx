@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
+import { Camera, KeyRound, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
 import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
-import { authApi } from "@/api/auth";
+import { authApi, AuthApiError, isCredentialAccount } from "@/api/auth";
 import { assetsApi } from "@/api/assets";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
@@ -21,6 +21,10 @@ function deriveInitials(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
+// Better Auth default (`emailAndPassword.minPasswordLength`); server/src/auth/better-auth.ts does not override it.
+export const MIN_PASSWORD_LENGTH = 8;
+const MAX_PASSWORD_LENGTH = 128;
+
 export function ProfileSettings() {
   const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -31,11 +35,24 @@ export function ProfileSettings() {
   const [name, setName] = useState("");
   const [image, setImage] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [revokeOthers, setRevokeOthers] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordChanged, setPasswordChanged] = useState(false);
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+
+  const accountsQuery = useQuery({
+    queryKey: ["auth", "accounts"],
+    queryFn: () => authApi.listAccounts(),
+    retry: false,
+  });
+  const hasPassword = (accountsQuery.data ?? []).some(isCredentialAccount);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -120,6 +137,50 @@ export function ProfileSettings() {
       setActionError(error instanceof Error ? error.message : t("area.settings-company.profile-settings.failedToRemoveAvatar"));
     },
   });
+
+  const passwordMutation = useMutation({
+    mutationFn: () => authApi.changePassword({ currentPassword, newPassword, revokeOtherSessions: revokeOthers }),
+    onSuccess: () => {
+      setPasswordError(null);
+      setPasswordChanged(true);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setRevokeOthers(false);
+    },
+    onError: (error) => {
+      setPasswordChanged(false);
+      if (error instanceof AuthApiError && error.code === "INVALID_PASSWORD") {
+        setPasswordError(t("area.settings-company.profile-settings.wrongCurrentPassword"));
+      } else if (error instanceof AuthApiError && error.code === "PASSWORD_TOO_SHORT") {
+        setPasswordError(t("area.settings-company.profile-settings.passwordTooShort", { min: MIN_PASSWORD_LENGTH }));
+      } else if (error instanceof AuthApiError && error.code === "PASSWORD_TOO_LONG") {
+        setPasswordError(t("area.settings-company.profile-settings.passwordTooLong", { max: MAX_PASSWORD_LENGTH }));
+      } else if (error instanceof Error && error.message) {
+        setPasswordError(error.message);
+      } else {
+        setPasswordError(t("area.settings-company.profile-settings.failedToChangePassword"));
+      }
+    },
+  });
+
+  function submitPasswordChange() {
+    setPasswordChanged(false);
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      setPasswordError(t("area.settings-company.profile-settings.passwordTooShort", { min: MIN_PASSWORD_LENGTH }));
+      return;
+    }
+    if (newPassword.length > MAX_PASSWORD_LENGTH) {
+      setPasswordError(t("area.settings-company.profile-settings.passwordTooLong", { max: MAX_PASSWORD_LENGTH }));
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError(t("area.settings-company.profile-settings.passwordsDoNotMatch"));
+      return;
+    }
+    setPasswordError(null);
+    passwordMutation.mutate();
+  }
 
   if (sessionQuery.isLoading) {
     return <div className="text-sm text-muted-foreground">{t("area.settings-company.profile-settings.loadingProfile")}</div>;
@@ -271,6 +332,83 @@ export function ProfileSettings() {
             </Button>
           </div>
         </form>
+
+        {hasPassword ? (
+          <form
+            className="grid gap-4 md:max-w-md"
+            data-testid="change-password-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitPasswordChange();
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <KeyRound className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-base font-semibold">{t("area.settings-company.profile-settings.changePasswordTitle")}</h2>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="profile-current-password">{t("area.settings-company.profile-settings.currentPassword")}</Label>
+              <Input
+                id="profile-current-password"
+                type="password"
+                autoComplete="current-password"
+                value={currentPassword}
+                onChange={(event) => setCurrentPassword(event.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="profile-new-password">{t("area.settings-company.profile-settings.newPassword")}</Label>
+              <Input
+                id="profile-new-password"
+                type="password"
+                autoComplete="new-password"
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("area.settings-company.profile-settings.newPasswordHint", { min: MIN_PASSWORD_LENGTH })}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="profile-confirm-password">{t("area.settings-company.profile-settings.confirmPassword")}</Label>
+              <Input
+                id="profile-confirm-password"
+                type="password"
+                autoComplete="new-password"
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+              />
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                id="profile-revoke-other-sessions"
+                type="checkbox"
+                checked={revokeOthers}
+                onChange={(event) => setRevokeOthers(event.target.checked)}
+              />
+              {t("area.settings-company.profile-settings.signOutOtherDevices")}
+            </label>
+            {passwordError ? (
+              <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                {passwordError}
+              </div>
+            ) : null}
+            {passwordChanged ? (
+              <div role="status" className="text-sm text-emerald-600">
+                {t("area.settings-company.profile-settings.passwordChanged")}
+              </div>
+            ) : null}
+            <div>
+              <Button
+                type="submit"
+                disabled={passwordMutation.isPending || !currentPassword || !newPassword || !confirmPassword}
+              >
+                {passwordMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+                {t("area.settings-company.profile-settings.changePasswordButton")}
+              </Button>
+            </div>
+          </form>
+        ) : null}
 
         <InboxAgentPolicyControl companyId={selectedCompanyId} />
       </section>

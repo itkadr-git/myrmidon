@@ -1365,7 +1365,20 @@
         "saving": "Сохранение…",
         "saveProfile": "Сохранить профиль",
         "storedFor": "Хранится в файловом хранилище Myrmidon для организации {{name}}.",
-        "avatarHint": "Нажмите на аватар, чтобы загрузить новое изображение. {{hint}}"
+        "avatarHint": "Нажмите на аватар, чтобы загрузить новое изображение. {{hint}}",
+        "changePasswordTitle": "Сменить пароль",
+        "currentPassword": "Текущий пароль",
+        "newPassword": "Новый пароль",
+        "newPasswordHint": "Не короче {{min}} символов.",
+        "confirmPassword": "Повторите новый пароль",
+        "signOutOtherDevices": "Выйти на других устройствах",
+        "changePasswordButton": "Сменить пароль",
+        "passwordChanged": "Пароль изменён.",
+        "passwordsDoNotMatch": "Новый пароль и повтор не совпадают.",
+        "passwordTooShort": "Новый пароль должен быть не короче {{min}} символов.",
+        "passwordTooLong": "Новый пароль должен быть не длиннее {{max}} символов.",
+        "wrongCurrentPassword": "Текущий пароль указан неверно.",
+        "failedToChangePassword": "Не удалось сменить пароль."
       },
       "user-profile": {
         "touched": "Затронуто",
