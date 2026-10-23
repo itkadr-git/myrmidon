@@ -1,0 +1,68 @@
+import { describe, expect, it, vi } from "vitest";
+import { createSiteHealthMonitor } from "./site-health-monitor.js";
+import { createSiteHealthSnapshot } from "../../../../packages/shared/src/remote-sites/health-reducer.js";
+
+describe("createSiteHealthMonitor", () => {
+  it("fences before failover and persists the reducer snapshot", async () => {
+    const calls: string[] = [];
+    const save = vi.fn(async () => undefined);
+    const monitor = createSiteHealthMonitor({
+      listSites: async () => [{ name: "primary", status: "active", url: "https://primary" }],
+      probe: async () => "timeout",
+      load: async () => createSiteHealthSnapshot({ missCount: 2, unavailableSince: 0 }),
+      save,
+      fence: async () => { calls.push("fence"); },
+      failover: async () => { calls.push("failover"); },
+      updateSiteStatus: vi.fn(async () => undefined),
+      now: () => 10 * 60_000,
+    });
+    const result = await monitor.tick();
+    monitor.stop();
+    expect(result[0]?.state).toBe("unreachable");
+    expect(save).toHaveBeenCalledOnce();
+    expect(calls).toEqual(["fence", "failover"]);
+  });
+
+  it("keeps an unreachable site fenced after a successful probe", async () => {
+    const save = vi.fn(async () => undefined);
+    const monitor = createSiteHealthMonitor({
+      listSites: async () => [{ name: "primary", status: "unreachable", url: "https://primary" }],
+      probe: async () => "success",
+      load: async () => createSiteHealthSnapshot({ state: "unreachable", missCount: 3 }),
+      save,
+      fence: async () => undefined,
+      failover: async () => undefined,
+      updateSiteStatus: vi.fn(async () => undefined),
+      now: () => 20 * 60_000,
+    });
+    const result = await monitor.tick();
+    monitor.stop();
+    expect(result[0]?.state).toBe("unreachable");
+    expect(save.mock.calls[0]?.[1].missCount).toBe(0);
+  });
+
+  it("does not run overlapping sweeps", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    let listCalls = 0;
+    const monitor = createSiteHealthMonitor({
+      listSites: async () => {
+        listCalls += 1;
+        if (listCalls === 1) await pending;
+        return [{ name: "primary", status: "active", url: "https://primary" }];
+      },
+      probe: async () => "success",
+      load: async () => createSiteHealthSnapshot({ state: "unreachable", missCount: 3 }),
+      save: async () => undefined,
+      fence: async () => undefined,
+      failover: async () => undefined,
+    });
+    const first = monitor.tick();
+    await Promise.resolve();
+    const second = await monitor.tick();
+    expect(second).toEqual([]);
+    release();
+    await first;
+    monitor.stop();
+  });
+});
