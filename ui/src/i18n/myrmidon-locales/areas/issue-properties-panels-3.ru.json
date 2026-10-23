@@ -1,0 +1,108 @@
+{
+  "area": {
+    "issue-properties-panels-3": {
+      "external-object-rows": {
+        "githubPr": "PR в GitHub",
+        "githubIssue": "Issue в GitHub",
+        "prValue": "PR {{number}}",
+        "issueValue": "Issue {{number}}",
+        "statusIconLabel": "{{provider}}: {{status}}",
+        "linkAriaLabel": "{{provider}} {{type}} - {{status}}: {{title}}",
+        "rowLabel": "Внешние объекты",
+        "loadError": "Не удалось загрузить внешние объекты.",
+        "referencesLabel": "Ссылки"
+      },
+      "relation-controls": {
+        "removeBlockerAria": "Убрать {{issue}} из блокеров",
+        "blockerActionsAria": "Действия для блокера {{issue}}",
+        "visitTask": "Перейти к задаче",
+        "removeBlocker": "Убрать блокер",
+        "taskLinkAria": "Задача {{issue}}: {{title}}",
+        "taskAria": "Задача: {{title}}",
+        "removeBlockerTitle": "Убрать блокер?",
+        "removeBlockerDescription": "Убрать {{issue}} из блокеров этой задачи.",
+        "showFewerAria": "Показать меньше элементов",
+        "showMoreAria": "Показать ещё элементов: {{hidden}}",
+        "showLess": "Свернуть",
+        "showMore": "Ещё {{hidden}}"
+      },
+      "side-panel-frame": {
+        "defaultLabel": "Боковая панель",
+        "toggle": "Показать или скрыть боковую панель",
+        "restore": "Свернуть боковую панель",
+        "maximize": "Развернуть боковую панель",
+        "close": "Закрыть боковую панель"
+      },
+      "side-panel-launcher": {
+        "alreadyOpen": "Уже открыто",
+        "title": "Открыть вкладку боковой панели",
+        "description": "Выберите раздел или ресурс, чтобы открыть.",
+        "placeholder": "Поиск по вкладкам и ресурсам…",
+        "emptyMessage": "Подходящих вкладок и ресурсов нет."
+      },
+      "task-detail-relations-panel": {
+        "subtasksAria": "Подзадачи",
+        "progress": "Прогресс",
+        "completeCount": "Выполнено {{completed}} из {{total}}",
+        "completionAria": "Выполнение подзадач",
+        "rootBlocker": "Первопричина блокировки",
+        "blockedSubtask": "Заблокированная подзадача",
+        "nextAction": "Следующий шаг",
+        "nextActionAria": "Следующий шаг по подзадачам",
+        "allComplete": "Все подзадачи выполнены.",
+        "noRemaining": "Больше шагов по подзадачам нет.",
+        "empty": "Подзадач пока нет.",
+        "otherSubtasks": "Остальные подзадачи",
+        "subtasks": "Подзадачи",
+        "addSubtask": "Добавить подзадачу",
+        "referenced": "Упоминаются в задаче",
+        "referencedEmpty": "Эта задача не ссылается на другие задачи.",
+        "referencedAria": "Задачи, на которые есть ссылки",
+        "mentionedIn": "Упоминается в",
+        "mentionedInEmpty": "Другие задачи эту задачу не упоминают.",
+        "mentionedInAria": "Задачи, которые упоминают эту задачу"
+      },
+      "task-detail-tasks-panel": {
+        "project": "Проект",
+        "noProject": "Без проекта",
+        "goToProject": "Перейти к проекту {{name}}",
+        "relatedTasksAria": "Связанные задачи",
+        "subtasks": "Подзадачи",
+        "groupTasksAria": "Задачи: {{name}}",
+        "loading": "Загрузка задач…",
+        "loadError": "Не удалось загрузить все задачи.",
+        "empty": "Задач пока нет."
+      },
+      "task-document-panel": {
+        "loading": "Загрузка документа…",
+        "loadError": "Не удалось загрузить документ. Повторите из списка вкладок или обновите задачу.",
+        "missingTitle": "Документ больше недоступен",
+        "missingDescription": "Вкладка оставлена, чтобы было видно, что ресурс пропал. Закройте её или выберите другой документ.",
+        "revision": "Ревизия {{number}}",
+        "updated": "Обновлено: {{date}}",
+        "empty": "Документ пуст."
+      },
+      "task-side-panel": {
+        "tasks": "Задачи",
+        "subtasks": "Подзадачи",
+        "plan": "План",
+        "properties": "Свойства",
+        "tasksLoadError": "Не удалось загрузить все задачи",
+        "tasksTotal": "Всего: {{total}}",
+        "artifacts": "Артефакты",
+        "files": "Файлы",
+        "revision": "Ревизия {{number}}",
+        "sectionOpen": "Открыть",
+        "sectionDocuments": "Документы задачи",
+        "sectionRecentFiles": "Недавние файлы рабочей области",
+        "recentFilesError": "Недавние файлы временно недоступны.",
+        "openNewTab": "Открыть новую вкладку"
+      },
+      "task-workspace-file-panel": {
+        "copy": "Копировать содержимое файла",
+        "copied": "Скопировано",
+        "download": "Скачать файл"
+      }
+    }
+  }
+}
