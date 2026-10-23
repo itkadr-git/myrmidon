@@ -351,6 +351,59 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     const viewerRes = await request(app(deps, viewerActor)).post(`${base}/import`).set("Content-Type", "application/gzip").send(Buffer.from("x"));
     expect(viewerRes.status).toBe(403);
     expect(deps.module.importTree).not.toHaveBeenCalled();
+
+  it("rejects a board user claiming ADM authority for an owner rule", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ kind: "rule", slug: "rules/owner-only", approverKind: "owner", approvalRequired: true });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    const res = await request(app(deps, boardActor))
+      .post(`${base}/items/rules/owner-only/approve`)
+      .send({ approverKind: "adm", revisionId: "rev-2" });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("approver_kind_mismatch");
+    expect(deps.module.approve).not.toHaveBeenCalled();
+  });
+
+  it("rejects an owner rule approval without a presented approver kind", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ kind: "rule", slug: "rules/owner-only", approverKind: "owner", approvalRequired: true });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    const res = await request(app(deps, boardActor))
+      .post(`${base}/items/rules/owner-only/approve`)
+      .send({ revisionId: "rev-2" });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("approver_kind_mismatch");
+    expect(deps.module.approve).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent claiming owner authority in the request body", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ kind: "rule", slug: "rules/owner-only", approverKind: "owner", approvalRequired: true });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    const res = await request(app(deps, agentActor))
+      .post(`${base}/items/rules/owner-only/approve`)
+      .send({ approverKind: "owner", revisionId: "rev-2" });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe(KNOWLEDGE_RULE_APPROVE_FORBIDDEN_CODE);
+    expect(deps.module.approve).not.toHaveBeenCalled();
+  });
+
+  it("reads revisions for a slash-delimited slug in encoded and raw paths", async () => {
+    for (const path of ["glossary/term", "glossary%2Fterm"]) {
+      const deps = makeDeps();
+      const res = await request(app(deps, boardActor)).get(`${base}/items/${path}/revisions`);
+      expect(res.status).toBe(200);
+      expect(deps.module.listRevisions).toHaveBeenCalledWith("glossary/term");
+    }
+  });
+
+  it("reads backlinks for a slash-delimited slug in encoded and raw paths", async () => {
+    for (const path of ["glossary/term", "glossary%2Fterm"]) {
+      const deps = makeDeps();
+      const res = await request(app(deps, boardActor)).get(`${base}/items/${path}/backlinks`);
+      expect(res.status).toBe(200);
+      expect(deps.module.backlinks).toHaveBeenCalledWith("glossary/term");
+    }
   });
 
   it("write gate: a payload flagged by the injection scanner is 422 before the store", async () => {
