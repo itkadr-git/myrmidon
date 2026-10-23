@@ -48,7 +48,9 @@ const guardedFromLists = readdirSync(GUARDED_DIR)
   .sort()
   .flatMap((name) => parseGuardedList(readFileSync(join(GUARDED_DIR, name), "utf8")));
 
-const GUARDED = [...new Set(guardedFromLists)].filter((rel) => !SCREENS.includes(rel));
+const GUARDED = [...new Set(guardedFromLists)];
+// A SCREENS file already listed in guarded/*.txt gets the stronger rule only.
+const LEGACY_ONLY = SCREENS.filter((rel) => !GUARDED.includes(rel));
 
 // Words that may appear as literal JSX text or attribute values without
 // breaking the RU screen: machine tokens and vendor-scope words.
@@ -91,7 +93,7 @@ function legacyOffenders(source: string): string[] {
 // extracted under the stronger rule, they belong to areas in guarded/_areas.md
 // and move to guarded/<area>.txt when their area is done).
 describe("legacy screens carry no English literals", () => {
-  for (const rel of SCREENS) {
+  for (const rel of LEGACY_ONLY) {
     it(`${rel} has no literal English UI text`, () => {
       const source = readFileSync(join(UI_ROOT, rel), "utf8");
       expect(legacyOffenders(source), `expected no literal English UI text in ${rel}`).toEqual([]);
