@@ -201,6 +201,22 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
     expect((await wakeRow(wakeFresh)).status).toBe("deferred_issue_execution");
   });
 
+  it("finds a free-lock owner through nativeIssueId when wake reason has no interaction metadata", async () => {
+    const issueId = await seedIssue("todo");
+    await seedFinishedRun(issueId, { contextSnapshot: {}, nativeIssueId: issueId });
+    const wakeId = await seedDeferredWake(issueId, {
+      reason: "issue_reopened_via_comment",
+      payload: { issueId },
+    });
+
+    const result = await heartbeat.reconcileStrandedDeferredWakes();
+
+    expect(result.revisited).toBe(1);
+    expect((await wakeRow(wakeId)).status).not.toBe("deferred_issue_execution");
+    const promoted = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, wakeId));
+    expect(promoted).toHaveLength(1);
+  });
+
   it("promotes a deferred wake without comment ids on an open task whose lock is free", async () => {
     const issueId = await seedIssue("todo");
     await seedFinishedRun(issueId);
