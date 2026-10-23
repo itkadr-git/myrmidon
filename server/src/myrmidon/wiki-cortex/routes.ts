@@ -22,12 +22,10 @@
 // real wiring is wiring.ts).
 
 import { Router, type Request } from "express";
-import { badRequest, forbidden, notFound } from "../../errors.js";
+import { badRequest, notFound } from "../../errors.js";
 import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "../../routes/authz.js";
-import { BUILTIN_SENSITIVE_CASTES } from "@myrmidon/shared";
-import { approverKindFromRequest } from "../approver-kind.js";
-import { approverKindSatisfies } from "../knowledge/domain.js";
-import { ruleApproverKind, type CasteSensitivity } from "../knowledge/rules.js";
+import type { CasteSensitivity } from "../knowledge/rules.js";
+import { assertRuleWriteGrade, builtinCasteSensitivity } from "../rule-grade.js";
 import type { RegulationActor } from "./types.js";
 import { normalizeRegulationRoles, type WikiRegulationService } from "./service.js";
 import type { RegulationPageRecord } from "./types.js";
@@ -113,28 +111,11 @@ function readBody(req: Request): Record<string, unknown> {
 export function wikiRegulationRoutes(deps: WikiRegulationRoutesDeps) {
   const router = Router();
   const { service, recordActivity } = deps;
-  const sensitivityOf = deps.casteSensitivity ?? (async () => ({ sensitive: new Set<string>(BUILTIN_SENSITIVE_CASTES) }));
+  const sensitivityOf = deps.casteSensitivity ?? builtinCasteSensitivity;
 
-  /**
-   * K-3: the grade gate every publishing action passes (approve, rollback, and
-   * a roles change of a delivered rule). The grade the actor presents comes
-   * from its membership, never from the request; the grade the rule needs is
-   * derived from its roles and the caste directory.
-   */
-  async function assertApproverGrade(req: Request, companyId: string, roles: readonly string[], approvedRoles: readonly string[] = roles) {
-    const sensitivity = await sensitivityOf(companyId);
-    const presented = approverKindFromRequest(req, companyId);
-    for (const required of [ruleApproverKind(roles, sensitivity), ruleApproverKind(approvedRoles, sensitivity)]) {
-      if (!approverKindSatisfies(required, presented)) {
-        throw forbidden(`Approval requires kind "${required}", the approver presents "${presented}"`, {
-          code: "approver_kind_mismatch",
-          required,
-          presented,
-        });
-      }
-    }
-  }
-  const base = "/myrmidon/companies/:companyId/wiki-regulations";
+  /** K-3: the shared rule-write grade check (see ../rule-grade.ts). */
+  const assertApproverGrade = (req: Request, companyId: string, ...roleSets: ReadonlyArray<readonly string[]>) =>
+    assertRuleWriteGrade(req, companyId, sensitivityOf, ...roleSets);
 
   /**
    * The company of the path, shadowed the way the other myrmidon routes do it:

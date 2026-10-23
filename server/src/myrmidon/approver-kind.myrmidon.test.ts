@@ -21,6 +21,10 @@ describe("approverKindFromRequest", () => {
     expect(approverKindFromRequest(withRole("operator"), COMPANY)).toBe("operator");
   });
 
+  it("the legacy member role is an operator", () => {
+    expect(approverKindFromRequest(withRole("member"), COMPANY)).toBe("operator");
+  });
+
   it("the instance admin and the local implicit board are the owner", () => {
     expect(approverKindFromRequest(reqOf({ type: "board", source: "session", isInstanceAdmin: true }), COMPANY)).toBe("owner");
     expect(approverKindFromRequest(reqOf({ type: "board", source: "local_implicit" }), COMPANY)).toBe("owner");

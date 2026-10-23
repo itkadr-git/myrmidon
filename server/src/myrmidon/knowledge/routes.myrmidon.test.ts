@@ -45,7 +45,7 @@ const agentActor = {
   companyIds: [COMPANY_ID],
 };
 
-type ItemOverrides = Partial<{ id: string; slug: string; kind: string; folderPath: string; status: string }>;
+type ItemOverrides = Partial<{ id: string; slug: string; kind: string; folderPath: string; status: string; roles: string[] }>;
 
 function makeItem(overrides: ItemOverrides = {}) {
   return {
@@ -270,6 +270,46 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       expect.objectContaining({ kind: "owner" }),
       expect.anything(),
     );
+  });
+
+  it("K-3: approve, publish, rollback, archive and supersede of a smm rule: operator 403, owner 200", async () => {
+    const operatorActor = { ...boardActor };
+    const ownerActor = { ...boardActor, isInstanceAdmin: true };
+    const writes = [
+      { op: "approve", url: "approve", body: { revisionId: "rev-2" } },
+      { op: "publish", url: "publish", body: {} },
+      { op: "rollback", url: "rollback", body: { toRevisionId: "rev-1" } },
+      { op: "archive", url: "archive", body: {} },
+      { op: "supersede", url: "supersede", body: { replacementSlug: "rules/smm/next" } },
+    ] as const;
+    for (const write of writes) {
+      const deps = makeDeps({ grants: true });
+      deps.casteSensitivity = async () => ({ sensitive: new Set(["smm"]) });
+      const item = makeItem({ kind: "rule", slug: "rules/smm/publications", folderPath: "rules/smm", roles: ["smm"] });
+      (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+      const url = `${base}/items/rules/smm/publications/${write.url}`;
+      const refused = await request(app(deps, operatorActor)).post(url).send(write.body);
+      expect(refused.status, `${write.op} by operator`).toBe(403);
+      expect((deps.module as Record<string, ReturnType<typeof vi.fn>>)[write.op]).not.toHaveBeenCalled();
+      const allowed = await request(app(deps, ownerActor)).post(url).send(write.body);
+      expect(allowed.status, `${write.op} by owner`).toBe(200);
+      expect((deps.module as Record<string, ReturnType<typeof vi.fn>>)[write.op]).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("K-3: the same writes on a rule of an ordinary caste pass for an operator, and a note is not graded", async () => {
+    for (const op of ["rollback", "archive"] as const) {
+      const deps = makeDeps({ grants: true });
+      deps.casteSensitivity = async () => ({ sensitive: new Set(["smm"]) });
+      (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(makeItem({ kind: "rule", slug: "rules/eng", roles: ["engineer"] }));
+      const body = op === "rollback" ? { toRevisionId: "rev-1" } : {};
+      expect((await request(app(deps, boardActor)).post(`${base}/items/rules/eng/${op}`).send(body)).status).toBe(200);
+    }
+    const viewerActor = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "viewer" }] };
+    const deps = makeDeps({ grants: true });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(makeItem({ kind: "rule", slug: "rules/eng", roles: ["engineer"] }));
+    expect((await request(app(deps, viewerActor)).post(`${base}/items/rules/eng/archive`).send({})).status).toBe(403);
+    expect(deps.module.archive).not.toHaveBeenCalled();
   });
 
   it("K-3: a viewer has no approver grade: approve is 403 before the module", async () => {
