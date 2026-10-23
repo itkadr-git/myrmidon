@@ -232,9 +232,27 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
     const res = await request(app(deps, boardActor))
       .post(`${base}/items/rules/no-secrets/approve`)
-      .send({ approverKind: "engineer", revisionId: "rev-2" });
+      .send({ approverKind: "adm", revisionId: "rev-2" });
     expect(res.status).toBe(200);
-    expect(deps.module.approve).toHaveBeenCalledTimes(1);
+    expect(deps.module.approve).toHaveBeenCalledWith(
+      "rules/no-secrets",
+      expect.objectContaining({ kind: "adm" }),
+      { revisionId: "rev-2" },
+    );
+  });
+
+  it("reads an item whose slash-delimited slug arrives as Express 5 wildcard segments", async () => {
+    const deps = makeDeps();
+    const res = await request(app(deps, boardActor)).get(`${base}/items/glossary/term`);
+    expect(res.status).toBe(200);
+    expect(deps.module.get).toHaveBeenCalledWith("glossary/term");
+  });
+
+  it("reads an item whose slash-delimited slug is percent-encoded", async () => {
+    const deps = makeDeps();
+    const res = await request(app(deps, boardActor)).get(`${base}/items/glossary%2Fterm`);
+    expect(res.status).toBe(200);
+    expect(deps.module.get).toHaveBeenCalledWith("glossary/term");
   });
 
   it("K-3: the approver grade comes from the membership, not the body: an operator posting approverKind owner is 403 on a smm rule", async () => {
