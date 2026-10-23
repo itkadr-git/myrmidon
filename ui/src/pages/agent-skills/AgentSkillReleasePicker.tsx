@@ -1,4 +1,5 @@
 import type { CompanySkillVersion } from "@paperclipai/shared";
+import { i18n, useTranslation } from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 import {
   Select,
@@ -11,7 +12,8 @@ import {
 /** Sentinel value for the "no pin / live default" option (Radix forbids ""). */
 export const RELEASE_DEFAULT_VALUE = "default";
 
-const DEFAULT_LABEL = "Default — current (recommended)";
+const defaultLabel = () => i18n.t("area.skills.agent-skill-release-picker.defaultLabel");
+const releaseFallbackLabel = () => i18n.t("area.skills.agent-skill-release-picker.releaseFallback");
 
 /**
  * Render a bundled release's calendar date. Plain `YYYY-MM-DD` strings (like the
@@ -32,19 +34,19 @@ export function formatReleaseDate(value: CompanySkillVersion["releasedAt"]): str
 
 /** Release display name, e.g. `V7 — Roster champion` (no date). */
 export function releaseName(release: CompanySkillVersion): string {
-  return release.releaseName ?? release.label ?? release.releaseId ?? "Release";
+  return release.releaseName ?? release.label ?? release.releaseId ?? releaseFallbackLabel();
 }
 
 /** Full option label, e.g. `V7 — Roster champion · released 2026-07-21`. */
 export function releaseOptionLabel(release: CompanySkillVersion): string {
   const name = releaseName(release);
   const date = formatReleaseDate(release.releasedAt);
-  return date ? `${name} · released ${date}` : name;
+  return date ? i18n.t("area.skills.agent-skill-release-picker.optionLabel", { name, date }) : name;
 }
 
 /** Compact badge label for a pinned release, e.g. `V7`. */
 export function releaseShortLabel(release: CompanySkillVersion): string {
-  const name = release.releaseName ?? release.label ?? release.releaseId ?? "Release";
+  const name = release.releaseName ?? release.label ?? release.releaseId ?? releaseFallbackLabel();
   return name.split(" — ")[0]!.trim();
 }
 
@@ -68,6 +70,8 @@ export function AgentSkillReleasePicker({
   disabled = false,
   onChange,
 }: AgentSkillReleasePickerProps) {
+  const { t } = useTranslation();
+  const DEFAULT_LABEL = defaultLabel();
   const selected = value ? releases.find((release) => release.id === value) ?? null : null;
   // Closed trigger shows the release name only; the `· released <date>` suffix
   // lives in the open menu, where dates are meaningful for comparing options.
@@ -82,7 +86,7 @@ export function AgentSkillReleasePicker({
       <SelectTrigger
         size="sm"
         className="w-full max-w-(--sz-16rem) sm:w-(--sz-16rem)"
-        aria-label="Skill release"
+        aria-label={t("area.skills.agent-skill-release-picker.ariaLabel")}
       >
         <SelectValue placeholder={DEFAULT_LABEL}>{triggerLabel}</SelectValue>
       </SelectTrigger>
@@ -93,7 +97,7 @@ export function AgentSkillReleasePicker({
             <span className="flex items-center gap-2">
               <span className="truncate">{releaseOptionLabel(release)}</span>
               <Badge variant="secondary" className="shrink-0 text-(length:--text-nano)">
-                Beta
+                {t("area.skills.agent-skill-release-picker.beta")}
               </Badge>
             </span>
           </SelectItem>
