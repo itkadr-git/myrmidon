@@ -8,6 +8,7 @@ import type { PatchAgentMemorySettings } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { i18n, useTranslation } from "@/i18n";
 import { agentMemoryApi, agentMemoryQueryKey, type AgentMemorySettingsView } from "./agentMemoryApi";
 
 interface Draft {
@@ -16,11 +17,17 @@ interface Draft {
   keySecretName: string;
 }
 
-const SOURCE_LABEL = {
-  setting: "this setting",
-  env: "the server environment",
-  "bot-env": "the bot containers' memory address",
-} as const;
+// Lazy: the language must be read at render time, not frozen at import.
+const sourceLabel = (source: "setting" | "env" | "bot-env"): string => {
+  switch (source) {
+    case "setting":
+      return i18n.t("area.settings-agent-card.agent-memory-settings-panel.sourceSetting");
+    case "env":
+      return i18n.t("area.settings-agent-card.agent-memory-settings-panel.sourceEnv");
+    default:
+      return i18n.t("area.settings-agent-card.agent-memory-settings-panel.sourceBotEnv");
+  }
+};
 
 function toDraft(view: AgentMemorySettingsView): Draft {
   return {
@@ -38,7 +45,7 @@ export function buildAgentMemoryPatch(draft: Draft): { patch: PatchAgentMemorySe
       const parsed = new URL(apiUrl);
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("scheme");
     } catch {
-      return { patch: null, urlError: "Enter an http(s):// address, or leave it empty" };
+      return { patch: null, urlError: i18n.t("area.settings-agent-card.agent-memory-settings-panel.urlError") };
     }
   }
   return {
@@ -63,6 +70,7 @@ export function AgentMemorySettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<Draft | null>(null);
   const current = draft ?? (view ? toDraft(view) : null);
   const built = current ? buildAgentMemoryPatch(current) : { patch: null, urlError: null };
@@ -72,11 +80,10 @@ export function AgentMemorySettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Brain className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Agent memory</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-agent-card.agent-memory-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          The shared memory service behind the Memory tab on an agent card. Saving applies on the next
-          request, without a restart. Leave a field empty to use the server environment.
+          {t("area.settings-agent-card.agent-memory-settings-panel.description")}
         </p>
       </div>
 
@@ -95,13 +102,13 @@ export function AgentMemorySettingsPanelView({
               checked={current.enabled}
               onChange={(event) => setDraft({ ...current, enabled: event.target.checked })}
             />
-            <Label htmlFor="agent-memory-enabled">Show agent memory on agent cards</Label>
+            <Label htmlFor="agent-memory-enabled">{t("area.settings-agent-card.agent-memory-settings-panel.enabledLabel")}</Label>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="agent-memory-url">Service address</Label>
+            <Label htmlFor="agent-memory-url">{t("area.settings-agent-card.agent-memory-settings-panel.urlLabel")}</Label>
             <Input
               id="agent-memory-url"
-              placeholder="http://host:port"
+              placeholder={t("area.settings-agent-card.agent-memory-settings-panel.urlPlaceholder")}
               value={current.apiUrl}
               onChange={(event) => setDraft({ ...current, apiUrl: event.target.value })}
             />
@@ -111,27 +118,34 @@ export function AgentMemorySettingsPanelView({
               </div>
             ) : null}
             <p className="text-xs text-muted-foreground">
-              Empty = the server environment, then the bot containers&apos; memory address.
+              {t("area.settings-agent-card.agent-memory-settings-panel.urlHint")}
             </p>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="agent-memory-key">API key secret name (optional)</Label>
+            <Label htmlFor="agent-memory-key">{t("area.settings-agent-card.agent-memory-settings-panel.keyLabel")}</Label>
             <Input
               id="agent-memory-key"
-              placeholder="No key"
+              placeholder={t("area.settings-agent-card.agent-memory-settings-panel.keyPlaceholder")}
               value={current.keySecretName}
               onChange={(event) => setDraft({ ...current, keySecretName: event.target.value })}
             />
             <p className="text-xs text-muted-foreground">
-              Name of the company secret with the key. Empty = no key is sent (a service without authentication).
+              {t("area.settings-agent-card.agent-memory-settings-panel.keyHint")}
             </p>
           </div>
           <div className="md:col-span-2 text-xs text-muted-foreground" data-testid="agent-memory-effective">
             {view.effective.enabled && view.effective.apiUrl
-              ? `In force: on, address from ${view.effective.urlSource ? SOURCE_LABEL[view.effective.urlSource] : "unknown"}${
-                  view.effective.keySecretName ? ", with a key" : ", no key"
-                }.`
-              : "In force: off (no address is configured, or the switch is off)."}
+              ? t(
+                  view.effective.keySecretName
+                    ? "area.settings-agent-card.agent-memory-settings-panel.inForceWithKey"
+                    : "area.settings-agent-card.agent-memory-settings-panel.inForceNoKey",
+                  {
+                    source: view.effective.urlSource
+                      ? sourceLabel(view.effective.urlSource)
+                      : t("area.settings-agent-card.agent-memory-settings-panel.unknownSource"),
+                  },
+                )
+              : t("area.settings-agent-card.agent-memory-settings-panel.inForceOff")}
           </div>
           <div className="md:col-span-2">
             <Button
@@ -142,12 +156,12 @@ export function AgentMemorySettingsPanelView({
                 if (built.patch) onSave(built.patch);
               }}
             >
-              {pending ? "Saving..." : "Save agent memory"}
+              {pending ? t("area.settings-agent-card.agent-memory-settings-panel.saving") : t("area.settings-agent-card.agent-memory-settings-panel.save")}
             </Button>
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading agent memory settings...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-agent-card.agent-memory-settings-panel.loading")}</p>
       )}
     </section>
   );
@@ -164,7 +178,7 @@ export function AgentMemorySettingsPanel() {
   const save = useMutation({
     mutationFn: agentMemoryApi.update,
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the agent memory settings failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : i18n.t("area.settings-agent-card.agent-memory-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       // Prefix key: also refreshes every agent card's Memory tab status.
@@ -175,7 +189,7 @@ export function AgentMemorySettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load agent memory settings."}
+        {query.error instanceof Error ? query.error.message : i18n.t("area.settings-agent-card.agent-memory-settings-panel.loadFailed")}
       </div>
     );
   }
