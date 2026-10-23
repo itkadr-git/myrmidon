@@ -8,7 +8,7 @@
 
 import type { BotContainerSpec, BotExtraMount, BotSharedMount } from "./driver.js";
 import { BOT_KEY_PATTERN } from "./template.js";
-import type { SharedMountSettings } from "@paperclipai/shared";
+import type { SharedMountSettings } from "@myrmidon/shared";
 import { resolveBotSharedMount } from "./shared-mount.js";
 import { FLEET_HOST_NAME_PATTERN } from "./fleetd-hosts.js";
 
@@ -56,6 +56,7 @@ export function botContainerCardSaveProblem(
   }
   if (raw.enabled !== true) return null;
   const { memoryMb, cpus, pidsLimit } = raw;
+  if (raw.idleStopMode !== undefined && raw.idleStopMode !== "always_on" && raw.idleStopMode !== "on_demand") return "adapterConfig.container.idleStopMode must be always_on or on_demand";
   const missing: string[] = [];
   if (typeof memoryMb !== "number" || !Number.isFinite(memoryMb) || memoryMb <= 0) missing.push("memoryMb (a positive number)");
   if (typeof cpus !== "number" || !Number.isFinite(cpus) || cpus <= 0) missing.push("cpus (a positive number)");

@@ -138,7 +138,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleet routing — every driver call goes by th
     const fleetB = recordingDriver("fleet-b");
     let currentMap = new Map<string, BotContainerDriver>([["host-a", fleetA]]);
 
-    const routed = fleetRoutingDriver({ local, fleet: () => currentMap }, () => agent("host-b"));
+    const routed = fleetRoutingDriver({ local, fleet: () => currentMap }, () => ({ ...agent("host-b"), companyId: "company-a" }));
 
     // host-b is not in currentMap yet
     await expect(routed.start("bot-b")).rejects.toThrow(/names no configured fleet host/);
@@ -191,5 +191,96 @@ describe("myrmidon(1.6.6 T1) fleet routing — tenant isolation", () => {
     }));
     await expect(routed.start("bot-1")).rejects.toThrow(/names no configured fleet host/);
     expect(a.calls).toEqual([]);
+  });
+
+  it("a card naming an unknown host is an error that names the host config", async () => {
+    const d = deps();
+    const routed = fleetRoutingDriver(d, () => ({ adapterConfig: { container: { host: "site-x" } } }));
+    await expect(routed.start("bot-a")).rejects.toThrow(/container\.host "site-x" names no configured fleet host/);
+    expect(d.local.calls).toEqual([]);
+  });
+
+  it("passes company id to fleet lookup and fails closed across tenant boundaries", async () => {
+    const d = deps();
+    const seen: Array<string | undefined> = [];
+    const fleetA = recordingDriver("company-1-fleet");
+    const fleetB = recordingDriver("company-2-fleet");
+    const routed = fleetRoutingDriver(
+      {
+        local: d.local,
+        fleet: (companyId) => {
+          seen.push(companyId);
+          return companyId === "company-1"
+            ? new Map([["host-a", fleetA]])
+            : companyId === "company-2"
+              ? new Map([["host-a", fleetB]])
+              : new Map();
+        },
+      },
+      (botKey) => ({
+        companyId: botKey === "bot-1" ? "company-1" : botKey === "bot-2" ? "company-2" : undefined,
+        adapterConfig: { container: { host: "host-a" } },
+      }),
+    );
+
+    await routed.start("bot-1");
+    await routed.start("bot-2");
+    expect(fleetA.calls).toEqual(["company-1-fleet:start:bot-1"]);
+    expect(fleetB.calls).toEqual(["company-2-fleet:start:bot-2"]);
+    expect(seen).toEqual(["company-1", "company-2"]);
+    await expect(routed.start("bot-without-company")).rejects.toThrow(/no companyId/);
+    expect(d.local.calls).toEqual([]);
+  });
+
+  it("waits for the registry's first load (ready) before routing", async () => {
+    const d = deps();
+    let release: () => void = () => {};
+    const ready = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const routed = fleetRoutingDriver({ ...d, ready: () => ready }, () => agent("host-a"));
+    const pending = routed.start("bot-a");
+    await Promise.resolve();
+    expect(d.fleetA.calls).toEqual([]);
+    release();
+    await pending;
+    expect(d.fleetA.calls).toEqual(["fleet-a:start:bot-a"]);
+  });
+});
+
+describe("myrmidon(1.6.6 T3) fleet routing — provider is asked by company", () => {
+  function twoCompanies() {
+    const local = recordingDriver("local");
+    const c1 = recordingDriver("co-1");
+    const c2 = recordingDriver("co-2");
+    const asked: Array<string | undefined> = [];
+    const byCompany = new Map<string, Map<string, BotContainerDriver>>([
+      ["comp-1", new Map([["myr-vm1", c1]])],
+      ["comp-2", new Map([["myr-vm2", c2]])],
+    ]);
+    const fleet = (companyId?: string) => {
+      asked.push(companyId);
+      return companyId ? (byCompany.get(companyId) ?? new Map<string, BotContainerDriver>()) : new Map<string, BotContainerDriver>();
+    };
+    return { local, c1, c2, asked, fleet };
+  }
+
+  it("a comp-2 bot gets only comp-2's client, never comp-1's", async () => {
+    const { local, c1, c2, asked, fleet } = twoCompanies();
+    const r2 = fleetRoutingDriver({ local, fleet }, () => ({ companyId: "comp-2", adapterConfig: { container: { host: "myr-vm2" } } }));
+    await r2.start("bot-2");
+    expect(c2.calls).toEqual(["co-2:start:bot-2"]);
+    expect(c1.calls).toEqual([]);
+    expect(asked).toEqual(["comp-2"]);
+    const r2x = fleetRoutingDriver({ local, fleet }, () => ({ companyId: "comp-2", adapterConfig: { container: { host: "myr-vm1" } } }));
+    await expect(r2x.start("bot-2")).rejects.toThrow(/names no configured fleet host/);
+    expect(c1.calls).toEqual([]);
+  });
+
+  it("a call without companyId is refused, nothing is started anywhere", async () => {
+    const { local, c1, c2, fleet } = twoCompanies();
+    const r = fleetRoutingDriver({ local, fleet }, () => ({ adapterConfig: { container: { host: "myr-vm1" } } }));
+    await expect(r.start("bot-x")).rejects.toThrow(/no companyId/);
+    expect([...local.calls, ...c1.calls, ...c2.calls]).toEqual([]);
   });
 });

@@ -7,7 +7,7 @@
 // The value is read while answering a bridged message, so the stored row is
 // reused for a few seconds at most; a PATCH drops the cached value at once.
 // The precedence (environment force, then the stored instance value, then
-// English) is decided in `@paperclipai/shared` (myrmidon-bridge-language.ts).
+// English) is decided in `@myrmidon/shared` (myrmidon-bridge-language.ts).
 //
 // This file deliberately has no runtime import of the instance settings
 // service: services/instance-settings.ts imports the preserve helper below.
@@ -16,7 +16,7 @@ import {
   BRIDGE_LANGUAGE_SETTINGS_KEY,
   resolveBridgeLanguage,
   type ResolvedBridgeLanguage,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export { BRIDGE_LANGUAGE_SETTINGS_KEY };
 

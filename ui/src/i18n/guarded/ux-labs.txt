@@ -1,0 +1,14 @@
+# myrmidon(OPE-8950): area ux-labs
+components/AsciiArtAnimation.tsx
+components/OpenCodeLogoIcon.tsx
+connect-flow-preview-main.tsx
+fixtures/TaskChatPerfHarness.tsx
+pages/BootstrapSetupUxLab.tsx
+pages/CrossIssueCollaborationUxLab.tsx
+pages/DesignGuide.tsx
+pages/InviteUxLab.tsx
+pages/IssueChatLongThreadPerf.tsx
+pages/IssueChatUxLab.tsx
+pages/ResponsibleUserDenialUxLab.tsx
+pages/RunTranscriptUxLab.tsx
+pages/SystemNoticeUxLab.tsx

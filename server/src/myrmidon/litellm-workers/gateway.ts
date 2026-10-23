@@ -22,7 +22,7 @@
 //   `systemctl kill -s {signal} litellm-gateway.service` instead.
 
 import { execFile } from "node:child_process";
-import type { LitellmWorkersMetrics } from "@paperclipai/shared";
+import type { LitellmWorkersMetrics } from "@myrmidon/shared";
 import {
   LitellmWorkerCpuSampler,
   parsePrometheusText,

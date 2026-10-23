@@ -72,9 +72,9 @@ import {
   environmentLeases,
   principalPermissionGrants,
   toolConnections,
-} from "@paperclipai/db";
-import type { ChatProvider } from "@paperclipai/shared";
-import { isPaperclipExternalChatTurn } from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/db";
+import type { ChatProvider } from "@myrmidon/shared";
+import { isPaperclipExternalChatTurn } from "@myrmidon/adapter-utils/server-utils";
 import type { Attachment, Author, Message, Thread } from "chat";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";

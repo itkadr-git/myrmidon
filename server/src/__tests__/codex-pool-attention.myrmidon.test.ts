@@ -23,14 +23,14 @@ import {
   companySecretVersions,
   createDb,
   modelProviders,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   clearModelProviderConnectors,
   DEFAULT_CHATGPT_POOL_MODELS,
   modelProviderSecretName,
   registerModelProviderConnector,
   type PoolAccountChannelView,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

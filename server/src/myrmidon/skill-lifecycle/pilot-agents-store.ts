@@ -12,7 +12,7 @@
 // write (see preserveSkillPilotAgentsGeneralKey and the call site there).
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 
 export const SKILL_PILOT_AGENTS_GENERAL_KEY = "myrmidonSkillPilotAgents";
 const SINGLETON_KEY = "default";

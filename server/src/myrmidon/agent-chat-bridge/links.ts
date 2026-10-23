@@ -10,8 +10,8 @@
  */
 
 import { and, eq, inArray, ne } from "drizzle-orm";
-import { agents, chatEndpoints, type Db } from "@paperclipai/db";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+import { agents, chatEndpoints, type Db } from "@myrmidon/db";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import { sanitizeExternalChatUrl } from "../../services/chat-publication-projection.js";
 
 /** Board routes a relative link or bare path may point at (`ui/src/App.tsx`). */

@@ -5,7 +5,7 @@ import type {
   CompanySecretProviderConfig,
   SecretProposalAgentRef,
   SecretProposalView,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,8 @@ import {
 } from "../../lib/secret-delivery";
 import { cn } from "../../lib/utils";
 import { copyTextToClipboard } from "../../lib/clipboard";
+import { t, useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { SecretPathName } from "./SecretPathName";
 
 /* -------------------------------------------------------------------------- */
@@ -41,8 +43,8 @@ import { SecretPathName } from "./SecretPathName";
 
 /** Short, non-reversible fingerprint label. Never renders the value. */
 export function fingerprintLabel(fingerprint: string | null, length: number | null): string {
-  const digest = fingerprint ? `sha256:${fingerprint.slice(0, 10)}…` : "no fingerprint";
-  const size = typeof length === "number" ? `${length} ${length === 1 ? "byte" : "bytes"}` : null;
+  const digest = fingerprint ? `sha256:${fingerprint.slice(0, 10)}…` : t("area.access-secrets-3.proposal-review.noFingerprint");
+  const size = typeof length === "number" ? t("area.access-secrets-3.proposal-review.bytes", { count: length }) : null;
   return size ? `${digest} · ${size}` : digest;
 }
 
@@ -60,6 +62,7 @@ export function FingerprintChip({
   length: number | null;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const { pushToast } = useToastActions();
   const label = fingerprintLabel(fingerprint, length);
   if (!fingerprint) {
@@ -76,10 +79,10 @@ export function FingerprintChip({
       type="button"
       onClick={() => {
         copyTextToClipboard(full)
-          .then(() => pushToast({ title: "Fingerprint copied", tone: "success" }))
-          .catch(() => pushToast({ title: "Couldn’t copy fingerprint", tone: "error" }));
+          .then(() => pushToast({ title: t("area.access-secrets-3.proposal-review.fingerprintCopied"), tone: "success" }))
+          .catch(() => pushToast({ title: t("area.access-secrets-3.proposal-review.fingerprintCopyError"), tone: "error" }));
       }}
-      title={`Copy full digest — ${full}`}
+      title={t("area.access-secrets-3.proposal-review.copyDigest", { digest: full })}
       className={cn(
         "inline-flex items-center gap-1 font-mono hover:text-foreground",
         className,
@@ -106,9 +109,10 @@ export function ProposalJustification({
   justification: string;
   className?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <div className={cn("space-y-0.5", className)}>
-      <p className="text-(length:--text-micro) text-muted-foreground">Reason given by the agent</p>
+      <p className="text-(length:--text-micro) text-muted-foreground">{t("area.access-secrets-3.proposal-review.agentReason")}</p>
       <p className="whitespace-pre-wrap break-words text-xs text-foreground/80">
         “{justification}”
       </p>
@@ -137,6 +141,7 @@ export function DeliveryBadge({ configPath }: { configPath: string | null }) {
   const mode = deliveryModeForConfigPath(configPath);
   const isEnv = mode === "env";
   const isApi = mode === "api";
+  const ModeIcon = isEnv ? Variable : isApi ? ServerCog : null;
   return (
     <Badge
       variant="outline"
@@ -147,7 +152,7 @@ export function DeliveryBadge({ configPath }: { configPath: string | null }) {
         !isEnv && !isApi && "border-border bg-muted/40 text-muted-foreground",
       )}
     >
-      {isEnv ? <Variable className="size-3" /> : isApi ? <ServerCog className="size-3" /> : null}
+      {ModeIcon ? <ModeIcon className="size-3" /> : null}
       {deliveryModeLabel(mode)}
     </Badge>
   );
@@ -155,6 +160,7 @@ export function DeliveryBadge({ configPath }: { configPath: string | null }) {
 
 /** Distinct "Proposed" pill used wherever a proposal is inlined among live rows. */
 export function ProposedBadge({ className }: { className?: string }) {
+  const { t } = useTranslation();
   return (
     <Badge
       variant="outline"
@@ -164,13 +170,14 @@ export function ProposedBadge({ className }: { className?: string }) {
         className,
       )}
     >
-      <ShieldAlert className="size-3" /> Proposed
+      <ShieldAlert className="size-3" /> {t("area.access-secrets-3.proposal-review.proposed")}
     </Badge>
   );
 }
 
 /** Pill marking a secret-kind proposal whose approval rotates an existing secret. */
 export function RotateTargetBadge({ className }: { className?: string }) {
+  const { t } = useTranslation();
   return (
     <Badge
       variant="outline"
@@ -180,7 +187,7 @@ export function RotateTargetBadge({ className }: { className?: string }) {
         className,
       )}
     >
-      <RotateCcw className="size-3" /> Rotates existing
+      <RotateCcw className="size-3" /> {t("area.access-secrets-3.proposal-review.rotatesExisting")}
     </Badge>
   );
 }
@@ -196,15 +203,15 @@ export function bindingSecretLabel(proposal: SecretProposalView): {
   pending: boolean;
 } {
   if (proposal.secretProposalId) {
-    return { name: proposal.secretProposalName ?? "proposed secret", pending: true };
+    return { name: proposal.secretProposalName ?? t("area.access-secrets-3.proposal-review.proposedSecretFallback"), pending: true };
   }
-  return { name: proposal.secretName ?? "secret", pending: false };
+  return { name: proposal.secretName ?? t("area.access-secrets-3.proposal-review.secretFallback"), pending: false };
 }
 
 function readableError(error: unknown): string {
-  if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
+  if (error instanceof ApiError) return error.message || t("area.access-secrets-3.proposal-review.requestFailed", { status: error.status });
   if (error instanceof Error) return error.message;
-  return "Something went wrong. Try again.";
+  return t("area.access-secrets-3.proposal-review.genericError");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -242,6 +249,7 @@ export function useProposalReview(
   companyId: string | null,
   providerConfigs: CompanySecretProviderConfig[] = [],
 ): UseProposalReview {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
 
@@ -290,14 +298,14 @@ export function useProposalReview(
     onSuccess: (result) => {
       pushToast({
         title: result.kind === "secret"
-          ? (result.rotationTargetSecretId ? "Secret rotated" : "Secret approved")
-          : "Binding approved",
+          ? (result.rotationTargetSecretId ? t("area.access-secrets-3.proposal-review.secretRotated") : t("area.access-secrets-3.proposal-review.secretApproved"))
+          : t("area.access-secrets-3.proposal-review.bindingApproved"),
         body:
           result.kind === "secret"
             ? (result.rotationTargetSecretId
-              ? `${result.rotationTargetName ?? result.proposedName ?? "Secret"} → new latest version`
-              : (result.proposedName ?? "Secret created"))
-            : `${result.target?.name ?? "Agent"} · ${bindingEnvKey(result) || "binding"}`,
+              ? t("area.access-secrets-3.proposal-review.rotatedBody", { name: result.rotationTargetName ?? result.proposedName ?? t("area.access-secrets-3.proposal-review.secretTitle") })
+              : (result.proposedName ?? t("area.access-secrets-3.proposal-review.secretCreated")))
+            : `${result.target?.name ?? t("area.access-secrets-3.proposal-review.agentTitle")} · ${bindingEnvKey(result) || t("area.access-secrets-3.proposal-review.bindingFallback")}`,
         tone: "success",
       });
       setApproveDraft(null);
@@ -312,7 +320,7 @@ export function useProposalReview(
       secretsApi.rejectProposal(companyId!, proposal.id, { reason: reason.trim() }),
     onSuccess: (result) => {
       pushToast({
-        title: "Proposal rejected",
+        title: t("area.access-secrets-3.proposal-review.rejected"),
         body: result.kind === "secret" ? (result.proposedName ?? undefined) : undefined,
         tone: "info",
       });
@@ -418,6 +426,7 @@ function ApproveDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation();
   const isSecret = draft?.proposal.kind === "secret";
   const isRotation = draft?.proposal.kind === "secret" && Boolean(draft.proposal.rotationTargetSecretId);
   const previewName = draft
@@ -436,22 +445,22 @@ function ApproveDialog({
             <DialogHeader>
               <DialogTitle>
                 {isRotation
-                  ? "Approve & rotate secret"
-                  : isSecret ? "Approve & create secret" : "Approve binding"}
+                  ? t("area.access-secrets-3.proposal-review.approveRotateTitle")
+                  : isSecret ? t("area.access-secrets-3.proposal-review.approveCreateTitle") : t("area.access-secrets-3.proposal-review.approveBindingTitle")}
               </DialogTitle>
               <DialogDescription>
                 {isRotation
-                  ? "The proposed value becomes the next version of the existing secret. Agents bound at @latest pick it up on their next wake."
+                  ? t("area.access-secrets-3.proposal-review.rotateDescription")
                   : isSecret
-                  ? "The value is created as the proposing agent recorded it. Re-folder or rename it before it lands."
-                  : "Grant the target agent access to this secret. This runs with your permissions."}
+                  ? t("area.access-secrets-3.proposal-review.createDescription")
+                  : t("area.access-secrets-3.proposal-review.bindingDescription")}
               </DialogDescription>
             </DialogHeader>
 
             {/* Provenance recap — keeps the social-engineering surface visible. */}
             <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-2.5 text-xs">
               <div className="flex items-center gap-1.5 text-muted-foreground">
-                <span>Proposed by</span>
+                <span>{t("area.access-secrets-3.proposal-review.proposedBy")}</span>
                 <AgentRefChip agent={draft.proposal.proposedBy} className="font-medium text-foreground" />
               </div>
               <ProposalJustification justification={draft.proposal.justification} />
@@ -461,28 +470,26 @@ function ApproveDialog({
               <div className="space-y-3">
                 <div className="space-y-2 rounded-md border border-border p-3 text-sm">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs text-muted-foreground">Rotates secret</span>
+                    <span className="text-xs text-muted-foreground">{t("area.access-secrets-3.proposal-review.rotatesSecret")}</span>
                     <SecretPathName
-                      name={draft.proposal.rotationTargetName ?? "existing secret"}
+                      name={draft.proposal.rotationTargetName ?? t("area.access-secrets-3.proposal-review.existingSecretFallback")}
                       className="font-medium"
                     />
                   </div>
                   {draft.proposal.rotationTargetStatus && draft.proposal.rotationTargetStatus !== "active" ? (
                     <p className="text-xs text-destructive" role="alert">
-                      The target secret is {draft.proposal.rotationTargetStatus}; approving this proposal will
-                      fail until it is active again.
+                      {t("area.access-secrets-3.proposal-review.targetInactive", { status: draft.proposal.rotationTargetStatus })}
                     </p>
                   ) : (
                     <p className="text-(length:--text-micro) text-muted-foreground">
-                      The live name and key stay fixed. Verify the fingerprint below against the value you
-                      expect before rotating.
+                      {t("area.access-secrets-3.proposal-review.rotateHint")}
                     </p>
                   )}
                 </div>
 
                 {localConfigs.length > 0 ? (
                   <div className="space-y-1">
-                    <Label htmlFor="approve-rotation-provider-config">Provider vault</Label>
+                    <Label htmlFor="approve-rotation-provider-config">{t("area.access-secrets-3.proposal-review.providerVault")}</Label>
                     <select
                       id="approve-rotation-provider-config"
                       value={draft.providerConfigId}
@@ -491,7 +498,7 @@ function ApproveDialog({
                       }
                       className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
                     >
-                      <option value="">Keep current vault</option>
+                      <option value="">{t("area.access-secrets-3.proposal-review.keepVault")}</option>
                       {localConfigs.map((config) => (
                         <option key={config.id} value={config.id}>
                           {config.displayName}
@@ -512,22 +519,22 @@ function ApproveDialog({
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1">
-                    <Label htmlFor="approve-folder">Folder</Label>
+                    <Label htmlFor="approve-folder">{t("area.access-secrets-3.proposal-review.folder")}</Label>
                     <Input
                       id="approve-folder"
                       value={draft.folder}
                       onChange={(event) => onChange({ ...draft, folder: event.target.value })}
-                      placeholder="dev/github"
+                      placeholder={t("area.access-secrets-3.proposal-review.folderPlaceholder")}
                       className="font-mono text-xs"
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label htmlFor="approve-name">Name</Label>
+                    <Label htmlFor="approve-name">{t("area.access-secrets-3.proposal-review.name")}</Label>
                     <Input
                       id="approve-name"
                       value={draft.leaf}
                       onChange={(event) => onChange({ ...draft, leaf: event.target.value })}
-                      placeholder="client-secret"
+                      placeholder={t("area.access-secrets-3.proposal-review.namePlaceholder")}
                       autoFocus
                       aria-invalid={!draft.leaf.trim()}
                       className="font-mono text-xs"
@@ -535,27 +542,27 @@ function ApproveDialog({
                   </div>
                 </div>
                 <p className="text-(length:--text-micro) text-muted-foreground">
-                  Lands as{" "}
+                  {t("area.access-secrets-3.proposal-review.landsAs")}{" "}
                   {previewName ? (
                     <SecretPathName name={previewName} className="font-mono" />
                   ) : (
-                    <span className="italic">enter a name</span>
+                    <span className="italic">{t("area.access-secrets-3.proposal-review.enterName")}</span>
                   )}
                 </p>
 
                 <div className="space-y-1">
-                  <Label htmlFor="approve-description">Description</Label>
+                  <Label htmlFor="approve-description">{t("area.access-secrets-3.proposal-review.description")}</Label>
                   <Input
                     id="approve-description"
                     value={draft.description}
                     onChange={(event) => onChange({ ...draft, description: event.target.value })}
-                    placeholder="Optional"
+                    placeholder={t("area.access-secrets-3.proposal-review.optional")}
                   />
                 </div>
 
                 {localConfigs.length > 0 ? (
                   <div className="space-y-1">
-                    <Label htmlFor="approve-provider-config">Provider vault</Label>
+                    <Label htmlFor="approve-provider-config">{t("area.access-secrets-3.proposal-review.providerVault")}</Label>
                     <select
                       id="approve-provider-config"
                       value={draft.providerConfigId}
@@ -564,7 +571,7 @@ function ApproveDialog({
                       }
                       className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
                     >
-                      <option value="">Deployment default</option>
+                      <option value="">{t("area.access-secrets-3.proposal-review.deploymentDefault")}</option>
                       {localConfigs.map((config) => (
                         <option key={config.id} value={config.id}>
                           {config.displayName}
@@ -593,18 +600,18 @@ function ApproveDialog({
 
             <DialogFooter>
               <Button variant="ghost" onClick={onCancel} disabled={pending}>
-                Cancel
+                {t("common.cancel")}
               </Button>
               <Button onClick={onConfirm} disabled={pending || !canConfirm}>
                 {pending
-                  ? "Approving…"
+                  ? t("area.access-secrets-3.proposal-review.approving")
                   : isRotation
-                    ? "Approve & rotate"
+                    ? t("area.access-secrets-3.proposal-review.approveRotate")
                     : isSecret
-                    ? "Approve & create"
+                    ? t("area.access-secrets-3.proposal-review.approveCreate")
                     : draft.cascade
-                      ? "Approve secret & bind"
-                      : "Approve binding"}
+                      ? t("area.access-secrets-3.proposal-review.approveSecretAndBind")
+                      : t("area.access-secrets-3.proposal-review.approveBindingTitle")}
               </Button>
             </DialogFooter>
           </>
@@ -621,6 +628,7 @@ function BindingApproveBody({
   draft: ApproveDraft;
   onChange: (next: ApproveDraft) => void;
 }) {
+  const { t } = useTranslation();
   const { proposal } = draft;
   const secret = bindingSecretLabel(proposal);
   const envKey = bindingEnvKey(proposal);
@@ -628,7 +636,7 @@ function BindingApproveBody({
     <div className="space-y-3 text-sm">
       <div className="space-y-2 rounded-md border border-border p-3">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">Target agent</span>
+          <span className="text-xs text-muted-foreground">{t("area.access-secrets-3.proposal-review.targetAgent")}</span>
           {proposal.target ? (
             <AgentRefChip agent={proposal.target} className="text-sm font-medium" />
           ) : (
@@ -636,14 +644,14 @@ function BindingApproveBody({
           )}
         </div>
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">Delivered as</span>
+          <span className="text-xs text-muted-foreground">{t("area.access-secrets-3.proposal-review.deliveredAs")}</span>
           <span className="flex items-center gap-1.5">
             <DeliveryBadge configPath={proposal.configPath} />
             <code className="font-mono text-xs">{envKey || proposal.configPath}</code>
           </span>
         </div>
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">Secret</span>
+          <span className="text-xs text-muted-foreground">{t("area.access-secrets-3.proposal-review.secretTitle")}</span>
           <span className="flex items-center gap-1.5">
             <KeyRound className="size-3.5 text-muted-foreground" />
             <span className="font-medium">{secret.name}</span>
@@ -659,12 +667,14 @@ function BindingApproveBody({
             checked={draft.cascade}
             onCheckedChange={(checked) => onChange({ ...draft, cascade: checked === true })}
             className="mt-0.5"
-            aria-label="Also approve the proposed secret"
+            aria-label={t("area.access-secrets-3.proposal-review.alsoApproveLabel")}
           />
           <span className="text-foreground/90">
-            Also approve the proposed secret{" "}
-            <span className="font-medium">{secret.name}</span> and create it in the same step. The
-            binding can’t land without it.
+            <Trans
+              i18nKey="area.access-secrets-3.proposal-review.alsoApprove"
+              values={{ name: secret.name }}
+              components={{ 1: <span className="font-medium" /> }}
+            />
           </span>
         </label>
       ) : null}
@@ -693,6 +703,7 @@ function RejectDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation();
   const canConfirm = reason.trim().length > 0;
   return (
     <Dialog open={Boolean(proposal)} onOpenChange={(open) => !open && onCancel()}>
@@ -700,22 +711,23 @@ function RejectDialog({
         {proposal ? (
           <>
             <DialogHeader>
-              <DialogTitle>Reject proposal</DialogTitle>
+              <DialogTitle>{t("area.access-secrets-3.proposal-review.rejectTitle")}</DialogTitle>
               <DialogDescription>
-                The reason is sent back to{" "}
-                <AgentRefChip agent={proposal.proposedBy} className="text-foreground" />. Dependent
-                bindings are rejected too.
+                <Trans
+                  i18nKey="area.access-secrets-3.proposal-review.rejectDescription"
+                  components={{ 1: <AgentRefChip agent={proposal.proposedBy} className="text-foreground" /> }}
+                />
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-1">
-              <Label htmlFor="reject-reason">Reason</Label>
+              <Label htmlFor="reject-reason">{t("area.access-secrets-3.proposal-review.reason")}</Label>
               <Textarea
                 id="reject-reason"
                 value={reason}
                 onChange={(event) => onReasonChange(event.target.value)}
                 rows={3}
                 autoFocus
-                placeholder="Why is this being rejected?"
+                placeholder={t("area.access-secrets-3.proposal-review.reasonPlaceholder")}
               />
             </div>
             {error ? (
@@ -725,10 +737,10 @@ function RejectDialog({
             ) : null}
             <DialogFooter>
               <Button variant="ghost" onClick={onCancel} disabled={pending}>
-                Cancel
+                {t("common.cancel")}
               </Button>
               <Button variant="destructive" onClick={onConfirm} disabled={pending || !canConfirm}>
-                {pending ? "Rejecting…" : "Reject"}
+                {pending ? t("area.access-secrets-3.proposal-review.rejecting") : t("area.access-secrets-3.proposal-review.reject")}
               </Button>
             </DialogFooter>
           </>
@@ -755,6 +767,7 @@ export function ProposalActions({
   disabled?: boolean;
   size?: "sm" | "xs";
 }) {
+  const { t } = useTranslation();
   const blocked = !proposal.viewerCanApprove;
   const heightClass = size === "xs" ? "h-7 px-2 text-xs" : "";
   const approveButton = (
@@ -764,7 +777,7 @@ export function ProposalActions({
       disabled={disabled || blocked}
       onClick={() => onApprove(proposal)}
     >
-      Approve
+      {t("area.access-secrets-3.proposal-review.approve")}
     </Button>
   );
   return (
@@ -776,7 +789,7 @@ export function ProposalActions({
               <span tabIndex={0}>{approveButton}</span>
             </TooltipTrigger>
             <TooltipContent className="max-w-72">
-              {proposal.approveBlockReason ?? "You don’t have permission to approve this."}
+              {proposal.approveBlockReason ?? t("area.access-secrets-3.proposal-review.noPermission")}
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
@@ -790,7 +803,7 @@ export function ProposalActions({
         disabled={disabled}
         onClick={() => onReject(proposal)}
       >
-        Reject
+        {t("area.access-secrets-3.proposal-review.reject")}
       </Button>
     </div>
   );

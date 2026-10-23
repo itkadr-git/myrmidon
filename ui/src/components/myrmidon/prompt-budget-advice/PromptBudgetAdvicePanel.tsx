@@ -12,7 +12,9 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Trans } from "react-i18next";
 import { Sparkles } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import {
   adviceSeverityLabel,
@@ -40,6 +42,7 @@ export function PromptBudgetAdviceView({
   deepTask: PromptBudgetDeepTask | null;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const canAnalyse = Boolean(advice?.hasRun);
 
   return (
@@ -52,11 +55,11 @@ export function PromptBudgetAdviceView({
         <div className="flex items-center gap-2">
           <Sparkles className="h-4 w-4 text-muted-foreground" />
           <h3 id="prompt-budget-advice-heading" className="text-sm font-medium">
-            Prompt budget advice
+            {t("area.costs-budgets-2.prompt-budget-advice-panel.title")}
           </h3>
         </div>
         <p className="max-w-2xl text-xs text-muted-foreground">
-          What the last run's prompt was made of, which part is bloated, and what to do about it.
+          {t("area.costs-budgets-2.prompt-budget-advice-panel.description")}
         </p>
       </div>
 
@@ -67,16 +70,22 @@ export function PromptBudgetAdviceView({
       ) : null}
 
       {!advice ? (
-        <p className="text-sm text-muted-foreground">Loading the prompt breakdown...</p>
+        <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.prompt-budget-advice-panel.loading")}</p>
       ) : !advice.hasRun ? (
         <p className="text-sm text-muted-foreground" data-testid="prompt-budget-advice-no-run">
-          No run of this agent has a recorded prompt breakdown yet.
+          {t("area.costs-budgets-2.prompt-budget-advice-panel.noRun")}
         </p>
       ) : (
         <div className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            Last run {advice.runId ? <span className="font-mono">{advice.runId}</span> : "unknown"} ·{" "}
-            <span className="font-mono">{formatTokensShort(advice.total)}</span> tokens in the prompt
+            <Trans
+              i18nKey="area.costs-budgets-2.prompt-budget-advice-panel.lastRun"
+              values={{
+                runId: advice.runId ?? t("area.costs-budgets-2.prompt-budget-advice-panel.unknownRun"),
+                total: formatTokensShort(advice.total),
+              }}
+              components={[<span className="font-mono" />, <span className="font-mono" />]}
+            />
           </p>
 
           {advice.parts.length > 0 ? (
@@ -113,8 +122,11 @@ export function PromptBudgetAdviceView({
                     </span>
                     <span className="text-sm font-medium">{item.title}</span>
                     <span className="text-xs text-muted-foreground font-mono truncate">
-                      {item.part} · {formatSharePct(item.sharePct)} ·{" "}
-                      {formatTokensShort(item.tokens)} tokens
+                      {t("area.costs-budgets-2.prompt-budget-advice-panel.itemMeta", {
+                        part: item.part,
+                        share: formatSharePct(item.sharePct),
+                        tokens: formatTokensShort(item.tokens),
+                      })}
                     </span>
                   </div>
                   <p className="text-sm">{item.action}</p>
@@ -123,7 +135,7 @@ export function PromptBudgetAdviceView({
             </ul>
           ) : (
             <p className="text-sm text-muted-foreground" data-testid="prompt-budget-advice-healthy">
-              No part of the last prompt crosses the warning threshold.
+              {t("area.costs-budgets-2.prompt-budget-advice-panel.healthy")}
             </p>
           )}
         </div>
@@ -138,16 +150,16 @@ export function PromptBudgetAdviceView({
           onClick={onDeep}
           data-testid="prompt-budget-advice-deep"
         >
-          {deepPending ? "Filing the task..." : "Deep analysis"}
+          {deepPending ? t("area.costs-budgets-2.prompt-budget-advice-panel.deepPending") : t("area.costs-budgets-2.prompt-budget-advice-panel.deepButton")}
         </Button>
         <span className="text-xs text-muted-foreground">
-          A cheap-model agent drafts instruction edits as a comment; nothing is changed for you.
+          {t("area.costs-budgets-2.prompt-budget-advice-panel.deepHint")}
         </span>
       </div>
 
       {deepTask ? (
         <p className="text-sm" data-testid="prompt-budget-advice-deep-task">
-          Deep analysis task:{" "}
+          {t("area.costs-budgets-2.prompt-budget-advice-panel.deepTask")}{" "}
           {deepTask.identifier ? (
             <a className="font-medium underline" href={deepTaskHref(deepTask.identifier)}>
               {deepTask.identifier}
@@ -168,6 +180,7 @@ export function PromptBudgetAdvicePanel({
   companyId: string;
   agentId: string;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [deepTask, setDeepTask] = useState<PromptBudgetDeepTask | null>(null);
@@ -182,7 +195,7 @@ export function PromptBudgetAdvicePanel({
     mutationFn: () => promptBudgetAdviceApi.startDeepAnalysis(companyId, agentId),
     onMutate: () => setError(null),
     onError: (err) =>
-      setError(err instanceof Error ? err.message : "Filing the deep analysis task failed."),
+      setError(err instanceof Error ? err.message : t("area.costs-budgets-2.prompt-budget-advice-panel.deepFailed")),
     onSuccess: async (task) => {
       setError(null);
       setDeepTask(task);

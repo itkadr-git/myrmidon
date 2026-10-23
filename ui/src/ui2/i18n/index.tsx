@@ -27,7 +27,7 @@ import {
   type ReactNode,
 } from "react";
 import { i18n } from "@/i18n";
-import { UI2_LANGUAGES, type Ui2Language } from "@paperclipai/shared";
+import { UI2_LANGUAGES, type Ui2Language } from "@myrmidon/shared";
 import { ui2LanguageApi } from "./api";
 import { en } from "./catalogs/en";
 import { ru } from "./catalogs/ru";

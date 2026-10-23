@@ -12,7 +12,7 @@ import {
   WORKSPACE_HYGIENE_METADATA_KEY,
   readWorkspaceHygieneRecord,
   type WorkspaceHygieneLimits,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { LogActivityInput } from "../../services/activity-log.js";
 import { WORKSPACE_HYGIENE_ACTOR_ID, createWorkspaceHygieneSweep } from "./sweep.js";
 import type { WorkspaceHygieneStore, WorkspaceHygieneWorkspaceRow } from "./store.js";

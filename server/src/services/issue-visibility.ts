@@ -1,5 +1,5 @@
 import { and, isNull, type SQL } from "drizzle-orm";
-import { issues } from "@paperclipai/db";
+import { issues } from "@myrmidon/db";
 
 export function visibleIssueCondition(): SQL {
   return and(isNull(issues.hiddenAt), isNull(issues.harnessKind))!;

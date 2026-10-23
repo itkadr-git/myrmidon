@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { BOT_CONTAINERS_ENV } from "./agent-config.js";
 import type { BotContainerDriver } from "./driver.js";
 import type { DockerDriverConfig } from "./docker-driver.js";

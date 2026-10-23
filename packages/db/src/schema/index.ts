@@ -16,6 +16,9 @@ export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { companyMemberships } from "./company_memberships.js";
 export { companyUserSidebarPreferences } from "./company_user_sidebar_preferences.js";
 export { principalPermissionGrants } from "./principal_permission_grants.js";
+export { poolChatModuleInstances } from "./pool_chat_module_instances.js";
+export { poolChatRequests } from "./pool_chat_requests.js";
+export { poolChatRequestAttempts, poolChatQuotaReservations } from "./pool_chat_ledger.js";
 export { companySkillPolicies } from "./company_skill_policies.js";
 export { invites } from "./invites.js";
 export { joinRequests } from "./join_requests.js";
@@ -324,5 +327,7 @@ export {
 export { botApplyJobs, BOT_APPLY_JOB_STATUSES, type BotApplyJobStatus } from "./bot_apply_jobs.js";
 // myrmidon(1.6.5 PROCS-0.1): the process registry and leader leases of the board.
 export { boardProcesses, boardLeases } from "./board_processes.js";
+// myrmidon(1.6.6-CORPUS-SHADOW A): shadow log of the corpus-module comparison.
+export { corpusShadowLog } from "./corpus_shadow_log.js";
 // myrmidon(OPE-8836): the single, permanent installation id of the board (licensing).
 export { myrmidonInstallIdentity } from "./myrmidon_install_identity.js";
