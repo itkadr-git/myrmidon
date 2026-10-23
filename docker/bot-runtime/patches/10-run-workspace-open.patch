@@ -44,7 +44,7 @@ index cadf8bf..0e71549 100644
      self._activate_admitted_request()
      # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
      # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
-@@ -778,6 +797,27 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
+@@ -778,6 +797,28 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
              # tools/environments/local.py then strips them for this run's spawns.
              if run.github_broker:
                  resets.append(set_github_broker_vars(run.github_broker))
