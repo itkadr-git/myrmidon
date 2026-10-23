@@ -12,7 +12,7 @@
 // Every request's read-write-audit sequence runs through one queue, so two
 // overlapping PATCHes cannot commit in one order and audit in the other.
 
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
   BOT_DISK_LAYOUT_KEYS,
@@ -34,7 +34,7 @@ import {
   type BotDiskSettings,
   type BotDiskSettingsPatch,
   type ResolvedBotDiskSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { sweepAllBotVolumes } from "./draft-lifecycle.js";

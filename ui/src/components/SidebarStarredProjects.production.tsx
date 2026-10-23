@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { NavLink, useLocation } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, LogOut, MoreHorizontal, Star } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
@@ -26,7 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { Project } from "@paperclipai/shared";
+import type { Project } from "@myrmidon/shared";
 
 // Sidebar star reveals with the row's own group, not the shared unnamed group.
 const STAR_ROW_REVEAL =
@@ -40,6 +41,7 @@ const STAR_ROW_REVEAL =
  * server-side, so a stale star never resurrects a hidden project.
  */
 export function SidebarStarredProjects() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
@@ -104,7 +106,7 @@ export function SidebarStarredProjects() {
   }
 
   return (
-    <div className="flex flex-col gap-0.5" aria-label="Starred projects">
+    <div className="flex flex-col gap-0.5" aria-label={t("area.shell-sidebar-layout-2.sidebar-starred-projects.listLabel")}>
       {starredProjects.map((project) => {
         const routeRef = projectRouteRef(project);
         const isActive = activeProjectRef === routeRef || activeProjectRef === project.id;
@@ -131,7 +133,7 @@ export function SidebarStarredProjects() {
             <ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="xs" />
             <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{project.name}</span>
             {!rail && project.pauseReason === "budget" ? (
-              <BudgetSidebarMarker title="Project paused by budget" />
+              <BudgetSidebarMarker title={t("area.shell-sidebar-layout-2.sidebar-starred-projects.pausedByBudgetMarker")} />
             ) : null}
           </NavLink>
         );
@@ -172,7 +174,7 @@ export function SidebarStarredProjects() {
                     variant="ghost"
                     size="icon-xs"
                     className="absolute right-3 top-1/2 h-6 w-6 -translate-y-1/2 opacity-100"
-                    aria-label={`Open actions for ${project.name}`}
+                    aria-label={t("area.shell-sidebar-layout-2.sidebar-starred-projects.openActions", { name: project.name })}
                   >
                     <MoreHorizontal className="h-3.5 w-3.5" />
                   </Button>
@@ -190,7 +192,7 @@ export function SidebarStarredProjects() {
                     ) : (
                       <Star className="size-4 fill-amber-500 text-amber-500" />
                     )}
-                    <span>Remove from starred</span>
+                    <span>{t("area.shell-sidebar-layout-2.sidebar-starred-projects.removeFromStarred")}</span>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
@@ -205,7 +207,7 @@ export function SidebarStarredProjects() {
                     ) : (
                       <LogOut className="size-4" />
                     )}
-                    <span>Leave project</span>
+                    <span>{t("area.shell-sidebar-layout-2.sidebar-starred-projects.leaveProject")}</span>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

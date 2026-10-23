@@ -37,7 +37,7 @@
 // row for the next pass.
 
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { companies, agentWakeupRequests, heartbeatRuns, issues, issueClaims, type Db } from "@paperclipai/db";
+import { companies, agentWakeupRequests, heartbeatRuns, issues, issueClaims, type Db } from "@myrmidon/db";
 import { wakeNotParkedOnExecutionHold } from "../settled-holds/ready-predicate.js";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
@@ -48,7 +48,8 @@ import {
   readStoredSwarmSettings,
   resolveSwarmClaimSettings,
   type SwarmClaimSettings,
-} from "@paperclipai/shared";
+  type SwarmClaimLease,
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
 import { SWARM_CLAIM_SWEEP_FEATURE_KEY } from "../features/reporters.js"; // myrmidon(FEATURES)
@@ -293,10 +294,11 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
 
       for (const row of expiredRows) {
         result.inspected += 1;
-        const lease = {
+        const lease: SwarmClaimLease = {
           id: row.id,
           issueId: row.issueId,
           agentId: row.agentId,
+          origin: row.origin === "auto_match" || row.origin === "checkout" ? row.origin : null,
           heartbeatAt: row.heartbeatAt,
           expiresAt: row.expiresAt,
           releasedAt: row.releasedAt,
@@ -321,21 +323,34 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
             entityId: row.issueId,
             details: { reason: SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED, claimId: row.id },
           });
-          // design §4.1 (review item 2): the lease ran out and no run holds the
-          // task any more, so the task goes back to the queue WITHOUT its
-          // owner. The old pass left the assignee in place and woke the next
-          // agent of the caste on a task that still belonged to somebody else —
-          // that wake was cancelled as `reassigned` before its checkout, the
-          // very failure this ticket exists for. Clearing the owner first and
-          // then matching wakes exactly the agent that now owns the task.
-          const rematched = await reclaimExpiredTask(
-            deps,
-            settings,
-            { companyId: row.companyId, issueId: row.issueId, agentId: row.agentId },
+          if (await hasLiveRunForTask(deps.db, row.companyId, row.agentId, row.issueId)) continue;
+          const expired = await clearExpiredAssignee(deps.db, {
+            companyId: row.companyId,
+            issueId: row.issueId,
+            agentId: row.agentId,
+            claimId: row.id,
             now,
-            hostGateOpen,
-          ).catch(() => false);
-          if (rematched) result.woken += 1;
+          });
+          if (expired) {
+            await deps.logActivity?.({
+              companyId: row.companyId,
+              actorType: "system",
+              actorId: "swarm_claim_sweep",
+              agentId: row.agentId,
+              runId: null,
+              action: SWARM_CLAIM_UNASSIGNED_ON_EXPIRY_ACTION,
+              entityType: "issue",
+              entityId: row.issueId,
+              details: { reason: SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED },
+            });
+            // Without a wake enqueuer there is nobody to start the re-match for.
+            if (!deps.enqueueWakeup) continue;
+            const rematched = await matchIssue(
+              matcherDeps(deps, settings, now, hostGateOpen),
+              row.issueId,
+            ).catch(() => null);
+            if (rematched) result.woken += 1;
+          }
         } catch {
           result.failed += 1;
           logger.warn(
@@ -501,52 +516,6 @@ export async function issueHasLiveClaimOrWake(
     return true;
   }
   return false;
-}
-
-/**
- * 1.6.5 (OPE-6608 §4.1, review item 2): one expired lease, re-matched. A task
- * whose lease lapsed with no live run behind it is nobody's again — the owner
- * is cleared (only while the task is still in a queue status and still carries
- * that owner, so a task that moved on is left alone), the activity records it,
- * and the matcher pairs the task again on this same pass. A live run keeps its
- * task: an idle lease expiring must never take work away from a running agent.
- */
-async function reclaimExpiredTask(
-  deps: SwarmClaimSweeperDeps,
-  settings: SwarmClaimSettings,
-  target: { companyId: string; issueId: string; agentId: string },
-  now: Date,
-  hostGateOpen: boolean,
-): Promise<boolean> {
-  // The gate first (review item 6): with the host's run admission closed the
-  // owner is not taken off the task, because nothing could be started for it
-  // afterwards. The sweep does not even release an expired lease then (it reads
-  // none while the gate is closed); this guard keeps the function safe on its own.
-  if (!hostGateOpen) return false;
-  if (await hasLiveRunForTask(deps.db, target.companyId, target.agentId, target.issueId)) return false;
-
-  const cleared = await clearExpiredAssignee(deps.db, {
-    companyId: target.companyId,
-    issueId: target.issueId,
-    agentId: target.agentId,
-    now,
-  });
-  if (cleared) {
-    await deps.logActivity?.({
-      companyId: target.companyId,
-      actorType: "system",
-      actorId: "swarm_claim_sweep",
-      agentId: target.agentId,
-      runId: null,
-      action: SWARM_CLAIM_UNASSIGNED_ON_EXPIRY_ACTION,
-      entityType: "issue",
-      entityId: target.issueId,
-      details: { reason: SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED },
-    });
-  }
-  if (!deps.enqueueWakeup) return false;
-  const matched = await matchIssue(matcherDeps(deps, settings, now, hostGateOpen), target.issueId);
-  return Boolean(matched);
 }
 
 /**

@@ -10,9 +10,9 @@
 // values live in the deploy repository); with none set, the connector still
 // serves the folder/grant/journal surface but refuses to start a connect.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { Router } from "express";
-import type { CloudRoot } from "@paperclipai/shared/myrmidon-cloud-connector";
+import type { CloudRoot } from "@myrmidon/shared/myrmidon-cloud-connector";
 import { OAuthStateStore, readOAuthClients } from "./oauth.js";
 import { createCloudAccessTokenResolver, type CloudAccessTokenResolver } from "./access-token.js";
 import { secretCloudTokenStore, type CloudTokenStore } from "./token-store.js";

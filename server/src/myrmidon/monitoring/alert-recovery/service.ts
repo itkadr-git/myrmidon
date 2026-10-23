@@ -11,7 +11,7 @@ import {
   type AlertRecoverySettingsPatch,
   type AlertRecoveryState,
   type ResolvedAlertRecoverySettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   alertRecoveryIssueTitle,
   alertRecoveryPriority,

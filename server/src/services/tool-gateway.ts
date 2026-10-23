@@ -1,4 +1,4 @@
-import { runIdentityContexts } from "@paperclipai/db";
+import { runIdentityContexts } from "@myrmidon/db";
 import { captureRunIdentity } from "./run-identity.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { emitToolPolicyChanged } from "./tool-policy-cache-events.js";
@@ -34,6 +34,10 @@ import {
   runBoundProjectToolDescriptors,
   selectBotGatewayRun,
 } from "../myrmidon/bot-containers/run-bound-tools.js";
+// myrmidon(1.6.6-CORPUS-SHADOW A): corpus-module shadow comparison (part A).
+import { liveBehaviorSetting } from "../myrmidon/behavior-settings/live.js";
+import { createCorpusShadowRunner, maybeRecordShadowSearchCall } from "../myrmidon/corpus-shadow.js";
+import type { CorpusShadowRunner } from "../myrmidon/corpus-shadow.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
@@ -49,7 +53,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   approvals,
@@ -83,8 +87,8 @@ import {
   toolProfileEntries,
   toolProfiles,
   toolStdioCommandTemplates,
-} from "@paperclipai/db";
-import type { ToolRunContext } from "@paperclipai/plugin-sdk";
+} from "@myrmidon/db";
+import type { ToolRunContext } from "@myrmidon/plugin-sdk";
 import { loadToolPolicySnapshot } from "./tool-policy-snapshot.js";
 import type {
   CreateToolMcpGateway,
@@ -105,13 +109,13 @@ import type {
   ToolMcpGatewayTokenCreated,
   ToolMcpGatewayWithTokens,
   UpdateToolMcpGateway,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 // myrmidon(B1c): product name in user-facing gateway texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import type {
@@ -141,7 +145,7 @@ import {
 } from "./remote-url-credentials.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 // myrmidon(S6): the per-agent tool/connection permission and its gate.
-import { agentToolPermissionAllows } from "@paperclipai/shared";
+import { agentToolPermissionAllows } from "@myrmidon/shared";
 import { loadAgentToolPermissions } from "../myrmidon/agent-tool-permissions.js";
 // myrmidon(DB-PERF-C-P4): gateway setup binds a profile outside the tool-access CRUD.
 import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
@@ -194,7 +198,7 @@ import {
   verifyToolArgumentsSignature,
 } from "./tool-content-guards.js";
 import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import { browserConsoleMcpPauseForEndpoint } from "../myrmidon/browser-console/mcp-guard.js"; // myrmidon(BROWSER-CONSOLE-B)
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
@@ -1102,6 +1106,13 @@ export function createToolGatewayService(
     beforeManagedArgumentDriftExpiry?: () => Promise<void>;
     /** Test seam for pausing a legacy approved request before its execution claim. */
     beforeLegacyApprovedActionClaim?: () => Promise<void>;
+    /**
+     * myrmidon(1.6.6-CORPUS-SHADOW A): test seam for the corpus shadow runner
+     * (and a production seam for wiring the real corpus SearchIndex port when
+     * the corpus module delivers it). Default: a runner behind the live `corpus.shadow`
+     * flag with the no-op module leg.
+     */
+    corpusShadowRunner?: CorpusShadowRunner;
     mcpGatewayProtocolLimits?: Partial<{
       authFailures: Partial<McpGatewayRateLimitConfig>;
       gatewayRequests: Partial<McpGatewayRateLimitConfig>;
@@ -1117,6 +1128,17 @@ export function createToolGatewayService(
     trustedLocalStdioRuntimeHost: options.trustedLocalStdioRuntimeHost,
     ...options.runtimeSupervisor,
   });
+  // myrmidon(1.6.6-CORPUS-SHADOW A): the fire-and-forget corpus comparison.
+  // Flag off (the default) means this object only ever answers "disabled" —
+  // zero behavior change; on, search calls get a shadow row after the bot
+  // response was decided. The module leg is the no-op port until the corpus module
+  // wires the real SearchIndex (a later part passes it via this seam).
+  const corpusShadowRunner: CorpusShadowRunner =
+    options.corpusShadowRunner ??
+    createCorpusShadowRunner({
+      db,
+      isEnabled: () => liveBehaviorSetting<boolean>("corpus.shadow") === true,
+    });
   const pluginToolDispatcher = options.pluginToolDispatcher;
   const interactions = issueThreadInteractionService(db);
   const policyService = toolAccessPolicyService(db);
@@ -10835,6 +10857,9 @@ export function createToolGatewayService(
       });
 
       try {
+        // myrmidon(1.6.6-CORPUS-SHADOW A): start stamp for the shadow log's
+        // ragflow_latency_ms; read-only, contributes nothing to the response.
+        const shadowRagflowStartedAt = Date.now();
         const executionTimeoutMs = timeoutMs(input.timeoutMs);
         if (
           tool.providerType === "paperclip_plugin" &&
@@ -10973,6 +10998,20 @@ export function createToolGatewayService(
             headerSummary: connectedMcpExecution?.headerSummary ?? undefined,
             execution: connectedMcpExecution?.execution ?? undefined,
           },
+        });
+        // myrmidon(1.6.6-CORPUS-SHADOW A): the shadow decision point. The
+        // response below is built and unchanged either way; the runner only
+        // sees read-only copies (tool, result, parameters) and its own leg can
+        // never fail or delay this return. Flag off => isEnabled() false => the
+        // helper returns before touching anything (byte-for-byte old behavior).
+        maybeRecordShadowSearchCall({
+          runner: corpusShadowRunner,
+          tool,
+          execution: connectedMcpExecution?.execution ?? null,
+          result: resultValidation.value,
+          parameters: effectiveParameters,
+          botId: session.agentId ?? null,
+          latencyMs: Date.now() - shadowRagflowStartedAt,
         });
         return {
           invocationId,

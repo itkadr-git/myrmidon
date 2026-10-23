@@ -3,7 +3,7 @@ import {
   type Request as ExpressRequest,
   type Response as ExpressResponse,
 } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 // myrmidon(B1): product name in the user-facing error text below; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 import {
@@ -20,7 +20,7 @@ import {
   resolveChatPublicationSchema,
   updateChatEndpointSchema,
   type ChatProvider,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../middleware/validate.js";
 import {
   chatChannelService,

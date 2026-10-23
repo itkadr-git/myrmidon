@@ -19,15 +19,15 @@
 //   5. The K-1 domain gates on top.
 
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
-import { knowledgeProposeSchema, isKnowledgeAutoSection, defaultAutonomyMatrix, resolveAutonomy } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { knowledgeProposeSchema, isKnowledgeAutoSection, defaultAutonomyMatrix, resolveAutonomy } from "@myrmidon/shared";
 import {
   KNOWLEDGE_APPROVAL_REQUIRED_CODE,
   KNOWLEDGE_INJECTION_FLAGGED_CODE,
   KNOWLEDGE_RULE_APPROVE_FORBIDDEN_CODE,
   KNOWLEDGE_TOOL_ACCESS_DENIED_CODE,
-} from "@paperclipai/shared";
-import type { AutonomyMatrix } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import type { AutonomyMatrix } from "@myrmidon/shared";
 import { HttpError, forbidden, notFound, unprocessable } from "../../errors.js";
 import { assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { KnowledgeDomainError } from "./domain.js";

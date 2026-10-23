@@ -19,7 +19,7 @@ import {
   DEFAULT_PROCESSES_SETTINGS,
   type ProcessesSettingKey,
   type ProcessesSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 interface Harness {
   deps: ProcessesSettingsDeps;
@@ -72,6 +72,34 @@ describe("processes settings service (PROCS-1.1)", () => {
     assert.equal(view.effectiveMode, "single");
     assert.equal(view.notInEffectReason, null);
     assert.equal(view.sources.mode, "default");
+  });
+
+  it("runs the whole read-merge-write inside the cross-process serializer", async () => {
+    // Another process may save between this process's read and its write; the
+    // serializer is what makes the pair one step, so the whole update must run
+    // inside it, never around it.
+    const h = harness();
+    const events: string[] = [];
+    const getGeneral = h.deps.settings.getGeneral;
+    const updateGeneral = h.deps.settings.updateGeneral;
+    h.deps.settings.getGeneral = async () => {
+      events.push("read");
+      return getGeneral();
+    };
+    h.deps.settings.updateGeneral = async (patch) => {
+      events.push("write");
+      return updateGeneral(patch);
+    };
+    h.deps.serialize = async (task) => {
+      events.push("lock");
+      try {
+        return await task();
+      } finally {
+        events.push("unlock");
+      }
+    };
+    await createProcessesSettingsService(h.deps).update({ apiCount: 2 }, ACTOR);
+    assert.deepEqual(events, ["lock", "read", "write", "unlock"]);
   });
 
   it("stores a patch, journals it once per company, and applies it after the row", async () => {

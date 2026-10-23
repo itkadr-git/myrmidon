@@ -41,7 +41,7 @@
 //      state machine) still apply on top.
 
 import express, { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   knowledgeApproveSchema,
   knowledgeCreateItemSchema,
@@ -60,8 +60,8 @@ import {
   isKnowledgeAutoSection,
   defaultAutonomyMatrix,
   resolveAutonomy,
-} from "@paperclipai/shared";
-import type { AutonomyMatrix } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import type { AutonomyMatrix } from "@myrmidon/shared";
 import { HttpError, forbidden, notFound, unprocessable } from "../../errors.js";
 import { assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { validate } from "../../middleware/validate.js";
@@ -726,7 +726,7 @@ export function myrmidonKnowledgeRoutes(db: Db, env: NodeJS.ProcessEnv = process
         explanation: `knowledge_publish outside the auto sections requires board approval (${actorLabel}).`,
         effectiveProfileIds: [],
         matchedPolicyIds: [],
-      } satisfies import("@paperclipai/shared").ToolAccessDecision;
+      } satisfies import("@myrmidon/shared").ToolAccessDecision;
       const recorded = await policy.recordInvocation(
         {
           companyId,

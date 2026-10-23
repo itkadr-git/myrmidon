@@ -6,7 +6,7 @@ import {
   getAppStoreDefinition,
   getConnectableAppDefinition,
   type AppDefinition,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export function appSupportsToolCatalogSetup(entry: AppDefinition | null | undefined): boolean {
   return Boolean(

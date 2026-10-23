@@ -5,7 +5,7 @@
 // the service-free module next to it. The review path (`tool-action-review.ts`)
 // builds the executors here and hands them to `executeApprovedAutonomyAction`.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { agentService } from "../../services/agents.js";
 import { heartbeatService } from "../../services/heartbeat.js";
 import type { AutonomyActionExecutorsFactory } from "./action-execution.js";

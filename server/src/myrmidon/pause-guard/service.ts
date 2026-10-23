@@ -14,7 +14,7 @@
 // runs through one queue (`withPauseGuardTransition`), exactly as the run
 // admission limits transition does.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   PAUSE_GUARD_SETTING_KEYS,
   mergePauseGuardSettings,
@@ -23,7 +23,7 @@ import {
   type PauseGuardSettings,
   type PauseGuardSettingsPatch,
   type PauseGuardSettingsSource,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 

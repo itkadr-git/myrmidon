@@ -1,4 +1,4 @@
-import { getAgentWorkEligibility, isAgentInvokable, type IssueReviewPolicy } from "@paperclipai/shared";
+import { getAgentWorkEligibility, isAgentInvokable, type IssueReviewPolicy } from "@myrmidon/shared";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";

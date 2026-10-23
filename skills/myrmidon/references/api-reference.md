@@ -1510,6 +1510,19 @@ Full request body fields for a secret proposal:
 ```
 
 `name` is a slash-separated path without whitespace or empty segments. The value is limited to 64 KiB. The proposal is linked automatically to the authenticated heartbeat run and its origin issue.
+**Rotating an existing secret.** If a live company secret already carries the name, a plain proposal is rejected with `409` at creation ("Secret already exists" - the approval could never land). Propose a rotation instead by adding `rotateSecretId`, the id of the existing active company secret:
+
+```json
+{
+  "kind": "secret",
+  "name": "integrations/vendor/api-token",
+  "value": "<new value>",
+  "justification": "Rotate the leaked token",
+  "rotateSecretId": "<existing secret id>"
+}
+```
+
+The 409 body names the target id, and `GET /api/agents/me/secrets` lists the secret metadata. On approval the value becomes the next version of that secret; agents whose bindings point at it via `@latest` pick the new value up on their next wake, and the origin issue receives a comment with the new version. A rotation proposal cannot rename its target.
 
 The response omits the credential. Use the returned proposal `id` to propose a binding; a binding to the proposing agent omits `targetAgentId`:
 
@@ -1548,6 +1561,7 @@ curl -s -X POST \
 ```
 
 `sourceConfigPath` must name an existing binding on the proposing agent; another agent's path and an unknown path both return `404`. Omit `targetAgentId` to bind the alias back to yourself. Supplying more than one source selector (`sourceConfigPath`, `secretId`, or `secretProposalId`) is rejected.
+**Retargeting an existing binding.** A binding proposal may point a path that already holds a company `secret_ref` at a different secret: on approval the reference is replaced instead of colliding with "Agent config path already exists". Paths holding a literal value or a user-secret reference still require an exact match, so a proposal can never silently drop a directly-typed credential.
 
 When this request comes from a run with a checked-out origin issue, Myrmidon creates a human-only **Confirm secret binding** card in that issue automatically. Do not create a separate interaction. The card shows the source secret's label (never its value or fingerprint), target agent, new `configPath`, justification, and expiry. A human can select **Create binding** or reject it with a reason.
 
