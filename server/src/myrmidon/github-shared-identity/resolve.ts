@@ -199,21 +199,22 @@ export async function resolveGitHubAppCredential(
   } catch (error) {
     return fail(error instanceof GitHubAppTokenError ? error.message : "GitHub App token minting failed");
   }
-  await journal(db, {
-    companyId: input.companyId,
-    agentId: agent.id,
-    runId: input.runId,
-    action: "myrmidon.github_app.issued",
-    details: {
-      repository,
-      entryId: entry.id,
-      appId: entry.appId,
-      installationId: minted.installationId,
-      expiresAt: minted.expiresAt,
-      reused: minted.reused,
-      permissions: entry.permissions,
-    },
-  });
+  if (!minted.reused) {
+    await journal(db, {
+      companyId: input.companyId,
+      agentId: agent.id,
+      runId: input.runId,
+      action: "myrmidon.github_app.issued",
+      details: {
+        repository,
+        entryId: entry.id,
+        appId: entry.appId,
+        installationId: minted.installationId,
+        expiresAt: minted.expiresAt,
+        permissions: entry.permissions,
+      },
+    });
+  }
   return {
     kind: "issued",
     repository,

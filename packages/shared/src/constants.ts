@@ -1018,6 +1018,9 @@ export const PERMISSION_KEYS = [
   "tools:view_audit",
   "audit:view_agent_actions",
   "tools:use",
+  // myrmidon(1.6.6 POOL-CHAT): explicit capability for module chat routing;
+  // no role default grants this permission, so chat access is deny-by-default.
+  "chat:invoke",
   "tools:manage_runtime",
   "inbox:manage",
   "users:invite",

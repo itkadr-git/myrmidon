@@ -32,6 +32,12 @@ const providerView = (id: string): ModelProviderView => ({
   hasKey: true,
   credentialSecretName: `model-provider-key-${id}`,
   free: false,
+  expiresAt: null,
+  packageName: null,
+  rpmLimit: null,
+  toolCallCompatible: null,
+  toolCallCheckedAt: null,
+  toolCallCheckError: null,
   keyValidatedAt: "2026-01-02T00:00:00.000Z",
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-02T00:00:00.000Z",
@@ -68,6 +74,9 @@ function fakeService() {
         { id: "m1", modelName: "model-a", litellmModelName: "openai/model-a", enabled: false, free: false },
         { id: "m2", modelName: "model-b", litellmModelName: "openai/model-b", enabled: true, free: false },
       ];
+    },
+    async checkToolCallCompatibility() {
+      return providerView("provider-1");
     },
     async listChannels(companyId, providerId) {
       return {
