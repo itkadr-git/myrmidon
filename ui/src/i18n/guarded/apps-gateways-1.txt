@@ -1,0 +1,7 @@
+pages/apps/gateways/ConnectClientDialog.tsx
+pages/apps/gateways/CopyableGatewayUrl.tsx
+pages/apps/gateways/EditGatewayDialog.tsx
+pages/apps/gateways/GatewayDetail.tsx
+pages/apps/gateways/GatewaysList.tsx
+pages/apps/gateways/NewGatewayDialog.tsx
+pages/apps/gateways/panels/AppsToolsPanel.tsx

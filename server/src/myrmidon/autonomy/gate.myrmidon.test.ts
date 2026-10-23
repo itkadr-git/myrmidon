@@ -4,15 +4,15 @@
 // by creating approval cards and holding actions until approved.
 
 import { describe, it, beforeEach, expect, vi, afterEach } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { autonomyGate } from "./gate.js";
 import type { AutonomyStore } from "./store.js";
-import { defaultAutonomyMatrix, AUTONOMY_SAFE_DEFAULTS } from "@paperclipai/shared";
+import { defaultAutonomyMatrix, AUTONOMY_SAFE_DEFAULTS } from "@myrmidon/shared";
 import { eq, and } from "drizzle-orm";
 import {
   toolActionRequests,
   toolInvocations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 
 // Mock the database
 const mockDb = {

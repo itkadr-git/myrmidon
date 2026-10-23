@@ -23,7 +23,7 @@ import {
   instanceSettings,
   issueComments,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -39,7 +39,7 @@ import {
 import {
   resolveSwarmSettings,
   swarmCoolingPeriodMs,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 // M3-style adapter spy: proves the gated wake never reaches the adapter.
 const mockAdapterExecute = vi.hoisted(() =>

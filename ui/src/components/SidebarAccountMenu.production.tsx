@@ -8,7 +8,7 @@ import {
   UserRound,
   UserRoundPen,
 } from "lucide-react";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentMode } from "@myrmidon/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
@@ -135,9 +135,9 @@ export function SidebarAccountMenu({
 
   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
-  const displayName = session?.user.name?.trim() || "Board";
+  const displayName = session?.user.name?.trim() || t("area.shell-sidebar-layout-1.sidebar-account-menu.board");
   const secondaryLabel =
-    session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
+    session?.user.email?.trim() || (deploymentMode === "authenticated" ? t("area.shell-sidebar-layout-1.sidebar-account-menu.signedIn") : t("area.shell-sidebar-layout-1.sidebar-account-menu.localBoard"));
   const initials = deriveInitials(displayName);
   const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
 
@@ -161,7 +161,7 @@ export function SidebarAccountMenu({
               "flex min-w-0 items-center gap-2.5 rounded-lg text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground",
               rail ? "w-full px-3 py-2" : "flex-1 px-2 py-1.5",
             )}
-            aria-label="Open account menu"
+            aria-label={t("area.shell-sidebar-layout-1.sidebar-account-menu.openMenu")}
           >
             <Avatar size="sm">
               {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
@@ -193,22 +193,22 @@ export function SidebarAccountMenu({
 
             <div className="mt-4 space-y-1">
               <MenuAction
-                label="View profile"
-                description="Open your activity, task, and usage ledger."
+                label={t("area.shell-sidebar-layout-1.sidebar-account-menu.viewProfile")}
+                description={t("area.shell-sidebar-layout-1.sidebar-account-menu.viewProfileDescription")}
                 icon={UserRound}
                 href={profileHref}
                 onClick={closeNavigationChrome}
               />
               <MenuAction
-                label="Edit profile"
-                description="Update your display name and avatar."
+                label={t("area.shell-sidebar-layout-1.sidebar-account-menu.editProfile")}
+                description={t("area.shell-sidebar-layout-1.sidebar-account-menu.editProfileDescription")}
                 icon={UserRoundPen}
                 href={PROFILE_SETTINGS_PATH}
                 onClick={closeNavigationChrome}
               />
               <MenuAction
-                label="Documentation"
-                description="Open Myrmidon docs in a new tab."
+                label={t("area.shell-sidebar-layout-1.sidebar-account-menu.documentation")}
+                description={t("area.shell-sidebar-layout-1.sidebar-account-menu.documentationDescription")}
                 icon={BookOpen}
                 href={DOCS_URL}
                 external
@@ -230,10 +230,10 @@ export function SidebarAccountMenu({
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium text-foreground">
-                      {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                      {signOutMutation.isPending ? t("area.shell-sidebar-layout-1.sidebar-account-menu.signingOut") : t("area.shell-sidebar-layout-1.sidebar-account-menu.signOut")}
                     </span>
                     <span className="block text-xs text-muted-foreground">
-                      End this browser session.
+                      {t("area.shell-sidebar-layout-1.sidebar-account-menu.signOutDescription")}
                     </span>
                   </span>
                 </button>
@@ -250,13 +250,13 @@ export function SidebarAccountMenu({
                 href={FEEDBACK_URL}
                 target="_blank"
                 rel="noreferrer"
-                aria-label="Share feedback"
+                aria-label={t("area.shell-sidebar-layout-1.sidebar-account-menu.shareFeedback")}
                 className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground/50 transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Flag className="h-4 w-4" aria-hidden="true" />
               </a>
             </TooltipTrigger>
-            <TooltipContent side="top">Share feedback</TooltipContent>
+            <TooltipContent side="top">{t("area.shell-sidebar-layout-1.sidebar-account-menu.shareFeedback")}</TooltipContent>
           </Tooltip>
         ) : null}
       </div>

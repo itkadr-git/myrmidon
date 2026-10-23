@@ -1,0 +1,10 @@
+# OPE-8950: files of the area settings-models-runtime-1
+components/myrmidon/CasteDebateSettingsPanel.tsx
+components/myrmidon/DebateSettingsPanel.tsx
+components/myrmidon/ForagingSettingsPanel.tsx
+components/myrmidon/LicensingSettingsPanel.tsx
+components/myrmidon/ModelFallbackSignalSettingsPanel.tsx
+components/myrmidon/ModelMenuSettingsPanel.tsx
+components/myrmidon/ModelServiceSettingsPanel.tsx
+components/myrmidon/ParallelHelpersSettingsPanel.tsx
+components/myrmidon/PauseGuardSettingsPanel.tsx

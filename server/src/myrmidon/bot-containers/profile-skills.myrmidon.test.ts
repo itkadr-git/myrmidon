@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
+import type { PaperclipSkillEntry } from "@myrmidon/adapter-utils/server-utils";
 import { HERMES_GATEWAY_ADAPTER_TYPE, type BotProfileAgentRecord } from "./profile-compile.js";
 import { beginBotProfilePass, type BotProfilePass } from "./profile-pass.js";
 import {

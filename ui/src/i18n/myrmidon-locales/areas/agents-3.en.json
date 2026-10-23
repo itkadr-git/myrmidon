@@ -1,0 +1,661 @@
+{
+  "area": {
+    "agents-3": {
+      "new-agent-setup": {
+        "newAgentSetup": {
+          "selectAnOrganizationToCreate": "Select an organization to create an agent."
+        },
+        "setup": {
+          "thisAdapterIsUnavailableChoose": "This adapter is unavailable. Choose an enabled adapter.",
+          "noManagedEnvironmentIsAvailable": "No managed environment is available. Configure an environment before continuing.",
+          "agentSetupSteps": "Agent setup steps",
+          "connectAModel": "Connect a model",
+          "adapter": "Adapter",
+          "environment": "Environment",
+          "editConfiguration": "Edit configuration",
+          "configureYourAgent": "Configure your agent",
+          "runtime": "Runtime",
+          "usingTheConnectionSelectedIn": "Using the connection selected in the Connect step.",
+          "changeConnection": "Change connection",
+          "couldNotLoadModelsRetry": "Could not load models. Retry or enter a model ID manually.",
+          "thinkingEffort": "Thinking effort",
+          "auto": "Auto",
+          "couldnTLoadModelsYou": "Couldn’t load models. You can enter a model ID manually.",
+          "apiKeyProvider": "API key provider",
+          "getApiKey": "get api key",
+          "orUseAnOrganizationSecret": "Or use an organization secret",
+          "hermesApiBaseUrl": "Hermes API base URL",
+          "httpsHermesExampleCom": "https://hermes.example.com",
+          "kimiApiModelName": "Kimi API model name",
+          "kimiForCoding": "kimi-for-coding",
+          "kimiApiProtocol": "Kimi API protocol",
+          "kimiApiBaseUrl": "Kimi API base URL",
+          "providerDefault": "Provider default",
+          "githubRepository": "GitHub repository",
+          "httpsGithubComYourOrg": "https://github.com/your-org/repo",
+          "branch": "Branch",
+          "repositoryDefault": "Repository default",
+          "connection": "Connection",
+          "errResolveEnvironment": "Could not resolve the environment.",
+          "errModelFormat": "Choose or enter a model in provider/model format.",
+          "errRepositoryUrl": "Enter a GitHub repository URL.",
+          "errCursorKey": "Enter a Cursor API key.",
+          "errKeyOrSecret": "Enter {{envKey}} or select an organization secret.",
+          "errHermesUrl": "Enter the Hermes API base URL.",
+          "errKimiModel": "Enter the Kimi API model name.",
+          "errTestAgent": "Could not test the agent.",
+          "errCreateAgent": "Could not create the agent.",
+          "loadCreatedFailed": "Could not load the created agent. Return to Agents to view it.",
+          "loadingAgent": "Loading your agent…",
+          "stepConnect": "Connect",
+          "stepConfigure": "Configure",
+          "stepConfirmation": "Confirmation",
+          "defaultModel": "Default",
+          "localMachine": "Local machine",
+          "nativeRunner": "Native app server runner",
+          "connectLede": "Connect {{name}} to {{provider}}.",
+          "submittedForApproval": "Agent submitted for approval",
+          "agentReady": "Your agent is ready",
+          "approvalNeeded": "An organization administrator must approve this agent before it can work.",
+          "assignTaskHint": "Assign a task when you’re ready for this agent to work.",
+          "usingSavedKey": "Using saved key",
+          "required": "Required",
+          "optionalIfConfigured": "Optional if already configured",
+          "newKeysSaved": "New keys are saved as organization secrets when you finish setup.",
+          "useProviderModelId": "Use a {{provider}}/model ID.",
+          "endpointOverrideHint": "Optional override for your provider endpoint.",
+          "creating": "Creating…",
+          "finishSetup": "Finish setup",
+          "assignTask": "Assign {{name}} a Task",
+          "defaultEnvironment": "Default: {{label}}"
+        }
+      },
+      "agent-detail": {
+        "runInvocationCard": {
+          "invocation": "Invocation",
+          "adapter": "Adapter:",
+          "workingDir": "Working dir:",
+          "details": "Details",
+          "command": "Command:",
+          "commandNotes": "Command notes",
+          "prompt": "Prompt",
+          "context": "Context",
+          "environment": "Environment"
+        },
+        "workspaceOperationLogViewer": {
+          "loadingLog": "Loading log...",
+          "noPersistedLogLines": "No persisted log lines.",
+          "hideFullLog": "Hide full log",
+          "showFullLog": "Show full log",
+          "loadOperationLogFailed": "Failed to load workspace operation log"
+        },
+        "workspaceOperationsSection": {
+          "command": "Command:",
+          "workingDir": "Working dir:",
+          "branch": "Branch:",
+          "baseRef": "Base ref:",
+          "worktree": "Worktree:",
+          "repoRoot": "Repo root:",
+          "cleanup": "Cleanup:",
+          "stderrExcerpt": "stderr excerpt",
+          "stdoutExcerpt": "stdout excerpt",
+          "createdByRun": "Created by this run",
+          "reusedWorkspace": "Reused existing workspace"
+        },
+        "agentDetail": {
+          "youLeftThisAgentIt": "You left this agent. It no longer appears in your sidebar.",
+          "dismissAgentMembershipNotice": "Dismiss agent membership notice",
+          "escalationPathIsPaused": "Escalation path is paused",
+          "builtInAgent": "Built-in agent",
+          "shipsWithMyrmidonAndPowers": "Ships with Myrmidon and powers",
+          "thisAgentIsPendingBoard": "This agent is pending board approval and cannot be invoked yet.",
+          "approveAgent": "Approve agent",
+          "discard": "Discard",
+          "updateBundleResourceFailed": "Failed to update bundle resource",
+          "runBuiltInRoutineFailed": "Failed to run built-in routine",
+          "enableScheduleFailed": "Failed to enable routine schedule",
+          "disableScheduleFailed": "Failed to disable routine schedule",
+          "noAgentReference": "No agent reference",
+          "actionFailed": "Action failed",
+          "updatePermissionsFailed": "Failed to update permissions",
+          "agentFallbackName": "Agent",
+          "breadcrumbRuns": "Runs",
+          "breadcrumbRun": "Run {{id}}",
+          "breadcrumbOverview": "Overview",
+          "assignTask": "Assign Task",
+          "repairChainReason": "Repair this agent's reporting chain before assigning tasks or starting runs",
+          "pauseBuiltInTitle": "Pause the {{name}}?",
+          "pauseBuiltInBody": "{{feature}} depends on this agent. While paused, {{featureLower}} generation is skipped and the {{feature}} page shows a warning.",
+          "resetting": "Resetting…",
+          "resetToDefaults": "Reset to defaults",
+          "invalidChainBody": "{{name}} cannot accept tasks or start runs until its reporting chain is repaired.",
+          "invalidChainRepair": "Assign this agent to an active manager/root, or explicitly pause or terminate the affected agent/subtree.",
+          "tabInstructions": "Instructions",
+          "tabConfiguration": "Configuration",
+          "tabSecrets": "Secrets",
+          "tabTools": "Tools",
+          "tabRuns": "Runs",
+          "tabBudget": "Budget",
+          "tabDashboard": "Dashboard",
+          "runHeartbeat": "Run Heartbeat",
+          "saving": "Saving…"
+        },
+        "agentOverview": {
+          "identity": "Identity",
+          "title": "Title",
+          "reportsTo": "Reports to",
+          "directReports": "Direct reports",
+          "harnessRuntime": "Harness / Runtime",
+          "configure": "Configure",
+          "adapter": "Adapter",
+          "session": "Session",
+          "lastRun": "Last run",
+          "capabilities": "Capabilities",
+          "noCapabilitySummaryHasBeen": "No capability summary has been added.",
+          "manage": "Manage",
+          "noSkillsEnabled": "No skills enabled.",
+          "recentTasks": "Recent Tasks",
+          "noRecentTasks": "No recent tasks.",
+          "runActivity": "Run Activity",
+          "tasksByPriority": "Tasks by Priority",
+          "tasksByStatus": "Tasks by Status",
+          "successRate": "Success Rate",
+          "adapterDefault": "Adapter default",
+          "moreSkills": "+{{count}} more"
+        },
+        "agentRevisionsTab": {
+          "configurationRevisions": "Configuration Revisions",
+          "noConfigurationRevisionsYet": "No configuration revisions yet.",
+          "restore": "Restore",
+          "moreTasks_one": "+{{count}} more task",
+          "moreTasks_other": "+{{count}} more tasks"
+        },
+        "configurationTab": {
+          "permissions": "Permissions",
+          "canCreateNewAgents": "Can create new agents",
+          "letsThisAgentCreateOr": "Lets this agent create or hire agents. This also grants task assignment authority.",
+          "canCreateImportSkills": "Can create/import skills",
+          "canAssignTasks": "Can assign tasks",
+          "changedKeys": "Changed: {{keys}}",
+          "noTrackedChanges": "no tracked changes",
+          "agentSaved": "Agent saved",
+          "saveAgentFailedMessage": "Could not save agent",
+          "saveFailed": "Save failed",
+          "assignHintCeo": "Enabled automatically for CEO agents.",
+          "assignHintCreator": "Enabled automatically while this agent can create new agents.",
+          "assignHintGrant": "Enabled via explicit organization permission grant.",
+          "assignHintDefault": "Enabled by simple organization-wide task assignment defaults.",
+          "assignHintDisabled": "Disabled unless explicitly granted.",
+          "sectionAdapter": "Adapter",
+          "sectionConfiguration": "Configuration",
+          "sectionIdentity": "Agent identity",
+          "skillsPermissionHint": "Lets this agent install, import, create, and scan organization skills without creating agents.",
+          "assignHintGrantCompany": "Enabled via explicit company permission grant.",
+          "assignHintDefaultCompany": "Enabled by simple company-wide task assignment defaults.",
+          "saveNoticeConfig": "Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.",
+          "skillsPermissionHintCompany": "Lets this agent install, import, create, and scan company skills without creating agents."
+        },
+        "promptsTab": {
+          "instructionsBundlesAreOnlyAvailable": "Instructions bundles are only available for local adapters.",
+          "advanced": "Advanced",
+          "mode": "Mode",
+          "managedMyrmidonStoresAndServes": "Managed: Myrmidon stores and serves the instructions bundle. External: you provide a path on disk where the instructions live.",
+          "managed": "Managed",
+          "external": "External",
+          "rootPath": "Root path",
+          "theAbsoluteDirectoryOnDisk": "The absolute directory on disk where the instructions bundle lives. In managed mode this is set by Myrmidon automatically.",
+          "absolutePathToAgentPrompts": "/absolute/path/to/agent/prompts",
+          "entryFile": "Entry file",
+          "theMainFileTheAgent": "The main file the agent reads first when loading instructions. Defaults to AGENTS.md.",
+          "files": "Files",
+          "toolsMd": "TOOLS.md",
+          "create": "Create",
+          "virtualFile": "virtual file",
+          "legacyInlinePromptThisDeprecated": "Legacy inline prompt — this deprecated virtual file preserves the old promptTemplate content",
+          "instructionFileView": "Instruction file view",
+          "copyAsMarkdown": "Copy as markdown",
+          "delete": "Delete",
+          "thisInstructionFileIsEmpty": "This instruction file is empty.",
+          "agentInstructions": "# Agent instructions",
+          "instructionFileEditor": "Instruction file editor",
+          "fileContents": "File contents",
+          "selectOrgToUpload": "Select an organization to upload images",
+          "saveNotice": "Saved instructions affect the next run. Active runs keep the instructions they started with, and instruction changes may start a fresh adapter session.",
+          "deprecatedVirtualFile": "Deprecated virtual file",
+          "fileLanguage": "{{language}} file",
+          "languageText": "text",
+          "newFileInBundle": "New file in this bundle",
+          "copyInstructionsAria": "Copy instructions file as markdown",
+          "copied": "Copied",
+          "deleteFileConfirm": "Delete {{file}}?",
+          "selectCompanyToUpload": "Select a company to upload images",
+          "entryFile2": "entry",
+          "fileSizeBytes": "{{size}}b"
+        },
+        "runsTab": {
+          "noRunsYet": "No runs yet.",
+          "backToRuns": "Back to runs",
+          "tokens": "{{value}} tok"
+        },
+        "runDetail": {
+          "inspectRun": "Inspect run",
+          "githubIdentityHistory": "GitHub identity history",
+          "noGithubOperationRecorded": "No GitHub operation recorded",
+          "loginUrl": "Login URL:",
+          "input": "Input",
+          "output": "Output",
+          "cached": "Cached",
+          "cost": "Cost",
+          "after": "After",
+          "resumeSkipped": "Resume request was skipped.",
+          "traceRerunSkipped": "Trace re-run was skipped.",
+          "cancelling": "Cancelling…",
+          "resuming": "Resuming…",
+          "resume": "Resume",
+          "onBehalfOf": "On behalf of",
+          "resumeRunFailed": "Failed to resume run",
+          "retryRunFailed": "Failed to retry run",
+          "duration": "Duration: {{value}}",
+          "durationMinSec": "{{minutes}}m {{seconds}}s",
+          "durationSec": "{{seconds}}s",
+          "claudeLoginRunning": "Running claude login...",
+          "claudeLogin": "Login to Claude Code",
+          "claudeLoginFailed": "Failed to run Claude login",
+          "exitCode": "Exit code {{code}}",
+          "signal": "(signal: {{signal}})",
+          "session": "Session",
+          "sessionChanged": "(changed)",
+          "clearSessionConfirm_one": "Clear session for {{count}} issue touched by this run?",
+          "clearSessionConfirm_other": "Clear session for {{count}} issues touched by this run?",
+          "clearingSession": "clearing session...",
+          "clearSessionAction": "clear session for these tasks",
+          "starting": "Starting…",
+          "rerunWithTrace": "Re-run with provider trace"
+        },
+        "logViewer": {
+          "loadingRunLogs": "Loading run logs...",
+          "noLogEvents": "No log events.",
+          "jumpToLive": "Jump to live",
+          "failureDetails": "Failure details",
+          "error": "Error:",
+          "stderrExcerpt": "stderr excerpt",
+          "adapterResultJson": "adapter result JSON",
+          "stdoutExcerpt": "stdout excerpt",
+          "clearingSession": "clearing session...",
+          "clearSessionAction": "clear session for these tasks",
+          "clearSessionsFailed": "Failed to clear sessions",
+          "loadRunLogFailed": "Failed to load run log",
+          "loadMoreRunLogFailed": "Failed to load more run log",
+          "waitingTranscript": "Waiting for transcript...",
+          "noTranscript": "No persisted transcript for this run.",
+          "loadMoreLog": "Load more log",
+          "showingFirstOf": "Showing the first {{size}} KB of {{total}} KB",
+          "showingFirst": "Showing the first {{size}} KB"
+        },
+        "keysTab": {
+          "copy": "Copy",
+          "copied": "Copied!",
+          "createApiKey": "Create API Key",
+          "apiKeysAllowThisAgent": "API keys allow this agent to authenticate calls to the Myrmidon server.",
+          "keyNameEGProduction": "Key name (e.g. production)",
+          "create": "Create",
+          "loadingKeys": "Loading keys...",
+          "noActiveApiKeys": "No active API keys.",
+          "activeKeys": "Active Keys",
+          "revoke": "Revoke",
+          "revokedKeys": "Revoked Keys",
+          "defaultKeyName": "Default",
+          "copyFailed": "Copy failed",
+          "clipboardUnavailable": "Clipboard access is unavailable.",
+          "keyCreated": "API key created — copy it now, it will not be shown again.",
+          "hide": "Hide",
+          "show": "Show",
+          "keyCreatedAt": "Created {{date}}",
+          "keyRevokedAt": "Revoked {{date}}"
+        },
+        "costsSection": {
+          "inputTokens": "Input tokens",
+          "outputTokens": "Output tokens",
+          "cachedTokens": "Cached tokens",
+          "totalCost": "Total cost",
+          "date": "Date",
+          "run": "Run",
+          "input": "Input",
+          "output": "Output",
+          "cost": "Cost",
+          "moreTasks_one": "+{{count}} more task",
+          "moreTasks_other": "+{{count}} more tasks"
+        },
+        "agentConfigurePage": {
+          "apiKeys": "API Keys",
+          "noConfigurationRevisionsYet": "No configuration revisions yet.",
+          "restore": "Restore",
+          "configurationRevisions": "Configuration Revisions"
+        },
+        "sourceLabels": {
+          "sourceTimer": "Timer",
+          "sourceAssignment": "Assignment",
+          "sourceOnDemand": "On-demand",
+          "sourceAutomation": "Automation"
+        },
+        "latestRunCard": {
+          "liveRun": "Live Run",
+          "latestRun": "Latest Run"
+        },
+        "agentConfigHistoryRestoreDelta": {
+          "discardConfigChanges": "Discard unsaved agent configuration changes?"
+        },
+        "workspaceOperationStatusTone": {
+          "phaseWorktreePrepare": "Worktree setup",
+          "phaseConfigFreshness": "Config freshness",
+          "phaseProvision": "Provision",
+          "phaseTeardown": "Teardown",
+          "phaseWorktreeCleanup": "Worktree cleanup"
+        },
+        "getRunSnapshotIssueId": {
+          "saving": "Saving…",
+          "saveChanges": "Save changes"
+        },
+        "promptsTabSkeleton": {
+          "deleteFileConfirm": "Delete {{file}}?"
+        },
+        "agentDetailTabs": {
+          "tabDashboard": "Dashboard",
+          "tabInstructions": "Instructions",
+          "tabConfiguration": "Configuration",
+          "tabSecrets": "Secrets",
+          "tabTools": "Tools",
+          "tabChannels": "Channels",
+          "tabRuns": "Runs",
+          "tabBudget": "Budget"
+        }
+      },
+      "agent-tools-tab": {
+        "gitHubIdentitySection": {
+          "githubIdentity": "GitHub identity",
+          "checkingGithubIdentity": "Checking GitHub identity…",
+          "couldNotLoadGithubIdentity": "Could not load GitHub identity",
+          "manageGithubIdentity": "Manage GitHub identity",
+          "manageMyGithub": "Manage my GitHub",
+          "connectMyGithub": "Connect my GitHub",
+          "useADedicatedAccount": "Use a dedicated account",
+          "loadErrorHint": "Myrmidon could not verify this agent's current connection. Your existing setup was not changed.",
+          "dedicatedAccount": "Dedicated GitHub account",
+          "dedicatedHint": "Used only by {{agentName}}. This dedicated connection takes precedence over the responsible person's GitHub.",
+          "useResponsibleGithub": "Use responsible person's GitHub",
+          "personalHint": "At run start, Myrmidon uses the personal GitHub connection of the person responsible for the task.",
+          "accountConnectedAs": "Your account is connected as @{{login}}.",
+          "accountConnected": "Your account is connected."
+        },
+        "installedAppsSection": {
+          "installedApps": "Installed apps",
+          "hasAccessMeansTheApp": "Has access means the app is permitted. Installed means its tools are added to this agent's runtime context.",
+          "noPermittedAppsYetBind": "No permitted apps yet. Bind an access profile to make apps available here.",
+          "saving": "Saving...",
+          "openPermissions": "Open permissions",
+          "permittedButNotInstalledTools": "Permitted but not installed — tools will not appear in runs.",
+          "installedAppsHint": "Installed apps load tools into {{agentName}}'s context on every run. Permitted-only apps do not add context cost.",
+          "installOnAgent": "Install {{name}} on {{agentName}}",
+          "installedForEvery": "Installed from the app page for every agent. Remove the all-agents install there.",
+          "loadedIntoContext": "Loaded into this agent's runtime context."
+        },
+        "installSaveStatusChip": {
+          "saving": "Saving...",
+          "couldNotSave": "Could not save",
+          "unsavedChanges": "Unsaved changes",
+          "saved": "Saved"
+        },
+        "agentToolsTab": {
+          "resolvingEffectiveAccess": "Resolving effective access…",
+          "effectiveAccess": "Effective access",
+          "allowedTools": "Allowed tools",
+          "noToolsAreAllowedFor": "No tools are allowed for this agent. Bind a tool profile to grant access.",
+          "tool": "Tool",
+          "capability": "Capability",
+          "risk": "Risk",
+          "source": "Source",
+          "whyTheseTools": "Why these tools?",
+          "accessProfiles": "Access profiles",
+          "checkAccess": "Check access",
+          "organizationDefault": "Organization default",
+          "activePolicies": "Active policies",
+          "loadingPolicies": "Loading policies…",
+          "noEnabledPolicyCurrentlyMutates": "No enabled policy currently mutates this agent's allow list.",
+          "unavailableTools": "Unavailable tools",
+          "checkingTools": "Checking tools…",
+          "everyKnownToolThisAgent": "Every known tool this agent could name is allowed.",
+          "toolsTheAgentCouldName": "Tools the agent could name but Myrmidon would block:",
+          "enforcementBody": "This is exactly the tool set Myrmidon will accept for <name>{{agentName}}</name>. Profile and policy edits are reflected within ~5 seconds. The agent's prompt can narrow this list but <strong>cannot expand it</strong> — everything else is blocked by default.",
+          "toolCount_one": "{{count}} tool",
+          "toolCount_other": "{{count}} tools",
+          "noActiveProfile": "No active profile applies to this agent, so it has no allowed tools.",
+          "policyTitle": "Policy #{{order}}: {{name}}",
+          "moreTools": "+{{count}} more",
+          "effectAllow": "allow",
+          "effectBlock": "block",
+          "effectDeny": "deny",
+          "effectRequireApproval": "require approval",
+          "effectRedact": "redact",
+          "effectRateLimit": "rate limit"
+        },
+        "installBadge": {
+          "installedForAll": "Installed for all",
+          "installed": "Installed",
+          "permittedOnly": "Permitted only",
+          "notPermitted": "Not permitted"
+        }
+      },
+      "agents": {
+        "agents": {
+          "selectACompanyToView": "Select a company to view agents.",
+          "viewMode": "View mode"
+        }
+      },
+      "org": {
+        "org": {
+          "selectAnOrganizationToView": "Select an organization to view org chart.",
+          "noAgentsInTheOrganization": "No agents in the organization. Create agents to build your org chart.",
+          "breadcrumb": "Org Chart"
+        }
+      },
+      "org-chart": {
+        "orgChart": {
+          "selectAnOrganizationToView": "Select an organization to view the org chart.",
+          "importOrganization": "Import organization",
+          "exportOrganization": "Export organization",
+          "zoomIn": "Zoom in",
+          "zoomOut": "Zoom out",
+          "fitToScreen": "Fit to screen",
+          "fitChartToScreen": "Fit chart to screen",
+          "selectACompanyToView": "Select a company to view the org chart.",
+          "importCompany": "Import company",
+          "exportCompany": "Export company",
+          "breadcrumb": "Org Chart"
+        }
+      },
+      "team-catalog": {
+        "provenanceBadge": {
+          "catalogPackageProvenance": "Catalog package provenance"
+        },
+        "teamHierarchyPreview": {
+          "rootAgent": "root agent",
+          "noAgentsInThisTeam": "No agents in this team."
+        },
+        "requiredSkillsList": {
+          "noRequiredSkills": "No required skills."
+        },
+        "externalSourcesList": {
+          "pinned": "Pinned",
+          "unpinned": "Unpinned",
+          "unsupportedInBrowserInstall": "Unsupported in browser install",
+          "externalSourcesHeading": "External sources · {{value}}"
+        },
+        "teamDetailPane": {
+          "installed": "Installed",
+          "updateAvailable": "Update available",
+          "thisTeamCannotBeInstalled": "This team cannot be installed — the package manifest is invalid.",
+          "requiresBoardOperatorOrAgent": "Requires board operator or agent-create permissions.",
+          "requiredSkills": "Required skills",
+          "agentHierarchy": "Agent hierarchy",
+          "files": "Files",
+          "reinstallLatest": "Re-install latest",
+          "installTeam": "Install team"
+        },
+        "teamInstallerDialog": {
+          "installFailed": "Install failed",
+          "partialStateIsNotRolled": "Partial state is not rolled back. Review the organization activity log before retrying.",
+          "back": "Back",
+          "enableALegacyAdapterTo": "Enable a legacy adapter to install this team",
+          "confirmInstallWithExecutables": "Confirm — install with executables",
+          "continue": "Continue",
+          "installFailedMessage": "Install failed.",
+          "legacyAdapterRequired": "Enable a legacy adapter before installing this team.",
+          "installTitle": "Install {{name}}",
+          "stepProgress": "Step {{current}} of {{total}} · {{label}}",
+          "installBlockedErrors_one": "Install blocked: {{count}} error",
+          "installBlockedErrors_other": "Install blocked: {{count}} errors",
+          "requiredSecretsMissing": "Required secrets missing: {{value}}",
+          "installWithExecutables": "Install with executables",
+          "installTeam": "Install team"
+        },
+        "stepTargetManager": {
+          "rootAgents": "Root agents",
+          "targetManager": "Target manager",
+          "searchAgents": "Search agents…",
+          "noAgentsFound": "No agents found."
+        },
+        "stepSourcePolicy": {
+          "allowExternalSources": "Allow external sources",
+          "resolveGithubUrlSkillAnd": "Resolve github/url skill and team sources at install time.",
+          "allowUnpinnedOptionalSources": "Allow unpinned optional sources",
+          "permitOptionalSourcesThatAre": "Permit optional sources that are not pinned to a ref or checksum.",
+          "allowLocalPathSources": "Allow local-path sources",
+          "requiredForLocalPathAgent": "Required for local_path / agent_package sources. Development use only.",
+          "externalNotice_one": "This team references {{count}} external source.",
+          "externalNotice_other": "This team references {{count}} external sources.",
+          "externalReview": "Review each one and decide what to allow before continuing.",
+          "refPinned": "pinned",
+          "refUnpinned": "unpinned reference",
+          "refUnsupported": "not installable from the browser"
+        },
+        "stepPreview": {
+          "preparingPreview": "Preparing preview…",
+          "summary": "Summary",
+          "starterTasks": "Starter tasks",
+          "requiredSkills": "Required skills",
+          "collisionStrategy": "Collision strategy",
+          "renameCollisions": "Rename collisions",
+          "skipCollisions": "Skip collisions",
+          "installBlocked": "Install blocked",
+          "noEnabledLegacyAdapter": "No enabled legacy adapter",
+          "starterTasksTitle": "Starter tasks · {{value}}",
+          "adapterSelectionTitle": "Adapter selection · {{value}}",
+          "required": "Required",
+          "inputValueAria": "{{key}} value"
+        },
+        "applySuccess": {
+          "teamInstalled": "Team installed",
+          "agentsImported": "Agents imported",
+          "projectsImported": "Projects imported",
+          "skillsResolved": "Skills resolved",
+          "viewImportedAgents": "View imported agents →",
+          "viewImportedProjects": "View imported projects →",
+          "viewRoutines": "View routines →",
+          "viewActivityLog": "View activity log →",
+          "installing": "Installing {{name}}…",
+          "installingHint": "Resolving skills, importing agents, projects, and routines. This may take a moment."
+        },
+        "teamRow": {
+          "updateAvailable": "Update available",
+          "updateAvailableInstalledTeamIs": "Update available — installed team is out of date",
+          "hasExternalSources": "Has external sources",
+          "importedNotice": "{{name}} was imported into your organization. Imported entities are stamped with catalog provenance."
+        },
+        "teamCatalog": {
+          "selectAnOrganizationToBrowse": "Select an organization to browse the team catalog.",
+          "teams": "Teams",
+          "searchTeams": "Search teams",
+          "kind": "Kind",
+          "allKinds": "All kinds",
+          "bundled": "Bundled",
+          "optional": "Optional",
+          "category": "Category",
+          "allCategories": "All categories",
+          "risk": "Risk",
+          "anyRisk": "Any risk",
+          "safeOnly": "Safe only",
+          "hasWarnings": "Has warnings",
+          "resetFilters": "Reset filters",
+          "failedToLoadTeamCatalog": "Failed to load team catalog.",
+          "noTeamCatalogConfigured": "No team catalog configured.",
+          "noTeamsMatchThisFilter": "No teams match this filter.",
+          "backToCatalog": "Back to catalog",
+          "selectATeamToView": "Select a team to view details.",
+          "breadcrumbOrgChart": "Org Chart",
+          "categoryButton": "Category · {{name}}",
+          "groupBundled": "Bundled · {{value}}",
+          "groupOptional": "Optional · {{value}}",
+          "groupInstalled": "Installed · {{value}}",
+          "teamImported": "{{name}} was imported."
+        },
+        "compatChip": {
+          "compatUnknown": "Unknown compat",
+          "compatInvalid": "Invalid"
+        },
+        "riskBanner": {
+          "title_one": "This team references {{count}} external source",
+          "title_other": "This team references {{count}} external sources"
+        },
+        "sourceKindIcon": {
+          "unsupportedInBrowser": "unsupported in browser install",
+          "unpinnedLower": "unpinned"
+        },
+        "envInputsList": {
+          "secretsEnvInputs": "Secrets & env inputs"
+        },
+        "computeSteps": {
+          "stepTargetManager": "Target manager",
+          "stepSourcePolicy": "Source policy",
+          "stepSkillPlan": "Prerequisite skills",
+          "stepPreview": "Preview"
+        },
+        "useInstallTeamCatalogEntry": {
+          "previewFailed": "Failed to load install preview."
+        },
+        "stepSkillPlan": {
+          "localPathSources": "This team has local-path sources. Enable “Allow local-path sources” to continue, or install it from the CLI.",
+          "skillBundled": "Bundled in package",
+          "skillCatalogInstall": "Will install from catalog",
+          "skillExternalImport": "Will import from source"
+        },
+        "toPreparation": {
+          "skillPlanIntro": "Before agents are imported, the catalog resolves the skills they depend on. This is the resolution plan."
+        },
+        "previewSection": {
+          "hideInput": "Hide {{key}}",
+          "showInput": "Show {{key}}"
+        },
+        "applyProgress": {
+          "hideValue": "Hide value",
+          "showValue": "Show value"
+        },
+        "resultRow": {
+          "provenanceNotice": "Imported entities are stamped with <code>metadata.paperclip.catalogTeam</code> ({{package}}, content hash <code>{{hash}}</code>), and an activity event is recorded for preview and install."
+        },
+        "trustMeta": {
+          "trustMarkdownOnly": "Markdown only",
+          "trustMarkdownOnlyTip": "Contains only markdown and references. No executable content.",
+          "trustAssets": "Assets",
+          "trustAssetsTip": "Includes static assets (images, fixtures). No executable content.",
+          "trustScripts": "Scripts",
+          "trustScriptsTip": "Includes executable scripts that were security-reviewed before bundling.",
+          "trustExternalSources": "External sources",
+          "trustExternalSourcesTip": "References external sources resolved at install time."
+        },
+        "compatMeta": {
+          "compatCompatible": "Compatible"
+        }
+      }
+    }
+  }
+}

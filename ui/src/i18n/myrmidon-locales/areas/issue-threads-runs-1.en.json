@@ -1,0 +1,642 @@
+{
+  "area": {
+    "issue-threads-runs-1": {
+      "comment-thread": {
+        "unassigned": "Unassigned",
+        "system": "System",
+        "copied": "Copied",
+        "copyFailed": "Copy failed",
+        "copy": "Copy",
+        "copyCommentAsMarkdown": "Copy comment as markdown",
+        "you": "You",
+        "queued": "Queued",
+        "followUp": "Follow-up",
+        "queueing": "Queueing...",
+        "sending": "Sending...",
+        "commentDeleted": "Comment deleted",
+        "requestedFollowUp": "requested follow-up",
+        "updatedThisTask": "updated this task",
+        "status": "Status",
+        "workspace": "Workspace",
+        "noTimelineEntries": "No timeline entries yet.",
+        "run": "run",
+        "environment": "Environment",
+        "provider": "Provider",
+        "lease": "Lease",
+        "interrupting": "Interrupting...",
+        "interrupt": "Interrupt",
+        "commentPlaceholder": "Leave a comment...",
+        "attachImage": "Attach image",
+        "responsible": "Responsible",
+        "noResponsible": "No responsible",
+        "searchResponsible": "Search responsible...",
+        "noResponsibleFound": "No responsible found.",
+        "posting": "Posting...",
+        "comment": "Comment",
+        "queuedComments": "Queued Comments ({{total}})"
+      },
+      "interaction-governance-panel": {
+        "kinds": {
+          "suggestTasks": "Suggested tasks",
+          "askUserQuestions": "Ask user questions",
+          "requestConfirmation": "Confirmations",
+          "requestCheckboxConfirmation": "Checkbox confirmations",
+          "requestItemVerdicts": "Item verdicts",
+          "connectionIntent": "Connection requests"
+        },
+        "unsetLabels": {
+          "defaultPolicy": "Anyone (default)",
+          "cap": "No cap"
+        },
+        "unsetEffects": {
+          "defaultPolicy": "New cards are open — the board or any agent can respond, including the one that asked.",
+          "cap": "A request keeps whatever audience it asks for."
+        },
+        "defaultPolicyEffects": {
+          "notCreator": "New cards exclude the agent that created them, so the answer comes from someone else.",
+          "humanOnly": "New cards wait for a person on the board. Agents are turned away."
+        },
+        "capEffects": {
+          "notCreator": "Even a card that asks for Anyone is narrowed to exclude its creator.",
+          "humanOnly": "Every card of this kind waits for a person, whatever it asked for."
+        },
+        "title": "Interaction governance",
+        "intro": "Thread interactions are open by default: <0>Anyone</0> in the organization — the board or any agent, including the one that asked — can respond. Narrow a kind only when you need to. <1>Default policy</1> is the audience new cards get when the requester does not ask for one; <2>Cap</2> narrows every request of that kind and can never widen one. Tool-approval confirmations always stay <3>Human only</3>.",
+        "kind": "Kind",
+        "defaultPolicy": "Default policy",
+        "cap": "Cap",
+        "defaultAudienceAria": "Default resolver audience for {{kind}}",
+        "capAria": "Resolver cap for {{kind}}"
+      },
+      "issue-chat-thread": {
+        "liveStatus": {
+          "usingTool": "Using {{tool}}",
+          "noOutputStillRunning": "no output for {{elapsed}} - still running",
+          "ago": "{{elapsed}} ago"
+        },
+        "pausedNotice": {
+          "budget": "It was paused by a budget hard stop.",
+          "import": "It arrived paused from an organization import — imported agents stay parked until you resume them.",
+          "system": "It was paused by the system.",
+          "manual": "It was paused manually.",
+          "title": "<0>{{name}}</0> is paused.",
+          "resuming": "Resuming…",
+          "resumeAgent": "Resume agent",
+          "newRunsWontStart": "New runs will not start until the agent is resumed. {{detail}}"
+        },
+        "roles": {
+          "agent": "Agent",
+          "you": "You",
+          "system": "System"
+        },
+        "fallback": {
+          "tool": "Tool: {{name}}",
+          "args": "Args:\n{{text}}",
+          "result": "Result:\n{{text}}",
+          "errorTitle": "Chat renderer hit an internal state error.",
+          "errorDescription": "Showing a safe fallback transcript instead of crashing the tasks page.",
+          "noContent": "No message content."
+        },
+        "toolSummary": {
+          "ranCommands_one": "ran {{count}} command",
+          "ranCommands_other": "ran {{count}} commands",
+          "calledTools_one": "called {{count}} tool",
+          "calledTools_other": "called {{count}} tools"
+        },
+        "cot": {
+          "working": "Working",
+          "worked": "Worked",
+          "forDuration": "for {{time}}"
+        },
+        "copy": "Copy",
+        "copyFailed": "Copy failed",
+        "unableToCopyText": "Unable to copy text",
+        "toolPart": {
+          "input": "Input",
+          "result": "Result"
+        },
+        "providerActivity": {
+          "title": "Provider activity",
+          "childAgent": "Child agent",
+          "unknown": "unknown",
+          "unavailableSource": "Unavailable source",
+          "providerReported": "(provider-reported)",
+          "model": "Model"
+        },
+        "deferredWake": "⏸ Deferred wake",
+        "queued": "Queued",
+        "followUp": "Follow-up",
+        "commentDeleted": "Comment deleted",
+        "interrupting": "Interrupting...",
+        "interrupt": "Interrupt",
+        "sentFromIMessage": "Sent from iMessage",
+        "sending": "Sending...",
+        "copyMessage": "Copy message",
+        "unableToCopyMessage": "Unable to copy message",
+        "deleteComment": "Delete comment",
+        "deleteDialog": {
+          "title": "Delete comment?",
+          "description": "This will replace the comment with a deleted-comment marker."
+        },
+        "stopRun": "Stop run",
+        "stopping": "Stopping...",
+        "viewRun": "View run",
+        "running": "Running",
+        "updatedThisTask": "updated this task",
+        "feedback": {
+          "helpful": "Helpful",
+          "needsWork": "Needs work",
+          "whatCouldBeBetter": "What could have been better?",
+          "addShortNote": "Add a short note",
+          "saving": "Saving...",
+          "saveNote": "Save note",
+          "sharingTitle": "Save your feedback sharing preference",
+          "sharingDescription": "Choose whether voted AI outputs can be shared with Myrmidon Labs. This answer becomes the default for future thumbs up and thumbs down votes.",
+          "savedLocally": "This vote is always saved locally.",
+          "sharingChoice": "Choose <0>Always allow</0> to share this vote and future voted AI outputs. Choose <1>Don't allow</1> to keep this vote and future votes local.",
+          "changeLater": "You can change this later in Settings > General.",
+          "readTerms": "Read our terms of service",
+          "dontAllow": "Don't allow",
+          "alwaysAllow": "Always allow"
+        },
+        "expiredConfirmation": {
+          "hide": "Hide confirmation",
+          "show": "Expired confirmation"
+        },
+        "systemNotice": {
+          "noAdditionalDetails": "No additional details.",
+          "staleDispositionWarning": "Stale disposition warning",
+          "unableToCopy": "Unable to copy system notice",
+          "unableToCopyLink": "Unable to copy system notice link",
+          "copyLink": "Copy link",
+          "copyLinkAria": "Copy link to system notice",
+          "copyText": "Copy notice text",
+          "copyTextAria": "Copy system notice"
+        },
+        "requestedFollowUp": "requested follow-up",
+        "status": "Status",
+        "workspace": "Workspace",
+        "run": "run",
+        "commentAuthorFallback": "Comment",
+        "deletedThisComment": "<0>{{name}}</0> deleted this comment",
+        "composer": {
+          "uploadNoUrl": "Upload did not return a file URL",
+          "cannotAttachHere": "This file type cannot be attached here",
+          "uploadFailed": "Upload failed",
+          "dropToUpload": "Drop to upload",
+          "dropDescription": "Images insert into the reply. Other files are added to this task.",
+          "uncertainSubmission": "We couldn’t confirm whether this comment was saved. It may already be in the conversation. Review it before starting another draft.",
+          "reviewConversation": "Review conversation",
+          "reviewFailed": "Couldn’t refresh the conversation. Try reviewing it again.",
+          "discardNote": "Discarding this draft does not remove any saved comment or uploaded file.",
+          "discardAndStartNew": "Discard draft and start new",
+          "reply": "Reply",
+          "uploadingToTask": "Uploading to task",
+          "insertedInline": "Inserted inline",
+          "attachedToTask": "Attached to task",
+          "removeAttachment": "Remove {{name}}",
+          "attachFile": "Attach file",
+          "cyclesModes": "Cmd/Ctrl+. cycles modes",
+          "responsible": "Responsible",
+          "noResponsible": "No responsible",
+          "searchResponsible": "Search responsible...",
+          "noResponsibleFound": "No responsible found.",
+          "stoppingEllipsis": "Stopping…",
+          "stop": "Stop",
+          "stopResponse": "Stop response",
+          "posting": "Posting...",
+          "send": "Send",
+          "noResponsibleDialog": {
+            "title": "No responsible selected",
+            "description": "This comment will be posted without an assignee, so no agent will be woken to act on it. Go back to pick a responsible, or send anyway.",
+            "goBack": "Go back",
+            "sendAnyway": "Send anyway"
+          }
+        },
+        "emptyRunOutput": "No run output yet.",
+        "emptyConversation": "This task conversation is empty. Start with a message below.",
+        "jumpToLatest": "Jump to latest",
+        "legacyRecovery": {
+          "label": "Legacy recovery task",
+          "noSource": "Legacy recovery task. Newer recovery actions live on the source task.",
+          "withSource": "Legacy recovery task. Newer recovery actions live on the source task — <0>{{identifier}}</0>",
+          "withSourceTitle": "Legacy recovery task. Newer recovery actions live on the source task — <0>{{identifier}}<1> — {{title}}</1></0>"
+        }
+      },
+      "issue-columns": {
+        "live": "Live",
+        "unassigned": "Unassigned",
+        "creatorViaAgent": "{{creator}} · via {{agent}}",
+        "unknown": "Unknown",
+        "noProject": "No project",
+        "filterByWorkspace": "Filter by workspace",
+        "subtasksRunningBelow_one": "{{count}} sub-task running below",
+        "subtasksRunningBelow_other": "{{count}} sub-tasks running below"
+      },
+      "issue-filters-popover": {
+        "categories": {
+          "everything": "All categories",
+          "issuesITouched": "My recent tasks",
+          "joinRequests": "Join requests",
+          "approvals": "Approvals",
+          "failedRuns": "Failed runs",
+          "alerts": "Alerts"
+        },
+        "approvalStatuses": {
+          "all": "All approval statuses",
+          "actionable": "Needs action",
+          "resolved": "Resolved"
+        },
+        "filtersCount": "Filters: {{count}}",
+        "filter": "Filter",
+        "filters": "Filters",
+        "clear": "Clear",
+        "category": "Category",
+        "approvalStatus": "Approval status",
+        "quickFilters": "Quick filters",
+        "status": "Status",
+        "priority": "Priority",
+        "responsible": "Responsible",
+        "searchResponsible": "Search responsible",
+        "searchResponsiblePlaceholder": "Search responsible...",
+        "noResponsible": "No responsible",
+        "creator": "Creator",
+        "removeCreator": "Remove creator {{name}}",
+        "searchCreatorsPlaceholder": "Search creators...",
+        "noCreatorsMatch": "No creators match.",
+        "project": "Project",
+        "searchProjects": "Search projects",
+        "searchProjectsPlaceholder": "Search projects...",
+        "labels": "Labels",
+        "searchLabels": "Search labels",
+        "searchLabelsPlaceholder": "Search labels...",
+        "workspace": "Workspace",
+        "searchWorkspaces": "Search workspaces",
+        "searchWorkspacesPlaceholder": "Search workspaces...",
+        "externalObjectStatus": "External object status",
+        "visibility": "Visibility",
+        "liveRunsOnly": "Live runs only",
+        "hideRoutineRuns": "Hide routine runs"
+      },
+      "issue-link-quicklook": {
+        "loadFailed": "Unable to load task preview."
+      },
+      "issue-recovery-action-card": {
+        "kindLabel": {
+          "missingDisposition": "Missing Disposition",
+          "deliberateWaitWithoutTarget": "Wait Without A Target",
+          "strandedAssignedIssue": "Stranded Task",
+          "workspaceValidation": "Workspace Validation",
+          "configurationValidation": "Configuration Validation",
+          "activeRunWatchdog": "Active Watchdog",
+          "issueGraphLiveness": "Task Needs Next Step"
+        },
+        "kindHeadline": {
+          "missingDisposition": "This task's run finished, but no next step was chosen. Choose what happens next — try the task again, mark it done, or send it for review.",
+          "deliberateWaitWithoutTarget": "This task's last run stopped to wait, but there is no reviewer, blocker, monitor, or approval to wait for. Myrmidon is repairing the next step; the task stays with its owner.",
+          "strandedAssignedIssue": "Myrmidon retried this task's last run, but there is still no queued run, reviewer, blocker, or other next owner. To get it moving, choose what happens next — try the task again, mark it done, or send it for review.",
+          "workspaceValidation": "Myrmidon stopped this run because the task's git workspace could not be validated.",
+          "configurationValidation": "Myrmidon stopped before dispatching this run because required secret/env bindings are missing.",
+          "activeRunWatchdog": "The active run has been silent. Recovery is observing without interrupting it.",
+          "issueGraphLiveness": "Myrmidon could not find a clear next step for this open task. Choose whether to continue work, send it for review, mark it done, or record what is blocking it."
+        },
+        "stateLabel": {
+          "needed": "RECOVERY NEEDED",
+          "escalated": "RECOVERY ESCALATED",
+          "resolved": "RECOVERY RESOLVED",
+          "inProgress": "RECOVERY IN PROGRESS",
+          "observeOnly": "OBSERVING ACTIVE RUN"
+        },
+        "outcome": {
+          "restored": "restored",
+          "handedBack": "handed back to original owner",
+          "ownerCompleted": "completed by recovery owner",
+          "delegated": "delegated to follow-up",
+          "falsePositive": "false positive",
+          "blocked": "blocked",
+          "escalated": "escalated",
+          "cancelled": "cancelled"
+        },
+        "resolvedHeadline": "Recovery resolved as {{outcome}}.",
+        "humanDecisionHeadline": "This recovery needs a human decision. Review the recorded failure and choose the next step.",
+        "resolvedAsAt": "Resolved as {{outcome}} · {{time}}",
+        "resolvedAs": "Resolved as {{outcome}}",
+        "ancestry": {
+          "ancestor": "Forward-only",
+          "diverged": "Diverged",
+          "unknown": "Ancestry unknown"
+        },
+        "detachedOrUnknown": "detached / unknown",
+        "divergenceDiagnosis": "Divergence diagnosis",
+        "expectedRecorded": "Expected · recorded",
+        "liveCheckedOut": "Live · checked out",
+        "worktreeClaimed": "Worktree claimed by <0>{{claimant}}</0> {{state}} — the lossless repair can't run while another workspace holds the live branch.",
+        "claimActiveRun": "(active run)",
+        "claimHeld": "(claim held)",
+        "issueShortId": "issue {{id}}",
+        "anotherTask": "another task",
+        "breakGlassTrigger": "I've verified this — reconcile anyway",
+        "breakGlassTitle": "Break-glass reconciliation",
+        "breakGlassDescription": "This overrides Myrmidon's safety check and points the recorded workspace at the live branch <0>without an ancestry proof</0>. Confirm the divergence below and record why before continuing.",
+        "recordedExpected": "Recorded · expected",
+        "ancestryVerdict": "Ancestry verdict",
+        "detached": "detached",
+        "reason": "Reason",
+        "reasonRequired": "(required — recorded in the audit log)",
+        "reasonPlaceholder": "e.g. Verified the live branch carries only the intended follow-up commits; safe to adopt.",
+        "reconciling": "Reconciling…",
+        "reconcileAnyway": "Reconcile anyway (break-glass)",
+        "uncommittedChanges": "Uncommitted changes",
+        "uncommittedChangesCount_one": "{{count}} uncommitted change",
+        "uncommittedChangesCount_other": "{{count}} uncommitted changes",
+        "repairTrigger": "Repair workspace — quarantine changes & restore branch",
+        "repairTitle": "Repair workspace",
+        "repairDescription": "This is lossless — no reason required. Your uncommitted changes are committed onto a fresh rescue branch, then the recorded branch is restored so the task can resume. The live branch is left exactly as it is.",
+        "dirtyChanges": "Dirty changes",
+        "liveBranch": "Live branch",
+        "leftUntouched": "(left untouched)",
+        "rescueBranch": "Rescue branch",
+        "timestampPlaceholder": "<timestamp>",
+        "restoreTo": "Restore to",
+        "recordedBranch": "recorded branch",
+        "repairing": "Repairing…",
+        "quarantineAndRestore": "Quarantine changes & restore branch",
+        "wake": {
+          "wakeOwner": "An agent will be asked to choose the next step",
+          "boundedOwnerDispositionRepair": "Myrmidon is retrying the original owner",
+          "boundedRecoveryOwner": "A recovery owner is repairing the next step",
+          "boardEscalation": "Board decision required",
+          "manual": "Manual follow-up needed",
+          "manualRepairRequired": "Repair needed before retry",
+          "monitorWithInterval": "Check scheduled · {{interval}}",
+          "monitor": "Check scheduled",
+          "retryExpired": "The scheduled retry did not run — a retry or a decision is needed",
+          "retriesFinished": "Automatic retries are finished — a decision is needed"
+        },
+        "relIn": "in {{m}}m",
+        "relAgo": "{{m}}m ago",
+        "agentShortId": "agent {{id}}",
+        "runShortId": "run {{id}}",
+        "lineageHeadline": {
+          "retryExpired": "This task's automatic retry came due and did not run, so nothing is moving it forward right now. Someone must retry it or record the next step. The task stays with its original owner.",
+          "sourceOwnerExhausted": "This task's last run stopped to wait, but nothing was waiting for it. The original owner has used every automatic repair attempt, so the next step needs a decision. The task stays with its owner.",
+          "sourceOwnerRetrying": "This task's last run stopped to wait, but nothing was waiting for it. Myrmidon is retrying the original owner to record a real next step. The task stays with its owner, and no action is needed yet.",
+          "recoveryOwner": "The original owner could not record a next step within its retry budget. A recovery owner is now repairing the path only — the task itself still belongs to its original owner.",
+          "board": "Automatic recovery is exhausted, so the board must choose the next step. The task itself still belongs to its original owner."
+        },
+        "resolveOptions": {
+          "todo": {
+            "label": "Try again",
+            "description": "Dismiss recovery and return the source task to todo."
+          },
+          "done": {
+            "label": "Mark task done",
+            "description": "Restore by recording the requested work as complete."
+          },
+          "inReview": {
+            "label": "Send for review",
+            "description": "Hand off to a reviewer with a real review path."
+          },
+          "falsePositiveDone": {
+            "label": "False positive, done",
+            "description": "Dismiss recovery and mark the source task complete."
+          },
+          "falsePositiveInReview": {
+            "label": "False positive, review",
+            "description": "Dismiss recovery and send the source task for review."
+          }
+        },
+        "ariaState": {
+          "needed": "needed",
+          "inProgress": "in progress",
+          "observeOnly": "observing active run",
+          "escalated": "escalated",
+          "resolved": "resolved"
+        },
+        "heldBy": "Held by {{claimant}} — re-issue on an isolated workspace instead.",
+        "ariaLabel": "Recovery action: {{state}}",
+        "taskOwner": "Task owner",
+        "unassigned": "unassigned",
+        "keepsThisTask": "keeps this task",
+        "recoveryOwner": "Recovery owner",
+        "originalOwnerRetrying": "Original owner — retrying itself",
+        "repairsNextStepOnly": "repairs the next step only",
+        "decidesNextStepOnly": "decides the next step only",
+        "userShortId": "user {{id}}",
+        "unassignedPickOne": "unassigned — pick one to wake them",
+        "retryProgress": "Retry progress",
+        "attemptsNotBounded": "Attempts not bounded",
+        "attemptRunningNow": "Attempt running now",
+        "retryMissedAt": "Retry missed {{when}}",
+        "retryMissed": "Retry missed",
+        "nextTryNow": "Next try now",
+        "nextTryAt": "Next try {{when}}",
+        "automaticRetriesUsedUp": "Automatic retries used up",
+        "ownerRetries": "Owner retries",
+        "originalOwnerUsedAttempts": "The original owner used {{used}} of {{max}} automatic attempts.",
+        "owner": "Owner",
+        "recoveryColon": "Recovery:",
+        "system": "System",
+        "returnsTo": "→ Returns to:",
+        "sourceRun": "Source run",
+        "correctiveRun": "Corrective run",
+        "evidence": "Evidence",
+        "nextAction": "Next action",
+        "followUp": "Follow-up",
+        "attemptOf": "attempt {{attempt}} of {{max}}",
+        "timesOut": "Times out {{when}}",
+        "soon": "soon",
+        "resolution": "Resolution",
+        "resolveRecovery": "Resolve recovery",
+        "resolveEllipsis": "Resolve…",
+        "reconcileForward": "Reconcile forward & continue",
+        "reissueTrigger": "Re-issue on isolated workspace",
+        "recommended": "Recommended",
+        "reissueDescription": "Creates a fresh copy of this task on an isolated git worktree based on the live branch. Your current workspace and its commits are left untouched.",
+        "baseRef": "Base ref",
+        "recorded": "Recorded",
+        "ancestry_label": "Ancestry",
+        "creating": "Creating…",
+        "createIsolatedReissue": "Create isolated re-issue",
+        "observingNotice": "Recovery is observing without interrupting the live run.",
+        "staysOpenNotice": "The card stays open until an explicit decision is recorded."
+      },
+      "issue-row": {
+        "archive": "Archive",
+        "parkedBlockerHint": "Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee.",
+        "parkedBlocker": "Blocked by parked work",
+        "chipLabelWithDetail": "{{label}} — {{detail}}",
+        "chipHintWithDetail": "{{label}} — {{detail}}. Open the source task to act.",
+        "chipHint": "{{label}} — open the source task to act."
+      },
+      "issue-run-ledger": {
+        "liveness": {
+          "completed": {
+            "label": "Completed",
+            "description": "Task reached a terminal state."
+          },
+          "advanced": {
+            "label": "Advanced",
+            "description": "Run produced concrete evidence of progress."
+          },
+          "planOnly": {
+            "label": "Plan only",
+            "description": "Run described future work without concrete action evidence."
+          },
+          "emptyResponse": {
+            "label": "Empty response",
+            "description": "Run finished without useful output."
+          },
+          "blocked": {
+            "label": "Blocked",
+            "description": "Run or task declared a blocker."
+          },
+          "failed": {
+            "label": "Failed",
+            "description": "Run ended unsuccessfully."
+          },
+          "needsFollowup": {
+            "label": "Needs follow-up",
+            "description": "Run produced useful output but did not prove concrete progress."
+          },
+          "pending": {
+            "label": "Checks after finish",
+            "description": "Liveness is evaluated after the run finishes."
+          },
+          "retryPending": {
+            "label": "Retry pending",
+            "description": "Myrmidon queued an automatic retry that has not started yet."
+          },
+          "missing": {
+            "label": "No liveness data",
+            "description": "This run has no persisted liveness classification."
+          }
+        },
+        "silence": {
+          "suspicious": "Output silence",
+          "critical": "Critical silence",
+          "snoozed": "Silence snoozed"
+        },
+        "duration": {
+          "s": "{{s}}s",
+          "ms": "{{m}}m {{s}}s",
+          "m": "{{m}}m",
+          "hm": "{{h}}h {{m}}m",
+          "h": "{{h}}h"
+        },
+        "summary": {
+          "running": "Running now by {{agent}}",
+          "queued": "Queued for {{agent}}",
+          "scheduledRetry": "Automatic retry scheduled for {{agent}}",
+          "byAgent": "{{status}} by {{agent}}"
+        },
+        "stop": {
+          "timeoutSeconds": "{{s}}s timeout",
+          "timeoutWith": "timeout ({{detail}})",
+          "timeout": "timeout",
+          "maxTurnsExhausted": "max turns exhausted",
+          "budgetPaused": "budget paused",
+          "cancelled": "cancelled",
+          "pausedByBoard": "paused by board",
+          "processLost": "process lost",
+          "unmanagedBackgroundTaskStopped": "unmanaged background task stopped",
+          "adapterFailed": "adapter failed",
+          "completedWith": "completed ({{detail}})",
+          "completed": "completed",
+          "label": "Stop"
+        },
+        "stopStatus": {
+          "retryPending": "Retry pending",
+          "waitingToStart": "Waiting to start",
+          "stillRunning": "Still running",
+          "unavailable": "Unavailable",
+          "noStopReason": "No stop reason"
+        },
+        "lastAction": {
+          "waitingForNextAttempt": "Waiting for next attempt",
+          "noneYet": "No action recorded yet",
+          "noConcreteAction": "No concrete action",
+          "noUsefulOutput": "No useful output",
+          "unavailable": "Unavailable",
+          "noneRecorded": "None recorded"
+        },
+        "continuationAttempt": "Continuation attempt {{attempt}}",
+        "silenceAge": {
+          "underMinute": "under 1 minute",
+          "minutes_one": "{{count}} minute",
+          "minutes_other": "{{count}} minutes",
+          "hours_one": "{{count}} hour",
+          "hours_other": "{{count}} hours"
+        },
+        "watchdog": {
+          "forbidden": "Only the board or the assigned recovery owner can record watchdog decisions",
+          "recordFailed": "Myrmidon could not record the watchdog decision.",
+          "notRecordedTitle": "Watchdog decision not recorded"
+        },
+        "trace": {
+          "skipped": "Trace re-run was skipped.",
+          "notStartedTitle": "Trace re-run not started",
+          "startFailed": "Myrmidon could not start the trace re-run."
+        },
+        "ariaLabel": "Task run ledger",
+        "title": "Run ledger",
+        "waitingForFirstRun": "Waiting for the first run record.",
+        "noRuns": "No runs linked yet.",
+        "latestRun": "Latest run",
+        "childWork": "Child work",
+        "childSummaryActive": "{{active}} active, {{done}} done, {{cancelled}} cancelled",
+        "childSummaryTerminal": "all {{total}} terminal ({{done}} done, {{cancelled}} cancelled)",
+        "moreChildren": "+{{count}} more",
+        "silenceNotice": {
+          "criticalTitle": "Critical output silence",
+          "warningTitle": "Output silence watchdog warning",
+          "silentFor": "Latest active run has been silent for {{age}}.",
+          "extendedPeriod": "an extended period",
+          "reviewIssue": "Review <0>{{identifier}}</0> for recovery context.",
+          "informationalDelegated": "This signal is informational. Myrmidon did not create new delegated recovery work.",
+          "informationalNoTask": "This signal is informational. Myrmidon did not create or assign a recovery task.",
+          "continueMonitoring": "Continue monitoring",
+          "snooze1h": "Snooze 1h",
+          "markFalsePositive": "Mark false positive"
+        },
+        "emptyWithActivity": "Runs and activity will appear here once this task has history.",
+        "emptyHistorical": "Historical runs without liveness metadata will appear here once linked to this task.",
+        "run": "Run",
+        "byAgent": "by {{agent}}",
+        "actingOnBehalfOf": "Acting on behalf of {{name}}",
+        "onBehalfOf": "on behalf of <0>{{name}}</0>",
+        "live": "live",
+        "exhausted": "Exhausted",
+        "inspectRun": "Inspect run",
+        "elapsed": "Elapsed",
+        "unknown": "unknown",
+        "lastUsefulAction": "Last useful action",
+        "retryOf": "Retry of <0>{{runId}}</0>",
+        "nextAction": "Next action:",
+        "olderItemsNotShown": "{{count}} older items not shown"
+      },
+      "issue-scheduled-retry-card": {
+        "waitingForWorkspace": "Waiting for workspace",
+        "workspaceBusy": "Another task is using this workspace. Work starts automatically when it is available.",
+        "continuationScheduled": "Continuation scheduled",
+        "retryScheduled": "Retry scheduled",
+        "dueNow": "due now",
+        "pendingSchedule": "pending schedule",
+        "titleContinuation": "Automatic continuation {{when}}",
+        "titleRetry": "Automatic retry {{when}}",
+        "helperContinuation": "Pulls continuation forward immediately",
+        "helperRetry": "Pulls retry forward immediately",
+        "replacesRun": "Replaces run <0>{{runId}}</0>",
+        "lastAttemptFailed": "Last attempt failed: {{error}}. Myrmidon will retry automatically.",
+        "alreadyPromoted": "Already promoted",
+        "promoted": "Promoted",
+        "retryNow": "Retry now",
+        "promotingScheduledRetry": "Promoting scheduled retry",
+        "alreadyPromotedRunStarting": "Already promoted — run starting",
+        "promotedRunStarting": "Promoted — run starting",
+        "retryFailed": "Couldn't retry now",
+        "tryAgain": "Try again"
+      }
+    }
+  }
+}

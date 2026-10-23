@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_ENV } from "@paperclipai/shared";
+import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_ENV } from "@myrmidon/shared";
 import type { BotExtraMount } from "./driver.js";
 import {
   assertBotRuntimeContract,

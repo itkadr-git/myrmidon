@@ -20,7 +20,7 @@ import {
   KNOWLEDGE_APPROVAL_REQUIRED_CODE,
   KNOWLEDGE_RULE_APPROVE_FORBIDDEN_CODE,
   type AutonomyMatrix,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { knowledgeRoutes, type KnowledgeRoutesDeps } from "./routes.js";
 

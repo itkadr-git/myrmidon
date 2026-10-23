@@ -286,11 +286,11 @@ import {
   resolveChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
   updateChatEndpointSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
   companyImportTransferDeclarationSchema,
-} from "@paperclipai/shared/company-import-transfer";
+} from "@myrmidon/shared/company-import-transfer";
 
 type JsonSchema = Record<string, unknown>;
 type OpenApiResponse = Record<string, unknown>;
@@ -3038,6 +3038,14 @@ const createAgentSecretProposalSchema = z
       description: z.string().optional().nullable(),
       value: z.string().min(1),
       justification: z.string().min(1),
+      /**
+       * Rotation target: the id of an existing active company secret this
+       * proposal's value should become the next version of. Without it, a
+       * proposal whose name collides with a live secret is rejected at create
+       * time with 409, because approving it could only ever fail with "Secret
+       * already exists" (OPE-2998).
+       */
+      rotateSecretId: z.string().guid().optional().nullable(),
     }),
     z.object({
       kind: z.literal("binding"),
@@ -3082,12 +3090,15 @@ registry.registerPath({
   path: "/api/agents/me/secret-proposals",
   tags: ["secrets"],
   summary: "Propose a company secret or agent secret binding",
+  description:
+    "Creates a pending proposal for board approval. A secret-kind proposal with `rotateSecretId` targets an existing active company secret: approving it rotates that secret to a new version instead of creating a new secret. Without `rotateSecretId`, a secret-kind proposal whose name or key collides with an existing live secret is rejected with 409 at creation.",
   request: { body: jsonBody(createAgentSecretProposalSchema) },
   responses: {
     201: r.ok(),
     400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
+    409: r.conflict,
     422: r.unprocessable,
   },
 });

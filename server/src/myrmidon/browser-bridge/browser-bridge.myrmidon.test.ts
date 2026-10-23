@@ -24,7 +24,7 @@ import {
   normalizeCapabilitySet,
   normalizePairingCode,
   validateActionParams,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   IdempotencyCache,
   jsonRpcError,

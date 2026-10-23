@@ -24,7 +24,7 @@
 // unchanged behavior) and reports itself as invalid, so the caller logs it
 // loudly at startup.
 
-import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 /** Environment variable that overrides the process role. */
 export const PROCESS_ROLE_ENV = "MYRMIDON_PROCESS_ROLE";
@@ -128,7 +128,9 @@ export function processRoleProfileFor(role: ProcessRole): Omit<ProcessRoleProfil
         executesRuns: false,
         migrations: "await",
         runsBackups: false,
-        listen: { host: PROCESS_ROLE_API_HOST, port: PROCESS_ROLE_API_PORT, reusePort: true },
+        // Keep the configured board port; only the socket sharing is role-specific.
+        // Hard-coding 3100 would make PORT ineffective for split deployments.
+        listen: { host: PROCESS_ROLE_API_HOST, port: null, reusePort: true },
         loopbackListen: null,
       };
     case "worker":

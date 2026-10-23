@@ -1,6 +1,7 @@
 import { useState } from "react";
+import { i18n, useTranslation } from "@/i18n";
 import { CollapsibleSection, Field } from "../agent-config-primitives";
-import type { TeamLivenessSettings } from "@paperclipai/shared";
+import type { TeamLivenessSettings } from "@myrmidon/shared";
 import {
   TEAM_LIVENESS_SWITCH_KEYS,
   readTeamLivenessBlock,
@@ -21,27 +22,30 @@ import {
  * so the operator sees what "follow" currently means.
  */
 
-const OPTIONS: Array<{ value: TeamLivenessCardChoice; label: string }> = [
-  { value: "inherit", label: "Follow the instance settings" },
-  { value: "on", label: "On for this agent" },
-  { value: "off", label: "Off for this agent" },
+// Lazy: the language must be read at render time, not frozen at import.
+const options = (): Array<{ value: TeamLivenessCardChoice; label: string }> => [
+  { value: "inherit", label: i18n.t("area.settings-agent-card.agent-card-team-liveness-fields.optionInherit") },
+  { value: "on", label: i18n.t("area.settings-agent-card.agent-card-team-liveness-fields.optionOn") },
+  { value: "off", label: i18n.t("area.settings-agent-card.agent-card-team-liveness-fields.optionOff") },
 ];
 
-const SWITCHES: Array<{ key: TeamLivenessSwitchKey; label: string; hint: string }> = [
+const switches = (
+  instanceValue: (key: TeamLivenessSwitchKey) => string,
+): Array<{ key: TeamLivenessSwitchKey; label: string; hint: string }> => [
   {
     key: "autoResume",
-    label: "Auto-resume",
-    hint: "the board resumes this agent after a failed run, with backoff",
+    label: i18n.t("area.settings-agent-card.agent-card-team-liveness-fields.autoResumeLabel"),
+    hint: i18n.t("area.settings-agent-card.agent-card-team-liveness-fields.autoResumeHint", { value: instanceValue("autoResume") }),
   },
   {
     key: "runStall",
-    label: "Run liveness by progress",
-    hint: "a run of this agent that stops recording progress is interrupted and its task returns to the queue",
+    label: i18n.t("area.settings-agent-card.agent-card-team-liveness-fields.runStallLabel"),
+    hint: i18n.t("area.settings-agent-card.agent-card-team-liveness-fields.runStallHint", { value: instanceValue("runStall") }),
   },
   {
     key: "idlePickup",
-    label: "Wake on ready work",
-    hint: "the board wakes this agent while it is idle with a ready task",
+    label: i18n.t("area.settings-agent-card.agent-card-team-liveness-fields.idlePickupLabel"),
+    hint: i18n.t("area.settings-agent-card.agent-card-team-liveness-fields.idlePickupHint", { value: instanceValue("idlePickup") }),
   },
 ];
 
@@ -58,29 +62,26 @@ export function AgentCardTeamLivenessFields({
   /** The instance values in force; `null` when they could not be loaded. */
   settings: TeamLivenessSettings | null;
 }) {
+  const { t } = useTranslation();
   const block = readTeamLivenessBlock(value);
   const overriding = TEAM_LIVENESS_SWITCH_KEYS.some((key) => teamLivenessChoice(block, key) !== "inherit");
   const [expanded, setExpanded] = useState(() => overriding);
 
   const instanceValue = (key: TeamLivenessSwitchKey): string => {
-    if (!settings) return "unknown";
+    if (!settings) return t("area.settings-agent-card.agent-card-team-liveness-fields.valueUnknown");
     const enabled = {
       autoResume: settings.autoResumeEnabled,
       runStall: settings.runStallEnabled,
       idlePickup: settings.idlePickupEnabled,
     }[key];
-    return enabled ? "on" : "off";
+    return enabled ? t("area.settings-agent-card.agent-card-team-liveness-fields.valueOn") : t("area.settings-agent-card.agent-card-team-liveness-fields.valueOff");
   };
 
   return (
-    <CollapsibleSection title="Team liveness" open={expanded} onToggle={() => setExpanded((open) => !open)}>
+    <CollapsibleSection title={t("area.settings-agent-card.agent-card-team-liveness-fields.title")} open={expanded} onToggle={() => setExpanded((open) => !open)}>
       <div className="space-y-3">
-        {SWITCHES.map(({ key, label, hint }) => (
-          <Field
-            key={key}
-            label={label}
-            hint={`Which layer decides that ${hint}. The instance settings say ${instanceValue(key)} right now.`}
-          >
+        {switches(instanceValue).map(({ key, label, hint }) => (
+          <Field key={key} label={label} hint={hint}>
             <select
               className={selectClass}
               aria-label={label}
@@ -92,7 +93,7 @@ export function AgentCardTeamLivenessFields({
                 )
               }
             >
-              {OPTIONS.map((option) => (
+              {options().map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -101,8 +102,7 @@ export function AgentCardTeamLivenessFields({
           </Field>
         ))}
         <p className="text-xs text-muted-foreground">
-          Changes apply on the agent's next pass, without a restart. The wake budget and the wake throttle are
-          company-wide and stay on the instance settings page.
+          {t("area.settings-agent-card.agent-card-team-liveness-fields.note")}
         </p>
       </div>
     </CollapsibleSection>

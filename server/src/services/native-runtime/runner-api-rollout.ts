@@ -1,4 +1,4 @@
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function readSetting(environment: NodeJS.ProcessEnv, name: string): string | undefined {
   return readProductEnv(name, { env: environment });
