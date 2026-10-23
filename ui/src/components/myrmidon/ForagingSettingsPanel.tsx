@@ -15,6 +15,7 @@ import type { ForagingSettingsPatch, ForagingSettingsSource } from "@paperclipai
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { i18n, useTranslation } from "@/i18n";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import {
   describeForagingSource,
@@ -40,24 +41,24 @@ const CENTS_FIELDS = [
 
 type CentsKey = (typeof CENTS_FIELDS)[number];
 
-const FIELD_HINTS: Record<CentsKey, string> = {
-  passBudgetCents: "Ceiling of one pass's cost estimate, in cents ($0.50 = 50). Empty = no per-pass limit.",
-  dailyBudgetCents: "Company ceiling per UTC day, in cents ($1 = 100). Empty = no daily ceiling.",
-  monthlyBudgetCents: "Company ceiling per UTC month, in cents. Empty = no monthly ceiling.",
-  roleBudgetCents: "Daily ceiling for one role, in cents. Empty = no role ceiling.",
-  agentBudgetCents: "Daily ceiling for one agent, in cents. Empty = no agent ceiling.",
-  autoOffCostPerTaskCents:
-    "When the mean cost per task (BASELINE) rises above this many cents, learning switches itself off. Empty = the check is off.",
-} as const;
+// Functions, not module constants: the texts follow the interface language.
+const fieldHints = (): Record<CentsKey, string> => ({
+  passBudgetCents: i18n.t("area.settings-models-runtime-1.foraging-settings-panel.hints.passBudgetCents"),
+  dailyBudgetCents: i18n.t("area.settings-models-runtime-1.foraging-settings-panel.hints.dailyBudgetCents"),
+  monthlyBudgetCents: i18n.t("area.settings-models-runtime-1.foraging-settings-panel.hints.monthlyBudgetCents"),
+  roleBudgetCents: i18n.t("area.settings-models-runtime-1.foraging-settings-panel.hints.roleBudgetCents"),
+  agentBudgetCents: i18n.t("area.settings-models-runtime-1.foraging-settings-panel.hints.agentBudgetCents"),
+  autoOffCostPerTaskCents: i18n.t("area.settings-models-runtime-1.foraging-settings-panel.hints.autoOffCostPerTaskCents"),
+});
 
-const CENTS_LABELS: Record<CentsKey, string> = {
-  passBudgetCents: "Pass budget, cents",
-  dailyBudgetCents: "Daily company limit, cents",
-  monthlyBudgetCents: "Monthly company limit, cents",
-  roleBudgetCents: "Daily role limit, cents",
-  agentBudgetCents: "Daily agent limit, cents",
-  autoOffCostPerTaskCents: "Auto-off: cost per task, cents",
-} as const;
+const centsLabels = (): Record<CentsKey, string> => ({
+  passBudgetCents: i18n.t("area.settings-models-runtime-1.foraging-settings-panel.labels.passBudgetCents"),
+  dailyBudgetCents: i18n.t("area.settings-models-runtime-1.foraging-settings-panel.labels.dailyBudgetCents"),
+  monthlyBudgetCents: i18n.t("area.settings-models-runtime-1.foraging-settings-panel.labels.monthlyBudgetCents"),
+  roleBudgetCents: i18n.t("area.settings-models-runtime-1.foraging-settings-panel.labels.roleBudgetCents"),
+  agentBudgetCents: i18n.t("area.settings-models-runtime-1.foraging-settings-panel.labels.agentBudgetCents"),
+  autoOffCostPerTaskCents: i18n.t("area.settings-models-runtime-1.foraging-settings-panel.labels.autoOffCostPerTaskCents"),
+});
 
 /**
  * Parse the draft. Interval and host pause are required whole numbers in the
@@ -73,13 +74,13 @@ export function parseForagingDraft(draft: {
   const intervalRaw = draft.intervalSec.trim();
   const interval = intervalRaw ? Number(intervalRaw) : Number.NaN;
   if (!intervalRaw || !Number.isInteger(interval) || interval < 60 || interval > 86400) {
-    errors.intervalSec = "Enter a whole number from 60 to 86400";
+    errors.intervalSec = i18n.t("area.settings-models-runtime-1.foraging-settings-panel.errors.interval");
   }
 
   const hostRaw = draft.minHostIntervalSec.trim();
   const host = hostRaw ? Number(hostRaw) : Number.NaN;
   if (!hostRaw || !Number.isInteger(host) || host < 5) {
-    errors.minHostIntervalSec = "Enter a whole number of at least 5";
+    errors.minHostIntervalSec = i18n.t("area.settings-models-runtime-1.foraging-settings-panel.errors.hostInterval");
   }
 
   const cents: Partial<Record<CentsKey, number | null>> = {};
@@ -91,7 +92,7 @@ export function parseForagingDraft(draft: {
     }
     const value = Number(raw);
     if (!Number.isInteger(value) || value <= 0) {
-      errors[key] = "Enter a whole number greater than zero, or leave it empty for no limit";
+      errors[key] = i18n.t("area.settings-models-runtime-1.foraging-settings-panel.errors.cents");
     } else {
       cents[key] = value;
     }
@@ -138,6 +139,9 @@ export function ForagingSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
+  const hints = fieldHints();
+  const labels = centsLabels();
   const [draftNumbers, setDraftNumbers] = useState<ReturnType<typeof toDraft> | null>(null);
   const [draftEnabled, setDraftEnabled] = useState<boolean | null>(null);
   const [draftSoft, setDraftSoft] = useState<boolean | null>(null);
@@ -172,13 +176,10 @@ export function ForagingSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Leaf className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Learning (foraging)</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-models-runtime-1.foraging-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          The enable switch, the pass tuning and the spend limits of the source-learning sweep. A
-          limit reached stops the pass (the sources after the stop stay untouched); a signal lands
-          in the attention feed. Every value applies with the next pass, without a restart —
-          environment variables stay forced overrides, and each field shows which side is in force.
+          {t("area.settings-models-runtime-1.foraging-settings-panel.description")}
         </p>
       </div>
 
@@ -193,7 +194,7 @@ export function ForagingSettingsPanelView({
           <div className="space-y-2 md:col-span-2">
             <div className="flex items-center justify-between gap-4">
               <div className="space-y-1">
-                <Label htmlFor="foraging-enabled">Enable learning</Label>
+                <Label htmlFor="foraging-enabled">{t("area.settings-models-runtime-1.foraging-settings-panel.enableLabel")}</Label>
                 <p className="text-xs text-muted-foreground">
                   <span data-testid="foraging-source-enabled">{source("enabled")}</span>
                 </p>
@@ -208,7 +209,7 @@ export function ForagingSettingsPanelView({
           </div>
 
           <div className="space-y-1">
-            <Label htmlFor="foraging-intervalSec">Pass interval, seconds</Label>
+            <Label htmlFor="foraging-intervalSec">{t("area.settings-models-runtime-1.foraging-settings-panel.intervalLabel")}</Label>
             <Input
               id="foraging-intervalSec"
               inputMode="numeric"
@@ -223,13 +224,13 @@ export function ForagingSettingsPanelView({
               </div>
             ) : null}
             <p className="text-xs text-muted-foreground">
-              How often the comparison pass runs (60–86400).{" "}
+              {t("area.settings-models-runtime-1.foraging-settings-panel.intervalHint")}{" "}
               <span data-testid="foraging-source-intervalSec">{source("intervalSec")}</span>
             </p>
           </div>
 
           <div className="space-y-1">
-            <Label htmlFor="foraging-minHostIntervalSec">Same-host pause, seconds</Label>
+            <Label htmlFor="foraging-minHostIntervalSec">{t("area.settings-models-runtime-1.foraging-settings-panel.hostPauseLabel")}</Label>
             <Input
               id="foraging-minHostIntervalSec"
               inputMode="numeric"
@@ -247,7 +248,7 @@ export function ForagingSettingsPanelView({
               </div>
             ) : null}
             <p className="text-xs text-muted-foreground">
-              The smallest pause between two reads of one host (minimum 5).{" "}
+              {t("area.settings-models-runtime-1.foraging-settings-panel.hostPauseHint")}{" "}
               <span data-testid="foraging-source-minHostIntervalSec">
                 {source("minHostIntervalSec")}
               </span>
@@ -256,11 +257,11 @@ export function ForagingSettingsPanelView({
 
           {CENTS_FIELDS.map((key) => (
             <div key={key} className="space-y-1">
-              <Label htmlFor={`foraging-${key}`}>{CENTS_LABELS[key]}</Label>
+              <Label htmlFor={`foraging-${key}`}>{labels[key]}</Label>
               <Input
                 id={`foraging-${key}`}
                 inputMode="numeric"
-                placeholder="No limit"
+                placeholder={t("area.settings-models-runtime-1.foraging-settings-panel.noLimitPlaceholder")}
                 value={numbers ? numbers[key] : ""}
                 onChange={(event) =>
                   setDraftNumbers({ ...(numbers ?? toDraft(view.settings)), [key]: event.target.value })
@@ -272,7 +273,7 @@ export function ForagingSettingsPanelView({
                 </div>
               ) : null}
               <p className="text-xs text-muted-foreground">
-                {FIELD_HINTS[key]} <span data-testid={`foraging-source-${key}`}>{source(key)}</span>
+                {hints[key]} <span data-testid={`foraging-source-${key}`}>{source(key)}</span>
               </p>
             </div>
           ))}
@@ -280,11 +281,10 @@ export function ForagingSettingsPanelView({
           <div className="space-y-2 md:col-span-2">
             <div className="flex items-center justify-between gap-4">
               <div className="space-y-1">
-                <Label htmlFor="foraging-soft">Soft mode (ask the owner)</Label>
+                <Label htmlFor="foraging-soft">{t("area.settings-models-runtime-1.foraging-settings-panel.softLabel")}</Label>
                 <p className="text-xs text-muted-foreground">
-                  Hard — the stopped pass only raises a notice. Soft — the notice asks the owner to
-                  raise the limit or switch learning off. The stop itself never depends on the
-                  mode. <span data-testid="foraging-source-enforcement">{source("enforcement")}</span>
+                  {t("area.settings-models-runtime-1.foraging-settings-panel.softHint")}{" "}
+                  <span data-testid="foraging-source-enforcement">{source("enforcement")}</span>
                 </p>
               </div>
               <ToggleSwitch
@@ -305,18 +305,19 @@ export function ForagingSettingsPanelView({
                 if (patch) onSave(patch);
               }}
             >
-              {pending ? "Saving..." : "Save learning settings"}
+              {pending ? t("area.settings-models-runtime-1.shared.saving") : t("area.settings-models-runtime-1.foraging-settings-panel.saveButton")}
             </Button>
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading learning settings...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-models-runtime-1.foraging-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function ForagingSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -328,7 +329,7 @@ export function ForagingSettingsPanel() {
     mutationFn: foragingSettingsApi.update,
     onMutate: () => setError(null),
     onError: (err) =>
-      setError(err instanceof Error ? err.message : "Saving the learning settings failed."),
+      setError(err instanceof Error ? err.message : t("area.settings-models-runtime-1.foraging-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: foragingSettingsQueryKey });
@@ -338,7 +339,7 @@ export function ForagingSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load learning settings."}
+        {query.error instanceof Error ? query.error.message : t("area.settings-models-runtime-1.foraging-settings-panel.loadFailed")}
       </div>
     );
   }

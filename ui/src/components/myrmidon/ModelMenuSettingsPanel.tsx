@@ -8,6 +8,7 @@ import { ArrowDown, ArrowUp, ListTree, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useTranslation } from "@/i18n";
 import {
   modelMenuApi,
   modelMenuQueryKey,
@@ -73,6 +74,7 @@ function previewLines(nodes: ModelMenuNode[], depth = 0): string[] {
 }
 
 export function ModelMenuSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [adapterType, setAdapterType] = useState<string | undefined>(undefined);
   const { data: view } = useQuery({
@@ -110,7 +112,7 @@ export function ModelMenuSettingsPanel() {
       setError(null);
       queryClient.invalidateQueries({ queryKey: ["myrmidon", "model-menu"] });
     },
-    onError: () => setError("Could not save the menu. Try again."),
+    onError: () => setError(t("area.settings-models-runtime-1.model-menu-settings-panel.saveFailed")),
   });
 
   const dirty = loaded && (!sameValue(groups, view?.stored?.groups ?? []) || !sameValue(hidden, view?.stored?.hidden ?? []));
@@ -131,7 +133,7 @@ export function ModelMenuSettingsPanel() {
     <li key={path.join(".")} className="space-y-2 rounded border p-2" data-testid={`model-menu-group-${path.join(".")}`}>
       <div className="flex items-center gap-2">
         <Input
-          aria-label="Group title"
+          aria-label={t("area.settings-models-runtime-1.model-menu-settings-panel.groupTitleLabel")}
           value={group.title}
           onChange={(event) =>
             setGroups((current) =>
@@ -157,7 +159,7 @@ export function ModelMenuSettingsPanel() {
             {id}
             <button
               type="button"
-              aria-label={`Remove ${id}`}
+              aria-label={t("area.settings-models-runtime-1.model-menu-settings-panel.removeModel", { id })}
               onClick={() =>
                 setGroups((current) =>
                   updateAt(current, path, (entry) => ({
@@ -172,13 +174,13 @@ export function ModelMenuSettingsPanel() {
           </span>
         ))}
         <select
-          aria-label="Add a model"
+          aria-label={t("area.settings-models-runtime-1.model-menu-settings-panel.addModel")}
           value=""
           data-testid={`model-menu-add-model-${path.join(".")}`}
           onChange={(event) => addModelTo(path, event.target.value)}
           className="h-9 rounded-md border px-2 text-sm"
         >
-          <option value="">Add a model…</option>
+          <option value="">{t("area.settings-models-runtime-1.model-menu-settings-panel.addModelOption")}</option>
           {catalog.map((model) => (
             <option key={model.id} value={model.id}>
               {model.label ?? model.id}
@@ -193,12 +195,12 @@ export function ModelMenuSettingsPanel() {
             setGroups((current) =>
               updateAt(current, path, (entry) => ({
                 ...entry,
-                children: [...(entry.children ?? []), { title: "Новая группа", models: [] }],
+                children: [...(entry.children ?? []), { title: t("area.settings-models-runtime-1.model-menu-settings-panel.newGroupTitle"), models: [] }],
               })),
             )
           }
         >
-          <Plus className="size-3" /> Subgroup
+          <Plus className="size-3" /> {t("area.settings-models-runtime-1.model-menu-settings-panel.subgroupButton")}
         </Button>
       </div>
 
@@ -214,16 +216,16 @@ export function ModelMenuSettingsPanel() {
     <section className="space-y-4 rounded-lg border p-4" data-testid="model-menu-panel">
       <div className="flex items-center gap-2">
         <ListTree className="size-4 text-muted-foreground" />
-        <h3 className="text-sm font-medium">Model menu</h3>
+        <h3 className="text-sm font-medium">{t("area.settings-models-runtime-1.model-menu-settings-panel.title")}</h3>
         <span className="text-xs text-muted-foreground" data-testid="model-menu-source">
           {view?.menu.source === "settings"
-            ? "Configured here"
-            : "Automatic groups by provider family"}
+            ? t("area.settings-models-runtime-1.model-menu-settings-panel.sourceSettings")
+            : t("area.settings-models-runtime-1.model-menu-settings-panel.sourceAutomatic")}
         </span>
       </div>
 
       <div className="space-y-1">
-        <Label htmlFor="model-menu-adapter">Gateway catalog</Label>
+        <Label htmlFor="model-menu-adapter">{t("area.settings-models-runtime-1.model-menu-settings-panel.catalogLabel")}</Label>
         <select
           id="model-menu-adapter"
           data-testid="model-menu-adapter"
@@ -238,8 +240,8 @@ export function ModelMenuSettingsPanel() {
           ))}
         </select>
         <p className="text-xs text-muted-foreground" data-testid="model-menu-catalog-size">
-          {catalog.length} models in the catalog, {view?.menu.visibleModelIds.length ?? 0} visible
-          {view?.menu.hiddenModelIds.length ? `, ${view.menu.hiddenModelIds.length} hidden` : ""}
+          {t("area.settings-models-runtime-1.model-menu-settings-panel.catalogSize", { count: catalog.length, visible: view?.menu.visibleModelIds.length ?? 0 })}
+          {view?.menu.hiddenModelIds.length ? t("area.settings-models-runtime-1.model-menu-settings-panel.catalogHidden", { hidden: view.menu.hiddenModelIds.length }) : ""}
         </p>
       </div>
 
@@ -251,16 +253,16 @@ export function ModelMenuSettingsPanel() {
         size="sm"
         variant="outline"
         data-testid="model-menu-add-root-group"
-        onClick={() => setGroups((current) => [...current, { title: "Новая группа", models: [] }])}
+        onClick={() => setGroups((current) => [...current, { title: t("area.settings-models-runtime-1.model-menu-settings-panel.newGroupTitle"), models: [] }])}
       >
-        <Plus className="size-3" /> Group
+        <Plus className="size-3" /> {t("area.settings-models-runtime-1.model-menu-settings-panel.groupButton")}
       </Button>
 
       <div className="space-y-2">
-        <Label>Hidden models</Label>
+        <Label>{t("area.settings-models-runtime-1.model-menu-settings-panel.hiddenTitle")}</Label>
         <div className="flex flex-wrap gap-3" data-testid="model-menu-hidden">
           {hiddenCandidates.length === 0 && (
-            <span className="text-xs text-muted-foreground">The catalog is empty.</span>
+            <span className="text-xs text-muted-foreground">{t("area.settings-models-runtime-1.model-menu-settings-panel.catalogEmpty")}</span>
           )}
           {hiddenCandidates.map((id) => (
             <label key={id} className="flex items-center gap-1 text-xs">
@@ -281,15 +283,15 @@ export function ModelMenuSettingsPanel() {
       </div>
 
       <div className="space-y-1">
-        <Label>The bot shows</Label>
+        <Label>{t("area.settings-models-runtime-1.model-menu-settings-panel.previewTitle")}</Label>
         <pre className="max-h-48 overflow-auto rounded bg-muted p-2 text-xs" data-testid="model-menu-preview">
-          {view ? previewLines(view.menu.groups).join("\n") : "Loading…"}
+          {view ? previewLines(view.menu.groups).join("\n") : t("area.settings-models-runtime-1.shared.loadingEllipsis")}
         </pre>
       </div>
 
       <div className="flex items-center gap-2">
         <Button onClick={() => save.mutate()} disabled={save.isPending || !dirty} data-testid="model-menu-save">
-          Save
+          {t("common.save")}
         </Button>
         <Button
           variant="outline"
@@ -300,14 +302,13 @@ export function ModelMenuSettingsPanel() {
             setError(null);
           }}
         >
-          Reset
+          {t("area.settings-models-runtime-1.model-menu-settings-panel.resetButton")}
         </Button>
         {error && <span className="text-xs text-destructive">{error}</span>}
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Saved to the instance settings and read on every /model — the Telegram menu changes at once,
-        without a restart.
+        {t("area.settings-models-runtime-1.model-menu-settings-panel.footnote")}
       </p>
     </section>
   );
