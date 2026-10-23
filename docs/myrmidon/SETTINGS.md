@@ -1928,6 +1928,7 @@ calls `apiinfo.version` / `host.get` / `item.get` only.
 | `myrmidonMonitoringDashboard.zabbixTokenRef` | 1.6.6 MONITORING C | unset | Read-token reference for the Zabbix API (`env:`/`file:`); value never returned | Unset — Zabbix queried without auth |
 | `myrmidonMonitoringDashboard.vmJobSelector` | 1.6.6 MONITORING C | `node` | PromQL label value selecting the fleet node_exporter jobs (`job=~"..."`) | — |
 | `myrmidonMonitoringDashboard.zabbixHostGroups` | 1.6.6 MONITORING C | `[]` | Zabbix host groups the dashboard reads; empty = all monitored hosts | — |
+| `myrmidonMonitoringDashboard.zabbixHostMapping` | 1.6.6 MONITORING C | `{}` | Maps a VictoriaMetrics `instance` label to a Zabbix host technical name or visible name to combine both sources in one host card | — |
 | `myrmidonMonitoringDashboard.timeoutMs` | 1.6.6 MONITORING C | `10000` | Per-source request timeout (500–60000 ms) | — |
 Since the A1-fix, the PATCH also accepts `baseUrl` (a URL), `keySecret` and
 `deepgramKeySecret` — each a non-empty string or `null`, with the same

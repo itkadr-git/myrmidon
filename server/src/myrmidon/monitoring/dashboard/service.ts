@@ -20,7 +20,7 @@ import {
 import type { MonitoringConnectionSettings } from "./settings.js";
 import type { VmClient } from "./vm.js";
 import type { ZabbixReadClient } from "./zabbix.js";
-import { DASHBOARD_ZABBIX_ITEM_KEYS } from "./zabbix.js";
+import { DASHBOARD_ZABBIX_ITEM_KEYS, mapZabbixHostName } from "./zabbix.js";
 
 export interface DashboardServiceDeps {
   settings: MonitoringConnectionSettings;
@@ -139,20 +139,27 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
       zabbixOk = true;
       sources.push({ name: "zabbix", ok: true, latency_ms: Date.now() - started, error: null });
       for (const reading of readings) {
+        const readingName = reading.name || reading.host;
+        const mappedName = mapZabbixHostName(reading, deps.settings.zabbixHostMapping);
         const host: HostReading = {
-          name: reading.name || reading.host,
+          name: readingName,
           origin: "zabbix",
           cpuPercent: numberOrNull(reading.items["system.cpu.util"]),
-          memoryPercent: numberOrNull(reading.items["vm.memory.utilization"]),
+          memoryPercent:
+            numberOrNull(reading.items["vm.memory.util"]) ?? numberOrNull(reading.items["vm.memory.utilization"]),
           swapPercent:
             numberOrNull(reading.items["system.swap.size[,pfree]"]) != null
               ? 100 - numberOrNull(reading.items["system.swap.size[,pfree]"])!
               : null,
-          diskPercent: numberOrNull(reading.items["vfs.fs.size[/,pused]"]),
+          diskPercent:
+            numberOrNull(reading.items["vfs.fs.dependent.size[/,pused]"]) ??
+            numberOrNull(reading.items["vfs.fs.size[/,pused]"]),
           ageSec: null,
           runbookKey: null,
         };
-        zabbixHosts.set(host.name, host);
+        host.name = mappedName;
+        zabbixHosts.set(mappedName, host);
+        zabbixHosts.set(reading.host, host);
       }
     } catch (err) {
       sources.push({ name: "zabbix", ok: false, latency_ms: Date.now() - started, error: classifySourceError(err) });
@@ -166,8 +173,20 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
 
   // Merge: VM wins when it has the host, Zabbix-only hosts are appended.
   const hosts = [...vmHosts.values()];
-  for (const [name, host] of zabbixHosts) {
-    if (!vmHosts.has(name)) hosts.push(host);
+  for (const [instance, zabbixName] of Object.entries(deps.settings.zabbixHostMapping)) {
+    const host = zabbixHosts.get(zabbixName);
+    const vmHost = vmHosts.get(instance);
+    if (vmHost) {
+      vmHost.cpuPercent ??= host?.cpuPercent ?? null;
+      vmHost.memoryPercent ??= host?.memoryPercent ?? null;
+      vmHost.swapPercent ??= host?.swapPercent ?? null;
+      vmHost.diskPercent ??= host?.diskPercent ?? null;
+    }
+  }
+  for (const host of new Set(zabbixHosts.values())) {
+    const mapping = Object.entries(deps.settings.zabbixHostMapping).find(([, name]) => name === host.name);
+    if (mapping && vmHosts.has(mapping[0])) continue;
+    if (!vmHosts.has(host.name)) hosts.push(host);
   }
   for (const host of hosts) host.runbookKey = defaultRunbookKey(host);
   hosts.sort((a, b) => a.name.localeCompare(b.name));
