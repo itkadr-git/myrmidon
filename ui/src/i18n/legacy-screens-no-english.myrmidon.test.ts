@@ -3,7 +3,7 @@
 // through the fork i18n catalog. Codes, identifiers, error messages surfaced
 // from the server and data-testid values stay out of scope.
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,14 +28,34 @@ const SCREENS = [
   "components/access/CompanySettingsNav.tsx",
 ];
 
+// myrmidon(OPE-8950): per-area guard lists. Every extraction PR adds its own
+// guarded/<area>.txt (one path per line, relative to ui/src; blank lines and
+// lines starting with # are ignored), so parallel PRs never touch one file.
+const GUARDED_DIR = join(UI_ROOT, "i18n", "guarded");
+
+export function parseGuardedList(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+}
+
+const guardedFromLists = readdirSync(GUARDED_DIR)
+  .filter((name) => name.endsWith(".txt"))
+  .sort()
+  .flatMap((name) => parseGuardedList(readFileSync(join(GUARDED_DIR, name), "utf8")));
+
+const GUARDED = [...new Set([...SCREENS, ...guardedFromLists])];
+
 // Words that may appear as literal JSX text or attribute values without
 // breaking the RU screen: machine tokens and vendor-scope words.
 const ALLOWED_TEXT = /^(—|-|…|\+|%|\d|\$|\{)/;
 
 describe("legacy screens carry no English literals", () => {
-  for (const rel of SCREENS) {
+  for (const rel of GUARDED) {
     it(`${rel} has no literal English UI text`, () => {
       const path = join(UI_ROOT, rel);
+      expect(existsSync(path), `guarded file ${rel} does not exist`).toBe(true);
       const source = readFileSync(path, "utf8");
       const lines = source.split("\n");
       const offenders: string[] = [];
