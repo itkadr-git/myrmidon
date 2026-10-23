@@ -18,6 +18,8 @@
  *   PAPERCLIP_NAME alias) and string literals "MYRMIDON_*" / "PAPERCLIP_*".
  * MYRMIDON_X and PAPERCLIP_X are one variable (alias) and are counted once.
  *
+ * Dynamic (runtime-built) names are checked against registry.dynamic_patterns.
+ *
  * Usage: node scripts/check-env-registry.mjs [--dump]
  */
 
@@ -92,6 +94,40 @@ export function extractEnvNames(root = ".") {
   return found;
 }
 
+/**
+ * Dynamic names: env names assembled at runtime (template literals such as
+ * `MYRMIDON_CLOUD_${x}_CLIENT_ID`, prefix constants such as "MYRMIDON_MCP_TOKEN_",
+ * "MYRMIDON_" + name). They cannot be listed by name, so each construction must
+ * be covered by a registry dynamic_patterns entry with the same prefix.
+ * Returns Map<canonicalPrefix, {file,line}>.
+ */
+const DYNAMIC_PATTERNS = [
+  /`((?:MYRMIDON|PAPERCLIP)_[A-Z0-9_]*)\$\{/g,
+  /["'`]((?:MYRMIDON|PAPERCLIP)_[A-Z0-9_]*_)["'`]/g,
+  /["'`]((?:MYRMIDON|PAPERCLIP)_)["'`]\s*\+/g,
+];
+
+export function extractDynamicPrefixes(root = ".") {
+  const found = new Map();
+  for (const scanRoot of SCAN_ROOTS) {
+    for (const file of walk(path.join(root, scanRoot))) {
+      const rel = path.relative(root, file).split(path.sep).join("/");
+      readFileSync(file, "utf8")
+        .split("\n")
+        .forEach((line, index) => {
+          for (const rx of DYNAMIC_PATTERNS) {
+            rx.lastIndex = 0;
+            for (const match of line.matchAll(rx)) {
+              const key = canonicalName(match[1]);
+              if (!found.has(key)) found.set(key, { file: rel, line: index + 1 });
+            }
+          }
+        });
+    }
+  }
+  return found;
+}
+
 export function parseCsv(text) {
   const rows = [];
   let row = [];
@@ -123,8 +159,24 @@ export function parseCsv(text) {
   return rows;
 }
 
-export function checkRegistry({ root = ".", extracted, registry, csvText }) {
+export function checkRegistry({ root = ".", extracted, registry, csvText, dynamic }) {
   const problems = [];
+  const patterns = registry.dynamic_patterns ?? [];
+  for (const pattern of patterns) {
+    for (const field of ["id", "template", "prefix", "classification", "scope", "source", "decision"]) {
+      if (typeof pattern[field] !== "string" || pattern[field] === "") problems.push(`dynamic pattern ${pattern.id ?? "?"}: field ${field} is empty`);
+    }
+    if (!CLASSIFICATIONS.has(pattern.classification)) problems.push(`dynamic pattern ${pattern.id}: bad classification ${pattern.classification}`);
+    if (!SCOPES.has(pattern.scope)) problems.push(`dynamic pattern ${pattern.id}: bad scope ${pattern.scope}`);
+  }
+  if (dynamic) {
+    const covered = new Set(patterns.map((p) => canonicalName(p.prefix)));
+    for (const [prefix, where] of dynamic) {
+      if (!covered.has(prefix)) {
+        problems.push(`${prefix}*: dynamic env name built in ${where.file}:${where.line} has no dynamic_patterns entry`);
+      }
+    }
+  }
   const entries = registry.entries ?? [];
   const names = new Map();
   for (const entry of entries) {
@@ -171,6 +223,7 @@ export function checkRegistry({ root = ".", extracted, registry, csvText }) {
 function main() {
   const root = process.cwd();
   const extracted = extractEnvNames(root);
+  const dynamic = extractDynamicPrefixes(root);
   if (process.argv.includes("--dump")) {
     const out = {};
     for (const [key, item] of [...extracted].sort(([a], [b]) => a.localeCompare(b))) {
@@ -181,14 +234,14 @@ function main() {
   }
   const registry = JSON.parse(readFileSync(path.join(root, REGISTRY_JSON), "utf8"));
   const csvText = readFileSync(path.join(root, REGISTRY_CSV), "utf8");
-  const problems = checkRegistry({ root, extracted, registry, csvText });
+  const problems = checkRegistry({ root, extracted, registry, csvText, dynamic });
   if (problems.length) {
     console.error(`env registry check failed (${problems.length}):`);
     for (const p of problems.slice(0, 100)) console.error(`  - ${p}`);
     console.error("Add the new variable to docs/myrmidon/env-registry-1.6.6.{json,csv} with classification, scope and decision.");
     process.exit(1);
   }
-  console.log(`env registry ok: ${registry.entries.length} entries cover ${extracted.size} names used in code`);
+  console.log(`env registry ok: ${registry.entries.length} entries cover ${extracted.size} names used in code, ${registry.dynamic_patterns.length} dynamic patterns cover ${dynamic.size} runtime-built prefixes`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) main();

@@ -38,11 +38,11 @@
     "Имена только, значения не читались.",
     "Классификация secret/infra/product: для имён из аудита — по аудиту 08.10 (class_basis=audit-20261008); для добавленных позже — по правилам имени/пути (class_basis=name-rule|settings-md) и подлежит проверке владельцем модуля.",
     "Столбец ui_or_store для продуктовых строк отражает аудит 08.10; наличие панели в main отмечено по имени файла, покрытие конкретного поля не проверялось.",
-    "Динамически собранные имена (шаблоны MYRMIDON_MCP_TOKEN_*) не перечисляются."
+    "Динамически собираемые имена не перечисляются поимённо, а описаны шаблонами в dynamic_patterns (префикс, допустимый набор значений, класс, источник); скрипт проверки находит в коде все динамические сборки имён и требует шаблон на каждую. Фактический набор имён в рантайме (по ботам/провайдерам экземпляра) определяется данными экземпляра и этим реестром не фиксируется."
   ],
   "counts": {
-    "unique_names": 883,
-    "secret": 109,
+    "unique_names": 882,
+    "secret": 108,
     "infra": 365,
     "product": 409
   },
@@ -8346,22 +8346,6 @@
       "decision": "перенести в хранилище секретов доски + secret-ref + UI (OPE-8822)"
     },
     {
-      "name": "MYRMIDON_MCP_TOKEN_",
-      "aliases": [],
-      "in_main_code": false,
-      "in_audit_20261008": true,
-      "in_settings_md": false,
-      "consumer": "server/src/myrmidon/bot-containers/profile-input.ts:789 (по аудиту 08.10; сканом по main прямое использование не найдено — требует проверки, не удалена ли переменная)",
-      "audit_reason": "secret or secret reference (must not be in UI)",
-      "classification": "secret",
-      "class_basis": "audit-20261008",
-      "scope": "process",
-      "ui_or_store": "UI нет; значение секрета только в env/окружении",
-      "secret_ref_or_instance_setup": "нужен secret-ref в хранилище секретов доски и выбор секрета в UI (правка оператора 08.10: секрет только в env = пробел)",
-      "ticket_or_pr": "OPE-8822",
-      "decision": "перенести в хранилище секретов доски + secret-ref + UI (OPE-8822)"
-    },
-    {
       "name": "MYRMIDON_MEDIA_BOTS_FILE",
       "aliases": [],
       "in_main_code": true,
@@ -14479,6 +14463,56 @@
       "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
       "ticket_or_pr": "не требуется",
       "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости"
+    }
+  ],
+  "dynamic_patterns": [
+    {
+      "id": "bot-mcp-token",
+      "template": "MYRMIDON_MCP_TOKEN_<BOT_NAME>",
+      "prefix": "MYRMIDON_MCP_TOKEN_",
+      "suffix_domain": "имя профиля бота в верхнем регистре; по одной переменной на бота экземпляра",
+      "classification": "secret",
+      "scope": "agent",
+      "source": "server/src/myrmidon/bot-containers/profile-input.ts (BOT_MCP_TOKEN_ENV_PREFIX)",
+      "secret_ref_or_instance_setup": "токен MCP бота; нужен secret-ref в хранилище секретов доски",
+      "ticket_or_pr": "OPE-8822",
+      "decision": "перенести в хранилище секретов доски + secret-ref + UI (OPE-8822)"
+    },
+    {
+      "id": "tool-oauth-provider",
+      "template": "PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_ID | PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_SECRET",
+      "prefix": "PAPERCLIP_TOOL_OAUTH_",
+      "suffix_domain": "PROVIDER = имя OAuth-провайдера инструмента (не-буквенно-цифровые символы заменены на _, верхний регистр); суффикс CLIENT_ID (infra) или CLIENT_SECRET (secret)",
+      "classification": "secret",
+      "scope": "instance",
+      "source": "server/src/services/tool-access.ts (oauthEnvName)",
+      "secret_ref_or_instance_setup": "CLIENT_SECRET: secret-ref; CLIENT_ID: настройка экземпляра",
+      "ticket_or_pr": "OPE-8822",
+      "decision": "перенести в хранилище секретов доски + secret-ref + UI (OPE-8822)"
+    },
+    {
+      "id": "cloud-oauth-provider",
+      "template": "MYRMIDON_CLOUD_<ONEDRIVE|GOOGLE_DRIVE|YANDEX_DISK>_CLIENT_ID | ..._CLIENT_SECRET",
+      "prefix": "MYRMIDON_CLOUD_",
+      "suffix_domain": "закрытый список из 3 провайдеров; CLIENT_SECRET — secret, CLIENT_ID — infra; 6 имён перечислены в entries",
+      "classification": "secret",
+      "scope": "instance",
+      "source": "server/src/myrmidon/cloud-connector/oauth.ts",
+      "secret_ref_or_instance_setup": "CLIENT_SECRET: secret-ref; CLIENT_ID: настройка экземпляра",
+      "ticket_or_pr": "OPE-8822",
+      "decision": "перенести в хранилище секретов доски + secret-ref + UI (OPE-8822)"
+    },
+    {
+      "id": "product-alias-prefix",
+      "template": "MYRMIDON_<NAME> <-> PAPERCLIP_<NAME>",
+      "prefix": "MYRMIDON_",
+      "suffix_domain": "правило алиаса: обе формы — одна переменная (canonicalName); собирается из имени, перечисленного в entries",
+      "classification": "infra",
+      "scope": "process",
+      "source": "server/src/dev-runner-worktree.ts; packages/adapter-utils/src/execution-target.ts; packages/adapter-utils/src/sandbox-callback-bridge.ts",
+      "secret_ref_or_instance_setup": "отдельной настройки нет: класс определяется именем в entries",
+      "ticket_or_pr": "OPE-8820",
+      "decision": "не отдельная переменная; учтено правилом алиасов"
     }
   ]
 }

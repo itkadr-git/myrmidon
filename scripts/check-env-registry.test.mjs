@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { canonicalName, checkRegistry, extractEnvNames, parseCsv, REGISTRY_CSV, REGISTRY_JSON } from "./check-env-registry.mjs";
+import { canonicalName, checkRegistry, extractDynamicPrefixes, extractEnvNames, parseCsv, REGISTRY_CSV, REGISTRY_JSON } from "./check-env-registry.mjs";
 
 const registry = JSON.parse(readFileSync(REGISTRY_JSON, "utf8"));
 const csvText = readFileSync(REGISTRY_CSV, "utf8");
@@ -14,7 +14,7 @@ test("PAPERCLIP_X and MYRMIDON_X are one variable", () => {
 });
 
 test("registry covers every env name used by the code", () => {
-  const problems = checkRegistry({ extracted: extractEnvNames("."), registry, csvText });
+  const problems = checkRegistry({ extracted: extractEnvNames("."), registry, csvText, dynamic: extractDynamicPrefixes(".") });
   assert.deepEqual(problems, []);
 });
 
@@ -32,4 +32,16 @@ test("an unclassified entry is reported", () => {
 
 test("csv parser handles quotes and commas", () => {
   assert.deepEqual(parseCsv('a,"b,c","d ""e"""\n1,2,3\n'), [["a", "b,c", 'd "e"'], ["1", "2", "3"]]);
+});
+
+test("every runtime-built env prefix has a dynamic pattern, including MYRMIDON_MCP_TOKEN_", () => {
+  const dynamic = extractDynamicPrefixes(".");
+  assert.ok(dynamic.has("MYRMIDON_MCP_TOKEN_"));
+  assert.deepEqual(checkRegistry({ extracted: new Map(), registry, dynamic }), []);
+});
+
+test("a runtime-built prefix without a pattern is reported", () => {
+  const dynamic = new Map([["MYRMIDON_UNKNOWN_FAMILY_", { file: "a.ts", line: 1 }]]);
+  const problems = checkRegistry({ extracted: new Map(), registry, dynamic });
+  assert.ok(problems.some((p) => p.startsWith("MYRMIDON_UNKNOWN_FAMILY_")));
 });

@@ -4,7 +4,7 @@
 
 ## Сверка числа
 
-- Всего уникальных имён в реестре: **883** (secret 109, infra 365, product 409).
+- Всего уникальных имён в реестре: **882** (secret 108, infra 365, product 409).
 - Аудит 08.10 (`settings-without-ui-20261008.md`, раздел C): 665 уникальных = 245 продуктовых (71 с UI, 174 без UI) + 420 инфраструктурных/секретных.
 - **«~420» — это не остаток без разбора, а число инфраструктурных и секретных переменных аудита** (таблица 2). Все 665 имён аудита разобраны в реестре.
 - Скан main (7a4d9c130) нашёл 741 имён; из них 158 добавлены после аудита 08.10 (или вне его охвата); 82 имён из аудита прямым сканом не найдены (чтение через иную форму либо удалены) — помечены в `consumer`.
@@ -15,7 +15,7 @@
 
 | Класс | Кол-во | Решение |
 |---|---|---|
-| secret | 109 | перенести в хранилище секретов доски: secret-ref + выбор в UI (OPE-8822) |
+| secret | 108 | перенести в хранилище секретов доски: secret-ref + выбор в UI (OPE-8822) |
 | infra | 365 | остаётся в env установки экземпляра (решение аудита 08.10) |
 | product | 409 | UI есть / нужен UI — по столбцу decision |
 
@@ -96,3 +96,15 @@
 | deployment-level / adapter-specific switch (set at install, not a runtime product knob) | 22 | `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_MODEL`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_LOGIN_EDGE_TLS_TERMINATED`, `GEMINI_CLI_TRUST_WORKSPACE`, `GOOGLE_GENAI_USE_GCA`, `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON`, `KIMI_MODEL_NAME`, `KIMI_MODEL_THINKING_EFFORT`, `MYRMIDON_BASE_PAPERCLIP`, `MYRMIDON_BOT_CANARY_TICK_SEC`, `MYRMIDON_CHAT_RECONCILE_FALLBACK_INTERVAL_MS`, `MYRMIDON_CODEX_AUTH_CACHE`, `MYRMIDON_DB_BACKUP_CATCHUP_WINDOW`, `MYRMIDON_DEPLOY_HEALTH_POLL_SEC`, `MYRMIDON_DEPLOY_TICK_SEC`, `MYRMIDON_EXECUTION_MODE`, `MYRMIDON_HIDDEN_SETTINGS`, `MYRMIDON_MULTI_PROJECT_WORKSPACE_SYNC`, `MYRMIDON_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE`, `MYRMIDON_SETTING_DEFAULTS`, `MYRMIDON_TOOL_OAUTH_CLIENT_ID` |
 | integration wiring: address, secret name, path or token of an external service / host | 17 | `MYRMIDON_ACCESS_HUB_SSH_TIMEOUT_MS`, `MYRMIDON_BOTD_BOARD_KEY_ENV`, `MYRMIDON_BOT_BOARD_GATEWAY`, `MYRMIDON_BOT_RECONCILE_INTERVAL_SEC`, `MYRMIDON_BOT_RELEASE_IMAGE`, `MYRMIDON_BOT_SCOPE_SUBDIR`, `MYRMIDON_BROWSER_FLEET`, `MYRMIDON_CLONE_REPORT_INTERVAL_SEC`, `MYRMIDON_DEPLOY_GITHUB_HEADERS_JSON`, `MYRMIDON_DOCKERGATE_MAX_RPS`, `MYRMIDON_EVALS_LANGFUSE_TIMEOUT_SEC`, `MYRMIDON_GITHUB_AUTH_MODE`, `MYRMIDON_LITELLM_AGENT_KEY_ENV`, `MYRMIDON_METRICS_ERROR_WINDOW_SEC`, `MYRMIDON_METRICS_LATENCY_WINDOW_SEC`, `MYRMIDON_TASK_WORKSPACE`, `MYRMIDON_ZABBIX_MAX_WINDOW_SEC` |
 | database connection / path | 12 | `DATABASE_MIGRATION_URL`, `DATABASE_URL`, `MYRMIDON_DB_BACKUP_ALERT_FILE`, `MYRMIDON_DB_BACKUP_DIR`, `MYRMIDON_DB_BACKUP_FILE_PREFIX`, `MYRMIDON_DB_BACKUP_MAX_AGE_HOURS`, `MYRMIDON_PG_DUMP_PATH`, `MYRMIDON_PSQL_PATH`, `MYRMIDON_TRACING_CLICKHOUSE_DATABASE`, `MYRMIDON_TRACING_CLICKHOUSE_URL`, `MYRMIDON_TRACING_CLICKHOUSE_USER`, `PGOPTIONS` |
+
+
+## Динамические шаблоны имён
+
+Имена, собираемые в коде на лету, описаны в `dynamic_patterns` JSON-реестра; проверка `scripts/check-env-registry.mjs` находит в коде каждую такую сборку и требует для неё шаблон.
+
+| id | шаблон | класс | область | источник |
+|---|---|---|---|---|
+| bot-mcp-token | `MYRMIDON_MCP_TOKEN_<BOT_NAME>` | secret | agent | server/src/myrmidon/bot-containers/profile-input.ts (BOT_MCP_TOKEN_ENV_PREFIX) |
+| tool-oauth-provider | `PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_ID | PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_SECRET` | secret | instance | server/src/services/tool-access.ts (oauthEnvName) |
+| cloud-oauth-provider | `MYRMIDON_CLOUD_<ONEDRIVE|GOOGLE_DRIVE|YANDEX_DISK>_CLIENT_ID | ..._CLIENT_SECRET` | secret | instance | server/src/myrmidon/cloud-connector/oauth.ts |
+| product-alias-prefix | `MYRMIDON_<NAME> <-> PAPERCLIP_<NAME>` | infra | process | server/src/dev-runner-worktree.ts; packages/adapter-utils/src/execution-target.ts; packages/adapter-utils/src/sandbox-callback-bridge.ts |
