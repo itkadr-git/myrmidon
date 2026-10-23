@@ -3,6 +3,9 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "@/i18n";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
+/** Key cap label: the physical key name, not UI copy. */
+const ESC_KEY_LABEL = "Esc";
+
 interface ShortcutEntry {
   keys: string[];
   label: string;
@@ -110,7 +113,7 @@ export function KeyboardShortcutsCheatsheetContent() {
       </div>
       <div className="border-t border-border px-5 py-3">
         <p className="text-xs text-muted-foreground">
-          <Trans i18nKey="area.shell-misc-1.keyboard-shortcuts-cheatsheet.footer" components={[<KeyCap key="esc">Esc</KeyCap>]} />
+          <Trans i18nKey="area.shell-misc-1.keyboard-shortcuts-cheatsheet.footer" components={[<KeyCap key="esc">{ESC_KEY_LABEL}</KeyCap>]} />
         </p>
       </div>
     </>
