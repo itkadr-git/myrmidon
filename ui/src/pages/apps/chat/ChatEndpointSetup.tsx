@@ -35,6 +35,11 @@ import {
   createGitHubPrivateKeyReadGuard,
   readGitHubPrivateKeyFile,
 } from "./github-private-key-file";
+import { Trans } from "react-i18next";
+import { i18n, useTranslation } from "@/i18n";
+
+// Component list for <Trans>: <0> is bold text, <1> is inline code.
+const strongCode = [<strong key="strong" />, <code key="code" />];
 
 const providerNames: Record<ChatProvider, string> = {
   agentmail: "AgentMail",
@@ -101,9 +106,14 @@ export function isChatEndpointRepairing(
 }
 
 function SetupRail({ step }: { step: number }) {
+  const { t } = useTranslation();
   return (
-    <ol className="space-y-2 text-sm" aria-label="Connection setup progress">
-      {["Choose agent", "Connect provider", "Try it"].map((label, index) => (
+    <ol className="space-y-2 text-sm" aria-label={t("area.apps-chat-email.chat-endpoint-setup.rail.ariaLabel")}>
+      {[
+        t("area.apps-chat-email.chat-endpoint-setup.rail.chooseAgent"),
+        t("area.apps-chat-email.chat-endpoint-setup.rail.connectProvider"),
+        t("area.apps-chat-email.chat-endpoint-setup.rail.tryIt"),
+      ].map((label, index) => (
         <li key={label} className="flex items-center gap-2">
           <span
             className={`flex h-6 w-6 items-center justify-center rounded-full border ${index < step ? "border-primary bg-primary text-primary-foreground" : index === step ? "border-foreground text-foreground" : "border-border text-muted-foreground"}`}
@@ -130,6 +140,7 @@ export function ChatEndpointSetup() {
   return params.get("provider") === "agentmail" ? <EmailEndpointSetup /> : <ChatSdkEndpointSetup />;
 }
 function ChatSdkEndpointSetup() {
+  const { t } = useTranslation();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -154,8 +165,8 @@ function ChatSdkEndpointSetup() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
-      { label: "Connect chat" },
+      { label: i18n.t("area.apps-chat-email.chat-endpoint-setup.breadcrumbs.connectors"), href: "/apps" },
+      { label: i18n.t("area.apps-chat-email.chat-endpoint-setup.breadcrumbs.connectChat") },
     ]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs]);
@@ -245,8 +256,8 @@ function ChatSdkEndpointSetup() {
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't start setup",
-        body: error instanceof Error ? error.message : "Try again.",
+        title: i18n.t("area.apps-chat-email.chat-endpoint-setup.createFailed"),
+        body: error instanceof Error ? error.message : i18n.t("area.apps-chat-email.chat-endpoint-setup.tryAgain"),
         tone: "error",
       }),
   });
@@ -330,8 +341,8 @@ function ChatSdkEndpointSetup() {
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't generate webhook secret",
-        body: error instanceof Error ? error.message : "Try again.",
+        title: i18n.t("area.apps-chat-email.chat-endpoint-setup.generateSecretFailed"),
+        body: error instanceof Error ? error.message : i18n.t("area.apps-chat-email.chat-endpoint-setup.tryAgain"),
         tone: "error",
       }),
   });
@@ -343,11 +354,11 @@ function ChatSdkEndpointSetup() {
     },
     onError: (error) =>
       pushToast({
-        title: "Test not complete",
+        title: i18n.t("area.apps-chat-email.chat-endpoint-setup.testIncomplete.title"),
         body:
           error instanceof Error
             ? error.message
-            : "Send the provider message, then try again.",
+            : i18n.t("area.apps-chat-email.chat-endpoint-setup.testIncomplete.body"),
         tone: "error",
       }),
   });
@@ -355,13 +366,13 @@ function ChatSdkEndpointSetup() {
   if (!provider)
     return (
       <p className="text-sm text-destructive">
-        This chat provider is not supported.
+        {t("area.apps-chat-email.chat-endpoint-setup.unsupported")}
       </p>
     );
   if (!selectedCompanyId)
     return (
       <p className="text-sm text-muted-foreground">
-        Select an organization to connect chat.
+        {t("area.apps-chat-email.chat-endpoint-setup.selectOrganization")}
       </p>
     );
 
@@ -369,9 +380,9 @@ function ChatSdkEndpointSetup() {
     return (
       <div className="max-w-2xl space-y-6">
         <div>
-          <h1 className="text-xl font-bold">Choose how to connect</h1>
+          <h1 className="text-xl font-bold">{t("area.apps-chat-email.chat-endpoint-setup.choice.title")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            What should this {providerNames[provider]} connection do?
+            {t("area.apps-chat-email.chat-endpoint-setup.choice.question", { provider: providerNames[provider] })}
           </p>
         </div>
         <div className="grid gap-3">
@@ -381,11 +392,10 @@ function ChatSdkEndpointSetup() {
             onClick={() => setPurpose("chat")}
           >
             <span className="block text-sm font-semibold">
-              Chat with an agent
+              {t("area.apps-chat-email.chat-endpoint-setup.choice.chatTitle")}
             </span>
             <span className="mt-1 block text-sm text-muted-foreground">
-              People in {providerNames[provider]} can start and continue
-              Myrmidon tasks.
+              {t("area.apps-chat-email.chat-endpoint-setup.choice.chatBody", { provider: providerNames[provider] })}
             </span>
           </button>
           <button
@@ -394,11 +404,10 @@ function ChatSdkEndpointSetup() {
             onClick={() => navigate(toolHref)}
           >
             <span className="block text-sm font-semibold">
-              Use this connection as an agent tool
+              {t("area.apps-chat-email.chat-endpoint-setup.choice.toolTitle")}
             </span>
             <span className="mt-1 block text-sm text-muted-foreground">
-              Let agents use {providerNames[provider]} actions and data while
-              they work.
+              {t("area.apps-chat-email.chat-endpoint-setup.choice.toolBody", { provider: providerNames[provider] })}
             </span>
           </button>
         </div>
@@ -426,19 +435,18 @@ function ChatSdkEndpointSetup() {
           <>
             <div>
               <h1 className="text-xl font-bold">
-                Which agent do you want to chat with?
+                {t("area.apps-chat-email.chat-endpoint-setup.agent.title")}
               </h1>
               <p className="mt-1 text-sm text-muted-foreground">
-                This agent is permanent for the connection. Connect another
-                channel to represent a different agent.
+                {t("area.apps-chat-email.chat-endpoint-setup.agent.description")}
               </p>
             </div>
             <AgentSelect
               agents={activeAgents}
               value={agentId}
               onChange={setAgentId}
-              placeholder="Choose an active agent"
-              emptyMessage="No active agents are available."
+              placeholder={t("area.apps-chat-email.chat-endpoint-setup.agent.placeholder")}
+              emptyMessage={t("area.apps-chat-email.chat-endpoint-setup.agent.empty")}
             />
             <div className="flex justify-end">
               <Button
@@ -448,7 +456,7 @@ function ChatSdkEndpointSetup() {
                 {createEndpoint.isPending && (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 )}
-                Continue
+                {t("area.apps-chat-email.chat-endpoint-setup.continue")}
               </Button>
             </div>
           </>
@@ -459,7 +467,7 @@ function ChatSdkEndpointSetup() {
                 role="alert"
                 className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive"
               >
-                <p className="font-medium">Connection failed</p>
+                <p className="font-medium">{t("area.apps-chat-email.chat-endpoint-setup.connectionFailed")}</p>
                 <p className="mt-1">{setupError}</p>
               </div>
             ) : null}
@@ -506,7 +514,7 @@ function ChatSdkEndpointSetup() {
         )}
         <div className="flex justify-start">
           <Button variant="ghost" onClick={() => navigate("/apps")}>
-            Save &amp; exit
+            {t("area.apps-chat-email.chat-endpoint-setup.saveAndExit")}
           </Button>
         </div>
       </main>
@@ -542,11 +550,12 @@ function ProviderConnectStep({
     values?: Record<string, string>,
   ) => void;
 }) {
+  const { t } = useTranslation();
   const { pushToast } = useToast();
   const reportCopyFailure = () =>
     pushToast({
-      title: "Couldn't copy to clipboard",
-      body: "Select and copy the value manually.",
+      title: i18n.t("area.apps-chat-email.chat-endpoint-setup.copyFailed.title"),
+      body: i18n.t("area.apps-chat-email.chat-endpoint-setup.copyFailed.body"),
       tone: "error",
     });
   const field = (key: string, label: string, type = "password") => (
@@ -574,7 +583,7 @@ function ProviderConnectStep({
       <p className="text-sm font-medium">{label}</p>
       <div className="rounded-lg border border-border bg-muted p-3 font-mono text-xs break-all">
         {value ??
-          "This endpoint is unavailable. Check the server's public URL."}
+          t("area.apps-chat-email.chat-endpoint-setup.endpointUnavailable")}
       </div>
     </div>
   );
@@ -612,7 +621,7 @@ function ProviderConnectStep({
       setPrivateKeyFileError(
         error instanceof Error
           ? error.message
-          : "Myrmidon couldn't read that file. Choose the .pem file again or paste the private key.",
+          : i18n.t("area.apps-chat-email.chat-endpoint-setup.github.readFailed"),
       );
     } finally {
       if (privateKeyReadGuard.isCurrent(readRevision)) {
@@ -765,29 +774,25 @@ settings:
     return (
       <div className="space-y-5">
         <div>
-          <h1 className="text-xl font-bold">Connect {agentName} to Discord</h1>
+          <h1 className="text-xl font-bold">{t("area.apps-chat-email.chat-endpoint-setup.discord.title", { agent: agentName })}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {repairing
-              ? "Reconnect verifies this same Discord application and server installation. It does not add or remove the bot from the server. Leave fields blank to reuse saved credentials."
-              : "Create one dedicated Discord application and bot for this Myrmidon agent."}
+              ? t("area.apps-chat-email.chat-endpoint-setup.discord.descriptionRepair")
+              : t("area.apps-chat-email.chat-endpoint-setup.discord.descriptionNew")}
           </p>
         </div>
       <ol className="list-decimal space-y-2 pl-5 text-sm">
           <li>
-            In Discord Developer Portal, create an application. Copy its
-            Application ID from General Information.
+            {t("area.apps-chat-email.chat-endpoint-setup.discord.step1")}
           </li>
           <li>
-            Open Bot, create the bot, enable Message Content Intent, then reset
-            and copy its token.
+            {t("area.apps-chat-email.chat-endpoint-setup.discord.step2")}
           </li>
           <li>
-            Enable Developer Mode in Discord, right-click the target server, and
-            copy its Server ID.
+            {t("area.apps-chat-email.chat-endpoint-setup.discord.step3")}
           </li>
           <li>
-            Enter those values below, then use the generated install link to add
-            the bot to that server.
+            {t("area.apps-chat-email.chat-endpoint-setup.discord.step4")}
           </li>
         </ol>
         <Button
@@ -796,23 +801,20 @@ settings:
             openProviderSetup("https://discord.com/developers/applications")
           }
         >
-          Open Discord Developer Portal <ExternalLink />
+          {t("area.apps-chat-email.chat-endpoint-setup.discord.openPortal")} <ExternalLink />
         </Button>
-        {field("applicationId", "Application ID", "text")}
-        {field("guildId", "Server ID", "text")}
-        {field("botToken", "Bot token")}
+        {field("applicationId", t("area.apps-chat-email.chat-endpoint-setup.discord.applicationId"), "text")}
+        {field("guildId", t("area.apps-chat-email.chat-endpoint-setup.discord.serverId"), "text")}
+        {field("botToken", t("area.apps-chat-email.chat-endpoint-setup.shared.botToken"))}
         {installUrl && (
           <Button asChild variant="outline">
             <a href={installUrl} target="_blank" rel="noreferrer">
-              Install bot in this server <ExternalLink />
+              {t("area.apps-chat-email.chat-endpoint-setup.discord.install")} <ExternalLink />
             </a>
           </Button>
         )}
         <p className="text-sm text-muted-foreground">
-          The install link grants only View Channels, Send Messages, Create
-          Public Threads, Send Messages in Threads, Read Message History, Add
-          Reactions, Embed Links, and Attach Files. Myrmidon still requires
-          each discovered channel to be enabled in Access.
+          {t("area.apps-chat-email.chat-endpoint-setup.discord.permissions")}
         </p>
         <Button
           disabled={
@@ -827,7 +829,7 @@ settings:
           }
         >
           {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-          {repairing ? "Reconnect Discord bot" : "Connect Discord bot"}
+          {repairing ? t("area.apps-chat-email.chat-endpoint-setup.discord.reconnect") : t("area.apps-chat-email.chat-endpoint-setup.discord.connect")}
         </Button>
       </div>
     );
@@ -836,40 +838,35 @@ settings:
     return (
       <div className="space-y-5">
         <div>
-          <h1 className="text-xl font-bold">Create {agentName} in Telegram</h1>
+          <h1 className="text-xl font-bold">{t("area.apps-chat-email.chat-endpoint-setup.telegram.title", { agent: agentName })}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {repairing
-              ? "Reconnect verifies this same BotFather bot and automatically refreshes its Myrmidon webhook and command menu. It does not recreate the bot or change its chat memberships. Leave the token blank to reuse the saved credential."
-              : "Create a bot with BotFather, then paste the token it gives you."}
+              ? t("area.apps-chat-email.chat-endpoint-setup.telegram.descriptionRepair")
+              : t("area.apps-chat-email.chat-endpoint-setup.telegram.descriptionNew")}
           </p>
         </div>
         <ol className="list-decimal space-y-2 pl-5 text-sm">
           <li>
-            Open BotFather and send <code>/newbot</code>.
+            <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.telegram.step1" components={strongCode} />
           </li>
-          <li>Enter the bot display name.</li>
+          <li>{t("area.apps-chat-email.chat-endpoint-setup.telegram.step2")}</li>
           <li>
-            Choose an available username ending in <code>bot</code>.
+            <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.telegram.step3" components={strongCode} />
           </li>
         </ol>
         <p className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
-          Myrmidon works with Telegram&apos;s default bot privacy mode and
-          registers its command menu automatically. In a group, ordinary
-          mentions are not delivered to bots: start or continue work with{" "}
-          <code>/task@bot_username &lt;request&gt;</code>, or reply directly to
-          a message from the bot.
+          <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.telegram.privacyNote" values={{ usage: "/task@bot_username <request>" }} components={strongCode} />
         </p>
         <Button
           variant="outline"
           onClick={() => openProviderSetup("https://t.me/BotFather")}
         >
-          Open BotFather <ExternalLink />
+          {t("area.apps-chat-email.chat-endpoint-setup.telegram.openBotFather")} <ExternalLink />
         </Button>
-        {field("botToken", "Bot token")}
+        {field("botToken", t("area.apps-chat-email.chat-endpoint-setup.shared.botToken"))}
         {!endpoint.setup?.webhookUrl && (
           <p className="text-sm text-destructive">
-            Configure a public HTTPS URL for this Myrmidon instance before
-            connecting Telegram.
+            {t("area.apps-chat-email.chat-endpoint-setup.shared.publicUrlRequired", { provider: providerNames[provider] })}
           </p>
         )}
         <Button
@@ -883,7 +880,7 @@ settings:
           }
         >
           {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-          {repairing ? "Reconnect bot" : "Connect bot"}
+          {repairing ? t("area.apps-chat-email.chat-endpoint-setup.telegram.reconnect") : t("area.apps-chat-email.chat-endpoint-setup.telegram.connect")}
         </Button>
       </div>
     );
@@ -892,42 +889,26 @@ settings:
       <div className="space-y-5">
         <div>
           <h1 className="text-xl font-bold">
-            Connect {agentName} to Microsoft Teams
+            {t("area.apps-chat-email.chat-endpoint-setup.teams.title", { agent: agentName })}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {repairing
-              ? "Reconnect verifies this same Microsoft app, tenant, and bot identity. It does not upload or reinstall the Teams app. Leave fields blank to reuse saved credentials."
-              : "Use your own Microsoft app credentials for this bot."}
+              ? t("area.apps-chat-email.chat-endpoint-setup.teams.descriptionRepair")
+              : t("area.apps-chat-email.chat-endpoint-setup.teams.descriptionNew")}
           </p>
         </div>
         <p className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
-          This setup requires a Microsoft 365 work or school organization where
-          you can register an Entra app, create an Azure Bot, and upload or
-          install a Teams app. Personal or free Teams accounts at teams.live.com
-          cannot complete this setup. This release supports Microsoft 365
-          commercial cloud tenants only; GCC, GCC High, DoD, and Microsoft 365
-          operated by 21Vianet are not supported yet.
+          {t("area.apps-chat-email.chat-endpoint-setup.teams.requirements")}
         </p>
         <ol className="list-decimal space-y-2 pl-5 text-sm">
           <li>
-            In Microsoft Entra, create a single-tenant app registration. Copy
-            its Application (client) ID and Directory (tenant) ID, then create a
-            client secret and copy its value.
+            {t("area.apps-chat-email.chat-endpoint-setup.teams.step1")}
           </li>
           <li>
-            In Azure, create an Azure Bot. Choose Single Tenant, use that
-            Application ID, set its messaging endpoint to the Myrmidon URL
-            below, and add the Microsoft Teams channel.
+            {t("area.apps-chat-email.chat-endpoint-setup.teams.step2")}
           </li>
           <li>
-            In Teams Developer Portal, create an app, add a bot with the same
-            Application ID, then apply the manifest settings shown below. The
-            block binds the Teams resource-specific consent permissions to that
-            Entra app; these are not Microsoft Graph permissions in Entra. These
-            permissions let the installed app receive every message in a team or
-            group chat without an @mention, so describe that access to
-            installers. Download the package and install it in the target team
-            or group chat.
+            {t("area.apps-chat-email.chat-endpoint-setup.teams.step3")}
           </li>
         </ol>
         <div className="flex flex-wrap gap-2">
@@ -937,7 +918,7 @@ settings:
               target="_blank"
               rel="noreferrer"
             >
-              Open Microsoft Entra <ExternalLink />
+              {t("area.apps-chat-email.chat-endpoint-setup.teams.openEntra")} <ExternalLink />
             </a>
           </Button>
           <Button asChild variant="outline">
@@ -946,7 +927,7 @@ settings:
               target="_blank"
               rel="noreferrer"
             >
-              Create Azure Bot <ExternalLink />
+              {t("area.apps-chat-email.chat-endpoint-setup.teams.createAzureBot")} <ExternalLink />
             </a>
           </Button>
           <Button asChild variant="outline">
@@ -955,79 +936,43 @@ settings:
               target="_blank"
               rel="noreferrer"
             >
-              Open Teams Developer Portal <ExternalLink />
+              {t("area.apps-chat-email.chat-endpoint-setup.teams.openPortal")} <ExternalLink />
             </a>
           </Button>
         </div>
         {endpointValue(
-          "Myrmidon messaging endpoint",
+          t("area.apps-chat-email.chat-endpoint-setup.teams.messagingEndpoint"),
           endpoint.setup?.messagingEndpoint,
         )}
-        {field("clientId", "Application / Client ID", "text")}
-        {field("tenantId", "Directory / Tenant ID", "text")}
-        {field("clientSecret", "Client secret value")}
+        {field("clientId", t("area.apps-chat-email.chat-endpoint-setup.teams.clientId"), "text")}
+        {field("tenantId", t("area.apps-chat-email.chat-endpoint-setup.teams.tenantId"), "text")}
+        {field("clientSecret", t("area.apps-chat-email.chat-endpoint-setup.teams.clientSecret"))}
         <section className="space-y-3 rounded-lg border border-border p-4">
           <div>
             <h2 className="text-sm font-semibold">
-              Microsoft portal field map
+              {t("area.apps-chat-email.chat-endpoint-setup.teams.fieldMapTitle")}
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Use these exact portal sections and reuse the same Application ID
-              in all three places.
+              {t("area.apps-chat-email.chat-endpoint-setup.teams.fieldMapIntro")}
             </p>
           </div>
           <ol className="list-decimal space-y-3 pl-5 text-sm">
             <li>
-              <strong>Microsoft Entra admin center · App registrations</strong>:
-              select <strong>New registration</strong>, choose{" "}
-              <strong>
-                Accounts in this organizational directory only (Single tenant)
-              </strong>
-              , then select <strong>Register</strong>. Copy{" "}
-              <strong>Application (client) ID</strong> and{" "}
-              <strong>Directory (tenant) ID</strong>. Under{" "}
-              <strong>Certificates &amp; secrets · Client secrets</strong>,
-              select <strong>New client secret</strong> and copy its{" "}
-              <strong>Value</strong>, not its Secret ID.
+              <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.teams.fieldMap1" components={strongCode} />
             </li>
             <li>
-              <strong>Azure · Create Azure Bot</strong>: set{" "}
-              <strong>Microsoft App ID</strong> to{" "}
-              <strong>Single Tenant</strong>, set <strong>Creation type</strong>{" "}
-              to <strong>Use existing app registration</strong>, and enter the
-              Application ID and Tenant ID above. After creation, open{" "}
-              <strong>Settings · Configuration</strong> and paste the Myrmidon{" "}
-              <strong>Messaging endpoint</strong>; then open{" "}
-              <strong>Settings · Channels</strong> and enable{" "}
-              <strong>Microsoft Teams</strong>.
+              <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.teams.fieldMap2" components={strongCode} />
             </li>
             <li>
-              <strong>Teams Developer Portal · Apps</strong>: select{" "}
-              <strong>New app</strong>. Under{" "}
-              <strong>Configure · App features · Bot</strong>, add an existing
-              bot using the same Application ID; enable{" "}
-              <strong>Personal</strong>, <strong>Team</strong>, and{" "}
-              <strong>Group chat</strong> scopes plus file support. Under{" "}
-              <strong>Configure · Permissions</strong>, add the two RSC{" "}
-              <strong>Application</strong> permissions shown below. Complete the
-              required app details and icons, explain that the app can receive
-              every message in an installed team or group chat, then download
-              the app package.
+              <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.teams.fieldMap3" components={strongCode} />
             </li>
             <li>
-              <strong>Microsoft Teams · Apps · Manage your apps</strong>: select{" "}
-              <strong>Upload an app · Upload a custom app</strong>, choose the
-              downloaded package, and install it in each intended personal chat,
-              group chat, or team. One team install covers its standard
-              channels. Private and shared channels require a separate app
-              installation and are not supported by this release. If upload is
-              unavailable, a Teams administrator must enable or approve custom
-              apps.
+              <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.teams.fieldMap4" components={strongCode} />
             </li>
           </ol>
         </section>
         <label className="grid gap-2 text-sm font-medium">
-          Required Teams app manifest block
+          {t("area.apps-chat-email.chat-endpoint-setup.teams.manifestBlock")}
           <Textarea
             className="min-h-80 font-mono text-xs"
             readOnly
@@ -1046,43 +991,25 @@ settings:
             }}
           >
             {manifestCopied
-              ? "Manifest settings copied"
-              : "Copy manifest settings"}
+              ? t("area.apps-chat-email.chat-endpoint-setup.teams.manifestCopied")
+              : t("area.apps-chat-email.chat-endpoint-setup.teams.copyManifest")}
           </Button>
         </div>
         <p className="text-sm text-muted-foreground">
-          Enter the Application / Client ID above before copying so the block
-          contains the real bot identity. This block contains the
-          Myrmidon-specific fields to verify in Developer Portal or merge into
-          a complete Teams app manifest. It is not a complete app package;
-          Developer Portal supplies the remaining required metadata and packages
-          the manifest with your app icons.
+          {t("area.apps-chat-email.chat-endpoint-setup.teams.manifestNote")}
         </p>
         <p className="text-sm text-muted-foreground">
-          Myrmidon does not use Teams single sign-on in this release. The
-          copied <code>webApplicationInfo</code> entry only associates the RSC
-          permissions with the same Entra Application ID. Its nonempty resource
-          is an RSC placeholder; you do not need to register an Entra
-          Application ID URI or add delegated Microsoft Graph permissions.
+          <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.teams.ssoNote" components={strongCode} />
         </p>
         <p className="text-sm text-muted-foreground">
-          The two application RSC permissions let the bot receive every message,
-          without an @mention, in each team or group chat where it is installed.
-          Myrmidon retains and acts only on messages admitted by your Myrmidon
-          reach and access rules. Make this provider access clear in the app
-          description shown to installers.
+          {t("area.apps-chat-email.chat-endpoint-setup.teams.rscNote")}
         </p>
         <p className="text-sm text-muted-foreground">
-          This release supports personal chats, group chats, and standard team
-          channels—not private channels. <code>supportsFiles: true</code>{" "}
-          enables native file receipt and consent-based sending in personal
-          chats; channel and group-chat files need a separate Microsoft Graph
-          connection and are not ingested here.
+          <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.teams.scopeNote" components={strongCode} />
         </p>
         {!endpoint.setup?.messagingEndpoint && (
           <p className="text-sm text-destructive">
-            Configure a public HTTPS URL for this Myrmidon instance before
-            connecting Microsoft Teams.
+            {t("area.apps-chat-email.chat-endpoint-setup.shared.publicUrlRequired", { provider: providerNames[provider] })}
           </p>
         )}
         <Button
@@ -1100,8 +1027,8 @@ settings:
         >
           {pending && <Loader2 className="h-4 w-4 animate-spin" />}
           {repairing
-            ? "Reconnect Microsoft app"
-            : "Verify Microsoft credentials"}
+            ? t("area.apps-chat-email.chat-endpoint-setup.teams.reconnect")
+            : t("area.apps-chat-email.chat-endpoint-setup.teams.verify")}
         </Button>
       </div>
     );
@@ -1111,54 +1038,39 @@ settings:
         <div>
           <h1 className="text-xl font-bold">
             {repairing
-              ? "Reconnect GitHub App"
-              : "Create or connect a GitHub App"}
+              ? t("area.apps-chat-email.chat-endpoint-setup.github.titleRepair")
+              : t("area.apps-chat-email.chat-endpoint-setup.github.titleNew")}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {repairing
-              ? "Reconnect verifies this same App and installation, then updates its webhook URL, secret, and secure delivery settings. It does not reinstall the App or change repository access. Leave App ID and private key blank to reuse saved credentials. Keep Webhooks · Active enabled in GitHub; send a test conversation after reconnecting."
-              : "Configure its webhook and permissions, then verify the App with Myrmidon."}
+              ? t("area.apps-chat-email.chat-endpoint-setup.github.descriptionRepair")
+              : t("area.apps-chat-email.chat-endpoint-setup.github.descriptionNew")}
           </p>
         </div>
         {!repairing && (
           <ol className="list-decimal space-y-2 pl-5 text-sm">
             <li>
-              Under the target user or organization, create a new GitHub App.
-              Give it a globally unique name (34 characters or fewer), use the
-              Myrmidon homepage URL below, and leave user authorization off.
+              <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.github.step1" components={strongCode} />
             </li>
             <li>
-              Keep <strong>Webhooks · Active</strong> on. Enter the Myrmidon
-              webhook URL and the Myrmidon-generated webhook secret below, and
-              keep <strong>Enable SSL verification</strong> selected.
+              <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.github.step2" components={strongCode} />
             </li>
             <li>
-              Under Repository permissions, set <strong>Issues</strong> and{" "}
-              <strong>Pull requests</strong> to{" "}
-              <strong>Read &amp; write</strong>. Leave every other permission at
-              its default; Metadata remains read-only.
+              <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.github.step3" components={strongCode} />
             </li>
             <li>
-              Subscribe to <strong>Issue comment</strong> (
-              <code>issue_comment</code>),{" "}
-              <strong>Pull request review comment</strong> (
-              <code>pull_request_review_comment</code>). GitHub sends{" "}
-              <code>installation</code> and{" "}
-              <code>installation_repositories</code> to every GitHub App
-              automatically; they are not selectable here.
+              <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.github.step4" components={strongCode} />
             </li>
             <li>
-              Choose <strong>Only on this account</strong>, create the App, copy
-              its App ID, generate one private key, then install it on the
-              selected repositories.
+              <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.github.step5" components={strongCode} />
             </li>
           </ol>
         )}
         {endpointValue(
-          "Myrmidon homepage URL",
+          t("area.apps-chat-email.chat-endpoint-setup.github.homepageUrl"),
           publicOrigin(endpoint.setup?.webhookUrl),
         )}
-        {endpointValue("Myrmidon webhook URL", endpoint.setup?.webhookUrl)}
+        {endpointValue(t("area.apps-chat-email.chat-endpoint-setup.shared.webhookUrl"), endpoint.setup?.webhookUrl)}
         <Button
           variant="outline"
           onClick={() =>
@@ -1172,12 +1084,12 @@ settings:
             )
           }
         >
-          {repairing ? "Open GitHub App settings" : "Open new GitHub App form"}{" "}
+          {repairing ? t("area.apps-chat-email.chat-endpoint-setup.github.openSettings") : t("area.apps-chat-email.chat-endpoint-setup.github.openNewForm")}{" "}
           <ExternalLink />
         </Button>
-        {field("appId", "GitHub App ID", "text")}
+        {field("appId", t("area.apps-chat-email.chat-endpoint-setup.github.appId"), "text")}
         <div className="grid gap-2 text-sm font-medium">
-          <label htmlFor="github-private-key">Private key (PEM)</label>
+          <label htmlFor="github-private-key">{t("area.apps-chat-email.chat-endpoint-setup.github.privateKey")}</label>
           <div className="relative">
             {privateKeyVisible ? (
               <Textarea
@@ -1205,7 +1117,7 @@ settings:
               size="icon"
               className="absolute right-1 top-1"
               aria-label={
-                privateKeyVisible ? "Hide private key" : "Show private key"
+                privateKeyVisible ? t("area.apps-chat-email.chat-endpoint-setup.github.hideKey") : t("area.apps-chat-email.chat-endpoint-setup.github.showKey")
               }
               onClick={() => setPrivateKeyVisible((visible) => !visible)}
             >
@@ -1217,7 +1129,7 @@ settings:
             type="file"
             accept=".pem,.key,application/x-pem-file,application/pkcs8,text/plain"
             className="hidden"
-            aria-label="Choose GitHub App private key file"
+            aria-label={t("area.apps-chat-email.chat-endpoint-setup.github.keyFileAriaLabel")}
             onChange={loadPrivateKeyFile}
           />
           <div>
@@ -1226,7 +1138,7 @@ settings:
               variant="outline"
               onClick={() => privateKeyFileInputRef.current?.click()}
             >
-              Choose .pem file
+              {t("area.apps-chat-email.chat-endpoint-setup.github.chooseFile")}
             </Button>
           </div>
           {privateKeyFileError ? (
@@ -1240,7 +1152,7 @@ settings:
               aria-live="polite"
               className="text-sm text-muted-foreground"
             >
-              Reading private key file…
+              {t("area.apps-chat-email.chat-endpoint-setup.github.readingFile")}
             </p>
           ) : privateKeyFileLoaded ? (
             <p
@@ -1248,16 +1160,16 @@ settings:
               aria-live="polite"
               className="text-sm text-muted-foreground"
             >
-              Private key loaded. It stays in this form until you connect.
+              {t("area.apps-chat-email.chat-endpoint-setup.github.keyLoaded")}
             </p>
           ) : null}
         </div>
         <div className="grid gap-2">
-          <p className="text-sm font-medium">Webhook secret</p>
+          <p className="text-sm font-medium">{t("area.apps-chat-email.chat-endpoint-setup.github.webhookSecret")}</p>
           {generatedWebhookSecret ? (
             <>
               <Input
-                aria-label="Generated webhook secret"
+                aria-label={t("area.apps-chat-email.chat-endpoint-setup.github.generatedSecretAriaLabel")}
                 className="font-mono text-xs"
                 readOnly
                 value={generatedWebhookSecret}
@@ -1272,18 +1184,18 @@ settings:
                     );
                   }}
                 >
-                  Copy webhook secret
+                  {t("area.apps-chat-email.chat-endpoint-setup.github.copySecret")}
                 </Button>
               </div>
               <p className="text-sm text-muted-foreground">
-                Copy this value now. Myrmidon will not show it again.
+                {t("area.apps-chat-email.chat-endpoint-setup.github.copyNow")}
               </p>
             </>
           ) : (
             <p className="text-sm text-muted-foreground">
               {endpoint.setup?.webhookSecretConfigured
-                ? "A webhook secret is configured and cannot be shown again."
-                : "Generate the secret in Myrmidon, then paste it into the GitHub App."}
+                ? t("area.apps-chat-email.chat-endpoint-setup.github.secretConfigured")
+                : t("area.apps-chat-email.chat-endpoint-setup.github.secretGenerateHint")}
             </p>
           )}
           <div>
@@ -1297,15 +1209,15 @@ settings:
                 <Loader2 className="h-4 w-4 animate-spin" />
               )}
               {endpoint.setup?.webhookSecretConfigured
-                ? "Regenerate webhook secret"
-                : "Generate webhook secret"}
+                ? t("area.apps-chat-email.chat-endpoint-setup.github.regenerate")
+                : t("area.apps-chat-email.chat-endpoint-setup.github.generate")}
             </Button>
           </div>
           {endpoint.setup?.webhookSecretConfigured && (
             <p className="text-sm text-muted-foreground">
               {endpoint.providerAccountId || endpoint.botExternalId
-                ? "Regenerating immediately invalidates GitHub webhook signatures until you replace the secret in the GitHub App settings."
-                : "Generating another secret replaces the previous value. Paste the newest value into GitHub before continuing."}
+                ? t("area.apps-chat-email.chat-endpoint-setup.github.regenerateWarning")
+                : t("area.apps-chat-email.chat-endpoint-setup.github.generateAgainWarning")}
             </p>
           )}
           {endpoint.setup?.webhookSecretConfigured && (
@@ -1313,15 +1225,14 @@ settings:
               className={`text-sm ${endpoint.setup.webhookVerifiedAt ? "text-foreground" : "text-muted-foreground"}`}
             >
               {endpoint.setup.webhookVerifiedAt
-                ? "GitHub has verified this webhook."
-                : "Waiting for GitHub to deliver its signed webhook ping…"}
+                ? t("area.apps-chat-email.chat-endpoint-setup.github.verified")
+                : t("area.apps-chat-email.chat-endpoint-setup.github.waitingVerification")}
             </p>
           )}
         </div>
         {!endpoint.setup?.webhookUrl && (
           <p className="text-sm text-destructive">
-            Configure a public HTTPS URL for this Myrmidon instance before
-            connecting GitHub.
+            {t("area.apps-chat-email.chat-endpoint-setup.shared.publicUrlRequired", { provider: providerNames[provider] })}
           </p>
         )}
         <Button
@@ -1339,7 +1250,7 @@ settings:
           }
         >
           {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-          {repairing ? "Reconnect and verify" : "Connect and verify"}
+          {repairing ? t("area.apps-chat-email.chat-endpoint-setup.github.reconnect") : t("area.apps-chat-email.chat-endpoint-setup.github.connect")}
         </Button>
       </div>
     );
@@ -1347,31 +1258,22 @@ settings:
     return (
       <div className="space-y-5">
         <div>
-          <h1 className="text-xl font-bold">Finish Slack setup</h1>
+          <h1 className="text-xl font-bold">{t("area.apps-chat-email.chat-endpoint-setup.slackFinish.title")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Point the Slack app at Myrmidon now that its signing secret is
-            connected.
+            {t("area.apps-chat-email.chat-endpoint-setup.slackFinish.description")}
           </p>
         </div>
-        {endpointValue("Myrmidon webhook URL", endpoint.setup?.webhookUrl)}
-        {endpointValue("Slack command", slackCommand)}
+        {endpointValue(t("area.apps-chat-email.chat-endpoint-setup.shared.webhookUrl"), endpoint.setup?.webhookUrl)}
+        {endpointValue(t("area.apps-chat-email.chat-endpoint-setup.slackFinish.command"), slackCommand)}
         <div className="rounded-lg border border-border p-3 text-sm">
-          <p className="font-medium">Use the registered command</p>
+          <p className="font-medium">{t("area.apps-chat-email.chat-endpoint-setup.slackFinish.useCommand")}</p>
           <p className="mt-1 text-muted-foreground">
-            Start work with <code>{slackCommand} investigate this</code>. In a
-            direct message, use <code>{slackCommand} status</code>,{" "}
-            <code>{slackCommand} new</code>, or{" "}
-            <code>{slackCommand} close</code>. Slack&apos;s bare{" "}
-            <code>/status</code> command is not a Myrmidon control.
+            <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.slackFinish.commandHelp" values={{ command: slackCommand }} components={strongCode} />
           </p>
         </div>
         <ol className="list-decimal space-y-2 pl-5 text-sm">
           <li>
-            Return to <strong>App Manifest</strong> in Slack and click{" "}
-            <strong>Save Changes</strong>. The copied manifest already contains
-            the event, interaction, and slash-command URLs. Slack verifies the
-            Events URL when you save; Myrmidon records Interactivity and slash
-            command health only after each signed callback is observed.
+            <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.slackFinish.step1" components={strongCode} />
           </li>
         </ol>
         <div className="flex flex-wrap gap-2">
@@ -1379,11 +1281,11 @@ settings:
             variant="outline"
             onClick={() => openProviderSetup("https://api.slack.com/apps")}
           >
-            Open Slack app settings <ExternalLink />
+            {t("area.apps-chat-email.chat-endpoint-setup.shared.openSlackSettings")} <ExternalLink />
           </Button>
           <Button disabled={pending} onClick={() => onAction("verify")}>
             {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-            Start Slack message test
+            {t("area.apps-chat-email.chat-endpoint-setup.slackFinish.startTest")}
           </Button>
         </div>
       </div>
@@ -1391,42 +1293,40 @@ settings:
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-xl font-bold">Connect a Slack app</h1>
+        <h1 className="text-xl font-bold">{t("area.apps-chat-email.chat-endpoint-setup.slack.title")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           {repairing
-            ? "Reconnect verifies or replaces credentials for this same Slack app. It does not reinstall the app or change its workspace or channel membership. Leave credentials blank to reuse the saved values."
-            : "Bring your own Slack app. The manifest requests the scopes Myrmidon needs; credentials remain write-only."}
+            ? t("area.apps-chat-email.chat-endpoint-setup.slack.descriptionRepair")
+            : t("area.apps-chat-email.chat-endpoint-setup.slack.descriptionNew")}
         </p>
       </div>
       <ol className="list-decimal space-y-2 pl-5 text-sm">
         <li>
-          Copy the manifest, then create a Slack app{" "}
-          <strong>From an app manifest</strong> in the target workspace.
+          <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.slack.step1" components={strongCode} />
         </li>
         <li>
-          Open <strong>OAuth &amp; Permissions</strong>, install the app to the
-          workspace, and copy its Bot User OAuth Token.
+          <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.slack.step2" components={strongCode} />
         </li>
         <li>
-          Open <strong>Basic Information</strong> and copy its Signing Secret.
+          <Trans i18nKey="area.apps-chat-email.chat-endpoint-setup.slack.step3" components={strongCode} />
         </li>
       </ol>
       <div className="space-y-2 rounded-lg border border-border p-3 text-sm">
         <div className="flex items-center justify-between gap-4">
-          <span className="text-muted-foreground">Slack app name</span>
+          <span className="text-muted-foreground">{t("area.apps-chat-email.chat-endpoint-setup.slack.appName")}</span>
           <code>{slackAppName}</code>
         </div>
         <div className="flex items-center justify-between gap-4">
-          <span className="text-muted-foreground">Bot display name</span>
+          <span className="text-muted-foreground">{t("area.apps-chat-email.chat-endpoint-setup.slack.botName")}</span>
           <code>{slackBotName}</code>
         </div>
         <div className="flex items-center justify-between gap-4">
-          <span className="text-muted-foreground">Slash command</span>
+          <span className="text-muted-foreground">{t("area.apps-chat-email.chat-endpoint-setup.slack.slashCommand")}</span>
           <code>{slackCommand}</code>
         </div>
       </div>
       <label className="grid gap-2 text-sm font-medium">
-        Slack app manifest
+        {t("area.apps-chat-email.chat-endpoint-setup.slack.manifest")}
         <Textarea
           className="min-h-56 font-mono text-xs"
           readOnly
@@ -1443,21 +1343,20 @@ settings:
             );
           }}
         >
-          {manifestCopied ? "Manifest copied" : "Copy manifest"}
+          {manifestCopied ? t("area.apps-chat-email.chat-endpoint-setup.slack.manifestCopied") : t("area.apps-chat-email.chat-endpoint-setup.slack.copyManifest")}
         </Button>
         <Button
           variant="outline"
           onClick={() => openProviderSetup("https://api.slack.com/apps")}
         >
-          Open Slack app settings <ExternalLink />
+          {t("area.apps-chat-email.chat-endpoint-setup.shared.openSlackSettings")} <ExternalLink />
         </Button>
       </div>
-      {field("botToken", "Bot User OAuth Token")}
-      {field("signingSecret", "Signing Secret")}
+      {field("botToken", t("area.apps-chat-email.chat-endpoint-setup.slack.botToken"))}
+      {field("signingSecret", t("area.apps-chat-email.chat-endpoint-setup.slack.signingSecret"))}
       {!endpoint.setup?.webhookUrl && (
         <p className="text-sm text-destructive">
-          Configure a public HTTPS URL for this Myrmidon instance before
-          connecting Slack.
+          {t("area.apps-chat-email.chat-endpoint-setup.shared.publicUrlRequired", { provider: providerNames[provider] })}
         </p>
       )}
       <Button
@@ -1472,7 +1371,7 @@ settings:
         }
       >
         {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-        {repairing ? "Reconnect Slack app" : "Connect Slack app"}
+        {repairing ? t("area.apps-chat-email.chat-endpoint-setup.slack.reconnect") : t("area.apps-chat-email.chat-endpoint-setup.slack.connect")}
       </Button>
     </div>
   );
@@ -1503,6 +1402,7 @@ function TryStep({
   onOpenAccess: () => void;
   onTest: () => void;
 }) {
+  const { t } = useTranslation();
   const principalsQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.principals(endpointId),
     queryFn: () => chatEndpointsApi.listPrincipals(endpointId),
@@ -1515,54 +1415,67 @@ function TryStep({
     (identity) => identity.status !== "linked",
   );
   const freshConversationInstruction =
-    provider === "imessage-photon" ? "send a fresh message to your Photon number" : provider === "telegram"
-      ? "start a fresh conversation with /new and send the test message again"
-      : provider === "github"
-        ? "start a new issue or pull request conversation and mention the agent again"
-        : provider === "microsoft-teams"
-          ? "start a new channel post and mention the agent again"
-          : "send a new root mention to the agent";
-  const identityGuidance = provider === "imessage-photon" && principalsQuery.isSuccess && (identities.length === 0 || unlinkedIdentities.length > 0)
-    ? { tone: "info" as const, title: "Link your Messages identity", body: "Send one message to discover your phone number or Apple account address, then link that exact identity in Access. Send a fresh request after linking; earlier messages do not start work." }
-    : principalsQuery.isError
-    ? {
-        tone: "warning" as const,
-        title: "Identity readiness could not be checked",
-        body: `Review Access before expecting an agent reply. After linking the account you are testing, ${freshConversationInstruction}.`,
-      }
-    : !principalsQuery.isSuccess || guestIsolationState === "loading"
-      ? null
-      : identities.length === 0
-        ? guestIsolationState === "disabled"
-          ? {
-              tone: "warning" as const,
-              title: "Link the account you’re testing",
-              body:
-                provider === "telegram"
-                  ? "Tap Start in Telegram to discover your account; the welcome does not start an agent run. Link the account privately in Access, then return and send the test message."
-                  : `Your first ${providerNames[provider]} message discovers the external account, but isolated guest work is off, so it cannot safely start ${agentName}. Send it once, link that account privately in Access, then ${freshConversationInstruction}.`,
-            }
-          : {
-              tone: "info" as const,
-              title: "Your first message identifies your account",
-              body:
-                provider === "telegram"
-                  ? "Tap Start in Telegram to discover your account. Until linked, it is a restricted guest and still needs a sandbox-backed isolated run; test that path intentionally, or link it in Access and then send the test message."
-                  : `Until linked, the account is a restricted guest and still needs a sandbox-backed isolated run. Test that guest path intentionally, or link the account in Access and then ${freshConversationInstruction}.`,
-            }
-        : unlinkedIdentities.length > 0
-          ? guestIsolationState === "disabled"
-            ? {
-                tone: "warning" as const,
-                title: "Link the account you’re testing",
-                body: `An observed external account is unlinked, and isolated guest work is off, so it cannot safely start ${agentName}. Link the account in Access, then ${freshConversationInstruction}; Myrmidon does not replay the refused request.`,
-              }
-            : {
-                tone: "info" as const,
-                title: "Unlinked identity detected",
-                body: `An unlinked account is a restricted guest and still needs a sandbox-backed isolated run. Test guest access intentionally, or link the account in Access and then ${freshConversationInstruction}.`,
-              }
-          : null;
+    provider === "imessage-photon"
+      ? t("area.apps-chat-email.chat-endpoint-setup.try.fresh.photon")
+      : provider === "telegram"
+        ? t("area.apps-chat-email.chat-endpoint-setup.try.fresh.telegram")
+        : provider === "github"
+          ? t("area.apps-chat-email.chat-endpoint-setup.try.fresh.github")
+          : provider === "microsoft-teams"
+            ? t("area.apps-chat-email.chat-endpoint-setup.try.fresh.teams")
+            : t("area.apps-chat-email.chat-endpoint-setup.try.fresh.default");
+  const identityGuidance =
+    provider === "imessage-photon" &&
+    principalsQuery.isSuccess &&
+    (identities.length === 0 || unlinkedIdentities.length > 0)
+      ? {
+          tone: "info" as const,
+          title: t("area.apps-chat-email.chat-endpoint-setup.try.guidance.photonLinkTitle"),
+          body: t("area.apps-chat-email.chat-endpoint-setup.try.guidance.photonLinkBody"),
+        }
+      : principalsQuery.isError
+        ? {
+            tone: "warning" as const,
+            title: t("area.apps-chat-email.chat-endpoint-setup.try.guidance.checkFailedTitle"),
+            body: t("area.apps-chat-email.chat-endpoint-setup.try.guidance.checkFailedBody", { action: freshConversationInstruction }),
+          }
+        : !principalsQuery.isSuccess || guestIsolationState === "loading"
+          ? null
+          : identities.length === 0
+            ? guestIsolationState === "disabled"
+              ? {
+                  tone: "warning" as const,
+                  title: t("area.apps-chat-email.chat-endpoint-setup.try.guidance.linkTitle"),
+                  body:
+                    provider === "telegram"
+                      ? t("area.apps-chat-email.chat-endpoint-setup.try.guidance.telegramGuestOff")
+                      : t("area.apps-chat-email.chat-endpoint-setup.try.guidance.guestOff", {
+                            provider: providerNames[provider],
+                            agent: agentName,
+                            action: freshConversationInstruction,
+                          }),
+                }
+              : {
+                  tone: "info" as const,
+                  title: t("area.apps-chat-email.chat-endpoint-setup.try.guidance.firstMessageTitle"),
+                  body:
+                    provider === "telegram"
+                      ? t("area.apps-chat-email.chat-endpoint-setup.try.guidance.telegramGuestOn")
+                      : t("area.apps-chat-email.chat-endpoint-setup.try.guidance.guestOn", { action: freshConversationInstruction }),
+                }
+            : unlinkedIdentities.length > 0
+              ? guestIsolationState === "disabled"
+                ? {
+                    tone: "warning" as const,
+                    title: t("area.apps-chat-email.chat-endpoint-setup.try.guidance.linkTitle"),
+                    body: t("area.apps-chat-email.chat-endpoint-setup.try.guidance.unlinkedGuestOff", { agent: agentName, action: freshConversationInstruction }),
+                  }
+                : {
+                    tone: "info" as const,
+                    title: t("area.apps-chat-email.chat-endpoint-setup.try.guidance.unlinkedTitle"),
+                    body: t("area.apps-chat-email.chat-endpoint-setup.try.guidance.unlinkedGuestOn", { action: freshConversationInstruction }),
+                  }
+              : null;
   const providerBotUsername = botUsername?.replace(/^@/, "");
   const normalizedBotUsername =
     provider === "github"
@@ -1572,54 +1485,56 @@ function TryStep({
     ? `@${normalizedBotUsername}`
     : (botLabel ?? agentName);
   const instructions =
-    provider === "imessage-photon" ? [
-      photonAllocation === "shared" ? "In your Photon project, enroll your sender in Users and find its assigned number in Get started. Send a fresh message to that number from Apple Messages." : `Open Apple Messages and send a fresh message to ${botUsername ?? botLabel ?? "the dedicated number"}.`,
-      "Link the discovered sender to a Myrmidon person in Access, then send a fresh request.",
-      "Wait for the agent’s actual reply. Setup completes after that reply is delivered.",
-      ...(photonAllocation === "shared" ? ["This Pro-compatible channel supports DMs only. Group messages cannot start work."] : ["For a group: add the number in Messages, send a message, enable the discovered group in Settings, then send a fresh request."]),
-    ] : provider === "discord"
+    provider === "imessage-photon"
       ? [
-          "Open a text channel where the bot is installed.",
-          `Mention ${botMention} in a new root message.`,
-          `Reply once inside ${agentName}'s new Discord thread.`,
+          photonAllocation === "shared"
+            ? t("area.apps-chat-email.chat-endpoint-setup.try.steps.photonShared")
+            : t("area.apps-chat-email.chat-endpoint-setup.try.steps.photonDedicated", { target: botUsername ?? botLabel ?? t("area.apps-chat-email.chat-endpoint-setup.try.steps.dedicatedNumber") }),
+          t("area.apps-chat-email.chat-endpoint-setup.try.steps.photonLink"),
+          t("area.apps-chat-email.chat-endpoint-setup.try.steps.photonWait"),
+          ...(photonAllocation === "shared"
+            ? [t("area.apps-chat-email.chat-endpoint-setup.try.steps.photonSharedNote")]
+            : [t("area.apps-chat-email.chat-endpoint-setup.try.steps.photonGroupNote")]),
         ]
-      : provider === "telegram"
+      : provider === "discord"
         ? [
-            "Open the bot's private chat.",
-            "Tap Start.",
-            "Send “Help me test this”.",
+            t("area.apps-chat-email.chat-endpoint-setup.try.steps.discord1"),
+            t("area.apps-chat-email.chat-endpoint-setup.try.steps.discord2", { bot: botMention }),
+            t("area.apps-chat-email.chat-endpoint-setup.try.steps.discord3", { agent: agentName }),
           ]
-        : provider === "github"
-          ? [
-              "Open an installed issue or pull request.",
-              `Mention ${botMention} in a comment.`,
-              "Add another comment to continue the same task.",
-            ]
-          : provider === "microsoft-teams"
+        : provider === "telegram"
+          ? [t("area.apps-chat-email.chat-endpoint-setup.try.steps.telegram1"), t("area.apps-chat-email.chat-endpoint-setup.try.steps.telegram2"), t("area.apps-chat-email.chat-endpoint-setup.try.steps.telegram3")]
+          : provider === "github"
             ? [
-                "Open an installed channel and start a new post.",
-                `Mention ${botMention} in the post.`,
-                "Reply once beneath the post.",
+                t("area.apps-chat-email.chat-endpoint-setup.try.steps.github1"),
+                t("area.apps-chat-email.chat-endpoint-setup.try.steps.github2", { bot: botMention }),
+                t("area.apps-chat-email.chat-endpoint-setup.try.steps.github3"),
               ]
-            : [
-                "Open a channel and invite the bot if needed.",
-                `Mention ${botMention} in a new channel message.`,
-                `Reply once in ${agentName}'s thread.`,
-              ];
+            : provider === "microsoft-teams"
+              ? [
+                  t("area.apps-chat-email.chat-endpoint-setup.try.steps.teams1"),
+                  t("area.apps-chat-email.chat-endpoint-setup.try.steps.teams2", { bot: botMention }),
+                  t("area.apps-chat-email.chat-endpoint-setup.try.steps.teams3"),
+                ]
+              : [
+                  t("area.apps-chat-email.chat-endpoint-setup.try.steps.default1"),
+                  t("area.apps-chat-email.chat-endpoint-setup.try.steps.default2", { bot: botMention }),
+                  t("area.apps-chat-email.chat-endpoint-setup.try.steps.default3", { agent: agentName }),
+                ];
   return (
     <div className="space-y-5">
       <div>
         <h1 className="text-xl font-bold">
-          Try {agentName} in {providerNames[provider]}
+          {t("area.apps-chat-email.chat-endpoint-setup.try.title", { agent: agentName, provider: providerNames[provider] })}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Complete this real conversation to finish setup.
+          {t("area.apps-chat-email.chat-endpoint-setup.try.description")}
         </p>
       </div>
       {(!principalsQuery.isSuccess || guestIsolationState === "loading") &&
       !principalsQuery.isError ? (
         <p role="status" className="text-sm text-muted-foreground">
-          Checking identity and guest readiness…
+          {t("area.apps-chat-email.chat-endpoint-setup.try.checking")}
         </p>
       ) : null}
       {identityGuidance ? (
@@ -1639,11 +1554,33 @@ function TryStep({
             variant="outline"
             onClick={onOpenAccess}
           >
-            Review identity access
+            {t("area.apps-chat-email.chat-endpoint-setup.try.reviewAccess")}
           </Button>
         </div>
       ) : null}
-      {provider === "imessage-photon" && botUsername && <div className="space-y-2"><Button variant="outline" onClick={() => { void copyTextToClipboard(botUsername).then(() => { setNumberCopied(true); setCopyError(null); }, () => setCopyError("Could not copy the number. Select it in the instructions below.")); }}>{numberCopied ? "Number copied" : `Copy ${botUsername}`}</Button>{copyError && <p role="alert" className="text-sm text-destructive">{copyError}</p>}</div>}
+      {provider === "imessage-photon" && botUsername && (
+        <div className="space-y-2">
+          <Button
+            variant="outline"
+            onClick={() => {
+              void copyTextToClipboard(botUsername).then(
+                () => {
+                  setNumberCopied(true);
+                  setCopyError(null);
+                },
+                () => setCopyError(t("area.apps-chat-email.chat-endpoint-setup.try.copyNumberFailed")),
+              );
+            }}
+          >
+            {numberCopied ? t("area.apps-chat-email.chat-endpoint-setup.try.numberCopied") : t("area.apps-chat-email.chat-endpoint-setup.try.copyNumber", { number: botUsername })}
+          </Button>
+          {copyError && (
+            <p role="alert" className="text-sm text-destructive">
+              {copyError}
+            </p>
+          )}
+        </div>
+      )}
       <ol className="list-decimal space-y-2 pl-5 text-sm">
         {instructions.map((item) => (
           <li key={item}>{item}</li>
@@ -1653,13 +1590,13 @@ function TryStep({
         {providerUrl && (
           <Button asChild variant="outline">
             <a href={providerUrl} target="_blank" rel="noopener noreferrer">
-              Open {providerNames[provider]} <ExternalLink />
+              {t("area.apps-chat-email.chat-endpoint-setup.try.openProvider", { provider: providerNames[provider] })} <ExternalLink />
             </a>
           </Button>
         )}
         <Button disabled={pending} onClick={onTest}>
           {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-          I've sent the test message
+          {t("area.apps-chat-email.chat-endpoint-setup.try.sentTest")}
         </Button>
       </div>
     </div>

@@ -6,6 +6,7 @@ import {
   type IssueWriteDenialTone,
 } from "@myrmidon/shared";
 import { cn } from "../lib/utils";
+import { useTranslation } from "@/i18n";
 
 /**
  * Renders actionable copy for a denied issue write (the open cross-task write design (failure UX)).
@@ -73,6 +74,7 @@ export function IssueWriteDenialNotice({
   context?: IssueWriteDenialContext;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const copy = describeIssueWriteDenial(code, context ?? {});
   const tone = TONE_CLASSES[copy.tone];
   const Icon = VISIBILITY_CODES.has(code) ? EyeOff : TONE_ICONS[copy.tone];
@@ -99,11 +101,11 @@ export function IssueWriteDenialNotice({
               label and the first words of the value together at every width. */}
           <dl className={cn("space-y-0.5 text-xs leading-5", tone.action)}>
             <div className="min-w-0">
-              <dt className="inline font-medium">Who can act:</dt>{" "}
+              <dt className="inline font-medium">{t("area.approvals-decisions-notices-2.issue-write-denial-notice.whoCanAct")}</dt>{" "}
               <dd className="inline">{copy.whoCanAct}</dd>
             </div>
             <div className="min-w-0">
-              <dt className="inline font-medium">Try this:</dt>{" "}
+              <dt className="inline font-medium">{t("area.approvals-decisions-notices-2.issue-write-denial-notice.tryThis")}</dt>{" "}
               <dd className="inline">{copy.sanctionedPath}</dd>
             </div>
           </dl>

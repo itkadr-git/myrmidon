@@ -99,6 +99,8 @@ import {
   type GenericMcpAuthMode,
 } from "@/pages/apps/generic-mcp-connect";
 import { autoExtendNotice, INSTALL_ALL_WARNING, installInfoNotice, installPayload } from "@/lib/tool-installs";
+import { i18n, useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 
 type Step = "gallery" | "access" | "key" | "success";
 export type OAuthConnectPhase = "entry" | "starting" | "redirecting" | "error";
@@ -173,12 +175,12 @@ function githubRecoveryUrl(value: string | null): string | null {
 
 function oauthCallbackErrorMessage(outcome: string | null, code: string | null): string {
   if (outcome === "denied") {
-    return "Authorization was cancelled or declined. Your saved connection was not changed.";
+    return i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.denied");
   }
   if (code === "github_installation_required") {
-    return "GitHub access is required. Install Myrmidon and grant at least one repository, then try again.";
+    return i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.githubRequired");
   }
-  return "Authorization did not complete. Your saved connection is still here, so you can try again.";
+  return i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.incomplete");
 }
 
 const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
@@ -305,7 +307,11 @@ type AppAccessSelection = "all_agents" | { agentIds: string[] };
 
 // Access comes before credentials so the reader knows what identity and reach
 // the secret is about to get before they share it (PAP-17835).
-const STEP_LABELS = ["Pick app", "Access", "Add your key"];
+const stepLabelsDefault = (): string[] => [
+  i18n.t("area.apps-connections-3.connection-setup-flow.steps.pickApp"),
+  i18n.t("area.apps-connections-3.connection-setup-flow.steps.access"),
+  i18n.t("area.apps-connections-3.connection-setup-flow.steps.addKey"),
+];
 const STEP_INDEX: Record<Exclude<Step, "success">, number> = {
   gallery: 0,
   access: 1,
@@ -315,7 +321,7 @@ const SELECTED_APP_STEP_INDEX: Record<Exclude<Step, "gallery" | "success">, numb
   access: 0,
   key: 1,
 };
-const ZAPIER_STEP_LABELS = ["Access", "Add MCP URL"];
+const zapierStepLabels = (): string[] => [i18n.t("area.apps-connections-3.connection-setup-flow.steps.access"), i18n.t("area.apps-connections-3.connection-setup-flow.steps.addMcpUrl")];
 
 /**
  * Which identity a fresh connection should default to (PAP-17835).
@@ -544,6 +550,7 @@ export function ConnectionSetupFlow({
   onCancel,
   renderCredentialStep,
 }: ConnectionSetupFlowProps = {}) {
+  const { t } = useTranslation();
   const routeNavigate = useNavigate();
   const navigate = useCallback((to: string, options?: { replace?: boolean }) => {
     if (host !== "page") return;
@@ -701,7 +708,7 @@ export function ConnectionSetupFlow({
     const popup = oauthPopupRef.current;
     if (!popup || popup.closed) {
       setOAuthPhase("error");
-      setOAuthError("Myrmidon couldn’t open the sign-in window. Open sign-in in a new tab to continue.");
+      setOAuthError(i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.popupBlocked"));
       onPhaseChange?.("needs_retry");
       return;
     }
@@ -723,7 +730,7 @@ export function ConnectionSetupFlow({
     const timer = window.setInterval(() => {
       if (!oauthPopupRef.current?.closed) return;
       setOAuthPhase("error");
-      setOAuthError("The sign-in window closed. If authorization did not finish, try again.");
+      setOAuthError(i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.windowClosed"));
       setAuthorizationFallbackUrl(null);
       onPhaseChange?.("needs_retry");
     }, 1_000);
@@ -741,7 +748,7 @@ export function ConnectionSetupFlow({
       if (target.kind === "reauthentication") {
         const destination = host === "dialog" ? oauthPopupRef.current : window;
         if (!destination || destination.closed || !start.handoff) {
-          throw new Error("Myrmidon couldn’t preserve this sign-in while refreshing your account.");
+          throw new Error(i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.preserveFailed"));
         }
         savePendingCloudHandoff(start.handoff.session, destination.sessionStorage);
         setOAuthPhase("starting");
@@ -753,7 +760,7 @@ export function ConnectionSetupFlow({
     } catch (error) {
       if (controller.signal.aborted) return;
       setOAuthPhase("error");
-      setOAuthError(error instanceof Error ? error.message : "Myrmidon couldn’t start secure sign-in. Try again.");
+      setOAuthError(error instanceof Error ? error.message : i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.secureStartFailed"));
       onPhaseChange?.("needs_retry");
     } finally {
       if (oauthHandoffAbortRef.current === controller) oauthHandoffAbortRef.current = null;
@@ -774,13 +781,13 @@ export function ConnectionSetupFlow({
       }
       if (outcome === "declined") {
         setOAuthPhase("error");
-        setOAuthError("Authorization was cancelled. You can try again.");
+        setOAuthError(i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.cancelled"));
         onPhaseChange?.("needs_retry");
         return;
       }
       if (outcome !== "failed") return;
       setOAuthPhase("error");
-      setOAuthError("Authorization did not complete. Try again when you’re ready.");
+      setOAuthError(i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.notComplete"));
     };
     window.addEventListener("message", receiveOAuthOutcome);
     return () => window.removeEventListener("message", receiveOAuthOutcome);
@@ -799,7 +806,7 @@ export function ConnectionSetupFlow({
       if (!popup || popup.closed) {
         setDialogOAuthConnectionId(null);
         setOAuthPhase("error");
-        setOAuthError("The sign-in window closed. Try again to finish connecting GitHub.");
+        setOAuthError(i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.githubWindowClosed"));
         return;
       }
       let returned: URL;
@@ -808,7 +815,7 @@ export function ConnectionSetupFlow({
       if (returned.searchParams.has("oauth")) {
         setDialogOAuthConnectionId(null);
         setOAuthPhase("error");
-        setOAuthError("Authorization did not complete. Finish setup in the sign-in window or try again.");
+        setOAuthError(i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.finishInWindow"));
         return;
       }
       if (returned.searchParams.get("success") !== "1") return;
@@ -824,7 +831,7 @@ export function ConnectionSetupFlow({
         if (!cancelled) {
           setDialogOAuthConnectionId(null);
           setOAuthPhase("error");
-          setOAuthError("Could not confirm the connection. Try again.");
+          setOAuthError(i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.confirmFailed"));
         }
       } finally { checking = false; }
     }, 1000);
@@ -909,11 +916,11 @@ export function ConnectionSetupFlow({
   useEffect(() => {
     if (host !== "page") return;
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
-      { label: vercelConnectMode ? "Vercel Connect" : byoOnly ? "Connect your own tool" : "Connect an app" },
+      { label: t("area.apps-connections-3.connection-setup-flow.breadcrumbConnectors"), href: "/apps" },
+      { label: vercelConnectMode ? "Vercel Connect" : byoOnly ? t("area.apps-connections-3.connection-setup-flow.breadcrumbOwnTool") : t("area.apps-connections-3.connection-setup-flow.breadcrumbConnectApp") },
     ]);
     return () => setBreadcrumbs([]);
-  }, [byoOnly, host, setBreadcrumbs, vercelConnectMode]);
+  }, [byoOnly, host, setBreadcrumbs, vercelConnectMode, t]);
 
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
@@ -998,7 +1005,7 @@ export function ConnectionSetupFlow({
         popup.location.assign(target.url);
         popup.focus();
       } else {
-        setConnectorEnrollmentError("Open authorization in a new tab to continue.");
+        setConnectorEnrollmentError(i18n.t("area.apps-connections-3.connection-setup-flow.enrollment.openInTab"));
       }
       return;
     }
@@ -1027,7 +1034,7 @@ export function ConnectionSetupFlow({
     onSuccess: (status) => {
       if (!status.verificationUrl) {
         closeEnrollmentPopup();
-        setConnectorEnrollmentError("The managed cloud service did not return an enrollment link. Try again.");
+        setConnectorEnrollmentError(i18n.t("area.apps-connections-3.connection-setup-flow.enrollment.noLink"));
         return;
       }
       openConnectorEnrollment(status.verificationUrl);
@@ -1035,7 +1042,7 @@ export function ConnectionSetupFlow({
     onError: (error) => {
       closeEnrollmentPopup();
       setConnectorEnrollmentError(
-        error instanceof Error ? error.message : "Couldn’t reach the managed cloud service. Try again.",
+        error instanceof Error ? error.message : i18n.t("area.apps-connections-3.connection-setup-flow.enrollment.unreachable"),
       );
     },
   });
@@ -1180,10 +1187,10 @@ export function ConnectionSetupFlow({
       onPhaseChange?.("needs_retry");
       setOAuthError(
         details?.code === "invalid_grant"
-          ? "Your authorization expired or was revoked. Reconnect to continue."
+          ? i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.invalidGrant")
           : error instanceof Error
             ? error.message
-            : "Myrmidon couldn’t start secure sign-in. Try again.",
+            : i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.secureStartFailed"),
       );
     },
   });
@@ -1352,10 +1359,10 @@ export function ConnectionSetupFlow({
         onPhaseChange?.("needs_retry");
         setOAuthError(
           details?.code === "invalid_grant"
-            ? "Your authorization expired or was revoked. Reconnect to continue."
+            ? i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.invalidGrant")
             : error instanceof Error
               ? error.message
-              : "Myrmidon couldn’t start secure sign-in. Try again.",
+              : i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.secureStartFailed"),
         );
         return;
       }
@@ -1371,8 +1378,8 @@ export function ConnectionSetupFlow({
         return;
       }
       pushToast({
-        title: "Couldn’t connect",
-        body: error instanceof Error ? error.message : "Please check your key and try again.",
+        title: i18n.t("area.apps-connections-3.connection-setup-flow.connectFailed"),
+        body: error instanceof Error ? error.message : i18n.t("area.apps-connections-3.connection-setup-flow.checkKeyTryAgain"),
         tone: "error",
       });
     },
@@ -1520,7 +1527,7 @@ export function ConnectionSetupFlow({
     if (automaticOAuth && directOAuthRetryingRef.current) return;
     if (automaticOAuth && (applicationsQuery.isError || connectionsQuery.isError)) {
       setOAuthPhase("error");
-      setOAuthError("Myrmidon couldn’t check for an existing connection. Try again.");
+      setOAuthError(i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.checkExistingFailed"));
       setStep("key");
       return;
     }
@@ -1683,15 +1690,15 @@ export function ConnectionSetupFlow({
       // stranding them on a half-made connection.
       setAppStep("access");
       pushToast({
-        title: "Couldn’t finish setup",
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: i18n.t("area.apps-connections-3.connection-setup-flow.finishSetupFailed"),
+        body: error instanceof Error ? error.message : i18n.t("area.apps-connections-3.connection-setup-flow.tryAgain"),
         tone: "error",
       });
     },
   });
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select a company to connect apps.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("area.apps-connections-3.connection-setup-flow.selectCompany")}</div>;
   }
 
   if (
@@ -1700,9 +1707,9 @@ export function ConnectionSetupFlow({
   ) {
     return (
       <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
-        <h2 className="text-lg font-semibold text-foreground">Couldn’t load connection setup</h2>
+        <h2 className="text-lg font-semibold text-foreground">{t("area.apps-connections-3.connection-setup-flow.loadFailed.title")}</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          Myrmidon couldn’t check the retained connection. The retained connection was not changed.
+          {t("area.apps-connections-3.connection-setup-flow.loadFailed.checkBody")}
         </p>
         <div className="mt-5 flex flex-wrap gap-2">
           <Button
@@ -1718,10 +1725,10 @@ export function ConnectionSetupFlow({
               }
             }}
           >
-            Try again
+            {t("area.apps-connections-3.connection-setup-flow.tryAgainButton")}
           </Button>
           <Button type="button" variant="outline" onClick={() => navigate("/apps")}>
-            Back to apps
+            {t("area.apps-connections-3.connection-setup-flow.backToApps")}
           </Button>
         </div>
       </div>
@@ -1731,12 +1738,12 @@ export function ConnectionSetupFlow({
   if (resumeConnectionId && connectionsQuery.isFetchedAfterMount && !resumeConnection) {
     return (
       <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
-        <h2 className="text-lg font-semibold text-foreground">This setup can’t be resumed</h2>
+        <h2 className="text-lg font-semibold text-foreground">{t("area.apps-connections-3.connection-setup-flow.resume.title")}</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          The saved connection no longer exists or is not available to this company.
+          {t("area.apps-connections-3.connection-setup-flow.resume.body")}
         </p>
         <Button type="button" variant="outline" className="mt-5" onClick={() => navigate("/apps")}>
-          Back to apps
+          {t("area.apps-connections-3.connection-setup-flow.backToApps")}
         </Button>
       </div>
     );
@@ -1750,14 +1757,14 @@ export function ConnectionSetupFlow({
   ) {
     return (
       <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
-        <h2 className="text-lg font-semibold text-foreground">This connection can’t be reconnected</h2>
+        <h2 className="text-lg font-semibold text-foreground">{t("area.apps-connections-3.connection-setup-flow.reconnect.title")}</h2>
         <p className="mt-2 text-sm text-muted-foreground">
           {!reconnectConnection
-            ? "The retained connection no longer exists or is not available to this company."
-            : "This reconnect link does not match the retained connection's provider."}
+            ? t("area.apps-connections-3.connection-setup-flow.reconnect.missing")
+            : t("area.apps-connections-3.connection-setup-flow.reconnect.mismatch")}
         </p>
         <Button type="button" variant="outline" className="mt-5" onClick={() => navigate("/apps")}>
-          Back to apps
+          {t("area.apps-connections-3.connection-setup-flow.backToApps")}
         </Button>
       </div>
     );
@@ -1766,16 +1773,16 @@ export function ConnectionSetupFlow({
   if ((resumeConnectionId || reconnectConnectionId) && galleryQuery.isError) {
     return (
       <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
-        <h2 className="text-lg font-semibold text-foreground">Couldn’t load connection setup</h2>
+        <h2 className="text-lg font-semibold text-foreground">{t("area.apps-connections-3.connection-setup-flow.loadFailed.title")}</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          Myrmidon couldn’t load the provider details needed to restore this connection. The retained connection was not changed.
+          {t("area.apps-connections-3.connection-setup-flow.loadFailed.providerBody")}
         </p>
         <div className="mt-5 flex flex-wrap gap-2">
           <Button type="button" onClick={() => void galleryQuery.refetch()}>
-            Try again
+            {t("area.apps-connections-3.connection-setup-flow.tryAgainButton")}
           </Button>
           <Button type="button" variant="outline" onClick={() => navigate("/apps")}>
-            Back to apps
+            {t("area.apps-connections-3.connection-setup-flow.backToApps")}
           </Button>
         </div>
       </div>
@@ -1785,12 +1792,12 @@ export function ConnectionSetupFlow({
   if (reconnectConnectionId && unavailableReconnectId === reconnectConnectionId) {
     return (
       <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
-        <h2 className="text-lg font-semibold text-foreground">This connection can’t be reconnected</h2>
+        <h2 className="text-lg font-semibold text-foreground">{t("area.apps-connections-3.connection-setup-flow.reconnect.title")}</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          Myrmidon no longer has a supported setup method for this retained connection. The retained connection was not changed.
+          {t("area.apps-connections-3.connection-setup-flow.reconnect.noMethod")}
         </p>
         <Button type="button" variant="outline" className="mt-5" onClick={() => navigate("/apps")}>
-          Back to apps
+          {t("area.apps-connections-3.connection-setup-flow.backToApps")}
         </Button>
       </div>
     );
@@ -1803,7 +1810,7 @@ export function ConnectionSetupFlow({
     || hydratedResumeConnectionId !== resumeConnection?.id
   )) {
     return (
-      <div className="mx-auto max-w-xl space-y-4" aria-label="Loading saved connection setup">
+      <div className="mx-auto max-w-xl space-y-4" aria-label={t("area.apps-connections-3.connection-setup-flow.loadingSaved")}>
         <Skeleton className="h-8 w-48" />
         <Skeleton className="h-40 w-full rounded-xl" />
       </div>
@@ -1817,7 +1824,7 @@ export function ConnectionSetupFlow({
     || Boolean(requestedAppKey && !entry)
   )) {
     return (
-      <div className="mx-auto max-w-xl space-y-4" aria-label="Loading retained connection setup">
+      <div className="mx-auto max-w-xl space-y-4" aria-label={t("area.apps-connections-3.connection-setup-flow.loadingRetained")}>
         <Skeleton className="h-8 w-48" />
         <Skeleton className="h-40 w-full rounded-xl" />
       </div>
@@ -1829,16 +1836,16 @@ export function ConnectionSetupFlow({
       <div className="max-w-5xl" data-testid="connection-existing-choice">
         <div className="mb-6">
           <h1 className="text-2xl font-bold tracking-tight">
-            Use an existing {requestedAppKey ? "connection" : "app connection"}
+            {requestedAppKey ? t("area.apps-connections-3.connection-setup-flow.existing.titleConnection") : t("area.apps-connections-3.connection-setup-flow.existing.titleAppConnection")}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Reuse a connection without changing who already has access, or connect a new one.
+            {t("area.apps-connections-3.connection-setup-flow.existing.body")}
           </p>
         </div>
         <ConnectionChoiceList
           choices={existingConnections.map((connection) => ({
             id: connection.id, name: connection.name,
-            description: connection.status === "active" && connection.enabled ? "Ready to use" : "Setup needs attention",
+            description: connection.status === "active" && connection.enabled ? t("area.apps-connections-3.connection-setup-flow.existing.ready") : t("area.apps-connections-3.connection-setup-flow.existing.needsAttention"),
           }))}
           pendingId={existingConnectionPendingId}
           onSelect={async (id) => {
@@ -1846,7 +1853,7 @@ export function ConnectionSetupFlow({
             setExistingConnectionError(null);
             try { await onUseExisting(id); }
             catch (error) {
-              setExistingConnectionError(error instanceof Error ? error.message : "Couldn’t use this connection.");
+              setExistingConnectionError(error instanceof Error ? error.message : t("area.apps-connections-3.connection-setup-flow.existing.useFailed"));
               setExistingConnectionPendingId(null);
             }
           }}
@@ -1856,9 +1863,9 @@ export function ConnectionSetupFlow({
         ) : null}
         <div className="mt-5 flex flex-wrap gap-2">
           <Button type="button" variant="outline" onClick={() => setShowConnectionChoice(false)}>
-            {configuredConnection ? "Review connection setup" : "Connect new"}
+            {configuredConnection ? t("area.apps-connections-3.connection-setup-flow.existing.review") : t("area.apps-connections-3.connection-setup-flow.existing.connectNew")}
           </Button>
-          {onCancel ? <Button type="button" variant="ghost" onClick={onCancel}>Cancel</Button> : null}
+          {onCancel ? <Button type="button" variant="ghost" onClick={onCancel}>{t("common.cancel")}</Button> : null}
         </div>
       </div>
     );
@@ -1925,7 +1932,7 @@ export function ConnectionSetupFlow({
             ]);
             if (applicationsResult.isError || connectionsResult.isError) {
               setOAuthPhase("error");
-              setOAuthError("Myrmidon couldn’t check for an existing connection. Try again.");
+              setOAuthError(i18n.t("area.apps-connections-3.connection-setup-flow.oauthErr.checkExistingFailed"));
               return;
             }
             const refreshedResumeConnection = resumeConnectionId
@@ -1985,7 +1992,7 @@ export function ConnectionSetupFlow({
     return (
       <OAuthConnectStateScreen
         identity={{
-          name: linkName.trim() || endpointHost(linkUrl) || "this server",
+          name: linkName.trim() || endpointHost(linkUrl) || t("area.apps-connections-3.connection-setup-flow.fallbackThisServer"),
           unverifiedHost: endpointHost(linkUrl),
         }}
         phase={oauthPhase}
@@ -2023,7 +2030,7 @@ export function ConnectionSetupFlow({
   const appName =
     connectResult?.application.name ??
     entry?.name ??
-    (linkName.trim() || defaultGenericMcpName(linkUrl) || "this app");
+    (linkName.trim() || defaultGenericMcpName(linkUrl) || t("area.apps-connections-3.connection-setup-flow.fallbackThisApp"));
   const credentialSourceMethods = connectionMethodsForCredentialSource(entry, credentialSource);
   const setupCredentialSourceMethods = preEnrollmentManagedMethod
     ? [preEnrollmentManagedMethod]
@@ -2050,19 +2057,20 @@ export function ConnectionSetupFlow({
     onCancel={() => onCancel ? onCancel() : navigate("/apps")}
     onComplete={result => { onComplete?.({ connectionId: result.connectionId }); if (!onComplete) navigate(`/apps/${result.connectionId}/permissions`); }}
   /></> : undefined) : undefined;
-  const stepLabels = reconnectConnection?.connectionPurpose === "ai" ? ["Reconnect account"] : credentialStep !== undefined
-    ? ["Access", "Connect account"]
+  const stepAccess = t("area.apps-connections-3.connection-setup-flow.steps.access");
+  const stepLabels = reconnectConnection?.connectionPurpose === "ai" ? [t("area.apps-connections-3.connection-setup-flow.steps.reconnectAccount")] : credentialStep !== undefined
+    ? [stepAccess, t("area.apps-connections-3.connection-setup-flow.steps.connectAccount")]
     : zapierSource
-    ? ZAPIER_STEP_LABELS
+    ? zapierStepLabels()
     : entry && setupCredentialSourceMethods.length > 1
-      ? ["Access", "Choose connection"]
+      ? [stepAccess, t("area.apps-connections-3.connection-setup-flow.steps.chooseConnection")]
     : entry && setupCredentialSourceMethods[0]?.auth === "oauth"
-      ? ["Access", "Sign in"]
+      ? [stepAccess, t("area.apps-connections-3.connection-setup-flow.steps.signIn")]
     : isGoogleSheetsRobotMethod(entry, connectionMethodKey)
-      ? ["Access", "Share sheet"]
+      ? [stepAccess, t("area.apps-connections-3.connection-setup-flow.steps.shareSheet")]
       : entry
-        ? ["Access", "Add your key"]
-      : STEP_LABELS;
+        ? [stepAccess, t("area.apps-connections-3.connection-setup-flow.steps.addKey")]
+      : stepLabelsDefault();
   // The Access step's identity question only makes sense when there *is* a
   // credential, so it reads the selected method's auth kind.
   const accessStepMethod = entry
@@ -2081,8 +2089,8 @@ export function ConnectionSetupFlow({
   // a local setup screen, even when OAuth is already the selected method.
   const accessContinuesToProvider = Boolean(directOAuthEntry);
   const accessSubmitLabel = accessContinuesToProvider
-    ? `Continue to ${entry?.name ?? "sign-in"}`
-    : accessStepAuthKind === "oauth" ? "Continue" : "Save and continue";
+    ? (entry ? t("area.apps-connections-3.connection-setup-flow.access.continueTo", { name: entry.name }) : t("area.apps-connections-3.connection-setup-flow.access.continueToSignIn"))
+    : accessStepAuthKind === "oauth" ? t("area.apps-connections-3.connection-setup-flow.access.continue") : t("area.apps-connections-3.connection-setup-flow.access.saveAndContinue");
 
   const stepIndex = reconnectConnection?.connectionPurpose === "ai" ? 0 : (zapierSource || entry) && step !== "gallery" && step !== "success"
     ? SELECTED_APP_STEP_INDEX[step]
@@ -2098,9 +2106,9 @@ export function ConnectionSetupFlow({
             subtitle={
               step === "gallery"
                 ? vercelConnectMode
-                  ? "Choose a reviewed app to connect through Vercel."
-                  : "Pick the app you want your agents to use."
-                : `Step ${stepIndex + 1} of ${stepLabels.length}`
+                  ? t("area.apps-connections-3.connection-setup-flow.header.vercelSubtitle")
+                  : t("area.apps-connections-3.connection-setup-flow.header.gallerySubtitle")
+                : t("area.apps-connections-3.connection-setup-flow.header.stepOf", { current: stepIndex + 1, total: stepLabels.length })
             }
             step={step}
             activeIndex={stepIndex}
@@ -2152,15 +2160,15 @@ export function ConnectionSetupFlow({
           it now says "Myrmidon Cloud". Wire/storage identifiers untouched (part c / stage 4). */}
       {managedConnectorUnavailable && entry ? (
         <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
-          <h2 className="text-lg font-semibold text-foreground">{entry.name} sign-in is unavailable</h2>
+          <h2 className="text-lg font-semibold text-foreground">{t("area.apps-connections-3.connection-setup-flow.managedUnavailable.title", { name: entry.name })}</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            This instance is connected to a managed cloud service, but {entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.
+            {t("area.apps-connections-3.connection-setup-flow.managedUnavailable.body", { name: entry.name })}
           </p>
           <div className="mt-6 flex items-center justify-between gap-3">
-            <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>Back</Button>
+            <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>{t("area.apps-connections-3.connection-setup-flow.back")}</Button>
             <Button type="button" disabled={galleryQuery.isFetching} onClick={() => void galleryQuery.refetch()}>
               {galleryQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              Try again
+              {t("area.apps-connections-3.connection-setup-flow.tryAgainButton")}
             </Button>
           </div>
         </div>
@@ -2173,31 +2181,31 @@ export function ConnectionSetupFlow({
               </div>
               <div className="min-w-0">
                 <h2 className="text-lg font-semibold text-foreground">
-                  Connect with managed cloud service
+                  {t("area.apps-connections-3.connection-setup-flow.enrollment.title")}
                 </h2>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  You must connect this instance to a managed cloud service to connect to {entry.name} (you only need to do this once).
+                  {t("area.apps-connections-3.connection-setup-flow.enrollment.body", { name: entry.name })}
                 </p>
               </div>
             </div>
 
             {connectorEnrollmentQuery.isError || connectorEnrollmentError ? (
               <InlineBanner tone="danger" className="mt-4">
-                {connectorEnrollmentError ?? "The managed cloud service could not check registration. Try again."}
+                {connectorEnrollmentError ?? t("area.apps-connections-3.connection-setup-flow.enrollment.checkFailed")}
               </InlineBanner>
             ) : null}
 
             {enrollmentAuthorizationUrl ? (
               <p className="mt-4 text-sm text-muted-foreground">
-                Finish authorization in the opened window.{' '}
+                {t("area.apps-connections-3.connection-setup-flow.enrollment.finishInWindow")}{' '}
                 <a className="underline" href={enrollmentAuthorizationUrl} target="_blank" rel="noopener noreferrer">
-                  Open authorization in a new tab
+                  {t("area.apps-connections-3.connection-setup-flow.enrollment.openInTabLink")}
                 </a>
               </p>
             ) : null}
             <div className="mt-6 flex items-center justify-between gap-3">
               <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>
-                Back
+                {t("area.apps-connections-3.connection-setup-flow.back")}
               </Button>
               <Button
                 type="button"
@@ -2213,8 +2221,8 @@ export function ConnectionSetupFlow({
               >
                 {startConnectorEnrollment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {connectorEnrollmentQuery.data?.status === "pending"
-                  ? "Continue"
-                  : "Connect with managed cloud service"}
+                  ? t("area.apps-connections-3.connection-setup-flow.access.continue")
+                  : t("area.apps-connections-3.connection-setup-flow.enrollment.title")}
               </Button>
             </div>
           </div>
@@ -2222,7 +2230,7 @@ export function ConnectionSetupFlow({
       ) : step === "key" && entry && credentialStep !== undefined ? credentialStep : step === "key" && entry ? (
         <KeyStep
           entry={entry}
-          error={connectMutation.isError ? (connectMutation.error instanceof Error ? connectMutation.error.message : "Please check your key and try again.") : null}
+          error={connectMutation.isError ? (connectMutation.error instanceof Error ? connectMutation.error.message : t("area.apps-connections-3.connection-setup-flow.checkKeyTryAgain")) : null}
           values={credentials}
           onChange={setCredentials}
           oauthClientId={curatedOAuthClientId}
@@ -2267,11 +2275,11 @@ export function ConnectionSetupFlow({
             if (isGoogleSheetsRobotMethod(entry, connectionMethodKey)) {
               const parsed = parseGoogleSheetIds(googleSheetsLinks);
               if (parsed.invalidCount > 0) {
-                setGoogleSheetsError("That doesn't look like a Google Sheets link.");
+                setGoogleSheetsError(i18n.t("area.apps-connections-3.connection-setup-flow.sheets.badLink"));
                 return;
               }
               if (parsed.ids.length === 0) {
-                setGoogleSheetsError("Paste at least one Google Sheets link.");
+                setGoogleSheetsError(i18n.t("area.apps-connections-3.connection-setup-flow.sheets.needLink"));
                 return;
               }
             }
@@ -2437,6 +2445,7 @@ function StepHeader({
   unverifiedHost?: string | null;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="mb-6">
       <div className="flex items-start justify-between gap-4">
@@ -2446,14 +2455,14 @@ function StepHeader({
           ) : null}
           <div>
             <h1 className="text-2xl font-bold tracking-tight">
-              {appIdentity ? `Connect ${appIdentity.name}` : "Connect your own MCP server"}
+              {appIdentity ? t("area.apps-connections-3.connection-setup-flow.header.connectApp", { name: appIdentity.name }) : t("area.apps-connections-3.connection-setup-flow.header.connectOwnMcp")}
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
             {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} className="mt-2" /> : null}
           </div>
         </div>
         <Button variant="ghost" size="sm" onClick={onCancel}>
-          Cancel
+          {t("common.cancel")}
         </Button>
       </div>
       {step !== "gallery" && (
@@ -2509,41 +2518,42 @@ export function OAuthConnectStateScreen({
   onBack: () => void;
   onCancel: () => void;
 }) {
-  const serverName = entry?.name ?? identity?.name ?? "this server";
+  const { t } = useTranslation();
+  const serverName = entry?.name ?? identity?.name ?? t("area.apps-connections-3.connection-setup-flow.fallbackThisServer");
   const unverifiedHost = entry ? null : identity?.unverifiedHost ?? null;
   const status = phase === "entry"
     ? {
         title: resuming
-          ? `Finish connecting ${serverName}`
-          : `Connect ${serverName} to Myrmidon`,
+          ? t("area.apps-connections-3.connection-setup-flow.oauth.finishConnecting", { name: serverName })
+          : t("area.apps-connections-3.connection-setup-flow.oauth.connectToMyrmidon", { name: serverName }),
         body: resuming
-          ? `Your connection is saved. Continue in ${serverName} to approve access; its identity and agent access will stay the same.`
-          : `Myrmidon will open ${serverName} so you can choose a workspace and approve access.`,
+          ? t("area.apps-connections-3.connection-setup-flow.oauth.savedContinueIn", { name: serverName })
+          : t("area.apps-connections-3.connection-setup-flow.oauth.willOpen", { name: serverName }),
       }
     : phase === "starting"
       ? {
-          title: "Preparing secure sign-in",
-          body: `Myrmidon is creating a secure ${serverName} connection.`,
+          title: t("area.apps-connections-3.connection-setup-flow.oauth.preparing"),
+          body: t("area.apps-connections-3.connection-setup-flow.oauth.creating", { name: serverName }),
         }
       : phase === "redirecting"
         ? {
-            title: `Opening ${serverName}`,
+            title: t("area.apps-connections-3.connection-setup-flow.oauth.opening", { name: serverName }),
             body: authorizationHost
-              ? `Continue at ${authorizationHost} to choose a workspace and approve access. Only approve access if you recognize that address.`
-              : `Continue in ${serverName} to choose a workspace and approve access.`,
+              ? t("area.apps-connections-3.connection-setup-flow.oauth.continueAtHost", { host: authorizationHost })
+              : t("area.apps-connections-3.connection-setup-flow.oauth.continueIn", { name: serverName }),
           }
         : {
-            title: `${serverName} couldn’t connect`,
-            body: error ?? "Myrmidon couldn’t start secure sign-in. Try again.",
+            title: t("area.apps-connections-3.connection-setup-flow.oauth.couldntConnect", { name: serverName }),
+            body: error ?? t("area.apps-connections-3.connection-setup-flow.oauthErr.secureStartFailed"),
           };
 
   return (
     <div className="max-w-5xl">
       <StepHeader
-        subtitle="Secure MCP sign-in"
+        subtitle={t("area.apps-connections-3.connection-setup-flow.oauth.subtitle")}
         step="key"
         activeIndex={1}
-        labels={["Access", "Sign in", "Ready"]}
+        labels={[t("area.apps-connections-3.connection-setup-flow.steps.access"), t("area.apps-connections-3.connection-setup-flow.steps.signIn"), t("area.apps-connections-3.connection-setup-flow.steps.ready")]}
         appIdentity={entry ? { name: entry.name, logoUrl: entry.branding.logoUrl, darkLogoUrl: entry.branding.darkLogoUrl } : undefined}
         unverifiedHost={unverifiedHost}
         onCancel={onCancel}
@@ -2571,7 +2581,7 @@ export function OAuthConnectStateScreen({
             {recoveryActions.installationUrl ? (
               <Button type="button" variant="outline" asChild>
                 <a href={recoveryActions.installationUrl} target="_blank" rel="noreferrer">
-                  Install Myrmidon on GitHub
+                  {t("area.apps-connections-3.connection-setup-flow.oauth.installGithub")}
                   <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
                 </a>
               </Button>
@@ -2579,7 +2589,7 @@ export function OAuthConnectStateScreen({
             {recoveryActions.managementUrl ? (
               <Button type="button" variant="ghost" asChild>
                 <a href={recoveryActions.managementUrl} target="_blank" rel="noreferrer">
-                  Manage repositories on GitHub
+                  {t("area.apps-connections-3.connection-setup-flow.oauth.manageGithub")}
                 </a>
               </Button>
             ) : null}
@@ -2590,16 +2600,16 @@ export function OAuthConnectStateScreen({
           {phase === "error" || phase === "entry" ? (
             <Button type="button" onClick={onRetry}>
               {phase === "entry"
-                ? resuming ? `Finish with ${serverName}` : `Continue to ${serverName}`
-                : "Try again"}
+                ? resuming ? t("area.apps-connections-3.connection-setup-flow.oauth.finishWith", { name: serverName }) : t("area.apps-connections-3.connection-setup-flow.access.continueTo", { name: serverName })
+                : t("area.apps-connections-3.connection-setup-flow.tryAgainButton")}
             </Button>
           ) : (
             <Button type="button" disabled>
-              {phase === "redirecting" ? `Opening ${serverName}…` : "Preparing…"}
+              {phase === "redirecting" ? t("area.apps-connections-3.connection-setup-flow.oauth.openingEllipsis", { name: serverName }) : t("area.apps-connections-3.connection-setup-flow.oauth.preparingEllipsis")}
             </Button>
           )}
-          {authorizationUrl ? <Button variant="outline" asChild><a href={authorizationUrl} target="_blank" rel="noopener noreferrer" onClick={onOpenAuthorization}>Open sign-in in a new tab</a></Button> : null}
-          <Button type="button" variant="ghost" onClick={onBack}>Back</Button>
+          {authorizationUrl ? <Button variant="outline" asChild><a href={authorizationUrl} target="_blank" rel="noopener noreferrer" onClick={onOpenAuthorization}>{t("area.apps-connections-3.connection-setup-flow.oauth.openInTab")}</a></Button> : null}
+          <Button type="button" variant="ghost" onClick={onBack}>{t("area.apps-connections-3.connection-setup-flow.back")}</Button>
         </div>
       </div>
     </div>
@@ -2619,6 +2629,7 @@ function ZapierConnectStep({
   onBack: () => void;
   onConnect: () => void;
 }) {
+  const { t } = useTranslation();
   const normalizedLink = normalizeAppLink(link);
   const zapierHostname = normalizedLink ? new URL(normalizedLink).hostname : "";
   const isZapierLink = zapierHostname === "zapier.com" || zapierHostname.endsWith(".zapier.com");
@@ -2626,7 +2637,7 @@ function ZapierConnectStep({
   return (
     <div className="mx-auto max-w-xl">
       <div>
-        <label className="text-sm font-medium text-foreground">Zapier MCP URL</label>
+        <label className="text-sm font-medium text-foreground">{t("area.apps-connections-3.connection-setup-flow.zapier.urlLabel")}</label>
         <Input
           type="password"
           autoComplete="off"
@@ -2636,22 +2647,22 @@ function ZapierConnectStep({
           onKeyDown={(event) => {
             if (event.key === "Enter" && isZapierLink && !submitting) onConnect();
           }}
-          placeholder="https://mcp.zapier.com/api/v1/connect?token=…"
+          placeholder={t("area.apps-connections-3.connection-setup-flow.zapier.urlPlaceholder")}
           className="mt-2 h-11"
           autoFocus
         />
         {link.trim() && !isZapierLink && (
-          <p className="mt-2 text-xs text-destructive">Paste a valid Zapier URL to continue.</p>
+          <p className="mt-2 text-xs text-destructive">{t("area.apps-connections-3.connection-setup-flow.zapier.invalidUrl")}</p>
         )}
       </div>
 
       <div className="mt-6 flex items-center justify-between">
         <Button variant="ghost" onClick={onBack} disabled={submitting}>
-          Back
+          {t("area.apps-connections-3.connection-setup-flow.back")}
         </Button>
         <Button onClick={onConnect} disabled={submitting || !isZapierLink}>
           {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          {submitting ? "Checking…" : "Check link"}
+          {submitting ? t("area.apps-connections-3.connection-setup-flow.checking") : t("area.apps-connections-3.connection-setup-flow.checkLink")}
         </Button>
       </div>
     </div>
@@ -2688,6 +2699,7 @@ function GalleryStep({
   onPick: (entry: AppDefinition) => void;
   onUseLink: (link: string) => void;
 }) {
+  const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const [linkInput, setLinkInput] = useState(initialLink);
   const linkInputEdited = useRef(false);
@@ -2719,7 +2731,7 @@ function GalleryStep({
   const continueWithLink = () => {
     const next = normalizeAppLink(linkInput);
     if (!next) {
-      setLinkError("Paste a full http or https link.");
+      setLinkError(t("area.apps-connections-3.connection-setup-flow.gallery.linkInvalid"));
       return;
     }
     setLinkError(null);
@@ -2742,15 +2754,15 @@ function GalleryStep({
         <div className="rounded-xl border border-border bg-card p-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h2 className="text-lg font-bold tracking-tight">Connect through Vercel</h2>
+              <h2 className="text-lg font-bold tracking-tight">{t("area.apps-connections-3.connection-setup-flow.gallery.vercelTitle")}</h2>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                Create and manage the provider connector in Vercel. Myrmidon stores its reference and applies agent access, policy, approval, and audit controls here.
+                {t("area.apps-connections-3.connection-setup-flow.gallery.vercelBody")}
               </p>
             </div>
             {vercelConnectAvailability ? (
               <Button asChild variant="outline" size="sm" className="shrink-0">
                 <a href={vercelConnectAvailability.manageUrl} target="_blank" rel="noreferrer">
-                  Open Vercel Connect
+                  {t("area.apps-connections-3.connection-setup-flow.gallery.openVercel")}
                   <ArrowUpRight className="ml-2 h-3.5 w-3.5" />
                 </a>
               </Button>
@@ -2758,7 +2770,7 @@ function GalleryStep({
           </div>
           {vercelConnectAvailability?.available === false ? (
             <InlineBanner tone="danger" compact className="mt-4">
-              {vercelConnectAvailability.reason ?? "Vercel Connect is unavailable on this instance."}
+              {vercelConnectAvailability.reason ?? t("area.apps-connections-3.connection-setup-flow.gallery.vercelUnavailable")}
             </InlineBanner>
           ) : null}
         </div>
@@ -2771,7 +2783,7 @@ function GalleryStep({
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search apps…"
+              placeholder={t("area.apps-connections-3.connection-setup-flow.gallery.searchPlaceholder")}
               className="h-11 pl-9"
             />
           </div>
@@ -2809,12 +2821,12 @@ function GalleryStep({
                   <div className="mt-3 text-xs font-semibold text-foreground">
                     {unavailable ? (
                       <span className="text-muted-foreground">
-                        {app.availability?.reason ?? vercelConnectAvailability?.reason ?? "Unavailable on this instance."}
+                        {app.availability?.reason ?? vercelConnectAvailability?.reason ?? t("area.apps-connections-3.connection-setup-flow.gallery.unavailableInstance")}
                       </span>
                     ) : oauthBlocked ? (
-                      <span className="text-muted-foreground">Unavailable</span>
+                      <span className="text-muted-foreground">{t("area.apps-connections-3.connection-setup-flow.gallery.unavailable")}</span>
                     ) : (
-                      <span>Connect →</span>
+                      <span>{t("area.apps-connections-3.connection-setup-flow.gallery.connectArrow")}</span>
                     )}
                   </div>
                 </button>
@@ -2823,7 +2835,7 @@ function GalleryStep({
           </div>
 
           {filtered.length === 0 && (
-            <div className="py-10 text-center text-sm text-muted-foreground">No apps match “{search}”.</div>
+            <div className="py-10 text-center text-sm text-muted-foreground">{t("area.apps-connections-3.connection-setup-flow.gallery.noMatch", { query: search })}</div>
           )}
         </>
       )}
@@ -2838,26 +2850,28 @@ function GalleryStep({
         <div>
           <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
             <Link2 className="h-4 w-4 text-muted-foreground" />
-            {zapierSource ? "Connect Zapier" : byo ? "Connect your own MCP server" : "Connect with a link"}
+            {zapierSource ? t("area.apps-connections-3.connection-setup-flow.gallery.connectZapier") : byo ? t("area.apps-connections-3.connection-setup-flow.header.connectOwnMcp") : t("area.apps-connections-3.connection-setup-flow.gallery.connectWithLink")}
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
             {zapierSource
-              ? "Paste the complete MCP URL Zapier gives you, including its token."
+              ? t("area.apps-connections-3.connection-setup-flow.gallery.zapierHint")
               : byo
-              ? "Paste your MCP server’s URL and every discovered tool will be available immediately."
-              : "Paste a setup link from an app that is not listed here."}
+              ? t("area.apps-connections-3.connection-setup-flow.gallery.byoHint")
+              : t("area.apps-connections-3.connection-setup-flow.gallery.linkHint")}
           </p>
           {!zapierSource && (
             <p className="mt-1 text-xs text-muted-foreground">
-              Any remote tool URL works here — including a local MCP server like{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-xs">http://127.0.0.1:8848/mcp</code>.
+              <Trans
+                i18nKey="area.apps-connections-3.connection-setup-flow.gallery.anyUrlHint"
+                components={{ 1: <code className="rounded bg-muted px-1 py-0.5 text-xs" /> }}
+              />
             </p>
           )}
           {matchedEntry && (
             <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
               <div className="flex min-w-0 items-center gap-2 text-sm">
                 <AppLogo name={matchedEntry.name} logoUrl={matchedEntry.branding.logoUrl} darkLogoUrl={matchedEntry.branding.darkLogoUrl} size={24} />
-                <span className="truncate">This looks like {matchedEntry.name}.</span>
+                <span className="truncate">{t("area.apps-connections-3.connection-setup-flow.gallery.looksLike", { name: matchedEntry.name })}</span>
               </div>
               <Button
                 type="button"
@@ -2874,10 +2888,10 @@ function GalleryStep({
                 }}
               >
                 {matchedEntry.availability?.available === false
-                  ? "Not available"
+                  ? t("area.apps-connections-3.connection-setup-flow.gallery.notAvailable")
                   : matchedEntry.slug === "zapier"
-                    ? "Continue"
-                    : `Use ${matchedEntry.name}`}
+                    ? t("area.apps-connections-3.connection-setup-flow.access.continue")
+                    : t("area.apps-connections-3.connection-setup-flow.gallery.use", { name: matchedEntry.name })}
               </Button>
             </div>
           )}
@@ -2889,7 +2903,7 @@ function GalleryStep({
               type={zapierSource || matchedEntry?.slug === "zapier" ? "password" : "url"}
               autoComplete="off"
               spellCheck={false}
-              aria-label="MCP server URL"
+              aria-label={t("area.apps-connections-3.connection-setup-flow.gallery.urlLabel")}
               value={linkInput}
               onChange={(e) => {
                 linkInputEdited.current = true;
@@ -2903,7 +2917,7 @@ function GalleryStep({
               className="h-10"
             />
             <Button type="button" variant="outline" onClick={continueWithLink}>
-              Continue
+              {t("area.apps-connections-3.connection-setup-flow.access.continue")}
             </Button>
           </div>
           {linkError && <div className="text-xs text-destructive">{linkError}</div>}
@@ -2985,6 +2999,7 @@ function LinkConnectStep({
   onBack: () => void;
   onConnect: () => void;
 }) {
+  const { t } = useTranslation();
   const host = endpointHost(link);
   const headerError = authMode === "custom_headers" ? customHeaderError(headers) : null;
   const draft: GenericConnectDraft = {
@@ -3016,10 +3031,10 @@ function LinkConnectStep({
         <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
           <div className="flex min-w-0 items-center gap-2 text-sm">
             <AppLogo name={matchedEntry.name} logoUrl={matchedEntry.branding.logoUrl} darkLogoUrl={matchedEntry.branding.darkLogoUrl} size={24} />
-            <span className="truncate">Myrmidon has a guided setup for {matchedEntry.name}.</span>
+            <span className="truncate">{t("area.apps-connections-3.connection-setup-flow.link.guidedSetup", { name: matchedEntry.name })}</span>
           </div>
           <Button type="button" size="sm" variant="outline" onClick={onUseMatchedEntry}>
-            Use {matchedEntry.name}
+            {t("area.apps-connections-3.connection-setup-flow.gallery.use", { name: matchedEntry.name })}
           </Button>
         </div>
       ) : null}
@@ -3035,23 +3050,23 @@ function LinkConnectStep({
       <div className="mt-6 space-y-6">
         {showSimpleKeyQuestion && (
           <div>
-            <label className="mr-2 text-sm font-medium text-foreground">Does it need a key?</label>
+            <label className="mr-2 text-sm font-medium text-foreground">{t("area.apps-connections-3.connection-setup-flow.link.needsKey")}</label>
             <div className="mt-2 inline-flex rounded-lg border border-border bg-muted/50 p-1">
               <SegmentedOption
-                label="No"
+                label={t("area.apps-connections-3.connection-setup-flow.link.no")}
                 selected={!needsKey}
                 onClick={() => onNeedsKeyChange(false)}
               />
               <SegmentedOption
-                label="Yes"
+                label={t("area.apps-connections-3.connection-setup-flow.link.yes")}
                 selected={needsKey}
                 onClick={() => onNeedsKeyChange(true)}
               />
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
               {needsKey
-                ? "Paste the key this app gave you."
-                : "Most servers just work from the address — pick Yes only if the server gave you a key, or if it asks you to sign in."}
+                ? t("area.apps-connections-3.connection-setup-flow.link.pasteKey")
+                : t("area.apps-connections-3.connection-setup-flow.link.mostServers")}
             </p>
           </div>
         )}
@@ -3059,7 +3074,7 @@ function LinkConnectStep({
         {(showSimpleKeyQuestion && needsKey) || authMode === "bearer" ? (
           <div className="space-y-4">
             <div>
-              <label className="text-sm font-medium text-foreground" htmlFor="generic-mcp-key">App key</label>
+              <label className="text-sm font-medium text-foreground" htmlFor="generic-mcp-key">{t("area.apps-connections-3.connection-setup-flow.link.appKey")}</label>
               <Input
                 id="generic-mcp-key"
                 type="password"
@@ -3075,15 +3090,15 @@ function LinkConnectStep({
 
         <Collapsible open={advancedOpen} onOpenChange={onAdvancedOpenChange}>
           <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg border border-border bg-background px-3 py-2 text-left text-sm font-medium text-foreground hover:bg-accent/40">
-            Advanced authentication
+            {t("area.apps-connections-3.connection-setup-flow.link.advancedAuth")}
             <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", advancedOpen && "rotate-180")} />
           </CollapsibleTrigger>
           <CollapsibleContent className="space-y-5 pt-4">
             <p className="text-xs text-muted-foreground">
-              Only needed when the server's docs are specific about how to authenticate.
+              {t("area.apps-connections-3.connection-setup-flow.link.advancedHint")}
             </p>
             <div className="flex flex-wrap gap-2">
-              {GENERIC_AUTH_MODE_OPTIONS.map((option) => (
+              {genericAuthModeOptions().map((option) => (
                 <SegmentedOption
                   key={option.mode}
                   label={option.label}
@@ -3093,7 +3108,7 @@ function LinkConnectStep({
               ))}
             </div>
             <p className="text-xs text-muted-foreground">
-              {GENERIC_AUTH_MODE_OPTIONS.find((option) => option.mode === authMode)?.hint}
+              {genericAuthModeOptions().find((option) => option.mode === authMode)?.hint}
             </p>
 
             {authMode === "custom_headers" ? (
@@ -3103,8 +3118,8 @@ function LinkConnectStep({
                     <Input
                       value={row.name}
                       onChange={(e) => updateHeader(row.id, { name: e.target.value })}
-                      placeholder="Header name"
-                      aria-label="Header name"
+                      placeholder={t("area.apps-connections-3.connection-setup-flow.link.headerName")}
+                      aria-label={t("area.apps-connections-3.connection-setup-flow.link.headerName")}
                       className="h-10 font-mono"
                     />
                     <Input
@@ -3112,8 +3127,8 @@ function LinkConnectStep({
                       autoComplete="off"
                       value={row.value}
                       onChange={(e) => updateHeader(row.id, { value: e.target.value })}
-                      placeholder="Value"
-                      aria-label={row.name.trim() ? `Value for ${row.name.trim()}` : "Header value"}
+                      placeholder={t("area.apps-connections-3.connection-setup-flow.link.headerValuePlaceholder")}
+                      aria-label={row.name.trim() ? t("area.apps-connections-3.connection-setup-flow.link.valueFor", { name: row.name.trim() }) : t("area.apps-connections-3.connection-setup-flow.link.headerValue")}
                       className="h-10 font-mono"
                     />
                     <Button
@@ -3124,7 +3139,7 @@ function LinkConnectStep({
                       onClick={() => onHeadersChange(headers.filter((candidate) => candidate.id !== row.id))}
                       disabled={headers.length === 1}
                     >
-                      Remove
+                      {t("common.remove")}
                     </Button>
                   </div>
                 ))}
@@ -3134,7 +3149,7 @@ function LinkConnectStep({
                   size="sm"
                   onClick={() => onHeadersChange([...headers, newCustomHeaderRow()])}
                 >
-                  Add another header
+                  {t("area.apps-connections-3.connection-setup-flow.link.addHeader")}
                 </Button>
                 {headerError ? <p className="text-xs text-destructive">{headerError}</p> : null}
               </div>
@@ -3143,25 +3158,24 @@ function LinkConnectStep({
             {authMode === "oauth" ? (
               <div className="space-y-4">
                 <p className="text-xs text-muted-foreground">
-                  Myrmidon sets sign-in up on its own whenever the server allows it. Only fill these in when the
-                  server's docs tell you to register Myrmidon yourself first.
+                  {t("area.apps-connections-3.connection-setup-flow.link.oauthHint")}
                 </p>
                 <div>
                   <label className="text-sm font-medium text-foreground" htmlFor="generic-mcp-client-id">
-                    Client ID
+                    {t("area.apps-connections-3.connection-setup-flow.link.clientId")}
                   </label>
                   <Input
                     id="generic-mcp-client-id"
                     value={oauthClientId}
                     onChange={(e) => onOAuthClientIdChange(e.target.value)}
                     autoComplete="off"
-                    placeholder="Optional"
+                    placeholder={t("area.apps-connections-3.connection-setup-flow.link.optional")}
                     className="mt-2 h-11 font-mono"
                   />
                 </div>
                 <div>
                   <label className="text-sm font-medium text-foreground" htmlFor="generic-mcp-client-secret">
-                    Client secret
+                    {t("area.apps-connections-3.connection-setup-flow.link.clientSecret")}
                   </label>
                   <Input
                     id="generic-mcp-client-secret"
@@ -3169,7 +3183,7 @@ function LinkConnectStep({
                     autoComplete="off"
                     value={oauthClientSecret}
                     onChange={(e) => onOAuthClientSecretChange(e.target.value)}
-                    placeholder="Optional"
+                    placeholder={t("area.apps-connections-3.connection-setup-flow.link.optional")}
                     className="mt-2 h-11 font-mono"
                   />
                 </div>
@@ -3181,11 +3195,11 @@ function LinkConnectStep({
 
       <div className="mt-8 flex items-center justify-between">
         <Button variant="ghost" onClick={onBack} disabled={submitting}>
-          Back
+          {t("area.apps-connections-3.connection-setup-flow.back")}
         </Button>
         <Button onClick={onConnect} disabled={submitting || !canSubmit || Boolean(headerError)}>
           {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          {submitting ? "Checking…" : "Check link"}
+          {submitting ? t("area.apps-connections-3.connection-setup-flow.checking") : t("area.apps-connections-3.connection-setup-flow.checkLink")}
         </Button>
       </div>
     </div>
@@ -3198,31 +3212,31 @@ function LinkConnectStep({
  * a client ID metadata document, dynamic registration, or the credentials pasted
  * below — none of which belongs on this screen.
  */
-const GENERIC_AUTH_MODE_OPTIONS: Array<{ mode: GenericMcpAuthMode; label: string; hint: string }> = [
+const genericAuthModeOptions = (): Array<{ mode: GenericMcpAuthMode; label: string; hint: string }> => [
   {
     mode: "auto",
-    label: "Let Myrmidon check",
-    hint: "Myrmidon asks the server what it needs and walks you through it. Start here.",
+    label: i18n.t("area.apps-connections-3.connection-setup-flow.authMode.auto"),
+    hint: i18n.t("area.apps-connections-3.connection-setup-flow.authMode.autoHint"),
   },
   {
     mode: "none",
-    label: "No sign-in needed",
-    hint: "The server is open to anyone with the address.",
+    label: i18n.t("area.apps-connections-3.connection-setup-flow.authMode.none"),
+    hint: i18n.t("area.apps-connections-3.connection-setup-flow.authMode.noneHint"),
   },
   {
     mode: "bearer",
-    label: "Key or token",
-    hint: "Myrmidon sends your key as an Authorization header.",
+    label: i18n.t("area.apps-connections-3.connection-setup-flow.authMode.bearer"),
+    hint: i18n.t("area.apps-connections-3.connection-setup-flow.authMode.bearerHint"),
   },
   {
     mode: "custom_headers",
-    label: "Custom headers",
-    hint: "For servers that name their own headers. Values are stored as Myrmidon secrets and can\u2019t be read back.",
+    label: i18n.t("area.apps-connections-3.connection-setup-flow.authMode.headers"),
+    hint: i18n.t("area.apps-connections-3.connection-setup-flow.authMode.headersHint"),
   },
   {
     mode: "oauth",
-    label: "Browser sign-in",
-    hint: "You\u2019ll sign in at the provider. Add a client ID and secret only if the provider requires you to register Myrmidon first.",
+    label: i18n.t("area.apps-connections-3.connection-setup-flow.authMode.oauth"),
+    hint: i18n.t("area.apps-connections-3.connection-setup-flow.authMode.oauthHint"),
   },
 ];
 
@@ -3303,6 +3317,7 @@ function KeyStep({
   onBack: () => void;
   onConnect: () => void;
 }) {
+  const { t } = useTranslation();
   const methods = useMemo(
     () => connectionMethodsForCredentialSource(entry, credentialSource),
     [credentialSource, entry],
@@ -3399,9 +3414,9 @@ function KeyStep({
   const hasAdvancedSettings = advancedConfigFields.length > 0 || optionalCustomerOAuthClient;
   const capabilitySelection = capabilityGroups.length > 1 ? (
     <div>
-      <label className="text-sm font-medium text-foreground">What should Myrmidon be able to do?</label>
+      <label className="text-sm font-medium text-foreground">{t("area.apps-connections-3.connection-setup-flow.key.capabilityQuestion")}</label>
       <RadioCardGroup
-        ariaLabel={`Access level for ${entry.name}`}
+        ariaLabel={t("area.apps-connections-3.connection-setup-flow.key.accessLevelFor", { name: entry.name })}
         className="mt-2"
         value={capabilityKey}
         onValueChange={(nextKey) => {
@@ -3416,7 +3431,7 @@ function KeyStep({
           description: group.description,
         }))}
       />
-      {!capabilityKey && <p className="mt-2 text-xs text-muted-foreground">Choose an access level to continue.</p>}
+      {!capabilityKey && <p className="mt-2 text-xs text-muted-foreground">{t("area.apps-connections-3.connection-setup-flow.key.chooseAccessLevel")}</p>}
     </div>
   ) : null;
   const managedGoogleMethod = capabilityMethods.find((candidate) =>
@@ -3439,13 +3454,13 @@ function KeyStep({
       disabled={submitting}
       onClick={() => onMethodChange(usingCustomGoogleOAuth ? managedGoogleMethod : customerGoogleMethod)}
     >
-      {usingCustomGoogleOAuth ? "Use Myrmidon instead" : "Use your own Google OAuth app"}
+      {usingCustomGoogleOAuth ? t("area.apps-connections-3.connection-setup-flow.key.useMyrmidonInstead") : t("area.apps-connections-3.connection-setup-flow.key.useOwnGoogleOAuth")}
     </Button>
   ) : capabilityMethods.length > 1 ? (
     <div>
-      <label className="text-sm font-medium text-foreground">How do you want to connect?</label>
+      <label className="text-sm font-medium text-foreground">{t("area.apps-connections-3.connection-setup-flow.key.howConnect")}</label>
       <RadioCardGroup
-        ariaLabel={`How to connect ${entry.name}`}
+        ariaLabel={t("area.apps-connections-3.connection-setup-flow.key.howToConnectFor", { name: entry.name })}
         className="mt-2"
         value={methodKey}
         onValueChange={(nextKey) => {
@@ -3454,10 +3469,10 @@ function KeyStep({
         }}
         options={capabilityMethods.map((candidate) => ({
           value: candidate.key,
-          title: candidate.label ?? (candidate.auth === "oauth" ? `Sign in with ${entry.name}` : "Use an API key"),
+          title: candidate.label ?? (candidate.auth === "oauth" ? t("area.apps-connections-3.connection-setup-flow.key.signInWith", { name: entry.name }) : t("area.apps-connections-3.connection-setup-flow.key.useApiKey")),
         }))}
       />
-      {!method && <p className="mt-2 text-xs text-muted-foreground">Choose a connection method to continue.</p>}
+      {!method && <p className="mt-2 text-xs text-muted-foreground">{t("area.apps-connections-3.connection-setup-flow.key.chooseMethod")}</p>}
     </div>
   ) : null;
 
@@ -3471,7 +3486,7 @@ function KeyStep({
 
           {robotEmail ? (
             <div>
-              <label className="text-sm font-medium text-foreground">Share each sheet with this email</label>
+              <label className="text-sm font-medium text-foreground">{t("area.apps-connections-3.connection-setup-flow.key.shareSheetEmail")}</label>
               <div className="mt-2 flex min-w-0 flex-col gap-2 sm:flex-row">
                 <div
                   title={robotEmail}
@@ -3486,31 +3501,31 @@ function KeyStep({
                   onClick={() => void copyTextToClipboard(robotEmail).catch(() => {})}
                 >
                   <Copy className="mr-2 h-4 w-4" />
-                  Copy
+                  {t("area.apps-connections-3.connection-setup-flow.key.copy")}
                 </Button>
               </div>
               <p className="mt-2 text-xs text-muted-foreground">
-                In Google Sheets, click Share and add this email as an Editor. Then paste the sheet links below.
+                {t("area.apps-connections-3.connection-setup-flow.key.shareInstructions")}
               </p>
             </div>
           ) : (
             <div className="rounded-lg bg-muted/50 p-4 text-sm text-muted-foreground">
-              Google Sheets is not available on this instance yet.
+              {t("area.apps-connections-3.connection-setup-flow.key.sheetsUnavailable")}
             </div>
           )}
 
           <div>
-            <label className="text-sm font-medium text-foreground">Paste links to the sheets you shared</label>
+            <label className="text-sm font-medium text-foreground">{t("area.apps-connections-3.connection-setup-flow.key.pasteSheetLinks")}</label>
             <Textarea
               value={googleSheetsLinks}
               onChange={(e) => onGoogleSheetsLinksChange(e.target.value)}
-              placeholder="https://docs.google.com/spreadsheets/d/..."
+              placeholder={t("area.apps-connections-3.connection-setup-flow.key.sheetsPlaceholder")}
               className="mt-2 min-h-28"
             />
             <div className="mt-2 text-xs text-muted-foreground">
               {parsed.ids.length > 0
-                ? `${parsed.ids.length} ${parsed.ids.length === 1 ? "sheet" : "sheets"} ready to connect.`
-                : "Paste one link per line. Both .../edit and .../edit#gid=... links work."}
+                ? t("area.apps-connections-3.connection-setup-flow.key.sheetsReady", { count: parsed.ids.length })
+                : t("area.apps-connections-3.connection-setup-flow.key.sheetsHint")}
             </div>
             {googleSheetsError && <div className="mt-2 text-xs text-destructive">{googleSheetsError}</div>}
           </div>
@@ -3518,11 +3533,11 @@ function KeyStep({
 
         <div className="mt-8 flex items-center justify-between">
           <Button variant="ghost" onClick={onBack} disabled={submitting}>
-            Back
+            {t("area.apps-connections-3.connection-setup-flow.back")}
           </Button>
           <Button onClick={onConnect} disabled={submitting || !canConnect}>
             {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {submitting ? "Checking…" : "Connect"}
+            {submitting ? t("area.apps-connections-3.connection-setup-flow.checking") : t("area.apps-connections-3.connection-setup-flow.key.connect")}
           </Button>
         </div>
       </div>
@@ -3541,7 +3556,7 @@ function KeyStep({
             rel="noreferrer"
             className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
           >
-            Review requirements
+            {t("area.apps-connections-3.connection-setup-flow.key.reviewRequirements")}
             <ArrowUpRight className="h-3 w-3" />
           </a>
         </div>
@@ -3554,9 +3569,9 @@ function KeyStep({
         {usingVercel && vercelReview && vercelConnectAvailability ? (
           <div className="space-y-4 rounded-lg border border-border p-4">
             <div>
-              <div className="text-sm font-medium text-foreground">Create or attach the connector in Vercel</div>
+              <div className="text-sm font-medium text-foreground">{t("area.apps-connections-3.connection-setup-flow.key.vercelCreate")}</div>
               <p className="mt-1 text-xs text-muted-foreground">
-                Myrmidon does not copy Vercel’s setup forms. Finish connector setup there, then paste its UID below.
+                {t("area.apps-connections-3.connection-setup-flow.key.vercelHint")}
               </p>
               <a
                 href={vercelConnectAvailability.manageUrl}
@@ -3564,24 +3579,24 @@ function KeyStep({
                 rel="noreferrer"
                 className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-foreground underline underline-offset-2"
               >
-                Open Vercel Connect
+                {t("area.apps-connections-3.connection-setup-flow.gallery.openVercel")}
                 <ArrowUpRight className="h-3 w-3" />
               </a>
             </div>
             <div>
               <label className="text-sm font-medium text-foreground" htmlFor="vercel-connect-connector">
-                Connector UID or ID
+                {t("area.apps-connections-3.connection-setup-flow.key.connectorUid")}
               </label>
               <Input
                 id="vercel-connect-connector"
                 value={vercelConnector}
                 onChange={(event) => onVercelConnectorChange(event.target.value)}
                 autoComplete="off"
-                placeholder="service/my-connector or scl_…"
+                placeholder={t("area.apps-connections-3.connection-setup-flow.key.connectorUidPlaceholder")}
                 className="mt-2 h-11 font-mono"
               />
               <p className="mt-2 text-xs text-muted-foreground">
-                Myrmidon validates the connector and stores only its reference and redacted verification metadata.
+                {t("area.apps-connections-3.connection-setup-flow.key.vercelValidates")}
               </p>
             </div>
           </div>
@@ -3602,7 +3617,7 @@ function KeyStep({
           <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
             <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
               <ChevronDown className={cn("h-4 w-4 transition-transform", advancedOpen && "rotate-180")} />
-              Advanced
+              {t("area.apps-connections-3.connection-setup-flow.key.advanced")}
             </CollapsibleTrigger>
             <CollapsibleContent className="pt-4">
               <div className="space-y-6">
@@ -3632,7 +3647,7 @@ function KeyStep({
         )}
 
         {!usingVercel && method?.auth === "oauth" && customerOAuthClientRequired ? (
-          <div id={googleOAuthFieldsId} role="region" aria-label="Your OAuth app">
+          <div id={googleOAuthFieldsId} role="region" aria-label={t("area.apps-connections-3.connection-setup-flow.key.yourOAuthApp")}>
             <OAuthClientFields
               entry={entry}
               method={method}
@@ -3668,7 +3683,7 @@ function KeyStep({
                   rel="noreferrer"
                   className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-foreground underline underline-offset-2"
                 >
-                  Where do I find this?
+                  {t("area.apps-connections-3.connection-setup-flow.key.whereFind")}
                   <ArrowUpRight className="h-3 w-3" />
                 </a>
               )}
@@ -3680,17 +3695,17 @@ function KeyStep({
 
       <div className="mt-8 flex items-center justify-between">
         <Button variant="ghost" onClick={onBack} disabled={submitting}>
-          Back
+          {t("area.apps-connections-3.connection-setup-flow.back")}
         </Button>
         <Button onClick={onConnect} disabled={submitting || !hasMethodSelection || !allFilled || !oauthClientFilled || !vercelConnectorFilled || !configFilled || !configRequirementMet}>
           {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           {submitting
-            ? "Checking…"
+            ? t("area.apps-connections-3.connection-setup-flow.checking")
             : usingVercel
-              ? method?.auth === "oauth" ? "Validate and continue" : "Validate and connect"
+              ? method?.auth === "oauth" ? t("area.apps-connections-3.connection-setup-flow.key.validateContinue") : t("area.apps-connections-3.connection-setup-flow.key.validateConnect")
               : method?.auth === "oauth"
-                ? entry.slug === "github" ? "Continue to GitHub" : "Continue to sign in"
-                : "Connect"}
+                ? entry.slug === "github" ? t("area.apps-connections-3.connection-setup-flow.key.continueGithub") : t("area.apps-connections-3.connection-setup-flow.key.continueSignIn")
+                : t("area.apps-connections-3.connection-setup-flow.key.connect")}
         </Button>
       </div>
     </div>
@@ -3716,14 +3731,15 @@ function OAuthClientFields({
   onClientSecretChange: (next: string) => void;
   required: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-4 rounded-lg border border-border p-4">
       <div>
         <div className="text-sm font-medium text-foreground">
-          {required ? "Your OAuth app" : "Use your own OAuth app"}
+          {required ? t("area.apps-connections-3.connection-setup-flow.key.yourOAuthApp") : t("area.apps-connections-3.connection-setup-flow.oauthFields.useOwn")}
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
-          Register Myrmidon's callback URI in {entry.name}, then enter the customer-owned client details.
+          {t("area.apps-connections-3.connection-setup-flow.oauthFields.register", { name: entry.name })}
         </p>
         {method.consoleLinks?.register ? (
           <a
@@ -3732,14 +3748,14 @@ function OAuthClientFields({
             rel="noreferrer"
             className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-foreground underline underline-offset-2"
           >
-            Open {entry.name} app settings
+            {t("area.apps-connections-3.connection-setup-flow.oauthFields.openSettings", { name: entry.name })}
             <ArrowUpRight className="h-3 w-3" />
           </a>
         ) : null}
       </div>
       {callbackUrl ? (
         <div>
-          <label className="text-sm font-medium text-foreground">Myrmidon callback URL</label>
+          <label className="text-sm font-medium text-foreground">{t("area.apps-connections-3.connection-setup-flow.oauthFields.callbackUrl")}</label>
           <div className="mt-2 flex min-w-0 flex-col gap-2 sm:flex-row">
             <div
               title={callbackUrl}
@@ -3754,30 +3770,30 @@ function OAuthClientFields({
               onClick={() => void copyTextToClipboard(callbackUrl).catch(() => {})}
             >
               <Copy className="mr-2 h-4 w-4" />
-              Copy
+              {t("area.apps-connections-3.connection-setup-flow.key.copy")}
             </Button>
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            Add this exact URL to {entry.name} before continuing. It must match the authorization request.
+            {t("area.apps-connections-3.connection-setup-flow.oauthFields.addExactUrl", { name: entry.name })}
           </p>
         </div>
       ) : null}
       <div>
         <label className="text-sm font-medium text-foreground" htmlFor="curated-oauth-client-id">
-          Client ID
+          {t("area.apps-connections-3.connection-setup-flow.link.clientId")}
         </label>
         <Input
           id="curated-oauth-client-id"
           value={clientId}
           onChange={(event) => onClientIdChange(event.target.value)}
           autoComplete="off"
-          placeholder={required ? "Required" : "Optional"}
+          placeholder={required ? t("area.apps-connections-3.connection-setup-flow.oauthFields.required") : t("area.apps-connections-3.connection-setup-flow.link.optional")}
           className="mt-2 h-11 font-mono"
         />
       </div>
       <div>
         <label className="text-sm font-medium text-foreground" htmlFor="curated-oauth-client-secret">
-          Client secret
+          {t("area.apps-connections-3.connection-setup-flow.link.clientSecret")}
         </label>
         <Input
           id="curated-oauth-client-secret"
@@ -3785,7 +3801,7 @@ function OAuthClientFields({
           value={clientSecret}
           onChange={(event) => onClientSecretChange(event.target.value)}
           autoComplete="off"
-          placeholder="Optional for public clients"
+          placeholder={t("area.apps-connections-3.connection-setup-flow.oauthFields.secretPlaceholder")}
           className="mt-2 h-11 font-mono"
         />
       </div>
@@ -3802,6 +3818,7 @@ function MethodConfigField({
   value: string | boolean | undefined;
   onChange: (value: string | boolean) => void;
 }) {
+  const { t } = useTranslation();
   if (field.type === "checkbox") {
     return (
       <div className="flex items-start justify-between gap-4 rounded-lg border border-border p-4">
@@ -3829,7 +3846,7 @@ function MethodConfigField({
           onChange={(event) => onChange(event.target.value)}
           className="mt-2 h-11 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
         >
-          <option value="" disabled>Select an option</option>
+          <option value="" disabled>{t("area.apps-connections-3.connection-setup-flow.methodField.selectOption")}</option>
           {(field.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
       ) : (
@@ -3901,6 +3918,7 @@ export function AccessStep({
   onBack: () => void;
   onContinue: () => void;
 }) {
+  const { t } = useTranslation();
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
@@ -3934,17 +3952,28 @@ export function AccessStep({
     ? canSetCompanyInstall
     : installAgentIds.size > 0);
   const lockedAgentName = lockedAgentId
-    ? allAgents.find((agent) => agent.id === lockedAgentId)?.name ?? "the requesting agent"
+    ? allAgents.find((agent) => agent.id === lockedAgentId)?.name ?? t("area.apps-connections-3.connection-setup-flow.access.requestingAgent")
     : null;
-  const identityHeading = githubIdentity ? "Connect GitHub as" : "Which humans can use this credential?";
+  const humansQuestion = t("area.apps-connections-3.connection-setup-flow.access.humansQuestion");
+  const identityHeading = githubIdentity ? t("area.apps-connections-3.connection-setup-flow.access.connectGithubAs") : humansQuestion;
+  const agentsQuestion = t("area.apps-connections-3.connection-setup-flow.access.agentsQuestion");
   const agentAccessHeading = grantKind === "agent"
-    ? "Which agent owns this GitHub account?"
+    ? t("area.apps-connections-3.connection-setup-flow.access.githubAgentOwns")
     : githubIdentity && grantKind === "user"
-      ? "Which agents may use your GitHub when you’re responsible?"
+      ? t("area.apps-connections-3.connection-setup-flow.access.githubAgentsUser")
       : githubIdentity
-        ? "Which agents may use the shared GitHub account?"
-        : "Which agents can use this connection?";
-  const agentAccessLabel = githubIdentity ? agentAccessHeading : "Which agents can use this connection?";
+        ? t("area.apps-connections-3.connection-setup-flow.access.githubAgentsShared")
+        : agentsQuestion;
+  const agentAccessLabel = githubIdentity ? agentAccessHeading : agentsQuestion;
+  const userTitle = githubIdentity ? t("area.apps-connections-3.connection-setup-flow.access.githubMine") : t("area.apps-connections-3.connection-setup-flow.access.justMe");
+  const agentTitle = t("area.apps-connections-3.connection-setup-flow.access.dedicatedAgent");
+  const orgTitle = githubIdentity ? t("area.apps-connections-3.connection-setup-flow.access.githubShared") : t("area.apps-connections-3.connection-setup-flow.access.anyHuman");
+  const userDesc = t("area.apps-connections-3.connection-setup-flow.access.userDesc");
+  const agentDesc = t("area.apps-connections-3.connection-setup-flow.access.agentDesc");
+  const orgDesc = t("area.apps-connections-3.connection-setup-flow.access.orgDesc");
+  const orgReasonFallback = t("area.apps-connections-3.connection-setup-flow.access.orgReasonFallback");
+  const installReasonFallback = t("area.apps-connections-3.connection-setup-flow.access.installReasonFallback");
+  const anyAgentTitle = t("area.apps-connections-3.connection-setup-flow.access.anyAgent");
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -3953,10 +3982,10 @@ export function AccessStep({
           <section className="p-6">
             <h2 className="text-sm font-semibold text-foreground">{identityHeading}</h2>
             {githubIdentity && grantKind === "agent" ? (
-              <p className="mt-2 text-sm text-muted-foreground">This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.</p>
+              <p className="mt-2 text-sm text-muted-foreground">{t("area.apps-connections-3.connection-setup-flow.access.githubAgentNote")}</p>
             ) : null}
             {identityLoading ? (
-              <div className="mt-4 grid gap-2 sm:grid-cols-2" aria-label="Loading connection identity">
+              <div className="mt-4 grid gap-2 sm:grid-cols-2" aria-label={t("area.apps-connections-3.connection-setup-flow.access.loadingIdentity")}>
                 <Skeleton className="h-20 w-full rounded-md" />
                 <Skeleton className="h-20 w-full rounded-md" />
               </div>
@@ -3972,25 +4001,25 @@ export function AccessStep({
                 <div>
                   <div className="text-sm font-medium text-foreground">
                     {allowedGrantKinds[0] === "user"
-                      ? githubIdentity ? "My GitHub account" : "Just me"
+                      ? userTitle
                       : allowedGrantKinds[0] === "agent"
-                        ? "A dedicated account for an agent"
-                        : githubIdentity ? "Shared company GitHub account (advanced)" : "Any human in the company"}
+                        ? agentTitle
+                        : orgTitle}
                   </div>
                   {githubIdentity ? (
                     <p className="mt-1 text-xs text-muted-foreground">
                       {allowedGrantKinds[0] === "user"
-                        ? "Agents use it only for runs where you are the responsible person."
+                        ? userDesc
                         : allowedGrantKinds[0] === "agent"
-                          ? "That agent always uses this account, regardless of who starts the run."
-                          : "Eligible agents use one shared credential, regardless of who starts the run."}
+                          ? agentDesc
+                          : orgDesc}
                     </p>
                   ) : null}
                 </div>
               </div>
             ) : needsIdentityChoice ? (
               <RadioCardGroup
-                ariaLabel={githubIdentity ? identityHeading : "Which humans can use this credential?"}
+                ariaLabel={githubIdentity ? identityHeading : humansQuestion}
                 className="mt-4 sm:grid-cols-2"
                 value={grantKind}
                 onValueChange={(next) => {
@@ -4004,35 +4033,34 @@ export function AccessStep({
                 options={[
                   {
                     value: "user",
-                    title: githubIdentity ? "My GitHub account" : "Just me",
+                    title: userTitle,
                     description: githubIdentity
-                      ? "Agents use it only for runs where you are the responsible person."
+                      ? userDesc
                       : undefined,
                     icon: <UserRound className="h-4 w-4" aria-hidden="true" />,
                   },
                   {
                     value: "agent",
-                    title: "A dedicated account for an agent",
+                    title: agentTitle,
                     description: githubIdentity
-                      ? "That agent always uses this account, regardless of who starts the run."
+                      ? agentDesc
                       : undefined,
                     icon: <Bot className="h-4 w-4" aria-hidden="true" />,
                   },
                   {
                     value: "organization",
-                    title: githubIdentity ? "Shared company GitHub account (advanced)" : "Any human in the company",
+                    title: orgTitle,
                     description: githubIdentity
-                      ? "Eligible agents use one shared credential, regardless of who starts the run."
+                      ? orgDesc
                       : undefined,
                     icon: <UsersRound className="h-4 w-4" aria-hidden="true" />,
                     accessibleLabel: canCreateOrganizationGrant
-                      ? githubIdentity ? "Shared company GitHub account (advanced)" : "Any human in the company"
-                      : `${githubIdentity ? "Shared company GitHub account (advanced)" : "Any human in the company"}. Unavailable: ${capabilities?.organizationGrantReason ??
-                        "Only a connection manager can share this credential with the organization."}`,
+                      ? orgTitle
+                      : t("area.apps-connections-3.connection-setup-flow.access.unavailableLabel", { label: orgTitle, reason: capabilities?.organizationGrantReason ?? orgReasonFallback }),
                     tooltip: canCreateOrganizationGrant
                       ? undefined
                       : capabilities?.organizationGrantReason ??
-                        "Only a connection manager can share this credential with the organization.",
+                        orgReasonFallback,
                     disabled: !canCreateOrganizationGrant,
                   },
                 ].filter((option) => allowedGrantKinds.includes(option.value as ConnectionGrantKind))}
@@ -4040,7 +4068,7 @@ export function AccessStep({
             ) : (
               // A connection with no credential has no identity to choose, so
               // asking would be a meaningless decision.
-              <p className="mt-4 text-sm text-muted-foreground">No identity required</p>
+              <p className="mt-4 text-sm text-muted-foreground">{t("area.apps-connections-3.connection-setup-flow.access.noIdentity")}</p>
             )}
           </section>
 
@@ -4050,20 +4078,23 @@ export function AccessStep({
               <div className="mt-4 flex items-start gap-3 rounded-md border border-border bg-muted/40 p-4">
                 <UsersRound className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
                 <div>
-                  <div className="text-sm font-medium text-foreground">Existing agent access stays the same</div>
+                  <div className="text-sm font-medium text-foreground">{t("area.apps-connections-3.connection-setup-flow.access.existingStays")}</div>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Reconnecting replaces the credential without changing which agents can use it.
+                    {t("area.apps-connections-3.connection-setup-flow.access.reconnectNote")}
                   </p>
                 </div>
               </div>
             ) : lockedAgentId ? (
               <p className="mt-2 text-sm text-muted-foreground">
-                This task grants access only to <span className="font-medium text-foreground">{lockedAgentName}</span>.
-                Existing connection access is left unchanged.
+                <Trans
+                  i18nKey="area.apps-connections-3.connection-setup-flow.access.taskGrants"
+                  values={{ name: lockedAgentName }}
+                  components={{ 1: <span className="font-medium text-foreground" /> }}
+                />
               </p>
             ) : (
               grantKind === "agent" ? (
-                <p className="mt-2 text-sm text-muted-foreground">Choose exactly one agent. This identity cannot be shared with other agents.</p>
+                <p className="mt-2 text-sm text-muted-foreground">{t("area.apps-connections-3.connection-setup-flow.access.exactlyOne")}</p>
               ) : <RadioCardGroup
                 ariaLabel={agentAccessLabel}
                 className="mt-4 sm:grid-cols-2"
@@ -4072,31 +4103,30 @@ export function AccessStep({
                 options={[
                   {
                     value: "specific",
-                    title: githubIdentity ? "Only agents I choose" : "Just agents I pick",
+                    title: githubIdentity ? t("area.apps-connections-3.connection-setup-flow.access.onlyChosen") : t("area.apps-connections-3.connection-setup-flow.access.justPicked"),
                     description: githubIdentity
                       ? grantKind === "user"
-                        ? "Only selected agents may use your GitHub when you’re responsible."
-                        : "Only selected agents may use the shared account."
+                        ? t("area.apps-connections-3.connection-setup-flow.access.onlySelectedUser")
+                        : t("area.apps-connections-3.connection-setup-flow.access.onlySelectedShared")
                       : undefined,
                     icon: <Bot className="h-4 w-4" aria-hidden="true" />,
                   },
                   {
                     value: "all",
-                    title: "Any agent",
+                    title: anyAgentTitle,
                     description: githubIdentity
                       ? grantKind === "user"
-                        ? "Every agent may use your GitHub when you’re responsible."
-                        : "Every agent may use the shared account."
+                        ? t("area.apps-connections-3.connection-setup-flow.access.everyUser")
+                        : t("area.apps-connections-3.connection-setup-flow.access.everyShared")
                       : undefined,
                     icon: <BotGroupIcon />,
                     accessibleLabel: canSetCompanyInstall
-                      ? "Any agent"
-                      : `Any agent. Unavailable: ${capabilities?.companyInstallReason ??
-                        "Only someone who can configure this connection can choose this."}`,
+                      ? anyAgentTitle
+                      : t("area.apps-connections-3.connection-setup-flow.access.unavailableLabel", { label: anyAgentTitle, reason: capabilities?.companyInstallReason ?? installReasonFallback }),
                     tooltip: canSetCompanyInstall
                       ? undefined
                       : capabilities?.companyInstallReason ??
-                        "Only someone who can configure this connection can choose this.",
+                        installReasonFallback,
                     disabled: !canSetCompanyInstall,
                   },
                 ]}
@@ -4111,7 +4141,7 @@ export function AccessStep({
                     grantKind === "agent" && next.size > 1 ? new Set([[...next].at(-1)!]) : next,
                   )}
                   loading={agentsQuery.isLoading}
-                  emptyMessage="You cannot edit any agents yet."
+                  emptyMessage={t("area.apps-connections-3.connection-setup-flow.access.noEditableAgents")}
                   showSelectionPreview={false}
                 />
               </div>
@@ -4124,7 +4154,7 @@ export function AccessStep({
           reading order; desktop keeps Back on the left. */}
       <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
         <Button variant="ghost" className="w-full sm:w-auto" onClick={onBack} disabled={pending}>
-          Back
+          {t("area.apps-connections-3.connection-setup-flow.back")}
         </Button>
         <Button
           className="w-full sm:w-auto"
@@ -4161,21 +4191,21 @@ export function accessSummaryLines(input: {
   enabledCount: number;
 }): Array<{ label: string; value: string }> {
   const identity = input.authKind === "none"
-    ? "No identity required"
+    ? i18n.t("area.apps-connections-3.connection-setup-flow.access.noIdentity")
     : input.grantKind === "user"
-      ? "Your identity"
+      ? i18n.t("area.apps-connections-3.connection-setup-flow.summary.yourIdentity")
       : input.grantKind === "agent"
-        ? "Dedicated agent identity"
-      : "Organization identity";
+        ? i18n.t("area.apps-connections-3.connection-setup-flow.summary.agentIdentity")
+      : i18n.t("area.apps-connections-3.connection-setup-flow.summary.orgIdentity");
   const availableTo = input.installChoice === "all"
-    ? "Any agent"
-    : `${input.installCount} selected ${input.installCount === 1 ? "agent" : "agents"}`;
+    ? i18n.t("area.apps-connections-3.connection-setup-flow.access.anyAgent")
+    : i18n.t("area.apps-connections-3.connection-setup-flow.summary.selectedAgents", { count: input.installCount });
   return [
-    { label: "Identity", value: identity },
-    { label: "Available to", value: availableTo },
+    { label: i18n.t("area.apps-connections-3.connection-setup-flow.summary.identity"), value: identity },
+    { label: i18n.t("area.apps-connections-3.connection-setup-flow.summary.availableTo"), value: availableTo },
     {
-      label: "Actions",
-      value: `${input.enabledCount} ${input.enabledCount === 1 ? "action" : "actions"} on`,
+      label: i18n.t("area.apps-connections-3.connection-setup-flow.summary.actions"),
+      value: i18n.t("area.apps-connections-3.connection-setup-flow.summary.actionsOn", { count: input.enabledCount }),
     },
   ];
 }
@@ -4207,6 +4237,7 @@ export function ConnectionSetupCompletionScreen({
   summary: Array<{ label: string; value: string }>;
   onDone: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="mx-auto max-w-md py-10 text-center">
       <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-500/10">
@@ -4214,7 +4245,7 @@ export function ConnectionSetupCompletionScreen({
       </div>
       <div className="mt-6 flex items-center justify-center gap-2">
         <AppLogo name={appName} logoUrl={logoUrl} darkLogoUrl={darkLogoUrl} size={28} />
-        <h2 className="text-2xl font-bold tracking-tight">{appName} is ready.</h2>
+        <h2 className="text-2xl font-bold tracking-tight">{t("area.apps-connections-3.connection-setup-flow.completion.ready", { name: appName })}</h2>
       </div>
       <dl className="mx-auto mt-6 max-w-xs space-y-1 text-left">
         {summary.map((line) => (
@@ -4226,7 +4257,7 @@ export function ConnectionSetupCompletionScreen({
       </dl>
       <div className="mt-8">
         <Button size="lg" className="px-10" onClick={onDone}>
-          View connection
+          {t("area.apps-connections-3.connection-setup-flow.completion.view")}
         </Button>
       </div>
     </div>

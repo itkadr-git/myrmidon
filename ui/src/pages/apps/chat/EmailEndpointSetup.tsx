@@ -38,14 +38,17 @@ import {
   lowTrustBoundaryHasScope,
 } from "@/lib/trust-policy-ui";
 import { queryKeys } from "@/lib/queryKeys";
+import { i18n, useTranslation } from "@/i18n";
 import type {
   AgentPermissions,
   EmailEndpointSummary,
 } from "@myrmidon/shared";
 const selectClass =
   "w-full rounded-md border border-input bg-background px-3 py-2 text-sm";
+const DEFAULT_DOMAIN = "agentmail.to";
 
 export function EmailEndpointSetup() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const [params] = useSearchParams();
   const navigate = useNavigate();
@@ -70,7 +73,7 @@ export function EmailEndpointSetup() {
   const [addressMode, setAddressMode] = useState("new");
   const [inboxId, setInboxId] = useState("");
   const [username, setUsername] = useState("");
-  const [domain, setDomain] = useState("agentmail.to");
+  const [domain, setDomain] = useState(DEFAULT_DOMAIN);
   const [mode, setMode] = useState<"websocket" | "webhook">("websocket");
   const [trustOpen, setTrustOpen] = useState(false);
   const [permissions, setPermissions] = useState<Partial<AgentPermissions>>({});
@@ -175,8 +178,8 @@ export function EmailEndpointSetup() {
     addressMode === "existing" ? inboxId : `${username}@${domain}`;
   const labels =
     step < 3
-      ? ["Access", "API key", "Connected"]
-      : ["Agent", "Email address", "Review"];
+      ? [t("area.apps-chat-email.email-endpoint-setup.steps.access"), t("area.apps-chat-email.email-endpoint-setup.steps.apiKey"), t("area.apps-chat-email.email-endpoint-setup.steps.connected")]
+      : [t("area.apps-chat-email.email-endpoint-setup.steps.agent"), t("area.apps-chat-email.email-endpoint-setup.steps.emailAddress"), t("area.apps-chat-email.email-endpoint-setup.steps.review")];
   const current = step < 3 ? step : Math.min(step - 3, 2);
   const error = connect.error ?? setup.error ?? inspected.error ?? agents.error;
   const trustNotice = chosen && (
@@ -192,16 +195,18 @@ export function EmailEndpointSetup() {
         )}
         {lowTrust
           ? scoped
-            ? "Low-trust review configured"
-            : "Low trust needs a work boundary"
-          : `${chosen.name} is not a low-trust agent`}
+            ? t("area.apps-chat-email.email-endpoint-setup.trust.configured")
+            : t("area.apps-chat-email.email-endpoint-setup.trust.needsBoundary")
+          : t("area.apps-chat-email.email-endpoint-setup.trust.notLowTrust", { name: chosen.name })}
       </p>
       <p className="text-sm text-muted-foreground">
         {lowTrust
-          ? "Email tasks stay inside the configured project or root task boundary. Output is quarantined for trusted review."
-          : "Email can contain malicious instructions. We recommend Low-trust review to limit the agent’s access to Myrmidon work."}
+          ? t("area.apps-chat-email.email-endpoint-setup.trust.bodyLowTrust")
+          : t("area.apps-chat-email.email-endpoint-setup.trust.bodyDefault")}
       </p>
-      <p className="text-xs text-muted-foreground">Low-trust execution also requires isolated workspaces and an active sandbox environment in the agent’s runtime settings.</p>
+      <p className="text-xs text-muted-foreground">
+        {t("area.apps-chat-email.email-endpoint-setup.trust.isolationNote")}
+      </p>
       <Button
         size="sm"
         variant="outline"
@@ -210,7 +215,7 @@ export function EmailEndpointSetup() {
           setTrustOpen(true);
         }}
       >
-        {lowTrust ? "Review trust settings" : "Configure low trust"}
+        {lowTrust ? t("area.apps-chat-email.email-endpoint-setup.trust.review") : t("area.apps-chat-email.email-endpoint-setup.trust.configure")}
       </Button>
     </div>
   );
@@ -219,10 +224,10 @@ export function EmailEndpointSetup() {
       <header className="flex items-center justify-between gap-3">
         <h1 className="text-xl font-bold">
           {step < 3
-            ? "Connect AgentMail"
+            ? t("area.apps-chat-email.email-endpoint-setup.title.connect")
             : step === 6
-              ? "Your agent’s email is ready"
-              : "Give an agent an email address"}
+              ? t("area.apps-chat-email.email-endpoint-setup.title.ready")
+              : t("area.apps-chat-email.email-endpoint-setup.title.giveAddress")}
         </h1>
         <Button
           variant="ghost"
@@ -232,11 +237,11 @@ export function EmailEndpointSetup() {
             )
           }
         >
-          {step === 6 ? "Close" : "Cancel"}
+          {step === 6 ? t("common.close") : t("common.cancel")}
         </Button>
       </header>
       {step !== 6 && (
-        <nav aria-label="Setup progress">
+        <nav aria-label={t("area.apps-chat-email.email-endpoint-setup.progressAriaLabel")}>
           <ol className="flex gap-4">
             {labels.map((label, i) => (
               <li
@@ -273,7 +278,7 @@ export function EmailEndpointSetup() {
           setInstallAgentIds={setAgentIds}
           onBack={() => navigate("/apps")}
           onContinue={() => setStep(1)}
-          submitLabel="Continue"
+          submitLabel={t("area.apps-chat-email.email-endpoint-setup.continue")}
         />
       )}
       {step === 1 && (
@@ -286,16 +291,16 @@ export function EmailEndpointSetup() {
         >
           <section className="space-y-4 rounded-xl border border-border p-6">
             <h2 className="text-lg font-semibold">
-              Add your AgentMail API key
+              {t("area.apps-chat-email.email-endpoint-setup.apiKey.title")}
             </h2>
-            <Label htmlFor="email-api-key">API key</Label>
+            <Label htmlFor="email-api-key">{t("area.apps-chat-email.email-endpoint-setup.apiKey.label")}</Label>
             <Input
               id="email-api-key"
               type="password"
               autoComplete="off"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder="Paste your AgentMail API key"
+              placeholder={t("area.apps-chat-email.email-endpoint-setup.apiKey.placeholder")}
             />
             <a
               href="https://console.agentmail.to"
@@ -303,30 +308,32 @@ export function EmailEndpointSetup() {
               rel="noreferrer"
               className="text-sm underline"
             >
-              Get a key in AgentMail ↗
+              {t("area.apps-chat-email.email-endpoint-setup.apiKey.getKey")}
             </a>
           </section>
           <div className="flex justify-between">
             <Button type="button" variant="ghost" onClick={() => setStep(0)}>
-              Back
+              {t("area.apps-chat-email.email-endpoint-setup.back")}
             </Button>
             <Button disabled={!apiKey.trim() || connect.isPending}>
-              {connect.isPending ? "Connecting…" : "Connect AgentMail"}
+              {connect.isPending ? t("area.apps-chat-email.email-endpoint-setup.apiKey.connecting") : t("area.apps-chat-email.email-endpoint-setup.apiKey.connect")}
             </Button>
           </div>
         </form>
       )}
       {step === 2 && (
         <section className="space-y-5 rounded-xl border border-border p-6">
-          <h2 className="text-lg font-semibold">AgentMail is connected</h2>
+          <h2 className="text-lg font-semibold">
+            {t("area.apps-chat-email.email-endpoint-setup.connected.title")}
+          </h2>
           <p className="text-sm text-muted-foreground">
-            Next, give an agent an email address from Permissions.
+            {t("area.apps-chat-email.email-endpoint-setup.connected.next")}
           </p>
           <div className="flex justify-end">
             <Button
               onClick={() => navigate(`/apps/${connectionId}/permissions`)}
             >
-              Open permissions <ArrowRight className="size-4" />
+              {t("area.apps-chat-email.email-endpoint-setup.connected.openPermissions")} <ArrowRight className="size-4" />
             </Button>
           </div>
         </section>
@@ -335,17 +342,17 @@ export function EmailEndpointSetup() {
         <>
           <section className="space-y-4 rounded-xl border border-border p-6">
             <h2 className="text-lg font-semibold">
-              Who should handle this inbox?
+              {t("area.apps-chat-email.email-endpoint-setup.agent.title")}
             </h2>
             <p className="text-sm text-muted-foreground">
-              Incoming email will create tasks assigned to this agent.
+              {t("area.apps-chat-email.email-endpoint-setup.agent.description")}
             </p>
-            <Label>Agent</Label>
+            <Label>{t("area.apps-chat-email.email-endpoint-setup.agent.label")}</Label>
             <SearchableSelect
               value={agentId}
-              placeholder="Choose an agent"
-              searchPlaceholder="Search all agents…"
-              emptyMessage="No agents found."
+              placeholder={t("area.apps-chat-email.email-endpoint-setup.agent.placeholder")}
+              searchPlaceholder={t("area.apps-chat-email.email-endpoint-setup.agent.searchPlaceholder")}
+              emptyMessage={t("area.apps-chat-email.email-endpoint-setup.agent.empty")}
               groups={[
                 {
                   id: "agents",
@@ -385,8 +392,7 @@ export function EmailEndpointSetup() {
               }
             />
             <p className="text-xs text-muted-foreground">
-              Activating this inbox also adds the agent to this connection’s
-              allowed agents.
+              {t("area.apps-chat-email.email-endpoint-setup.agent.activationNote")}
             </p>
           </section>
           {trustNotice}
@@ -396,24 +402,24 @@ export function EmailEndpointSetup() {
         <>
           <section className="space-y-5 rounded-xl border border-border p-6">
             <h2 className="text-lg font-semibold">
-              Choose {chosen?.name}’s email address
+              {t("area.apps-chat-email.email-endpoint-setup.address.title", { name: chosen?.name })}
             </h2>
             <RadioCardGroup
-              ariaLabel="Email address source"
+              ariaLabel={t("area.apps-chat-email.email-endpoint-setup.address.sourceAriaLabel")}
               value={addressMode}
               onValueChange={setAddressMode}
               options={[
                 {
                   value: "new",
-                  title: "Create a new address",
+                  title: t("area.apps-chat-email.email-endpoint-setup.address.createNew"),
                   disabled: scopedKey,
                 },
-                { value: "existing", title: "Use an existing inbox" },
+                { value: "existing", title: t("area.apps-chat-email.email-endpoint-setup.address.useExisting") },
               ]}
             />
             {addressMode === "new" ? (
               <div className="space-y-2">
-                <Label htmlFor="email-name">Email address</Label>
+                <Label htmlFor="email-name">{t("area.apps-chat-email.email-endpoint-setup.address.label")}</Label>
                 <div className="flex items-center gap-2">
                   <Input
                     id="email-name"
@@ -427,14 +433,14 @@ export function EmailEndpointSetup() {
               </div>
             ) : (
               <div className="space-y-2">
-                <Label htmlFor="email-existing">Available inbox</Label>
+                <Label htmlFor="email-existing">{t("area.apps-chat-email.email-endpoint-setup.address.availableInbox")}</Label>
                 <select
                   id="email-existing"
                   className={selectClass}
                   value={inboxId}
                   onChange={(e) => setInboxId(e.target.value)}
                 >
-                  <option value="">Choose an inbox</option>
+                  <option value="">{t("area.apps-chat-email.email-endpoint-setup.address.chooseInbox")}</option>
                   {inspected.data?.inboxes.map((i) => (
                     <option
                       key={i.inbox_id}
@@ -446,7 +452,7 @@ export function EmailEndpointSetup() {
                     >
                       {i.inbox_id}
                       {inboxes.data?.some((e) => e.address === i.inbox_id)
-                        ? " — already assigned"
+                        ? ` — ${t("area.apps-chat-email.email-endpoint-setup.address.alreadyAssigned")}`
                         : ""}
                     </option>
                   ))}
@@ -455,19 +461,19 @@ export function EmailEndpointSetup() {
             )}
             <details className="border-t border-border pt-4">
               <summary className="cursor-pointer text-sm text-muted-foreground">
-                Advanced options
+                {t("area.apps-chat-email.email-endpoint-setup.address.advanced")}
               </summary>
               <div className="space-y-4 pt-4">
                 {addressMode === "new" && (
                   <>
-                    <Label htmlFor="email-domain">Domain</Label>
+                    <Label htmlFor="email-domain">{t("area.apps-chat-email.email-endpoint-setup.address.domain")}</Label>
                     <select
                       id="email-domain"
                       value={domain}
                       onChange={(e) => setDomain(e.target.value)}
                       className={selectClass}
                     >
-                      <option>agentmail.to</option>
+                      <option>{DEFAULT_DOMAIN}</option>
                       {inspected.data?.domains
                         .filter((d) => d.status === "VERIFIED")
                         .map((d) => (
@@ -480,11 +486,11 @@ export function EmailEndpointSetup() {
                       target="_blank"
                       rel="noreferrer"
                     >
-                      Set up a custom domain in AgentMail ↗
+                      {t("area.apps-chat-email.email-endpoint-setup.address.customDomain")}
                     </a>
                   </>
                 )}
-                <Label htmlFor="email-mode">Receiving</Label>
+                <Label htmlFor="email-mode">{t("area.apps-chat-email.email-endpoint-setup.address.receiving")}</Label>
                 <select
                   id="email-mode"
                   value={mode}
@@ -492,10 +498,10 @@ export function EmailEndpointSetup() {
                   className={selectClass}
                 >
                   <option value="websocket">
-                    Live connection — works locally
+                    {t("area.apps-chat-email.email-endpoint-setup.address.modeLive")}
                   </option>
                   <option value="webhook">
-                    Webhook — requires public HTTPS
+                    {t("area.apps-chat-email.email-endpoint-setup.address.modeWebhook")}
                   </option>
                 </select>
               </div>
@@ -510,16 +516,15 @@ export function EmailEndpointSetup() {
           {trustNotice}
           <section className="space-y-4 rounded-xl border border-border p-6">
             <h2 className="text-lg font-semibold">
-              Ready to start receiving email?
+              {t("area.apps-chat-email.email-endpoint-setup.review.title")}
             </h2>
             <p className="text-lg font-semibold">{address}</p>
             <p className="text-sm">
-              Assigned to {chosen?.name} ·{" "}
-              {mode === "websocket" ? "Live connection" : "Signed webhook"}
+              {t("area.apps-chat-email.email-endpoint-setup.review.assignedTo", { name: chosen?.name })} ·{" "}
+              {mode === "websocket" ? t("area.apps-chat-email.email-endpoint-setup.review.modeLive") : t("area.apps-chat-email.email-endpoint-setup.review.modeWebhook")}
             </p>
             <p className="text-sm text-muted-foreground">
-              New conversations create tasks. Replies stay in the same task.
-              Task comments stay internal.
+              {t("area.apps-chat-email.email-endpoint-setup.review.note")}
             </p>
           </section>
         </>
@@ -528,12 +533,12 @@ export function EmailEndpointSetup() {
         <section className="space-y-5 rounded-xl border border-border p-6">
           <p className="flex items-center gap-2 text-sm">
             <Check className="size-4" />
-            Receiving email for {chosen?.name}
+            {t("area.apps-chat-email.email-endpoint-setup.done.receiving", { name: chosen?.name })}
           </p>
           <p className="text-lg font-semibold">{setup.data?.address}</p>
           <EmailSafetyNotice />
           <Button onClick={() => navigate(`/apps/${connectionId}/permissions`)}>
-            Back to permissions
+            {t("area.apps-chat-email.email-endpoint-setup.done.back")}
           </Button>
         </section>
       )}
@@ -548,7 +553,7 @@ export function EmailEndpointSetup() {
             }
           >
             <ArrowLeft className="size-4" />
-            Back
+            {t("area.apps-chat-email.email-endpoint-setup.back")}
           </Button>
           <Button
             disabled={
@@ -564,14 +569,14 @@ export function EmailEndpointSetup() {
             onClick={() => (step === 5 ? setup.mutate() : setStep(step + 1))}
           >
             {setup.isPending
-              ? "Activating…"
+              ? t("area.apps-chat-email.email-endpoint-setup.action.activating")
               : step === 5
                 ? addressMode === "new"
-                  ? "Create email address"
-                  : "Connect email address"
+                  ? t("area.apps-chat-email.email-endpoint-setup.action.create")
+                  : t("area.apps-chat-email.email-endpoint-setup.action.connect")
                 : step === 4
-                  ? "Review email address"
-                  : "Continue"}
+                  ? t("area.apps-chat-email.email-endpoint-setup.action.review")
+                  : t("area.apps-chat-email.email-endpoint-setup.continue")}
             <ArrowRight className="size-4" />
           </Button>
         </div>
@@ -584,10 +589,11 @@ export function EmailEndpointSetup() {
       <Dialog open={trustOpen} onOpenChange={setTrustOpen}>
         <DialogContent className="max-h-screen overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Trust settings · {chosen?.name}</DialogTitle>
+            <DialogTitle>
+              {t("area.apps-chat-email.email-endpoint-setup.trustDialog.title", { name: chosen?.name })}
+            </DialogTitle>
             <DialogDescription>
-              Changes apply to all of this agent’s work. Use a dedicated email
-              agent if its other tasks need broader access.
+              {t("area.apps-chat-email.email-endpoint-setup.trustDialog.description")}
             </DialogDescription>
           </DialogHeader>
           <TrustPresetSection
@@ -606,8 +612,7 @@ export function EmailEndpointSetup() {
             candidatesLoading={projects.isPending || boundaryIssues.isPending}
           />
           <p className="text-xs text-muted-foreground">
-            Low trust limits Myrmidon access; it does not sandbox the runtime.
-            Review filesystem, tool, and secret access separately.
+            {t("area.apps-chat-email.email-endpoint-setup.trustDialog.note")}
           </p>
           {(trust.error || projects.error || boundaryIssues.error) && (
             <p role="alert" className="text-sm text-destructive">
@@ -616,7 +621,7 @@ export function EmailEndpointSetup() {
           )}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setTrustOpen(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button
               disabled={
@@ -628,7 +633,7 @@ export function EmailEndpointSetup() {
               }
               onClick={() => trust.mutate()}
             >
-              Save trust settings
+              {t("area.apps-chat-email.email-endpoint-setup.trustDialog.save")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -646,6 +651,7 @@ export function EmailConnectionInboxes({
   connectionId: string;
   canConfigure: boolean;
 }) {
+  const { t } = useTranslation();
   const query = useQuery({
     queryKey: ["email-inboxes", companyId],
     queryFn: () => emailApi.list(companyId),
@@ -669,10 +675,10 @@ export function EmailConnectionInboxes({
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border p-6">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">
-            Give an agent an email address
+            {t("area.apps-chat-email.email-endpoint-setup.inboxes.title")}
           </h2>
           <p className="text-sm text-muted-foreground">
-            Each email conversation becomes a task.
+            {t("area.apps-chat-email.email-endpoint-setup.inboxes.description")}
           </p>
         </div>
         {canConfigure && (
@@ -680,7 +686,7 @@ export function EmailConnectionInboxes({
             <Link
               to={`/apps/chat/connect?provider=agentmail&connectionId=${connectionId}`}
             >
-              Give an agent an email address
+              {t("area.apps-chat-email.email-endpoint-setup.inboxes.title")}
             </Link>
           </Button>
         )}
@@ -698,7 +704,7 @@ export function EmailConnectionInboxes({
           </Link>
           <span className="text-xs text-muted-foreground">
             {i.lastError ??
-              (i.status === "active" ? "Receiving email" : i.status)}
+              (i.status === "active" ? t("area.apps-chat-email.email-endpoint-setup.inboxes.receiving") : i.status)}
           </span>
         </div>
       ))}
@@ -718,6 +724,7 @@ export function EmailEndpointSettings({
   endpointId: string;
   companyId: string;
 }) {
+  const { t } = useTranslation();
   const cache = useQueryClient();
   const query = useQuery({
     queryKey: ["email-inboxes", companyId],
@@ -755,11 +762,11 @@ export function EmailEndpointSettings({
     },
   });
   if (removed)
-    return <p>Inbox disconnected. Email history remains in its tasks.</p>;
+    return <p>{t("area.apps-chat-email.email-endpoint-setup.settings.disconnected")}</p>;
   if (!inbox)
     return (
       <p role={query.error ? "alert" : undefined}>
-        {query.error?.message ?? "Loading email inbox…"}
+        {query.error?.message ?? t("area.apps-chat-email.email-endpoint-setup.settings.loading")}
       </p>
     );
   return (
@@ -767,14 +774,19 @@ export function EmailEndpointSettings({
       <h1 className="text-xl font-bold">{inbox.address}</h1>
       <p className="text-sm text-muted-foreground">
         {inbox.status} ·{" "}
-        {inbox.receiveMode === "websocket" ? "Live connection" : "Webhook"}
+        {inbox.receiveMode === "websocket"
+          ? t("area.apps-chat-email.email-endpoint-setup.settings.modeLive")
+          : t("area.apps-chat-email.email-endpoint-setup.settings.modeWebhook")}
       </p>
       <p className="text-sm text-muted-foreground">
-        Last mail check: {inbox.lastSyncAt ? new Date(inbox.lastSyncAt).toLocaleString() : "Not checked yet"}
+        {t("area.apps-chat-email.email-endpoint-setup.settings.lastCheck", {
+          time: inbox.lastSyncAt
+            ? new Date(inbox.lastSyncAt).toLocaleString(i18n.language)
+            : t("area.apps-chat-email.email-endpoint-setup.settings.notChecked"),
+        })}
       </p>
       <p className="text-sm">
-        Each email conversation is a task. Task comments stay internal; use
-        Email reply to send.
+        {t("area.apps-chat-email.email-endpoint-setup.settings.note")}
       </p>
       {inbox.lastError && (
         <p role="alert" className="text-sm text-destructive">
@@ -789,19 +801,19 @@ export function EmailEndpointSettings({
             control.mutate(inbox.status === "active" ? "pause" : "resume")
           }
         >
-          {inbox.status === "active" ? "Pause" : "Resume"}
+          {inbox.status === "active" ? t("area.apps-chat-email.email-endpoint-setup.settings.pause") : t("area.apps-chat-email.email-endpoint-setup.settings.resume")}
         </Button>
         <Button
           variant="outline"
           disabled={control.isPending}
           onClick={() => control.mutate("remove")}
         >
-          Disconnect inbox
+          {t("area.apps-chat-email.email-endpoint-setup.settings.disconnect")}
         </Button>
       </div>
       <div className="space-y-2">
         <Label htmlFor="email-reconnect-key">
-          Reconnect this inbox with a new API key
+          {t("area.apps-chat-email.email-endpoint-setup.settings.reconnectKey")}
         </Label>
         <Input
           id="email-reconnect-key"
@@ -810,7 +822,9 @@ export function EmailEndpointSettings({
           value={replacementKey}
           onChange={(e) => setReplacementKey(e.target.value)}
         />
-        <Label htmlFor="email-reconnect-mode">Receiving mode</Label>
+        <Label htmlFor="email-reconnect-mode">
+          {t("area.apps-chat-email.email-endpoint-setup.settings.receivingMode")}
+        </Label>
         <select
           id="email-reconnect-mode"
           className={selectClass}
@@ -819,15 +833,15 @@ export function EmailEndpointSettings({
             setReceiveMode(e.target.value as "websocket" | "webhook")
           }
         >
-          <option value="websocket">Live connection</option>
-          <option value="webhook">Webhook</option>
+          <option value="websocket">{t("area.apps-chat-email.email-endpoint-setup.settings.modeLive")}</option>
+          <option value="webhook">{t("area.apps-chat-email.email-endpoint-setup.settings.modeWebhook")}</option>
         </select>
         <Button
           variant="outline"
           disabled={!replacementKey || reconnect.isPending}
           onClick={() => reconnect.mutate()}
         >
-          Reconnect inbox
+          {t("area.apps-chat-email.email-endpoint-setup.settings.reconnect")}
         </Button>
       </div>
       {reconnect.error && (

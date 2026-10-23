@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppWindow, Cloud, Loader2, ShieldAlert, ShieldCheck, ShieldQuestion, Trash2 } from "lucide-react";
+import type { TFunction } from "i18next";
+import { Trans } from "react-i18next";
 import type {
   ToolApplication,
   ToolConnection,
+  ToolConnectionCredentialPolicy,
   ToolProfileWithDetails,
 } from "@myrmidon/shared";
 import {
@@ -51,13 +54,14 @@ import {
   connectionOwnerProfile,
   type ConnectionOwnerProfile,
 } from "./connection-owner";
+import { i18n, useTranslation } from "@/i18n";
 
 const BROWSE_HREF = "/apps";
 
 type StatusFilter = "all" | "attention";
 
 type AppStatus = {
-  label: "Healthy" | "Needs attention" | "Paused" | "Not connected";
+  label: string;
   tone: "connected" | "attention" | "paused" | "not_connected";
 };
 
@@ -82,19 +86,19 @@ type AppRow = {
  */
 function statusFor(application: ToolApplication, connections: ToolConnection[]): AppStatus {
   if (connections.length === 0) {
-    return { label: "Not connected", tone: "not_connected" };
+    return { label: i18n.t("area.apps-connections-3.connections.statusNotConnected"), tone: "not_connected" };
   }
   if (
     application.status === "disabled" ||
     application.status === "archived" ||
     connections.every((connection) => connection.enabled === false || connection.status === "disabled")
   ) {
-    return { label: "Paused", tone: "paused" };
+    return { label: i18n.t("area.apps-connections-3.connections.statusPaused"), tone: "paused" };
   }
   if (connections.some((connection) => isAttentionHealthStatus(connection.healthStatus))) {
-    return { label: "Needs attention", tone: "attention" };
+    return { label: i18n.t("area.apps-connections-3.connections.statusNeedsAttention"), tone: "attention" };
   }
-  return { label: "Healthy", tone: "connected" };
+  return { label: i18n.t("area.apps-connections-3.connections.statusHealthy"), tone: "connected" };
 }
 
 /** The single health-derived predicate that drives highlight, pill, banner, filter (F6). */
@@ -110,6 +114,7 @@ const STATUS_CLASS: Record<AppStatus["tone"], string> = {
 };
 
 export function Connections() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -126,11 +131,11 @@ export function Connections() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
-      { label: "Connections" },
+      { label: t("area.apps-connections-3.connections.breadcrumbConnectors"), href: "/apps" },
+      { label: t("area.apps-connections-3.connections.title") },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
@@ -167,8 +172,8 @@ export function Connections() {
       if (status.verificationUrl) window.location.assign(status.verificationUrl);
     },
     onError: (error) => pushToast({
-      title: "Couldn’t reach Myrmidon Cloud",
-      body: error instanceof Error ? error.message : "Try again in a moment.",
+      title: t("area.apps-connections-3.connections.cloudUnreachable"),
+      body: error instanceof Error ? error.message : t("area.apps-connections-3.connections.tryAgainMoment"),
       tone: "error",
     }),
   });
@@ -188,18 +193,18 @@ export function Connections() {
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
       pushToast({
-        title: "Connection deleted",
+        title: t("area.apps-connections-3.connections.deletedTitle"),
         body: target.remainingConnectionCount > 0
-          ? `${target.appName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
-          : `${target.appName} is no longer available to agents and its credentials are deleted. Connecting it again needs a new sign-in or key.`,
+          ? t("area.apps-connections-3.connections.deletedStillHas", { app: target.appName, count: target.remainingConnectionCount })
+          : t("area.apps-connections-3.connections.deletedNoLonger", { app: target.appName }),
         tone: "success",
       });
       setConnectionToDelete(null);
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't delete the connection",
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("area.apps-connections-3.connections.deleteFailed"),
+        body: error instanceof Error ? error.message : t("area.apps-connections-3.connections.tryAgainShort"),
         tone: "error",
       }),
   });
@@ -305,7 +310,7 @@ export function Connections() {
   const visibleRows = filter === "attention" ? rowsNeedingAttention : rows;
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage apps.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("area.apps-connections-3.connections.selectOrganization")}</div>;
   }
 
   const loading = applicationsQuery.isLoading || connectionsQuery.isLoading || galleryQuery.isLoading;
@@ -335,17 +340,17 @@ export function Connections() {
         <div className="space-y-5">
           <header className="flex flex-wrap items-end justify-between gap-3">
             <div>
-              <h1 className="text-2xl font-bold tracking-tight">Connections</h1>
+              <h1 className="text-2xl font-bold tracking-tight">{t("area.apps-connections-3.connections.title")}</h1>
               <p className="mt-1 text-sm text-muted-foreground">
-                The tools you’ve connected, and whether they’re working.
+                {t("area.apps-connections-3.connections.subtitle")}
               </p>
             </div>
-            <Button onClick={() => navigate(BROWSE_HREF)}>Connect an app</Button>
+            <Button onClick={() => navigate(BROWSE_HREF)}>{t("area.apps-connections-3.connections.connectApp")}</Button>
           </header>
 
           <div className="flex flex-wrap items-center gap-2">
             <FilterChip active={filter === "all"} onClick={() => setFilter("all")}>
-              All ({rows.length})
+              {t("area.apps-connections-3.connections.filterAll", { n: rows.length })}
             </FilterChip>
             <FilterChip
               active={filter === "attention"}
@@ -353,7 +358,7 @@ export function Connections() {
               disabled={rowsNeedingAttention.length === 0}
               onClick={() => setFilter("attention")}
             >
-              Needs attention ({rowsNeedingAttention.length})
+              {t("area.apps-connections-3.connections.filterAttention", { n: rowsNeedingAttention.length })}
             </FilterChip>
           </div>
 
@@ -366,13 +371,13 @@ export function Connections() {
               <ShieldQuestion className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-semibold text-amber-900 dark:text-amber-100">
-                  {reviewCount} {reviewCount === 1 ? "action is" : "actions are"} waiting for your OK
+                  {t("area.apps-connections-3.connections.waitingForOk", { count: reviewCount })}
                 </div>
                 <div className="truncate text-xs text-amber-700 dark:text-amber-300">
-                  Your agents paused to check with you before making a change.
+                  {t("area.apps-connections-3.connections.agentsPaused")}
                 </div>
               </div>
-              <span className="shrink-0 text-xs font-semibold text-amber-800 dark:text-amber-200">Review →</span>
+              <span className="shrink-0 text-xs font-semibold text-amber-800 dark:text-amber-200">{t("area.apps-connections-3.connections.reviewLink")}</span>
             </button>
           )}
 
@@ -385,13 +390,13 @@ export function Connections() {
               <ShieldAlert className="h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-semibold text-red-900 dark:text-red-100">
-                  {rowsNeedingAttention.length} {rowsNeedingAttention.length === 1 ? "connection needs" : "connections need"} attention
+                  {t("area.apps-connections-3.connections.needAttention", { count: rowsNeedingAttention.length })}
                 </div>
                 <div className="truncate text-xs text-red-700 dark:text-red-300">
-                  {floatSummary(rowsNeedingAttention)}
+                  {floatSummary(rowsNeedingAttention, t)}
                 </div>
               </div>
-              <span className="shrink-0 text-xs font-semibold text-red-800 dark:text-red-200">Fix →</span>
+              <span className="shrink-0 text-xs font-semibold text-red-800 dark:text-red-200">{t("area.apps-connections-3.connections.fixLink")}</span>
             </button>
           )}
 
@@ -399,12 +404,12 @@ export function Connections() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-2.5">Connection</th>
-                  <th className="px-4 py-2.5">Type</th>
-                  <th className="px-4 py-2.5">Connected by</th>
-                  <th className="px-4 py-2.5">Status</th>
-                  <th className="px-4 py-2.5">Actions</th>
-                  <th className="px-4 py-2.5">Last used</th>
+                  <th className="px-4 py-2.5">{t("area.apps-connections-3.connections.colConnection")}</th>
+                  <th className="px-4 py-2.5">{t("area.apps-connections-3.connections.colType")}</th>
+                  <th className="px-4 py-2.5">{t("area.apps-connections-3.connections.colConnectedBy")}</th>
+                  <th className="px-4 py-2.5">{t("area.apps-connections-3.connections.colStatus")}</th>
+                  <th className="px-4 py-2.5">{t("area.apps-connections-3.connections.colActions")}</th>
+                  <th className="px-4 py-2.5">{t("area.apps-connections-3.connections.colLastUsed")}</th>
                   <th className="px-4 py-2.5" />
                 </tr>
               </thead>
@@ -415,12 +420,12 @@ export function Connections() {
                   const hint =
                     status.tone === "attention"
                       ? connection?.authKind === "oauth"
-                        ? "Reconnect required — sign in again to restore access."
-                        : "The key stopped working — reconnect to fix."
+                        ? t("area.apps-connections-3.connections.hintReconnectRequired")
+                        : t("area.apps-connections-3.connections.hintKeyStopped")
                       : status.tone === "paused"
-                        ? "Paused — agents can’t use it right now."
+                        ? t("area.apps-connections-3.connections.hintPaused")
                         : status.tone === "not_connected"
-                          ? "Connect it so agents can use it."
+                          ? t("area.apps-connections-3.connections.hintConnect")
                           : row.displayName !== application.name
                             ? application.name
                             : null;
@@ -428,10 +433,10 @@ export function Connections() {
                     ? `/apps/${connection.id}/permissions`
                     : `/apps/app/${application.id}/permissions`;
                   const actionLabel = !connection
-                    ? "Connect"
+                    ? t("area.apps-connections-3.connections.actionConnect")
                     : status.tone === "attention"
-                      ? "Reconnect"
-                      : "Permissions";
+                      ? t("area.apps-connections-3.connections.actionReconnect")
+                      : t("area.apps-connections-3.connections.actionPermissions");
                   return (
                     <tr
                       key={connection?.id ?? application.id}
@@ -463,7 +468,7 @@ export function Connections() {
                       </td>
                       <td className="px-4 py-3">
                         <span className="text-xs font-medium text-foreground">
-                          {connection ? connectionTypeLabel(connection.credentialPolicy) : "—"}
+                          {connection ? typeLabelText(connection.credentialPolicy, t) : "—"}
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -480,7 +485,7 @@ export function Connections() {
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className="text-xs text-muted-foreground">{row.actionCount} on</span>
+                        <span className="text-xs text-muted-foreground">{t("area.apps-connections-3.connections.actionsOn", { n: row.actionCount })}</span>
                       </td>
                       <td className="px-4 py-3">
                         <span className="text-xs text-muted-foreground">
@@ -504,7 +509,7 @@ export function Connections() {
                               variant="ghost"
                               size="icon-sm"
                               className="text-muted-foreground hover:text-destructive"
-                              aria-label={`Delete ${row.displayName} connection`}
+                              aria-label={t("area.apps-connections-3.connections.deleteAria", { name: row.displayName })}
                               onClick={(event) => {
                                 event.stopPropagation();
                                 setConnectionToDelete({
@@ -531,7 +536,7 @@ export function Connections() {
 
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-xs text-muted-foreground">
-              Apps you connect become available to every agent unless you change “Who can use it”.
+              {t("area.apps-connections-3.connections.footerNote")}
             </p>
           </div>
         </div>
@@ -546,18 +551,20 @@ export function Connections() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Delete {connectionToDelete?.appName ?? "this"} connection?
+              {connectionToDelete
+                ? t("area.apps-connections-3.connections.deleteDialogTitle", { app: connectionToDelete.appName })
+                : t("area.apps-connections-3.connections.deleteDialogTitleGeneric")}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {connectionToDelete && connectionToDelete.childConnectionCount > 0
-                ? `This also removes ${connectionToDelete.childConnectionCount} connected ${connectionToDelete.childConnectionCount === 1 ? "service" : "services"} and takes agent access away immediately. The Composio key and child session credentials are deleted.`
+                ? t("area.apps-connections-3.connections.childServices", { count: connectionToDelete.childConnectionCount })
                 : connectionToDelete && connectionToDelete.remainingConnectionCount > 0
-                ? `This connection's saved credentials are deleted and agents lose access through it immediately. Agents can still use ${connectionToDelete.appName} through ${connectionToDelete.remainingConnectionCount} other active ${connectionToDelete.remainingConnectionCount === 1 ? "connection" : "connections"}.`
-                : "The saved credentials are deleted and agents lose access immediately. Connecting it again later needs a new sign-in or key."}
+                ? t("area.apps-connections-3.connections.otherConnections", { app: connectionToDelete.appName, count: connectionToDelete.remainingConnectionCount })
+                : t("area.apps-connections-3.connections.deleteNoOthers")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleteConnection.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={deleteConnection.isPending}>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={!connectionToDelete || deleteConnection.isPending}
@@ -567,7 +574,7 @@ export function Connections() {
               }}
             >
               {deleteConnection.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-              {deleteConnection.isPending ? "Deleting..." : "Delete connection"}
+              {deleteConnection.isPending ? t("area.apps-connections-3.connections.deleting") : t("area.apps-connections-3.connections.deleteConnection")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -587,15 +594,16 @@ function CloudConnectorEnrollmentBanner({
   busy: boolean;
   onEnable: () => void;
 }) {
+  const { t } = useTranslation();
   if (status?.configured) {
     return (
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card px-4 py-3">
         <ShieldCheck className="h-5 w-5 text-primary" />
         <div className="min-w-0 flex-1">
           {/* myrmidon(B1a): user-visible text, matches the "Myrmidon-managed" wording used elsewhere in this PR */}
-          <div className="text-sm font-semibold text-foreground">Myrmidon-managed sign-in is ready</div>
+          <div className="text-sm font-semibold text-foreground">{t("area.apps-connections-3.connections.managedReady")}</div>
           <div className="truncate text-xs text-muted-foreground">
-            Provider authorization uses {status.brokerBaseUrl}; credentials stay in this instance.
+            {t("area.apps-connections-3.connections.providerAuthUses", { url: status.brokerBaseUrl })}
           </div>
         </div>
       </div>
@@ -605,7 +613,7 @@ function CloudConnectorEnrollmentBanner({
     return (
       <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3">
         <Cloud className="h-5 w-5 text-muted-foreground" />
-        <div className="text-sm text-muted-foreground">Myrmidon Cloud enrollment status is unavailable.</div>
+        <div className="text-sm text-muted-foreground">{t("area.apps-connections-3.connections.enrollmentUnavailable")}</div>
       </div>
     );
   }
@@ -615,15 +623,15 @@ function CloudConnectorEnrollmentBanner({
       <div className="min-w-0 flex-1">
         <div className="text-sm font-semibold text-foreground">
           {/* myrmidon(DB1): DEBRAND 1.6.6-a — the enrollment surface copy follows the product rename. */}
-          {status?.status === "pending" ? "Finish Myrmidon Cloud enrollment" : "Enable Myrmidon-managed sign-in"}
+          {status?.status === "pending" ? t("area.apps-connections-3.connections.finishEnrollment") : t("area.apps-connections-3.connections.enableManaged")}
         </div>
         <div className="text-xs text-muted-foreground">
-          Confirm this server’s exact address before Cloud can return encrypted Google credentials to it.
+          {t("area.apps-connections-3.connections.confirmAddress")}
         </div>
       </div>
       <Button variant="outline" size="sm" disabled={busy} onClick={onEnable}>
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-        {status?.status === "pending" ? "Continue enrollment" : "Enable"}
+        {status?.status === "pending" ? t("area.apps-connections-3.connections.continueEnrollment") : t("area.apps-connections-3.connections.enable")}
       </Button>
     </div>
   );
@@ -670,19 +678,30 @@ function enabledActionCount(profile: ToolProfileWithDetails): number {
   return count;
 }
 
-function floatSummary(rows: AppRow[]): string {
+function floatSummary(rows: AppRow[], t: TFunction): string {
   const names = rows.map((row) => humanizeConnectionDisplayName(row.application.name));
-  if (names.length <= 2) return names.join(" and ");
-  return `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
+  if (names.length <= 2) {
+    return new Intl.ListFormat(i18n.language, { style: "long", type: "conjunction" }).format(names);
+  }
+  return t("area.apps-connections-3.connections.andMore", { names: names.slice(0, 2).join(", "), count: names.length - 2 });
+}
+
+function typeLabelText(credentialPolicy: ToolConnectionCredentialPolicy, t: TFunction): string {
+  return credentialPolicy === "per_user"
+    ? t("area.apps-connections-3.connections.typePersonal")
+    : credentialPolicy === "per_agent"
+      ? t("area.apps-connections-3.connections.typeDedicatedAgent")
+      : t("area.apps-connections-3.connections.typeCompany");
 }
 
 function EmptyConnections({ onBrowse }: { onBrowse: () => void }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-2xl font-bold tracking-tight">Connections</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{t("area.apps-connections-3.connections.title")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          The tools you’ve connected, and whether they’re working.
+          {t("area.apps-connections-3.connections.subtitle")}
         </p>
       </header>
 
@@ -690,13 +709,15 @@ function EmptyConnections({ onBrowse }: { onBrowse: () => void }) {
         <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-muted">
           <AppWindow className="h-6 w-6 text-muted-foreground" />
         </div>
-        <p className="mt-4 text-sm font-medium text-foreground">No connections yet.</p>
+        <p className="mt-4 text-sm font-medium text-foreground">{t("area.apps-connections-3.connections.emptyTitle")}</p>
         <p className="mt-1 text-sm text-muted-foreground">
-          Add one from <span className="font-medium text-foreground">Apps</span> to give your agents
-          the tools they need.
+          <Trans
+            i18nKey="area.apps-connections-3.connections.emptyBody"
+            components={{ 1: <span className="font-medium text-foreground" /> }}
+          />
         </p>
         <Button className="mt-6" onClick={onBrowse}>
-          Browse apps
+          {t("area.apps-connections-3.connections.browseApps")}
         </Button>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, ShieldQuestion, X } from "lucide-react";
+import type { TFunction } from "i18next";
 import type { ToolActionRequestListItem } from "@myrmidon/shared";
 import { humanizeConnectionDisplayName } from "@myrmidon/shared";
 import { useCompany } from "@/context/CompanyContext";
@@ -12,6 +13,7 @@ import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionC
 import { toolsApi } from "@/api/tools";
 import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { useTranslation } from "@/i18n";
 
 /**
  * "Ask first" review queue (M1b float / M9 card, PAP-10859).
@@ -27,7 +29,7 @@ import { MarkdownBody } from "@/components/MarkdownBody";
 export function ReviewQueueCard({
   connectionId,
   emptyState = "hidden",
-  heading = "Waiting for your OK",
+  heading,
   plain = false,
 }: {
   connectionId?: string;
@@ -35,6 +37,7 @@ export function ReviewQueueCard({
   heading?: string;
   plain?: boolean;
 }) {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
 
   const query = useQuery({
@@ -51,13 +54,13 @@ export function ReviewQueueCard({
 
   if (!selectedCompanyId) return null;
   if (query.isLoading) return null;
-  if (query.isError) return <p role="alert" className="text-sm text-destructive">Could not load connection reviews. Please refresh to try again.</p>;
+  if (query.isError) return <p role="alert" className="text-sm text-destructive">{t("area.apps-connections-3.review-queue-card.loadFailed")}</p>;
 
   if (items.length === 0) {
     if (emptyState === "hidden") return null;
     return (
       <div className={plain ? "py-5 text-sm text-muted-foreground" : "rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground"}>
-        Nothing is waiting for your OK right now.
+        {t("area.apps-connections-3.review-queue-card.empty")}
       </div>
     );
   }
@@ -66,7 +69,7 @@ export function ReviewQueueCard({
     <section className="space-y-3">
       <div className="flex items-center gap-2">
         <ShieldQuestion className="h-4 w-4 text-muted-foreground" />
-        <h2 className="text-sm font-bold text-foreground">{heading}</h2>
+        <h2 className="text-sm font-bold text-foreground">{heading ?? t("area.apps-connections-3.review-queue-card.defaultHeading")}</h2>
         <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground">
           {items.length}
         </span>
@@ -89,6 +92,7 @@ function ReviewRow({
   item: ToolActionRequestListItem;
   plain: boolean;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [resolving, setResolving] = useState<null | "allow" | "always" | "decline">(null);
@@ -111,12 +115,12 @@ function ReviewRow({
     mutationFn: () => toolsApi.approveActionRequest(companyId, item.request.id),
     onMutate: () => setResolving("allow"),
     onSuccess: () => {
-      pushToast({ title: "Allowed once", body: `${actionLabel(item)} can run this time.`, tone: "success" });
+      pushToast({ title: t("area.apps-connections-3.review-queue-card.allowedOnceTitle"), body: t("area.apps-connections-3.review-queue-card.allowedOnceBody", { action: actionLabel(item, t) }), tone: "success" });
       invalidate();
     },
     onError: (error) => {
       invalidate();
-      failToast(pushToast, error);
+      failToast(pushToast, error, t);
     },
     onSettled: () => setResolving(null),
   });
@@ -128,8 +132,8 @@ function ReviewRow({
     onMutate: () => setResolving("always"),
     onSuccess: () => {
       pushToast({
-        title: "Always allowed",
-        body: `${actionLabel(item)} won’t ask again.`,
+        title: t("area.apps-connections-3.review-queue-card.alwaysAllowedTitle"),
+        body: t("area.apps-connections-3.review-queue-card.alwaysAllowedBody", { action: actionLabel(item, t) }),
         tone: "success",
       });
       invalidate();
@@ -137,7 +141,7 @@ function ReviewRow({
     },
     onError: (error) => {
       invalidate();
-      failToast(pushToast, error);
+      failToast(pushToast, error, t);
     },
     onSettled: () => setResolving(null),
   });
@@ -146,12 +150,12 @@ function ReviewRow({
     mutationFn: () => toolsApi.declineActionRequest(companyId, item.request.id),
     onMutate: () => setResolving("decline"),
     onSuccess: () => {
-      pushToast({ title: "Declined", body: `${actionLabel(item)} won’t run.`, tone: "info" });
+      pushToast({ title: t("area.apps-connections-3.review-queue-card.declinedTitle"), body: t("area.apps-connections-3.review-queue-card.declinedBody", { action: actionLabel(item, t) }), tone: "info" });
       invalidate();
     },
     onError: (error) => {
       invalidate();
-      failToast(pushToast, error);
+      failToast(pushToast, error, t);
     },
     onSettled: () => setResolving(null),
   });
@@ -174,13 +178,13 @@ function ReviewRow({
   return (
     <div className={plain ? "py-3" : "rounded-xl border border-border bg-card p-4"}>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
-        <span className="font-bold text-foreground">{actionLabel(item)}</span>
+        <span className="font-bold text-foreground">{actionLabel(item, t)}</span>
         {item.applicationName && (
           <span className="text-muted-foreground">
-            in {humanizeConnectionDisplayName(item.applicationName)}
+            {t("area.apps-connections-3.review-queue-card.inApp", { app: humanizeConnectionDisplayName(item.applicationName) })}
           </span>
         )}
-        <span className="text-xs text-muted-foreground">· asked {timeAgo(item.request.createdAt)}</span>
+        <span className="text-xs text-muted-foreground">{t("area.apps-connections-3.review-queue-card.asked", { when: timeAgo(item.request.createdAt) })}</span>
       </div>
 
       {preview ? (
@@ -189,41 +193,42 @@ function ReviewRow({
         </div>
       ) : (
         <p className="mt-1 text-sm text-muted-foreground">
-          An agent wants to run this action. Your connection policy requires approval first.
+          {t("area.apps-connections-3.review-queue-card.agentWantsAction")}
         </p>
       )}
 
-      {item.requestedByAgentId && item.connectionId && !item.request.approvalId ? <p className="mt-2 text-xs text-muted-foreground">Always allow lets this agent use this action with different arguments on this connection, within the current project when present.</p> : null}
+      {item.requestedByAgentId && item.connectionId && !item.request.approvalId ? <p className="mt-2 text-xs text-muted-foreground">{t("area.apps-connections-3.review-queue-card.alwaysAllowHint")}</p> : null}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button size="sm" onClick={() => allowOnce.mutate()} disabled={busy}>
           {resolving === "allow" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Check className="mr-1.5 h-3.5 w-3.5" />}
-          Allow once
+          {t("area.apps-connections-3.review-queue-card.allowOnce")}
         </Button>
         {item.requestedByAgentId && item.connectionId && !item.request.approvalId ? <Button size="sm" variant="outline" onClick={() => alwaysAllow.mutate()} disabled={busy}>
           {resolving === "always" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-          Always allow
+          {t("area.apps-connections-3.review-queue-card.alwaysAllow")}
         </Button> : null}
         <Button size="sm" variant="ghost" onClick={() => decline.mutate()} disabled={busy}>
           {resolving === "decline" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <X className="mr-1.5 h-3.5 w-3.5" />}
-          Decline
+          {t("area.apps-connections-3.review-queue-card.decline")}
         </Button>
       </div>
     </div>
   );
 }
 
-function actionLabel(item: ToolActionRequestListItem): string {
-  if (!item.toolTitle && !item.toolName) return "This action";
+function actionLabel(item: ToolActionRequestListItem, t: TFunction): string {
+  if (!item.toolTitle && !item.toolName) return t("area.apps-connections-3.review-queue-card.thisAction");
   return humanizeConnectionDisplayName(item.toolName ?? "", { title: item.toolTitle });
 }
 
 function failToast(
   pushToast: ReturnType<typeof useToast>["pushToast"],
   error: unknown,
+  t: TFunction,
 ) {
   pushToast({
-    title: "Couldn’t save that",
-    body: error instanceof Error ? error.message : "Please try again.",
+    title: t("area.apps-connections-3.review-queue-card.saveFailedTitle"),
+    body: error instanceof Error ? error.message : t("area.apps-connections-3.review-queue-card.tryAgain"),
     tone: "error",
   });
 }

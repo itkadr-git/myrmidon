@@ -263,7 +263,7 @@ export function SidebarAccountMenu({
                 <Flag className="h-4 w-4" aria-hidden="true" />
               </a>
             </TooltipTrigger>
-            <TooltipContent side="top">Share feedback</TooltipContent>
+            <TooltipContent side="top">{t("area.shell-sidebar-layout-1.sidebar-account-menu.shareFeedback")}</TooltipContent>
           </Tooltip>
         ) : null}
       </div>

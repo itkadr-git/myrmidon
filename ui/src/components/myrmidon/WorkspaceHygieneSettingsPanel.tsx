@@ -15,12 +15,16 @@ import type { WorkspaceHygieneLimitsPatch } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { i18n, useTranslation } from "@/i18n";
 import {
   describeWorkspaceHygieneSource,
   workspaceHygieneSettingsApi,
   workspaceHygieneSettingsQueryKey,
   type WorkspaceHygieneSettingsView,
 } from "./workspaceHygieneSettingsApi";
+
+// myrmidon(OPE-8950): visible strings live in area.settings-bots-host-2.workspace-hygiene-settings-panel.*
+type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 interface DraftParse {
   patch: WorkspaceHygieneLimitsPatch | null;
@@ -47,11 +51,11 @@ export function parseWorkspaceHygieneDraft(draft: {
 
   const workspaceQuotaMb = parseQuota(draft.workspaceQuotaMb);
   if (workspaceQuotaMb === undefined) {
-    errors.workspaceQuotaMb = "Enter a whole number above 0, or leave it empty for no cap";
+    errors.workspaceQuotaMb = i18n.t("area.settings-bots-host-2.workspace-hygiene-settings-panel.quotaInvalid");
   }
   const totalQuotaMb = parseQuota(draft.totalQuotaMb);
   if (totalQuotaMb === undefined) {
-    errors.totalQuotaMb = "Enter a whole number above 0, or leave it empty for no cap";
+    errors.totalQuotaMb = i18n.t("area.settings-bots-host-2.workspace-hygiene-settings-panel.quotaInvalid");
   }
 
   if (Object.keys(errors).length > 0) return { patch: null, errors };
@@ -65,11 +69,9 @@ function toDraft(quota: WorkspaceHygieneSettingsView["quota"]) {
   };
 }
 
-const QUOTA_FIELD_HINTS = {
-  workspaceQuotaMb:
-    "Disk ceiling for one execution workspace, megabytes. Over it, the workspace is asked to clean up — at most once a day.",
-  totalQuotaMb:
-    "Disk ceiling for the sum of the measured workspaces of one company, megabytes. Over it, the company gets one signal.",
+const QUOTA_FIELD_HINT_KEYS = {
+  workspaceQuotaMb: "area.settings-bots-host-2.workspace-hygiene-settings-panel.workspaceQuotaHint",
+  totalQuotaMb: "area.settings-bots-host-2.workspace-hygiene-settings-panel.totalQuotaHint",
 } as const;
 
 export function WorkspaceHygieneSettingsPanelView({
@@ -83,6 +85,7 @@ export function WorkspaceHygieneSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation() as { t: Translate };
   const [draft, setDraft] = useState<ReturnType<typeof toDraft> | null>(null);
 
   const numbers = draft ?? (view ? toDraft(view.quota) : null);
@@ -99,15 +102,10 @@ export function WorkspaceHygieneSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <HardDrive className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Workspace hygiene</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-bots-host-2.workspace-hygiene-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Disk ceilings for agent execution workspaces. The sweep measures each
-          workspace on its tick and signals &ldquo;clean up&rdquo; when a ceiling
-          is crossed — it never deletes anything. Every value applies without a
-          restart; an empty field means the cap is off. Environment variables
-          stay the default for an instance that never saved a row here; each
-          field shows where the value in force came from.
+          {t("area.settings-bots-host-2.workspace-hygiene-settings-panel.description")}
         </p>
       </div>
 
@@ -123,13 +121,13 @@ export function WorkspaceHygieneSettingsPanelView({
             <div key={key} className="space-y-1">
               <Label htmlFor={`workspace-hygiene-${key}`}>
                 {key === "workspaceQuotaMb"
-                  ? "Per-workspace ceiling, MB"
-                  : "Per-company total ceiling, MB"}
+                  ? t("area.settings-bots-host-2.workspace-hygiene-settings-panel.workspaceQuotaLabel")
+                  : t("area.settings-bots-host-2.workspace-hygiene-settings-panel.totalQuotaLabel")}
               </Label>
               <Input
                 id={`workspace-hygiene-${key}`}
                 inputMode="numeric"
-                placeholder="No cap"
+                placeholder={t("area.settings-bots-host-2.workspace-hygiene-settings-panel.noCap")}
                 value={numbers ? numbers[key] : ""}
                 onChange={(event) =>
                   setDraft({ ...(numbers ?? toDraft(view.quota)), [key]: event.target.value })
@@ -146,7 +144,7 @@ export function WorkspaceHygieneSettingsPanelView({
                   </span>
                 ) : null}
               </div>
-              <p className="text-xs text-muted-foreground">{QUOTA_FIELD_HINTS[key]}</p>
+              <p className="text-xs text-muted-foreground">{t(QUOTA_FIELD_HINT_KEYS[key])}</p>
             </div>
           ))}
 
@@ -159,7 +157,7 @@ export function WorkspaceHygieneSettingsPanelView({
                 if (patch) onSave(patch);
               }}
             >
-              {pending ? "Saving..." : "Save workspace hygiene quotas"}
+              {pending ? t("area.settings-bots-host-2.workspace-hygiene-settings-panel.saving") : t("area.settings-bots-host-2.workspace-hygiene-settings-panel.saveButton")}
             </Button>
           </div>
 
@@ -168,62 +166,63 @@ export function WorkspaceHygieneSettingsPanelView({
             data-testid="workspace-hygiene-status"
           >
             <p>
-              Measured workspaces:{" "}
+              {t("area.settings-bots-host-2.workspace-hygiene-settings-panel.measured")}{" "}
               <span data-testid="workspace-hygiene-measured" className="font-mono">
                 {view.status.measuredWorkspaces}
               </span>
               {" — "}
-              over quota:{" "}
+              {t("area.settings-bots-host-2.workspace-hygiene-settings-panel.overQuotaCount")}{" "}
               <span data-testid="workspace-hygiene-over-quota" className="font-mono">
                 {view.status.overQuotaCount}
               </span>
               {" — "}
-              total size:{" "}
+              {t("area.settings-bots-host-2.workspace-hygiene-settings-panel.totalSize")}{" "}
               <span data-testid="workspace-hygiene-total-mb" className="font-mono">
-                {view.status.totalSizeMb} MB
+                {t("area.settings-bots-host-2.workspace-hygiene-settings-panel.sizeMb", { size: view.status.totalSizeMb })}
               </span>
               {" — "}
-              last sweep:{" "}
+              {t("area.settings-bots-host-2.workspace-hygiene-settings-panel.lastSweep")}{" "}
               <span data-testid="workspace-hygiene-last-sweep" className="font-mono">
-                {view.status.lastSweepAt ? new Date(view.status.lastSweepAt).toLocaleString() : "not yet"}
+                {view.status.lastSweepAt ? new Date(view.status.lastSweepAt).toLocaleString() : t("area.settings-bots-host-2.workspace-hygiene-settings-panel.lastSweepNever")}
               </span>
             </p>
           </div>
 
           {view.workspaces.length > 0 ? (
             <div className="md:col-span-2 space-y-1" data-testid="workspace-hygiene-workspaces">
-              <h3 className="text-sm font-medium">Largest workspaces</h3>
+              <h3 className="text-sm font-medium">{t("area.settings-bots-host-2.workspace-hygiene-settings-panel.largest")}</h3>
               <ul className="space-y-1 text-xs text-muted-foreground">
                 {view.workspaces.slice(0, 10).map((row) => (
                   <li key={row.id} data-testid="workspace-hygiene-workspace-row">
-                    <span className="font-mono">{row.sizeMb} MB</span>
+                    <span className="font-mono">{t("area.settings-bots-host-2.workspace-hygiene-settings-panel.sizeMb", { size: row.sizeMb })}</span>
                     {" — "}
                     {row.name}
                     <span className="font-mono"> ({row.status})</span>
                     {row.overQuota ? (
                       <span data-testid="workspace-hygiene-workspace-over" className="ml-2 text-destructive">
-                        over quota
+                        {t("area.settings-bots-host-2.workspace-hygiene-settings-panel.overQuota")}
                       </span>
                     ) : null}
-                    {row.truncated ? <span className="ml-2">(lower bound)</span> : null}
+                    {row.truncated ? <span className="ml-2">{t("area.settings-bots-host-2.workspace-hygiene-settings-panel.lowerBound")}</span> : null}
                   </li>
                 ))}
               </ul>
             </div>
           ) : (
             <p className="text-xs text-muted-foreground md:col-span-2">
-              Nothing measured yet — the sweep fills these numbers on its tick.
+              {t("area.settings-bots-host-2.workspace-hygiene-settings-panel.nothingMeasured")}
             </p>
           )}
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading workspace hygiene settings...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-bots-host-2.workspace-hygiene-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function WorkspaceHygieneSettingsPanel() {
+  const { t } = useTranslation() as { t: Translate };
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -235,7 +234,7 @@ export function WorkspaceHygieneSettingsPanel() {
     mutationFn: workspaceHygieneSettingsApi.update,
     onMutate: () => setError(null),
     onError: (err) =>
-      setError(err instanceof Error ? err.message : "Saving the workspace hygiene quotas failed."),
+      setError(err instanceof Error ? err.message : i18n.t("area.settings-bots-host-2.workspace-hygiene-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: workspaceHygieneSettingsQueryKey });
@@ -247,7 +246,7 @@ export function WorkspaceHygieneSettingsPanel() {
       <div className="text-sm text-destructive">
         {query.error instanceof Error
           ? query.error.message
-          : "Failed to load workspace hygiene settings."}
+          : t("area.settings-bots-host-2.workspace-hygiene-settings-panel.loadFailed")}
       </div>
     );
   }

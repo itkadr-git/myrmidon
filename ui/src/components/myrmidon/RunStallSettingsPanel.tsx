@@ -9,6 +9,8 @@ import type { RunStallKey, RunStallValues } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { i18n, useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import {
   describeRunStallSource,
   runStallApi,
@@ -22,18 +24,23 @@ export const TEAM_LIVENESS_ANCHOR = "#team-liveness-settings";
 
 type NumberKey = Extract<RunStallKey, "checkIntervalSec" | "pageSize">;
 
-const NUMBER_FIELDS: Array<{ key: NumberKey; label: string; hint: string }> = [
-  {
-    key: "checkIntervalSec",
-    label: "Sweep interval, seconds",
-    hint: "Minimum spacing between two scan passes; the scheduler queue itself ticks more often. From 15; default 60.",
-  },
-  {
-    key: "pageSize",
-    label: "Page size",
-    hint: "How many running runs one scan pass inspects at most, stalest progress first. From 1 to 200; default 50.",
-  },
-];
+const NUMBER_KEYS: NumberKey[] = ["checkIntervalSec", "pageSize"];
+
+/** Labels are resolved at render, not at import, so a language switch applies. */
+function numberFields(): Array<{ key: NumberKey; label: string; hint: string }> {
+  return [
+    {
+      key: "checkIntervalSec",
+      label: i18n.t("area.settings-models-runtime-2.run-stall-settings-panel.checkIntervalSec.label"),
+      hint: i18n.t("area.settings-models-runtime-2.run-stall-settings-panel.checkIntervalSec.hint"),
+    },
+    {
+      key: "pageSize",
+      label: i18n.t("area.settings-models-runtime-2.run-stall-settings-panel.pageSize.label"),
+      hint: i18n.t("area.settings-models-runtime-2.run-stall-settings-panel.pageSize.hint"),
+    },
+  ];
+}
 
 interface DraftParse {
   patch: RunStallEditablePatch | null;
@@ -44,11 +51,11 @@ interface DraftParse {
 export function parseRunStallDraft(draft: Record<NumberKey, string>): DraftParse {
   const errors: Partial<Record<NumberKey, string>> = {};
   const parsed = {} as Record<NumberKey, number>;
-  for (const { key } of NUMBER_FIELDS) {
+  for (const key of NUMBER_KEYS) {
     const raw = draft[key].trim();
     const value = raw ? Number(raw) : NaN;
     if (!raw || !Number.isInteger(value) || value <= 0) {
-      errors[key] = "Enter a whole number greater than zero";
+      errors[key] = i18n.t("area.settings-models-runtime-2.run-stall-settings-panel.wholeNumberError");
       continue;
     }
     parsed[key] = value;
@@ -81,6 +88,7 @@ export function RunStallSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<Record<NumberKey, string> | null>(null);
   const current = draft ?? (view ? toDraft(view.settings) : null);
   const { patch, errors } = current
@@ -92,17 +100,17 @@ export function RunStallSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <AlarmClock className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Run stall detection</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-models-runtime-2.run-stall-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          The sweep that interrupts a running run whose own recorded progress stopped advancing: the task goes back to
-          todo and the assignee is woken. A run working for hours with fresh progress is never touched — this is not a
-          duration limit. Saving takes effect immediately, without a restart. Whether the sweep runs and its silence
-          threshold are set in the{" "}
-          <a href={TEAM_LIVENESS_ANCHOR} className="underline" data-testid="run-stall-team-liveness-link">
-            Team liveness settings
-          </a>{" "}
-          (one source of truth for all three liveness passes); they are shown here read-only.
+          <Trans
+            i18nKey="area.settings-models-runtime-2.run-stall-settings-panel.description"
+            components={{
+              link: (
+                <a href={TEAM_LIVENESS_ANCHOR} className="underline" data-testid="run-stall-team-liveness-link" />
+              ),
+            }}
+          />
         </p>
       </div>
 
@@ -116,24 +124,24 @@ export function RunStallSettingsPanelView({
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-1 md:col-span-2" data-testid="run-stall-managed">
             <div className="text-sm">
-              <span className="text-muted-foreground">Interrupt stalled runs: </span>
-              <span data-testid="run-stall-enabled-value">{view.settings.enabled ? "on" : "off"}</span>
+              <span className="text-muted-foreground">{t("area.settings-models-runtime-2.run-stall-settings-panel.interruptLabel")} </span>
+              <span data-testid="run-stall-enabled-value">{view.settings.enabled ? t("area.settings-models-runtime-2.run-stall-settings-panel.on") : t("area.settings-models-runtime-2.run-stall-settings-panel.off")}</span>
               <span className="ml-2 text-xs text-muted-foreground" data-testid="run-stall-source-enabled">
                 {describeRunStallSource(view.sources.enabled)}
               </span>
             </div>
             <div className="text-sm">
-              <span className="text-muted-foreground">Silence threshold: </span>
+              <span className="text-muted-foreground">{t("area.settings-models-runtime-2.run-stall-settings-panel.thresholdLabel")} </span>
               <span data-testid="run-stall-threshold-value">{view.settings.thresholdSec} s</span>
               <span className="ml-2 text-xs text-muted-foreground" data-testid="run-stall-source-thresholdSec">
                 {describeRunStallSource(view.sources.thresholdSec)}
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              Read-only here: change them in the Team liveness settings (runStallEnabled, runStallThresholdSec).
+              {t("area.settings-models-runtime-2.run-stall-settings-panel.readOnlyHint")}
             </p>
           </div>
-          {NUMBER_FIELDS.map(({ key, label, hint }) => (
+          {numberFields().map(({ key, label, hint }) => (
             <div key={key} className="space-y-1">
               <Label htmlFor={`run-stall-${key}`}>{label}</Label>
               <Input
@@ -166,18 +174,19 @@ export function RunStallSettingsPanelView({
                 if (patch) onSave(patch);
               }}
             >
-              {pending ? "Saving..." : "Save run stall detection"}
+              {pending ? t("area.settings-models-runtime-2.run-stall-settings-panel.saving") : t("area.settings-models-runtime-2.run-stall-settings-panel.save")}
             </Button>
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading run stall detection...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-models-runtime-2.run-stall-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function RunStallSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -188,7 +197,7 @@ export function RunStallSettingsPanel() {
   const save = useMutation({
     mutationFn: runStallApi.update,
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the run stall detection failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : i18n.t("area.settings-models-runtime-2.run-stall-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: runStallQueryKey });
@@ -198,7 +207,7 @@ export function RunStallSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load run stall detection."}
+        {query.error instanceof Error ? query.error.message : t("area.settings-models-runtime-2.run-stall-settings-panel.loadFailed")}
       </div>
     );
   }

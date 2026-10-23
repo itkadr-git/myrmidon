@@ -1,4 +1,6 @@
 import { healthApi } from "@/api/health";
+import { Trans } from "react-i18next";
+import { useTranslation } from "@/i18n";
 import { LocalProviderLoginInstructions } from "./AdapterLoginChrome";
 import { useLocalAiLogin } from "./ai-connections/useLocalAiLogin";
 import { aiConnectionsApi } from "@/api/ai-connections";
@@ -272,6 +274,8 @@ function ModelSourceMark({
 // Exported so tests write/read the exact key the component uses, instead of
 // duplicating the literal and silently drifting from it if it's ever renamed.
 export const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
+const PROBE_PROMPT = "Respond with hello.";
+const ANTHROPIC_KEY_ENV = "ANTHROPIC_API_KEY";
 const DEFAULT_TASK_TITLE = "Myrmidon onboarding";
 /**
  * The onboarding draft in `localStorage`, via a browser that is allowed to say
@@ -314,8 +318,6 @@ const onboardingDraftStorage = {
   },
 };
 
-const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
-  "Onboarding state is incomplete. Please restart onboarding and try again.";
 
 /**
  * Thin gate in front of {@link OnboardingWizardInner}. The inner component's
@@ -479,6 +481,7 @@ function OnboardingWizardInner({
     onboardingRouteDismissed: routeDismissed,
     setOnboardingRouteDismissed: setRouteDismissed,
   } = useDialog();
+  const { t } = useTranslation();
   const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
   const queryClient = useQueryClient();
   // myrmidon(1.6.1 CUSTOM-CASTES C): the wizard's hire path names an agent
@@ -1205,7 +1208,7 @@ function OnboardingWizardInner({
   */
   const connectCollapsed =
     connectPhase !== "idle" && connectPhase !== "unwindRow" && sourceSelected;
-  const connectProgress = adapterEnvLoading ? "Testing connection…" : loading ? "Connecting…" : null;
+  const connectProgress = adapterEnvLoading ? t("area.apps-connections-1.onboarding-wizard.testingConnection") : loading ? t("area.apps-connections-1.onboarding-wizard.connectingEllipsis") : null;
   const hasSavedSubscription = Boolean(savedSubscription || savedKeys.storedLogin.data ||
     (credentialMode !== "api" && managedBindingForStep()));
   const connectHasCard = credentialMode === "api" || connectStepNeedsLogin || connectStepHasNoSandbox || Boolean(connectProgress);
@@ -1350,27 +1353,27 @@ function OnboardingWizardInner({
   const connectSourceLabel = CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
   const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
     connectProgress
-      ? { label: adapterEnvLoading ? "Testing…" : connectProgress, icon: "spinner", disabled: true }
+      ? { label: adapterEnvLoading ? t("area.apps-connections-1.onboarding-wizard.testing") : connectProgress, icon: "spinner", disabled: true }
       : connectPhase === "waiting"
-      ? { label: "Waiting for code", icon: "spinner", disabled: true }
+      ? { label: t("area.apps-connections-1.onboarding-wizard.waitingForCode"), icon: "spinner", disabled: true }
       : connectPhase === "connecting"
-        ? { label: "Connecting", icon: "spinner", disabled: true }
+        ? { label: t("area.apps-connections-1.onboarding-wizard.connecting"), icon: "spinner", disabled: true }
         : connectPhase === "ready"
           ? connectStepNeedsLogin
             ? {
-                label: `Sign in to ${connectSourceLabel}`,
+                label: t("area.apps-connections-1.onboarding-wizard.signInTo", { provider: connectSourceLabel }),
                 icon: "none",
                 disabled: !connectAuthUrl,
               }
             : {
-                label: "Connect",
+                label: t("area.apps-connections-1.onboarding-wizard.connect"),
                 icon: "arrow",
                 disabled:
                   !connectStepReady || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey),
               }
           : // Nothing is chosen on arrival, and the row is what chooses. Until
             // it has been answered the button has nothing to do.
-            { label: "Next", icon: "arrow", disabled: true };
+            { label: t("area.apps-connections-1.onboarding-wizard.next"), icon: "arrow", disabled: true };
 
   /**
    * Back, on the connect step, unwinds the sign-in before it leaves the step.
@@ -1671,13 +1674,13 @@ function OnboardingWizardInner({
     if (companyIdNow === companyIdAtStart || companyIdNow === returnedCompanyId) {
       return true;
     }
-    setError("Organization created, but onboarding switched to another organization.");
+    setError(t("area.apps-connections-1.onboarding-wizard.orgSwitched"));
     return false;
   }
 
   async function handleLaunchToDashboard() {
     if (!createdCompanyId || !createdAgentId) {
-      setError(INCOMPLETE_ONBOARDING_STATE_MESSAGE);
+      setError(t("area.apps-connections-1.onboarding-wizard.incompleteState"));
       return;
     }
     setLoading(true);
@@ -1747,7 +1750,7 @@ function OnboardingWizardInner({
       // dashboard) so they land on the conversation the agent will start in.
       navigate(prefix ? `/${prefix}/issues/${issueRef}` : `/issues/${issueRef}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to launch first task");
+      setError(err instanceof Error ? err.message : t("area.apps-connections-1.onboarding-wizard.launchFailed"));
     } finally {
       setLoading(false);
     }
@@ -1790,8 +1793,8 @@ function OnboardingWizardInner({
     } catch (err) {
       setError(
         err instanceof Error
-          ? `Could not store the API key: ${err.message}`
-          : "Could not store the API key.",
+          ? t("area.apps-connections-1.onboarding-wizard.storeKeyFailedWith", { message: err.message })
+          : t("area.apps-connections-1.onboarding-wizard.storeKeyFailed"),
       );
       return false;
     }
@@ -1870,7 +1873,7 @@ function OnboardingWizardInner({
   ): Promise<AdapterEnvironmentTestResult | null> {
     if (!createdCompanyId) {
       setAdapterEnvError(
-        "Create or select an organization before testing adapter environment."
+        t("area.apps-connections-1.onboarding-wizard.createOrgFirst")
       );
       return null;
     }
@@ -1906,7 +1909,7 @@ function OnboardingWizardInner({
       } catch {
         if (!isCurrent()) return null;
         setAdapterEnvError(
-          "Could not load environment settings to determine which environment to test in. Retry the test.",
+          t("area.apps-connections-1.onboarding-wizard.envSettingsFailed"),
         );
         return null;
       }
@@ -1944,7 +1947,7 @@ function OnboardingWizardInner({
     } catch (err) {
       if (!isCurrent()) return null;
       setAdapterEnvError(
-        err instanceof Error ? err.message : "Adapter environment test failed"
+        err instanceof Error ? err.message : t("area.apps-connections-1.onboarding-wizard.envTestFailed")
       );
       return null;
     } finally {
@@ -1986,7 +1989,7 @@ function OnboardingWizardInner({
       setSelectedCompanyId(company.id);
       setStep(3);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create organization");
+      setError(err instanceof Error ? err.message : t("area.apps-connections-1.onboarding-wizard.createOrgFailed"));
     } finally {
       creatingCompanyRef.current = false;
       setLoading(false);
@@ -2005,7 +2008,7 @@ function OnboardingWizardInner({
     if (adapterType === "paperclip_runner") {
       setAdapterType("claude_local");
       setModel("");
-      setError("Myrmidon Runner is not available during onboarding. Choose a legacy adapter.");
+      setError(t("area.apps-connections-1.onboarding-wizard.runnerUnavailable"));
       return;
     }
     if (createdAgentId) {
@@ -2024,7 +2027,7 @@ function OnboardingWizardInner({
         const selectedModelId = model.trim();
         if (!isValidOpenCodeModelId(selectedModelId)) {
           setError(
-            "OpenCode requires an explicit model in provider/model format."
+            t("area.apps-connections-1.onboarding-wizard.openCodeModelRequired")
           );
           return;
         }
@@ -2032,13 +2035,13 @@ function OnboardingWizardInner({
           setError(
             adapterModelsError instanceof Error
               ? adapterModelsError.message
-              : "Failed to load OpenCode models."
+              : t("area.apps-connections-1.onboarding-wizard.openCodeModelsFailed")
           );
           return;
         }
         if (adapterModelsLoading || adapterModelsFetching) {
           setError(
-            "OpenCode models are still loading. Please wait and try again."
+            t("area.apps-connections-1.onboarding-wizard.openCodeModelsLoading")
           );
           return;
         }
@@ -2046,8 +2049,8 @@ function OnboardingWizardInner({
         if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
           setError(
             discoveredModels.length === 0
-              ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
-              : `Configured OpenCode model is unavailable: ${selectedModelId}`
+              ? t("area.apps-connections-1.onboarding-wizard.openCodeNoModels")
+              : t("area.apps-connections-1.onboarding-wizard.openCodeModelUnavailable", { model: selectedModelId })
           );
           return;
         }
@@ -2133,8 +2136,8 @@ function OnboardingWizardInner({
         if (blocksAgentCreate(result)) {
           setError(
             result.status === "fail"
-              ? "The environment test failed. Fix the reported checks before you hire this agent."
-              : "No working authentication was found. Fix the reported checks before you hire this agent.",
+              ? t("area.apps-connections-1.onboarding-wizard.hireBlockedFail")
+              : t("area.apps-connections-1.onboarding-wizard.hireBlockedAuth"),
           );
           return;
         }
@@ -2216,7 +2219,7 @@ function OnboardingWizardInner({
       setStep(5);
     } catch (err) {
       if (!isCurrent()) return;
-      setError(err instanceof Error ? err.message : "Failed to create agent");
+      setError(err instanceof Error ? err.message : t("area.apps-connections-1.onboarding-wizard.createAgentFailed"));
     } finally {
       if (hiringAgentRef.current === attempt) hiringAgentRef.current = null;
       if (isCurrent()) setLoading(false);
@@ -2265,14 +2268,14 @@ function OnboardingWizardInner({
       const result = await runAdapterEnvironmentTest(configWithUnset);
       if (result?.status === "fail") {
         setError(
-          "Retried with ANTHROPIC_API_KEY unset in adapter config, but the environment test is still failing."
+          t("area.apps-connections-1.onboarding-wizard.unsetRetryStillFailing", { env: ANTHROPIC_KEY_ENV })
         );
       }
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
-          : "Failed to unset ANTHROPIC_API_KEY and retry."
+          : t("area.apps-connections-1.onboarding-wizard.unsetFailed", { env: ANTHROPIC_KEY_ENV })
       );
     } finally {
       setUnsetAnthropicLoading(false);
@@ -2348,7 +2351,7 @@ function OnboardingWizardInner({
   const showsAgentArcStepper = isAgentArcStep && entryStep >= 3 && !enteredFromCloud;
 
   const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
-  const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);
+  const visibleError = error ?? (launchStateIncomplete ? t("area.apps-connections-1.onboarding-wizard.incompleteState") : null);
 
   return (
     <Dialog
@@ -2513,19 +2516,19 @@ function OnboardingWizardInner({
                       center
                       title={
                         step === 3
-                          ? "Create your first agent"
+                          ? t("area.apps-connections-1.onboarding-wizard.agentTitle")
                           : step === 4
-                            ? "Connect a model"
-                            : "Let's get started..."
+                            ? t("area.apps-connections-1.onboarding-wizard.connectTitle")
+                            : t("area.apps-connections-1.onboarding-wizard.readyTitle")
                       }
                       // The agent step carries no lede, as the prototype has it:
                       // the capsule and the heading say what this is, and a
                       // sentence restating it only pushes the fields down.
                       lede={
                         step === 3 ? undefined : step === 4 ? (
-                          <>Myrmidon works with your subscription or API keys.</>
+                          <>{t("area.apps-connections-1.onboarding-wizard.connectLede")}</>
                         ) : (
-                          <>{agentName.trim() || "Your first agent"} is ready to work!</>
+                          <>{t("area.apps-connections-1.onboarding-wizard.agentReady", { name: agentName.trim() || t("area.apps-connections-1.onboarding-wizard.firstAgentFallback") })}</>
                         )
                       }
                     />
@@ -2546,8 +2549,8 @@ function OnboardingWizardInner({
                 <div className="mx-auto w-full space-y-9">
                   <OnboardingHeading
                     center
-                    title="What is the name of your organization?"
-                    lede="Welcome to Myrmidon — let's set up your organization."
+                    title={t("area.apps-connections-1.onboarding-wizard.orgNameTitle")}
+                    lede={t("area.apps-connections-1.onboarding-wizard.orgNameLede")}
                   />
                   {/* The field takes the agent step's measure rather than the
                       column's, so the two questions the wizard asks — name the
@@ -2562,11 +2565,11 @@ function OnboardingWizardInner({
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Name
+                      {t("area.apps-connections-1.onboarding-wizard.nameLabel")}
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="e.g. Northwind Labs"
+                      placeholder={t("area.apps-connections-1.onboarding-wizard.orgNamePlaceholder")}
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       onKeyDown={(e) => {
@@ -2590,7 +2593,7 @@ function OnboardingWizardInner({
               {step === 3 && (
                 <div className="mx-auto flex w-full flex-col gap-9">
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor="onboarding-agent-name">Agent name</Label>
+                    <Label htmlFor="onboarding-agent-name">{t("area.apps-connections-1.onboarding-wizard.agentNameLabel")}</Label>
                     {/*
                       Filled, not outlined, and the column's full width — the
                       same field the naming step before the hand-off draws.
@@ -2603,7 +2606,7 @@ function OnboardingWizardInner({
                     <Input
                       id="onboarding-agent-name"
                       className="h-(--sz-44px) rounded-lg border-transparent bg-muted shadow-none dark:bg-muted"
-                      placeholder="e.g. Chief of staff"
+                      placeholder={t("area.apps-connections-1.onboarding-wizard.agentNamePlaceholder")}
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
                       onKeyDown={(e) => {
@@ -2631,7 +2634,7 @@ function OnboardingWizardInner({
                         Picking one starts the sign-in now. The row is the
                         question, and answering it is what opens the card. */}
                     <ModelSourceTiles
-                      label="Model source"
+                      label={t("area.apps-connections-1.onboarding-wizard.modelSource")}
                       sources={recommendedAdapters.map((opt) => ({
                         id: opt.type,
                         label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
@@ -2681,8 +2684,8 @@ function OnboardingWizardInner({
                     >
                       <div className="-ml-3 mt-1">
                         <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />
-                        {savedKeys.options.length > 0 && <p className="px-3 text-sm text-muted-foreground">{savedKeys.options.length} saved API {savedKeys.options.length === 1 ? "key available" : "keys available"}.</p>}
-                        {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">An existing provider connection is available.</p>}
+                        {savedKeys.options.length > 0 && <p className="px-3 text-sm text-muted-foreground">{t("area.apps-connections-1.onboarding-wizard.savedKeys", { count: savedKeys.options.length })}</p>}
+                        {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">{t("area.apps-connections-1.onboarding-wizard.existingConnection")}</p>}
                       </div>
                     </motion.div>
                   </div>
@@ -2730,17 +2733,15 @@ function OnboardingWizardInner({
                       </p>
                     ) : credentialMode === "api" ? (
                       <OnboardingLoginCard
-                        instruction={savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${
-                          CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
-                        } API key to connect`}
+                        instruction={savedKeys.options.length ? t("area.apps-connections-1.onboarding-wizard.chooseSavedKey") : t("area.apps-connections-1.onboarding-wizard.provideKey", { provider: CONNECT_SOURCE_NAMES[adapterType] ?? adapterType })}
                       >
                         <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
                           setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id } : null);
                           setApiKey("");
                         }} />
                         {!selectedApiKey && <OnboardingCardField
-                          label="API key"
-                          placeholder="Enter API key here"
+                          label={t("area.apps-connections-1.onboarding-wizard.apiKeyLabel")}
+                          placeholder={t("area.apps-connections-1.onboarding-wizard.apiKeyPlaceholder")}
                           masked
                           // The card is the answer to the tile just pressed, so
                           // the field is unambiguously the next thing. Carried
@@ -2851,7 +2852,7 @@ function OnboardingWizardInner({
                     ) : hasSavedSubscription || localLogin.status === "ready" ? null : connectStepHasNoSandbox ? (
                       canUseLocalLogin && managedProvider ? (
                         <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }} />
-                      ) : <p className="text-xs text-muted-foreground">This environment does not support browser sign-in. Choose another sign-in environment or connect with an API key.</p>
+                      ) : <p className="text-xs text-muted-foreground">{t("area.apps-connections-1.onboarding-wizard.noBrowserSignIn")}</p>
                     ) : null}
                   </motion.div>
 
@@ -2896,7 +2897,7 @@ function OnboardingWizardInner({
                             style={{ "--sc": "var(--status-task-done)" } as CSSProperties}
                           >
                             <Check className="size-3.5 shrink-0" />
-                            <span className="font-medium">Passed</span>
+                            <span className="font-medium">{t("area.apps-connections-1.onboarding-wizard.passed")}</span>
                           </div>
                           {/* Show the checks on a pass too, so the target and the
                               auth signals stay visible before the hire. */}
@@ -2909,10 +2910,11 @@ function OnboardingWizardInner({
                       {shouldSuggestUnsetAnthropicApiKey && (
                         <div className="rounded-md border border-amber-300/60 bg-amber-50/40 px-2.5 py-2 space-y-2">
                           <p className="text-(length:--text-micro) text-amber-900/90 leading-relaxed">
-                            Claude failed while{" "}
-                            <span className="font-mono">ANTHROPIC_API_KEY</span>{" "}
-                            is set. You can clear it in this adapter config
-                            and retry the probe.
+                            <Trans
+                              i18nKey="area.apps-connections-1.onboarding-wizard.claudeFailedWithKey"
+                              values={{ env: ANTHROPIC_KEY_ENV }}
+                              components={{ 0: <span className="font-mono" /> }}
+                            />
                           </p>
                           <Button
                             size="sm"
@@ -2924,15 +2926,15 @@ function OnboardingWizardInner({
                             onClick={() => void handleUnsetAnthropicApiKey()}
                           >
                             {unsetAnthropicLoading
-                              ? "Retrying..."
-                              : "Unset ANTHROPIC_API_KEY"}
+                              ? t("area.apps-connections-1.onboarding-wizard.retrying")
+                              : t("area.apps-connections-1.onboarding-wizard.unsetKey", { env: ANTHROPIC_KEY_ENV })}
                           </Button>
                         </div>
                       )}
 
                       {adapterEnvResult && adapterEnvResult.status === "fail" && (
                         <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-(length:--text-micro) space-y-1.5">
-                          <p className="font-medium">Manual debug</p>
+                          <p className="font-medium">{t("area.apps-connections-1.onboarding-wizard.manualDebug")}</p>
                           <p className="text-muted-foreground font-mono break-all">
                             {adapterType === "cursor"
                               ? `${effectiveAdapterCommand} -p --mode ask --output-format json \"Respond with hello.\"`
@@ -2947,8 +2949,8 @@ function OnboardingWizardInner({
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
                           </p>
                           <p className="text-muted-foreground">
-                            Prompt:{" "}
-                            <span className="font-mono">Respond with hello.</span>
+                            {t("area.apps-connections-1.onboarding-wizard.prompt")}{" "}
+                            <span className="font-mono">{PROBE_PROMPT}</span>
                           </p>
                           {adapterType === "cursor" ||
                           adapterType === "codex_local" ||
@@ -2956,19 +2958,17 @@ function OnboardingWizardInner({
                           adapterType === "kimi_local" ||
                           adapterType === "opencode_local" ? (
                             <p className="text-muted-foreground">
-                              If auth fails, set{" "}
-                              <span className="font-mono">
-                                {adapterType === "cursor"
+                              <Trans
+                                i18nKey="area.apps-connections-1.onboarding-wizard.authFailsHint"
+                                values={{
+                                  env: adapterType === "cursor"
                                   ? "CURSOR_API_KEY"
                                   : adapterType === "gemini_local"
                                     ? "GEMINI_API_KEY"
                                     : adapterType === "kimi_local"
                                       ? "KIMI_MODEL_NAME + KIMI_MODEL_API_KEY"
-                                    : "OPENAI_API_KEY"}
-                              </span>{" "}
-                              in env or run{" "}
-                              <span className="font-mono">
-                                {adapterType === "cursor"
+                                    : "OPENAI_API_KEY",
+                                  cmd: adapterType === "cursor"
                                   ? "agent login"
                                   : adapterType === "codex_local"
                                     ? "codex login"
@@ -2976,15 +2976,18 @@ function OnboardingWizardInner({
                                       ? "gemini auth"
                                       : adapterType === "kimi_local"
                                         ? "kimi login"
-                                      : "opencode auth login"}
-                              </span>
-                              .
+                                      : "opencode auth login",
+                                }}
+                                components={{ 0: <span className="font-mono" />, 1: <span className="font-mono" /> }}
+                              />
                             </p>
                           ) : (
                             <p className="text-muted-foreground">
-                              If login is required, run{" "}
-                              <span className="font-mono">claude login</span>{" "}
-                              and retry.
+                              <Trans
+                                i18nKey="area.apps-connections-1.onboarding-wizard.loginHint"
+                                values={{ cmd: "claude login" }}
+                                components={{ 0: <span className="font-mono" /> }}
+                              />
                             </p>
                           )}
                         </div>
@@ -2997,8 +3000,8 @@ function OnboardingWizardInner({
                     <div>
                       <label className="text-xs text-muted-foreground mb-1 block">
                         {adapterType === "openclaw_gateway"
-                          ? "Gateway URL"
-                          : "Webhook URL"}
+                          ? t("area.apps-connections-1.onboarding-wizard.gatewayUrl")
+                          : t("area.apps-connections-1.onboarding-wizard.webhookUrl")}
                       </label>
                       <input
                         className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -3049,20 +3052,20 @@ function OnboardingWizardInner({
                   // prototype's own local flow draws with "Next".
                   primaryLabel={
                     step === 1
-                      ? "Continue"
+                      ? t("area.apps-connections-1.onboarding-wizard.continue")
                       : step === 5
-                        ? "Get started"
+                        ? t("area.apps-connections-1.onboarding-wizard.getStarted")
                         : step === 4
                           ? connectCta.label
-                          : "Next"
+                          : t("area.apps-connections-1.onboarding-wizard.next")
                   }
                   primaryIcon={step === 4 ? connectCta.icon : undefined}
                   loadingLabel={
                     step === 1
-                      ? "Creating..."
+                      ? t("area.apps-connections-1.onboarding-wizard.creating")
                       : step === 4
-                        ? "Connecting"
-                        : "Launching..."
+                        ? t("area.apps-connections-1.onboarding-wizard.connecting")
+                        : t("area.apps-connections-1.onboarding-wizard.launching")
                   }
                   // The browser-code login is finished on this screen, so the
                   // button is genuinely busy for its duration and shows it. The
@@ -3105,12 +3108,13 @@ function AdapterEnvironmentResult({
 }: {
   result: AdapterEnvironmentTestResult;
 }) {
+  const { t } = useTranslation();
   const statusLabel =
     result.status === "pass"
-      ? "Passed"
+      ? t("area.apps-connections-1.onboarding-wizard.passed")
       : result.status === "warn"
-      ? "Warnings"
-      : "Failed";
+      ? t("area.apps-connections-1.onboarding-wizard.warnings")
+      : t("area.apps-connections-1.onboarding-wizard.failed");
   const statusClass =
     result.status === "pass"
       ? "text-green-700 dark:text-green-300 border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10"
@@ -3144,7 +3148,7 @@ function AdapterEnvironmentResult({
             )}
             {check.hint && (
               <span className="block opacity-90 break-words">
-                Hint: {check.hint}
+                {t("area.apps-connections-1.onboarding-wizard.hint", { hint: check.hint })}
               </span>
             )}
           </div>

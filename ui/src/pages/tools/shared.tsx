@@ -5,6 +5,7 @@ import type {
   ToolPolicyDecision,
 } from "@myrmidon/shared";
 import { AlertTriangle } from "lucide-react";
+import { i18n, useTranslation } from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -12,7 +13,8 @@ import { ApiError } from "@/api/client";
 
 /** Risk classification badge for a catalog tool. */
 export function RiskBadge({ risk }: { risk: ToolRiskLevel | null | undefined }) {
-  if (!risk) return <Badge variant="outline">unknown</Badge>;
+  const { t } = useTranslation();
+  if (!risk) return <Badge variant="outline">{t("area.tools-profiles-2.shared.unknown")}</Badge>;
   const variant =
     risk === "high" || risk === "critical"
       ? "destructive"
@@ -32,11 +34,12 @@ export function CapabilityBadges({
   isWrite?: boolean;
   isDestructive?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <span className="inline-flex flex-wrap gap-1">
-      {isReadOnly ? <Badge variant="outline">read-only</Badge> : null}
-      {isWrite ? <Badge variant="secondary">write</Badge> : null}
-      {isDestructive ? <Badge variant="destructive">destructive</Badge> : null}
+      {isReadOnly ? <Badge variant="outline">{t("area.tools-profiles-2.shared.readOnly")}</Badge> : null}
+      {isWrite ? <Badge variant="secondary">{t("area.tools-profiles-2.shared.write")}</Badge> : null}
+      {isDestructive ? <Badge variant="destructive">{t("area.tools-profiles-2.shared.destructive")}</Badge> : null}
     </span>
   );
 }
@@ -83,25 +86,25 @@ function decisionToStatusKey(decision: string): { key: string; label: string } {
   switch (decision) {
     case "allow":
     case "allowed":
-      return { key: "allowed", label: "allowed" };
+      return { key: "allowed", label: i18n.t("area.tools-profiles-2.shared.decision.allowed") };
     case "deny":
     case "denied":
-      return { key: "denied", label: "denied" };
+      return { key: "denied", label: i18n.t("area.tools-profiles-2.shared.decision.denied") };
     case "block":
-      return { key: "block", label: "block" };
+      return { key: "block", label: i18n.t("area.tools-profiles-2.shared.decision.block") };
     case "require_approval":
     case "requires_approval":
-      return { key: "require-approval", label: "require approval" };
+      return { key: "require-approval", label: i18n.t("area.tools-profiles-2.shared.decision.requireApproval") };
     case "redact":
     case "redacted":
-      return { key: "redacted", label: "redacted" };
+      return { key: "redacted", label: i18n.t("area.tools-profiles-2.shared.decision.redacted") };
     case "rate_limited":
-      return { key: "rate-limit", label: "rate limited" };
+      return { key: "rate-limit", label: i18n.t("area.tools-profiles-2.shared.decision.rateLimited") };
     case "defer":
     case "deferred":
-      return { key: "deferred", label: "deferred" };
+      return { key: "deferred", label: i18n.t("area.tools-profiles-2.shared.decision.deferred") };
     case "hidden":
-      return { key: "hidden", label: "hidden" };
+      return { key: "hidden", label: i18n.t("area.tools-profiles-2.shared.decision.hidden") };
     default:
       return { key: decision, label: decision };
   }
@@ -116,7 +119,8 @@ export function DecisionBadge({ decision }: { decision: ToolPolicyDecision | str
 
 /** Compact relative time, falling back to absolute. */
 export function RelativeTime({ value }: { value: Date | string | null | undefined }) {
-  if (!value) return <span className="text-muted-foreground">never</span>;
+  const { t } = useTranslation();
+  if (!value) return <span className="text-muted-foreground">{t("area.tools-profiles-2.shared.never")}</span>;
   const date = typeof value === "string" ? new Date(value) : value;
   if (Number.isNaN(date.getTime())) return <span className="text-muted-foreground">—</span>;
   const diffMs = Date.now() - date.getTime();
@@ -124,11 +128,15 @@ export function RelativeTime({ value }: { value: Date | string | null | undefine
   const mins = Math.round(abs / 60000);
   const isFuture = diffMs < 0;
   let text: string;
-  if (mins < 1) text = "just now";
+  if (mins < 1) text = t("area.tools-profiles-2.shared.justNow");
   else {
-    const value =
-      mins < 60 ? `${mins}m` : mins < 1440 ? `${Math.round(mins / 60)}h` : `${Math.round(mins / 1440)}d`;
-    text = isFuture ? `in ${value}` : `${value} ago`;
+    const amount =
+      mins < 60
+        ? t("area.tools-profiles-2.shared.minutes", { n: mins })
+        : mins < 1440
+          ? t("area.tools-profiles-2.shared.hours", { n: Math.round(mins / 60) })
+          : t("area.tools-profiles-2.shared.days", { n: Math.round(mins / 1440) });
+    text = isFuture ? t("area.tools-profiles-2.shared.inFuture", { value: amount }) : t("area.tools-profiles-2.shared.ago", { value: amount });
   }
   return (
     <span title={date.toLocaleString()} className="text-muted-foreground">
@@ -157,31 +165,33 @@ export function ToolsPageHeader({
   );
 }
 
-export function LoadingState({ label = "Loading…" }: { label?: string }) {
+export function LoadingState({ label }: { label?: string }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
       <span className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground" />
-      {label}
+      {label ?? t("common.loading")}
     </div>
   );
 }
 
 /** Actionable error surface — surfaces the server message and HTTP status. */
 export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
+  const { t } = useTranslation();
   let message: string;
   if (error instanceof ApiError) {
     if (error.status === 403) {
-      message = "You do not have permission to view this. Tools & Access requires board/admin access.";
+      message = t("area.tools-profiles-2.shared.error.forbidden");
     } else if (error.status === 404 || /route not found/i.test(error.message)) {
       // Snapshot-skew window: the route exists in this build but not on the live server snapshot yet.
-      message = "Tools & Access isn't available on this server yet — try refreshing after the next deployment.";
+      message = t("area.tools-profiles-2.shared.error.notAvailable");
     } else {
       message = error.message;
     }
   } else if (error instanceof Error) {
     message = error.message;
   } else {
-    message = "Something went wrong.";
+    message = t("area.tools-profiles-2.shared.error.generic");
   }
   return (
     <Card className="border-destructive/40">
@@ -189,7 +199,7 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
         <div className="flex items-start gap-2 text-sm text-destructive">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
-            <p className="font-medium">Could not load this view</p>
+            <p className="font-medium">{t("area.tools-profiles-2.shared.error.title")}</p>
             <p className="text-destructive/80">{message}</p>
           </div>
         </div>
@@ -199,7 +209,7 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
             onClick={onRetry}
             className="self-start rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent"
           >
-            Retry
+            {t("common.retry")}
           </button>
         ) : null}
       </CardContent>
@@ -221,6 +231,7 @@ export function PendingBackendNotice({
   body: ReactNode;
   issue?: { identifier: string; href: string };
 }) {
+  const { t } = useTranslation();
   return (
     <Card className="border-dashed">
       <CardContent className="flex flex-col gap-2 py-8">
@@ -231,7 +242,7 @@ export function PendingBackendNotice({
         <p className="max-w-2xl text-sm text-muted-foreground">{body}</p>
         {issue ? (
           <a href={issue.href} className="text-sm font-medium text-primary hover:underline">
-            Tracked in {issue.identifier} →
+            {t("area.tools-profiles-2.shared.trackedIn", { identifier: issue.identifier })}
           </a>
         ) : null}
       </CardContent>

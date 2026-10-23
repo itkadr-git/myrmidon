@@ -13,6 +13,8 @@ import type {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Trans } from "react-i18next";
+import { useTranslation } from "@/i18n";
 import {
   describeProcessesEffectNotice,
   describeProcessesMode,
@@ -22,7 +24,11 @@ import {
   type ProcessesSettingsView,
 } from "./processesApi";
 
+// myrmidon(OPE-8950): visible strings live in area.settings-bots-host-2.processes-settings-panel.*
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
 export function ProcessesSettingsPanel() {
+  const { t } = useTranslation() as { t: Translate };
   const queryClient = useQueryClient();
   const [draftError, setDraftError] = useState<string | null>(null);
   const { data, isLoading, error } = useQuery({
@@ -38,9 +44,9 @@ export function ProcessesSettingsPanel() {
     },
   });
 
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading process settings…</p>;
+  if (isLoading) return <p className="text-sm text-muted-foreground">{t("area.settings-bots-host-2.processes-settings-panel.loading")}</p>;
   if (error || !data) {
-    return <p className="text-sm text-destructive">Process settings are unavailable right now.</p>;
+    return <p className="text-sm text-destructive">{t("area.settings-bots-host-2.processes-settings-panel.unavailable")}</p>;
   }
   const { settings, sources, effectiveMode } = data;
   const notice = describeProcessesEffectNotice(data);
@@ -51,25 +57,22 @@ export function ProcessesSettingsPanel() {
     <section className="space-y-4">
       <header className="flex items-center gap-2">
         <ServerCog className="h-4 w-4" aria-hidden />
-        <h3 className="text-sm font-medium">Processes of the board</h3>
+        <h3 className="text-sm font-medium">{t("area.settings-bots-host-2.processes-settings-panel.title")}</h3>
       </header>
       <p className="text-sm text-muted-foreground">
-        How the board is split across processes. Saving applies the setting without restarting the
-        server; the mode in force is reported by each process when it starts, and
-        <code className="mx-1">PAPERCLIP_PROCESS_MODE=single</code>
-        on the server starts it as one process whatever this page says.
+        <Trans i18nKey="area.settings-bots-host-2.processes-settings-panel.description" components={{ code: <code className="mx-1" /> }} />
       </p>
 
       {notice ? <p className="text-sm text-amber-600" data-testid="myrmidon-processes-notice">{notice}</p> : null}
       {save.isError ? (
         <p className="text-sm text-destructive" data-testid="myrmidon-processes-error">
-          Could not save the process settings: {String(save.error)}
+          {t("area.settings-bots-host-2.processes-settings-panel.saveError", { error: String(save.error) })}
         </p>
       ) : null}
       {draftError ? <p className="text-sm text-destructive">{draftError}</p> : null}
 
       <div className="space-y-2">
-        <Label htmlFor="processes-mode">Mode</Label>
+        <Label htmlFor="processes-mode">{t("area.settings-bots-host-2.processes-settings-panel.modeLabel")}</Label>
         <select
           id="processes-mode"
           data-testid="myrmidon-processes-mode"
@@ -88,12 +91,12 @@ export function ProcessesSettingsPanel() {
           ))}
         </select>
         <p className="text-xs text-muted-foreground" data-testid="myrmidon-processes-effective">
-          In force now: {describeProcessesMode(effectiveMode)}. Source: {sourceOf("mode")}.
+          {t("area.settings-bots-host-2.processes-settings-panel.effective", { mode: describeProcessesMode(effectiveMode), source: sourceOf("mode") })}
         </p>
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="processes-api-count">Api processes</Label>
+        <Label htmlFor="processes-api-count">{t("area.settings-bots-host-2.processes-settings-panel.apiCountLabel")}</Label>
         <Input
           id="processes-api-count"
           type="number"
@@ -104,7 +107,7 @@ export function ProcessesSettingsPanel() {
           onBlur={(event) => {
             const apiCount = Number(event.target.value);
             if (!Number.isInteger(apiCount) || apiCount < 1 || apiCount > 4) {
-              setDraftError("Api processes must be a whole number between 1 and 4.");
+              setDraftError(t("area.settings-bots-host-2.processes-settings-panel.apiCountInvalid"));
               return;
             }
             setDraftError(null);
@@ -112,13 +115,12 @@ export function ProcessesSettingsPanel() {
           }}
         />
         <p className="text-xs text-muted-foreground">
-          How many api processes a split board runs (the recommended arrangement is one worker and
-          two api processes). Source: {sourceOf("apiCount")}.
+          {t("area.settings-bots-host-2.processes-settings-panel.apiCountHint", { source: sourceOf("apiCount") })}
         </p>
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="processes-lease">Leader lease, seconds</Label>
+        <Label htmlFor="processes-lease">{t("area.settings-bots-host-2.processes-settings-panel.leaseLabel")}</Label>
         <Input
           id="processes-lease"
           type="number"
@@ -129,7 +131,7 @@ export function ProcessesSettingsPanel() {
           onBlur={(event) => {
             const leaderLeaseTtlSec = Number(event.target.value);
             if (!Number.isInteger(leaderLeaseTtlSec) || leaderLeaseTtlSec < 5 || leaderLeaseTtlSec > 600) {
-              setDraftError("The leader lease must be a whole number of seconds between 5 and 600.");
+              setDraftError(t("area.settings-bots-host-2.processes-settings-panel.leaseInvalid"));
               return;
             }
             setDraftError(null);
@@ -137,13 +139,12 @@ export function ProcessesSettingsPanel() {
           }}
         />
         <p className="text-xs text-muted-foreground">
-          How long the background role holds the leader lease before it has to renew it. Source:{" "}
-          {sourceOf("leaderLeaseTtlSec")}.
+          {t("area.settings-bots-host-2.processes-settings-panel.leaseHint", { source: sourceOf("leaderLeaseTtlSec") })}
         </p>
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="processes-bus">Live events bus</Label>
+        <Label htmlFor="processes-bus">{t("area.settings-bots-host-2.processes-settings-panel.busLabel")}</Label>
         <select
           id="processes-bus"
           className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
@@ -151,17 +152,16 @@ export function ProcessesSettingsPanel() {
           disabled={disabled}
           onChange={(event) => save.mutate({ liveEventsBus: event.target.value as ProcessesLiveEventsBus })}
         >
-          <option value="local">Local (in-process)</option>
-          <option value="pg">PostgreSQL (shared between processes)</option>
+          <option value="local">{t("area.settings-bots-host-2.processes-settings-panel.busLocal")}</option>
+          <option value="pg">{t("area.settings-bots-host-2.processes-settings-panel.busPg")}</option>
         </select>
         <p className="text-xs text-muted-foreground">
-          Where live events travel when the board runs as several processes. Source:{" "}
-          {sourceOf("liveEventsBus")}.
+          {t("area.settings-bots-host-2.processes-settings-panel.busHint", { source: sourceOf("liveEventsBus") })}
         </p>
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="processes-admission">Run admission store</Label>
+        <Label htmlFor="processes-admission">{t("area.settings-bots-host-2.processes-settings-panel.admissionLabel")}</Label>
         <select
           id="processes-admission"
           className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
@@ -171,11 +171,11 @@ export function ProcessesSettingsPanel() {
             save.mutate({ admissionStore: event.target.value as ProcessesSettingsPatch["admissionStore"] })
           }
         >
-          <option value="memory">In memory (this process)</option>
-          <option value="db">Database (shared between processes)</option>
+          <option value="memory">{t("area.settings-bots-host-2.processes-settings-panel.admissionMemory")}</option>
+          <option value="db">{t("area.settings-bots-host-2.processes-settings-panel.admissionDb")}</option>
         </select>
         <p className="text-xs text-muted-foreground">
-          Where run admission is decided. Source: {sourceOf("admissionStore")}.
+          {t("area.settings-bots-host-2.processes-settings-panel.admissionHint", { source: sourceOf("admissionStore") })}
         </p>
       </div>
 
@@ -188,11 +188,10 @@ export function ProcessesSettingsPanel() {
           disabled={disabled}
           onChange={(event) => save.mutate({ singletonProxy: event.target.checked })}
         />
-        <Label htmlFor="processes-proxy">Proxy single-process routes to the leader</Label>
+        <Label htmlFor="processes-proxy">{t("area.settings-bots-host-2.processes-settings-panel.proxyLabel")}</Label>
       </div>
       <p className="text-xs text-muted-foreground">
-        A process that is not the leader proxies the routes that must run once (the scheduler, the
-        background timers) to the process that owns them. Source: {sourceOf("singletonProxy")}.
+        {t("area.settings-bots-host-2.processes-settings-panel.proxyHint", { source: sourceOf("singletonProxy") })}
       </p>
 
       <Button
@@ -201,7 +200,7 @@ export function ProcessesSettingsPanel() {
         disabled={disabled}
         onClick={() => queryClient.invalidateQueries({ queryKey: processesQueryKey })}
       >
-        Reload from the server
+        {t("area.settings-bots-host-2.processes-settings-panel.reload")}
       </Button>
     </section>
   );

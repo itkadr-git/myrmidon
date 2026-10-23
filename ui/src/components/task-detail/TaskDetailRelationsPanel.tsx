@@ -8,6 +8,7 @@ import {
   rememberIssueDetailLocationState,
 } from "@/lib/issueDetailBreadcrumb";
 import { Link } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 
 export interface TaskDetailRelationItem {
   id: string;
@@ -120,22 +121,23 @@ export function TaskDetailSubtasksPanel({
   onAddSubtask?: () => void;
   issueLinkState?: unknown;
 }) {
+  const { t } = useTranslation();
   const completed = items.filter((item) => item.status === "done").length;
   const progress = items.length > 0 ? Math.round((completed / items.length) * 100) : 0;
   const { nextAction, rootBlocker, remainingItems } = resolveTaskDetailSubtaskState(items);
   const allCompleted = items.length > 0 && completed === items.length;
 
   return (
-    <section className="flex flex-col gap-4" aria-label="Subtasks">
+    <section className="flex flex-col gap-4" aria-label={t("area.issue-properties-panels-3.task-detail-relations-panel.subtasksAria")}>
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-          <span>Progress</span>
-          <span className="font-mono">{completed} of {items.length} complete</span>
+          <span>{t("area.issue-properties-panels-3.task-detail-relations-panel.progress")}</span>
+          <span className="font-mono">{t("area.issue-properties-panels-3.task-detail-relations-panel.completeCount", { completed, total: items.length })}</span>
         </div>
         <div
           className="h-1.5 overflow-hidden rounded-full bg-muted"
           role="progressbar"
-          aria-label="Subtask completion"
+          aria-label={t("area.issue-properties-panels-3.task-detail-relations-panel.completionAria")}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={progress}
@@ -150,12 +152,12 @@ export function TaskDetailSubtasksPanel({
       {rootBlocker ? (
         <section className="flex flex-col gap-1.5" aria-labelledby="task-root-blocker-heading">
           <h3 id="task-root-blocker-heading" className="text-xs font-medium text-muted-foreground">
-            Root blocker
+            {t("area.issue-properties-panels-3.task-detail-relations-panel.rootBlocker")}
           </h3>
           <RelationNavigationList
             items={[rootBlocker]}
             emptyMessage=""
-            ariaLabel="Root blocker"
+            ariaLabel={t("area.issue-properties-panels-3.task-detail-relations-panel.rootBlocker")}
             issueLinkState={issueLinkState}
           />
         </section>
@@ -164,30 +166,30 @@ export function TaskDetailSubtasksPanel({
       {nextAction ? (
         <section className="flex flex-col gap-1.5" aria-labelledby="task-next-action-heading">
           <h3 id="task-next-action-heading" className="text-xs font-medium text-muted-foreground">
-            {nextAction.status === "blocked" ? "Blocked subtask" : "Next action"}
+            {nextAction.status === "blocked" ? t("area.issue-properties-panels-3.task-detail-relations-panel.blockedSubtask") : t("area.issue-properties-panels-3.task-detail-relations-panel.nextAction")}
           </h3>
           <TaskDetailTaskList
             items={[nextAction]}
-            ariaLabel="Next subtask action"
+            ariaLabel={t("area.issue-properties-panels-3.task-detail-relations-panel.nextActionAria")}
             issueLinkState={issueLinkState}
           />
         </section>
       ) : items.length > 0 ? (
         <p className="text-xs text-muted-foreground">
-          {allCompleted ? "All subtasks are complete." : "No remaining subtask actions."}
+          {allCompleted ? t("area.issue-properties-panels-3.task-detail-relations-panel.allComplete") : t("area.issue-properties-panels-3.task-detail-relations-panel.noRemaining")}
         </p>
       ) : (
-        <p className="py-6 text-center text-sm text-muted-foreground">No subtasks yet.</p>
+        <p className="py-6 text-center text-sm text-muted-foreground">{t("area.issue-properties-panels-3.task-detail-relations-panel.empty")}</p>
       )}
 
       {remainingItems.length > 0 ? (
         <section className="flex flex-col gap-1.5" aria-labelledby="task-other-subtasks-heading">
           <h3 id="task-other-subtasks-heading" className="text-xs font-medium text-muted-foreground">
-            {nextAction ? "Other subtasks" : "Subtasks"}
+            {nextAction ? t("area.issue-properties-panels-3.task-detail-relations-panel.otherSubtasks") : t("area.issue-properties-panels-3.task-detail-relations-panel.subtasks")}
           </h3>
           <TaskDetailTaskList
             items={remainingItems}
-            ariaLabel={nextAction ? "Other subtasks" : "Subtasks"}
+            ariaLabel={nextAction ? t("area.issue-properties-panels-3.task-detail-relations-panel.otherSubtasks") : t("area.issue-properties-panels-3.task-detail-relations-panel.subtasks")}
             issueLinkState={issueLinkState}
           />
         </section>
@@ -196,7 +198,7 @@ export function TaskDetailSubtasksPanel({
       {onAddSubtask ? (
         <Button type="button" variant="outline" size="sm" className="self-start" onClick={onAddSubtask}>
           <Plus className="h-3.5 w-3.5" />
-          Add subtask
+          {t("area.issue-properties-panels-3.task-detail-relations-panel.addSubtask")}
         </Button>
       ) : null}
     </section>
@@ -212,27 +214,28 @@ export function TaskDetailReferencesPanel({
   mentionedIn: TaskDetailRelationItem[];
   issueLinkState?: unknown;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-6">
       <section className="flex flex-col gap-2" aria-labelledby="task-referenced-heading">
         <h3 id="task-referenced-heading" className="text-xs font-medium text-muted-foreground">
-          Referenced
+          {t("area.issue-properties-panels-3.task-detail-relations-panel.referenced")}
         </h3>
         <RelationNavigationList
           items={referenced}
-          emptyMessage="This task does not reference another task."
-          ariaLabel="Referenced tasks"
+          emptyMessage={t("area.issue-properties-panels-3.task-detail-relations-panel.referencedEmpty")}
+          ariaLabel={t("area.issue-properties-panels-3.task-detail-relations-panel.referencedAria")}
           issueLinkState={issueLinkState}
         />
       </section>
       <section className="flex flex-col gap-2" aria-labelledby="task-mentioned-in-heading">
         <h3 id="task-mentioned-in-heading" className="text-xs font-medium text-muted-foreground">
-          Mentioned in
+          {t("area.issue-properties-panels-3.task-detail-relations-panel.mentionedIn")}
         </h3>
         <RelationNavigationList
           items={mentionedIn}
-          emptyMessage="No other task mentions this task."
-          ariaLabel="Tasks that mention this task"
+          emptyMessage={t("area.issue-properties-panels-3.task-detail-relations-panel.mentionedInEmpty")}
+          ariaLabel={t("area.issue-properties-panels-3.task-detail-relations-panel.mentionedInAria")}
           issueLinkState={issueLinkState}
         />
       </section>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IssueAttachment, IssueWorkProduct } from "@myrmidon/shared";
 import { Paperclip } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
@@ -58,6 +59,7 @@ export function IssueFilesDrawer({
   isMobile,
   className,
 }: IssueFilesDrawerProps) {
+  const { t } = useTranslation();
   const { files, links } = useMemo(
     () => buildIssueFileEntries(attachments, workProducts),
     [attachments, workProducts],
@@ -151,12 +153,12 @@ export function IssueFilesDrawer({
         size="xs"
         disabled={count === 0}
         data-testid="issue-files-drawer-trigger"
-        aria-label={`Task files (${count})`}
+        aria-label={t("area.settings-integrations.issue-files-drawer.triggerAria", { count })}
         className={cn("mr-1 shrink-0 gap-1", className)}
         onClick={() => setOpen(true)}
       >
         <Paperclip className="h-3.5 w-3.5" />
-        Files ({count})
+        {t("area.settings-integrations.issue-files-drawer.filesCount", { count })}
       </Button>
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent
@@ -174,7 +176,7 @@ export function IssueFilesDrawer({
             <div
               role="separator"
               aria-orientation="vertical"
-              aria-label="Resize files panel"
+              aria-label={t("area.settings-integrations.issue-files-drawer.resizeAria")}
               data-testid="issue-files-drawer-grip"
               data-dragging={dragging ? "" : undefined}
               className="group absolute inset-y-0 z-10 cursor-col-resize touch-none"
@@ -194,7 +196,7 @@ export function IssueFilesDrawer({
             </div>
           ) : null}
           <SheetHeader className="border-b border-border">
-            <SheetTitle>Files ({count})</SheetTitle>
+            <SheetTitle>{t("area.settings-integrations.issue-files-drawer.filesCount", { count })}</SheetTitle>
           </SheetHeader>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
             <IssueFilesPanel

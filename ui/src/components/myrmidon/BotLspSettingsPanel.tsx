@@ -20,6 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { i18n, useTranslation } from "@/i18n";
 import { botLspApi, botLspQueryKey, type BotLspView } from "./botLspApi";
 import { BOT_LSP_MODE_HINTS, BOT_LSP_MODE_LABELS } from "./botLspModes";
 
@@ -68,15 +69,15 @@ export function parseBotLspDraft(draft: BotLspDraft): BotLspDraftParse {
 
   const roles = splitList(draft.codingRoles, /[\s,]+/);
   const badRole = roles.find((role) => !ROLE_KEY.test(role));
-  if (badRole) errors.codingRoles = `"${badRole}" is not a caste key (latin letters, digits, hyphens)`;
+  if (badRole) errors.codingRoles = i18n.t("area.settings-bots-host-1.bot-lsp-settings-panel.errBadRole", { role: badRole });
 
   const idle = parseBounded(draft.idleTimeoutSeconds, BOT_LSP_IDLE_TIMEOUT_MIN_SECONDS, BOT_LSP_IDLE_TIMEOUT_MAX_SECONDS);
   if (idle === "invalid") {
-    errors.idleTimeoutSeconds = `A whole number from ${BOT_LSP_IDLE_TIMEOUT_MIN_SECONDS} to ${BOT_LSP_IDLE_TIMEOUT_MAX_SECONDS}, or empty`;
+    errors.idleTimeoutSeconds = i18n.t("area.settings-bots-host-1.bot-lsp-settings-panel.errRange", { min: BOT_LSP_IDLE_TIMEOUT_MIN_SECONDS, max: BOT_LSP_IDLE_TIMEOUT_MAX_SECONDS });
   }
   const memory = parseBounded(draft.tsserverMemoryMb, BOT_LSP_TSSERVER_MEMORY_MIN_MB, BOT_LSP_TSSERVER_MEMORY_MAX_MB);
   if (memory === "invalid") {
-    errors.tsserverMemoryMb = `A whole number from ${BOT_LSP_TSSERVER_MEMORY_MIN_MB} to ${BOT_LSP_TSSERVER_MEMORY_MAX_MB}, or empty`;
+    errors.tsserverMemoryMb = i18n.t("area.settings-bots-host-1.bot-lsp-settings-panel.errRange", { min: BOT_LSP_TSSERVER_MEMORY_MIN_MB, max: BOT_LSP_TSSERVER_MEMORY_MAX_MB });
   }
   const excludeRoots = splitList(draft.excludeRoots, /\n+/);
 
@@ -119,6 +120,7 @@ function ModeSelect({
   defaultMode: BotLspMode;
   onChange: (next: BotLspMode | "") => void;
 }) {
+  const { t } = useTranslation();
   return (
     <select
       id={id}
@@ -126,7 +128,7 @@ function ModeSelect({
       value={value}
       onChange={(event) => onChange(isBotLspMode(event.target.value) ? event.target.value : "")}
     >
-      <option value="">Default ({BOT_LSP_MODE_LABELS[defaultMode]})</option>
+      <option value="">{t("area.settings-bots-host-1.bot-lsp-settings-panel.defaultMode", { mode: BOT_LSP_MODE_LABELS[defaultMode] })}</option>
       {BOT_LSP_MODES.map((mode) => (
         <option key={mode} value={mode}>
           {BOT_LSP_MODE_LABELS[mode]}
@@ -147,6 +149,7 @@ export function BotLspSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<BotLspDraft | null>(null);
   const current = draft ?? (view ? botLspDraftFrom(view.settings) : null);
   const { patch, errors } = current ? parseBotLspDraft(current) : { patch: null, errors: {} as BotLspDraftParse["errors"] };
@@ -160,13 +163,10 @@ export function BotLspSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <FileCode2 className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Bot language servers</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-bots-host-1.bot-lsp-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Language servers give a bot diagnostics after it edits code, at the cost of a TypeScript server (about 1 GB on a
-          large repository) per worktree. Bots whose role writes code get the limited mode; every other bot runs none.
-          An agent card can pin its own mode. Saving applies on each bot&apos;s next reconcile, while that bot is paused;
-          the server is not restarted. Leave a field empty to keep the built-in default.
+          {t("area.settings-bots-host-1.bot-lsp-settings-panel.intro")}
         </p>
       </div>
 
@@ -179,7 +179,7 @@ export function BotLspSettingsPanelView({
       {view && current ? (
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-1 md:col-span-2">
-            <Label htmlFor="bot-lsp-codingRoles">Roles that write code</Label>
+            <Label htmlFor="bot-lsp-codingRoles">{t("area.settings-bots-host-1.bot-lsp-settings-panel.codingRolesLabel")}</Label>
             <Input
               id="bot-lsp-codingRoles"
               placeholder={view.effective.codingRoles.join(", ")}
@@ -192,11 +192,11 @@ export function BotLspSettingsPanelView({
               </div>
             ) : null}
             <p className="text-xs text-muted-foreground">
-              Caste keys (the agent&apos;s role), separated by commas. Custom castes count too.
+              {t("area.settings-bots-host-1.bot-lsp-settings-panel.codingRolesHint")}
             </p>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="bot-lsp-codingMode">Mode for coding roles</Label>
+            <Label htmlFor="bot-lsp-codingMode">{t("area.settings-bots-host-1.bot-lsp-settings-panel.codingModeLabel")}</Label>
             <ModeSelect
               id="bot-lsp-codingMode"
               value={current.codingMode}
@@ -206,7 +206,7 @@ export function BotLspSettingsPanelView({
             <p className="text-xs text-muted-foreground">{BOT_LSP_MODE_HINTS[view.effective.codingMode]}</p>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="bot-lsp-nonCodingMode">Mode for other roles</Label>
+            <Label htmlFor="bot-lsp-nonCodingMode">{t("area.settings-bots-host-1.bot-lsp-settings-panel.nonCodingModeLabel")}</Label>
             <ModeSelect
               id="bot-lsp-nonCodingMode"
               value={current.nonCodingMode}
@@ -216,7 +216,7 @@ export function BotLspSettingsPanelView({
             <p className="text-xs text-muted-foreground">{BOT_LSP_MODE_HINTS[view.effective.nonCodingMode]}</p>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="bot-lsp-idleTimeoutSeconds">Idle timeout, seconds (limited mode)</Label>
+            <Label htmlFor="bot-lsp-idleTimeoutSeconds">{t("area.settings-bots-host-1.bot-lsp-settings-panel.idleTimeoutLabel")}</Label>
             <Input
               id="bot-lsp-idleTimeoutSeconds"
               inputMode="numeric"
@@ -229,10 +229,10 @@ export function BotLspSettingsPanelView({
                 {errors.idleTimeoutSeconds}
               </div>
             ) : null}
-            <p className="text-xs text-muted-foreground">An idle language server is stopped after this long.</p>
+            <p className="text-xs text-muted-foreground">{t("area.settings-bots-host-1.bot-lsp-settings-panel.idleTimeoutHint")}</p>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="bot-lsp-tsserverMemoryMb">TypeScript server memory cap, MB (limited mode)</Label>
+            <Label htmlFor="bot-lsp-tsserverMemoryMb">{t("area.settings-bots-host-1.bot-lsp-settings-panel.memoryLabel")}</Label>
             <Input
               id="bot-lsp-tsserverMemoryMb"
               inputMode="numeric"
@@ -245,23 +245,23 @@ export function BotLspSettingsPanelView({
                 {errors.tsserverMemoryMb}
               </div>
             ) : null}
-            <p className="text-xs text-muted-foreground">Heap limit of each TypeScript server.</p>
+            <p className="text-xs text-muted-foreground">{t("area.settings-bots-host-1.bot-lsp-settings-panel.memoryHint")}</p>
           </div>
           <div className="space-y-1 md:col-span-2">
-            <Label htmlFor="bot-lsp-excludeRoots">Excluded workspace roots</Label>
+            <Label htmlFor="bot-lsp-excludeRoots">{t("area.settings-bots-host-1.bot-lsp-settings-panel.excludeLabel")}</Label>
             <textarea
               id="bot-lsp-excludeRoots"
               className={`${selectClass} min-h-16 font-mono`}
-              placeholder="One glob per line"
+              placeholder={t("area.settings-bots-host-1.bot-lsp-settings-panel.excludePlaceholder")}
               value={current.excludeRoots}
               onChange={(event) => set("excludeRoots", event.target.value)}
             />
             <p className="text-xs text-muted-foreground">
-              Workspaces where no language server runs at all, for bots whose servers do run (limited or full).
+              {t("area.settings-bots-host-1.bot-lsp-settings-panel.excludeHint")}
             </p>
           </div>
           <div className="space-y-1 md:col-span-2 text-xs text-muted-foreground" data-testid="bot-lsp-counts">
-            Bots now: {view.counts.limited} limited, {view.counts.off} off, {view.counts.full} full.
+            {t("area.settings-bots-host-1.bot-lsp-settings-panel.counts", { limited: view.counts.limited, off: view.counts.off, full: view.counts.full })}
           </div>
           <div className="md:col-span-2">
             <Button
@@ -272,18 +272,19 @@ export function BotLspSettingsPanelView({
                 if (patch) onSave(patch);
               }}
             >
-              {pending ? "Saving..." : "Save language servers"}
+              {pending ? t("area.settings-bots-host-1.bot-lsp-settings-panel.saving") : t("area.settings-bots-host-1.bot-lsp-settings-panel.save")}
             </Button>
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading language-server settings...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-bots-host-1.bot-lsp-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function BotLspSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -294,7 +295,7 @@ export function BotLspSettingsPanel() {
   const save = useMutation({
     mutationFn: botLspApi.update,
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the language-server settings failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-lsp-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: botLspQueryKey });
@@ -304,7 +305,7 @@ export function BotLspSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load the language-server settings."}
+        {query.error instanceof Error ? query.error.message : t("area.settings-bots-host-1.bot-lsp-settings-panel.loadFailed")}
       </div>
     );
   }

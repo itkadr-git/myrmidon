@@ -11,6 +11,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ApiError } from "@/api/client";
+import { i18n, useTranslation } from "@/i18n";
 import type {
   CloudAccessMode,
   CloudAccount,
@@ -28,8 +29,6 @@ import {
   cloudsGrantsQueryKey,
   cloudsJournalQueryKey,
   cloudsRootsQueryKey,
-  grantTargetLabel,
-  rootKindLabel,
   type NewGrantInput,
   type NewRootInput,
 } from "./cloudsApi";
@@ -37,9 +36,9 @@ import {
 const SELECT_CLASS = "h-9 w-full rounded-md border border-input bg-background px-2 text-sm";
 
 export function readable(error: unknown): string {
-  if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
+  if (error instanceof ApiError) return error.message || i18n.t("area.settings-integrations.clouds-settings-page.requestFailed", { status: error.status });
   if (error instanceof Error) return error.message;
-  return "Unexpected error";
+  return i18n.t("area.settings-integrations.clouds-settings-page.unexpectedError");
 }
 
 export interface CloudsSettingsPageViewProps {
@@ -61,11 +60,12 @@ export interface CloudsSettingsPageViewProps {
 }
 
 function AccountsSection({ accounts, pending, onConnect, onDisconnect }: Pick<CloudsSettingsPageViewProps, "accounts" | "pending" | "onConnect" | "onDisconnect">) {
+  const { t } = useTranslation();
   return (
     <section className="space-y-2">
-      <h2 className="text-sm font-semibold">Connected accounts</h2>
+      <h2 className="text-sm font-semibold">{t("area.settings-integrations.clouds-settings-page.accountsTitle")}</h2>
       <p className="text-xs text-muted-foreground">
-        The connector keeps the cloud token; no bot ever sees it. One account per provider.
+        {t("area.settings-integrations.clouds-settings-page.accountsHint")}
       </p>
       <ul className="space-y-2" data-testid="myrmidon-clouds-accounts">
         {CLOUD_PROVIDER_LABELS.map(({ id, label }) => {
@@ -80,8 +80,11 @@ function AccountsSection({ accounts, pending, onConnect, onDisconnect }: Pick<Cl
                 <p className="text-sm">{label}</p>
                 <p className="text-xs text-muted-foreground" data-testid={`myrmidon-clouds-provider-state-${id}`}>
                   {account
-                    ? `Connected as ${account.displayName} on ${new Date(account.connectedAt).toLocaleDateString()}`
-                    : "Not connected"}
+                    ? t("area.settings-integrations.clouds-settings-page.connectedAs", {
+                        name: account.displayName,
+                        date: new Date(account.connectedAt).toLocaleDateString(i18n.language),
+                      })
+                    : t("area.settings-integrations.clouds-settings-page.notConnected")}
                 </p>
               </div>
               {account ? (
@@ -92,7 +95,7 @@ function AccountsSection({ accounts, pending, onConnect, onDisconnect }: Pick<Cl
                   onClick={() => onDisconnect(account.id)}
                   data-testid={`myrmidon-clouds-disconnect-${id}`}
                 >
-                  Disconnect
+                  {t("area.settings-integrations.clouds-settings-page.disconnect")}
                 </Button>
               ) : (
                 <Button
@@ -101,7 +104,7 @@ function AccountsSection({ accounts, pending, onConnect, onDisconnect }: Pick<Cl
                   onClick={() => onConnect(id)}
                   data-testid={`myrmidon-clouds-connect-${id}`}
                 >
-                  Connect
+                  {t("area.settings-integrations.clouds-settings-page.connect")}
                 </Button>
               )}
             </li>
@@ -113,6 +116,7 @@ function AccountsSection({ accounts, pending, onConnect, onDisconnect }: Pick<Cl
 }
 
 function AddFolderForm({ pending, onAddRoot }: Pick<CloudsSettingsPageViewProps, "pending" | "onAddRoot">) {
+  const { t } = useTranslation();
   const [providerId, setProviderId] = useState<CloudProviderId>("onedrive");
   const [name, setName] = useState("");
   const [kind, setKind] = useState<CloudRootKind>("own");
@@ -126,12 +130,12 @@ function AddFolderForm({ pending, onAddRoot }: Pick<CloudsSettingsPageViewProps,
     <div className="space-y-2 rounded-md border border-border p-3" data-testid="myrmidon-clouds-add-folder">
       <div className="grid gap-2 sm:grid-cols-3">
         <label className="space-y-1 text-xs text-muted-foreground">
-          Cloud
+          {t("area.settings-integrations.clouds-settings-page.cloud")}
           <select
             className={SELECT_CLASS}
             value={providerId}
             onChange={(event) => setProviderId(event.target.value as CloudProviderId)}
-            aria-label="Cloud provider"
+            aria-label={t("area.settings-integrations.clouds-settings-page.cloudProviderAria")}
             data-testid="myrmidon-clouds-new-folder-provider"
           >
             {CLOUD_PROVIDER_LABELS.map(({ id, label }) => (
@@ -140,57 +144,57 @@ function AddFolderForm({ pending, onAddRoot }: Pick<CloudsSettingsPageViewProps,
           </select>
         </label>
         <label className="space-y-1 text-xs text-muted-foreground">
-          Folder name
+          {t("area.settings-integrations.clouds-settings-page.folderName")}
           <Input
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="work"
-            aria-label="Folder name"
+            placeholder={t("area.settings-integrations.clouds-settings-page.folderNamePlaceholder")}
+            aria-label={t("area.settings-integrations.clouds-settings-page.folderName")}
             data-testid="myrmidon-clouds-new-folder-name"
           />
         </label>
         <label className="space-y-1 text-xs text-muted-foreground">
-          Where it lives
+          {t("area.settings-integrations.clouds-settings-page.whereItLives")}
           <select
             className={SELECT_CLASS}
             value={kind}
             onChange={(event) => setKind(event.target.value as CloudRootKind)}
-            aria-label="Folder kind"
+            aria-label={t("area.settings-integrations.clouds-settings-page.folderKindAria")}
             data-testid="myrmidon-clouds-new-folder-kind"
           >
-            <option value="own">In the connected account</option>
-            <option value="shared">Shared with us (read only)</option>
+            <option value="own">{t("area.settings-integrations.clouds-settings-page.kindOwn")}</option>
+            <option value="shared">{t("area.settings-integrations.clouds-settings-page.kindShared")}</option>
           </select>
         </label>
       </div>
       {kind === "own" ? (
         <label className="space-y-1 text-xs text-muted-foreground">
-          Path inside the account drive
+          {t("area.settings-integrations.clouds-settings-page.pathLabel")}
           <Input
             value={folder}
             onChange={(event) => setFolder(event.target.value)}
-            placeholder="Agents/work"
-            aria-label="Folder path"
+            placeholder={t("area.settings-integrations.clouds-settings-page.pathPlaceholder")}
+            aria-label={t("area.settings-integrations.clouds-settings-page.folderPathAria")}
             data-testid="myrmidon-clouds-new-folder-path"
           />
         </label>
       ) : (
         <div className="grid gap-2 sm:grid-cols-2">
           <label className="space-y-1 text-xs text-muted-foreground">
-            Drive id
+            {t("area.settings-integrations.clouds-settings-page.driveId")}
             <Input
               value={driveId}
               onChange={(event) => setDriveId(event.target.value)}
-              aria-label="Drive id"
+              aria-label={t("area.settings-integrations.clouds-settings-page.driveId")}
               data-testid="myrmidon-clouds-new-folder-drive"
             />
           </label>
           <label className="space-y-1 text-xs text-muted-foreground">
-            Item id
+            {t("area.settings-integrations.clouds-settings-page.itemId")}
             <Input
               value={itemId}
               onChange={(event) => setItemId(event.target.value)}
-              aria-label="Item id"
+              aria-label={t("area.settings-integrations.clouds-settings-page.itemId")}
               data-testid="myrmidon-clouds-new-folder-item"
             />
           </label>
@@ -212,7 +216,7 @@ function AddFolderForm({ pending, onAddRoot }: Pick<CloudsSettingsPageViewProps,
         }}
         data-testid="myrmidon-clouds-add-folder-button"
       >
-        Add folder
+        {t("area.settings-integrations.clouds-settings-page.addFolder")}
       </Button>
     </div>
   );
@@ -225,6 +229,17 @@ function GrantsSection({
   onSetGrant,
   onRemoveGrant,
 }: Pick<CloudsSettingsPageViewProps, "roots" | "grants" | "pending" | "onSetGrant" | "onRemoveGrant">) {
+  const { t } = useTranslation();
+  const grantTargetLabel = (grant: CloudGrant): string => {
+    switch (grant.targetKind) {
+      case "agent":
+        return t("area.settings-integrations.clouds-settings-page.targetLabelAgent", { id: grant.agentId ?? "?" });
+      case "caste":
+        return t("area.settings-integrations.clouds-settings-page.targetLabelCaste", { name: grant.caste ?? "?" });
+      case "all":
+        return t("area.settings-integrations.clouds-settings-page.targetLabelAll");
+    }
+  };
   const [rootId, setRootId] = useState("");
   const [targetKind, setTargetKind] = useState<CloudGrantTargetKind>("all");
   const [agentId, setAgentId] = useState("");
@@ -239,19 +254,19 @@ function GrantsSection({
 
   return (
     <section className="space-y-2">
-      <h2 className="text-sm font-semibold">Access</h2>
+      <h2 className="text-sm font-semibold">{t("area.settings-integrations.clouds-settings-page.accessTitle")}</h2>
       <p className="text-xs text-muted-foreground">
-        Each row hands one folder to an agent, a caste or everyone. A folder shared with us can only be read.
+        {t("area.settings-integrations.clouds-settings-page.accessHint")}
       </p>
       <div className="space-y-2 rounded-md border border-border p-3" data-testid="myrmidon-clouds-add-grant">
         <div className="grid gap-2 sm:grid-cols-4">
           <label className="space-y-1 text-xs text-muted-foreground">
-            Folder
+            {t("area.settings-integrations.clouds-settings-page.folder")}
             <select
               className={SELECT_CLASS}
               value={selectedRoot?.id ?? ""}
               onChange={(event) => setRootId(event.target.value)}
-              aria-label="Folder"
+              aria-label={t("area.settings-integrations.clouds-settings-page.folder")}
               data-testid="myrmidon-clouds-grant-root"
             >
               {roots.map((root) => (
@@ -260,52 +275,52 @@ function GrantsSection({
             </select>
           </label>
           <label className="space-y-1 text-xs text-muted-foreground">
-            Give to
+            {t("area.settings-integrations.clouds-settings-page.giveTo")}
             <select
               className={SELECT_CLASS}
               value={targetKind}
               onChange={(event) => setTargetKind(event.target.value as CloudGrantTargetKind)}
-              aria-label="Grant target"
+              aria-label={t("area.settings-integrations.clouds-settings-page.grantTargetAria")}
               data-testid="myrmidon-clouds-grant-target"
             >
-              <option value="all">Everyone</option>
-              <option value="agent">One agent</option>
-              <option value="caste">A caste</option>
+              <option value="all">{t("area.settings-integrations.clouds-settings-page.targetAll")}</option>
+              <option value="agent">{t("area.settings-integrations.clouds-settings-page.targetAgent")}</option>
+              <option value="caste">{t("area.settings-integrations.clouds-settings-page.targetCaste")}</option>
             </select>
           </label>
           {targetKind === "agent" && (
             <label className="space-y-1 text-xs text-muted-foreground">
-              Agent id
+              {t("area.settings-integrations.clouds-settings-page.agentId")}
               <Input
                 value={agentId}
                 onChange={(event) => setAgentId(event.target.value)}
-                aria-label="Agent id"
+                aria-label={t("area.settings-integrations.clouds-settings-page.agentId")}
                 data-testid="myrmidon-clouds-grant-agent"
               />
             </label>
           )}
           {targetKind === "caste" && (
             <label className="space-y-1 text-xs text-muted-foreground">
-              Caste
+              {t("area.settings-integrations.clouds-settings-page.caste")}
               <Input
                 value={caste}
                 onChange={(event) => setCaste(event.target.value)}
-                aria-label="Caste"
+                aria-label={t("area.settings-integrations.clouds-settings-page.caste")}
                 data-testid="myrmidon-clouds-grant-caste"
               />
             </label>
           )}
           <label className="space-y-1 text-xs text-muted-foreground">
-            Mode
+            {t("area.settings-integrations.clouds-settings-page.mode")}
             <select
               className={SELECT_CLASS}
               value={mode}
               onChange={(event) => setMode(event.target.value as CloudAccessMode)}
-              aria-label="Grant mode"
+              aria-label={t("area.settings-integrations.clouds-settings-page.grantModeAria")}
               data-testid="myrmidon-clouds-grant-mode"
             >
-              <option value="ro">Read only</option>
-              <option value="rw">Read and write</option>
+              <option value="ro">{t("area.settings-integrations.clouds-settings-page.modeRo")}</option>
+              <option value="rw">{t("area.settings-integrations.clouds-settings-page.modeRw")}</option>
             </select>
           </label>
         </div>
@@ -326,12 +341,12 @@ function GrantsSection({
           }}
           data-testid="myrmidon-clouds-add-grant-button"
         >
-          Grant access
+          {t("area.settings-integrations.clouds-settings-page.grantAccess")}
         </Button>
       </div>
       {grants.length === 0 ? (
         <p className="text-xs text-muted-foreground" data-testid="myrmidon-clouds-grants-empty">
-          No folder is shared with anyone yet.
+          {t("area.settings-integrations.clouds-settings-page.noGrants")}
         </p>
       ) : (
         <ul className="space-y-1" data-testid="myrmidon-clouds-grants">
@@ -343,7 +358,7 @@ function GrantsSection({
             >
               <span>
                 {roots.find((root) => root.id === grant.rootId)?.name ?? grant.rootId} · {grantTargetLabel(grant)} ·{" "}
-                {grant.mode === "rw" ? "read and write" : "read only"}
+                {grant.mode === "rw" ? t("area.settings-integrations.clouds-settings-page.rowModeRw") : t("area.settings-integrations.clouds-settings-page.rowModeRo")}
               </span>
               <Button
                 size="sm"
@@ -352,7 +367,7 @@ function GrantsSection({
                 onClick={() => onRemoveGrant(grant.id)}
                 data-testid={`myrmidon-clouds-remove-grant-${grant.id}`}
               >
-                Remove
+                {t("common.remove")}
               </Button>
             </li>
           ))}
@@ -363,19 +378,20 @@ function GrantsSection({
 }
 
 function JournalSection({ journal }: Pick<CloudsSettingsPageViewProps, "journal">) {
+  const { t } = useTranslation();
   return (
     <section className="space-y-2">
-      <h2 className="text-sm font-semibold">Journal</h2>
+      <h2 className="text-sm font-semibold">{t("area.settings-integrations.clouds-settings-page.journalTitle")}</h2>
       {journal.length === 0 ? (
         <p className="text-xs text-muted-foreground" data-testid="myrmidon-clouds-journal-empty">
-          No cloud operation yet.
+          {t("area.settings-integrations.clouds-settings-page.journalEmpty")}
         </p>
       ) : (
         <ul className="space-y-1 text-xs text-muted-foreground" data-testid="myrmidon-clouds-journal">
           {journal.map((entry) => (
             <li key={entry.id} data-testid="myrmidon-clouds-journal-entry">
               {new Date(entry.at).toLocaleString()} · {entry.actor} · {entry.tool} · {entry.rootName ?? "—"} ·{" "}
-              {entry.ok ? "ok" : "refused"}
+              {entry.ok ? t("area.settings-integrations.clouds-settings-page.journalOk") : t("area.settings-integrations.clouds-settings-page.journalRefused")}
               {entry.detail ? ` · ${entry.detail}` : ""}
             </li>
           ))}
@@ -386,16 +402,18 @@ function JournalSection({ journal }: Pick<CloudsSettingsPageViewProps, "journal"
 }
 
 export function CloudsSettingsPageView(props: CloudsSettingsPageViewProps) {
+  const { t } = useTranslation();
+  const rootKindLabel = (root: CloudRoot) =>
+    root.kind === "shared" ? t("area.settings-integrations.clouds-settings-page.rootKindShared") : t("area.settings-integrations.clouds-settings-page.rootKindOwn");
   return (
     <div className="space-y-6" data-testid="myrmidon-clouds-page">
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Cloud className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Clouds</h1>
+          <h1 className="text-lg font-semibold">{t("area.settings-integrations.clouds-settings-page.title")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Connect a cloud once and hand folders to agents. Tokens stay in the connector; agents only reach what is
-          granted to them, and every operation lands in the journal.
+          {t("area.settings-integrations.clouds-settings-page.description")}
         </p>
       </div>
 
@@ -406,7 +424,7 @@ export function CloudsSettingsPageView(props: CloudsSettingsPageViewProps) {
         <p className="text-xs text-muted-foreground" data-testid="myrmidon-clouds-notice">{props.notice}</p>
       )}
       {props.loading && (
-        <p className="text-xs text-muted-foreground" data-testid="myrmidon-clouds-loading">Loading…</p>
+        <p className="text-xs text-muted-foreground" data-testid="myrmidon-clouds-loading">{t("common.loading")}</p>
       )}
 
       <AccountsSection
@@ -417,14 +435,14 @@ export function CloudsSettingsPageView(props: CloudsSettingsPageViewProps) {
       />
 
       <section className="space-y-2">
-        <h2 className="text-sm font-semibold">Folders</h2>
+        <h2 className="text-sm font-semibold">{t("area.settings-integrations.clouds-settings-page.foldersTitle")}</h2>
         <p className="text-xs text-muted-foreground">
-          A folder is either a path inside the connected account or a folder somebody shared with it (read only).
+          {t("area.settings-integrations.clouds-settings-page.foldersHint")}
         </p>
         <AddFolderForm pending={props.pending} onAddRoot={props.onAddRoot} />
         {props.roots.length === 0 ? (
           <p className="text-xs text-muted-foreground" data-testid="myrmidon-clouds-roots-empty">
-            No folder yet.
+            {t("area.settings-integrations.clouds-settings-page.noFolders")}
           </p>
         ) : (
           <ul className="space-y-1" data-testid="myrmidon-clouds-roots">
@@ -444,7 +462,7 @@ export function CloudsSettingsPageView(props: CloudsSettingsPageViewProps) {
                   onClick={() => props.onRemoveRoot(root.id)}
                   data-testid={`myrmidon-clouds-remove-root-${root.id}`}
                 >
-                  Remove
+                  {t("common.remove")}
                 </Button>
               </li>
             ))}
@@ -466,6 +484,7 @@ export function CloudsSettingsPageView(props: CloudsSettingsPageViewProps) {
 }
 
 export function CloudsSettingsPage() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -473,8 +492,11 @@ export function CloudsSettingsPage() {
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Settings", href: "/company/settings" }, { label: "Clouds" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([
+      { label: t("area.settings-integrations.clouds-settings-page.breadcrumbSettings"), href: "/company/settings" },
+      { label: t("area.settings-integrations.clouds-settings-page.breadcrumbClouds") },
+    ]);
+  }, [setBreadcrumbs, t]);
 
   const accountsQuery = useQuery({
     queryKey: [...cloudsAccountsQueryKey, companyId],
@@ -512,7 +534,7 @@ export function CloudsSettingsPage() {
       // The cloud signs the owner in on its own page and sends the browser back
       // to the callback, which records the account.
       window.open(started.authorizeUrl, "_blank", "noopener");
-      setNotice(`Finish the sign-in for ${started.providerId} in the new tab.`);
+      setNotice(t("area.settings-integrations.clouds-settings-page.finishSignIn", { provider: started.providerId }));
     },
     onError: (error) => setNotice(readable(error)),
   });

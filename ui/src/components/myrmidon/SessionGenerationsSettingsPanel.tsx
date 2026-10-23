@@ -16,6 +16,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { queryKeys } from "@/lib/queryKeys";
+import { i18n, useTranslation } from "@/i18n";
+
+// myrmidon(OPE-8950): visible strings live in area.settings-bots-host-2.session-generations-settings-panel.*
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
 
 export interface SessionGenerationsDraft {
   enabled: boolean;
@@ -36,7 +41,7 @@ function parseThreshold(raw: string, label: string): { value: number | null; err
   const trimmed = raw.trim();
   const value = Number(trimmed);
   if (trimmed === "" || !Number.isInteger(value) || value < 1 || value > 1_000_000) {
-    return { value: null, error: `${label}: enter a whole number from 1 to 1000000` };
+    return { value: null, error: i18n.t("area.settings-bots-host-2.session-generations-settings-panel.thresholdError", { label }) };
   }
   return { value, error: null };
 }
@@ -46,8 +51,8 @@ export function buildSessionGenerationsPatch(draft: SessionGenerationsDraft): {
   patch: SessionGenerationsSettings | null;
   errors: { maxMessages: string | null; maxDays: string | null };
 } {
-  const messages = parseThreshold(draft.maxMessages, "Runs per session");
-  const days = parseThreshold(draft.maxDays, "Days per session");
+  const messages = parseThreshold(draft.maxMessages, i18n.t("area.settings-bots-host-2.session-generations-settings-panel.runsPerSession"));
+  const days = parseThreshold(draft.maxDays, i18n.t("area.settings-bots-host-2.session-generations-settings-panel.daysPerSession"));
   if (messages.value === null || days.value === null) {
     return { patch: null, errors: { maxMessages: messages.error, maxDays: days.error } };
   }
@@ -68,6 +73,7 @@ export function SessionGenerationsSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation() as { t: Translate };
   const [draft, setDraft] = useState<SessionGenerationsDraft | null>(null);
   const current = draft ?? toSessionGenerationsDraft(stored);
   const built = buildSessionGenerationsPatch(current);
@@ -77,13 +83,10 @@ export function SessionGenerationsSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <History className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Task session generations</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-bots-host-2.session-generations-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          A container bot keeps one session per task. Once a session passes either limit below, the next wake
-          starts a fresh session and carries the task summary and a handoff note into it, so the bot&apos;s
-          state stops growing with the task. Saving applies on the next wake, without a restart. Turning the
-          switch off keeps every task on its current session.
+          {t("area.settings-bots-host-2.session-generations-settings-panel.description")}
         </p>
       </div>
 
@@ -102,10 +105,10 @@ export function SessionGenerationsSettingsPanelView({
             onChange={(event) => setDraft({ ...current, enabled: event.target.checked })}
             data-testid="session-generations-enabled"
           />
-          <Label htmlFor="session-generations-enabled">Start a fresh session when a limit is passed</Label>
+          <Label htmlFor="session-generations-enabled">{t("area.settings-bots-host-2.session-generations-settings-panel.enabledLabel")}</Label>
         </div>
         <div className="space-y-1">
-          <Label htmlFor="session-generations-max-messages">Runs per session</Label>
+          <Label htmlFor="session-generations-max-messages">{t("area.settings-bots-host-2.session-generations-settings-panel.runsPerSession")}</Label>
           <Input
             id="session-generations-max-messages"
             inputMode="numeric"
@@ -119,11 +122,11 @@ export function SessionGenerationsSettingsPanelView({
             </div>
           ) : null}
           <p className="text-xs text-muted-foreground">
-            A session that recorded more runs than this rolls over. Default {SESSION_GENERATION_DEFAULT_MAX_MESSAGES}.
+            {t("area.settings-bots-host-2.session-generations-settings-panel.maxMessagesHint", { value: SESSION_GENERATION_DEFAULT_MAX_MESSAGES })}
           </p>
         </div>
         <div className="space-y-1">
-          <Label htmlFor="session-generations-max-days">Days per session</Label>
+          <Label htmlFor="session-generations-max-days">{t("area.settings-bots-host-2.session-generations-settings-panel.daysPerSession")}</Label>
           <Input
             id="session-generations-max-days"
             inputMode="numeric"
@@ -137,7 +140,7 @@ export function SessionGenerationsSettingsPanelView({
             </div>
           ) : null}
           <p className="text-xs text-muted-foreground">
-            A session older than this many days rolls over. Default {SESSION_GENERATION_DEFAULT_MAX_DAYS}.
+            {t("area.settings-bots-host-2.session-generations-settings-panel.maxDaysHint", { value: SESSION_GENERATION_DEFAULT_MAX_DAYS })}
           </p>
         </div>
         <div className="md:col-span-2">
@@ -150,7 +153,7 @@ export function SessionGenerationsSettingsPanelView({
             }}
             data-testid="session-generations-save"
           >
-            {pending ? "Saving..." : "Save session generations"}
+            {pending ? t("area.settings-bots-host-2.session-generations-settings-panel.saving") : t("area.settings-bots-host-2.session-generations-settings-panel.saveButton")}
           </Button>
         </div>
       </div>
@@ -159,6 +162,7 @@ export function SessionGenerationsSettingsPanelView({
 }
 
 export function SessionGenerationsSettingsPanel() {
+  const { t } = useTranslation() as { t: Translate };
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -169,7 +173,7 @@ export function SessionGenerationsSettingsPanel() {
   const save = useMutation({
     mutationFn: (sessions: SessionGenerationsSettings) => instanceSettingsApi.updateGeneral({ sessions }),
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the session generation settings failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : i18n.t("area.settings-bots-host-2.session-generations-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
@@ -179,12 +183,12 @@ export function SessionGenerationsSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load the session generation settings."}
+        {query.error instanceof Error ? query.error.message : t("area.settings-bots-host-2.session-generations-settings-panel.loadFailed")}
       </div>
     );
   }
   if (!query.data) {
-    return <p className="text-sm text-muted-foreground">Loading session generation settings...</p>;
+    return <p className="text-sm text-muted-foreground">{t("area.settings-bots-host-2.session-generations-settings-panel.loading")}</p>;
   }
   return (
     <SessionGenerationsSettingsPanelView

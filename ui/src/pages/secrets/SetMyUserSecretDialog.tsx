@@ -12,6 +12,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { secretsApi } from "../../api/secrets";
 import { ApiError } from "../../api/client";
 import { queryKeys } from "../../lib/queryKeys";
@@ -39,6 +41,7 @@ export function SetMyUserSecretDialog({
   onOpenChange: (open: boolean) => void;
   onSaved?: (secret: CompanySecret) => void;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [value, setValue] = useState("");
@@ -57,7 +60,7 @@ export function SetMyUserSecretDialog({
 
   const save = useMutation({
     mutationFn: async () => {
-      if (!definition) throw new Error("No definition selected");
+      if (!definition) throw new Error(t("area.access-secrets-3.set-my-user-secret-dialog.noDefinition"));
       const payload = isExternal
         ? { externalRef: externalRef.trim() }
         : { value: value.trim() };
@@ -75,7 +78,9 @@ export function SetMyUserSecretDialog({
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.myUserSecrets(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.userDefinitions(companyId) });
       pushToast({
-        title: existingSecret ? "Value updated" : "Value saved",
+        title: existingSecret
+          ? t("area.access-secrets-3.set-my-user-secret-dialog.updated")
+          : t("area.access-secrets-3.set-my-user-secret-dialog.saved"),
         body: definition?.name,
         tone: "success",
       });
@@ -88,7 +93,7 @@ export function SetMyUserSecretDialog({
           ? err.message
           : err instanceof Error
             ? err.message
-            : "Failed to save value",
+            : t("area.access-secrets-3.set-my-user-secret-dialog.saveError"),
       );
     },
   });
@@ -100,15 +105,18 @@ export function SetMyUserSecretDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            {existingSecret ? "Update your value" : "Set your value"}
+            {existingSecret
+              ? t("area.access-secrets-3.set-my-user-secret-dialog.updateTitle")
+              : t("area.access-secrets-3.set-my-user-secret-dialog.setTitle")}
             <UserSecretChip />
           </DialogTitle>
           <DialogDescription>
             {definition ? (
-              <>
-                This value is yours only. It is used when you are the user responsible for a run that
-                needs <span className="font-mono">{definition.key}</span>.
-              </>
+              <Trans
+                i18nKey="area.access-secrets-3.set-my-user-secret-dialog.description"
+                values={{ key: definition.key }}
+                components={{ 1: <span className="font-mono" /> }}
+              />
             ) : null}
           </DialogDescription>
         </DialogHeader>
@@ -127,31 +135,30 @@ export function SetMyUserSecretDialog({
 
             {isExternal ? (
               <div className="space-y-1">
-                <label className="text-xs font-medium text-foreground">External reference</label>
+                <label className="text-xs font-medium text-foreground">{t("area.access-secrets-3.set-my-user-secret-dialog.externalRef")}</label>
                 <Input
                   value={externalRef}
                   onChange={(event) => setExternalRef(event.target.value)}
-                  placeholder="provider reference or ARN"
+                  placeholder={t("area.access-secrets-3.set-my-user-secret-dialog.externalRefPlaceholder")}
                   className="font-mono text-sm"
                   autoFocus
                 />
                 <p className="text-(length:--text-micro) text-muted-foreground">
-                  Points at your own credential in the configured provider. Myrmidon stores the
-                  reference, not the value.
+                  {t("area.access-secrets-3.set-my-user-secret-dialog.externalRefHint")}
                 </p>
               </div>
             ) : (
               <div className="space-y-1">
-                <label className="text-xs font-medium text-foreground">Your value</label>
+                <label className="text-xs font-medium text-foreground">{t("area.access-secrets-3.set-my-user-secret-dialog.yourValue")}</label>
                 <Textarea
                   value={value}
                   onChange={(event) => setValue(event.target.value)}
-                  placeholder="Paste your token or credential"
+                  placeholder={t("area.access-secrets-3.set-my-user-secret-dialog.valuePlaceholder")}
                   className="font-mono text-sm min-h-(--sz-80px)"
                   autoFocus
                 />
                 <p className="text-(length:--text-micro) text-muted-foreground">
-                  Stored encrypted. Never shown back to anyone, including admins.
+                  {t("area.access-secrets-3.set-my-user-secret-dialog.valueHint")}
                 </p>
               </div>
             )}
@@ -162,10 +169,14 @@ export function SetMyUserSecretDialog({
 
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={save.isPending}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button onClick={() => save.mutate()} disabled={!canSave || save.isPending}>
-            {save.isPending ? "Saving…" : existingSecret ? "Update value" : "Save value"}
+            {save.isPending
+              ? t("area.access-secrets-3.set-my-user-secret-dialog.saving")
+              : existingSecret
+                ? t("area.access-secrets-3.set-my-user-secret-dialog.updateValue")
+                : t("area.access-secrets-3.set-my-user-secret-dialog.saveValue")}
           </Button>
         </DialogFooter>
       </DialogContent>

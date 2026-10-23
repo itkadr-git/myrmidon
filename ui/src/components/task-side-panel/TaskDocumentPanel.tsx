@@ -9,6 +9,7 @@ import { MarkdownBody } from "@/components/MarkdownBody";
 import { queryKeys } from "@/lib/queryKeys";
 import { documentDisplayTitle } from "@/lib/issue-artifacts";
 import { useLocation } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 
 export function TaskDocumentPanel({
   issueId,
@@ -19,6 +20,7 @@ export function TaskDocumentPanel({
   documentKey: string;
   initialDocument?: IssueDocument;
 }) {
+  const { t, i18n } = useTranslation();
   const location = useLocation();
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
   const query = useQuery<IssueDocument | null>({
@@ -38,14 +40,14 @@ export function TaskDocumentPanel({
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
         <Loader2 className="size-4 animate-spin" aria-hidden />
-        Loading document…
+        {t("area.issue-properties-panels-3.task-document-panel.loading")}
       </div>
     );
   }
   if (query.isError) {
     return (
       <div className="py-8 text-sm text-muted-foreground" role="alert">
-        The document could not be loaded. Retry from the tab launcher or refresh the task.
+        {t("area.issue-properties-panels-3.task-document-panel.loadError")}
       </div>
     );
   }
@@ -55,9 +57,9 @@ export function TaskDocumentPanel({
       <div className="flex items-start gap-3 py-8 text-sm" role="status">
         <FileQuestion className="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden />
         <div className="space-y-1">
-          <p className="font-medium">Document no longer available</p>
+          <p className="font-medium">{t("area.issue-properties-panels-3.task-document-panel.missingTitle")}</p>
           <p className="text-muted-foreground">
-            This tab is preserved so the missing resource is explicit. Close it or choose another document.
+            {t("area.issue-properties-panels-3.task-document-panel.missingDescription")}
           </p>
         </div>
       </div>
@@ -69,9 +71,9 @@ export function TaskDocumentPanel({
       <header className="space-y-1">
         <h2 className="text-lg font-semibold">{documentDisplayTitle(document)}</h2>
         <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-          <span>{`Revision ${document.latestRevisionNumber ?? 1}`}</span>
+          <span>{t("area.issue-properties-panels-3.task-document-panel.revision", { number: document.latestRevisionNumber ?? 1 })}</span>
           <span aria-hidden>·</span>
-          <span>{`Updated ${new Date(document.updatedAt).toLocaleString()}`}</span>
+          <span>{t("area.issue-properties-panels-3.task-document-panel.updated", { date: new Date(document.updatedAt).toLocaleString(i18n.language) })}</span>
           <DocumentAnnotationsCountChip
             issueId={issueId}
             docKey={document.key}
@@ -96,7 +98,7 @@ export function TaskDocumentPanel({
           <MarkdownBody>{document.body}</MarkdownBody>
         </IssueDocumentAnnotations>
       ) : (
-        <p className="text-sm text-muted-foreground">Document is empty.</p>
+        <p className="text-sm text-muted-foreground">{t("area.issue-properties-panels-3.task-document-panel.empty")}</p>
       )}
     </article>
   );

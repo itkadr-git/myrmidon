@@ -247,21 +247,16 @@ export function GitHubSharedIdentityPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <KeyRound className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Shared GitHub authorization (self-hosted GitHub Apps)</h2>
+          <h2 className="text-sm font-semibold">{t("area.access-secrets-2.github-shared-identity-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Authorize GitHub once for the whole server with your own GitHub App: register one App per account or
-          organization, install it on that product’s repositories, store its private key as a company secret and add it
-          here. The board mints short-lived tokens for one repository at a time with exactly the permissions listed on
-          the entry (by default contents and pull requests write; Workflows can be allowed where the App registration
-          permits it). Each operation gets the App whose repositories match its target; a repository matched by two
-          Apps is refused. Commits stay authored by the agent. Saving applies to the next operation — no restart.
+          {t("area.access-secrets-2.github-shared-identity-panel.intro")}
         </p>
         {view ? (
           <p className="text-xs text-muted-foreground" data-testid="github-vendor-connector-state">
             {view.vendorConnectorEnabled
-              ? "The vendor cloud GitHub connector is enabled on this instance."
-              : "The vendor cloud GitHub connector is disabled on this instance."}
+              ? t("area.access-secrets-2.github-shared-identity-panel.vendorEnabled")
+              : t("area.access-secrets-2.github-shared-identity-panel.vendorDisabled")}
           </p>
         ) : null}
       </div>
@@ -283,56 +278,56 @@ export function GitHubSharedIdentityPanelView({
       ) : null}
 
       {!view || !draft ? (
-        <p className="text-sm text-muted-foreground">Loading the GitHub App identities...</p>
+        <p className="text-sm text-muted-foreground">{t("area.access-secrets-2.github-shared-identity-panel.loading")}</p>
       ) : (
         <div className="space-y-4">
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
-              aria-label="Use managed GitHub identities"
+              aria-label={t("area.access-secrets-2.github-shared-identity-panel.useManaged")}
               checked={draft.enabled}
               onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))}
             />
-            Use managed GitHub identities
+            {t("area.access-secrets-2.github-shared-identity-panel.useManaged")}
           </label>
 
-          <section className="space-y-3 rounded-md border border-border p-4" aria-label="GitHub PAT identities">
-            <h3 className="font-medium">Personal access tokens</h3>
+          <section className="space-y-3 rounded-md border border-border p-4" aria-label={t("area.access-secrets-2.github-shared-identity-panel.patSectionLabel")}>
+            <h3 className="font-medium">{t("area.access-secrets-2.github-shared-identity-panel.patHeading")}</h3>
             {draft.pats.map((pat, index) => (
               <div key={pat.id} className="space-y-3 border-t border-border pt-3" data-testid={`github-pat-${index}`}>
-                <label className="grid gap-1 text-sm">Name<Input aria-label={`PAT identity name ${index + 1}`} value={pat.name} onChange={(e) => setDraft((d) => ({ ...d, pats: d.pats.map((x) => x.id === pat.id ? { ...x, name: e.target.value } : x) }))} /></label>
-                <label className="grid gap-1 text-sm">Token secret<SecretPicker secretId={pat.tokenSecretId} secrets={secrets} onSelect={(tokenSecretId) => setDraft((d) => ({ ...d, pats: d.pats.map((x) => x.id === pat.id ? { ...x, tokenSecretId } : x) }))} /></label>
-                <label className="grid gap-1 text-sm">Allowed repositories (one owner/repo per line)<Textarea aria-label={`PAT allowed repositories ${index + 1}`} rows={2} value={pat.allowedRepos} onChange={(e) => setDraft((d) => ({ ...d, pats: d.pats.map((x) => x.id === pat.id ? { ...x, allowedRepos: e.target.value } : x) }))} /></label>
-                <fieldset><legend className="text-sm">Agents allowed</legend>{agents.map((agent) => <label key={agent.id} className="mr-3 inline-flex items-center gap-1 text-sm"><input type="checkbox" checked={pat.agentIds.includes(agent.id)} onChange={(e) => setDraft((d) => ({ ...d, pats: d.pats.map((x) => x.id === pat.id ? { ...x, agentIds: e.target.checked ? [...x.agentIds, agent.id] : x.agentIds.filter((id) => id !== agent.id) } : x) }))} />{agent.name}</label>)}</fieldset>
-                <Button type="button" variant="outline" size="sm" onClick={() => setDraft((d) => ({ ...d, pats: d.pats.filter((x) => x.id !== pat.id) }))}>Remove PAT identity</Button>
+                <label className="grid gap-1 text-sm">{t("area.access-secrets-2.github-shared-identity-panel.patName")}<Input aria-label={t("area.access-secrets-2.github-shared-identity-panel.patNameAria", { number: index + 1 })} value={pat.name} onChange={(e) => setDraft((d) => ({ ...d, pats: d.pats.map((x) => x.id === pat.id ? { ...x, name: e.target.value } : x) }))} /></label>
+                <label className="grid gap-1 text-sm">{t("area.access-secrets-2.github-shared-identity-panel.patTokenSecret")}<SecretPicker secretId={pat.tokenSecretId} secrets={secrets} onSelect={(tokenSecretId) => setDraft((d) => ({ ...d, pats: d.pats.map((x) => x.id === pat.id ? { ...x, tokenSecretId } : x) }))} /></label>
+                <label className="grid gap-1 text-sm">{t("area.access-secrets-2.github-shared-identity-panel.patRepos")}<Textarea aria-label={t("area.access-secrets-2.github-shared-identity-panel.patReposAria", { number: index + 1 })} rows={2} value={pat.allowedRepos} onChange={(e) => setDraft((d) => ({ ...d, pats: d.pats.map((x) => x.id === pat.id ? { ...x, allowedRepos: e.target.value } : x) }))} /></label>
+                <fieldset><legend className="text-sm">{t("area.access-secrets-2.github-shared-identity-panel.patAgents")}</legend>{agents.map((agent) => <label key={agent.id} className="mr-3 inline-flex items-center gap-1 text-sm"><input type="checkbox" checked={pat.agentIds.includes(agent.id)} onChange={(e) => setDraft((d) => ({ ...d, pats: d.pats.map((x) => x.id === pat.id ? { ...x, agentIds: e.target.checked ? [...x.agentIds, agent.id] : x.agentIds.filter((id) => id !== agent.id) } : x) }))} />{agent.name}</label>)}</fieldset>
+                <Button type="button" variant="outline" size="sm" onClick={() => setDraft((d) => ({ ...d, pats: d.pats.filter((x) => x.id !== pat.id) }))}>{t("area.access-secrets-2.github-shared-identity-panel.patRemove")}</Button>
               </div>
             ))}
-            <Button type="button" variant="outline" size="sm" onClick={() => setDraft((d) => ({ ...d, pats: [...d.pats, { id: newId(), name: "", tokenSecretId: "", allowedRepos: "", agentIds: [] }] }))}>Add PAT identity</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setDraft((d) => ({ ...d, pats: [...d.pats, { id: newId(), name: "", tokenSecretId: "", allowedRepos: "", agentIds: [] }] }))}>{t("area.access-secrets-2.github-shared-identity-panel.patAdd")}</Button>
           </section>
           {draft.apps.map((app, index) => {
-            const label = app.name.trim() || `App ${index + 1}`;
+            const label = app.name.trim() || t("area.access-secrets-2.github-shared-identity-panel.appFallbackName", { number: index + 1 });
             return (
               <div key={app.id} className="space-y-3 rounded-md border border-border p-4" data-testid={`github-app-${index}`}>
                 <div className="grid gap-3 sm:grid-cols-3">
                   <label className="grid gap-1 text-sm">
-                    Name
-                    <Input aria-label={`Name of ${label}`} value={app.name} onChange={(event) => updateApp(app.id, { name: event.target.value })} />
+                    {t("area.access-secrets-2.github-shared-identity-panel.appName")}
+                    <Input aria-label={t("area.access-secrets-2.github-shared-identity-panel.appNameAria", { label })} value={app.name} onChange={(event) => updateApp(app.id, { name: event.target.value })} />
                   </label>
                   <label className="grid gap-1 text-sm">
-                    GitHub App id
-                    <Input aria-label={`App id of ${label}`} value={app.appId} onChange={(event) => updateApp(app.id, { appId: event.target.value })} />
+                    {t("area.access-secrets-2.github-shared-identity-panel.appId")}
+                    <Input aria-label={t("area.access-secrets-2.github-shared-identity-panel.appIdAria", { label })} value={app.appId} onChange={(event) => updateApp(app.id, { appId: event.target.value })} />
                   </label>
                   <label className="grid gap-1 text-sm">
-                    Installation id (empty: found per repository)
+                    {t("area.access-secrets-2.github-shared-identity-panel.installationId")}
                     <Input
-                      aria-label={`Installation id of ${label}`}
+                      aria-label={t("area.access-secrets-2.github-shared-identity-panel.installationIdAria", { label })}
                       value={app.installationId}
                       onChange={(event) => updateApp(app.id, { installationId: event.target.value })}
                     />
                   </label>
                 </div>
                 <div className="grid gap-1 text-sm">
-                  Private key (company secret, PEM)
+                  {t("area.access-secrets-2.github-shared-identity-panel.privateKey")}
                   <SecretPicker
                     secretId={app.privateKeySecretId}
                     secrets={secrets}
@@ -340,26 +335,26 @@ export function GitHubSharedIdentityPanelView({
                   />
                 </div>
                 <label className="grid gap-1 text-sm">
-                  Allowed repositories (owner/repo or owner/*, one per line)
+                  {t("area.access-secrets-2.github-shared-identity-panel.allowedRepos")}
                   <Textarea
-                    aria-label={`Allowed repositories of ${label}`}
+                    aria-label={t("area.access-secrets-2.github-shared-identity-panel.allowedReposAria", { label })}
                     value={app.allowedRepos}
                     onChange={(event) => updateApp(app.id, { allowedRepos: event.target.value })}
                     rows={3}
                   />
                 </label>
                 <label className="grid gap-1 text-sm">
-                  Roles (comma-separated, e.g. engineer)
-                  <Input aria-label={`Roles of ${label}`} value={app.roles} onChange={(event) => updateApp(app.id, { roles: event.target.value })} />
+                  {t("area.access-secrets-2.github-shared-identity-panel.roles")}
+                  <Input aria-label={t("area.access-secrets-2.github-shared-identity-panel.rolesAria", { label })} value={app.roles} onChange={(event) => updateApp(app.id, { roles: event.target.value })} />
                 </label>
                 <fieldset className="grid gap-1 text-sm">
-                  <legend>Agents (in addition to the roles)</legend>
+                  <legend>{t("area.access-secrets-2.github-shared-identity-panel.agentsLegend")}</legend>
                   <div className="flex max-h-48 flex-col gap-1 overflow-auto">
                     {agents.map((agent) => (
                       <label key={agent.id} className="flex items-center gap-2">
                         <input
                           type="checkbox"
-                          aria-label={`${agent.name} may use ${label}`}
+                          aria-label={t("area.access-secrets-2.github-shared-identity-panel.agentMayUse", { agent: agent.name, label })}
                           checked={app.agentIds.includes(agent.id)}
                           onChange={(event) =>
                             updateApp(app.id, {
@@ -379,17 +374,16 @@ export function GitHubSharedIdentityPanelView({
                   className="grid gap-1 text-sm"
                   data-testid={`github-app-permissions-${index}`}
                 >
-                  <legend>Token permissions (the broker requests exactly these)</legend>
+                  <legend>{t("area.access-secrets-2.github-shared-identity-panel.permissionsLegend")}</legend>
                   <p className="text-xs text-muted-foreground">
-                    None: never requested; the token can only do what is set here. Workflows lets agents edit
-                    .github/workflows/* where the App registration allows it.
+                    {t("area.access-secrets-2.github-shared-identity-panel.permissionsHint")}
                   </p>
                   <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                     {GITHUB_APP_PERMISSION_KEYS.map((key) => (
                       <label key={key} className="grid gap-1 text-sm">
                         {githubAppPermissionLabel(key)}
                         <select
-                          aria-label={`Permissions of ${label}: ${key}`}
+                          aria-label={t("area.access-secrets-2.github-shared-identity-panel.permissionAria", { label, permission: key })}
                           value={app.permissions[key]}
                           onChange={(event) =>
                             updateApp(app.id, {
@@ -415,7 +409,7 @@ export function GitHubSharedIdentityPanelView({
                       size="sm"
                       onClick={() => setDraft((current) => ({ ...current, apps: current.apps.filter((candidate) => candidate.id !== app.id) }))}
                     >
-                      <Trash2 className="mr-1 h-3.5 w-3.5" /> Remove {label}
+                      <Trash2 className="mr-1 h-3.5 w-3.5" /> {t("area.access-secrets-2.github-shared-identity-panel.removeApp", { label })}
                     </Button>
                     {app.slug && onInstallApp ? (
                       <Button
@@ -454,7 +448,7 @@ export function GitHubSharedIdentityPanelView({
                 }))
               }
             >
-              <Plus className="mr-1 h-3.5 w-3.5" /> Add GitHub App
+              <Plus className="mr-1 h-3.5 w-3.5" /> {t("area.access-secrets-2.github-shared-identity-panel.addApp")}
             </Button>
             {onBeginAppManifest ? (
               <Button type="button" variant="outline" size="sm" onClick={openManifestDialog}>
@@ -537,10 +531,10 @@ export function GitHubSharedIdentityPanelView({
           ) : null}
 
           <label className="grid max-w-md gap-1 text-sm">
-            Commit email domain of the agents (empty: a reserved placeholder domain)
+            {t("area.access-secrets-2.github-shared-identity-panel.commitDomain")}
             <Input
-              aria-label="Commit email domain"
-              placeholder="example.com"
+              aria-label={t("area.access-secrets-2.github-shared-identity-panel.commitDomainAria")}
+              placeholder={t("area.access-secrets-2.github-shared-identity-panel.commitDomainPlaceholder")}
               value={draft.commitEmailDomain}
               onChange={(event) => setDraft((current) => ({ ...current, commitEmailDomain: event.target.value }))}
             />
@@ -548,7 +542,7 @@ export function GitHubSharedIdentityPanelView({
 
           <div>
             <Button type="button" size="sm" disabled={pending || !dirty} onClick={() => onSave(bodyFromDraft(draft))}>
-              {pending ? "Saving..." : "Save GitHub access"}
+              {pending ? t("area.access-secrets-2.github-shared-identity-panel.saving") : t("area.access-secrets-2.github-shared-identity-panel.save")}
             </Button>
           </div>
         </div>
@@ -584,7 +578,7 @@ export function GitHubSharedIdentityPanel() {
   const save = useMutation({
     mutationFn: (body: GitHubSharedIdentityPut) => githubSharedIdentityApi.save(companyId, body),
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the GitHub App identities failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.access-secrets-2.github-shared-identity-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: githubSharedIdentityQueryKey(companyId) });
@@ -633,7 +627,7 @@ export function GitHubSharedIdentityPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load the GitHub App identities."}
+        {query.error instanceof Error ? query.error.message : t("area.access-secrets-2.github-shared-identity-panel.loadFailed")}
       </div>
     );
   }

@@ -10,6 +10,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "@/lib/router";
+import { i18n, useTranslation } from "@/i18n";
 import type { WorkTimelineActor, WorkTimelineResult } from "@myrmidon/shared";
 import { applyCompanyPrefix, extractCompanyPrefixFromPath } from "@/lib/company-routes";
 import { getAgentIcon } from "@/lib/agent-icons";
@@ -140,23 +141,27 @@ export function formatVisibleDurationMinutes(minutes: number): string {
   const rounded = Math.max(1, Math.round(minutes));
   if (rounded >= 7 * 24 * 60 && rounded % (7 * 24 * 60) === 0) {
     const weeks = rounded / (7 * 24 * 60);
-    return `${weeks} week${weeks === 1 ? "" : "s"} visible`;
+    return i18n.t("area.search-timeline-audit-1.work-timeline-chart.visible.weeks", { count: weeks });
   }
   if (rounded >= 24 * 60 && rounded % (24 * 60) === 0) {
     const days = rounded / (24 * 60);
-    return `${days} day${days === 1 ? "" : "s"} visible`;
+    return i18n.t("area.search-timeline-audit-1.work-timeline-chart.visible.days", { count: days });
   }
   if (rounded >= 24 * 60) {
     const days = Math.floor(rounded / (24 * 60));
     const hours = Math.round((rounded % (24 * 60)) / 60);
-    return `${days}d${hours > 0 ? ` ${hours}h` : ""} visible`;
+    return hours > 0
+      ? i18n.t("area.search-timeline-audit-1.work-timeline-chart.visible.daysHours", { days, hours })
+      : i18n.t("area.search-timeline-audit-1.work-timeline-chart.visible.daysShort", { days });
   }
   if (rounded >= 60 && rounded % 60 === 0) {
     const hours = rounded / 60;
-    return `${hours} hour${hours === 1 ? "" : "s"} visible`;
+    return i18n.t("area.search-timeline-audit-1.work-timeline-chart.visible.hours", { count: hours });
   }
-  if (rounded >= 60) return `${Math.floor(rounded / 60)}h ${rounded % 60}m visible`;
-  return `${rounded} minutes visible`;
+  if (rounded >= 60) {
+    return i18n.t("area.search-timeline-audit-1.work-timeline-chart.visible.hoursMinutes", { hours: Math.floor(rounded / 60), minutes: rounded % 60 });
+  }
+  return i18n.t("area.search-timeline-audit-1.work-timeline-chart.visible.minutes", { count: rounded });
 }
 
 function truncate(text: string, n = 42): string {
@@ -267,6 +272,7 @@ export function WorkTimelineChart({
   nowMs,
 }: WorkTimelineChartProps) {
   const location = useLocation();
+  const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const initialWindowKeyRef = useRef<string | null>(null);
   const centerMsRef = useRef<number | null>(null);
@@ -372,7 +378,7 @@ export function WorkTimelineChart({
     const effectiveViewportW = viewportW || DEFAULT_VIEWPORT_W;
     const minutes = plotViewportWidth(effectiveViewportW) / layout.pxPerMinute;
     onVisibleRangeLabelChange(formatVisibleDurationMinutes(minutes));
-  }, [layout.pxPerMinute, onVisibleRangeLabelChange, viewportW]);
+  }, [layout.pxPerMinute, onVisibleRangeLabelChange, viewportW, t]);
 
   useEffect(() => {
     if (!onVisibleWindowChange || viewportW <= 0) return;
@@ -452,8 +458,8 @@ export function WorkTimelineChart({
     const related = layout.connectors.filter((c) => c.sourceRunId === bar.span.runId || c.targetRunId === bar.span.runId);
     if (related.length === 0) return null;
     return related.some((c) => c.dashed)
-      ? "dashed handoff: retry or changes requested"
-      : "solid handoff: delegation or assignment";
+      ? t("area.search-timeline-audit-1.work-timeline-chart.chart.dashedHandoff")
+      : t("area.search-timeline-audit-1.work-timeline-chart.chart.solidHandoff");
   };
 
   const showTooltip = (evt: React.MouseEvent, bar: PositionedBar) => {
@@ -787,10 +793,11 @@ function TimeAxisOverlay({
 }
 
 function Tooltip({ tooltip, now }: { tooltip: TooltipState; now: number }) {
+  const { t } = useTranslation();
   const { bar } = tooltip;
   const startMs = new Date(bar.span.start).getTime();
   const endMs = bar.span.end ? new Date(bar.span.end).getTime() : now;
-  const title = bar.span.issueTitle ?? bar.span.issueIdentifier ?? "run";
+  const title = bar.span.issueTitle ?? bar.span.issueIdentifier ?? t("area.search-timeline-audit-1.work-timeline-chart.tooltip.runFallback");
   const left = Math.min(tooltip.x + 14, (typeof window !== "undefined" ? window.innerWidth : 1200) - 300);
   return (
     <div
@@ -800,13 +807,13 @@ function Tooltip({ tooltip, now }: { tooltip: TooltipState; now: number }) {
     >
       <div className="text-(length:--text-compact) font-medium text-foreground">{truncate(title)}</div>
       <div className="mt-0.5 text-muted-foreground">
-        {fmtClock(startMs)}–{bar.span.end ? fmtClock(endMs) : "now"} · {formatDuration(startMs, endMs)} ·{" "}
+        {fmtClock(startMs)}–{bar.span.end ? fmtClock(endMs) : t("area.search-timeline-audit-1.work-timeline-chart.tooltip.now")} · {formatDuration(startMs, endMs)} ·{" "}
         <span className="font-medium text-foreground">{bar.span.status}</span>
       </div>
       {bar.kickoff && (
         <div className="text-muted-foreground">
-          kicked off by: {(bar.kickoff as WorkTimelineActor).name}
-          {bar.span.retryOfRunId ? " · retry" : ""}
+          {t("area.search-timeline-audit-1.work-timeline-chart.tooltip.kickedOffBy", { name: (bar.kickoff as WorkTimelineActor).name })}
+          {bar.span.retryOfRunId ? ` · ${t("area.search-timeline-audit-1.work-timeline-chart.tooltip.retry")}` : ""}
         </div>
       )}
       {tooltip.connectorHint && (
@@ -829,6 +836,7 @@ function MiniMap({
   scrollLeft: number;
   onVisibleRangeChange: (fromMs: number, toMs: number) => void;
 }) {
+  const { t } = useTranslation();
   const documentDragCleanupRef = useRef<(() => void) | null>(null);
   const W = Math.max(320, viewportW || 900);
   const H = 54;
@@ -954,7 +962,7 @@ function MiniMap({
           height={H - 2}
           width={handleW}
           testId="timeline-minimap-left-handle"
-          label="Drag left edge to resize visible range"
+          label={t("area.search-timeline-audit-1.work-timeline-chart.miniMap.dragLeft")}
           onMouseDown={(e) => startRangeDrag("left", e)}
         />
         <MiniMapHandle
@@ -963,7 +971,7 @@ function MiniMap({
           height={H - 2}
           width={handleW}
           testId="timeline-minimap-right-handle"
-          label="Drag right edge to resize visible range"
+          label={t("area.search-timeline-audit-1.work-timeline-chart.miniMap.dragRight")}
           onMouseDown={(e) => startRangeDrag("right", e)}
         />
       </svg>

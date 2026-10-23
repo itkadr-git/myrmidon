@@ -204,7 +204,7 @@ export function CastesScreenView({
               <Input
                 id="caste-key"
                 value={form.key}
-                placeholder="e.g. data-steward"
+                placeholder={t("area.settings-models-runtime-2.castes-screen.keyPlaceholder")}
                 onChange={(e) => setForm({ ...form, key: readableKey(e.target.value) })}
                 data-testid="myrmidon-castes-add-key"
               />
@@ -233,7 +233,7 @@ export function CastesScreenView({
               <Input
                 id="caste-model"
                 value={form.defaultModel ?? ""}
-                placeholder="qwen-plus"
+                placeholder={t("area.settings-models-runtime-2.castes-screen.modelPlaceholder")}
                 onChange={(e) => setForm({ ...form, defaultModel: e.target.value })}
                 data-testid="myrmidon-castes-add-model"
               />
@@ -258,7 +258,7 @@ export function CastesScreenView({
                       form.color === color ? "ring-2 ring-foreground ring-offset-1 ring-offset-background" : ""
                     }`}
                     style={{ backgroundColor: color }}
-                    aria-label={`Select color ${color}`}
+                    aria-label={t("area.settings-models-runtime-2.castes-screen.selectColor", { color })}
                     onClick={() => setForm({ ...form, color })}
                     data-testid={`myrmidon-castes-add-color-${color.slice(2)}`}
                   />
@@ -615,7 +615,7 @@ export function CastesScreenView({
                                     : ""
                                 }`}
                                 style={{ backgroundColor: color }}
-                                aria-label={`Select color ${color}`}
+                                aria-label={t("area.settings-models-runtime-2.castes-screen.selectColor", { color })}
                                 onClick={() => setEditDraft({ ...editDraft, color })}
                               />
                             ))}

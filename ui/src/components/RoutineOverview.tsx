@@ -12,6 +12,7 @@ import { MarkdownBody } from "@/components/MarkdownBody";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
+import { i18n, useTranslation } from "@/i18n";
 import { Link } from "@/lib/router";
 import {
   routineActivityAuditHref,
@@ -27,7 +28,7 @@ export type RoutineScheduleSummary = {
 };
 
 export function formatRoutineTimestamp(value: Date | string) {
-  return new Date(value).toLocaleString(undefined, {
+  return new Date(value).toLocaleString(i18n.language, {
     dateStyle: "medium",
     timeStyle: "short",
   });
@@ -41,15 +42,15 @@ export function summarizeRoutineSchedule(triggers: RoutineTrigger[]): RoutineSch
     .sort((left, right) => left.getTime() - right.getTime())[0] ?? null;
 
   if (schedules.length === 0) {
-    return { label: "No active schedule", detail: "Manual runs only", nextRunAt: null };
+    return { label: i18n.t("area.routines-1.routine-overview.noActiveSchedule"), detail: i18n.t("area.routines-1.routine-overview.manualOnly"), nextRunAt: null };
   }
 
   const first = schedules[0]!;
   return {
-    label: schedules.length === 1 ? "1 active schedule" : `${schedules.length} active schedules`,
+    label: i18n.t("area.routines-1.routine-overview.activeSchedules", { count: schedules.length }),
     detail: first.cronExpression
       ? `${first.cronExpression}${first.timezone ? ` · ${first.timezone}` : ""}`
-      : first.label ?? "Scheduled trigger",
+      : first.label ?? i18n.t("area.routines-1.routine-overview.scheduledTrigger"),
     nextRunAt,
   };
 }
@@ -132,6 +133,7 @@ function OverviewFact({
 }
 
 export function RoutineOverview() {
+  const { t } = useTranslation();
   const { routine, routineRuns, currentAssignee, hasLiveRun } = useRoutineDetail();
   const schedule = summarizeRoutineSchedule(routine.triggers);
   const sortedRuns = [...(routineRuns ?? [])].sort(
@@ -155,32 +157,32 @@ export function RoutineOverview() {
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <OverviewFact
           icon={Repeat}
-          label="State"
+          label={t("area.routines-1.routine-overview.state")}
           value={<StatusBadge status={automationState} />}
-          detail={hasLiveRun ? "A run is active now" : "No active run"}
+          detail={hasLiveRun ? t("area.routines-1.routine-overview.runActive") : t("area.routines-1.routine-overview.noActiveRun")}
         />
         <OverviewFact
           icon={CalendarClock}
-          label="Schedule"
+          label={t("area.routines-1.routine-overview.schedule")}
           value={schedule.label}
           detail={<span className="font-mono">{schedule.detail}</span>}
         />
         <OverviewFact
           icon={Clock3}
-          label="Next run"
-          value={schedule.nextRunAt ? formatRoutineTimestamp(schedule.nextRunAt) : "Not scheduled"}
-          detail={schedule.nextRunAt ? "Scheduled" : "Add or enable a schedule"}
+          label={t("area.routines-1.routine-overview.nextRun")}
+          value={schedule.nextRunAt ? formatRoutineTimestamp(schedule.nextRunAt) : t("area.routines-1.routine-overview.notScheduled")}
+          detail={schedule.nextRunAt ? t("area.routines-1.routine-overview.scheduled") : t("area.routines-1.routine-overview.addSchedule")}
         />
         <OverviewFact
           icon={Play}
-          label="Last run"
-          value={lastRun ? <StatusBadge status={lastRun.status} /> : "No runs yet"}
-          detail={lastRun ? formatRoutineTimestamp(lastRun.triggeredAt) : "Run manually or wait for the schedule"}
+          label={t("area.routines-1.routine-overview.lastRun")}
+          value={lastRun ? <StatusBadge status={lastRun.status} /> : t("area.routines-1.routine-overview.noRunsYet")}
+          detail={lastRun ? formatRoutineTimestamp(lastRun.triggeredAt) : t("area.routines-1.routine-overview.runManuallyOrWait")}
         />
       </div>
 
       <section className="flex flex-col gap-2" aria-labelledby="routine-agent-heading">
-        <h2 id="routine-agent-heading" className="text-sm font-semibold">Default agent</h2>
+        <h2 id="routine-agent-heading" className="text-sm font-semibold">{t("area.routines-1.routine-overview.defaultAgent")}</h2>
         {currentAssignee ? (
           <Link
             to={`/agents/${currentAssignee.urlKey ?? currentAssignee.id}`}
@@ -190,31 +192,31 @@ export function RoutineOverview() {
             {currentAssignee.name}
           </Link>
         ) : (
-          <p className="text-sm text-muted-foreground">No default agent. Automatic triggers remain paused.</p>
+          <p className="text-sm text-muted-foreground">{t("area.routines-1.routine-overview.noDefaultAgent")}</p>
         )}
       </section>
 
       <section className="flex flex-col gap-2" aria-labelledby="routine-description-heading">
-        <h2 id="routine-description-heading" className="text-sm font-semibold">Description</h2>
+        <h2 id="routine-description-heading" className="text-sm font-semibold">{t("area.routines-1.routine-overview.description")}</h2>
         {routine.description?.trim() ? (
           <MarkdownBody className="text-sm text-foreground" linkIssueReferences>
             {routine.description}
           </MarkdownBody>
         ) : (
-          <p className="text-sm text-muted-foreground">No description yet.</p>
+          <p className="text-sm text-muted-foreground">{t("area.routines-1.routine-overview.noDescription")}</p>
         )}
       </section>
 
       <section className="flex flex-col gap-2" aria-labelledby="routine-recent-runs-heading">
         <div className="flex items-center justify-between gap-3">
-          <h2 id="routine-recent-runs-heading" className="text-sm font-semibold">Recent runs</h2>
+          <h2 id="routine-recent-runs-heading" className="text-sm font-semibold">{t("area.routines-1.routine-overview.recentRuns")}</h2>
           <Button variant="ghost" size="sm" asChild>
-            <Link to={routineRunsAuditHref(routine.id)}>View all runs</Link>
+            <Link to={routineRunsAuditHref(routine.id)}>{t("area.routines-1.routine-overview.viewAllRuns")}</Link>
           </Button>
         </div>
         {recentRuns.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">
-            No runs yet. Run the routine now or wait for its schedule.
+            {t("area.routines-1.routine-overview.noRunsEmpty")}
           </p>
         ) : (
           <div className="flex flex-col gap-0.5">
@@ -234,14 +236,14 @@ export function RoutineOverview() {
             ) : (
               <div key={run.id} className="flex min-w-0 items-center gap-2 rounded-lg px-2 py-2 text-sm">
                 <StatusBadge status={run.status} />
-                <span className="min-w-0 flex-1 truncate">{run.trigger?.label ?? "Routine run"}</span>
+                <span className="min-w-0 flex-1 truncate">{run.trigger?.label ?? t("area.routines-1.routine-overview.routineRun")}</span>
                 <span className="shrink-0 font-mono text-xs text-muted-foreground">{formatRoutineTimestamp(run.triggeredAt)}</span>
               </div>
             ))}
           </div>
         )}
         <Button variant="link" size="sm" className="w-fit px-0" asChild>
-          <Link to={routineActivityAuditHref(routine.id)}>View routine activity</Link>
+          <Link to={routineActivityAuditHref(routine.id)}>{t("area.routines-1.routine-overview.viewActivity")}</Link>
         </Button>
       </section>
     </div>

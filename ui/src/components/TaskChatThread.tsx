@@ -1,4 +1,5 @@
 // myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
+import { i18n, useTranslation } from "@/i18n";
 import type { ActivityEvent } from "@myrmidon/shared";
 import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { requiresExecutionReconciliation } from "@myrmidon/shared";
@@ -422,26 +423,26 @@ function durableInputLabel(
   interaction: TaskChatInteractionItem["interaction"],
 ): string {
   if (interaction.kind === "ask_user_questions")
-    return interaction.title ?? "Questions";
+    return interaction.title ?? i18n.t("area.task-chat-1.task-chat-thread.durableQuestions");
   if (interaction.kind === "suggest_tasks")
-    return interaction.title ?? "Suggested tasks";
+    return interaction.title ?? i18n.t("area.task-chat-1.task-chat-thread.durableSuggestedTasks");
   if (interaction.kind === "request_checkbox_confirmation")
-    return interaction.title ?? "Choose options";
+    return interaction.title ?? i18n.t("area.task-chat-1.task-chat-thread.durableChooseOptions");
   if (interaction.kind === "request_item_verdicts")
-    return interaction.title ?? "Review items";
+    return interaction.title ?? i18n.t("area.task-chat-1.task-chat-thread.durableReviewItems");
   if (interaction.kind === "connection_intent")
-    return interaction.title ?? "Connect service";
+    return interaction.title ?? i18n.t("area.task-chat-1.task-chat-thread.durableConnectService");
   if (
     interaction.payload.target?.type === "issue_document" &&
     interaction.payload.target.key === "plan"
   ) {
-    return interaction.title ?? "Review plan";
+    return interaction.title ?? i18n.t("area.task-chat-1.task-chat-thread.durableReviewPlan");
   }
   if (interaction.payload.toolAction)
-    return interaction.title ?? "Approve tool action";
+    return interaction.title ?? i18n.t("area.task-chat-1.task-chat-thread.durableApproveToolAction");
   if (interaction.payload.secretProposal)
-    return interaction.title ?? "Review secret proposal";
-  return interaction.title ?? "Confirmation";
+    return interaction.title ?? i18n.t("area.task-chat-1.task-chat-thread.durableReviewSecretProposal");
+  return interaction.title ?? i18n.t("area.task-chat-1.task-chat-thread.durableConfirmation");
 }
 
 /**
@@ -467,6 +468,7 @@ function durableInputLabel(
  * folded row. flag-OFF remains byte-for-byte IssueChatThread.
  */
 export function TaskChatThread(props: TaskChatThreadProps) {
+  const { t } = useTranslation();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const {
     initialHistoryPending = false,
@@ -495,7 +497,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     showComposer = true,
     composerPause,
     composerDisabledReason,
-    emptyMessage = "No messages yet.",
+    emptyMessage: emptyMessageProp,
     companyId,
     linkedRuns,
     liveRuns,
@@ -541,6 +543,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onResumeAssignee,
     resumeAssigneePending = false,
   } = props;
+  const emptyMessage = emptyMessageProp ?? t("area.task-chat-1.task-chat-thread.noMessagesYet");
   const retryFailedRunHandler =
     isTerminalIssueStatus(issueStatus) ||
     interactions?.some((interaction) => interaction.status === "pending") ||
@@ -596,7 +599,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       assigneeUserId: string | null;
     }) => {
       if (!issueId)
-        throw new Error("The task is not available for reassignment.");
+        throw new Error(i18n.t("area.task-chat-1.task-chat-thread.errReassignUnavailable"));
       await issuesApi.update(issueId, {
         ...reassignment,
         deferWakeForGoal: true,
@@ -644,14 +647,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const saveQueuedEdit = useCallback(
     async (commentId: string, body: string) => {
       if (!queuedEdit || queuedEdit.commentId !== commentId) {
-        throw new Error("This queued message is no longer editable.");
+        throw new Error(i18n.t("area.task-chat-1.task-chat-thread.errQueuedNotEditable"));
       }
       if (queuedEdit.stale) {
         await onAdd(body);
         return;
       }
       if (!onEditQueuedComment)
-        throw new Error("This queued message is no longer editable.");
+        throw new Error(i18n.t("area.task-chat-1.task-chat-thread.errQueuedNotEditable"));
       try {
         await onEditQueuedComment(commentId, body, queuedEdit.revision);
       } catch (error) {
@@ -1234,7 +1237,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           surface: "resource",
           resourceKind: "document",
           title: documentDisplayTitle(document),
-          subtitle: `Document · rev ${document.latestRevisionNumber}`,
+          subtitle: i18n.t("area.task-chat-1.task-chat-thread.documentRevision", { revision: document.latestRevisionNumber }),
           href: buildDocumentAnnotationHash({
             documentKey: document.key,
             threadId: null,
@@ -1285,7 +1288,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           kind: "protocol",
           surface: "resource",
           resourceKind: "attachment",
-          title: attachment.originalFilename ?? "Agent attachment",
+          title: attachment.originalFilename ?? i18n.t("area.task-chat-1.task-chat-thread.agentAttachment"),
           subtitle: `${attachment.contentType} · ${formatResourceBytes(attachment.byteSize)}`,
           href: safeResourceHref(attachment.openPath ?? attachment.contentPath),
           timestamp: new Date(attachment.createdAt).toISOString(),
@@ -1474,8 +1477,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             id,
             item: {
               id, kind: "marker", variant: "interrupted", tone: "neutral",
-              label: "Waiting to resume",
-              detail: "The previous execution needs to be checked before work can continue. See the task’s execution hold for the next action. Individual checks remain in the run history.",
+              label: i18n.t("area.task-chat-1.task-chat-thread.waitingToResume"),
+              detail: i18n.t("area.task-chat-1.task-chat-thread.waitingToResumeDetail"),
             },
           });
         }
@@ -1560,36 +1563,34 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             : "native_runner_process_exited");
         const label =
           code === "native_provider_approval_required" && source.status === "failed"
-            ? "Approval required"
+            ? i18n.t("area.task-chat-1.task-chat-thread.approvalRequired")
             : code === "native_provider_usage_limit" && source.status === "failed"
-            ? "Usage limit reached"
+            ? i18n.t("area.task-chat-1.task-chat-thread.usageLimitReached")
             : source.status === "cancelled"
-              ? "Run cancelled"
+              ? i18n.t("area.task-chat-1.task-chat-thread.runCancelled")
               : source.status === "interrupted"
-                ? "Run interrupted"
+                ? i18n.t("area.task-chat-1.task-chat-thread.runInterrupted")
                 : source.status === "timed_out"
-                  ? "Run timed out"
-                  : "Run failed";
-        const responseBoundary = sourceHasNativeResponse
-          ? "after returning a final response"
-          : "before returning an answer";
+                  ? i18n.t("area.task-chat-1.task-chat-thread.runTimedOut")
+                  : i18n.t("area.task-chat-1.task-chat-thread.runFailed");
+        const afterResponse = sourceHasNativeResponse;
         const detail =
           source.status === "cancelled"
-            ? `The run was cancelled ${responseBoundary}.`
+            ? (afterResponse ? i18n.t("area.task-chat-1.task-chat-thread.cancelledAfterResponse") : i18n.t("area.task-chat-1.task-chat-thread.cancelledBeforeAnswer"))
             : source.status === "interrupted"
-              ? `The run was interrupted ${responseBoundary}.`
+              ? (afterResponse ? i18n.t("area.task-chat-1.task-chat-thread.interruptedAfterResponse") : i18n.t("area.task-chat-1.task-chat-thread.interruptedBeforeAnswer"))
               : code === "native_provider_approval_required"
-                ? "This operation requires approval, but this runner has no interactive approval handler. Review the operation and update the agent's permission setting before retrying."
+                ? i18n.t("area.task-chat-1.task-chat-thread.approvalRequiredDetail")
                 : code === "native_provider_model_rejected"
-                ? "The provider rejected the selected model. Check the model ID and your account's access, save the agent configuration, then retry. View the run for the provider's full error."
+                ? i18n.t("area.task-chat-1.task-chat-thread.modelRejectedDetail")
                 : code === "native_provider_usage_limit" &&
                     source.status === "failed"
-                  ? "The model provider has reached its current usage limit. Try again after the limit resets."
+                  ? i18n.t("area.task-chat-1.task-chat-thread.usageLimitDetail")
                   : code === "provider_frame_too_large"
-                    ? "Provider output exceeded the safe limit."
+                    ? i18n.t("area.task-chat-1.task-chat-thread.frameTooLargeDetail")
                     : source.status === "timed_out"
-                      ? `The runner timed out ${responseBoundary} (${code}).`
-                      : `The runner stopped ${responseBoundary} (${code}).`;
+                      ? (afterResponse ? i18n.t("area.task-chat-1.task-chat-thread.timedOutAfterResponse", { code }) : i18n.t("area.task-chat-1.task-chat-thread.timedOutBeforeAnswer", { code }))
+                      : (afterResponse ? i18n.t("area.task-chat-1.task-chat-thread.stoppedAfterResponse", { code }) : i18n.t("area.task-chat-1.task-chat-thread.stoppedBeforeAnswer", { code }));
         const id = `${source.id}:failure`;
         const runAgent = meta?.agentId
           ? agentMap?.get(meta.agentId)
@@ -1674,24 +1675,24 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           settledRunIds.add(source.id);
           const code = meta?.errorCode ?? "native_runner_process_exited";
           const retryDetail = meta?.scheduledRetryAt
-            ? "Retry scheduled automatically."
+            ? i18n.t("area.task-chat-1.task-chat-thread.retryScheduled")
             : canRetryFailedRun
-              ? "You can retry this message now."
-              : "Your message is preserved.";
+              ? i18n.t("area.task-chat-1.task-chat-thread.canRetryNow")
+              : i18n.t("area.task-chat-1.task-chat-thread.messagePreserved");
           const aiRequest = interactions?.find((interaction) => interaction.kind === "connection_intent" && interaction.payload.purpose === "ai" && interaction.sourceRunId === source.id);
           const detail = aiRequest
             ? aiRequest.status === "pending"
-              ? "The selected AI account is unavailable. Fix it in the connection card."
-              : "This run stopped because its AI account was unavailable."
+              ? i18n.t("area.task-chat-1.task-chat-thread.aiAccountUnavailablePending")
+              : i18n.t("area.task-chat-1.task-chat-thread.aiAccountUnavailableStopped")
             : source.status === "cancelled"
               ? code === "execution_reconciliation_required"
-                ? "The previous execution must be checked before this task can continue. Your message is preserved. View the stopped run for details."
-                : "Execution was stopped before returning an answer."
+                ? i18n.t("area.task-chat-1.task-chat-thread.reconciliationRequired")
+                : i18n.t("area.task-chat-1.task-chat-thread.stoppedBeforeAnswerShort")
               : code === "provider_frame_too_large"
-              ? `Provider output exceeded the safe limit. ${retryDetail}`
+              ? i18n.t("area.task-chat-1.task-chat-thread.frameTooLargeRetry", { retryDetail })
               : code.startsWith("workspace_git_scan_")
-              ? `Workspace setup failed before the agent started. ${retryDetail}`
-              : `The runner stopped before returning an answer (${code}). ${retryDetail}`;
+              ? i18n.t("area.task-chat-1.task-chat-thread.workspaceSetupFailedRetry", { retryDetail })
+              : i18n.t("area.task-chat-1.task-chat-thread.runnerStoppedRetry", { code, retryDetail });
           const id = `${source.id}:failure`;
           entriesWithFailures.push({
             ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
@@ -1701,7 +1702,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               id,
               kind: "marker",
               variant: "interrupted",
-              label: source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
+              label: source.status === "cancelled" ? (meta?.startedAt ? i18n.t("area.task-chat-1.task-chat-thread.stopped") : i18n.t("area.task-chat-1.task-chat-thread.couldntStart")) : i18n.t("area.task-chat-1.task-chat-thread.runFailed"),
               runId: source.status === "cancelled" ? undefined : source.id,
               tone: source.status === "cancelled" ? "neutral" : "error",
               detail,
@@ -1718,8 +1719,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               id,
               kind: "marker",
               variant: "turn_boundary",
-              label: source.status === "cancelled" ? "Stopped" : "Run completed",
-              detail: source.status === "cancelled" ? "This turn was cancelled before it returned a response." : "The runner returned no user-facing response.",
+              label: source.status === "cancelled" ? i18n.t("area.task-chat-1.task-chat-thread.stopped") : i18n.t("area.task-chat-1.task-chat-thread.runCompleted"),
+              detail: source.status === "cancelled" ? i18n.t("area.task-chat-1.task-chat-thread.turnCancelled") : i18n.t("area.task-chat-1.task-chat-thread.noUserFacingResponse"),
             },
           });
         }
@@ -1750,8 +1751,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             id,
             kind: "marker",
             variant: "turn_boundary",
-            label: "Run completed",
-            detail: "The runner returned no user-facing response.",
+            label: i18n.t("area.task-chat-1.task-chat-thread.runCompleted"),
+            detail: i18n.t("area.task-chat-1.task-chat-thread.noUserFacingResponse"),
           },
         });
       }
@@ -2268,7 +2269,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ) => {
       if (!item.turnId || !item.requestKind) {
         throw new Error(
-          "This runtime request is missing the provider turn identity needed to resolve it.",
+          i18n.t("area.task-chat-1.task-chat-thread.errRuntimeMissingTurn"),
         );
       }
       let resolution: RuntimeRequestResolution;
@@ -2290,7 +2291,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         resolution = { action: "submit", content: decision.values };
       } else {
         throw new Error(
-          "This runtime permission does not accept submitted form data.",
+          i18n.t("area.task-chat-1.task-chat-thread.errRuntimeNoFormData"),
         );
       }
       await heartbeatsApi.resolveRuntimeRequest({
@@ -2316,8 +2317,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         label:
           pendingRuntimeRequest.questionSet?.title ??
           (pendingRuntimeRequest.requestType === "permission"
-            ? "Runtime permission"
-            : "Runtime input"),
+            ? i18n.t("area.task-chat-1.task-chat-thread.runtimePermission")
+            : i18n.t("area.task-chat-1.task-chat-thread.runtimeInput")),
       });
     }
     const durable = (interactions ?? [])
@@ -2392,7 +2393,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         await handleRuntimeRequestDecision(input.item, { action: "cancel" });
       } else {
         if (!onSkipInteraction)
-          throw new Error("Skipping this interaction is unavailable.");
+          throw new Error(i18n.t("area.task-chat-1.task-chat-thread.errSkipUnavailable"));
         await onSkipInteraction(input.interaction);
       }
       setTakeoverMode("normal");
@@ -2496,7 +2497,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           disabled={isInterrupting}
           onClick={() => void onInterruptQueued(runId)}
         >
-          {isInterrupting ? "Interrupting…" : "Interrupt"}
+          {isInterrupting ? i18n.t("area.task-chat-1.task-chat-thread.interrupting") : i18n.t("area.task-chat-1.task-chat-thread.interrupt")}
         </Button>
       );
     },
@@ -2747,9 +2748,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   role="status"
                   className="absolute inset-x-0 top-0 z-20 mx-auto flex w-full max-w-(--tc-shell-max-w) items-center gap-2 border border-border bg-background px-4 py-2 text-sm text-muted-foreground"
                 >
-                  Some task history could not be loaded.
+                  {t("area.task-chat-1.task-chat-thread.historyLoadFailed")}
                   <Button variant="ghost" size="sm" onClick={retryHistory}>
-                    Retry
+                    {t("common.retry")}
                   </Button>
                 </div>
               ) : null}
@@ -2758,7 +2759,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   className="absolute inset-0 z-10 overflow-hidden bg-background"
                   data-testid="task-chat-history-loading"
                   role="status"
-                  aria-label="Loading conversation"
+                  aria-label={t("area.task-chat-1.task-chat-thread.loadingConversation")}
                 >
                   <div className="mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-4 px-4 py-3">
                     {threadHeader}
@@ -2888,15 +2889,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                     items={tailItems}
                                     emptyMessage={
                                       tailStatus === "queued"
-                                        ? "Waiting to start..."
+                                        ? t("area.task-chat-1.task-chat-thread.waitingToStart")
                                         : (liveRun && liveRun.id === tailRunId
                                             ? liveRun.currentStatusMessage
                                             : null) ||
                                           (tailStatus === "failed"
                                             ? linkedRunMetaById.get(tailRunId ?? "")?.errorCode?.startsWith("workspace_git_scan_")
-                                              ? "Workspace setup failed before the agent started."
-                                              : "This run stopped before a response was available. Review the task’s connection or recovery action below."
-                                            : "Waiting for transcript...")
+                                              ? t("area.task-chat-1.task-chat-thread.workspaceSetupFailed")
+                                              : t("area.task-chat-1.task-chat-thread.runStoppedNoResponse")
+                                            : t("area.task-chat-1.task-chat-thread.waitingForTranscript"))
                                     }
                                   />
                                 </>
@@ -2961,7 +2962,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       onEdit={beginQueuedEdit}
                       onReorder={async (orderedCommentIds, revision) => {
                         if (!onReorderQueuedComments)
-                          throw new Error("Queue reordering is unavailable.");
+                          throw new Error(t("area.task-chat-1.task-chat-thread.errReorderUnavailable"));
                         await onReorderQueuedComments(
                           orderedCommentIds,
                           revision,
@@ -2969,7 +2970,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       }}
                       onSteer={async (commentId, revision) => {
                         if (!onSteerQueuedComment)
-                          throw new Error("Steering is unavailable.");
+                          throw new Error(t("area.task-chat-1.task-chat-thread.errSteerUnavailable"));
                         await onSteerQueuedComment(commentId, revision);
                       }}
                       onInterrupt={
@@ -2984,12 +2985,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       onDiscard={async (commentId, revision) => {
                         if (commentId.startsWith("optimistic-")) {
                           if (!onCancelQueued)
-                            throw new Error("Discard is unavailable.");
+                            throw new Error(t("area.task-chat-1.task-chat-thread.errDiscardUnavailable"));
                           onCancelQueued(commentId);
                           return;
                         }
                         if (!onDiscardQueuedComment)
-                          throw new Error("Discard is unavailable.");
+                          throw new Error(t("area.task-chat-1.task-chat-thread.errDiscardUnavailable"));
                         await onDiscardQueuedComment(commentId, revision);
                         if (queuedEdit?.commentId === commentId)
                           setQueuedEdit(null);
@@ -3036,7 +3037,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         pendingComposerInputs.length > 0
                           ? {
                               count: pendingComposerInputs.length,
-                              label: `${pendingComposerInputs.length} pending input${pendingComposerInputs.length === 1 ? "" : "s"}`,
+                              label: t("area.task-chat-1.task-chat-thread.pendingInputs", { count: pendingComposerInputs.length }),
                               onOpen: openPendingTakeover,
                             }
                           : null
