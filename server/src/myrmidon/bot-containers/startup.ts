@@ -31,6 +31,7 @@ import { instanceSettingsService } from "../../services/instance-settings.js"; /
 import { listBotContainerAgents } from "./agents-query.js";
 import { isBotContainersEnabled } from "./agent-config.js";
 import type { BotContainerDriver } from "./driver.js";
+import { fleetSiteKey } from "./fleetd-hosts.js";
 import { dockerBotContainerDriver, readDockerDriverConfig, type DockerDriverConfig } from "./docker-driver.js";
 import {
   DEFAULT_RECONCILE_INTERVAL_MS,
@@ -126,6 +127,11 @@ export interface BotContainersStartupPorts {
    * real one. Its stop is folded into the stop of this run.
    */
   startCloneReportCollection?: typeof startCloneReportCollection;
+  /**
+   * myrmidon(1.6.6 T3): the remote-site clients (registry sites by company and name)
+   * and the one-time import of MYRMIDON_FLEET_HOSTS into the registry. Optional so
+   * a test without a registry builds the runtime without a database round trip.
+   */
   createFleetClientManager?: (deps: FleetClientManagerDeps) => FleetClientManager;
   bootstrapFleetSitesFromEnv?: typeof bootstrapFleetSitesFromEnv;
   /**
@@ -201,7 +207,12 @@ export function startBotContainers(
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the collector needs a registered
   // runtime (it reads the reports through its driver), so it starts after the
   // registration and stops with this run.
-  const stopCollector = ports.startCloneReportCollection?.(db, { env }) ?? null;
+  let stopCollector: (() => void) | undefined;
+  try {
+    stopCollector = ports.startCloneReportCollection?.(db, { env });
+  } catch (err) {
+    ports.log.error({ err }, "failed to start clone hygiene report collection");
+  }
   // myrmidon(1.6.6 REMOTE-SITES-T5): after the runtime is registered, because a move uses it.
   const stopSiteScheduler = ports.startSiteScheduler?.(db, { env }) ?? null;
   // myrmidon(1.6.6 REMOTE-SITES-T4): next to the scheduler; it reads the client manager's transports.
@@ -257,7 +268,16 @@ function build(
     const routingDriver = fleetRoutingDriver(
       {
         local: localDriver,
-        fleet: () => clientManager.getClients(),
+        fleet: (companyId) => {
+          const all = clientManager.getClients();
+          if (!companyId) return all; // list: every client; routed calls are refused without a company
+          const prefix = fleetSiteKey(companyId, "");
+          const scoped = new Map<string, BotContainerDriver>();
+          for (const [key, client] of all) {
+            if (key.startsWith(prefix)) scoped.set(key.slice(prefix.length), client);
+          }
+          return scoped;
+        },
         ready: () => clientManager.ensureFresh(),
       },
       async (botKey: string) => {

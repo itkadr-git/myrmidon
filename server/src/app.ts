@@ -115,6 +115,7 @@ import { myrmidonTelegramDmProgressRoutes } from "./myrmidon/telegram-dm-progres
 // myrmidon(1.6.5-TG-LOCALE-C): GET/PATCH the instance-wide bridge language
 import { myrmidonBridgeLanguageRoutes } from "./myrmidon/bridge-language/index.js";
 import { myrmidonChannelSettingsRoutes } from "./myrmidon/channel-settings/index.js"; // myrmidon(1.7-SETTINGS-TO-UI)
+import { myrmidonUsersAdminRoutes } from "./myrmidon/users-admin-a/index.js"; // myrmidon(OPE-8985)
 import { channelAllowlistRoutes } from "./myrmidon/channel-allowlist/routes.js"; // myrmidon(CA-A)
 import { channelAllowlistService } from "./myrmidon/channel-allowlist/service.js"; // myrmidon(CA-A)
 
@@ -1110,6 +1111,7 @@ export async function createApp(
   api.use(myrmidonBehaviorSettingsRoutes(db)); // myrmidon(SETTINGS-CORE): unified behavior settings, UI→env→default without restart
   api.use(myrmidonTelegramDmProgressRoutes(db)); // myrmidon(DM-PROGRESS): live progress steps of the Telegram DM status
   api.use(myrmidonChannelSettingsRoutes(db)); // myrmidon(1.7-SETTINGS-TO-UI): GET/PATCH /api/myrmidon/channel-settings
+  api.use(myrmidonUsersAdminRoutes(db, { authPublicBaseUrl: opts.authPublicBaseUrl })); // myrmidon(OPE-8985): users admin + public password-set
   api.use(channelAllowlistRoutes(db, channelAllowlistService(db))); // myrmidon(CA-A): GET/POST/PATCH /api/myrmidon/channel-allowlist
   api.use(myrmidonParallelHelpersRoutes(db)); // myrmidon(PARALLEL-HELPERS)
   api.use(myrmidonTeamLivenessRoutes(db)); // myrmidon(TEAM-LIVENESS-SETTINGS)
