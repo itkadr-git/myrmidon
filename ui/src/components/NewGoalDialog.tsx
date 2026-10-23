@@ -155,7 +155,7 @@ export function NewGoalDialog() {
               variant="ghost"
               size="icon-xs"
               className="text-muted-foreground"
-              aria-label={t("area.projects-goals-workspaces-1.new-goal-dialog.closeAria")}
+              aria-label={t("common.close")}
               onClick={() => { reset(); closeNewGoal(); }}
             >
               <span className="text-lg leading-none">&times;</span>
