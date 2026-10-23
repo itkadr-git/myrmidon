@@ -1,5 +1,6 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+import { livePauseWakeSettings } from "./runs-queue-settings/live.js";
 
 /**
  * Skip idle timer heartbeats (M3, part 1).
@@ -16,8 +17,9 @@ import { issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 export const SKIP_IDLE_HEARTBEATS_ENV = "MYRMIDON_SKIP_IDLE_HEARTBEATS";
 
 export function skipIdleHeartbeatsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[SKIP_IDLE_HEARTBEATS_ENV]?.trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+  // OPE-4096: resolve live (UI value → env forced override → default false)
+  // so the switch applies without a restart; an explicit env value always wins.
+  return livePauseWakeSettings(env).skipIdleHeartbeats;
 }
 
 /**

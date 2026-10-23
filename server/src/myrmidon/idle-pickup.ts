@@ -6,6 +6,7 @@ import { logger } from "../middleware/logger.js";
 // budget without restarting the server — a restart drops every run in flight.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
+import { liveIdlePickupSettings, liveIdleWakeBudget } from "./runs-queue-settings/live.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
 
@@ -92,12 +93,7 @@ const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as 
 
 /** Interval in seconds; invalid or too-small values fall back to the default. */
 export function readIdlePickupIntervalSec(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[IDLE_PICKUP_INTERVAL_SEC_ENV]?.trim();
-  if (!raw) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  if (!/^\d+$/.test(raw)) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value <= 0) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  return Math.max(MIN_IDLE_PICKUP_INTERVAL_SEC, value);
+  return liveIdlePickupSettings(env).intervalSec;
 }
 
 /**
@@ -105,8 +101,7 @@ export function readIdlePickupIntervalSec(env: NodeJS.ProcessEnv = process.env):
  * unrecognized value keeps it on. Only an explicit off value disables it.
  */
 export function readIdlePickupEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[IDLE_PICKUP_ENABLED_ENV]?.trim().toLowerCase();
-  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
+  return liveIdlePickupSettings(env).enabled;
 }
 
 /**
@@ -120,12 +115,7 @@ export function readIdlePickupEnabled(env: NodeJS.ProcessEnv = process.env): boo
  * anyone other than the run itself, reopens the issue for idle pickup.
  */
 export function readIdlePickupRecentSuccessWindowMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV]?.trim();
-  if (!raw) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  if (!/^\d+$/.test(raw)) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value)) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  return value;
+  return liveIdlePickupSettings(env).recentSuccessWindowMs;
 }
 
 /** Bounded non-negative integer reader shared by the two budget knobs. */
@@ -157,21 +147,7 @@ export interface IdleWakeBudgetSettings {
  * spend the whole window in one pass.
  */
 export function readIdleWakeBudgetSettings(env: NodeJS.ProcessEnv = process.env): IdleWakeBudgetSettings {
-  const perMinute = readBoundedInt(
-    env,
-    IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV,
-    DEFAULT_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
-    1,
-    MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
-  );
-  const batch = readBoundedInt(
-    env,
-    IDLE_PICKUP_WAKE_BATCH_ENV,
-    DEFAULT_IDLE_PICKUP_WAKE_BATCH,
-    1,
-    MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
-  );
-  return { perMinute, batch: Math.min(perMinute, batch) };
+  return liveIdleWakeBudget(env);
 }
 
 /**
@@ -862,9 +838,10 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
       // the environment; the reader already resolved that precedence per key.
       // Without a reader this module keeps reading the environment itself.
       const liveness = deps.readLiveness ? (await deps.readLiveness()).settings : null;
+      const idleSettings = liveness ? null : liveIdlePickupSettings(env);
       const intervalMs =
-        (liveness ? liveness.idlePickupIntervalSec : readIdlePickupIntervalSec(env)) * 1000;
-      const enabled = liveness ? liveness.idlePickupEnabled : readIdlePickupEnabled(env);
+        (liveness ? liveness.idlePickupIntervalSec : idleSettings!.intervalSec) * 1000;
+      const enabled = liveness ? liveness.idlePickupEnabled : idleSettings!.enabled;
       if (!enabled) {
         return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
       }
@@ -872,11 +849,11 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
         return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
       }
       lastSweepAtMs = now.getTime();
-      const envWake = readIdleWakeBudgetSettings(env);
+      const envWake = liveness ? null : liveIdleWakeBudget(env);
       // A pass never spends more of the minute than the minute holds, whichever
       // layer set the two numbers.
-      const perMinute = liveness ? liveness.idlePickupWakeBudgetPerMin : envWake.perMinute;
-      const batch = Math.min(liveness ? liveness.idlePickupWakeBatch : envWake.batch, perMinute);
+      const perMinute = liveness ? liveness.idlePickupWakeBudgetPerMin : envWake!.perMinute;
+      const batch = Math.min(liveness ? liveness.idlePickupWakeBatch : envWake!.batch, perMinute);
       // The release path spends the same budget object; handing it the resolved
       // pair keeps both paths on the numbers the operator saved.
       deps.budget?.configure({ perMinute, batch });

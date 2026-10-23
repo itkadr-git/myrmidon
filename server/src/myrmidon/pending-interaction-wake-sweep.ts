@@ -7,6 +7,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { liveWakeDeliverySettings } from "./runs-queue-settings/live.js";
 
 /**
  * Pending interaction addressee wake sweep (P12).
@@ -61,21 +62,16 @@ export const PENDING_INTERACTION_WAKE_RE_ADMITTED_REASON =
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Grace window in milliseconds; invalid values fall back to the default. */
+/** Grace window in milliseconds. OPE-4096: resolves live (UI value → env
+ * forced override → default); an explicit env value always wins. */
 export function readPendingInteractionWakeGraceMs(env: NodeJS.ProcessEnv = process.env): number {
-  return readCountEnv(env, PENDING_INTERACTION_WAKE_GRACE_ENV, DEFAULT_PENDING_INTERACTION_WAKE_GRACE_MS);
+  return liveWakeDeliverySettings(env).pendingInteractionGraceMs;
 }
 
-/** Re-admission budget per receipt; invalid values fall back to the default. */
+/** Re-admission budget per receipt. OPE-4096: resolves live (UI value → env
+ * forced override → default); an explicit env value always wins. */
 export function readPendingInteractionWakeReAdmissionBudget(env: NodeJS.ProcessEnv = process.env): number {
-  return readCountEnv(env, PENDING_INTERACTION_WAKE_RE_ADMISSIONS_ENV, DEFAULT_PENDING_INTERACTION_WAKE_RE_ADMISSIONS);
-}
-
-function readCountEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
-  const raw = env[name]?.trim();
-  if (!raw || !/^\d+$/.test(raw)) return fallback;
-  const value = Number(raw);
-  return Number.isSafeInteger(value) ? value : fallback;
+  return liveWakeDeliverySettings(env).pendingInteractionReAdmissions;
 }
 
 export type PendingInteractionWakeFacts = {

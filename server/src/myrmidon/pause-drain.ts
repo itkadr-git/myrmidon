@@ -8,6 +8,7 @@ import {
   INFRA_INTERRUPT_CONTEXT_ATTEMPT_KEY,
   isInfraInterruptErrorCode,
 } from "./infra-interrupts.js";
+import { livePauseWakeSettings } from "./runs-queue-settings/live.js";
 
 /**
  * Operator pause drains instead of cancelling (L3).
@@ -165,14 +166,16 @@ function readNonNegativeInt(raw: string | undefined, fallback: number): number {
   return Number.isSafeInteger(parsed) ? parsed : fallback;
 }
 
-/** Batch size for resume wakes; `0` means "no batching, previous behavior". */
+/** Batch size for resume wakes. OPE-4096: resolves live (UI value → env
+ * forced override → default 5); `0` means "no batching, previous behavior". */
 export function readResumeWakeBatchSize(env: NodeJS.ProcessEnv = process.env): number {
-  return readNonNegativeInt(env[PAUSE_RESUME_WAKE_BATCH_ENV], PAUSE_RESUME_WAKE_BATCH_DEFAULT);
+  return livePauseWakeSettings(env).resumeWakeBatch;
 }
 
-/** Pause between resume-wake batches in milliseconds; `0` removes the wait. */
+/** Pause between resume-wake batches in milliseconds. OPE-4096: resolves live
+ * (UI value → env forced override → default 1000); `0` removes the wait. */
 export function readResumeWakeBatchPauseMs(env: NodeJS.ProcessEnv = process.env): number {
-  return readNonNegativeInt(env[PAUSE_RESUME_WAKE_BATCH_PAUSE_MS_ENV], PAUSE_RESUME_WAKE_BATCH_PAUSE_MS_DEFAULT);
+  return livePauseWakeSettings(env).resumeWakeBatchPauseMs;
 }
 
 function sleepMs(ms: number): Promise<void> {

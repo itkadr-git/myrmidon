@@ -79,13 +79,15 @@ export class BehaviorSettingRegistry {
 /** Global registry instance */
 export const behaviorSettingRegistry = new BehaviorSettingRegistry();
 
+// Register runs-and-queue settings before the server builds the live settings view.
+import "./myrmidon-runs-queue-settings.js";
+
 const positiveInteger = (allowZero = false) => (value: unknown): number | null => {
   const num = typeof value === "number" ? value : Number(value);
   return Number.isSafeInteger(num) && (allowZero ? num >= 0 : num > 0) ? num : null;
 };
 const nonEmptyString = (value: unknown): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-// An optional text setting: a saved empty string is kept and means "not set".
 const optionalString = (value: unknown): string | null =>
   typeof value === "string" ? value.trim() : null;
 const booleanSetting = (value: unknown): boolean | null => {
@@ -154,7 +156,6 @@ for (const setting of dSettings) {
     validate: setting.validate,
   });
 }
-
 
 behaviorSettingRegistry.register({
   key: "debug_mode",
