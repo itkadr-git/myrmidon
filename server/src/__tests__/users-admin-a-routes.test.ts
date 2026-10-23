@@ -7,7 +7,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
-import { authSessions, authUsers, createDb, userPasswordSetTokens } from "@paperclipai/db";
+import { authSessions, authUsers, boardApiKeys, createDb, userPasswordSetTokens } from "@paperclipai/db";
+import { actorMiddleware } from "../middleware/auth.js";
+import { createBoardApiToken, hashBearerToken } from "../services/board-auth.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createBetterAuthHandler, createBetterAuthInstance } from "../auth/better-auth.js";
 import { errorHandler } from "../middleware/index.js";
@@ -27,6 +29,7 @@ type Actor = Express.Request["actor"];
 
 const admin: Actor = { type: "board", userId: "admin-user", source: "session", isInstanceAdmin: true, companyIds: [] } as unknown as Actor;
 const member: Actor = { type: "board", userId: "member-user", source: "session", isInstanceAdmin: false, companyIds: [] } as unknown as Actor;
+const agent: Actor = { type: "agent", agentId: "agent-1", companyId: "company-1", source: "agent_key" } as unknown as Actor;
 const anonymous: Actor = { type: "none", source: "none" } as unknown as Actor;
 
 function appFor(db: Db, actor: Actor) {
@@ -76,8 +79,8 @@ describePostgres("users-admin-a routes", () => {
   const signIn = (email: string, password: string) =>
     request(authApp).post("/api/auth/sign-in/email").set("origin", ORIGIN).send({ email, password });
 
-  it("answers 403 to a non-admin and to an anonymous caller on every admin route", async () => {
-    for (const actor of [member, anonymous]) {
+  it("answers 403 to a non-admin, an agent token and an anonymous caller on every admin route", async () => {
+    for (const actor of [member, anonymous, agent]) {
       const app = appFor(db, actor);
       expect((await request(app).get("/api/myrmidon/users-admin-a/users")).status).toBe(403);
       expect((await request(app).post("/api/myrmidon/users-admin-a/users").send({ username: "nope-user", name: "N" })).status).toBe(403);
@@ -202,5 +205,40 @@ describePostgres("users-admin-a routes", () => {
     expect((await request(anon).post("/api/myrmidon/users-admin-a/password-set").send({ token: "x".repeat(43), newPassword: NEW_PASSWORD })).status).toBe(404);
     expect((await request(anon).post("/api/myrmidon/users-admin-a/password-set").send({ token: second, newPassword: "short" })).status).toBe(400);
     expect((await request(anon).post("/api/myrmidon/users-admin-a/password-set").send({ token: second, newPassword: NEW_PASSWORD })).status).toBe(200);
+  });
+
+  it("a board API key of a blocked user is rejected and revoked; unblocking does not revive it", async () => {
+    const app = appFor(db, admin);
+    const created = await request(app).post("/api/myrmidon/users-admin-a/users").send({ username: "ivan-key", name: "Ivan", password: PASSWORD, role: "instance_admin" });
+    const issue = async () => {
+      const token = createBoardApiToken();
+      await db.insert(boardApiKeys).values({
+        userId: created.body.id, name: "test key", keyHash: hashBearerToken(token), expiresAt: new Date(Date.now() + 3_600_000),
+      });
+      return token;
+    };
+    const keyApp = express();
+    keyApp.use(express.json());
+    keyApp.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession: async () => null } as never));
+    keyApp.use("/api", usersAdminRoutes(db, { authPublicBaseUrl: BASE }));
+    keyApp.use(errorHandler);
+    const call = (token: string) => request(keyApp).get("/api/myrmidon/users-admin-a/users").set("authorization", `Bearer ${token}`);
+
+    const first = await issue();
+    expect((await call(first)).status).toBe(200);
+
+    expect((await request(app).patch(`/api/myrmidon/users-admin-a/users/${created.body.id}`).send({ blocked: true })).status).toBe(200);
+    const rows = await db.select().from(boardApiKeys).where(eq(boardApiKeys.userId, created.body.id));
+    expect(rows.every((row) => row.revokedAt !== null)).toBe(true);
+    expect((await call(first)).status).toBe(401);
+
+    // A key created while the user is blocked is refused too (access check, not only revocation).
+    const whileBlocked = await issue();
+    expect((await call(whileBlocked)).status).toBe(401);
+
+    // Unblocking: the keys revoked at block time stay dead; the user issues a new one.
+    expect((await request(app).patch(`/api/myrmidon/users-admin-a/users/${created.body.id}`).send({ blocked: false })).status).toBe(200);
+    expect((await call(first)).status).toBe(401);
+    expect((await call(await issue())).status).toBe(200);
   });
 });

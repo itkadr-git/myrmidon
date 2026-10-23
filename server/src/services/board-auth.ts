@@ -8,6 +8,7 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
+  userBlocks,
 } from "@paperclipai/db";
 import { normalizeBoardApiKeyScope } from "@paperclipai/shared";
 import { conflict, forbidden, notFound } from "../errors.js";
@@ -68,7 +69,7 @@ export function boardAuthService(db: Db) {
     }
   }
   async function resolveBoardAccess(userId: string) {
-    const [user, memberships, adminRole] = await Promise.all([
+    const [user, memberships, adminRole, blockedRow] = await Promise.all([
       db
         .select({
           id: authUsers.id,
@@ -98,7 +99,17 @@ export function boardAuthService(db: Db) {
         .from(instanceUserRoles)
         .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
         .then((rows) => rows[0] ?? null),
+      // myrmidon(OPE-8985): blocked users (Users screen) have no board access.
+      db
+        .select({ userId: userBlocks.userId })
+        .from(userBlocks)
+        .where(eq(userBlocks.userId, userId))
+        .then((rows) => rows[0] ?? null),
     ]);
+
+    if (blockedRow) {
+      return { user: null, companyIds: [], memberships: [], isInstanceAdmin: false };
+    }
 
     return {
       user,

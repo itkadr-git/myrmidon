@@ -15,6 +15,7 @@ import {
   authAccounts,
   authSessions,
   authUsers,
+  boardApiKeys,
   instanceUserRoles,
   userBlocks,
   userPasswordSetTokens,
@@ -178,6 +179,12 @@ export async function setUserBlocked(
     .insert(userBlocks)
     .values({ userId: input.userId, blockedByUserId: input.actorUserId })
     .onConflictDoNothing();
+  // Board API keys are a second way in besides sessions: revoke them too. They stay
+  // revoked after unblocking; the user issues a new key.
+  await db
+    .update(boardApiKeys)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(boardApiKeys.userId, input.userId), isNull(boardApiKeys.revokedAt)));
   const closed = await db.delete(authSessions).where(eq(authSessions.userId, input.userId)).returning({ id: authSessions.id });
   return { sessionsClosed: closed.length };
 }
