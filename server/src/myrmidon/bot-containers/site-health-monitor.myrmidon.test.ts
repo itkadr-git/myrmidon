@@ -67,7 +67,7 @@ describe("site health monitor", () => {
     expect(r?.state).toBe("healthy");
     expect(w.site.status).toBe("active");
     expect(w.site.health?.snapshot.lastSeenAt).toBe(T0);
-    expect(readFleetSiteMetrics().sites).toEqual([{ site: "myr-vm1", reachable: 1, lastSeenSeconds: 0 }]);
+    expect(readFleetSiteMetrics(T0 + 15_000).sites).toEqual([{ site: "myr-vm1", reachable: 1, lastSeenSeconds: 15 }]);
   });
 
   it("two misses change nothing; the third (90 s of misses) drains the site automatically and raises no failover", async () => {

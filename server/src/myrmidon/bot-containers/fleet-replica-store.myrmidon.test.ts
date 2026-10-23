@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, readdir, rm, utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { PassThrough, Readable } from "node:stream";
+import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fileFleetReplicaStore, fleetReplicaStoreFromEnv, FLEET_REPLICA_DIR_ENV } from "./fleet-replica-store.js";
 import { startFleetReplicaLane } from "./fleet-replica-lane.js";
@@ -49,11 +49,14 @@ describe("fileFleetReplicaStore", () => {
   it("a stream that breaks off never replaces a good replica and leaves no temporary file", async () => {
     const store = fileFleetReplicaStore(root);
     await store.write("s", "b", Readable.from([Buffer.from("good")]));
-    const broken = new PassThrough();
-    const pending = store.write("s", "b", broken);
-    broken.write("par");
-    broken.destroy(new Error("link dropped"));
-    await expect(pending).rejects.toThrow("link dropped");
+    // The link drops some time after the transfer started, not before the store is listening.
+    const broken = new Readable({
+      read() {
+        this.push(Buffer.from("par"));
+        setTimeout(() => this.destroy(new Error("link dropped")), 20);
+      },
+    });
+    await expect(store.write("s", "b", broken)).rejects.toThrow("link dropped");
 
     const dir = path.join(root, "s", "b");
     expect(await readFile(path.join(dir, "latest.tar.zst"), "utf8")).toBe("good");
