@@ -367,7 +367,7 @@ function GrantsSection({
                 onClick={() => onRemoveGrant(grant.id)}
                 data-testid={`myrmidon-clouds-remove-grant-${grant.id}`}
               >
-                {t("area.settings-integrations.clouds-settings-page.remove")}
+                {t("common.remove")}
               </Button>
             </li>
           ))}
@@ -424,7 +424,7 @@ export function CloudsSettingsPageView(props: CloudsSettingsPageViewProps) {
         <p className="text-xs text-muted-foreground" data-testid="myrmidon-clouds-notice">{props.notice}</p>
       )}
       {props.loading && (
-        <p className="text-xs text-muted-foreground" data-testid="myrmidon-clouds-loading">{t("area.settings-integrations.clouds-settings-page.loading")}</p>
+        <p className="text-xs text-muted-foreground" data-testid="myrmidon-clouds-loading">{t("common.loading")}</p>
       )}
 
       <AccountsSection
@@ -462,7 +462,7 @@ export function CloudsSettingsPageView(props: CloudsSettingsPageViewProps) {
                   onClick={() => props.onRemoveRoot(root.id)}
                   data-testid={`myrmidon-clouds-remove-root-${root.id}`}
                 >
-                  {t("area.settings-integrations.clouds-settings-page.remove")}
+                  {t("common.remove")}
                 </Button>
               </li>
             ))}
