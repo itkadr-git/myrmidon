@@ -2267,7 +2267,7 @@ async function startServerWithDatabaseTeardown(
     // Initialize IDLE-STOP service after bot containers (needs the driver from runtime)
     const botContainerRuntime = getBotContainerRuntime();
     if (botContainerRuntime) {
-      initializeIdleStopService(botContainerRuntime.driver, db as any);
+      await initializeIdleStopService(botContainerRuntime.driver, db as any);
     }
     runContextColumnsBackfill = startRunContextColumnsBackfill(db as any, logger); // OPE-5007 П2: batched, per-batch-commit fill of the thin run-context columns (the migration only adds them)
     startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
