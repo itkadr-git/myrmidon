@@ -7,18 +7,23 @@ import { HardDrive } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { i18n, useTranslation } from "@/i18n";
 import { hostDiskApi, hostDiskQueryKey, type HostDiskView } from "./hostDiskApi";
 
+// myrmidon(OPE-8950): visible strings live in area.settings-bots-host-2.host-disk-settings-panel.*
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
 function formatGrowth(bytesPerHour: number | null): string {
-  if (bytesPerHour === null) return "Not enough samples yet";
+  if (bytesPerHour === null) return i18n.t("area.settings-bots-host-2.host-disk-settings-panel.growthUnknown");
   const gbPerHour = bytesPerHour / (1024 * 1024 * 1024);
-  if (gbPerHour >= 1) return `+${gbPerHour.toFixed(1)} GB/hour`;
-  if (gbPerHour > 0) return `+${(gbPerHour * 1024).toFixed(0)} MB/hour`;
-  if (gbPerHour === 0) return "Stable";
-  return `${gbPerHour.toFixed(1)} GB/hour`;
+  if (gbPerHour >= 1) return i18n.t("area.settings-bots-host-2.host-disk-settings-panel.growthGbPerHour", { value: gbPerHour.toFixed(1) });
+  if (gbPerHour > 0) return i18n.t("area.settings-bots-host-2.host-disk-settings-panel.growthMbPerHour", { value: (gbPerHour * 1024).toFixed(0) });
+  if (gbPerHour === 0) return i18n.t("area.settings-bots-host-2.host-disk-settings-panel.growthStable");
+  return i18n.t("area.settings-bots-host-2.host-disk-settings-panel.growthNegative", { value: gbPerHour.toFixed(1) });
 }
 
 export function HostDiskSettingsPanel() {
+  const { t } = useTranslation() as { t: Translate };
   const queryClient = useQueryClient();
   const { data: view } = useQuery({
     queryKey: hostDiskQueryKey,
@@ -37,13 +42,13 @@ export function HostDiskSettingsPanel() {
       setError(null);
       queryClient.invalidateQueries({ queryKey: hostDiskQueryKey });
     },
-    onError: () => setError("Could not save the threshold. Try again."),
+    onError: () => setError(t("area.settings-bots-host-2.host-disk-settings-panel.saveFailed")),
   });
 
   const submit = () => {
     const value = Number(draft);
     if (!Number.isInteger(value) || value < 1 || value > 99) {
-      setError("Enter a whole number between 1 and 99");
+      setError(t("area.settings-bots-host-2.host-disk-settings-panel.thresholdInvalid"));
       return;
     }
     save.mutate();
@@ -56,16 +61,16 @@ export function HostDiskSettingsPanel() {
     <section className="space-y-4 rounded-lg border p-4" data-testid="host-disk-panel">
       <div className="flex items-center gap-2">
         <HardDrive className="size-4 text-muted-foreground" />
-        <h3 className="text-sm font-medium">Host disk</h3>
+        <h3 className="text-sm font-medium">{t("area.settings-bots-host-2.host-disk-settings-panel.title")}</h3>
         {overThreshold && (
           <span className="rounded bg-orange-500/15 px-2 py-0.5 text-xs font-medium text-orange-600" data-testid="host-disk-over">
-            Over threshold
+            {t("area.settings-bots-host-2.host-disk-settings-panel.overThreshold")}
           </span>
         )}
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="host-disk-threshold">Alert when the disk is fuller than, %</Label>
+        <Label htmlFor="host-disk-threshold">{t("area.settings-bots-host-2.host-disk-settings-panel.thresholdLabel")}</Label>
         <div className="flex items-center gap-2">
           <Input
             id="host-disk-threshold"
@@ -79,23 +84,21 @@ export function HostDiskSettingsPanel() {
             data-testid="host-disk-threshold-input"
           />
           <Button size="sm" onClick={submit} disabled={save.isPending || draft === ""}>
-            {save.isPending ? "Saving…" : "Save"}
+            {save.isPending ? t("area.settings-bots-host-2.host-disk-settings-panel.saving") : t("common.save")}
           </Button>
           {view && view.threshold.sources.usageThresholdPercent !== "settings" && (
             <span className="text-xs text-muted-foreground">
               {view.threshold.sources.usageThresholdPercent === "env"
-                ? "From the server environment"
-                : "Default"}
+                ? t("area.settings-bots-host-2.host-disk-settings-panel.sourceEnv")
+                : t("area.settings-bots-host-2.host-disk-settings-panel.sourceDefault")}
             </span>
           )}
         </div>
         <p className="text-xs text-muted-foreground">
-          The signal appears in the attention queue when usage crosses this
-          level. Applies immediately; the sweep re-reads it on every
-          measurement.
+          {t("area.settings-bots-host-2.host-disk-settings-panel.hint")}
         </p>
         {error && <p className="text-xs text-red-600">{error}</p>}
-        {save.isSuccess && !error && <p className="text-xs text-green-600">Saved</p>}
+        {save.isSuccess && !error && <p className="text-xs text-green-600">{t("area.settings-bots-host-2.host-disk-settings-panel.saved")}</p>}
       </div>
 
       {status && (
@@ -103,17 +106,17 @@ export function HostDiskSettingsPanel() {
           {status.usage.usedPercent !== null ? (
             <>
               <p>
-                <span className="font-medium">{status.usage.usedPercent}%</span> used
-                {status.usage.totalGb !== null && ` — ${status.usage.usedGb} of ${status.usage.totalGb} GB (${status.usage.freeGb} GB free)`}
+                <span className="font-medium">{status.usage.usedPercent}%</span> {t("area.settings-bots-host-2.host-disk-settings-panel.used")}
+                {status.usage.totalGb !== null && ` ${t("area.settings-bots-host-2.host-disk-settings-panel.usageDetail", { used: status.usage.usedGb, total: status.usage.totalGb, free: status.usage.freeGb })}`}
               </p>
-              <p className="text-muted-foreground">Growth: {formatGrowth(status.usage.growthBytesPerHour)}</p>
+              <p className="text-muted-foreground">{t("area.settings-bots-host-2.host-disk-settings-panel.growth", { value: formatGrowth(status.usage.growthBytesPerHour) })}</p>
               {status.consumers.length > 0 && (
                 <div>
-                  <p className="font-medium">Biggest consumers</p>
+                  <p className="font-medium">{t("area.settings-bots-host-2.host-disk-settings-panel.consumers")}</p>
                   <ul className="list-disc pl-4 text-muted-foreground">
                     {status.consumers.map((consumer) => (
                       <li key={consumer.path}>
-                        {consumer.path} — {consumer.sizeGb} GB
+                        {t("area.settings-bots-host-2.host-disk-settings-panel.consumerRow", { path: consumer.path, size: consumer.sizeGb })}
                       </li>
                     ))}
                   </ul>
@@ -121,7 +124,7 @@ export function HostDiskSettingsPanel() {
               )}
             </>
           ) : (
-            <p className="text-muted-foreground">No measurement yet.</p>
+            <p className="text-muted-foreground">{t("area.settings-bots-host-2.host-disk-settings-panel.noMeasurement")}</p>
           )}
         </div>
       )}

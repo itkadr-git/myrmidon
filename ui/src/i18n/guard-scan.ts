@@ -27,6 +27,10 @@ const ATTRS =
 // Words that may appear as literal JSX text without breaking the RU screen.
 const ALLOWED_TEXT = /^(—|-|…|\+|%|\d|\$|\{)/;
 
+// An attribute value that is only a URL or path (e.g. placeholder="https://mcp.example.com")
+// is an example value, not translatable copy.
+const URL_ONLY = /^(?:[a-z][a-z0-9+.-]*:\/\/|\/)\S*$/i;
+
 /** Blank out comments, keeping line breaks so line numbers stay right. */
 export function stripComments(source: string): string {
   const blank = (s: string) => s.replace(/[^\n]/g, " ");
@@ -46,6 +50,8 @@ function looksLikeCode(text: string): boolean {
   if (/[(){}=;]|=>/.test(text)) return true; // code fragments between angle brackets
   if (/^(Promise|Set|Map|Array|Partial|Pick|React|ReactNode|unknown|void)$/.test(text)) return true;
   if (/[,]|&|\bRecord\b/.test(text)) return true; // type-parameter fragments
+  // ternary JSX branches between tags: ": repair ? repair.canReconnect ?"
+  if (/(^|\s)[?:](\s|$)/.test(text) && /\w\??\.\w/.test(text)) return true;
   return false;
 }
 
@@ -75,6 +81,7 @@ export function findEnglishLiterals(source: string): GuardOffender[] {
   );
   for (const match of code.matchAll(attrRe)) {
     if (!/\p{L}/u.test(match[3])) continue;
+    if (URL_ONLY.test(match[3])) continue;
     offenders.push({ line: lineOf(code, match.index!), kind: "attr", text: `${match[1]}="${match[3]}"` });
   }
 

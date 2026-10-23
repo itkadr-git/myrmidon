@@ -15,59 +15,58 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
+import { Trans } from "react-i18next";
+import { i18n, useTranslation } from "@/i18n";
 import { cn } from "../lib/utils";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 
 /* ---- Help text for (?) tooltips ---- */
+/* Lazy getters: the language can change after module load. */
 export const help: Record<string, string> = {
-  name: "Display name for this agent.",
-  title: "Job title shown in the org chart.",
-  role: "Organizational role. Determines position and capabilities.",
-  reportsTo: "The agent this one reports to in the org hierarchy.",
-  capabilities: "Describes what this agent can do. Shown in the org chart and used for task routing.",
-  adapterType: "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or generic HTTP webhook.",
-  cwd: "Deprecated legacy working directory fallback for local adapters. Existing agents may still carry this value, but new configurations should use project workspaces instead.",
-  promptTemplate: "Sent on every heartbeat. Keep this small and dynamic. Use it for current-task framing, not large static instructions. Supports {{ agent.id }}, {{ agent.name }}, {{ agent.role }} and other template variables.",
-  model: "Override the default model used by the adapter.",
-  thinkingEffort: "Control model reasoning depth. Supported values vary by adapter/model.",
-  chrome: "Enable Claude's Chrome integration by passing --chrome.",
-  dangerouslySkipPermissions: "Run unattended by auto-approving adapter permission prompts when supported.",
-  dangerouslyBypassSandbox: "Run Codex without sandbox restrictions. Required for filesystem/network access.",
-  search: "Enable Codex web search capability during runs.",
-  fastMode: "Enable Codex Fast mode. This burns credits/tokens much faster and is supported on GPT-6 Astra, GPT-5.6, GPT-5.5, GPT-5.4, and manual Codex model IDs.",
-  workspaceStrategy: "How Myrmidon should realize an execution workspace for this agent. Keep project_primary for normal cwd execution, or use git_worktree for issue-scoped isolated checkouts.",
-  workspaceBaseRef: "Base git ref used when creating a worktree branch. Leave blank to use the resolved workspace ref or HEAD.",
-  workspaceBranchTemplate: "Template for naming derived branches. Supports {{issue.identifier}}, {{issue.title}}, {{agent.name}}, {{project.id}}, {{workspace.repoRef}}, and {{slug}}.",
-  worktreeParentDir: "Directory where derived worktrees should be created. Absolute, ~-prefixed, and repo-relative paths are supported.",
-  runtimeServicesJson: "Optional workspace runtime service definitions. Use this for shared app servers, workers, or other long-lived companion processes attached to the workspace.",
-  maxTurnsPerRun: "Maximum number of agentic turns (tool calls) per heartbeat run.",
-  command: "The command to execute (e.g. node, python).",
-  localCommand: "Override the path to the CLI command you want the adapter to call (e.g. /usr/local/bin/claude, codex, opencode).",
-  args: "Command-line arguments, comma-separated.",
-  extraArgs: "Extra CLI arguments for local adapters, comma-separated.",
-  envVars: "Environment variables injected into the adapter process. Use plain values or secret references.",
-  secretAccess:
-    "Secrets this agent can reach. Env-var bindings are injected at run start; API-access bindings are fetched on demand via the run-bound agent API and never written to the environment.",
-  bootstrapPrompt: "Only sent when Myrmidon starts a fresh session. Use this for stable setup guidance that should not be repeated on every heartbeat.",
-  payloadTemplateJson: "Optional JSON merged into remote adapter request payloads before Myrmidon adds its standard wake and workspace fields.",
-  webhookUrl: "The URL that receives POST requests when the agent is invoked.",
-  heartbeatInterval: "Run this agent automatically on a timer. Useful for periodic tasks like checking for new work.",
-  intervalSec: "Seconds between automatic heartbeat invocations.",
-  timeoutSec: "Maximum seconds a run can take before being terminated. 0 means no timeout.",
-  graceSec: "Seconds to wait after sending interrupt before force-killing the process.",
-  wakeOnDemand: "Allow this agent to be woken by assignments, API calls, UI actions, or automated systems.",
-  cooldownSec: "Minimum seconds between consecutive heartbeat runs.",
-  maxConcurrentRuns: "Maximum number of heartbeat runs that can execute simultaneously for this agent.",
-  // myrmidon(1.6.6-SETTINGS-UI-B): the daily caps and idle-skip the server has
-  // always read from runtimeConfig.heartbeat (parseHeartbeatPolicy) but the form
-  // never exposed. 0 in a number field means "no limit" (the field is unset).
-  maxDailyRuns: "Maximum heartbeat runs per UTC day for this agent. 0: no limit.",
-  maxDailyCostCents: "Maximum recorded cost in cents per UTC day for this agent. 0: no limit.",
-  skipTimerWhenNoActionableWork: "Skip a timer wake when the agent has no actionable work on its board.",
-  maxTurnContinuationEnabled: "Automatically queue bounded continuation runs when an adapter stops because its per-run turn cap was exhausted.",
-  maxTurnContinuationMaxAttempts: "Maximum automatic continuations after one max-turn stop. This is separate from max turns per run.",
-  maxTurnContinuationDelaySec: "Seconds to wait before starting each max-turn continuation.",
-  budgetMonthlyCents: "Monthly spending limit in cents. 0 means no limit.",
+  get name() { return i18n.t("area.agents-2.agent-config-primitives.help.name"); },
+  get title() { return i18n.t("area.agents-2.agent-config-primitives.help.title"); },
+  get role() { return i18n.t("area.agents-2.agent-config-primitives.help.role"); },
+  get reportsTo() { return i18n.t("area.agents-2.agent-config-primitives.help.reportsTo"); },
+  get capabilities() { return i18n.t("area.agents-2.agent-config-primitives.help.capabilities"); },
+  get adapterType() { return i18n.t("area.agents-2.agent-config-primitives.help.adapterType"); },
+  get cwd() { return i18n.t("area.agents-2.agent-config-primitives.help.cwd"); },
+  get promptTemplate() { return i18n.t("area.agents-2.agent-config-primitives.help.promptTemplate", { agentId: "{{ agent.id }}", agentName: "{{ agent.name }}", agentRole: "{{ agent.role }}" }); },
+  get model() { return i18n.t("area.agents-2.agent-config-primitives.help.model"); },
+  get thinkingEffort() { return i18n.t("area.agents-2.agent-config-primitives.help.thinkingEffort"); },
+  get chrome() { return i18n.t("area.agents-2.agent-config-primitives.help.chrome"); },
+  get dangerouslySkipPermissions() { return i18n.t("area.agents-2.agent-config-primitives.help.dangerouslySkipPermissions"); },
+  get dangerouslyBypassSandbox() { return i18n.t("area.agents-2.agent-config-primitives.help.dangerouslyBypassSandbox"); },
+  get search() { return i18n.t("area.agents-2.agent-config-primitives.help.search"); },
+  get fastMode() { return i18n.t("area.agents-2.agent-config-primitives.help.fastMode"); },
+  get workspaceStrategy() { return i18n.t("area.agents-2.agent-config-primitives.help.workspaceStrategy"); },
+  get workspaceBaseRef() { return i18n.t("area.agents-2.agent-config-primitives.help.workspaceBaseRef"); },
+  get workspaceBranchTemplate() { return i18n.t("area.agents-2.agent-config-primitives.help.workspaceBranchTemplate", { issueIdentifier: "{{issue.identifier}}", issueTitle: "{{issue.title}}", agentName: "{{agent.name}}", projectId: "{{project.id}}", workspaceRepoRef: "{{workspace.repoRef}}", slug: "{{slug}}" }); },
+  get worktreeParentDir() { return i18n.t("area.agents-2.agent-config-primitives.help.worktreeParentDir"); },
+  get runtimeServicesJson() { return i18n.t("area.agents-2.agent-config-primitives.help.runtimeServicesJson"); },
+  get maxTurnsPerRun() { return i18n.t("area.agents-2.agent-config-primitives.help.maxTurnsPerRun"); },
+  get command() { return i18n.t("area.agents-2.agent-config-primitives.help.command"); },
+  get localCommand() { return i18n.t("area.agents-2.agent-config-primitives.help.localCommand"); },
+  get args() { return i18n.t("area.agents-2.agent-config-primitives.help.args"); },
+  get extraArgs() { return i18n.t("area.agents-2.agent-config-primitives.help.extraArgs"); },
+  get envVars() { return i18n.t("area.agents-2.agent-config-primitives.help.envVars"); },
+  get secretAccess() { return i18n.t("area.agents-2.agent-config-primitives.help.secretAccess"); },
+  get bootstrapPrompt() { return i18n.t("area.agents-2.agent-config-primitives.help.bootstrapPrompt"); },
+  get payloadTemplateJson() { return i18n.t("area.agents-2.agent-config-primitives.help.payloadTemplateJson"); },
+  get webhookUrl() { return i18n.t("area.agents-2.agent-config-primitives.help.webhookUrl"); },
+  get heartbeatInterval() { return i18n.t("area.agents-2.agent-config-primitives.help.heartbeatInterval"); },
+  get intervalSec() { return i18n.t("area.agents-2.agent-config-primitives.help.intervalSec"); },
+  get timeoutSec() { return i18n.t("area.agents-2.agent-config-primitives.help.timeoutSec"); },
+  get graceSec() { return i18n.t("area.agents-2.agent-config-primitives.help.graceSec"); },
+  get wakeOnDemand() { return i18n.t("area.agents-2.agent-config-primitives.help.wakeOnDemand"); },
+  get cooldownSec() { return i18n.t("area.agents-2.agent-config-primitives.help.cooldownSec"); },
+  get maxConcurrentRuns() { return i18n.t("area.agents-2.agent-config-primitives.help.maxConcurrentRuns"); },
+  get maxDailyRuns() { return i18n.t("area.agents-2.agent-config-primitives.help.maxDailyRuns"); },
+  get maxDailyCostCents() { return i18n.t("area.agents-2.agent-config-primitives.help.maxDailyCostCents"); },
+  get skipTimerWhenNoActionableWork() { return i18n.t("area.agents-2.agent-config-primitives.help.skipTimerWhenNoActionableWork"); },
+  get maxTurnContinuationEnabled() { return i18n.t("area.agents-2.agent-config-primitives.help.maxTurnContinuationEnabled"); },
+  get maxTurnContinuationMaxAttempts() { return i18n.t("area.agents-2.agent-config-primitives.help.maxTurnContinuationMaxAttempts"); },
+  get maxTurnContinuationDelaySec() { return i18n.t("area.agents-2.agent-config-primitives.help.maxTurnContinuationDelaySec"); },
+  get budgetMonthlyCents() { return i18n.t("area.agents-2.agent-config-primitives.help.budgetMonthlyCents"); },
 };
 
 import { getAdapterLabels } from "../adapters/adapter-display-registry";
@@ -382,11 +381,15 @@ export function DraftNumberInput({
   );
 }
 
+const EXAMPLE_MAC_PATH = "/Users/yourname/Documents/project";
+const EXAMPLE_WINDOWS_PATH = "C:\\Users\\yourname\\Documents\\project";
+
 /**
  * "Choose" button that opens a dialog explaining the user must manually
  * type the path due to browser security limitations.
  */
 export function ChoosePathButton() {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -395,54 +398,53 @@ export function ChoosePathButton() {
         className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
         onClick={() => setOpen(true)}
       >
-        Choose
+        {t("area.agents-2.agent-config-primitives.choose")}
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Specify path manually</DialogTitle>
+            <DialogTitle>{t("area.agents-2.agent-config-primitives.pathTitle")}</DialogTitle>
             <DialogDescription>
-              Browser security blocks apps from reading full local paths via a file picker.
-              Copy the absolute path and paste it into the input.
+              {t("area.agents-2.agent-config-primitives.pathDescription")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 text-sm">
             <section className="space-y-1.5">
-              <p className="font-medium">macOS (Finder)</p>
+              <p className="font-medium">{t("area.agents-2.agent-config-primitives.mac.title")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in Finder.</li>
-                <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
-                <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("area.agents-2.agent-config-primitives.mac.step1")}</li>
+                <li><Trans i18nKey="area.agents-2.agent-config-primitives.mac.step2" components={[<kbd />]} /></li>
+                <li>{t("area.agents-2.agent-config-primitives.mac.step3")}</li>
+                <li>{t("area.agents-2.agent-config-primitives.pasteStep")}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
-                /Users/yourname/Documents/project
+                {EXAMPLE_MAC_PATH}
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Windows (File Explorer)</p>
+              <p className="font-medium">{t("area.agents-2.agent-config-primitives.win.title")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in File Explorer.</li>
-                <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
-                <li>Click "Copy as path".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("area.agents-2.agent-config-primitives.win.step1")}</li>
+                <li><Trans i18nKey="area.agents-2.agent-config-primitives.win.step2" components={[<kbd />]} /></li>
+                <li>{t("area.agents-2.agent-config-primitives.win.step3")}</li>
+                <li>{t("area.agents-2.agent-config-primitives.pasteStep")}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
-                C:\Users\yourname\Documents\project
+                {EXAMPLE_WINDOWS_PATH}
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Terminal fallback (macOS/Linux)</p>
+              <p className="font-medium">{t("area.agents-2.agent-config-primitives.term.title")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Run <code>cd /path/to/folder</code>.</li>
-                <li>Run <code>pwd</code>.</li>
-                <li>Copy the output and paste it into the path input.</li>
+                <li><Trans i18nKey="area.agents-2.agent-config-primitives.term.step1" components={[<code />]} /></li>
+                <li><Trans i18nKey="area.agents-2.agent-config-primitives.term.step2" components={[<code />]} /></li>
+                <li>{t("area.agents-2.agent-config-primitives.term.step3")}</li>
               </ol>
             </section>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
-              OK
+              {t("area.agents-2.agent-config-primitives.ok")}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -2,8 +2,9 @@ import { Copy, KeyRound, RefreshCw, Server, ServerOff, Sparkles } from "lucide-r
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { useTranslation } from "@/i18n";
+import { accessKindLabel } from "./accessKindLabel";
 import {
-  ACCESS_KIND_LABEL,
   formatAccessMoment,
   grantedAgents,
   hostNamesFor,
@@ -63,6 +64,7 @@ export function AccessDetailView({
   onRevoke,
   onCopyPublicKey,
 }: AccessDetailViewProps) {
+  const { t } = useTranslation();
   const usages = usedByBindings(record);
   const hostNames = hostNamesFor(record, hosts);
 
@@ -72,31 +74,31 @@ export function AccessDetailView({
         <div className="flex flex-wrap items-center gap-2">
           <KeyRound className="h-4 w-4 text-muted-foreground" />
           <span className="text-base font-semibold text-foreground">{record.name}</span>
-          <Badge variant="outline">{ACCESS_KIND_LABEL[record.kind]}</Badge>
+          <Badge variant="outline">{accessKindLabel(t, record.kind)}</Badge>
           <span className="text-xs text-muted-foreground">{record.status}</span>
         </div>
         <span className="font-mono text-xs text-muted-foreground">{record.key}</span>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <DetailField label="Version">
+        <DetailField label={t("area.access-hub.access-detail.version")}>
           <span className="font-mono">v{record.latestVersion}</span>
         </DetailField>
-        <DetailField label="Created">
+        <DetailField label={t("area.access-hub.access-detail.created")}>
           <span className="font-mono">{formatAccessMoment(record.createdAt)}</span>
         </DetailField>
-        <DetailField label="Last rotated">
+        <DetailField label={t("area.access-hub.access-detail.lastRotated")}>
           <span className="font-mono">{formatAccessMoment(record.lastRotatedAt)}</span>
         </DetailField>
-        <DetailField label="Public fingerprint">
+        <DetailField label={t("area.access-hub.access-detail.publicFingerprint")}>
           <span className="font-mono">{record.fingerprint ?? "—"}</span>
         </DetailField>
       </div>
 
       <div className="flex flex-col gap-1">
-        <span className="text-xs text-muted-foreground">Used by</span>
+        <span className="text-xs text-muted-foreground">{t("area.access-hub.access-detail.usedBy")}</span>
         {usages.length === 0 && hostNames.length === 0 ? (
-          <span className="text-sm text-muted-foreground">Not used anywhere yet.</span>
+          <span className="text-sm text-muted-foreground">{t("area.access-hub.access-detail.unused")}</span>
         ) : (
           <ul className="flex flex-col gap-0.5 text-sm">
             {usages.map((binding) => (
@@ -109,7 +111,7 @@ export function AccessDetailView({
               </li>
             ))}
             {hostNames.length > 0 ? (
-              <li className="text-muted-foreground">Hosts: {hostNames.join(", ")}</li>
+              <li className="text-muted-foreground">{t("area.access-hub.access-detail.hosts", { names: hostNames.join(", ") })}</li>
             ) : null}
           </ul>
         )}
@@ -118,14 +120,14 @@ export function AccessDetailView({
       {sshPublicKey ? (
         <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/40 p-3" data-testid="access-hub-public-key">
           <span className="text-xs text-muted-foreground">
-            Public key — shown once. Add it to the target host&apos;s authorized keys before leaving this card.
+            {t("area.access-hub.access-detail.publicKeyNotice")}
           </span>
           <span className="break-all font-mono text-xs text-foreground">{sshPublicKey}</span>
           <span className="font-mono text-xs text-muted-foreground">
-            Fingerprint: {record.fingerprint ?? "—"}
+            {t("area.access-hub.access-detail.fingerprint", { value: record.fingerprint ?? "—" })}
           </span>
           <Button size="sm" variant="outline" onClick={() => onCopyPublicKey(sshPublicKey)}>
-            <Copy className="mr-1 h-3.5 w-3.5" /> Copy public key
+            <Copy className="mr-1 h-3.5 w-3.5" /> {t("area.access-hub.access-detail.copyPublicKey")}
           </Button>
         </div>
       ) : null}
@@ -134,18 +136,18 @@ export function AccessDetailView({
 
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="outline" disabled={busy} onClick={onSetValue}>
-          Change value
+          {t("area.access-hub.access-detail.changeValue")}
         </Button>
         <Button size="sm" variant="outline" disabled={busy} onClick={onRotate}>
-          <RefreshCw className="mr-1 h-3.5 w-3.5" /> Rotate
+          <RefreshCw className="mr-1 h-3.5 w-3.5" /> {t("area.access-hub.access-detail.rotate")}
         </Button>
         {record.kind === "ssh_key" ? (
           <Button size="sm" variant="outline" disabled={busy} onClick={onGenerateSsh}>
-            <Sparkles className="mr-1 h-3.5 w-3.5" /> Generate new key
+            <Sparkles className="mr-1 h-3.5 w-3.5" /> {t("area.access-hub.access-detail.generateNewKey")}
           </Button>
         ) : null}
         <Button size="sm" variant="outline" disabled={busy} onClick={onDeployHosts}>
-          <Server className="mr-1 h-3.5 w-3.5" /> Deploy to hosts
+          <Server className="mr-1 h-3.5 w-3.5" /> {t("area.access-hub.access-detail.deployToHosts")}
         </Button>
         <Button
           size="sm"
@@ -153,14 +155,14 @@ export function AccessDetailView({
           disabled={busy || record.hostRefs.length === 0}
           onClick={onWithdrawHosts}
         >
-          <ServerOff className="mr-1 h-3.5 w-3.5" /> Withdraw from hosts
+          <ServerOff className="mr-1 h-3.5 w-3.5" /> {t("area.access-hub.access-detail.withdrawFromHosts")}
         </Button>
       </div>
 
       <Separator />
 
       <div className="flex flex-col gap-2">
-        <span className="text-xs text-muted-foreground">Granted to agents</span>
+        <span className="text-xs text-muted-foreground">{t("area.access-hub.access-detail.grantedToAgents")}</span>
         <GrantRevokeControls
           agents={agents}
           granted={grantedAgents(record)}

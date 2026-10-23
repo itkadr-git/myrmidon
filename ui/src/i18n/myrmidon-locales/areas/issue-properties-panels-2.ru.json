@@ -1,0 +1,367 @@
+{
+  "area": {
+    "issue-properties-panels-2": {
+      "issue-output-section": {
+        "browseInGallery": "Просмотреть {{filename}} в галерее",
+        "open": "Открыть {{filename}}",
+        "ariaLabel": "Результаты задачи",
+        "title": "Результат",
+        "alsoProduced": "Также получено"
+      },
+      "issue-properties-artifacts-tab": {
+        "bytes": {
+          "b": "{{value}} Б",
+          "kb": "{{value}} КБ",
+          "mb": "{{value}} МБ"
+        },
+        "statusForReview": "На ревью",
+        "statusChangesRequested": "Нужны правки",
+        "statusFailed": "Ошибка",
+        "tooLarge": "Этот Markdown-файл слишком велик для предпросмотра. Откройте исходный файл или скачайте его.",
+        "documentEmpty": "Документ пуст.",
+        "previewUnsupported": "Этот файл нельзя показать как Markdown. Откройте исходный файл или скачайте его.",
+        "previewFailed": "Не удалось загрузить предпросмотр.",
+        "preparingPreview": "Подготовка предпросмотра…",
+        "revision": "Ревизия {{number}}",
+        "openRaw": "Открыть исходный файл {{title}}",
+        "openRawShort": "Открыть исходный файл",
+        "download": "Скачать {{title}}",
+        "downloadShort": "Скачать",
+        "empty": "Артефактов пока нет. Здесь появятся результаты работы, документы и файлы, созданные агентами.",
+        "run": "Прогон {{id}}"
+      },
+      "issue-properties-plans-tab": {
+        "loading": "Загрузка плана…",
+        "planModeNoDocument": "Задача в режиме планирования, но документ плана ещё не написан.",
+        "confirmationPendingNoDocument": "Ожидается подтверждение плана, но документа плана, который нужно подтвердить, нет.",
+        "empty": "Плана пока нет. Здесь появятся документ плана, принятые планы и их ревизии.",
+        "revisionUpdated": "Ревизия {{revision}} · обновлено {{date}}"
+      },
+      "issue-properties": {
+        "copyable": {
+          "copy": "Скопировать {{value}} в буфер обмена",
+          "copied": "Скопировано"
+        },
+        "pheromone": {
+          "label": "Сила феромона",
+          "hint": "Задачи с большим значением той же касты забираются первыми.",
+          "effectiveNow": "Сейчас действует: {{value}} (сила + выдержка в очереди)."
+        },
+        "p0": {
+          "label": "P0",
+          "hint": "P0 идёт вне очереди независимо от силы феромона."
+        },
+        "caste": {
+          "label": "Каста",
+          "none": "Без касты (по умолчанию проекта)",
+          "hint": "Попадает в очередь этой касты."
+        },
+        "about": {
+          "unarchiveFailed": "Не удалось вернуть задачу из архива. Попробуйте ещё раз.",
+          "via": "через {{name}}",
+          "archivedBy": "Архивировал: {{name}} · {{date}}",
+          "unarchiving": "Возврат из архива…",
+          "unarchive": "Вернуть из архива"
+        },
+        "workspace": {
+          "newIsolated": "Новая изолированная рабочая область",
+          "reuseExisting": "Использовать существующую рабочую область",
+          "default": "По умолчанию",
+          "notAttached": "Задача не привязана к рабочей области.",
+          "jobCompleted": "Задание рабочей области выполнено.",
+          "serviceStopped": "Сервис рабочей области остановлен.",
+          "serviceRestarted": "Сервис рабочей области перезапущен.",
+          "serviceStarted": "Сервис рабочей области запущен.",
+          "controlFailed": "Не удалось выполнить команду рабочей области.",
+          "defaultHint": "Политика рабочей области проекта",
+          "newIsolatedHint": "Создать новую рабочую область при следующем прогоне",
+          "reuseExistingEllipsis": "Использовать существующую рабочую область…",
+          "reuseHint": "Выбрать рабочую область для повторного использования",
+          "appliesNextRunKeepCurrent": "Текущая рабочая область остаётся активной. Применится при следующем прогоне.",
+          "appliesNextRun": "Применится при следующем прогоне.",
+          "backToOptions": "Назад к вариантам рабочей области",
+          "mode": "Режим рабочей области",
+          "search": "Поиск рабочих областей...",
+          "searchAria": "Поиск рабочих областей для повторного использования",
+          "loading": "Загрузка рабочих областей...",
+          "loadFailed": "Не удалось загрузить рабочие области.",
+          "noMatching": "Подходящих рабочих областей нет.",
+          "view": "Открыть рабочую область",
+          "waiting": "Ожидание рабочей области"
+        },
+        "model": {
+          "overrideSummary": "Переопределение · {{details}}",
+          "overrideAdapterOptions": "Переопределение · параметры адаптера",
+          "overrideTitle": "Переопределение модели на уровне задачи — заменяет основную модель агента для этой задачи.",
+          "primaryModel": "Основная модель",
+          "lane": "Линия модели",
+          "lanePrimary": "Основная",
+          "laneOverride": "Переопределение",
+          "model": "Модель",
+          "defaultModel": "Модель по умолчанию",
+          "searchModels": "Поиск моделей...",
+          "noModels": "Модели не найдены.",
+          "thinkingEffort": "Глубина рассуждений",
+          "enableChrome": "Включить Chrome (--chrome)",
+          "noEditableOverrides": "Адаптер этого исполнителя не поддерживает редактируемые переопределения задачи.",
+          "selectCompatibleAssignee": "Выберите подходящего исполнителя, чтобы править эти переопределения.",
+          "clearAdapterOptions": "Сбросить параметры адаптера"
+        },
+        "execution": {
+          "runReviewNow": "Запустить ревью сейчас",
+          "runApprovalNow": "Запустить согласование сейчас",
+          "reviewChangesRequestedBy": "Ревью: правки запросил {{name}}",
+          "approvalChangesRequestedBy": "Согласование: правки запросил {{name}}",
+          "reviewChangesRequested": "Ревью: запрошены правки",
+          "approvalChangesRequested": "Согласование: запрошены правки",
+          "reviewPendingWith": "Ревью ожидает: {{name}}",
+          "approvalPendingWith": "Согласование ожидает: {{name}}",
+          "reviewPending": "Ревью ожидается",
+          "approvalPending": "Согласование ожидается",
+          "searchReviewers": "Поиск ревьюеров...",
+          "searchApprovers": "Поиск согласующих...",
+          "noReviewers": "Без ревьюеров",
+          "noApprovers": "Без согласующих"
+        },
+        "watchdog": {
+          "disabled": "(выключен)",
+          "agent": "Агент-наблюдатель",
+          "selectAgent": "Выберите агента",
+          "noAgent": "Без наблюдателя",
+          "searchAgents": "Поиск агентов...",
+          "noAgentsFound": "Агенты не найдены.",
+          "instructions": "Инструкции",
+          "optional": "(необязательно)",
+          "instructionsPlaceholder": "За чем должен следить наблюдатель и как ему двигать работу дальше?",
+          "task": "Задача наблюдателя:",
+          "viewTask": "Открыть задачу",
+          "saving": "Сохранение…",
+          "set": "Назначить наблюдателя",
+          "openTask": "Открыть задачу наблюдателя"
+        },
+        "labels": {
+          "addLabel": "Добавить метку",
+          "more": "ещё {{count}}",
+          "search": "Поиск меток...",
+          "newLabel": "Новая метка",
+          "creating": "Создание…",
+          "create": "Создать метку"
+        },
+        "monitor": {
+          "cleared": "Снят",
+          "checkingMomentarily": "проверка вот-вот начнётся…",
+          "firesOnNextTick": "сработает на ближайшем тике",
+          "attempt": "Попытка {{count}}",
+          "lastChecked": "проверен {{when}}",
+          "afterAttempt": "после попытки {{count}}",
+          "title": "Монитор",
+          "nextCheck": "Следующая проверка",
+          "watching": "Что отслеживается",
+          "notes": "Заметки",
+          "lastTriggered": "Последнее срабатывание",
+          "notYetTriggered": "ещё не срабатывал",
+          "checking": "Проверка…",
+          "checkNow": "Проверить сейчас",
+          "edit": "Изменить",
+          "clear": "Снять",
+          "notesPlaceholder": "Что агенту перепроверить?",
+          "servicePlaceholder": "Внешний сервис",
+          "schedule": "Запланировать"
+        },
+        "retry": {
+          "pendingSchedule": "Ожидает расписания",
+          "continuationDueNow": "Продолжение: срок наступил",
+          "retryDueNow": "Повтор: срок наступил",
+          "continuationWhen": "Продолжение {{when}}",
+          "retryWhen": "Повтор {{when}}",
+          "scheduledContinuation": "Запланированное продолжение",
+          "scheduledRetry": "Запланированный повтор",
+          "reason": "Причина",
+          "failureClass": "Класс сбоя",
+          "nextAttempt": "Следующая попытка",
+          "replacesRun": "Заменяет прогон",
+          "agent": "Агент",
+          "lastError": "Последняя ошибка",
+          "alreadyPromoted": "Уже запущен",
+          "promoted": "Запущен",
+          "retryNow": "Повторить сейчас",
+          "promoting": "Запускаем запланированный повтор",
+          "alreadyPromotedStarting": "Уже запущен — прогон стартует",
+          "promotedStarting": "Запущен — прогон стартует",
+          "pullsContinuation": "Немедленно переносит продолжение на сейчас",
+          "pullsRetry": "Немедленно переносит повтор на сейчас"
+        },
+        "assignee": {
+          "unassigned": "Не назначен",
+          "assignToMe": "Назначить на себя",
+          "assignTo": "Назначить: {{name}}",
+          "assignToRequester": "Назначить на автора",
+          "requesterSearch": "автор",
+          "noAssignee": "Без исполнителя",
+          "search": "Поиск исполнителей...",
+          "agents": "Агенты",
+          "boardUsers": "Пользователи доски",
+          "noMatches": "Ничего не найдено.",
+          "requester": "Автор"
+        },
+        "project": {
+          "noProject": "Без проекта",
+          "search": "Поиск проектов..."
+        },
+        "parent": {
+          "parentTask": "Родительская задача",
+          "noParent": "Без родителя"
+        },
+        "tasks": {
+          "search": "Поиск задач...",
+          "searching": "Поиск задач...",
+          "noMatching": "Подходящих задач нет."
+        },
+        "blockers": {
+          "searchAria": "Поиск задач, которые станут блокерами",
+          "none": "Без блокеров",
+          "add": "Добавить блокер"
+        },
+        "subtasks": {
+          "none": "Подзадач пока нет.",
+          "add": "Добавить подзадачу",
+          "addSubTask": "Добавить подзадачу"
+        },
+        "rows": {
+          "status": "Статус",
+          "priority": "Приоритет",
+          "model": "Модель",
+          "project": "Проект",
+          "labels": "Метки",
+          "parent": "Родитель",
+          "blockedBy": "Блокируют",
+          "blocking": "Блокирует",
+          "subtasks": "Подзадачи",
+          "subTasks": "Подзадачи",
+          "referenced": "Упомянуты",
+          "relatedTasks": "Связанные задачи",
+          "approvals": "Согласования",
+          "reviewers": "Ревьюеры",
+          "approvers": "Согласующие",
+          "execution": "Исполнение",
+          "workspace": "Рабочая область",
+          "scheduledRetry": "Запланированный повтор",
+          "monitor": "Монитор",
+          "watchdog": "Наблюдатель",
+          "service": "Сервис",
+          "branch": "Ветка",
+          "folder": "Папка",
+          "originating": "Автор",
+          "started": "Начата",
+          "completed": "Завершена",
+          "created": "Создана",
+          "updated": "Обновлена",
+          "archived": "В архиве",
+          "depth": "Глубина"
+        },
+        "sections": {
+          "relationships": "Связи",
+          "execution": "Исполнение",
+          "workspace": "Рабочая область",
+          "work": "Работа",
+          "triage": "Разбор",
+          "about": "О задаче"
+        },
+        "tabs": {
+          "properties": "Свойства",
+          "subtasks": "Подзадачи",
+          "references": "Ссылки",
+          "plan": "План",
+          "artifacts": "Артефакты",
+          "panelAria": "Разделы панели свойств",
+          "close": "Закрыть вкладку «{{label}}»",
+          "openClosed": "Открыть закрытую вкладку боковой панели",
+          "allOpen": "Все вкладки боковой панели открыты"
+        }
+      },
+      "output-primary-card": {
+        "browseInGallery": "Просмотреть {{filename}} в галерее",
+        "open": "Открыть {{filename}}",
+        "metadataUnavailable": "Сведения о результате недоступны — этот файл нельзя воспроизвести или скачать здесь.",
+        "primary": "Основной",
+        "browse": "Просмотр",
+        "openButton": "Открыть",
+        "downloadFile": "Скачать {{filename}}",
+        "download": "Скачать"
+      },
+      "output-row": {
+        "detailsUnavailable": "Сведения о файле недоступны",
+        "openInNewTab": "Открыть в новой вкладке",
+        "open": "Открыть {{filename}}",
+        "download": "Скачать",
+        "downloadFile": "Скачать {{filename}}"
+      },
+      "standalone-browser-controls": {
+        "linkCopied": "Ссылка скопирована",
+        "shareFailed": "Не удалось поделиться",
+        "shareFailedBody": "Попробуйте открыть страницу в браузере.",
+        "refresh": "Обновить",
+        "share": "Поделиться",
+        "openInBrowser": "Открыть в браузере"
+      },
+      "workspace-file-browser": {
+        "unavailable": {
+          "remoteTitle": "Предпросмотр удалённой рабочей области не поддерживается",
+          "remoteBody": "Эта рабочая область находится на удалённом сервере, встроенный предпросмотр пока недоступен.",
+          "noWorkspaceTitle": "Рабочей области пока нет",
+          "noWorkspaceBody": "У этой задачи нет рабочей области для просмотра. Файлы появятся здесь, когда прогон её создаст.",
+          "goneTitle": "Рабочая область больше недоступна",
+          "goneBody": "Изолированная рабочая копия этой задачи удалена, поэтому файлы нельзя просмотреть.",
+          "genericTitle": "Рабочая область недоступна",
+          "genericBody": "Файлы этой рабочей области сейчас нельзя просмотреть."
+        },
+        "breadcrumbs": {
+          "currentFolder": "Текущая папка"
+        },
+        "row": {
+          "download": "Скачать {{name}}"
+        },
+        "tree": {
+          "loadingFolder": "Загрузка папки…",
+          "ariaLabel": "Файлы рабочей области"
+        },
+        "loadMoreFolder": "Загрузить ещё из этой папки",
+        "announcement": {
+          "loading": "Загрузка файлов рабочей области…",
+          "error": "Не удалось загрузить файлы рабочей области.",
+          "none": "Подходящих файлов нет.",
+          "count_one": "Найден {{count}} элемент.",
+          "count_other": "Найдено {{count}} элемента.",
+          "count_few": "Найдено {{count}} элемента.",
+          "count_many": "Найдено {{count}} элементов."
+        },
+        "state": {
+          "noOrgTitle": "Организация не выбрана",
+          "noOrgBody": "Выберите организацию, прежде чем просматривать рабочую область другого проекта.",
+          "loadingProjectsTitle": "Загрузка рабочих областей проектов",
+          "loadingProjectsBody": "Здесь появятся зарегистрированные рабочие области.",
+          "noProjectsTitle": "Рабочих областей проектов нет",
+          "noProjectsBody": "Ни у одного проекта этой организации нет зарегистрированной рабочей области."
+        },
+        "error": {
+          "changedTempTitle": "Изменённые файлы временно недоступны",
+          "loadFailedTitle": "Не удалось загрузить файлы",
+          "throttledBody": "Myrmidon ограничивает сканирование рабочих областей, чтобы сервер отвечал быстро. Повторите чуть позже.",
+          "notAvailableBody": "Просмотр рабочей области для этой задачи недоступен.",
+          "genericBody": "При загрузке файлов рабочей области что-то пошло не так."
+        },
+        "empty": {
+          "noMatch": "Нет файлов по запросу «{{query}}»",
+          "noRecent": "Недавно изменённых файлов пока нет",
+          "hint": "Попробуйте поиск по имени или пути."
+        },
+        "search": {
+          "placeholder": "Поиск файлов по имени или пути…",
+          "ariaLabel": "Поиск по файлам рабочей области",
+          "refresh": "Обновить файлы рабочей области"
+        },
+        "showingFirst": "Показаны первые {{shown}} — уточните поиск, чтобы сузить."
+      }
+    }
+  }
+}
