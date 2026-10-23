@@ -156,6 +156,21 @@ type memoryRetainRequest struct {
 	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
+type memoryExportRequest struct {
+	BotKey string `json:"botKey"`
+}
+
+func validMemoryBotKey(key string) bool {
+	return validBotKey(key)
+}
+
+func (c *memoryClient) export(ctx context.Context, botKey string) ([]byte, error) {
+	if !validMemoryBotKey(botKey) {
+		return nil, fmt.Errorf("invalid bot key")
+	}
+	return c.request(ctx, http.MethodPost, "/export", map[string]any{"botKey": botKey})
+}
+
 func decodeMemoryBody(r *http.Request, out any) error {
 	dec := json.NewDecoder(io.LimitReader(r.Body, maxMemoryResponse))
 	dec.DisallowUnknownFields()

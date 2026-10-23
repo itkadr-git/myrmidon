@@ -13,6 +13,7 @@ func memoryRouteServer(t *testing.T, upstream *httptest.Server) *server {
 	cfg := testConfig()
 	if upstream != nil {
 		cfg.Memory = &memoryConfig{Enabled: true, URL: upstream.URL, Bank: "fleetd"}
+		cfg.Bots = []bot{{BotKey: "bot-1", MaxMemoryMb: 1024, MaxCpus: 1, MaxPids: 128}}
 	}
 	mc, err := newMemoryClient(cfg.Memory)
 	if upstream != nil && err != nil {
@@ -31,6 +32,8 @@ func routeMemory(s *server, method, path, token, body string) *httptest.Response
 		if strings.HasPrefix(r.URL.Path, "/v1/memory/") {
 			if strings.HasSuffix(r.URL.Path, "/recall") {
 				s.memoryRecall(w, r)
+			} else if strings.HasSuffix(r.URL.Path, "/export") {
+				s.memoryExport(w, r)
 			} else {
 				s.memoryRetain(w, r)
 			}
@@ -51,6 +54,10 @@ func TestMemoryRoutesDisabledAnswer503(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("retain disabled: got %d", rec.Code)
 	}
+	rec = routeMemory(s, http.MethodPost, "/v1/memory/export", s.cfg.Token, `{}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("export disabled: got %d", rec.Code)
+	}
 }
 
 func TestMemoryRoutesRequireAuth(t *testing.T) {
@@ -63,11 +70,16 @@ func TestMemoryRoutesRequireAuth(t *testing.T) {
 }
 
 func TestMemoryRoutesForwardToUpstream(t *testing.T) {
-	var gotPath, gotQuery string
+	var gotPath, gotQuery, gotBot string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		}
+		if q, ok := body["botKey"].(string); ok {
+			gotBot = q
+		}
 		if q, ok := body["query"].(string); ok {
 			gotQuery = q
 		}
@@ -88,6 +100,17 @@ func TestMemoryRoutesForwardToUpstream(t *testing.T) {
 	}
 	if !strings.HasPrefix(gotPath, "/v1/default/banks/fleetd/memories") {
 		t.Fatalf("retain path = %q", gotPath)
+	}
+	rec = routeMemory(s, http.MethodPost, "/v1/memory/export", s.cfg.Token, `{"botKey":"bot-1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export: got %d %s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/v1/default/banks/fleetd/memories/export" || gotBot != "bot-1" {
+		t.Fatalf("export upstream saw %q / %q", gotPath, gotBot)
+	}
+	rec = routeMemory(s, http.MethodPost, "/v1/memory/export", s.cfg.Token, `{"botKey":"unknown"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown bot export: got %d", rec.Code)
 	}
 }
 

@@ -96,3 +96,34 @@ func TestMemoryClientRetainUsesAsyncBatch(t *testing.T) {
 		t.Fatalf("item = %#v", item)
 	}
 }
+
+func TestMemoryClientExportUsesSiteAgentContract(t *testing.T) {
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/default/banks/fleetd/memories/export" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	}))
+	defer upstream.Close()
+	client, err := newMemoryClient(&memoryConfig{Enabled: true, URL: upstream.URL, Bank: "fleetd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.export(context.Background(), "bot-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got["botKey"] != "bot-1" {
+		t.Fatalf("export body = %#v", got)
+	}
+}
+
+func TestMemoryClientExportRejectsInvalidBotKey(t *testing.T) {
+	client := &memoryClient{}
+	if _, err := client.export(context.Background(), "../secret"); err == nil {
+		t.Fatal("expected invalid bot key to be rejected")
+	}
+}
