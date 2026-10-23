@@ -44,7 +44,7 @@ index cadf8bf..0e71549 100644
      self._activate_admitted_request()
      # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
      # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
-@@ -778,6 +797,26 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
+@@ -778,6 +797,27 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
              # tools/environments/local.py then strips them for this run's spawns.
              if run.github_broker:
                  resets.append(set_github_broker_vars(run.github_broker))
@@ -52,9 +52,11 @@ index cadf8bf..0e71549 100644
 +            # the copy BEFORE the model starts (bot-disk contract C6). On success the
 +            # run's cwd is the copy (bound as the session cwd, so the prompt builder,
 +            # context discovery and every tool agree) and its terminal children see
-+            # MYRMIDON_TASK_WORKSPACE via the local env bridge. Exit codes 3/4/5 fall
-+            # back to /scratch with a run warning event instead of failing the turn;
-+            # anything else raises and fails the run loudly.
++            # MYRMIDON_TASK_WORKSPACE via the local env bridge. ANY open failure
++            # (refusal 3/4/5, other exit code, timeout, bad output) falls back to
++            # /scratch with a run warning event instead of failing the turn: a
++            # workspace that cannot be opened is a turn problem, not an agent fault
++            # (OPE-8946), and a failed run would push the agent towards status error.
 +            if run.workspace is not None:
 +                from agent.runtime_cwd import reset_session_cwd, set_session_cwd
 +                from tools.run_workspace import (
@@ -113,7 +115,7 @@ new file mode 100644
 index 0000000..360e518
 --- /dev/null
 +++ b/tools/run_workspace.py
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,179 @@
 +"""Run-scoped task workspace resolution via ``myr-ws open`` (myrmidon BOT-DISK-H5b).
 +
 +The board's hermes_gateway adapter may attach a ``workspace`` field to a
@@ -126,10 +128,12 @@ index 0000000..360e518
 +
 +On success the run's cwd is the opened copy (``/workspace/<key>``) and its
 +terminal children see ``MYRMIDON_TASK_WORKSPACE`` pointing at it. Exit codes
-+3/4/5 (quota refusal, base limit, network) never fail the run: it starts in
++(quota refusal, base limit, network) and every other open failure (any other
++exit code, timeout, undecodable output) never fail the run: it starts in
 +the fallback directory ``/scratch`` instead and the run stream carries a
 +warning event — a silent failure would send the agent's edits to the wrong
-+directory. A request without the field behaves exactly as before.
++directory, and a failed run would count against the agent's health (OPE-8946).
++A request without the field behaves exactly as before.
 +
 +Concurrency: the resolved path lives in a ContextVar bound in
 +``_run_agent_sync`` (the run's executor thread), never in the process env —
@@ -156,11 +160,12 @@ index 0000000..360e518
 +
 +# Contract C6 (packages/shared/src/myrmidon-bot-workspace.ts in the board repo):
 +# exit codes 3/4/5 fall back to RUN_WORKSPACE_FALLBACK_DIR with a warning
-+# event; any other code (and timeouts, missing binary, bad output) fails the
-+# run loudly — those mean a broken CLI or a broken call, not disk pressure.
++# event. OPE-8946: so does every other open failure (other exit code, timeout,
++# bad output) — an unopenable workspace is a turn error, never a reason to fail
++# the run and flip the agent to status error. The warning carries the cause.
 +RUN_WORKSPACE_FALLBACK_DIR = "/scratch"
 +MYR_WS_OPEN_TIMEOUT_SEC = 120
-+_FALLBACK_EXIT_CODES = (3, 4, 5)
++_TIMEOUT_EXIT_CODE = 124
 +_TASK_WORKSPACE_ENV = "MYRMIDON_TASK_WORKSPACE"
 +
 +# (path, is_fallback) for the current run context, or None when the request
@@ -232,15 +237,21 @@ index 0000000..360e518
 +    return os.environ.get("MYRMIDON_WS_BIN") or "myr-ws"
 +
 +
++def _fallback(exit_code: int, error: str) -> Dict[str, Any]:
++    logger.warning("myr-ws open failed (exit %s), run falls back to %s: %s",
++                   exit_code, RUN_WORKSPACE_FALLBACK_DIR, error)
++    return {"path": RUN_WORKSPACE_FALLBACK_DIR, "fallback": True,
++            "exit_code": exit_code, "error": error}
++
++
 +def open_task_workspace(field: Dict[str, Any]) -> Dict[str, Any]:
 +    """Run ``myr-ws open`` for a validated workspace field.
 +
 +    Returns ``{"path": <dir>, "fallback": bool, "exit_code": int,
 +    "error": str}``. ``fallback`` is True for contract exit codes 3/4/5:
 +    ``path`` is then the fallback dir and the caller must surface ``error``
-+    as a run warning. Raises RuntimeError for every other failure shape
-+    (non-fallback exit code, timeout, missing binary, undecodable output):
-+    those are operator-visible breakage, not disk pressure.
++    as a run warning. Never raises for an open failure (any exit code, timeout,
++    missing binary, undecodable output): the run starts in the fallback dir.
 +    """
 +    ws = _validate_workspace_field(field)
 +    argv = [_myr_ws_bin(), "open", ws["key"], ws["repo"]]
@@ -260,8 +271,11 @@ index 0000000..360e518
 +        proc = subprocess.run(
 +            argv, capture_output=True, text=True, timeout=MYR_WS_OPEN_TIMEOUT_SEC)
 +    except subprocess.TimeoutExpired:
-+        raise RuntimeError(
++        return _fallback(
++            _TIMEOUT_EXIT_CODE,
 +            f"myr-ws open timed out after {MYR_WS_OPEN_TIMEOUT_SEC}s for {ws['key']}")
++    except OSError as exc:
++        return _fallback(1, f"myr-ws open could not start for {ws['key']}: {exc}")
 +    stdout = (proc.stdout or "").strip()
 +    parsed: Dict[str, Any] = {}
 +    if stdout:
@@ -272,18 +286,12 @@ index 0000000..360e518
 +    if proc.returncode == 0:
 +        path = parsed.get("path") if isinstance(parsed, dict) else None
 +        if not (isinstance(path, str) and path):
-+            raise RuntimeError(
-+                f"myr-ws open {ws['key']} exited 0 without a JSON path: {stdout[:200]!r}")
++            return _fallback(
++                1, f"myr-ws open {ws['key']} exited 0 without a JSON path: {stdout[:200]!r}")
 +        return {"path": path, "fallback": False, "exit_code": 0, "error": ""}
 +    error_text = ""
 +    if isinstance(parsed, dict) and parsed.get("ok") is False:
 +        error_text = str(parsed.get("error") or "")
 +    if not error_text:
 +        error_text = (proc.stderr or "").strip() or f"myr-ws open exited {proc.returncode}"
-+    if proc.returncode in _FALLBACK_EXIT_CODES:
-+        return {
-+            "path": RUN_WORKSPACE_FALLBACK_DIR, "fallback": True,
-+            "exit_code": proc.returncode, "error": error_text,
-+        }
-+    raise RuntimeError(
-+        f"myr-ws open {ws['key']} failed (exit {proc.returncode}): {error_text[:300]}")
++    return _fallback(proc.returncode, error_text[:300])
