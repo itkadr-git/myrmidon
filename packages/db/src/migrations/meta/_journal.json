@@ -2445,6 +2445,13 @@
       "when": 1792395511000,
       "tag": "0411_pool_chat_module_instance",
       "breakpoints": true
+    },
+    {
+      "idx": 412,
+      "version": "7",
+      "when": 1792395512000,
+      "tag": "0412_fleet_site_health_move_claim",
+      "breakpoints": true
     }
   ]
 }

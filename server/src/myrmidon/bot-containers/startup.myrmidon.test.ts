@@ -472,3 +472,37 @@ describe("myrmidon(1.6.6 T1) fleet routing in startup", () => {
     stopBotContainers();
   });
 });
+
+// myrmidon(1.6.6 REMOTE-SITES-T4): the site-monitor lane starts with the runtime and stops with it.
+describe("startBotContainers and the site-monitor lane", () => {
+  it("starts the lane after the runtime is registered, hands it the client manager, and folds its stop into the run's stop", () => {
+    const h = harness();
+    const stopHealth = vi.fn();
+    const startSiteHealth = vi.fn((_db: Db, _opts: { env?: NodeJS.ProcessEnv; clientManager: unknown }) => {
+      // The lane moves bots through the registered runtime, so it must already be there.
+      expect(h.registered()).not.toBeNull();
+      return stopHealth;
+    });
+    const stop = startBotContainers(DB, { env: ENABLED, ports: { ...h.ports, startSiteHealth: startSiteHealth as never } });
+
+    expect(startSiteHealth).toHaveBeenCalledOnce();
+    const call = startSiteHealth.mock.calls[0]!;
+    expect(call[1].env).toBe(ENABLED);
+    expect(typeof (call[1].clientManager as { getClients: unknown }).getClients).toBe("function");
+    expect(stopHealth).not.toHaveBeenCalled();
+
+    stop();
+    expect(stopHealth).toHaveBeenCalledOnce();
+    stop();
+    expect(stopHealth).toHaveBeenCalledOnce();
+    stopBotContainers();
+  });
+
+  it("is not started when the container runtime is off", () => {
+    const h = harness();
+    const startSiteHealth = vi.fn(() => () => {});
+    startBotContainers(DB, { env: {}, ports: { ...h.ports, startSiteHealth } });
+    expect(startSiteHealth).not.toHaveBeenCalled();
+  });
+});
+

@@ -188,6 +188,7 @@ import { myrmidonLitellmWorkersRoutes } from "./myrmidon/litellm-workers/routes.
 import { agentInstructionsRevisionsRoutes } from "./myrmidon/agent-instructions-revisions/index.js"; // myrmidon(H2)
 import { myrmidonFleetConsoleRoutes } from "./myrmidon/fleet-console/index.js"; // myrmidon(SC1)
 import { myrmidonFleetMoveRoutes } from "./myrmidon/bot-containers/fleet-move-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
+import { siteHealthRoutes } from "./myrmidon/bot-containers/site-health-routes.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { myrmidonPromptBudgetAdviceRoutes } from "./myrmidon/prompt-budget-advice/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET C)
 import { myrmidonMonitoringLinkRoutes } from "./myrmidon/monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
 import { myrmidonMonitoringDashboardRoutes } from "./myrmidon/monitoring/dashboard/index.js"; // myrmidon(1.6.6 MONITORING C)
@@ -1173,6 +1174,7 @@ export async function createApp(
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
   api.use(myrmidonFleetMoveRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T5)
+  api.use(siteHealthRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T4): site health badges
   api.use(myrmidonCloudConnectorRoutes(db)); // myrmidon(CLOUD-CONNECTOR)
   api.use(myrmidonPromptBudgetAdviceRoutes(db)); // myrmidon(1.6.3 PROMPT-BUDGET C): prompt-budget advice and deep analysis
   api.use(myrmidonMonitoringLinkRoutes(db)); // myrmidon(1.6.6 MONITORING E): link liveness feed and the link pulse endpoint

@@ -318,8 +318,20 @@ export interface FleetClientManagerDeps {
   };
 }
 
+/** How the board reaches a site-agent: the address, the bearer token and the mTLS agent of a live client. */
+export interface FleetSiteTransport {
+  baseUrl: string;
+  token?: string;
+  agent?: https.Agent;
+}
+
 export interface FleetClientManager {
   getClients(): ReadonlyMap<string, BotContainerDriver>;
+  /**
+   * myrmidon(1.6.6 REMOTE-SITES-T4): the transport behind each client (same keys as getClients),
+   * for the health probe and the site-agent calls that are not part of the driver contract.
+   */
+  getTransports?(): ReadonlyMap<string, FleetSiteTransport>;
   refresh(): Promise<ReadonlyMap<string, BotContainerDriver>>;
   getVersion(): number;
   /**
@@ -384,6 +396,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
   // rotated secret value rebuilds the client even if the secret name is the same.
   const clientFingerprints = new Map<string, string>();
   const clientAgents = new Map<string, https.Agent>();
+  const clientTransports = new Map<string, FleetSiteTransport>();
   let lastVersion = -1;
   let lastAttemptAt = 0;
   let lastOk = false;
@@ -407,6 +420,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
 
   function dropClient(key: string): void {
     clients.delete(key);
+    clientTransports.delete(key);
     clientFingerprints.delete(key);
     const agent = clientAgents.get(key);
     if (agent) {
@@ -430,7 +444,10 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
     lastAttemptAt = now();
     try {
       const sites = await listFleetSites(deps.db);
-      const activeSites = sites.filter((s) => s.status === "active");
+      // A draining site keeps its client: its bots are still managed there until they are moved
+      // off, and a site that went draining on a failed probe must be reachable again for the
+      // return pass. Placement of new bots is the scheduler's rule, not the client map's.
+      const activeSites = sites.filter((s) => s.status === "active" || s.status === "draining");
       const activeKeys = new Set<string>();
 
       for (const site of activeSites) {
@@ -523,6 +540,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
         // The replaced client's agent is released only after the new one is in.
         const oldAgent = clientAgents.get(key);
         clients.set(key, driver);
+        clientTransports.set(key, { baseUrl: site.url, ...(token ? { token } : {}), ...(httpsAgent ? { agent: httpsAgent } : {}) });
         clientFingerprints.set(key, fingerprint);
         if (httpsAgent) clientAgents.set(key, httpsAgent);
         else clientAgents.delete(key);
@@ -572,6 +590,10 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
     return clients;
   }
 
+  function getTransports(): ReadonlyMap<string, FleetSiteTransport> {
+    return clientTransports;
+  }
+
   function getVersion(): number {
     return getFleetRegistryVersion();
   }
@@ -580,11 +602,13 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
     for (const agent of clientAgents.values()) agent.destroy();
     clientAgents.clear();
     clients.clear();
+    clientTransports.clear();
     clientFingerprints.clear();
   }
 
   return {
     getClients,
+    getTransports,
     refresh,
     getVersion,
     ensureFresh,

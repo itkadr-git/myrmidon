@@ -1,28 +1,35 @@
 ---
-divergence-section: Трек 1 — платформа
+settings-section: Track 5 — operations
 ---
+
+## settings-en
+
+| `MYRMIDON_SITE_HEALTH` | REMOTE-SITES-T4 | unset (off) | Turns on the `site-monitor` lane (30 s): probes every remote site, drains a site that missed 3 probes in a row (90 s), fails its bots over after 10 minutes, quarantines a site with a bad certificate or protocol, and runs the return pass when it answers again. Read at server startup; needs `MYRMIDON_BOT_CONTAINERS`. Starts only in a process that runs the heartbeat scheduler | Unset or any value but `1` — the lane is not started: no probe, no drain, no failover |
+| `MYRMIDON_FLEET_REPLICA_DIR` | REMOTE-SITES-T4 | unset | Directory on the board host where the replica lane keeps the last snapshot of every bot of a remote site (`<dir>/<site>/<botKey>/latest.tar.zst`, plus `previous`), refreshed every 15 minutes, and where a failover restores a lost site's bots from. A site's datadirs can be tens of gigabytes: point it at a volume with room for two copies of them | Unset — no replicas are taken and a failover moves nothing: every bot of a lost site is reported as unavailable |
+
+## settings-ru
+
+| `MYRMIDON_SITE_HEALTH` | REMOTE-SITES-T4 | не задан (выключено) | Включает lane `site-monitor` (30 с): опрашивает каждую удалённую площадку, отводит площадку, пропустившую 3 опроса подряд (90 с), через 10 минут переносит её ботов, ставит в карантин площадку с неверным сертификатом или протоколом и выполняет проход возврата, когда площадка снова отвечает. Читается при запуске сервера; нужен `MYRMIDON_BOT_CONTAINERS`. Запускается только в процессе, где работает планировщик heartbeat | Не задан или не `1` — lane не запускается: ни опроса, ни отвода, ни переноса |
+| `MYRMIDON_FLEET_REPLICA_DIR` | REMOTE-SITES-T4 | не задан | Каталог на хосте доски, где lane реплик хранит последний снимок каждого бота удалённой площадки (`<каталог>/<площадка>/<бот>/latest.tar.zst`, плюс `previous`), обновляет его раз в 15 минут и откуда перенос восстанавливает ботов потерянной площадки. Датадиры площадки могут занимать десятки гигабайт: укажите том, где есть место под две их копии | Не задан — реплики не снимаются, а перенос при потере площадки ничего не переносит: каждый бот потерянной площадки помечается недоступным |
 
 ## changelog-en
 
-### REMOTE-SITES-T4: remote site health monitor and failover policy (OPE-7651)
+### REMOTE-SITES-T4: remote site health, automatic drain and failover (OPE-7651)
 
-- New site health monitor polls each fleet site, runs the shared health reducer
-  and persists its snapshot. On a drain intent it fences the site before
-  anything else; on a failover intent it asks the failover orchestrator to move
-  the site's bots. A site that answers again stays unreachable until an
-  operator re-enables it.
-- The failover orchestrator moves each unpinned bot once to a reserve site
-  through the existing move service and marks pinned bots unavailable instead of
-  moving them.
+- New `site-monitor` lane (30 s), off by default (`MYRMIDON_SITE_HEALTH=1`). It probes `GET /v1/health` of each remote site (5 s timeout) and keeps the result in the new `myrmidon_fleet_sites.health` and `lastSeenAt`. Three misses in a row (90 s) turn the site `draining` automatically (no new placements, an alert in the log and `myrmidon_fleet_site_reachable 0`); a rejected certificate or an answer that is not the health contract puts it in `quarantined` and drops its client. A drain set by an operator is never lifted or acted on by the monitor.
+- After 10 minutes unavailable the failover moves each unpinned bot of the site to the board host from its last replica, after finalizing its running runs as `failed` with the new error code `site_lost` and queuing the bounded retry (an atomic claim on each run: a live controller lease, a reattach in flight or an earlier claim leave it alone, so a retry is never doubled). The retry runs once the bot's move has closed its maintenance window, against the new host. Pinned bots are never moved and are reported; a bot without a replica is reported and its runs are left for the returning site. `site_lost` joins `MYRMIDON_INFRA_INTERRUPT_CODES`.
+- The board keeps replicas of the remote datadirs itself: the replica lane pulls a snapshot of each bot of an answering site every 15 minutes into `MYRMIDON_FLEET_REPLICA_DIR`. A snapshot of a running bot is file-level; the move's phase log says when the replica was taken, and what changed after that is lost.
+- A bot has at most one unfinished move: the claim is a partial unique index on `myrmidon_fleet_moves`, so two board processes cannot both move one bot. The migration adds `myrmidon_fleet_sites.health`, `myrmidon_fleet_moves.source` (`live` or `replica`) and that index.
+- When the site answers three times in a row after being lost, the return pass stops and sets aside the old copies of the bots that were failed over. The drain is lifted only by an operator, or automatically when the site carries the label `autoResume=true`. A draining site keeps its client, so its bots stay managed.
+- The Fleet screen shows a state badge and the last answer time for each site (`GET /api/myrmidon/fleet/sites`). `/metrics` gains `myrmidon_fleet_site_reachable`, `myrmidon_fleet_site_last_seen_seconds`, `myrmidon_fleet_exec_retries_total` and `myrmidon_fleet_moves_total`.
 
 ## changelog-ru
 
-### REMOTE-SITES-T4: монитор здоровья площадок и политика failover (OPE-7651)
+### REMOTE-SITES-T4: здоровье удалённых площадок, автоотвод и failover (OPE-7651)
 
-- Новый монитор здоровья опрашивает площадки флота, прогоняет общий reducer и
-  сохраняет его снимок. По намерению drain сначала отгораживает площадку, по
-  намерению failover просит оркестратор перенести её ботов. Вернувшаяся площадка
-  остаётся unreachable, пока оператор не включит её снова.
-- Оркестратор failover переносит каждого незакреплённого бота один раз на
-  резервную площадку через существующий сервис переезда, закреплённых помечает
-  недоступными и не переносит.
+- Новый lane `site-monitor` (30 с), по умолчанию выключен (`MYRMIDON_SITE_HEALTH=1`). Опрашивает `GET /v1/health` каждой удалённой площадки (таймаут 5 с), результат пишет в новое `myrmidon_fleet_sites.health` и `lastSeenAt`. Три промаха подряд (90 с) автоматически переводят площадку в `draining` (новых размещений нет, тревога в журнале и `myrmidon_fleet_site_reachable 0`); отвергнутый сертификат или ответ не по контракту health переводит её в `quarantined` и убирает её клиента. Отвод, поставленный оператором, монитор не снимает и не отрабатывает.
+- Через 10 минут недоступности failover переносит каждого незакреплённого бота площадки на хост доски из его последней реплики, предварительно завершив его идущие прогоны как `failed` с новым кодом ошибки `site_lost` и поставив ограниченный повтор (атомарный захват каждого прогона: живая аренда контроллера, идущий reattach или прежний захват оставляют прогон в покое, поэтому повтор не удваивается). Повтор идёт после закрытия окна обслуживания переноса, уже на новый хост. Закреплённые боты не переносятся и попадают в тревогу; бот без реплики попадает в тревогу, его прогоны остаются вернувшейся площадке. `site_lost` добавлен в `MYRMIDON_INFRA_INTERRUPT_CODES`.
+- Реплики удалённых датадиров доска хранит сама: lane реплик раз в 15 минут снимает снимок каждого бота отвечающей площадки в `MYRMIDON_FLEET_REPLICA_DIR`. Снимок бота на ходу файловый; журнал фаз переноса говорит, когда снята реплика, а изменения после этого теряются.
+- У бота не больше одного незавершённого переноса: захват — частичный уникальный индекс `myrmidon_fleet_moves`, два процесса доски не перенесут одного бота одновременно. Миграция добавляет `myrmidon_fleet_sites.health`, `myrmidon_fleet_moves.source` (`live` или `replica`) и этот индекс.
+- Когда потерянная площадка трижды подряд отвечает, проход возврата останавливает и откладывает в сторону старые копии ботов, перенесённых failover. Отвод снимает только оператор или автоматически площадка с меткой `autoResume=true`. Площадка в `draining` сохраняет клиента, её боты остаются под управлением.
+- Экран Флота показывает у каждой площадки бейдж состояния и время последнего ответа (`GET /api/myrmidon/fleet/sites`). В `/metrics` добавлены `myrmidon_fleet_site_reachable`, `myrmidon_fleet_site_last_seen_seconds`, `myrmidon_fleet_exec_retries_total` и `myrmidon_fleet_moves_total`.

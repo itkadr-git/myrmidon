@@ -539,3 +539,51 @@ describe("site-registry — env bootstrap tenant scope", () => {
     expect(inserted.map((r) => r.companyId)).toEqual(["c1"]);
   });
 });
+
+// myrmidon(1.6.6 REMOTE-SITES-T4): a draining site keeps its client (its bots are managed there and the
+// return pass must reach it); a quarantined or disabled one loses it. The transport behind each client is exposed.
+describe("site-registry — client map and site status", () => {
+  const site = (name: string, status: string, url: string): FleetSite => ({
+    id: `id-${name}`,
+    companyId: "company-1",
+    name,
+    url,
+    tokenSecret: `${name}-token`,
+    status,
+    capacity: { maxCpus: 2, maxMemoryMb: 4096 },
+    profile: {},
+    enrolledAt: new Date(),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  it("keeps active and draining clients, drops quarantined ones, and exposes the transport of each kept client", async () => {
+    let sites = [
+      site("up", "active", "http://127.0.0.1:9101"),
+      site("drained", "draining", "http://127.0.0.1:9102"),
+      site("held", "quarantined", "http://127.0.0.1:9103"),
+    ];
+    const manager = createFleetClientManager({
+      db: { select: () => ({ from: () => Promise.resolve(sites) }) } as any,
+      readCompanySecret: async (_c, name) => `value-of-${name}`,
+      createDriver: (config) => fakeDriver(config.baseUrl),
+    });
+
+    const clients = await manager.refresh();
+    expect([...clients.keys()].sort()).toEqual([fleetSiteKey("company-1", "drained"), fleetSiteKey("company-1", "up")]);
+    expect(manager.getTransports?.().get(fleetSiteKey("company-1", "drained"))).toEqual({
+      baseUrl: "http://127.0.0.1:9102",
+      token: "value-of-drained-token",
+    });
+    expect(manager.getTransports?.().has(fleetSiteKey("company-1", "held"))).toBe(false);
+
+    // The monitor drains "up" and quarantines "drained": the client map follows the registry.
+    sites = [site("up", "draining", "http://127.0.0.1:9101"), site("drained", "quarantined", "http://127.0.0.1:9102")];
+    await manager.refresh();
+    expect([...manager.getClients().keys()]).toEqual([fleetSiteKey("company-1", "up")]);
+    expect(manager.getTransports?.().has(fleetSiteKey("company-1", "drained"))).toBe(false);
+    manager.close();
+    expect(manager.getTransports?.().size).toBe(0);
+  });
+});
+

@@ -145,6 +145,7 @@ import { createPauseGuardSweepFromHeartbeat } from "./myrmidon/pause-guard/index
 import { startRunPriority } from "./myrmidon/run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { getBotContainerRuntime } from "./myrmidon/bot-containers/routes-wiring.js";
+import { registerSiteLostRunFinalizer } from "./myrmidon/bot-containers/site-health-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { initializeIdleStopService, shutdownIdleStopService } from "./myrmidon/idle-stop-startup.js";
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
 import {
@@ -2263,6 +2264,8 @@ async function startServerWithDatabaseTeardown(
     }
     await startMaintenanceMode(db as any); // myrmidon(R3): load open maintenance windows before startup recovery starts runs
     startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
+    // myrmidon(1.6.6 REMOTE-SITES-T4): the site-monitor lane finalizes the runs of a lost site through the heartbeat service of this process.
+    if (heartbeat && processRoleProfile.runsBackground) registerSiteLostRunFinalizer(heartbeat.finalizeSiteLostRun);
     startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
     // Initialize IDLE-STOP service after bot containers (needs the driver from runtime)
     const botContainerRuntime = getBotContainerRuntime();
