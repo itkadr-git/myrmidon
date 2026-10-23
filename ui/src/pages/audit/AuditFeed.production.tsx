@@ -125,7 +125,7 @@ function AuditActor({
     const profile = userProfileMap.get(record.actorId);
     return (
       <Identity
-        name={profile?.label ?? t("area.search-timeline-audit-2.audit-feed-production.actor.user")}
+        name={profile?.label ?? t("common.user")}
         avatarUrl={profile?.image ?? null}
         size="sm"
         className="font-medium text-foreground"
@@ -140,7 +140,7 @@ function AuditActor({
       : record.actorType === "agent"
         ? t("area.search-timeline-audit-2.audit-feed-production.actor.agent")
         : record.actorType === "user"
-          ? t("area.search-timeline-audit-2.audit-feed-production.actor.user")
+          ? t("common.user")
           : t("area.search-timeline-audit-2.audit-feed-production.actor.system");
   return <Identity name={label} size="sm" className="font-medium text-foreground" />;
 }
