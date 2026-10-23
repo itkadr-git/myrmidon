@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   createDb,
@@ -12,10 +12,13 @@ import {
 } from "@paperclipai/db";
 import type { ProviderUsageReportedEventV1 } from "@paperclipai/shared";
 import { providerUsageService } from "../../services/provider-usage.js";
+import { issueService } from "../../services/issues.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
+
+const mockAddComment = vi.spyOn(issueService, "addComment");
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -30,6 +33,7 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
   }, 20_000);
 
   afterEach(async () => {
+    mockAddComment.mockReset();
     await db.delete(providerUsageWarningDeliveries);
     await db.delete(providerUsageSnapshots);
     await db.delete(providerUsageEventReceipts);
@@ -112,6 +116,41 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
     await svc.deliverPendingWarnings(late);
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, ownerId));
     expect(comments).toHaveLength(1);
+  });
+
+  it("persists retry timing after addComment fails and delivers once after the retry deadline", async () => {
+    const companyId = await seedCompany();
+    const ownerId = await seedIssue(companyId, 5);
+    const svc = providerUsageService(db);
+    const now = new Date("2026-10-14T09:00:00Z");
+    await svc.ingest(companyId, report(companyId, "evt-retry", "cred-retry", 90), now, ownerId);
+
+    mockAddComment.mockRejectedValueOnce(new Error("temporary comment failure"))
+      .mockResolvedValueOnce({ id: randomUUID() } as never);
+
+    const failed = await svc.deliverPendingWarnings(now);
+    expect(failed).toEqual({ delivered: 0, failed: 1 });
+    let [delivery] = await db.select().from(providerUsageWarningDeliveries);
+    expect(delivery?.lastError).toBe("temporary comment failure");
+    expect(delivery?.nextAttemptAt).toEqual(new Date(now.getTime() + 60_000));
+    expect(mockAddComment).toHaveBeenCalledTimes(1);
+
+    const beforeRetry = new Date(now.getTime() + 59_999);
+    expect(await svc.deliverPendingWarnings(beforeRetry)).toEqual({ delivered: 0, failed: 0 });
+    [delivery] = await db.select().from(providerUsageWarningDeliveries);
+    expect(delivery?.deliveredAt).toBeNull();
+    expect(mockAddComment).toHaveBeenCalledTimes(1);
+
+    const retryAt = new Date(now.getTime() + 60_000);
+    expect(await svc.deliverPendingWarnings(retryAt)).toEqual({ delivered: 1, failed: 0 });
+    [delivery] = await db.select().from(providerUsageWarningDeliveries);
+    expect(delivery?.deliveredAt).toEqual(retryAt);
+    expect(delivery?.lastError).toBeNull();
+    expect(mockAddComment).toHaveBeenCalledTimes(2);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, ownerId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Provider usage warning");
   });
 
   it("list returns each credential's own owner issue regardless of row order", async () => {
