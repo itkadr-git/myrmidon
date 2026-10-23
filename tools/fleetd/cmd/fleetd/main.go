@@ -167,6 +167,7 @@ func main() {
 	mux.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
 	mux.HandleFunc("/v1/memory/recall", srv.requireAuth(srv.memoryRecall))
 	mux.HandleFunc("/v1/memory/retain", srv.requireAuth(srv.memoryRetain))
+	mux.HandleFunc("/v1/memory/export", srv.requireAuth(srv.memoryExport))
 	log.Printf("fleetd listening on %s (mTLS)", cfg.Listen)
 	log.Fatal((&http.Server{
 		Addr:              cfg.Listen,
@@ -355,6 +356,39 @@ func (s *server) memoryRetain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeRawJSON(w, data)
+}
+
+func (s *server) memoryExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.memory == nil {
+		http.Error(w, "centralized_memory_disabled", http.StatusServiceUnavailable)
+		return
+	}
+	var req memoryExportRequest
+	if err := decodeMemoryBody(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !validMemoryBotKey(req.BotKey) {
+		http.Error(w, "invalid bot key", http.StatusBadRequest)
+		return
+	}
+	if s.enrollment(req.BotKey) == nil {
+		http.Error(w, "unknown bot", http.StatusNotFound)
+		return
+	}
+	data, err := s.memory.export(r.Context(), s.memory.bank)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="memory-export.zip"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func writeRawJSON(w http.ResponseWriter, data []byte) {

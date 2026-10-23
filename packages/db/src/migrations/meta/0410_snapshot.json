@@ -1,5 +1,5 @@
 {
-  "id": "45610ba8-185c-4e29-98cd-b670f4fd66e3",
+  "id": "6bd5ca28-4ae8-4492-854e-d1da771fde73",
   "prevId": "fa48508d-bfe7-44ed-9efe-f7cfd4a3b3ba",
   "version": "7",
   "dialect": "postgresql",
@@ -820,13 +820,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'light'"
-        },
-        "sensitive": {
-          "name": "sensitive",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         }
       },
       "indexes": {
@@ -35116,6 +35109,42 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rpm_limit": {
+          "name": "rpm_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "package_name": {
+          "name": "package_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_call_compatible": {
+          "name": "tool_call_compatible",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_call_checked_at": {
+          "name": "tool_call_checked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_call_check_error": {
+          "name": "tool_call_check_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -54968,13 +54997,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "roles": {
-          "name": "roles",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
         }
       },
       "indexes": {
@@ -55081,21 +55103,6 @@
           "isUnique": false,
           "concurrently": false,
           "method": "btree",
-          "with": {}
-        },
-        "knowledge_items_roles_idx": {
-          "name": "knowledge_items_roles_idx",
-          "columns": [
-            {
-              "expression": "roles",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "gin",
           "with": {}
         }
       },

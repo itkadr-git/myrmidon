@@ -25,22 +25,24 @@ import {
   type DebateCastePatch,
 } from "./debateApi";
 import { useCasteOptionsForCompany, type CasteOption } from "./castes/useCasteOptions";
+import { i18n, useTranslation } from "@/i18n";
 
-const ROLES: Array<{ key: "generator" | "critic" | "judge"; label: string; hint: string }> = [
+// A function, not a module constant: the labels follow the interface language.
+const getRoles = (): Array<{ key: "generator" | "critic" | "judge"; label: string; hint: string }> => [
   {
     key: "generator",
-    label: "Generator model",
-    hint: "The constructive pole. A different family than the critic.",
+    label: i18n.t("area.settings-models-runtime-1.caste-debate-settings-panel.roles.generator.label"),
+    hint: i18n.t("area.settings-models-runtime-1.caste-debate-settings-panel.roles.generator.hint"),
   },
   {
     key: "critic",
-    label: "Critic model",
-    hint: "The adversarial pole, penalized for a missed error. Must be a different family than the generator.",
+    label: i18n.t("area.settings-models-runtime-1.caste-debate-settings-panel.roles.critic.label"),
+    hint: i18n.t("area.settings-models-runtime-1.caste-debate-settings-panel.roles.critic.hint"),
   },
   {
     key: "judge",
-    label: "Judge model",
-    hint: "Outside the dispute. A third family — neither debater's.",
+    label: i18n.t("area.settings-models-runtime-1.caste-debate-settings-panel.roles.judge.label"),
+    hint: i18n.t("area.settings-models-runtime-1.caste-debate-settings-panel.roles.judge.hint"),
   },
 ];
 
@@ -109,6 +111,8 @@ export function CasteDebateForm({
   onClear: () => void;
   pending: boolean;
 }) {
+  const { t } = useTranslation();
+  const roles = getRoles();
   const [draft, setDraft] = useState<Draft>(() => toDraft(view));
   const patch = buildCasteDebatePatch(draft);
   const dirty = JSON.stringify(draft) !== JSON.stringify(toDraft(view));
@@ -132,11 +136,11 @@ export function CasteDebateForm({
         <ToggleSwitch
           checked={draft.enabled}
           onCheckedChange={(checked) => set("enabled", checked)}
-          aria-label="Debates for this caste"
+          aria-label={t("area.settings-models-runtime-1.caste-debate-settings-panel.enabledLabel")}
           data-testid="caste-debate-enabled"
         />
         <div className="space-y-0.5">
-          <Label>Debates for this caste</Label>
+          <Label>{t("area.settings-models-runtime-1.caste-debate-settings-panel.enabledLabel")}</Label>
           <p className="text-xs text-muted-foreground" data-testid="caste-debate-enabled-source">
             {describeCasteEnabledSource(view.enabledSource)}
           </p>
@@ -144,7 +148,7 @@ export function CasteDebateForm({
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
-        {ROLES.map((role) => (
+        {roles.map((role) => (
           <div key={role.key} className="space-y-1.5">
             <Label htmlFor={`caste-debate-model-${role.key}`}>{role.label}</Label>
             <Input
@@ -160,7 +164,7 @@ export function CasteDebateForm({
 
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
-          <Label htmlFor="caste-debate-rounds">Rounds (max 3)</Label>
+          <Label htmlFor="caste-debate-rounds">{t("area.settings-models-runtime-1.caste-debate-settings-panel.roundsLabel")}</Label>
           <Input
             id="caste-debate-rounds"
             data-testid="caste-debate-rounds"
@@ -171,7 +175,7 @@ export function CasteDebateForm({
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="caste-debate-ceiling">Token ceiling</Label>
+          <Label htmlFor="caste-debate-ceiling">{t("area.settings-models-runtime-1.caste-debate-settings-panel.ceilingLabel")}</Label>
           <Input
             id="caste-debate-ceiling"
             data-testid="caste-debate-ceiling"
@@ -185,12 +189,11 @@ export function CasteDebateForm({
 
       <div className="space-y-2">
         <p className="text-xs text-muted-foreground">
-          Extra guidance per role. It is added to the built-in pole prompt — the critic keeps its missed-error penalty —
-          so a caste narrows where a role looks, it does not change the dispute.
+          {t("area.settings-models-runtime-1.caste-debate-settings-panel.guidanceIntro")}
         </p>
-        {ROLES.map((role) => (
+        {roles.map((role) => (
           <div key={role.key} className="space-y-1">
-            <Label htmlFor={`caste-debate-prompt-${role.key}`}>{`${role.label} guidance (optional)`}</Label>
+            <Label htmlFor={`caste-debate-prompt-${role.key}`}>{t("area.settings-models-runtime-1.caste-debate-settings-panel.guidanceLabel", { role: role.label })}</Label>
             <textarea
               id={`caste-debate-prompt-${role.key}`}
               data-testid={`caste-debate-prompt-${role.key}`}
@@ -212,7 +215,7 @@ export function CasteDebateForm({
             if (patch) onSave(patch);
           }}
         >
-          {pending ? "Saving..." : "Save caste configuration"}
+          {pending ? t("area.settings-models-runtime-1.shared.saving") : t("area.settings-models-runtime-1.caste-debate-settings-panel.saveButton")}
         </Button>
         <Button
           type="button"
@@ -222,7 +225,7 @@ export function CasteDebateForm({
           disabled={pending || view.stored === null}
           onClick={onClear}
         >
-          Inherit instance configuration
+          {t("area.settings-models-runtime-1.caste-debate-settings-panel.inheritButton")}
         </Button>
         <span className="text-xs text-muted-foreground" data-testid="caste-debate-source">
           {describeCasteDebateSource(view.source, view.instanceSource)}
@@ -256,17 +259,16 @@ export function CasteDebateSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   return (
     <section className="space-y-4" data-testid="myrmidon-caste-debate-settings">
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Users className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Debates per caste</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-models-runtime-1.caste-debate-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Debates are on for every caste unless a caste is switched off here. A caste without its own entry inherits
-          the instance configuration above; saving an entry pins this caste's models, guidance, rounds and ceiling.
-          Changes apply at the next run — no restart.
+          {t("area.settings-models-runtime-1.caste-debate-settings-panel.description")}
         </p>
       </div>
 
@@ -280,7 +282,7 @@ export function CasteDebateSettingsPanelView({
       ) : null}
 
       <div className="space-y-1.5">
-        <Label htmlFor="caste-debate-caste">Caste</Label>
+        <Label htmlFor="caste-debate-caste">{t("area.settings-models-runtime-1.caste-debate-settings-panel.casteLabel")}</Label>
         <select
           id="caste-debate-caste"
           data-testid="caste-debate-select"
@@ -288,7 +290,7 @@ export function CasteDebateSettingsPanelView({
           value={selectedKey ?? ""}
           onChange={(event) => onSelect(event.target.value)}
         >
-          <option value="">Select a caste...</option>
+          <option value="">{t("area.settings-models-runtime-1.caste-debate-settings-panel.selectPlaceholder")}</option>
           {castes.map((caste) => (
             <option key={caste.key} value={caste.key}>
               {caste.label}
@@ -299,13 +301,13 @@ export function CasteDebateSettingsPanelView({
 
       {loading ? (
         <p className="text-sm text-muted-foreground" data-testid="caste-debate-loading">
-          Loading the caste configuration...
+          {t("area.settings-models-runtime-1.caste-debate-settings-panel.loading")}
         </p>
       ) : view ? (
         <CasteDebateForm key={view.casteKey} view={view} onSave={onSave} onClear={onClear} pending={pending} />
       ) : (
         <p className="text-sm text-muted-foreground" data-testid="caste-debate-empty">
-          Pick a caste to see whether debates run for it and what it inherits.
+          {t("area.settings-models-runtime-1.caste-debate-settings-panel.empty")}
         </p>
       )}
     </section>
@@ -313,6 +315,7 @@ export function CasteDebateSettingsPanelView({
 }
 
 export function CasteDebateSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useOptionalCompany() ?? { selectedCompanyId: null };
   const companyId = selectedCompanyId ?? "";
@@ -334,7 +337,7 @@ export function CasteDebateSettingsPanel() {
   const save = useMutation({
     mutationFn: (patch: DebateCastePatch) => debateApi.casteUpdate(companyId, selectedKey as string, patch),
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the caste configuration failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-models-runtime-1.caste-debate-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await invalidate();
@@ -343,7 +346,7 @@ export function CasteDebateSettingsPanel() {
   const clear = useMutation({
     mutationFn: () => debateApi.casteUpdate(companyId, selectedKey as string, null),
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Clearing the caste configuration failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-models-runtime-1.caste-debate-settings-panel.clearFailed")),
     onSuccess: async () => {
       setError(null);
       await invalidate();

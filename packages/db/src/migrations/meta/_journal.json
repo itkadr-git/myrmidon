@@ -2436,7 +2436,21 @@
       "idx": 410,
       "version": "7",
       "when": 1792395510000,
-      "tag": "0410_knowledge_rules",
+      "tag": "0410_model_provider_key_compatibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 411,
+      "version": "7",
+      "when": 1792395511000,
+      "tag": "0411_pool_chat_module_instance",
+      "breakpoints": true
+    },
+    {
+      "idx": 412,
+      "version": "7",
+      "when": 1792395512000,
+      "tag": "0412_knowledge_rules",
       "breakpoints": true
     }
   ]

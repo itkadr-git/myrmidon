@@ -150,6 +150,8 @@ import { myrmidonAlertRecoveryRoutes } from "./myrmidon/monitoring/alert-recover
 import { myrmidonDatastoreCareRoutes } from "./myrmidon/datastore-care/index.js"; // myrmidon(DBC-4)
 import { myrmidonDataRetentionRoutes } from "./myrmidon/data-retention/index.js"; // myrmidon(1.6.5-DB-RETENTION)
 import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
+import { idleStopSettingsRoutes } from "./myrmidon/idle-stop-settings-routes.js"; // myrmidon(OPE-7898)
+import { getIdleStopService } from "./myrmidon/idle-stop-startup.js"; // myrmidon(OPE-7898)
 // myrmidon(1.6.6-SETTINGS-UI-B): the read side of the lifecycle screen (the C5
 // relay + the stored C4 reports) and the bot-side C4 report POST.
 import { myrmidonBotDiskPhysicalRoutes } from "./myrmidon/bot-containers/bot-disk-physical-routes.js";
@@ -191,6 +193,10 @@ import { myrmidonMonitoringLinkRoutes } from "./myrmidon/monitoring/links/index.
 import { myrmidonMonitoringDashboardRoutes } from "./myrmidon/monitoring/dashboard/index.js"; // myrmidon(1.6.6 MONITORING C)
 import { myrmidonCloudConnectorRoutes } from "./myrmidon/cloud-connector/index.js"; // myrmidon(CLOUD-CONNECTOR)
 import { myrmidonBoardProcessRegistryRoutes } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
+import { poolChatRoutes } from "./myrmidon/pool-chat/routes.js";
+import { createPoolChatHttpTransport } from "./myrmidon/pool-chat/transports.js";
+import type { PoolChatTransportResolver } from "./myrmidon/pool-chat/service.js";
+import { secretService } from "./services/secrets.js";
 import { myrmidonAutonomyRoutes } from "./myrmidon/autonomy/index.js"; // myrmidon(1.6-AUTONOMY)
 import { myrmidonKnowledgeRoutes, myrmidonKnowledgeMcpRoutes } from "./myrmidon/knowledge/index.js"; // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2)
 // myrmidon(1.6-TG-PROACTIVITY-E): head-bot proactivity gate/bundling sweep
@@ -1129,6 +1135,7 @@ export async function createApp(
   api.use(myrmidonDatastoreCareRoutes(db)); // myrmidon(DBC-4): GET/POST /api/myrmidon/datastores*, audit reports and their .md export
   api.use(myrmidonDataRetentionRoutes(db)); // myrmidon(1.6.5-DB-RETENTION)
   api.use(myrmidonBotDiskLifecycleRoutes(db)); // myrmidon(BOT-DISK-A)
+  api.use(idleStopSettingsRoutes(db, () => getIdleStopService()?.invalidateConfigCache())); // myrmidon(OPE-7898)
   api.use(myrmidonBotDiskPhysicalRoutes(db)); // myrmidon(1.6.6-SETTINGS-UI-B): C5 relay + C4 reports for the lifecycle screen
   api.use(myrmidonBotDiskReportRoutes()); // myrmidon(1.6.6-SETTINGS-UI-B): C4 POST /myrmidon/bots/me/disk-report (was unmounted)
   api.use(myrmidonBotScopeRoutes(db)); // myrmidon(BOT-DISK-F)
@@ -1198,6 +1205,21 @@ export async function createApp(
   api.use(myrmidonForagingPassRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass history
   api.use(myrmidonWikiCortexRoutes(db)); // myrmidon(1.6-WIKI): company regulations (wiki pages, revisions, resolver)
   api.use(myrmidonBoardProcessRegistryRoutes(db)); // myrmidon(1.6.6 PROCS-0.1): process registry read by the «Процессы» panel
+  const poolChatSecrets = secretService(db);
+  const resolvePoolChatTransport: PoolChatTransportResolver = async (input) => {
+    if (!input.credentialSecretName) return null;
+    const secret = await poolChatSecrets.getByName(input.companyId, input.credentialSecretName);
+    if (!secret) return null;
+    const apiKey = await poolChatSecrets.resolveSecretValue(input.companyId, secret.id, "latest");
+    const endpoint = typeof input.config.endpoint === "string" ? input.config.endpoint : null;
+    if (!endpoint || !apiKey) return null;
+    return createPoolChatHttpTransport({ provider: input.provider, endpoint, apiKey });
+  };
+  // Keep provider-backed pool-chat disabled until an operator explicitly
+  // enables the deployment after recovery/settlement checks.
+  if (process.env.MYRMIDON_POOL_CHAT_ENABLED === "1") {
+    api.use(poolChatRoutes(db, resolvePoolChatTransport)); // myrmidon(1.6.6 POOL-CHAT): authenticated router boundary
+  }
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }

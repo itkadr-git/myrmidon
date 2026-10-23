@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Megaphone } from "lucide-react";
+import { i18n, useTranslation } from "@/i18n";
 import type { BudgetEnforcementMode, BudgetEnforcementPatch } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { RadioCardGroup } from "@/components/ui/radio-card";
@@ -14,28 +15,25 @@ import {
   type BudgetEnforcementView,
 } from "./budgetEnforcementApi";
 
-const MODES: Array<{
+const modes = (): Array<{
   value: BudgetEnforcementMode;
   title: string;
   description: string;
-}> = [
+}> => [
   {
     value: "signal_only",
-    title: "Signal only",
-    description:
-      "A crossed limit opens an incident and signals the owner (issue thread and the decision inbox), but work continues. The default until the owner switches it off.",
+    title: i18n.t("area.costs-budgets-2.budget-enforcement-settings-panel.modes.signalOnly.title"),
+    description: i18n.t("area.costs-budgets-2.budget-enforcement-settings-panel.modes.signalOnly.description"),
   },
   {
     value: "soft",
-    title: "Soft: pause and ask",
-    description:
-      "The scope is paused and the owner gets a card: raise the budget by the amount needed or keep the work stopped. Raising lifts the pause and held work resumes.",
+    title: i18n.t("area.costs-budgets-2.budget-enforcement-settings-panel.modes.soft.title"),
+    description: i18n.t("area.costs-budgets-2.budget-enforcement-settings-panel.modes.soft.description"),
   },
   {
     value: "hard",
-    title: "Hard: refuse",
-    description:
-      "New runs of the over-limit scope are refused with the budget reason before they start. Work already in flight finishes.",
+    title: i18n.t("area.costs-budgets-2.budget-enforcement-settings-panel.modes.hard.title"),
+    description: i18n.t("area.costs-budgets-2.budget-enforcement-settings-panel.modes.hard.description"),
   },
 ];
 
@@ -50,6 +48,7 @@ export function BudgetEnforcementSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<BudgetEnforcementMode | null>(null);
   const current = draft ?? view?.mode ?? null;
   const dirty = draft !== null && view != null && draft !== view.mode;
@@ -59,11 +58,10 @@ export function BudgetEnforcementSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Megaphone className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Budget enforcement</h2>
+          <h2 className="text-sm font-semibold">{t("area.costs-budgets-2.budget-enforcement-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          What a crossed spend budget limit does while its incident is open: only signal, pause the scope with an
-          owner card, or refuse new runs. Saving takes effect at the next budget evaluation — no server restart.
+          {t("area.costs-budgets-2.budget-enforcement-settings-panel.description")}
         </p>
       </div>
 
@@ -76,14 +74,14 @@ export function BudgetEnforcementSettingsPanelView({
       {view ? (
         <div className="space-y-3">
           <RadioCardGroup
-            ariaLabel="Budget enforcement mode"
+            ariaLabel={t("area.costs-budgets-2.budget-enforcement-settings-panel.modeAriaLabel")}
             value={current ?? "signal_only"}
             onValueChange={(value) => setDraft(value as BudgetEnforcementMode)}
-            options={MODES.map(({ value, title, description }) => ({
+            options={modes().map(({ value, title, description }) => ({
               value,
               title,
               description,
-              accessibleLabel: `Budget enforcement mode: ${title}`,
+              accessibleLabel: t("area.costs-budgets-2.budget-enforcement-settings-panel.modeAccessibleLabel", { title }),
             }))}
           />
           <div className="flex items-center gap-3">
@@ -95,7 +93,7 @@ export function BudgetEnforcementSettingsPanelView({
                 if (draft) onSave({ mode: draft });
               }}
             >
-              {pending ? "Saving..." : "Save enforcement mode"}
+              {pending ? t("area.costs-budgets-2.budget-enforcement-settings-panel.saving") : t("area.costs-budgets-2.budget-enforcement-settings-panel.saveButton")}
             </Button>
             <span className="text-xs text-muted-foreground" data-testid="budget-enforcement-source">
               {describeBudgetEnforcementSource(view.source)}
@@ -103,13 +101,14 @@ export function BudgetEnforcementSettingsPanelView({
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading the budget enforcement mode...</p>
+        <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.budget-enforcement-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function BudgetEnforcementSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -120,7 +119,7 @@ export function BudgetEnforcementSettingsPanel() {
   const save = useMutation({
     mutationFn: budgetEnforcementApi.update,
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the budget enforcement mode failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.costs-budgets-2.budget-enforcement-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: budgetEnforcementQueryKey });
@@ -130,7 +129,7 @@ export function BudgetEnforcementSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load the budget enforcement mode."}
+        {query.error instanceof Error ? query.error.message : t("area.costs-budgets-2.budget-enforcement-settings-panel.loadFailed")}
       </div>
     );
   }

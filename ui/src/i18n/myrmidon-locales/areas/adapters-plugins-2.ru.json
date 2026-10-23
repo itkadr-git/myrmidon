@@ -1,0 +1,347 @@
+{
+  "area": {
+    "adapters-plugins-2": {
+      "adapter-manager": {
+        "row": {
+          "sourceExternal": "Внешний",
+          "sourceBuiltin": "Встроенный",
+          "installedFromLocalPath": "Установлен из локального пути",
+          "installedFromNpm": "Установлен из npm",
+          "overridesBuiltin": "Заменяет встроенный",
+          "overriddenBy": "Заменён: {{name}}",
+          "hiddenFromMenus": "Скрыт из меню",
+          "models_one": "{{count}} модель",
+          "models_few": "{{count}} модели",
+          "models_many": "{{count}} моделей",
+          "models_other": "{{count}} модели",
+          "reinstallTitle": "Переустановить адаптер (взять последнюю версию из npm)",
+          "reloadTitle": "Перезагрузить адаптер (горячая замена)",
+          "showInAgentMenus": "Показывать в меню агентов",
+          "hideFromAgentMenus": "Скрыть из меню агентов",
+          "removeTitle": "Удалить адаптер"
+        },
+        "reinstall": {
+          "title": "Переустановка адаптера",
+          "description": "Будет загружена последняя версия пакета <strong>{{name}}</strong> из npm, а работающий модуль адаптера заменён на лету. Существующие агенты перейдут на новую версию при следующем прогоне.",
+          "package": "Пакет",
+          "current": "Текущая",
+          "unknown": "неизвестна",
+          "latestOnNpm": "Последняя в npm",
+          "checking": "проверяем...",
+          "unavailable": "недоступна",
+          "upToDate": "Уже установлена последняя версия.",
+          "reinstalling": "Переустанавливаем...",
+          "confirm": "Переустановить"
+        },
+        "breadcrumbOrganization": "Организация",
+        "breadcrumbSettings": "Настройки",
+        "breadcrumbAdapters": "Адаптеры",
+        "toast": {
+          "installed": "Адаптер установлен",
+          "installedBody": "Тип «{{type}}» успешно зарегистрирован.",
+          "installedBodyVersion": "Тип «{{type}}» успешно зарегистрирован. (v{{version}})",
+          "installFailed": "Не удалось установить",
+          "removed": "Адаптер удалён",
+          "removalFailed": "Не удалось удалить",
+          "toggleFailed": "Не удалось переключить",
+          "overrideToggleFailed": "Не удалось переключить замену",
+          "reloaded": "Адаптер перезагружен",
+          "reloadedBody": "Тип «{{type}}» перезагружен.",
+          "reloadedBodyVersion": "Тип «{{type}}» перезагружен. (v{{version}})",
+          "reloadFailed": "Не удалось перезагрузить",
+          "reinstalled": "Адаптер переустановлен",
+          "reinstalledBody": "Тип «{{type}}» обновлён из npm.",
+          "reinstalledBodyVersion": "Тип «{{type}}» обновлён из npm. (v{{version}})",
+          "reinstallFailed": "Не удалось переустановить"
+        },
+        "loading": "Загружаем адаптеры...",
+        "title": "Адаптеры",
+        "alpha": "Альфа",
+        "install": {
+          "button": "Установить адаптер",
+          "title": "Установка внешнего адаптера",
+          "description": "Добавьте адаптер из npm или по локальному пути. Пакет адаптера должен экспортировать <code>createServerAdapter()</code>.",
+          "npmPackage": "Пакет npm",
+          "localPath": "Локальный путь",
+          "pathLabel": "Путь к пакету адаптера",
+          "pathPlaceholder": "/mnt/e/Projects/my-adapter  или  E:\\Projects\\my-adapter",
+          "pathHint": "Принимаются пути Linux, WSL и Windows. Пути Windows преобразуются автоматически.",
+          "packageNameLabel": "Имя пакета",
+          "packageNamePlaceholder": "my-myrmidon-adapter",
+          "versionLabel": "Версия (необязательно)",
+          "versionPlaceholder": "latest",
+          "installing": "Устанавливаем...",
+          "confirm": "Установить"
+        },
+        "alphaNotice": {
+          "title": "Внешние адаптеры — альфа-версия.",
+          "body": "Система адаптеров активно разрабатывается. API и формат хранения могут измениться. Кнопкой питания можно скрыть адаптер из меню агентов, не удаляя его."
+        },
+        "externalHeading": "Внешние адаптеры",
+        "externalEmptyTitle": "Внешних адаптеров нет",
+        "externalEmptyHint": "Установите пакет адаптера, чтобы расширить список поддерживаемых моделей.",
+        "pauseOverride": "Приостановить внешнюю замену",
+        "resumeOverride": "Возобновить внешнюю замену",
+        "overridePaused": "Замена приостановлена",
+        "builtinHeading": "Встроенные адаптеры",
+        "builtinEmpty": "Встроенных адаптеров не найдено.",
+        "remove": {
+          "title": "Удаление адаптера",
+          "description": "Удалить адаптер <strong>{{type}}</strong>? Он будет снят с регистрации и удалён из хранилища адаптеров. Это действие нельзя отменить.",
+          "descriptionWithPackage": "Удалить адаптер <strong>{{type}}</strong>? Он будет снят с регистрации и удалён из хранилища адаптеров. Пакеты npm будут удалены с диска. Это действие нельзя отменить."
+        }
+      },
+      "plugin-manager": {
+        "errorSummaryFallback": "Плагин перешёл в состояние ошибки, но текст ошибки не сохранён.",
+        "experimental": "Экспериментальный",
+        "breadcrumbOrganization": "Организация",
+        "breadcrumbSettings": "Настройки",
+        "breadcrumbPlugins": "Плагины",
+        "toast": {
+          "installed": "Плагин установлен",
+          "installFailed": "Не удалось установить плагин",
+          "uninstalled": "Плагин удалён",
+          "uninstallFailed": "Не удалось удалить плагин",
+          "upgraded": "Плагин обновлён",
+          "enabled": "Плагин включён",
+          "enableFailed": "Не удалось включить плагин",
+          "disabled": "Плагин отключён",
+          "disableFailed": "Не удалось отключить плагин"
+        },
+        "loading": "Загружаем плагины...",
+        "loadFailed": "Не удалось загрузить плагины.",
+        "title": "Менеджер плагинов",
+        "install": {
+          "button": "Установить плагин",
+          "title": "Установка плагина",
+          "description": "Введите имя npm-пакета плагина, который хотите установить.",
+          "packageNameLabel": "Имя npm-пакета",
+          "packageNamePlaceholder": "@paperclipai/plugin-example",
+          "installing": "Устанавливаем...",
+          "confirm": "Установить"
+        },
+        "alphaNotice": {
+          "title": "Плагины — альфа-версия.",
+          "body": "Среда выполнения плагинов и API ещё меняются. Пока функция не устоялась, возможны несовместимые изменения."
+        },
+        "available": {
+          "heading": "Доступные плагины",
+          "bundled": "Из поставки",
+          "loading": "Загружаем плагины из поставки...",
+          "loadFailed": "Не удалось загрузить плагины из поставки.",
+          "empty": "В этой сборке плагинов из поставки не найдено.",
+          "notInstalled": "Не установлен",
+          "building": "Собираем плагин...",
+          "openSettings": "Открыть настройки",
+          "review": "Проверить"
+        },
+        "tagFirstParty": "Собственный",
+        "tagExample": "Пример",
+        "enable": "Включить",
+        "disable": "Отключить",
+        "installed": {
+          "heading": "Установленные плагины",
+          "emptyTitle": "Плагины не установлены",
+          "emptyHint": "Установите плагин, чтобы расширить возможности.",
+          "noDescription": "Описание не указано.",
+          "pluginError": "Ошибка плагина",
+          "viewFullError": "Показать ошибку полностью",
+          "upgrade": "Обновить",
+          "configure": "Настроить"
+        },
+        "upgradeDialog": {
+          "title": "Разрешить дополнительные возможности плагина?",
+          "description": "Это обновление запрашивает дополнительные возможности. Проверьте их, прежде чем разрешать и обновлять.",
+          "upgrading": "Обновляем...",
+          "confirm": "Разрешить и обновить"
+        },
+        "uninstall": {
+          "title": "Удаление плагина",
+          "description": "Удалить плагин <strong>{{name}}</strong>? Это действие нельзя отменить.",
+          "uninstalling": "Удаляем...",
+          "confirm": "Удалить"
+        },
+        "errorDialog": {
+          "title": "Подробности ошибки",
+          "description": "Плагин {{name}} перешёл в состояние ошибки.",
+          "pluginFallback": "Плагин",
+          "whatErrored": "Что сломалось",
+          "noSummary": "Сводка ошибки недоступна.",
+          "fullOutput": "Полный вывод ошибки",
+          "noStoredMessage": "Текст ошибки не сохранён."
+        }
+      },
+      "plugin-settings": {
+        "breadcrumbOrganization": "Организация",
+        "breadcrumbSettings": "Настройки",
+        "breadcrumbPlugins": "Плагины",
+        "breadcrumbPluginDetails": "О плагине",
+        "loading": "Загружаем сведения о плагине...",
+        "noDescription": "Описание не указано.",
+        "yes": "Да",
+        "no": "Нет",
+        "tabs": {
+          "configuration": "Конфигурация",
+          "status": "Состояние"
+        },
+        "about": {
+          "heading": "О плагине",
+          "description": "Описание",
+          "author": "Автор",
+          "categories": "Категории"
+        },
+        "settings": {
+          "heading": "Настройки",
+          "none": "Этому плагину настройки не нужны."
+        },
+        "environments": {
+          "title": "Настройте этот плагин в разделе «Настройки → Окружения».",
+          "description": "{{name}} регистрирует там настройки среды выполнения: целевая среда остаётся общей для экземпляра, а привязки секретов по-прежнему разрешаются в контексте выбранной организации.",
+          "thisPlugin": "Этот плагин",
+          "open": "Открыть окружения"
+        },
+        "dashboard": {
+          "title": "Панель выполнения",
+          "description": "Рабочий процесс, плановые задания и доставки вебхуков",
+          "workerHeading": "Рабочий процесс",
+          "status": "Состояние",
+          "pid": "PID",
+          "uptime": "Время работы",
+          "pendingRpcs": "Ожидающие RPC",
+          "crashes": "Сбои",
+          "crashCounts": "подряд: {{consecutive}} / всего: {{total}}",
+          "lastCrash": "Последний сбой",
+          "noWorker": "Рабочий процесс не зарегистрирован.",
+          "jobRunsHeading": "Последние прогоны заданий",
+          "noJobRuns": "Прогонов заданий пока нет.",
+          "webhooksHeading": "Последние доставки вебхуков",
+          "noWebhooks": "Доставок вебхуков пока нет.",
+          "lastChecked": "Проверено: {{time}}",
+          "unavailable": "Диагностика выполнения сейчас недоступна."
+        },
+        "logs": {
+          "title": "Последние логи",
+          "description_one": "Последних записей лога: {{count}}",
+          "description_few": "Последних записей лога: {{count}}",
+          "description_many": "Последних записей лога: {{count}}",
+          "description_other": "Последних записей лога: {{count}}"
+        },
+        "health": {
+          "title": "Работоспособность",
+          "checking": "Проверяем состояние...",
+          "overall": "Итог",
+          "lifecycle": "Жизненный цикл",
+          "runsWhenReady": "Проверки состояния запускаются, когда плагин готов."
+        },
+        "details": {
+          "title": "Сведения",
+          "pluginId": "ID плагина",
+          "pluginKey": "Ключ плагина",
+          "npmPackage": "Пакет npm",
+          "version": "Версия"
+        },
+        "permissions": {
+          "title": "Разрешения",
+          "none": "Особые разрешения не запрашиваются."
+        },
+        "localFolders": {
+          "selectOrganization": "Выберите организацию, чтобы настроить локальные папки плагина.",
+          "heading": "Локальные папки",
+          "loadFailed": "Не удалось загрузить настройки локальных папок.",
+          "loading": "Загружаем локальные папки..."
+        },
+        "folderRow": {
+          "saved": "Локальная папка сохранена.",
+          "savedNeedsAttention": "Локальная папка сохранена, но проверка всё ещё требует внимания.",
+          "saveFailed": "Не удалось сохранить локальную папку.",
+          "pathRequired": "Укажите путь к локальной папке.",
+          "pathMustBeAbsolute": "Путь к локальной папке должен быть полным абсолютным.",
+          "healthy": "В порядке",
+          "needsAttention": "Требует внимания",
+          "readWrite": "Чтение и запись",
+          "readOnly": "Только чтение",
+          "configured": "Настроена",
+          "readable": "Читается",
+          "writable": "Доступна для записи",
+          "notRequested": "Не требуется",
+          "configuredPath": "Настроенный путь",
+          "pathLabel": "Путь к локальной папке",
+          "pathPlaceholder": "/absolute/path/to/folder",
+          "problems": "Проблемы проверки"
+        },
+        "requirements": {
+          "requiredDirectories": "Обязательные каталоги",
+          "missingDirectories": "Отсутствуют каталоги",
+          "requiredFiles": "Обязательные файлы",
+          "missingFiles": "Отсутствуют файлы",
+          "notInspected": "Не проверено",
+          "missingCount": "Отсутствует: {{count}}",
+          "present": "На месте",
+          "noneDeclared": "Не заявлено.",
+          "rootNotInspected": "Настроенный корень не проверялся."
+        },
+        "configForm": {
+          "selectOrgToSave": "Выберите организацию, прежде чем сохранять конфигурацию плагина.",
+          "saved": "Конфигурация сохранена.",
+          "saveFailed": "Не удалось сохранить конфигурацию.",
+          "selectOrgToTest": "Выберите организацию, прежде чем проверять конфигурацию плагина.",
+          "testPassed": "Проверка конфигурации пройдена.",
+          "testFailed": "Проверка конфигурации не пройдена.",
+          "loading": "Загружаем конфигурацию...",
+          "saving": "Сохраняем...",
+          "save": "Сохранить конфигурацию",
+          "testing": "Проверяем...",
+          "test": "Проверить конфигурацию"
+        },
+        "format": {
+          "uptimeSeconds": "{{s}} с",
+          "uptimeMinutes": "{{m}} мин {{s}} с",
+          "uptimeHours": "{{h}} ч {{m}} мин",
+          "uptimeDays": "{{d}} д {{h}} ч",
+          "durationMs": "{{value}} мс",
+          "durationSeconds": "{{value}} с",
+          "durationMinutes": "{{value}} мин",
+          "justNow": "только что",
+          "secondsAgo": "{{n}} с назад",
+          "minutesAgo": "{{n}} мин назад",
+          "hoursAgo": "{{n}} ч назад",
+          "daysAgo": "{{n}} д назад"
+        }
+      },
+      "opencode-local-config-fields": {
+        "instructionsFileLabel": "Файл инструкций агента",
+        "instructionsFileHint": "Абсолютный путь к markdown-файлу (например, AGENTS.md), который описывает поведение этого агента. Подставляется в системный промпт во время работы.",
+        "instructionsFilePlaceholder": "/absolute/path/to/AGENTS.md",
+        "skipPermissions": "Пропускать проверку разрешений"
+      },
+      "pi-local-config-fields": {
+        "instructionsFileLabel": "Файл инструкций агента",
+        "instructionsFileHint": "Абсолютный путь к markdown-файлу (например, AGENTS.md), который описывает поведение этого агента. Подставляется в системный промпт во время работы.",
+        "instructionsFilePlaceholder": "/absolute/path/to/AGENTS.md"
+      },
+      "process-config-fields": {
+        "commandLabel": "Команда",
+        "commandPlaceholder": "например, node, python",
+        "argsLabel": "Аргументы (через запятую)",
+        "argsPlaceholder": "например, script.js, --flag"
+      },
+      "runtime-json-fields": {
+        "runtimeServicesLabel": "JSON сервисов среды выполнения",
+        "payloadTemplateLabel": "JSON шаблона данных запроса"
+      },
+      "missing-plugin-tab-placeholder": {
+        "unavailable": "Вкладка плагина рабочего пространства недоступна."
+      },
+      "launchers": {
+        "unknownError": "Неизвестная ошибка",
+        "unavailable": "Средства запуска плагинов недоступны: {{message}}"
+      },
+      "plugin-page": {
+        "breadcrumbPlugins": "Плагины",
+        "selectOrganization": "Выберите организацию, чтобы открыть эту страницу.",
+        "duplicateRoute": "Несколько плагинов объявляют маршрут <code>{{route}}</code>. Пока конфликт не устранён, используйте маршрут по id плагина.",
+        "back": "Назад"
+      }
+    }
+  }
+}

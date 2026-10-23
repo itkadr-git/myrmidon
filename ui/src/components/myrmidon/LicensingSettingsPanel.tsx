@@ -25,6 +25,9 @@ import {
   type ModuleLicenseStatus,
 } from "./licensingApi";
 
+// The license line starts with this prefix; a format token, not a sentence.
+const LICENSE_PLACEHOLDER = "MYR1.…";
+
 const STATE_TONE: Record<ModuleLicenseStatus["state"], string> = {
   valid: "text-green-700 dark:text-green-400",
   expiring: "text-amber-700 dark:text-amber-400",
@@ -268,7 +271,7 @@ export function LicensingSettingsPanel() {
               id="licensing-license-input"
               rows={3}
               className="font-mono text-xs"
-              placeholder="MYR1.…"
+              placeholder={LICENSE_PLACEHOLDER}
               value={licenseText}
               data-testid="licensing-license-input"
               onChange={(event) => {

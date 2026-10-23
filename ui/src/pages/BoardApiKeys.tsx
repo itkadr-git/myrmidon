@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/select";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
+import { i18n, useTranslation } from "@/i18n";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -25,23 +26,25 @@ import { queryKeys } from "@/lib/queryKeys";
 // with a chosen scope, and revokes keys. The plaintext token of a newly
 // created key is rendered exactly once and never refetched.
 
-const SCOPE_HINTS: Record<BoardApiKeyScopeKind, string> = {
-  full: "Unrestricted operator access (legacy default)",
-  read_only: "Read-only: every GET, no mutations",
-  ops: "Read + maintenance, connections, plugins",
-  agents_manage: "Read + agent and invite management",
-  secrets_manage: "Read + secrets and secret providers",
-  release: "Read + issues, work products, attachments",
-  monitoring_link: "One linking component (Zabbix aggregator, Alertmanager webhook, collector): create/update a task and report its own liveness",
-};
+const scopeHints = (): Record<BoardApiKeyScopeKind, string> => ({
+  full: i18n.t("area.access-secrets-2.board-api-keys.hintFull"),
+  read_only: i18n.t("area.access-secrets-2.board-api-keys.hintReadOnly"),
+  ops: i18n.t("area.access-secrets-2.board-api-keys.hintOps"),
+  agents_manage: i18n.t("area.access-secrets-2.board-api-keys.hintAgentsManage"),
+  secrets_manage: i18n.t("area.access-secrets-2.board-api-keys.hintSecretsManage"),
+  release: i18n.t("area.access-secrets-2.board-api-keys.hintRelease"),
+  monitoring_link: i18n.t("area.access-secrets-2.board-api-keys.hintMonitoringLink"),
+});
 
 function readable(error: unknown): string {
-  if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
+  if (error instanceof ApiError) return error.message || i18n.t("area.access-secrets-2.board-api-keys.requestFailed", { status: error.status });
   if (error instanceof Error) return error.message;
-  return "Unexpected error";
+  return i18n.t("area.access-secrets-2.board-api-keys.unexpectedError");
 }
 
 export function BoardApiKeysPage() {
+  const { t, i18n: i18nInstance } = useTranslation();
+  const formatDate = (value: string | Date) => new Date(value).toLocaleDateString(i18nInstance.language);
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -54,11 +57,11 @@ export function BoardApiKeysPage() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
-      { label: "Board API keys" },
+      { label: t("area.access-secrets-2.board-api-keys.breadcrumbSettings"), href: "/company/settings" },
+      { label: t("area.access-secrets-2.board-api-keys.breadcrumbInstance"), href: "/company/settings/instance/general" },
+      { label: t("area.access-secrets-2.board-api-keys.title") },
     ]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const keysQuery = useQuery({
     queryKey: queryKeys.access.boardApiKeys(includeInactive),
@@ -76,7 +79,7 @@ export function BoardApiKeysPage() {
       setCreateError(null);
       setNewName("");
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.boardApiKeys(includeInactive) });
-      pushToast({ title: "Board API key created", body: "Copy the token now — it is shown once.", tone: "success" });
+      pushToast({ title: t("area.access-secrets-2.board-api-keys.createdTitle"), body: t("area.access-secrets-2.board-api-keys.createdBody"), tone: "success" });
     },
     onError: (error) => setCreateError(readable(error)),
   });
@@ -85,9 +88,9 @@ export function BoardApiKeysPage() {
     mutationFn: (keyId: string) => accessApi.revokeBoardApiKey(keyId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.boardApiKeys(includeInactive) });
-      pushToast({ title: "Board API key revoked", tone: "success" });
+      pushToast({ title: t("area.access-secrets-2.board-api-keys.revokedTitle"), tone: "success" });
     },
-    onError: (error) => pushToast({ title: "Revoke failed", body: readable(error), tone: "error" }),
+    onError: (error) => pushToast({ title: t("area.access-secrets-2.board-api-keys.revokeFailed"), body: readable(error), tone: "error" }),
   });
 
   const keys = keysQuery.data ?? [];
@@ -96,27 +99,26 @@ export function BoardApiKeysPage() {
     <div className="space-y-4 p-4 md:p-6">
       <div className="flex items-center gap-2">
         <KeyRound className="size-4 text-muted-foreground" />
-        <h1 className="text-base font-semibold">Board API keys</h1>
+        <h1 className="text-base font-semibold">{t("area.access-secrets-2.board-api-keys.title")}</h1>
       </div>
       <p className="text-sm text-muted-foreground">
-        Keys authenticate the board API for this user. Each key carries a scope limiting which
-        admin actions it may perform; keys without a scope keep full access.
+        {t("area.access-secrets-2.board-api-keys.intro")}
       </p>
 
       <Card className="space-y-4 p-4">
-        <h2 className="text-sm font-semibold">Create key</h2>
+        <h2 className="text-sm font-semibold">{t("area.access-secrets-2.board-api-keys.createHeading")}</h2>
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-2">
-            <Label htmlFor="board-key-name">Name</Label>
+            <Label htmlFor="board-key-name">{t("area.access-secrets-2.board-api-keys.nameLabel")}</Label>
             <Input
               id="board-key-name"
               value={newName}
               onChange={(event) => setNewName(event.target.value)}
-              placeholder="release duty"
+              placeholder={t("area.access-secrets-2.board-api-keys.namePlaceholder")}
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="board-key-scope">Scope</Label>
+            <Label htmlFor="board-key-scope">{t("area.access-secrets-2.board-api-keys.scopeLabel")}</Label>
             <Select value={newScope} onValueChange={(value) => setNewScope(value as BoardApiKeyScopeKind)}>
               <SelectTrigger id="board-key-scope">
                 <SelectValue />
@@ -129,13 +131,13 @@ export function BoardApiKeysPage() {
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">{SCOPE_HINTS[newScope]}</p>
+            <p className="text-xs text-muted-foreground">{scopeHints()[newScope]}</p>
           </div>
         </div>
         {createError ? <p className="text-sm text-destructive">{createError}</p> : null}
         <div className="flex justify-end">
           <Button onClick={() => createMutation.mutate()} disabled={createMutation.isPending}>
-            {createMutation.isPending ? "Creating…" : "Create key"}
+            {createMutation.isPending ? t("area.access-secrets-2.board-api-keys.creating") : t("area.access-secrets-2.board-api-keys.createButton")}
           </Button>
         </div>
 
@@ -143,7 +145,7 @@ export function BoardApiKeysPage() {
           <div className="space-y-2 rounded-lg border border-border p-3">
             <p className="text-sm font-medium">{created.name}</p>
             <p className="text-xs text-muted-foreground">
-              scope: {created.scope.kind} • copy the token now, it is shown once
+              {t("area.access-secrets-2.board-api-keys.createdScope", { scope: created.scope.kind })}
             </p>
             <div className="flex items-center gap-2">
               <code className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-xs">
@@ -153,13 +155,13 @@ export function BoardApiKeysPage() {
                 variant="outline"
                 onClick={() => {
                   void copyTextToClipboard(created.token);
-                  pushToast({ title: "Token copied", tone: "success" });
+                  pushToast({ title: t("area.access-secrets-2.board-api-keys.tokenCopied"), tone: "success" });
                 }}
               >
-                Copy
+                {t("area.access-secrets-2.board-api-keys.copy")}
               </Button>
               <Button variant="ghost" onClick={() => setCreated(null)}>
-                Dismiss
+                {t("common.dismiss")}
               </Button>
             </div>
           </div>
@@ -168,22 +170,22 @@ export function BoardApiKeysPage() {
 
       <Card className="space-y-3 p-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold">Keys</h2>
+          <h2 className="text-sm font-semibold">{t("area.access-secrets-2.board-api-keys.keysHeading")}</h2>
           <label className="flex items-center gap-2 text-xs text-muted-foreground">
             <input
               type="checkbox"
               checked={includeInactive}
               onChange={(event) => setIncludeInactive(event.target.checked)}
             />
-            show revoked and expired
+            {t("area.access-secrets-2.board-api-keys.showInactive")}
           </label>
         </div>
         {keysQuery.isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
         ) : keysQuery.isError ? (
           <p className="text-sm text-destructive">{readable(keysQuery.error)}</p>
         ) : keys.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No board API keys yet.</p>
+          <p className="text-sm text-muted-foreground">{t("area.access-secrets-2.board-api-keys.empty")}</p>
         ) : (
           <div className="space-y-2">
             {keys.map((key: BoardApiKeyRecord) => (
@@ -194,13 +196,15 @@ export function BoardApiKeysPage() {
                 <div className="min-w-0">
                   <div className="font-medium">{key.name}</div>
                   <div className="text-muted-foreground">
-                    scope: {key.scope?.kind ?? "full"} • created{" "}
-                    {new Date(key.createdAt).toLocaleDateString()}
-                    {key.lastUsedAt
-                      ? ` • last used ${new Date(key.lastUsedAt).toLocaleDateString()}`
-                      : ""}
-                    {key.revokedAt ? " • revoked" : ""}
-                    {key.expiresAt ? ` • expires ${new Date(key.expiresAt).toLocaleDateString()}` : ""}
+                    {[
+                      t("area.access-secrets-2.board-api-keys.rowScope", { scope: key.scope?.kind ?? "full" }),
+                      t("area.access-secrets-2.board-api-keys.rowCreated", { date: formatDate(key.createdAt) }),
+                      key.lastUsedAt ? t("area.access-secrets-2.board-api-keys.rowLastUsed", { date: formatDate(key.lastUsedAt) }) : null,
+                      key.revokedAt ? t("area.access-secrets-2.board-api-keys.rowRevoked") : null,
+                      key.expiresAt ? t("area.access-secrets-2.board-api-keys.rowExpires", { date: formatDate(key.expiresAt) }) : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" • ")}
                   </div>
                 </div>
                 {!key.revokedAt ? (
@@ -209,7 +213,7 @@ export function BoardApiKeysPage() {
                     onClick={() => revokeMutation.mutate(key.id)}
                     disabled={revokeMutation.isPending}
                   >
-                    Revoke
+                    {t("area.access-secrets-2.board-api-keys.revoke")}
                   </Button>
                 ) : null}
               </div>
