@@ -26,7 +26,7 @@ Plan of the wave: `ui/src/i18n/guarded/_areas.md` (areas, files, string counts).
 - Markup inside text: use `<Trans>` with indexed tags, do not split the sentence.
 
 ### Do not translate
-Codes and enum values, identifiers, ids, `data-testid`, class names, URLs and routes, CLI commands, JSON/field names, product and protocol names (Myrmidon, Paperclip, LiteLLM...), and error messages that come from the server (show them as received).
+Codes and enum values, identifiers, ids, `data-testid`, class names, URLs and routes, CLI commands, JSON/field names, product and protocol names (Myrmidon, LiteLLM...), and error messages that come from the server (show them as received).
 
 ### Guard
 Create `ui/src/i18n/guarded/<area>.txt`: one path per line relative to `ui/src` (see `_areas.md` for your area). The test `legacy-screens-no-english` then fails on any English JSX text or `title/label/placeholder/...` attribute in those files. Lines starting with `#` are comments.
@@ -77,7 +77,7 @@ Checks: `areas` catalogs tests (no conflicts, own namespace, en/ru parity) and t
 - Разметка внутри текста: `<Trans>` с индексными тегами, предложение не дробить.
 
 ### Не переводить
-Коды и значения enum, идентификаторы, id, `data-testid`, имена классов, URL и маршруты, команды CLI, имена полей JSON, названия продуктов и протоколов (Myrmidon, Paperclip, LiteLLM...), ошибки, пришедшие с сервера (показывать как есть).
+Коды и значения enum, идентификаторы, id, `data-testid`, имена классов, URL и маршруты, команды CLI, имена полей JSON, названия продуктов и протоколов (Myrmidon, LiteLLM...), ошибки, пришедшие с сервера (показывать как есть).
 
 ### Защита
 Создайте `ui/src/i18n/guarded/<area>.txt`: по пути на строку относительно `ui/src` (файлы вашей области - в `_areas.md`). Тест `legacy-screens-no-english` упадёт на английском тексте JSX и атрибутах `title/label/placeholder/...` в этих файлах. Строки с `#` - комментарии.
