@@ -704,7 +704,7 @@ export function TaskChatComposer({
             ? {
                 ...item,
                 status: "error",
-                error: err instanceof Error ? err.message : "Upload failed",
+                error: err instanceof Error ? err.message : t("area.task-chat-2.composer.uploadFailed"),
               }
             : item,
         ),
@@ -759,7 +759,7 @@ export function TaskChatComposer({
             ? {
                 ...item,
                 status: "error",
-                error: err instanceof Error ? err.message : "Upload failed",
+                error: err instanceof Error ? err.message : t("area.task-chat-2.composer.uploadFailed"),
               }
             : item,
         ),
