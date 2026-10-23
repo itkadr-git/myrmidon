@@ -268,6 +268,8 @@ export interface SwarmClaimLease {
   id: string;
   issueId: string;
   agentId: string;
+  /** Provenance is absent on pre-migration rows and must be treated as unknown. */
+  origin?: "auto_match" | "checkout" | null;
   heartbeatAt: Date | number | string | null;
   expiresAt: Date | number | string | null;
   releasedAt: Date | number | string | null;

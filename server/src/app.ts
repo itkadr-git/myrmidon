@@ -121,9 +121,11 @@ import { channelAllowlistService } from "./myrmidon/channel-allowlist/service.js
 import { myrmidonParallelHelpersRoutes } from "./myrmidon/parallel-helpers/index.js"; // myrmidon(PARALLEL-HELPERS)
 import { myrmidonTeamLivenessRoutes } from "./myrmidon/team-liveness/index.js"; // myrmidon(TEAM-LIVENESS-SETTINGS)
 import { myrmidonBotLspRoutes } from "./myrmidon/bot-lsp/index.js"; // myrmidon(BOT-LSP-DEFAULTS)
+import { myrmidonFeaturesRoutes } from "./myrmidon/features/index.js"; // myrmidon(FEATURES)
 import { myrmidonReplayBlockedRoutes } from "./myrmidon/replay-blocked/index.js"; // myrmidon(N1)
 import { aboutRoutes } from "./myrmidon/about/routes.js"; // myrmidon(ABOUT)
 import { licensingRoutes } from "./myrmidon/licensing/routes.js"; // myrmidon(LICENSING)
+import { installIdProviderFor } from "./myrmidon/licensing/install-id.js"; // myrmidon(OPE-8836)
 import { installedClosedModules } from "./myrmidon/licensing/installed-modules.js"; // myrmidon(LICENSING)
 import { myrmidonBotContainerRoutes } from "./myrmidon/bot-containers/routes-wiring.js"; // myrmidon(W2b)
 import { myrmidonBrowserConsoleRoutes } from "./myrmidon/browser-console/wiring.js"; // myrmidon(BROWSER-CONSOLE)
@@ -189,9 +191,15 @@ import { myrmidonMonitoringLinkRoutes } from "./myrmidon/monitoring/links/index.
 import { myrmidonMonitoringDashboardRoutes } from "./myrmidon/monitoring/dashboard/index.js"; // myrmidon(1.6.6 MONITORING C)
 import { myrmidonCloudConnectorRoutes } from "./myrmidon/cloud-connector/index.js"; // myrmidon(CLOUD-CONNECTOR)
 import { myrmidonBoardProcessRegistryRoutes } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
+import { poolChatRoutes } from "./myrmidon/pool-chat/routes.js";
+import { createPoolChatHttpTransport } from "./myrmidon/pool-chat/transports.js";
+import type { PoolChatTransportResolver } from "./myrmidon/pool-chat/service.js";
+import { secretService } from "./services/secrets.js";
 import { myrmidonAutonomyRoutes } from "./myrmidon/autonomy/index.js"; // myrmidon(1.6-AUTONOMY)
+import { myrmidonKnowledgeRoutes, myrmidonKnowledgeMcpRoutes } from "./myrmidon/knowledge/index.js"; // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2)
 // myrmidon(1.6-TG-PROACTIVITY-E): head-bot proactivity gate/bundling sweep
-import { sweepTelegramNotifyProactivity } from "./myrmidon/telegram-notify/sweep.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the proactivity sweep is reached through the bridge seam.
+import { sweepTelegramNotifyProactivity } from "./myrmidon/channel-connectors/bridge/notify-sweep.js";
 import { accessHubRoutes } from "./myrmidon/access-hub/routes.js"; // myrmidon(SEC1)
 import { ui2LanguageRoutes } from "./myrmidon/ui2-language/routes.js"; // myrmidon(UI2-I18N)
 import { myrmidonForagingRoutes, myrmidonForagingIdleGateRoutes, myrmidonForagingPassRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE, 1.6.3-FORAGING-IDLE-GATE)
@@ -229,7 +237,8 @@ import {
   type ProcessSupervisorReadinessSource,
 } from "./myrmidon/process-readiness/index.js";
 // myrmidon(TG-NOTIFY-A): the telegramNotify settings core (contract, GET/PATCH, changelog)
-import { myrmidonTelegramNotifyRoutes } from "./myrmidon/telegram-notify/index.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the notify track is reached through the bridge seam.
+import { myrmidonTelegramNotifyRoutes } from "./myrmidon/channel-connectors/bridge/notify.js";
 import { instanceSettingsService } from "./services/instance-settings.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
@@ -1102,9 +1111,10 @@ export async function createApp(
   api.use(myrmidonParallelHelpersRoutes(db)); // myrmidon(PARALLEL-HELPERS)
   api.use(myrmidonTeamLivenessRoutes(db)); // myrmidon(TEAM-LIVENESS-SETTINGS)
   api.use(myrmidonBotLspRoutes(db)); // myrmidon(BOT-LSP-DEFAULTS)
+  api.use(myrmidonFeaturesRoutes(db)); // myrmidon(FEATURES): feature registry with live health
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
   api.use(aboutRoutes()); // myrmidon(ABOUT)
-  api.use(licensingRoutes({ installedModules: installedClosedModules(db) })); // myrmidon(LICENSING): install id, license request, license state and save (instance admin)
+  api.use(licensingRoutes({ installId: installIdProviderFor(db), installedModules: installedClosedModules(db) })); // myrmidon(LICENSING): install id, license request, license state and save (instance admin)
   api.use(myrmidonBotContainerRoutes(db)); // myrmidon(W2b)
   api.use(myrmidonBrowserConsoleRoutes(db)); // myrmidon(BROWSER-CONSOLE)
   api.use(myrmidonLitellmCostsRoutes(db)); // myrmidon(M2-A): gateway-collected costs and model catalog
@@ -1154,7 +1164,7 @@ export async function createApp(
   api.use(reviewRoutingRoutes(db)); // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   api.use(reviewReworkRoutes(db)); // myrmidon(REVIEW-REWORK): review-return loop settings
   api.use(pluginEntitlementRoutes(db)); // myrmidon(PLUGIN-ENTITLEMENT C): accept/remove plugin keys (instance admin)
-  api.use(licensingInstallIdRoutes()); // myrmidon(LIC-ID-1): instance install ID
+  api.use(licensingInstallIdRoutes(installIdProviderFor(db))); // myrmidon(LIC-ID-1): instance install ID
   api.use(myrmidonLitellmBudgetSyncRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection settings, status, re-sync
   api.use(myrmidonLitellmWorkersRoutes(db)); // myrmidon(1.6.5 LITELLM-WORKERS A): LiteLLM worker-process target, live pool size and TTIN/TTOU resize
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
@@ -1165,6 +1175,8 @@ export async function createApp(
   api.use(myrmidonMonitoringLinkRoutes(db)); // myrmidon(1.6.6 MONITORING E): link liveness feed and the link pulse endpoint
   api.use(myrmidonPromptBudgetRoutes(db)); // myrmidon(1.6.3 PROMPT-BUDGET B): prompt-budget threshold settings and status
   api.use(myrmidonAutonomyRoutes(db)); // myrmidon(1.6-AUTONOMY): role × action-class matrix and regulations
+  api.use(myrmidonKnowledgeRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): one service, one set of rights (REST)
+  api.use(myrmidonKnowledgeMcpRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): company knowledge MCP endpoint (tools/list + tools/call)
   api.use(accessHubRoutes(db)); // myrmidon(SEC1): access-hub routes
   api.use(myrmidonBrowserBridgeRoutes(db)); // myrmidon(EXTCASE-B): bridge panel (codes, devices, allowlist)
   api.use(myrmidonOcrRoutes(db)); // myrmidon(EXT-CASE-OCR): company OCR MCP endpoint (ocr.pdf)
@@ -1190,6 +1202,21 @@ export async function createApp(
   api.use(myrmidonForagingPassRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass history
   api.use(myrmidonWikiCortexRoutes(db)); // myrmidon(1.6-WIKI): company regulations (wiki pages, revisions, resolver)
   api.use(myrmidonBoardProcessRegistryRoutes(db)); // myrmidon(1.6.6 PROCS-0.1): process registry read by the «Процессы» panel
+  const poolChatSecrets = secretService(db);
+  const resolvePoolChatTransport: PoolChatTransportResolver = async (input) => {
+    if (!input.credentialSecretName) return null;
+    const secret = await poolChatSecrets.getByName(input.companyId, input.credentialSecretName);
+    if (!secret) return null;
+    const apiKey = await poolChatSecrets.resolveSecretValue(input.companyId, secret.id, "latest");
+    const endpoint = typeof input.config.endpoint === "string" ? input.config.endpoint : null;
+    if (!endpoint || !apiKey) return null;
+    return createPoolChatHttpTransport({ provider: input.provider, endpoint, apiKey });
+  };
+  // Keep provider-backed pool-chat disabled until an operator explicitly
+  // enables the deployment after recovery/settlement checks.
+  if (process.env.MYRMIDON_POOL_CHAT_ENABLED === "1") {
+    api.use(poolChatRoutes(db, resolvePoolChatTransport)); // myrmidon(1.6.6 POOL-CHAT): authenticated router boundary
+  }
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }

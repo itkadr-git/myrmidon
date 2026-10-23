@@ -335,9 +335,11 @@
     "castes": "Agent castes",
     "models": "Models & providers",
     "wipLimit": "WIP limit",
+    "features": "Features",
     "reviewRouting": "Review routing",
     "corpus": "Knowledge corpus",
-    "agentExchange": "Agent exchanges"
+    "agentExchange": "Agent exchanges",
+    "budgets": "Budgets"
   },
   "corpus": {
     "title": "Knowledge corpus",
@@ -540,6 +542,19 @@
     "queueTitle": "Queue",
     "queueDescription": "Assigned tasks waiting for a claim in this role, oldest first.",
     "queueEmpty": "No queued tasks for this role.",
+    "discuss": "Discuss",
+    "discussRunning": "Discussing...",
+    "discussFailed": "The debate did not start.",
+    "discussDisabled": "Debates are switched off for this caste.",
+    "discussDisabledHint": "Turn them on in Settings → Instance → General → Asymmetric debates → Debates per caste.",
+    "discussVerdict": "Verdict",
+    "discussStop": "Stopped",
+    "discussRounds": "Rounds",
+    "discussTokens": "Tokens",
+    "discussCost": "Cost",
+    "discussCaste": "Caste",
+    "discussCustomPrompts": "custom guidance",
+    "discussDocument": "Result document on the task",
     "claimsTitle": "Active leases",
     "claimsDescription": "Live claims held by agents in this role; expired rows are awaiting release.",
     "claimsEmpty": "No active leases for this role.",
@@ -983,6 +998,100 @@
     "publicKeySaveButton": "Save public key",
     "publicKeySaveFailed": "Could not save the public key. Try again."
   },
+  "features": {
+    "title": "Features",
+    "subtitle": "Every fork feature, the settings it runs with and whether it actually works right now. A feature that is enabled but misconfigured or failing for more than 30 minutes raises a card in the attention queue.",
+    "loading": "Loading features...",
+    "loadFailed": "Could not load the features.",
+    "toggleFailed": "Could not switch the feature.",
+    "refresh": "Check now",
+    "checked": "Checked {{time}}",
+    "never": "never",
+    "notCounted": "not counted",
+    "effect": "Effect",
+    "lastSuccess": "Last success",
+    "errors24h": "Errors in 24 h",
+    "lastError": "Last error",
+    "config": "Effective configuration",
+    "source": {
+      "settings": "from settings",
+      "env": "from the server environment",
+      "default": "default",
+      "derived": "derived"
+    },
+    "status": {
+      "failing": "Failing",
+      "misconfigured": "Misconfigured",
+      "unknown": "Unknown",
+      "working": "Working",
+      "off": "Off"
+    },
+    "toggleLabel": "Switch: {{name}}",
+    "lockedByEnv": "The value is set by a server environment variable",
+    "attentionSince": "First seen broken {{time}}. A card is raised in the attention queue once it stays broken for {{minutes}} minutes.",
+    "openSettings": "Open settings: {{panel}}",
+    "switchHere": "The switch is on this page",
+    "noPanel": "Set by the server environment",
+    "docs": "Guide",
+    "items": {
+      "swarm-claim": {
+        "name": "Swarm self-claim and idle wake",
+        "description": "Idle agents of a role take ready tasks from the role queue under a lease, and the sweeper wakes free agents next to a non-empty queue."
+      },
+      "run-admission": {
+        "name": "Run admission",
+        "description": "Instance-wide limits on concurrent runs, run starts per minute and free memory of the server and the host, so a mass wake cannot exhaust the machine."
+      },
+      "bot-disk-lifecycle": {
+        "name": "Bot disk lifecycle",
+        "description": "Reaps idle scratch and workspace clones of bot containers after a TTL; the memory volume is never touched."
+      },
+      "shared-package-cache": {
+        "name": "Shared package cache",
+        "description": "One set of package manager and build cache directories mounted read-write into every development bot container on the board host."
+      },
+      "bot-lsp": {
+        "name": "Bot language servers",
+        "description": "Writes the language-server block of each bot's profile by role: limited for coding castes, off for the rest unless a card says otherwise."
+      },
+      "agent-memory": {
+        "name": "Agent memory card",
+        "description": "The Memory tab of an agent: lists the memories of the bank the agent really uses, with invalidate, clear and export."
+      },
+      "cost-attribution": {
+        "name": "Cost attribution sweep",
+        "description": "Collects the model gateway's spend log, attributes it to agents and runs by the bot's key, and fills the prices into the cost ledger."
+      },
+      "telegram-dm-status": {
+        "name": "Telegram DM status and progress",
+        "description": "A bridged Telegram DM gets one status message per run that later milestones edit in place; long answers can be split into inline parts."
+      },
+      "chat-holds": {
+        "name": "Chat hold rules",
+        "description": "Chats are never held: a crashed or stopped turn does not block the conversation, and an owner message always wakes the bot as a fresh turn."
+      },
+      "budget-enforcement": {
+        "name": "Budget enforcement",
+        "description": "What a crossed spend limit does: only signal the owner (default), pause the scope (soft) or refuse new runs (hard)."
+      },
+      "plugin-entitlements": {
+        "name": "Plugin entitlements",
+        "description": "Plugins whose manifest requires an entitlement stay unactivated until a valid key for that plugin is accepted in the instance settings."
+      },
+      "host-disk": {
+        "name": "Host disk signal",
+        "description": "Measures the disk the server's data lives on and raises an attention signal, with the biggest consumers, when usage crosses a threshold."
+      },
+      "workspace-hygiene": {
+        "name": "Workspace quotas",
+        "description": "Measures agent workspaces and raises a clean-up signal for a workspace over its quota or a company over its total."
+      },
+      "model-fallback-signal": {
+        "name": "Model fallback signal",
+        "description": "Raises an attention card for a bot when more than a set share of its gateway calls were served by a model outside its card."
+      }
+    }
+  },
   "telegramDmProgress": {
     "title": "Telegram DM: live progress",
     "description": "While a bot works on a message in a bridged Telegram DM, one status message shows what it is doing now (reading a file, editing slides, checking the result) and is edited in place until the answer replaces it. Saving takes effect at the next status update — no server restart.",
@@ -1242,6 +1351,7 @@
       "expiring": "Expires {{date}}",
       "expired": "Expired",
       "wrong_instance": "Not for this installation",
+      "wrongInstanceIds": "Not for this installation (the license is for {{licenseId}}; this board is {{boardId}})",
       "missing": "No license",
       "not_granted": "Not included in the license",
       "bad_signature": "Invalid signature",
@@ -1264,6 +1374,7 @@
       "badSignature": "The license signature is invalid: the text was changed or it was not issued by the vendor.",
       "unsupportedRev": "This license format is not supported by this board version. Update the board.",
       "instanceMismatch": "This license was issued for another installation: the installation id does not match. Send the vendor the request from this screen.",
+      "instanceMismatchIds": "This license was issued for installation {{licenseId}}; the installation id of this board is {{boardId}}. Send the vendor the request from this screen.",
       "expired": "This license has already expired. Ask the vendor for a new one.",
       "noCore": "This license does not allow any module to start.",
       "envOverride": "The license is set by the MYR_LICENSE variable of the board, so a license cannot be saved here. Change the variable or remove it to use the license file.",
@@ -1404,5 +1515,79 @@
         "cooldownCeilingHours": "Enter a whole number from 1 to 168, or leave it empty for the default"
       }
     }
+  },
+  "budgetLimits": {
+    "title": "Budgets",
+    "breadcrumb": "Budgets",
+    "intro": "Spend limits per hierarchy level: nest (the company and its projects), caste, foraging, task. Each row carries an amount and a period; over the limit a hard mode refuses the work and a soft mode stops it with a card to the owner.",
+    "loading": "Loading the spend limits...",
+    "noCompany": "Select a company to edit its budgets.",
+    "signalOnlyLabel": "Signal only",
+    "signalOnlyHint": "Limits signal, they never stop work. While this mode is on, crossing a limit blocks nothing.",
+    "source": {
+      "default": "Default value — nothing saved yet",
+      "stored": "Saved in the settings",
+      "env": "Forced by the server environment — the switch is locked"
+    },
+    "treeTitle": "Limit levels",
+    "colScope": "Level",
+    "colSpent": "Spent",
+    "colAmount": "Amount",
+    "colPeriod": "Period",
+    "colMode": "Mode",
+    "colActions": "Actions",
+    "level": {
+      "nest": "Nest",
+      "caste": "Caste",
+      "foraging": "Foraging",
+      "issue": "Task"
+    },
+    "refCompany": "Whole company",
+    "refForaging": "Foraging pass",
+    "period": {
+      "calendar_month_utc": "Calendar month (UTC)",
+      "lifetime": "Lifetime"
+    },
+    "mode": {
+      "hard": "Hard: refuse",
+      "soft": "Soft: pause and ask"
+    },
+    "save": "Save",
+    "create": "Create",
+    "remove": "Remove",
+    "inactive": "Switched off",
+    "noLimit": "No limit",
+    "overLimit": "Over the limit",
+    "percentUsed": "{{percent}}% used",
+    "amountPlaceholder": "0.00",
+    "amountRequired": "Enter an amount.",
+    "amountInvalid": "Enter a number, for example 25 or 25.50.",
+    "amountRange": "Enter an amount from 0 to 10,000,000.",
+    "refErrorLength": "The value must be 1 to 128 characters long.",
+    "refErrorNest": "Enter a project identifier, or leave the whole company row.",
+    "refErrorCaste": "A caste value holds lowercase letters, digits and hyphens.",
+    "refErrorForaging": "The foraging level has a single value and it is already in the tree.",
+    "refErrorIssue": "A task value must be an issue identifier (UUID).",
+    "addTo": "Add a limit: {{level}}",
+    "addProjectLabel": "Project",
+    "addProjectPlaceholder": "Select a project",
+    "addRefLabel": "Level value",
+    "addCastePlaceholder": "caste key, for example engineer",
+    "addIssuePlaceholder": "task identifier (UUID)",
+    "addSubmit": "Add",
+    "journalTitle": "Change journal",
+    "journalEmpty": "No changes yet",
+    "colWhen": "When",
+    "colActor": "Who",
+    "colAction": "Action",
+    "colWhat": "Change",
+    "action": {
+      "create": "Created",
+      "update": "Updated",
+      "delete": "Deleted"
+    },
+    "journalCreated": "Limit created: {{amount}}",
+    "journalDeleted": "Limit deleted: {{amount}}",
+    "journalUpdated": "Was {{before}}, became {{after}}"
   }
 }
