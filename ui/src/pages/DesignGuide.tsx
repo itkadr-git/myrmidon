@@ -1152,7 +1152,7 @@ export function DesignGuide() {
               </div>
             </div>
             <SheetFooter>
-              <Button variant="outline">{t("area.ux-labs.design-guide.cancel")}</Button>
+              <Button variant="outline">{t("common.cancel")}</Button>
               <Button>{t("area.ux-labs.design-guide.save")}</Button>
             </SheetFooter>
           </SheetContent>
@@ -1262,7 +1262,7 @@ export function DesignGuide() {
             </CardContent>
             <CardFooter className="gap-2">
               <Button size="sm">{t("area.ux-labs.design-guide.action")}</Button>
-              <Button variant="outline" size="sm">{t("area.ux-labs.design-guide.cancel")}</Button>
+              <Button variant="outline" size="sm">{t("common.cancel")}</Button>
             </CardFooter>
           </Card>
         </SubSection>
@@ -1580,7 +1580,7 @@ export function DesignGuide() {
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline">{t("area.ux-labs.design-guide.cancel")}</Button>
+              <Button variant="outline">{t("common.cancel")}</Button>
               <Button>{t("area.ux-labs.design-guide.save")}</Button>
             </DialogFooter>
           </DialogContent>
