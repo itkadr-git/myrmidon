@@ -86,7 +86,6 @@ describe("chat connector UI contract", () => {
   });
 
   it("lists every supported provider in the agent channel empty state", () => {
-    const panel = source("../../../components/chat/AgentChannelsPanel.tsx");
     expect(catalog).toContain(
       "Connect AgentMail, Slack, GitHub, Discord, Microsoft Teams, or Telegram from",
     );
@@ -170,8 +169,6 @@ describe("chat connector UI contract", () => {
   });
 
   it("states the provider boundary for reconnect and removal", () => {
-    const detail = source("./ChatEndpointDetail.tsx");
-    const setup = source("./ChatEndpointSetup.tsx");
     for (const reconnectCopy of [
       "does not reinstall the app or change its workspace or channel membership",
       "does not reinstall the App or change repository access",
@@ -179,8 +176,8 @@ describe("chat connector UI contract", () => {
       "does not upload or reinstall the Teams app",
       "automatically refreshes its Myrmidon webhook and command menu",
     ]) {
-      expect(detail).toContain(reconnectCopy);
-      expect(setup).toContain(reconnectCopy);
+      // The detail page and the setup page each carry this copy in the catalog.
+      expect(catalog.split(reconnectCopy).length - 1).toBeGreaterThanOrEqual(2);
     }
     for (const removalCopy of [
       "It does not uninstall the Slack app",
@@ -191,7 +188,7 @@ describe("chat connector UI contract", () => {
       "After Telegram confirms that cleanup, Myrmidon retires the saved token",
       "BotFather bot and its chat memberships remain",
     ]) {
-      expect(detail).toContain(removalCopy);
+      expect(catalog).toContain(removalCopy);
     }
   });
 
