@@ -23,7 +23,7 @@
 // ModelProviderRoutesDeps, so the suite runs the real routes with fakes (the
 // real wiring is wiring.ts).
 
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import {
   createModelProviderSchema,
   listAvailableModelProviderTypes,
@@ -159,6 +159,20 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     assertCompanyAccess(req, companyId);
     res.json({ models: await deps.service.listModels(companyId, providerId) });
   });
+
+  router.post(
+    "/myrmidon/companies/:companyId/model-providers/:id/tool-call-probe",
+    async (req: Request, res: Response) => {
+      const companyId = req.params.companyId as string;
+      const providerId = req.params.id as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      // The probe is deliberately detached from request latency. Its persisted state
+      // is read by the next provider list request.
+      void deps.service.checkToolCallCompatibility({ companyId, providerId }).catch(() => undefined);
+      res.status(202).json({ ok: true, queued: true });
+    },
+  );
 
   router.post("/myrmidon/companies/:companyId/model-providers/:id/models", async (req, res) => {
     const companyId = req.params.companyId as string;
