@@ -45,6 +45,7 @@ import {
   assertValidSlug,
   assertValidRoles,
   assertValidTags,
+  approverKindSatisfies,
   draftPointerFields,
   extractLinkTargets,
   assertTranslationOf,
@@ -1194,19 +1195,87 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     nestId: string,
     buf: Buffer,
     actor: KnowledgeActor,
-    options: { publishOnImport?: boolean } = {},
+    options: {
+      publishOnImport?: boolean;
+      /**
+       * K-3: the approver grade the importing actor presents (from its
+       * membership, never from the file). `null` = no grade at all. Left
+       * undefined only by in-process callers (migration runner, seed), which
+       * act as the instance itself.
+       */
+      approverKind?: string | null;
+    } = {},
   ): Promise<ImportTreeResult> {
     const doc = parseKnowledgeTree(buf);
     if (doc.nestId !== nestId) {
       throw new KnowledgeDomainError("nest_mismatch", 400, `Tree was exported for nest ${doc.nestId}, not ${nestId}.`);
+    }
+    const presented = options.approverKind === undefined ? "owner" : options.approverKind;
+    const sensitivity = await resolveCasteSensitivity(db, companyId);
+
+    /**
+     * K-3: a rule's approver_kind is derived from its roles, never read from
+     * the file. Changing the roles of an existing rule, turning a note into a
+     * rule or a rule into a note needs a grade covering both the old and the
+     * new requirement (403); a new rule arrives published only when the actor
+     * could approve it, otherwise as a draft.
+     */
+    const ruleGate = (page: (typeof doc.pages)[number], existing: ItemRow | null, changed: boolean) => {
+      if (page.kind !== "rule" && existing?.kind !== "rule") return { approverKind: page.approverKind, mayPublish: true };
+      const derived = page.kind === "rule" ? ruleApproverKind(page.roles, sensitivity) : null;
+      const previous = existing?.kind === "rule" ? ruleApproverKind(existing.roles ?? [], sensitivity) : null;
+      const mayPublish = derived === null || approverKindSatisfies(derived, presented);
+      if (existing) {
+        const sameRoles = JSON.stringify([...(existing.roles ?? [])].sort()) === JSON.stringify([...page.roles].sort());
+        if (existing.kind !== page.kind || !sameRoles) {
+          for (const required of [previous, derived]) {
+            if (required && !approverKindSatisfies(required, presented)) {
+              throw new KnowledgeDomainError(
+                "approver_kind_mismatch",
+                403,
+                `Importing "${page.slug}" changes the roles of a rule that needs kind "${required}", the importer presents "${presented ?? "none"}".`,
+              );
+            }
+          }
+        }
+        if (page.kind === "rule" && page.status === "published" && changed && options.publishOnImport !== false && !mayPublish) {
+          throw new KnowledgeDomainError(
+            "approver_kind_mismatch",
+            403,
+            `Importing "${page.slug}" would publish a rule that needs kind "${derived}", the importer presents "${presented ?? "none"}".`,
+          );
+        }
+      }
+      return { approverKind: derived ?? page.approverKind, mayPublish };
+    };
+
+    const deliveredContentOf = async (item: ItemRow): Promise<string> =>
+      item.deliveredRevisionId
+        ? (
+            await db
+              .select({ content: knowledgeRevisions.content })
+              .from(knowledgeRevisions)
+              .where(eq(knowledgeRevisions.id, item.deliveredRevisionId))
+              .limit(1)
+          )[0]?.content ?? ""
+        : "";
+
+    // Refuse before the first write: an import is all-or-nothing on grades.
+    for (const page of doc.pages) {
+      assertValidSlug(page.slug);
+      const present = await loadItem(nestId, page.slug).catch(() => null);
+      ruleGate(page, present, present ? (await deliveredContentOf(present)) !== page.content : true);
     }
     let created = 0;
     let updated = 0;
 
     for (const page of doc.pages) {
       assertValidSlug(page.slug);
-      assertRuleFields(page.kind, page.approvalRequired, page.approverKind);
       const existing = await loadItem(nestId, page.slug).catch(() => null);
+      const currentContent = existing ? await deliveredContentOf(existing) : "";
+      const changed = existing ? currentContent !== page.content : true;
+      const gate = ruleGate(page, existing, changed);
+      assertRuleFields(page.kind, page.approvalRequired, gate.approverKind);
       const timestamp = now();
 
       if (!existing) {
@@ -1220,12 +1289,12 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
               slug: page.slug,
               title: page.title,
               summary: page.summary,
-              status: page.status,
+              status: page.status === "published" && !gate.mayPublish ? "draft" : page.status,
               folderPath: page.folder,
               tags: page.tags,
               roles: page.roles,
               approvalRequired: page.approvalRequired,
-              approverKind: page.approverKind,
+              approverKind: gate.approverKind,
               deliveredRevisionId: null,
               currentRevisionNumber: 1,
               createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -1241,13 +1310,13 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
               nestId,
               itemId: item!.id,
               revisionNumber: 1,
-              status: page.status === "published" ? "approved" : "draft",
+              status: page.status === "published" && gate.mayPublish ? "approved" : "draft",
               content: page.content,
               changeSummary: "import",
               createdAt: timestamp,
             })
             .returning();
-          if (page.status === "published" && options.publishOnImport !== false) {
+          if (page.status === "published" && gate.mayPublish && options.publishOnImport !== false) {
             await tx
               .update(knowledgeItems)
               .set({ deliveredRevisionId: revision!.id })
@@ -1266,16 +1335,6 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         });
         created += 1;
       } else {
-        const currentContent = existing.deliveredRevisionId
-          ? (
-              await db
-                .select({ content: knowledgeRevisions.content })
-                .from(knowledgeRevisions)
-                .where(eq(knowledgeRevisions.id, existing.deliveredRevisionId))
-                .limit(1)
-            )[0]?.content ?? ""
-          : "";
-        const changed = currentContent !== page.content;
         await db.transaction(async (tx) => {
           const set: Partial<ItemRow> = {
             title: page.title,
@@ -1284,7 +1343,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
             tags: page.tags,
             roles: page.roles,
             approvalRequired: page.approvalRequired,
-            approverKind: page.approverKind,
+            approverKind: gate.approverKind,
             kind: page.kind,
             updatedAt: timestamp,
           };
@@ -1305,7 +1364,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
             set.currentRevisionNumber = existing.currentRevisionNumber + 1;
             // S3 holds here too: an import never silently moves the pointer;
             // a published page gets the new revision delivered explicitly.
-            if (page.status === "published" && options.publishOnImport !== false) {
+            if (page.status === "published" && gate.mayPublish && options.publishOnImport !== false) {
               set.deliveredRevisionId = revision!.id;
             }
             await syncLinks(tx, { ...existing, ...set } as ItemRow, page.content);

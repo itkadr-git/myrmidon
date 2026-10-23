@@ -492,6 +492,11 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
         // approverKind and a caller without the matching grade is refused by
         // the domain gate (403).
         const approverKindInput = approverKindFromRequest(req, companyId);
+        if (approverKindInput === null) {
+          throw forbidden("approving needs an operator, admin or owner membership of the company", {
+            code: "approver_kind_mismatch",
+          });
+        }
         res.json({
           item: await mod.approve(
             req.params.idOrSlug as string,
@@ -675,7 +680,13 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     }
     await assertBulkImportAllowed(req, companyId);
     try {
-      res.json(await mod.importTree(buf, { actorType: actor.actorType, actorId: actor.actorId }));
+      res.json(
+        await mod.importTree(
+          buf,
+          { actorType: actor.actorType, actorId: actor.actorId },
+          { approverKind: approverKindFromRequest(req, companyId) },
+        ),
+      );
     } catch (err) {
       throw toHttpError(err);
     }

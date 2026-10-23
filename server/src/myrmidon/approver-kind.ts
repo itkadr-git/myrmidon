@@ -11,8 +11,11 @@ import type { Request } from "express";
  * The instance admin and the local implicit board are the owner; a company
  * membership maps by its role (owner, admin, otherwise operator).
  * Never taken from the request body: the caller cannot type its own grade.
+ *
+ * `null` = no grade: a viewer, an unknown role, no active membership of the
+ * company. Every caller treats `null` as a refusal.
  */
-export function approverKindFromRequest(req: Request, companyId: string): string {
+export function approverKindFromRequest(req: Request, companyId: string): string | null {
   const actor = (req.actor ?? {}) as {
     source?: string;
     isInstanceAdmin?: boolean;
@@ -22,5 +25,6 @@ export function approverKindFromRequest(req: Request, companyId: string): string
   const membership = actor.memberships?.find((m) => m.companyId === companyId && m.status === "active");
   if (membership?.membershipRole === "owner") return "owner";
   if (membership?.membershipRole === "admin") return "admin";
-  return "operator";
+  if (membership?.membershipRole === "operator" || membership?.membershipRole === "member") return "operator";
+  return null;
 }

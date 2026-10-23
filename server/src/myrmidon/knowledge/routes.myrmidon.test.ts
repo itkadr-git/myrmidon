@@ -34,6 +34,7 @@ const boardActor = {
   userId: "user-a",
   isInstanceAdmin: false,
   companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "operator" }],
 };
 const agentActor = {
   type: "agent",
@@ -269,6 +270,26 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       expect.objectContaining({ kind: "owner" }),
       expect.anything(),
     );
+  });
+
+  it("K-3: a viewer has no approver grade: approve is 403 before the module", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ kind: "rule", slug: "rules/no-secrets" });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    const viewerActor = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "viewer" }] };
+    const res = await request(app(deps, viewerActor)).post(`${base}/items/rules/no-secrets/approve`).send({ approverKind: "owner" });
+    expect(res.status).toBe(403);
+    expect(deps.module.approve).not.toHaveBeenCalled();
+  });
+
+  it("K-3: the import route hands the module the actor's grade, never one from the file", async () => {
+    const deps = makeDeps({ grants: true });
+    const operatorActor = { ...boardActor };
+    await request(app(deps, operatorActor)).post(`${base}/import`).set("Content-Type", "application/gzip").send(Buffer.from("x")).expect(200);
+    expect(deps.module.importTree).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), { approverKind: "operator" });
+    const viewerActor = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "viewer" }] };
+    await request(app(deps, viewerActor)).post(`${base}/import`).set("Content-Type", "application/gzip").send(Buffer.from("x")).expect(200);
+    expect(deps.module.importTree).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), { approverKind: null });
   });
 
   it("write gate: a payload flagged by the injection scanner is 422 before the store", async () => {

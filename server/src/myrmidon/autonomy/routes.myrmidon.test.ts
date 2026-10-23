@@ -283,6 +283,25 @@ describe("myrmidon(1.6-AUTONOMY) routes: read and edit with a change log", () =>
     ]);
   });
 
+  it("K-3: delete presents the actor's grade to the backend; a viewer has none and is refused before it", async () => {
+    const seen: Array<string | null> = [];
+    const backend = {
+      delete: vi.fn(async (_c: string, _a: unknown, id: string, kind: string | null) => {
+        seen.push(kind);
+        return kind === "owner"
+          ? { ok: true as const, value: { id } }
+          : { ok: false as const, failure: { kind: "approver_kind_mismatch" as const, regulationId: id, required: "owner", presented: kind } };
+      }),
+    } as unknown as AutonomyRegulationsBackend;
+    const asRole = (membershipRole: string) =>
+      app({ ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole }] }, memoryAutonomyStore(), undefined, backend).server;
+    const url = `/api/myrmidon/autonomy/regulations/rule-1?companyId=${COMPANY_ID}`;
+    await request(asRole("operator")).delete(url).expect(403);
+    await request(asRole("viewer")).delete(url).expect(403);
+    await request(asRole("owner")).delete(url).expect(200);
+    expect(seen).toEqual(["operator", "owner"]);
+  });
+
   it("edits the matrix, answers 409 on a stale version and shows the edit in the change log", async () => {
     const { server } = app(boardActor);
     const patch = {

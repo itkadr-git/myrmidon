@@ -12,7 +12,14 @@ import type { RegulationPageRecord } from "./types.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 
-const member = { type: "board", source: "session", userId: "user-a", isInstanceAdmin: false, companyIds: [COMPANY_ID] };
+const member = {
+  type: "board",
+  source: "session",
+  userId: "user-a",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "operator" }],
+};
 const outsider = { type: "board", source: "session", userId: "user-b", isInstanceAdmin: false, companyIds: ["other-company"] };
 const agentActor = { type: "agent", source: "agent_key", agentId: "agent-a", companyId: COMPANY_ID, keyId: "key-a" };
 
@@ -190,6 +197,16 @@ describe("myrmidon(1.6.6 K-3) wiki regulation routes: approver grade", () => {
     expect(JSON.stringify(refused.body)).toContain("owner");
     expect((await request(appSharing(store, operator)).get(`${base}/smm/publications`).expect(200)).body.status).toBe("draft");
     await request(appSharing(store, owner)).post(`${base}/smm/publications/approve`).expect(200);
+  });
+
+  it("refuses a viewer approving, rolling back or re-roling: a viewer has no grade", async () => {
+    const viewer = { ...member, userId: "user-viewer", memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "viewer" }] };
+    const store = memoryStore();
+    await request(appSharing(store, owner)).put(`${base}/deploy/oncall`).send({ title: "t", roles: ["engineer"], content: "v1" }).expect(200);
+    await request(appSharing(store, viewer)).post(`${base}/deploy/oncall/approve`).expect(403);
+    await request(appSharing(store, owner)).post(`${base}/deploy/oncall/approve`).expect(200);
+    await request(appSharing(store, viewer)).post(`${base}/deploy/oncall/rollback`).send({ revisionNumber: 1 }).expect(403);
+    await request(appSharing(store, viewer)).put(`${base}/deploy/oncall`).send({ title: "t", roles: ["ops"], content: "v1" }).expect(403);
   });
 
   it("lets an operator approve a rule of an ordinary caste", async () => {

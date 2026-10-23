@@ -30,7 +30,7 @@ import {
   type AutonomyActorRef,
   type AutonomyMatrix,
 } from "@myrmidon/shared";
-import { badRequest, unprocessable } from "../../errors.js";
+import { badRequest, forbidden, unprocessable } from "../../errors.js";
 import { approverKindFromRequest } from "../approver-kind.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
@@ -92,6 +92,13 @@ function respondFailure(res: Response, failure: AutonomyFailure) {
       });
       return;
   }
+}
+
+/** The grade of a board actor; a caller without one is refused (403). */
+function requireApproverKind(req: Request, companyId: string): string {
+  const kind = approverKindFromRequest(req, companyId);
+  if (kind === null) throw forbidden("approving needs an operator, admin or owner membership of the company");
+  return kind;
 }
 
 /** The actor the change log records. */
@@ -242,7 +249,7 @@ export function autonomyRoutes(deps: AutonomyRoutesDeps) {
     const actor = actorFromRequest(req);
     const id = String(req.params.id ?? "");
     const result = deps.regulationsBackend
-      ? await deps.regulationsBackend.approve(companyId, actor, id, approverKindFromRequest(req, companyId))
+      ? await deps.regulationsBackend.approve(companyId, actor, id, requireApproverKind(req, companyId))
       : await service.approveRegulation(companyId, actor, id);
     if (!result.ok) {
       respondFailure(res, result.failure);
@@ -259,7 +266,7 @@ export function autonomyRoutes(deps: AutonomyRoutesDeps) {
     const actor = actorFromRequest(req);
     const id = String(req.params.id ?? "");
     const result = deps.regulationsBackend
-      ? await deps.regulationsBackend.restore(companyId, actor, { id, toRevision: revision }, approverKindFromRequest(req, companyId))
+      ? await deps.regulationsBackend.restore(companyId, actor, { id, toRevision: revision }, requireApproverKind(req, companyId))
       : await service.restoreRegulationRevision(companyId, actor, { id, toRevision: revision });
     if (!result.ok) {
       respondFailure(res, result.failure);
@@ -274,7 +281,7 @@ export function autonomyRoutes(deps: AutonomyRoutesDeps) {
     const actor = actorFromRequest(req);
     const id = String(req.params.id ?? "");
     const result = deps.regulationsBackend
-      ? await deps.regulationsBackend.delete(companyId, actor, id)
+      ? await deps.regulationsBackend.delete(companyId, actor, id, requireApproverKind(req, companyId))
       : await service.deleteRegulation(companyId, actor, id);
     if (!result.ok) {
       respondFailure(res, result.failure);

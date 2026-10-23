@@ -13,6 +13,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import express from "express";
+import request from "supertest";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import {
   activityLog,
@@ -31,9 +33,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { KnowledgeDomainError, createMemorySearchIndex } from "./domain.js";
+import { KnowledgeDomainError, createMemorySearchIndex, serializeKnowledgeTree, type KnowledgeTreePage } from "./domain.js";
 import { createKnowledgeService, type KnowledgeActor } from "./store.js";
 import { createKnowledgeModule } from "./service.js";
+import { knowledgeRoutes } from "./routes.js";
+import { errorHandler } from "../../middleware/index.js";
 import { createDbRegulationStore } from "../wiki-cortex/store.js";
 import { createKnowledgeAutonomyRegulationsBackend } from "../autonomy/knowledge-regulations.js";
 import { resolvedRules } from "./rules.js";
@@ -640,6 +644,123 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(await mod.search("zebra")).toEqual([]); // drafts are not indexed until delivered
     await mod.publish("mars", AGENT, (await mod.listRevisions("mars"))[1]!.id);
     expect((await mod.search("zebra")).map((h) => h.slug)).toEqual(["mars"]);
+  });
+
+  // K-3: import and delete are not a way around the approver grade.
+  describe("approver grade on import and delete", () => {
+    const grade = (membershipRole: string, isInstanceAdmin = false) => ({
+      type: "board",
+      source: "session",
+      userId: `user-${membershipRole}`,
+      isInstanceAdmin,
+      companyIds: [companyId],
+      memberships: [{ companyId, status: "active", membershipRole }],
+    });
+
+    function httpApp(actor: unknown) {
+      const server = express();
+      server.use(express.json());
+      server.use((req, _res, next) => {
+        (req as unknown as { actor: unknown }).actor = actor;
+        next();
+      });
+      server.use("/api", knowledgeRoutes({ moduleFor: (id) => createKnowledgeModule(db, id) }));
+      server.use(errorHandler);
+      return server;
+    }
+
+    const importUrl = () => `/api/myrmidon/companies/${companyId}/knowledge/import`;
+    const page = (over: Partial<KnowledgeTreePage> & { slug: string }): KnowledgeTreePage => ({
+      kind: "rule",
+      title: over.slug,
+      summary: null,
+      folder: "rules/smm",
+      tags: [],
+      roles: ["smm"],
+      status: "published",
+      approvalRequired: true,
+      approverKind: "operator", // the file lies: the code derives the grade
+      content: "imported text",
+      ...over,
+    });
+    const tree = (pages: KnowledgeTreePage[]) => serializeKnowledgeTree({ nestId: companyId, pages });
+    const post = (actor: unknown, pages: KnowledgeTreePage[]) =>
+      request(httpApp(actor)).post(importUrl()).set("Content-Type", "application/gzip").send(tree(pages));
+
+    async function smmCompany() {
+      companyId = await makeCompany();
+      await db.insert(agentCastes).values({ companyId, key: "smm", nameEn: "SMM", color: "blue", sensitive: true });
+    }
+
+    async function publishedSmmRule(slug: string) {
+      const store = makeStore();
+      await store.create({ companyId, nestId: companyId, slug, title: slug, content: "owner text", kind: "rule", roles: ["smm"] }, AGENT);
+      await store.submit(companyId, slug, AGENT);
+      return store.approve(companyId, slug, OWNER, { publish: true });
+    }
+
+    it("an operator importing a smm rule with roles smm -> engineer is 403 and nothing changes; the owner may", async () => {
+      await smmCompany();
+      const rule = await publishedSmmRule("rules/smm/publications");
+      const file = page({ slug: "rules/smm/publications", roles: ["engineer"], content: "owner text" });
+
+      const refused = await post(grade("operator"), [file]);
+      expect(refused.status).toBe(403);
+      const [after] = await db.select().from(knowledgeItems).where(eq(knowledgeItems.id, rule.id));
+      expect(after!.roles).toEqual(["smm"]);
+      expect(after!.approverKind).toBe("owner");
+
+      await post(grade("operator"), [{ ...file, roles: ["smm"], content: "operator rewrite" }]).then((res) => expect(res.status).toBe(403));
+      expect((await post(grade("owner", true), [file])).status).toBe(200);
+      const [moved] = await db.select().from(knowledgeItems).where(eq(knowledgeItems.id, rule.id));
+      expect(moved!.roles).toEqual(["engineer"]);
+      expect(moved!.approverKind).toBe("operator");
+    });
+
+    it("an operator importing a new smm rule gets a draft, not a published rule; the owner publishes", async () => {
+      await smmCompany();
+      const res = await post(grade("operator"), [page({ slug: "rules/smm/new" })]);
+      expect(res.status).toBe(200);
+      const [draft] = await db.select().from(knowledgeItems).where(and(eq(knowledgeItems.nestId, companyId), eq(knowledgeItems.slug, "rules/smm/new")));
+      expect(draft!.status).toBe("draft");
+      expect(draft!.deliveredRevisionId).toBeNull();
+      expect(draft!.approverKind).toBe("owner");
+      const revs = await db.select().from(knowledgeRevisions).where(eq(knowledgeRevisions.itemId, draft!.id));
+      expect(revs.map((r) => r.status)).toEqual(["draft"]);
+
+      expect((await post(grade("owner", true), [page({ slug: "rules/smm/owned" })])).status).toBe(200);
+      const [published] = await db.select().from(knowledgeItems).where(and(eq(knowledgeItems.nestId, companyId), eq(knowledgeItems.slug, "rules/smm/owned")));
+      expect(published!.status).toBe("published");
+      expect(published!.deliveredRevisionId).not.toBeNull();
+    });
+
+    it("a viewer imports nothing that is a rule change; re-importing an unchanged export is idempotent for an operator", async () => {
+      await smmCompany();
+      await publishedSmmRule("rules/smm/publications");
+      const exported = await makeStore().exportTree(companyId);
+      expect((await request(httpApp(grade("operator"))).post(importUrl()).set("Content-Type", "application/gzip").send(exported)).status).toBe(200);
+      expect(await makeStore().exportTree(companyId)).toEqual(exported);
+      const changed = page({ slug: "rules/smm/publications", content: "viewer rewrite" });
+      expect((await post(grade("viewer"), [changed])).status).toBe(403);
+    });
+
+    it("deleting a published rule of a sensitive caste needs the owner's grade; a draft is free", async () => {
+      await smmCompany();
+      const backend = createKnowledgeAutonomyRegulationsBackend(db);
+      const actor = { type: "board" as const, id: "user-1" };
+      const rule = await publishedSmmRule("rules/smm/publications");
+      for (const kind of ["operator", "admin", null]) {
+        const refused = await backend.delete(companyId, actor, rule.id, kind);
+        expect(refused).toMatchObject({ ok: false, failure: { kind: "approver_kind_mismatch", required: "owner" } });
+      }
+      expect(await db.select().from(knowledgeItems).where(eq(knowledgeItems.id, rule.id))).toHaveLength(1);
+      expect(await backend.delete(companyId, actor, rule.id, "owner")).toMatchObject({ ok: true });
+      expect(await db.select().from(knowledgeItems).where(eq(knowledgeItems.id, rule.id))).toHaveLength(0);
+
+      const store = makeStore();
+      const draft = await store.create({ companyId, nestId: companyId, slug: "rules/smm/draft", title: "d", content: "c", kind: "rule", roles: ["smm"] }, AGENT);
+      expect(await backend.delete(companyId, actor, draft.id, "operator")).toMatchObject({ ok: true });
+    });
   });
 
   it("the second company sees none of the first company's knowledge", async () => {

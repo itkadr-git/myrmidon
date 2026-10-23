@@ -493,20 +493,37 @@ export async function deleteKnowledgeAutonomyRegulation(
   companyId: string,
   actor: AutonomyActorRef,
   regulationId: string,
+  approverKind: string | null,
   logActivity?: AutonomyLogActivityFn,
 ): Promise<AutonomyResult<{ id: string }>> {
-  const deleted = await db.transaction(async (tx) => {
+  const sensitivity = await resolveCasteSensitivity(db, companyId);
+  const outcome = await db.transaction(async (tx) => {
     const [item] = await tx
-      .select({ id: knowledgeItems.id })
+      .select({
+        id: knowledgeItems.id,
+        roles: knowledgeItems.roles,
+        status: knowledgeItems.status,
+        deliveredRevisionId: knowledgeItems.deliveredRevisionId,
+      })
       .from(knowledgeItems)
-      .where(and(eq(knowledgeItems.nestId, companyId), eq(knowledgeItems.id, regulationId), eq(knowledgeItems.kind, "rule")));
-    if (!item) return false;
+      .where(and(eq(knowledgeItems.nestId, companyId), eq(knowledgeItems.id, regulationId), eq(knowledgeItems.kind, "rule")))
+      .for("update");
+    if (!item) return { notFound: true } as const;
+    // Deleting a delivered rule withdraws it from the fleet: it needs the same
+    // grade as approving it. A draft that was never delivered is free to delete.
+    if (item.deliveredRevisionId !== null || item.status === "published") {
+      const refusal = checkApproverGate(sensitivity, item, approverKind);
+      if (refusal) return { refusal } as const;
+    }
 
     await tx.delete(knowledgeItems).where(eq(knowledgeItems.id, item.id));
-    return true;
+    return { deleted: true } as const;
   });
 
-  if (!deleted) {
+  if ("refusal" in outcome) {
+    return fail(outcome.refusal);
+  }
+  if ("notFound" in outcome) {
     return fail({ kind: "regulation_not_found", regulationId });
   }
 
@@ -529,7 +546,7 @@ export interface AutonomyRegulationsBackend {
   update(companyId: string, actor: AutonomyActorRef, input: { id: string; title?: string; bodyMarkdown?: string }): Promise<AutonomyResult<AutonomyRegulation>>;
   approve(companyId: string, actor: AutonomyActorRef, regulationId: string, approverKind: string | null): Promise<AutonomyResult<AutonomyRegulation>>;
   restore(companyId: string, actor: AutonomyActorRef, input: { id: string; toRevision: number }, approverKind: string | null): Promise<AutonomyResult<AutonomyRegulation>>;
-  delete(companyId: string, actor: AutonomyActorRef, regulationId: string): Promise<AutonomyResult<{ id: string }>>;
+  delete(companyId: string, actor: AutonomyActorRef, regulationId: string, approverKind: string | null): Promise<AutonomyResult<{ id: string }>>;
 }
 
 export function createKnowledgeAutonomyRegulationsBackend(
@@ -546,7 +563,7 @@ export function createKnowledgeAutonomyRegulationsBackend(
       approveKnowledgeAutonomyRegulation(db, companyId, actor, regulationId, approverKind, logActivity),
     restore: (companyId: string, actor: AutonomyActorRef, input: { id: string; toRevision: number }, approverKind: string | null) =>
       restoreKnowledgeAutonomyRegulation(db, companyId, actor, input, approverKind, logActivity),
-    delete: (companyId: string, actor: AutonomyActorRef, regulationId: string) =>
-      deleteKnowledgeAutonomyRegulation(db, companyId, actor, regulationId, logActivity),
+    delete: (companyId: string, actor: AutonomyActorRef, regulationId: string, approverKind: string | null) =>
+      deleteKnowledgeAutonomyRegulation(db, companyId, actor, regulationId, approverKind, logActivity),
   };
 }
