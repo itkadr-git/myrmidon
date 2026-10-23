@@ -33,7 +33,7 @@ vi.mock("../../services/issues.js", async (importOriginal) => {
             mockRejectFirstComment.value = false;
             return Promise.reject(new Error("temporary comment failure"));
           }
-          return service.addComment(...args);
+          return mockAddComment(...args);
         },
       };
     },
