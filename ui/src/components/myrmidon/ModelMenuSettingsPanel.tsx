@@ -285,7 +285,7 @@ export function ModelMenuSettingsPanel() {
       <div className="space-y-1">
         <Label>{t("area.settings-models-runtime-1.model-menu-settings-panel.previewTitle")}</Label>
         <pre className="max-h-48 overflow-auto rounded bg-muted p-2 text-xs" data-testid="model-menu-preview">
-          {view ? previewLines(view.menu.groups).join("\n") : t("area.settings-models-runtime-1.shared.loadingEllipsis")}
+          {view ? previewLines(view.menu.groups).join("\n") : t("common.loading")}
         </pre>
       </div>
 

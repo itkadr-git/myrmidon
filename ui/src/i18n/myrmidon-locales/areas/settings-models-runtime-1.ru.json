@@ -2,8 +2,7 @@
   "area": {
     "settings-models-runtime-1": {
       "shared": {
-        "saving": "Сохранение…",
-        "loadingEllipsis": "Загрузка…"
+        "saving": "Сохранение…"
       },
       "caste-debate-settings-panel": {
         "roles": {
