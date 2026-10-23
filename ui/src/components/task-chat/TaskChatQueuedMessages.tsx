@@ -27,7 +27,7 @@ import {
 import type {
   IssueQueuedCommentEntry,
   IssueQueuedCommentQueue,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/i18n";
 import {

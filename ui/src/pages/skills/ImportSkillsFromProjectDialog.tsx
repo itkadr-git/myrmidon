@@ -26,8 +26,8 @@ import type {
   CompanySkillProjectScanResult,
   Project,
   ProjectWorkspace,
-} from "@paperclipai/shared";
-import { normalizeAgentUrlKey } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { normalizeAgentUrlKey } from "@myrmidon/shared";
 import { Link } from "@/lib/router";
 import { Trans } from "react-i18next";
 import { i18n, useTranslation } from "@/i18n";

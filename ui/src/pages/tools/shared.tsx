@@ -3,7 +3,7 @@ import type {
   ToolRiskLevel,
   ToolConnectionHealthStatus,
   ToolPolicyDecision,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { AlertTriangle } from "lucide-react";
 import { i18n, useTranslation } from "@/i18n";
 import { Badge } from "@/components/ui/badge";

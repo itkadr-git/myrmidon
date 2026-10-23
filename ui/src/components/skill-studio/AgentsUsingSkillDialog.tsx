@@ -7,7 +7,7 @@ import type {
   CompanySkillDetail,
   CompanySkillUsageAgent,
   CompanySkillVersion,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Link } from "@/lib/router";
 import { useTranslation } from "@/i18n";
 import { agentsApi } from "@/api/agents";

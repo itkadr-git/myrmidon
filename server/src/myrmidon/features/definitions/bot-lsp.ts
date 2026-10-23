@@ -5,7 +5,7 @@
 // container, so the entry reports `unknown` and shows what it does know — how
 // many bots resolve to a language-server mode.
 
-import { BOT_LSP_SETTINGS_KEY, effectiveBotLspSettings, type BotLspSettings } from "@paperclipai/shared";
+import { BOT_LSP_SETTINGS_KEY, effectiveBotLspSettings, type BotLspSettings } from "@myrmidon/shared";
 import { entry, healthOff, healthUnknown, listText } from "../health.js";
 import type { FeatureDefinition } from "../types.js";
 

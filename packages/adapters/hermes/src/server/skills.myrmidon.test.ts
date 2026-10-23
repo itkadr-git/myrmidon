@@ -4,8 +4,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Spawn nothing: the run only has to get past skill reconciliation.
-vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/server-utils")>();
+vi.mock("@myrmidon/adapter-utils/server-utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@myrmidon/adapter-utils/server-utils")>();
   return {
     ...actual,
     runChildProcess: vi.fn(async () => ({
@@ -18,7 +18,7 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
   };
 });
 
-import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
+import * as serverUtils from "@myrmidon/adapter-utils/server-utils";
 import { execute } from "./execute.js";
 import { listHermesSkills, reconcileHermesPaperclipSkills } from "./skills.js";
 

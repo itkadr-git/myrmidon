@@ -283,22 +283,28 @@ export function AgentCardContainerFieldsView({
             </Field>
 
             <div className="space-y-3 rounded-md border border-border p-3" data-testid="myrmidon-bot-idle-stop">
-              <Field label="Idle stop mode" hint="Always on containers are excluded from idle-stop. On demand is the default.">
+              <Field label={t("area.settings-agent-card.agent-card-container-fields.idleStopMode")} hint={t("area.settings-agent-card.agent-card-container-fields.idleStopHint")}>
                 <select
                   className={inputClass}
-                  aria-label="Idle stop mode"
+                  aria-label={t("area.settings-agent-card.agent-card-container-fields.idleStopMode")}
                   data-testid="myrmidon-bot-idle-stop-mode"
                   value={card.idleStopMode === "always_on" ? "always_on" : "on_demand"}
                   onChange={(event) => onChange({ ...card, idleStopMode: event.target.value as "always_on" | "on_demand" })}
                 >
-                  <option value="on_demand">On demand</option>
-                  <option value="always_on">Always on</option>
+                  <option value="on_demand">{t("area.settings-agent-card.agent-card-container-fields.idleStopOnDemand")}</option>
+                  <option value="always_on">{t("area.settings-agent-card.agent-card-container-fields.idleStopAlwaysOn")}</option>
                 </select>
               </Field>
               <div className="text-xs text-muted-foreground" data-testid="myrmidon-bot-idle-stop-runtime">
-                Container: {status?.idleStopRuntime?.idleStopped ? "stopped on idle" : status?.container ? stateLabel(status.container.state).toLowerCase() : "unknown"}
-                {status?.idleStopRuntime?.lastStoppedAt && `; last stopped ${new Date(status.idleStopRuntime.lastStoppedAt).toLocaleString()}`}
-                {status?.idleStopRuntime?.lastStartedAt && `; last started ${new Date(status.idleStopRuntime.lastStartedAt).toLocaleString()}`}
+                {t("area.settings-agent-card.agent-card-container-fields.idleStopContainer", {
+                  state: status?.idleStopRuntime?.idleStopped
+                    ? t("area.settings-agent-card.agent-card-container-fields.idleStopStoppedOnIdle")
+                    : status?.container
+                      ? stateLabel(status.container.state).toLowerCase()
+                      : t("area.settings-agent-card.agent-card-container-fields.idleStopUnknown"),
+                })}
+                {status?.idleStopRuntime?.lastStoppedAt && t("area.settings-agent-card.agent-card-container-fields.idleStopLastStopped", { at: new Date(status.idleStopRuntime.lastStoppedAt).toLocaleString() })}
+                {status?.idleStopRuntime?.lastStartedAt && t("area.settings-agent-card.agent-card-container-fields.idleStopLastStarted", { at: new Date(status.idleStopRuntime.lastStartedAt).toLocaleString() })}
               </div>
             </div>
 

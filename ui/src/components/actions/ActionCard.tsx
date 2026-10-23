@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Clock, Pencil, ShieldCheck } from "lucide-react";
-import type { ToolRiskLevel } from "@paperclipai/shared";
+import type { ToolRiskLevel } from "@myrmidon/shared";
 import { Trans } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useTranslation } from "@/i18n";

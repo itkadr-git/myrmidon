@@ -1,7 +1,7 @@
 import { FilterX, RotateCcw } from "lucide-react";
 import { Trans } from "react-i18next";
 import { useTranslation } from "@/i18n";
-import type { CompanySearchZeroResults } from "@paperclipai/shared";
+import type { CompanySearchZeroResults } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import {
   clearFilterDimension,

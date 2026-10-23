@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { i18n, useTranslation } from "@/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, FolderOpen, Save } from "lucide-react";
-import type { PluginLocalFolderDeclaration } from "@paperclipai/shared";
+import type { PluginLocalFolderDeclaration } from "@myrmidon/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useManagedSandboxOnly } from "@/hooks/useManagedSandboxOnly";

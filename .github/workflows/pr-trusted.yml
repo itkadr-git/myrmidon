@@ -704,7 +704,7 @@ jobs:
           save-if: false
 
       - name: Verify Paperclip Runner
-        run: pnpm --filter @paperclipai/paperclip-runner check:all
+        run: pnpm --filter @myrmidon/paperclip-runner check:all
 
   build:
     name: Build
@@ -760,7 +760,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build Runner Evalbook viewer
-        run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
+        run: pnpm --filter @myrmidon/paperclip-runner build:issue-thread
 
       - name: Build
         run: pnpm build

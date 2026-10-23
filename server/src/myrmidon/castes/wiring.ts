@@ -5,7 +5,7 @@
 // testable with plain fakes; this file is the only one that knows about `Db`.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logActivity } from "../../services/index.js";
 import { casteRoutes, type CasteRoutesDeps } from "./routes.js";
 import { createCasteService, type CasteActivityEntry } from "./service.js";

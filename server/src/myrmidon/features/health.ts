@@ -7,7 +7,7 @@ import {
   type FeatureConfigSource,
   type FeatureHealth,
   type FeatureHealthStatus,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { OutcomeSummary } from "./recorder.js";
 
 export function iso(date: Date | null | undefined): string | null {

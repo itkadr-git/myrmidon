@@ -48,7 +48,7 @@ import {
   parseSwarmClaimDraft,
 } from "./SwarmClaimSettingsPanel";
 import { swarmClaimStatusLine, type SwarmClaimSettingsView } from "./swarmClaimSettingsApi";
-import type { SwarmSettings } from "@paperclipai/shared";
+import type { SwarmSettings } from "@myrmidon/shared";
 
 let container: HTMLDivElement;
 let root: Root;

@@ -1326,6 +1326,42 @@
         "noIssueLinkedUsage": "No issue-linked token usage yet.",
         "noProviderUsage": "No provider usage attributed yet.",
         "users": "Users"
+      },
+      "idle-stop-settings-panel": {
+        "loading": "Loading IDLE-STOP settings...",
+        "unavailable": "IDLE-STOP settings are unavailable.",
+        "saveError": "Could not save IDLE-STOP settings.",
+        "validationError": "Idle threshold must be 60-31536000 seconds and health timeout 1000-600000 ms.",
+        "title": "IDLE-STOP",
+        "description": "Stop idle bot containers and wake them before the next run. Changes apply without a restart.",
+        "enabledByDefault": "Enabled by default",
+        "afterSecLabel": "Idle threshold (seconds)",
+        "healthTimeoutLabel": "Health timeout (ms)",
+        "saved": "Saved",
+        "stoppedOnIdle": "Stopped on idle",
+        "unknown": "Unknown",
+        "running": "Running",
+        "stopped": "Stopped",
+        "botsList": {
+          "loading": "Loading bots...",
+          "unavailable": "The bot list is unavailable.",
+          "modeError": "Could not change the mode.",
+          "heading": "Bots",
+          "summary": "{{total}} with a container; \"{{onDemand}}\" is the default.",
+          "selectedAlwaysOn": "Selected: always on",
+          "selectedOnDemand": "Selected: on demand",
+          "allOnDemand": "All: on demand",
+          "allAlwaysOn": "All: always on",
+          "columnBot": "Bot",
+          "columnMode": "Mode",
+          "columnContainer": "Container",
+          "columnLastStopped": "Last stopped",
+          "columnLastStarted": "Last started",
+          "selectBot": "Select {{name}}",
+          "modeFor": "Idle stop mode for {{name}}",
+          "onDemand": "On demand",
+          "alwaysOn": "Always on"
+        }
       }
     }
   }

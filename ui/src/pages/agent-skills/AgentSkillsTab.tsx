@@ -4,7 +4,7 @@ import { Trans } from "react-i18next";
 import { useTranslation } from "@/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, ChevronDown, Loader2, Search, Store, X } from "lucide-react";
-import type { Agent, AgentDesiredSkillEntry } from "@paperclipai/shared";
+import type { Agent, AgentDesiredSkillEntry } from "@myrmidon/shared";
 import { agentsApi } from "../../api/agents";
 import { companySkillsApi } from "../../api/companySkills";
 import { instanceSettingsApi } from "../../api/instanceSettings";

@@ -33,7 +33,7 @@ import {
   executionWorkspaces,
   workspaceOperations,
   issueTreeHolds,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -41,7 +41,7 @@ import {
 import {
   readRunPriorityFromEnv,
   type RunPrioritySettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
 import { attentionService } from "../services/attention.js";

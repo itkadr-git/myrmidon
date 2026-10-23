@@ -23,7 +23,7 @@ import type {
   AgentExchangeFeedRoom,
   AgentExchangeFeedSkillCandidate,
   AgentExchangeFeedTotals,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** The stable error codes of the feed and of the «to skill» action. */
 export type AgentExchangeFeedErrorCode =

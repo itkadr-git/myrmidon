@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb, pluginConfig, plugins } from "@paperclipai/db";
+import { companies, createDb, pluginConfig, plugins } from "@myrmidon/db";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -53,7 +53,7 @@ describeEmbeddedPostgres("registry.listConfigs (startup config delivery)", () =>
     await db.insert(plugins).values({
       id: pluginId,
       pluginKey,
-      packageName: `@paperclipai/${pluginKey}`,
+      packageName: `@myrmidon/${pluginKey}`,
       version: "0.0.1",
       apiVersion: 1,
       categories: ["automation"],

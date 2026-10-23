@@ -11,8 +11,8 @@
 // stored object additively — unknown keys are preserved verbatim on write).
 
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
-import { instanceSettings } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { instanceSettings } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 
 export const MONITORING_SETTINGS_GENERAL_KEY = "myrmidonMonitoringDashboard";

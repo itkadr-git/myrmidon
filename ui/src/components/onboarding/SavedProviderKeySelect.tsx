@@ -1,6 +1,6 @@
 import { useTranslation } from "@/i18n";
 import { aiConnectionsApi } from "@/api/ai-connections";
-import type { AiProvider } from "@paperclipai/shared";
+import type { AiProvider } from "@myrmidon/shared";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";

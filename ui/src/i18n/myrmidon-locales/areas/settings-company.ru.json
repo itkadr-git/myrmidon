@@ -1416,6 +1416,42 @@
         "noIssueLinkedUsage": "Расхода токенов по задачам пока нет.",
         "noProviderUsage": "Расход по провайдерам пока не определён.",
         "users": "Пользователи"
+      },
+      "idle-stop-settings-panel": {
+        "loading": "Загрузка настроек IDLE-STOP…",
+        "unavailable": "Настройки IDLE-STOP недоступны.",
+        "saveError": "Не удалось сохранить настройки IDLE-STOP.",
+        "validationError": "Порог простоя — от 60 до 31536000 секунд, таймаут проверки состояния — от 1000 до 600000 мс.",
+        "title": "IDLE-STOP",
+        "description": "Останавливает простаивающие контейнеры ботов и запускает их перед следующим прогоном. Изменения применяются без перезапуска.",
+        "enabledByDefault": "Включено по умолчанию",
+        "afterSecLabel": "Порог простоя (секунды)",
+        "healthTimeoutLabel": "Таймаут проверки состояния (мс)",
+        "saved": "Сохранено",
+        "stoppedOnIdle": "Остановлен при простое",
+        "unknown": "Неизвестно",
+        "running": "Работает",
+        "stopped": "Остановлен",
+        "botsList": {
+          "loading": "Загрузка ботов…",
+          "unavailable": "Список ботов недоступен.",
+          "modeError": "Не удалось изменить режим.",
+          "heading": "Боты",
+          "summary": "Ботов с контейнером: {{total}}; по умолчанию — «{{onDemand}}».",
+          "selectedAlwaysOn": "Выбранные: всегда включены",
+          "selectedOnDemand": "Выбранные: по запросу",
+          "allOnDemand": "Все: по запросу",
+          "allAlwaysOn": "Все: всегда включены",
+          "columnBot": "Бот",
+          "columnMode": "Режим",
+          "columnContainer": "Контейнер",
+          "columnLastStopped": "Последняя остановка",
+          "columnLastStarted": "Последний запуск",
+          "selectBot": "Выбрать: {{name}}",
+          "modeFor": "Режим остановки при простое: {{name}}",
+          "onDemand": "По запросу",
+          "alwaysOn": "Всегда включён"
+        }
       }
     }
   }

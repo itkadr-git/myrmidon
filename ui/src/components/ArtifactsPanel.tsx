@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { i18n, useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
-import type { IssueWorkProduct } from "@paperclipai/shared";
+import type { IssueWorkProduct } from "@myrmidon/shared";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { MarkdownBody } from "./MarkdownBody";

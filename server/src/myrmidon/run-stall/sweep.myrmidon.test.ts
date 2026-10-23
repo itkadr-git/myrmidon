@@ -9,8 +9,8 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
-} from "@paperclipai/db";
-import { resolveTeamLivenessSettings } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { resolveTeamLivenessSettings } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { i18n, useTranslation } from "@/i18n";
 import { useVisibilityRefetchInterval } from "@/lib/polling";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
-import type { ActivityEvent, Agent } from "@paperclipai/shared";
+import type { ActivityEvent, Agent } from "@myrmidon/shared";
 import { activityApi } from "../api/activity";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";

@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
-import { type Db } from "@paperclipai/db";
+import { type Db } from "@myrmidon/db";
 import {
   consumeLeadingMention,
   findMention,

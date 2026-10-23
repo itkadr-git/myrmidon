@@ -20,7 +20,7 @@ import type {
   ToolConnectionTestCallResult,
   ToolConnectionTestCallStatus,
   ToolConnectionTestDecision,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Trans } from "react-i18next";
 import { i18n, useTranslation } from "@/i18n";
 import { Link } from "@/lib/router";

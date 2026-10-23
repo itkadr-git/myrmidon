@@ -7,9 +7,9 @@
 // accounts appear and clear without anyone viewing the settings page.
 
 import { and, eq, isNotNull } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { modelProviders } from "@paperclipai/db";
-import type { PoolAccountRoleSignal } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { modelProviders } from "@myrmidon/db";
+import type { PoolAccountRoleSignal } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { createDefaultModelProviderService } from "./wiring.js";
 import type { ModelProviderService } from "./service.js";

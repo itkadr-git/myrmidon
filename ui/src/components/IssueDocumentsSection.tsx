@@ -10,8 +10,8 @@ import type {
   FeedbackVoteValue,
   Issue,
   IssueDocument,
-} from "@paperclipai/shared";
-import { isSystemIssueDocumentKey } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { isSystemIssueDocumentKey } from "@myrmidon/shared";
 import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";

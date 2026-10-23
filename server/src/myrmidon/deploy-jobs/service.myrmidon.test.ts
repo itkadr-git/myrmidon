@@ -6,7 +6,7 @@
 // window open for the rollback.
 
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { emptyDeployJobDocument, type DeployJobDocument } from "./domain.js";
 import { deployJobsService, type DeployJobServiceDeps, type HostReport } from "./service.js";
 import { readDeployJobsSettings, type DeployJobsSettings } from "./settings.js";

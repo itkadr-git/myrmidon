@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
-import type { Db } from "@paperclipai/db";
-import type { PermissionKey, SecretBindingTargetType } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import type { PermissionKey, SecretBindingTargetType } from "@myrmidon/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";

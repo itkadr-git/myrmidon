@@ -6,7 +6,7 @@ import {
   type AiConnectionBinding,
   type AiAuthMethod,
   type AiProvider,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { useTranslation } from "@/i18n";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { AiConnectionPicker } from "./AiConnectionPicker";

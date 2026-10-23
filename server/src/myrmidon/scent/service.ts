@@ -17,7 +17,7 @@
 // `scent_tags`.
 
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
-import { agents, issues, type Db } from "@paperclipai/db";
+import { agents, issues, type Db } from "@myrmidon/db";
 import {
   pheromoneStrengthForPriority,
   readScentSettings,
@@ -25,7 +25,7 @@ import {
   scentTaskStrength,
   type IssueScent,
   type ScentSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { ScentGateway, AgentScentClassificationResult, ScentClassificationResult } from "./gateway.js";
 import { deriveScentAuto } from "./create-hook.js";
 

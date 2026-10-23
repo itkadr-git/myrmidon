@@ -7,7 +7,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import { isUuidLike, type EnvSecretRefBinding } from "@paperclipai/shared";
+import { isUuidLike, type EnvSecretRefBinding } from "@myrmidon/shared";
 import { cn } from "@/lib/utils";
 import { i18n, useTranslation } from "@/i18n";
 import { Input } from "@/components/ui/input";

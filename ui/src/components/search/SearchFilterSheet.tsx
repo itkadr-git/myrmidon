@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { SlidersHorizontal } from "lucide-react";
 import { useTranslation } from "@/i18n";
-import { COMPANY_SEARCH_SORTS, type CompanySearchSort } from "@paperclipai/shared";
+import { COMPANY_SEARCH_SORTS, type CompanySearchSort } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,

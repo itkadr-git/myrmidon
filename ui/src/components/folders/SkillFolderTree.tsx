@@ -25,7 +25,7 @@ import {
   Trash2,
   User,
 } from "lucide-react";
-import type { FolderListItem, FolderListResult } from "@paperclipai/shared";
+import type { FolderListItem, FolderListResult } from "@myrmidon/shared";
 import { Trans } from "react-i18next";
 import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
