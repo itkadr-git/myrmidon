@@ -31,6 +31,7 @@ import { instanceSettingsService } from "../../services/instance-settings.js"; /
 import { listBotContainerAgents } from "./agents-query.js";
 import { isBotContainersEnabled } from "./agent-config.js";
 import type { BotContainerDriver } from "./driver.js";
+import { fleetSiteKey } from "./fleetd-hosts.js";
 import { dockerBotContainerDriver, readDockerDriverConfig, type DockerDriverConfig } from "./docker-driver.js";
 import {
   DEFAULT_RECONCILE_INTERVAL_MS,
@@ -246,7 +247,16 @@ function build(
     const routingDriver = fleetRoutingDriver(
       {
         local: localDriver,
-        fleet: () => clientManager.getClients(),
+        fleet: (companyId) => {
+          const all = clientManager.getClients();
+          if (!companyId) return all; // list: every client; routed calls are refused without a company
+          const prefix = fleetSiteKey(companyId, "");
+          const scoped = new Map<string, BotContainerDriver>();
+          for (const [key, client] of all) {
+            if (key.startsWith(prefix)) scoped.set(key.slice(prefix.length), client);
+          }
+          return scoped;
+        },
         ready: () => clientManager.ensureFresh(),
       },
       async (botKey: string) => {
