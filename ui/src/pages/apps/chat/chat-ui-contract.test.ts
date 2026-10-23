@@ -45,7 +45,14 @@ describe("chat connector UI contract", () => {
     expect(issue).toMatch(
       /agentsApi\.retryFailedRun\(\s*failedRun\.agentId,\s*failedRun\.runId,\s*companyId/,
     );
-    expect(issue).toContain("area.issue-threads-runs-2.issue-detail.retryQueued");
+    expect(issue).toContain('"area.issue-threads-runs-2.issue-detail.retryQueued"');
+    expect(
+      collectStrings(
+        JSON.parse(
+          source("../../../i18n/myrmidon-locales/areas/issue-threads-runs-2.en.json"),
+        ),
+      ),
+    ).toContain("Retry queued");
     for (const file of ["Inbox.tsx", "LegacyInbox.tsx"]) {
       const page = source(`../../${file}`);
       expect(page).toMatch(
