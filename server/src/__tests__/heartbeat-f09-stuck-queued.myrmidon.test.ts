@@ -466,6 +466,58 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     expect(stored?.errorCode).toBe("queued_run_issue_not_startable");
   }, 30_000);
 
+  it("myrmidon(1.6.6 OPE-8998): a started run closes the served review-admission records of its agent and issue", async () => {
+    pinAdmission({ maxConcurrentRuns: 0 });
+    applyRunPrioritySettings(readRunPriorityFromEnv({}));
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Reviewer", role: "engineer" });
+    const issueId = await seedIssue(companyId, {
+      title: "Review me",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+    const otherIssueId = await seedIssue(companyId, {
+      title: "Other work",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+    const admission = (issue: string) =>
+      db
+        .insert(agentWakeupRequests)
+        .values({
+          companyId,
+          agentId,
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "execution_review_requested",
+          payload: { issueId: issue },
+          status: "queued",
+          requestedByActorType: "user",
+          requestedByActorId: null,
+          idempotencyKey: `issue-review-admission:${issue}:${agentId}`,
+          createdAt: new Date(Date.now() - 1_000),
+        })
+        .returning()
+        .then((rows) => rows[0]!);
+    const served = await admission(issueId);
+    const unrelated = await admission(otherIssueId);
+
+    await wakeAndQueue(agentId, issueId);
+    pinAdmission({ maxConcurrentRuns: 1 });
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const statusOf = (id: string) =>
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, id))
+        .then((rows) => rows[0]?.status);
+    expect(await statusOf(served.id)).toBe("coalesced");
+    expect(await statusOf(unrelated.id)).toBe("queued");
+  }, 30_000);
+
   it("keeps a queued run on a hidden todo startable (Summarizer pattern)", async () => {
     // Hidden todos are the supported summary-slot / status-card pattern: the
     // Summarizer is woken through the regular queue on a hidden todo, so the
