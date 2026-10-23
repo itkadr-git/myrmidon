@@ -82,6 +82,7 @@ const ALLOWLIST = [
   "управляемые навыки Paperclip",
   "Allow Paperclip reads", "upstream Paperclip", "вендорского Paperclip",
   "Paperclip server failed to start", "Paperclip вендора",
+  "Paperclip/1.0", // historical user-agent retained in the rebrand guide
   "Paperclip v2026.1001.0",
   "Paperclip v2026.916.1", "Paperclip → Myrmidon", "пользователей Paperclip",
   "from Paperclip to Myrmidon", "с Paperclip на Myrmidon",

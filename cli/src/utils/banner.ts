@@ -1,24 +1,30 @@
 import pc from "picocolors";
 
-const MYRMIDON_ART = [
-  "██████╗  █████╗ ██████╗ ███████╗██████╗  ██████╗██╗     ██╗██████╗ ",
-  "██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔════╝██║     ██║██╔══██╗",
-  "██████╔╝███████║██████╔╝█████╗  ██████╔╝██║     ██║     ██║██████╔╝",
-  "██╔═══╝ ██╔══██║██╔═══╝ ██╔══╝  ██╔══██╗██║     ██║     ██║██╔═══╝ ",
-  "██║     ██║  ██║██║     ███████╗██║  ██║╚██████╗███████╗██║██║     ",
-  "╚═╝     ╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝╚═╝     ",
+import { PRODUCT_NAME, PRODUCT_TAGLINE } from "../myrmidon-product.js";
+
+// myrmidon(B1b): Myrmidon wordmark replaces the vendor ASCII art. The helper
+// keeps its vendor export name (printPaperclipCliBanner) so callers stay
+// vendor-merge-compatible; only the visible output changed.
+export const MYRMIDON_ART = [
+  "███╗   ███╗██╗   ██╗██████╗ ███╗   ███╗██╗██████╗  ██████╗ ███╗   ██╗",
+  "████╗ ████║╚██╗ ██╔╝██╔══██╗████╗ ████║██║██╔══██╗██╔═══██╗████╗  ██║",
+  "██╔████╔██║ ╚████╔╝ ██████╔╝██╔████╔██║██║██║  ██║██║   ██║██╔██╗ ██║",
+  "██║╚██╔╝██║  ╚██╔╝  ██╔══██╗██║╚██╔╝██║██║██║  ██║██║   ██║██║╚██╗██║",
+  "██║ ╚═╝ ██║   ██║   ██║  ██║██║ ╚═╝ ██║██║██████╔╝╚██████╔╝██║ ╚████║",
+  "╚═╝     ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝     ╚═╝╚═╝╚═════╝  ╚═════╝ ╚═╝  ╚═══╝",
 ] as const;
 
-const TAGLINE = "The app people use to manage AI agents for work";
-
-export function printMyrmidonCliBanner(): void {
+export function printPaperclipCliBanner(): void {
   const lines = [
     "",
     ...MYRMIDON_ART.map((line) => pc.cyan(line)),
     pc.blue("  ───────────────────────────────────────────────────────"),
-    pc.bold(pc.white(`  ${TAGLINE}`)),
+    pc.bold(pc.white(`  ${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`)),
     "",
   ];
 
   console.log(lines.join("\n"));
 }
+
+// Keep the Myrmidon command imports working while preserving vendor callers.
+export const printMyrmidonCliBanner = printPaperclipCliBanner;

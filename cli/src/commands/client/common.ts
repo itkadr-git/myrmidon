@@ -5,6 +5,7 @@ import { buildCliCommandLabel } from "../../client/command-label.js";
 import { readConfig } from "../../config/store.js";
 import { readContext, resolveProfile, type ClientContextProfile } from "../../client/context.js";
 import { ApiRequestError, PaperclipApiClient } from "../../client/http.js";
+import { PRODUCT_NAME } from "../../myrmidon-product.js";
 import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export interface BaseClientOptions {
@@ -30,11 +31,11 @@ export interface ResolvedClientContext {
 
 export function addCommonClientOptions(command: Command, opts?: { includeCompany?: boolean }): Command {
   command
-    .option("-c, --config <path>", "Path to Myrmidon config file")
-    .option("-d, --data-dir <path>", "Myrmidon data directory root (isolates state from ~/.paperclip)")
+    .option("-c, --config <path>", `Path to ${PRODUCT_NAME} config file`)
+    .option("-d, --data-dir <path>", `${PRODUCT_NAME} data directory root (isolates state from ~/.paperclip)`)
     .option("--context <path>", "Path to CLI context file")
     .option("--profile <name>", "CLI context profile name")
-    .option("--api-base <url>", "Base URL for the Paperclip API")
+    .option("--api-base <url>", `Base URL for the ${PRODUCT_NAME} API`)
     .option("--api-key <token>", "Bearer token for agent-authenticated calls")
     .option("--run-id <id>", "Heartbeat run id for agent-authenticated mutations (checkout/release/interactions/in-progress update); falls back to $PAPERCLIP_RUN_ID")
     .option("--json", "Output raw JSON");

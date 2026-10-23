@@ -15,6 +15,7 @@ import {
 import { eq, inArray } from "drizzle-orm";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type RoutinesDisableAllOptions = {
@@ -340,7 +341,7 @@ export function registerRoutineCommands(program: Command): void {
     .command("disable-all")
     .description("Pause all non-archived routines in the configured local instance for one company")
     .option("-c, --config <path>", "Path to config file")
-    .option("-d, --data-dir <path>", "Myrmidon data directory root (isolates state from ~/.paperclip)")
+    .option("-d, --data-dir <path>", `${PRODUCT_NAME} data directory root (isolates state from ~/.paperclip)`)
     .option("-C, --company-id <id>", "Company ID")
     .option("--json", "Output raw JSON")
     .action(async (opts: RoutinesDisableAllOptions) => {

@@ -39,7 +39,7 @@ describe("buildInviteOnboardingTextDocument", () => {
       allowedHostnames: [],
     });
 
-    expect(text).toContain("Paperclip Agent Onboarding");
+    expect(text).toContain("Myrmidon Agent Onboarding");
     expect(text).toContain("/api/invites/token-123/accept");
     expect(text).toContain("/api/join-requests/{requestId}/claim-api-key");
     expect(text).toContain("/api/invites/token-123/onboarding.txt");
@@ -61,14 +61,14 @@ describe("buildInviteOnboardingTextDocument", () => {
     expect(text).toContain("agentDefaultsPayload.apiBaseUrl");
     expect(text).toContain("agentDefaultsPayload.paperclipApiUrl");
     expect(text).toContain("hermes_local");
-    expect(text).toContain("Hermes-originated Paperclip API usage");
+    expect(text).toContain("Hermes-originated Myrmidon API usage");
     expect(text).toContain("http://127.0.0.1:8642");
     expect(text).toContain("http://127.0.0.1:9119");
     expect(text).toContain("http://127.0.0.1:9119/chat");
     expect(text).toContain("map to /api");
     expect(text).toContain("/chat and the dashboard root are browser UI routes");
     expect(text).toContain("/api/v1/runs");
-    expect(text).toContain("Do not rotate or invent a Paperclip key manually");
+    expect(text).toContain("Do not rotate or invent a Myrmidon key manually");
     expect(text).toContain("http://192.168.1.25:8642");
     expect(text).toContain("tailnet-name.ts.net:8642");
     expect(text).toContain("http://host.docker.internal:8642");
@@ -80,7 +80,7 @@ describe("buildInviteOnboardingTextDocument", () => {
     expect(text).toContain("The response body includes the full token exactly once");
     expect(text).toContain("Do not persist displayed previews containing literal ... or [redacted]");
     expect(text).toContain("Use your runtime's normal skill or instruction installation path.");
-    expect(text).toContain("Decide which Paperclip adapter type matches your runtime.");
+    expect(text).toContain("Decide which Myrmidon adapter type matches your runtime.");
   });
 
   it("includes loopback diagnostics for authenticated/private onboarding", () => {

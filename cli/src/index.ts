@@ -30,6 +30,7 @@ import { registerSkillsCommands } from "./commands/client/skills.js";
 import { registerTeamCommands } from "./commands/client/teams.js";
 import { applyDataDirOverride, type DataDirOptionLike } from "./config/data-dir.js";
 import { loadPaperclipEnvFile } from "./config/env.js";
+import { PRODUCT_NAME } from "./myrmidon-product.js";
 import { initTelemetryFromConfigFile, flushTelemetry } from "./telemetry.js";
 import { registerWorktreeCommands } from "./commands/worktree.js";
 import { registerPluginCommands } from "./commands/client/plugin.js";
@@ -47,7 +48,6 @@ import { registerManagedAgentCommands } from "./commands/managed-agent.js";
 import { registerAssetCommands } from "./commands/client/asset.js";
 import { registerSkillCommands } from "./commands/client/skill.js";
 import { cliVersion } from "./version.js";
-import { warnIfLegacyBinaryName } from "./legacy-bin.js";
 import { installCommand } from "./commands/install.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 import { updateCommand } from "./commands/update.js";
@@ -61,23 +61,20 @@ import {
   type TestDriveOptions,
 } from "./commands/test-drive.js";
 
-// myrmidon(DB4): the "paperclipai" binary stays as a deprecated synonym.
-warnIfLegacyBinaryName();
-
 const program = new Command();
-const DATA_DIR_OPTION_HELP =
-  "Myrmidon data directory root (isolates state from ~/.paperclip)";
+// myrmidon(B1b): help text shows the product name; the vendor path stays.
+const DATA_DIR_OPTION_HELP = `${PRODUCT_NAME} data directory root (isolates state from ~/.paperclip)`;
 
 program.enablePositionalOptions();
 
 program
-  .name("myrmidon")
-  .description("Myrmidon CLI — setup, diagnose, and configure your instance")
+  .name("paperclipai")
+  .description(`${PRODUCT_NAME} CLI — setup, diagnose, and configure your instance`)
   .version(cliVersion);
 
 program
   .command("install")
-  .description("Install Myrmidon into a managed per-user CLI store")
+  .description(`Install ${PRODUCT_NAME} into a managed per-user CLI store`)
   .option("--canary", "Install the npm canary channel")
   .option("--version <version>", "Install an exact published npm version")
   .option("--ref <ref>", "Install a GitHub branch, tag, or commit SHA")
@@ -93,7 +90,7 @@ program
 program
   .command("update")
   .alias("upgrade")
-  .description("Check, update, or roll back the Myrmidon CLI")
+  .description(`Check, update, or roll back the ${PRODUCT_NAME} CLI`)
   .option("--latest", "Switch to the latest stable channel")
   .option("--canary", "Switch to the canary channel")
   .option("--version <version>", "Install an exact published version")
@@ -139,12 +136,12 @@ program
   .option("-y, --yes", "Accept quickstart defaults (trusted local loopback unless --bind is set) and start immediately", false)
   .option("--install-service", "Install and start the background service after onboarding")
   .option("--no-install-service", "Do not install or suggest the background service")
-  .option("--run", "Start Myrmidon immediately after saving config", false)
+  .option("--run", `Start ${PRODUCT_NAME} immediately after saving config`, false)
   .action(onboard);
 
 program
   .command("doctor")
-  .description("Run diagnostic checks on your Myrmidon setup")
+  .description(`Run diagnostic checks on your ${PRODUCT_NAME} setup`)
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("--repair", "Attempt to repair issues automatically")
@@ -200,7 +197,7 @@ program
 
 const run = program
   .command("run")
-  .description("Bootstrap local setup (onboard + doctor) and run Myrmidon")
+  .description(`Bootstrap local setup (onboard + doctor) and run ${PRODUCT_NAME}`)
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("-i, --instance <id>", "Local instance id (default: default)")
@@ -223,7 +220,7 @@ heartbeat
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("--context <path>", "Path to CLI context file")
   .option("--profile <name>", "CLI context profile name")
-  .option("--api-base <url>", "Base URL for the Myrmidon server API")
+  .option("--api-base <url>", `Base URL for the ${PRODUCT_NAME} server API`)
   .option("--api-key <token>", "Bearer token for agent-authenticated calls")
   .option(
     "--source <source>",

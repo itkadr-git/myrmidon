@@ -46,7 +46,7 @@ import {
   resolvePaperclipInstanceId,
 } from "../config/home.js";
 import { bootstrapCeoInvite } from "./auth-bootstrap-ceo.js";
-import { printMyrmidonCliBanner } from "../utils/banner.js";
+import { printPaperclipCliBanner } from "../utils/banner.js";
 import {
   getTelemetryClient,
   trackInstallStarted,
@@ -58,6 +58,7 @@ import {
   shouldOfferForegroundStart,
 } from "../onboard-service.js";
 import { readInstallManifest, isManagedExecutable } from "../install-store.js";
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 import { deleteProductEnv, readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type SetupMode = "quickstart" | "advanced";
@@ -377,7 +378,7 @@ function printManagedInstallHint(): void {
   if (manifest && isManagedExecutable(process.argv[1], manifest)) return;
   if (!isEphemeralNpxExecution()) return;
   p.log.info(
-    `This npx run is temporary. Use ${pc.cyan("myrmidon install")} for atomic updates, rollback, and service support.`,
+    `This npx run is temporary. Use ${pc.cyan("paperclipai install")} for atomic updates, rollback, and service support.`,
   );
 }
 
@@ -386,8 +387,8 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     throw new Error(`Unsupported bind preset for onboard: ${opts.bind}. Use loopback, lan, or tailnet.`);
   }
 
-  printMyrmidonCliBanner();
-  p.intro(pc.bgCyan(pc.black(" myrmidon onboard ")));
+  printPaperclipCliBanner();
+  p.intro(pc.bgCyan(pc.black(" paperclipai onboard ")));
   const configPath = resolveConfigPath(opts.config);
   const instance = describeLocalInstancePaths(resolvePaperclipInstanceId());
   p.log.message(
@@ -441,9 +442,9 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
 
   if (existingConfig) {
     p.log.message(
-      pc.dim("Existing Myrmidon install detected; keeping the current configuration unchanged."),
+      pc.dim(`Existing ${PRODUCT_NAME} install detected; keeping the current configuration unchanged.`),
     );
-    p.log.message(pc.dim(`Use ${pc.cyan("myrmidon configure")} if you want to change settings.`));
+    p.log.message(pc.dim(`Use ${pc.cyan("paperclipai configure")} if you want to change settings.`));
 
     const jwtSecret = ensureAgentJwtSecret(configPath);
     const envFilePath = resolveAgentJwtEnvFile(configPath);
@@ -484,9 +485,9 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
 
     p.note(
       [
-        `Run: ${pc.cyan("myrmidon run")}`,
-        `Reconfigure later: ${pc.cyan("myrmidon configure")}`,
-        `Diagnose setup: ${pc.cyan("myrmidon doctor")}`,
+        `Run: ${pc.cyan("paperclipai run")}`,
+        `Reconfigure later: ${pc.cyan("paperclipai configure")}`,
+        `Diagnose setup: ${pc.cyan("paperclipai doctor")}`,
       ].join("\n"),
       "Next commands",
     );
@@ -500,7 +501,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     let shouldRunNow = !serviceInstalled && (opts.run === true || opts.yes === true);
     if (shouldOfferForegroundStart({ serviceInstalled, startAlreadyDecided: shouldRunNow, invokedByRun: opts.invokedByRun === true, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY) })) {
       const answer = await p.confirm({
-        message: "Start Myrmidon now?",
+        message: `Start ${PRODUCT_NAME} now?`,
         initialValue: true,
       });
       if (!p.isCancel(answer)) {
@@ -513,7 +514,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
       return;
     }
 
-    p.outro("Existing Myrmidon setup is ready.");
+    p.outro(`Existing ${PRODUCT_NAME} setup is ready.`);
     return;
   }
 
@@ -592,7 +593,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
         await db.execute("SELECT 1");
         s.stop("Database connection successful");
       } catch {
-        s.stop(pc.yellow("Could not connect to database — you can fix this later with `myrmidon doctor`"));
+        s.stop(pc.yellow("Could not connect to database — you can fix this later with `paperclipai doctor`"));
       }
     }
 
@@ -750,9 +751,9 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
 
   p.note(
     [
-      `Run: ${pc.cyan("myrmidon run")}`,
-      `Reconfigure later: ${pc.cyan("myrmidon configure")}`,
-      `Diagnose setup: ${pc.cyan("myrmidon doctor")}`,
+      `Run: ${pc.cyan("paperclipai run")}`,
+      `Reconfigure later: ${pc.cyan("paperclipai configure")}`,
+      `Diagnose setup: ${pc.cyan("paperclipai doctor")}`,
     ].join("\n"),
     "Next commands",
   );
@@ -772,7 +773,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   let shouldRunNow = !serviceInstalled && (opts.run === true || opts.yes === true);
   if (shouldOfferForegroundStart({ serviceInstalled, startAlreadyDecided: shouldRunNow, invokedByRun: opts.invokedByRun === true, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY) })) {
     const answer = await p.confirm({
-      message: "Start Myrmidon now?",
+      message: `Start ${PRODUCT_NAME} now?`,
       initialValue: true,
     });
     if (!p.isCancel(answer)) {
@@ -789,8 +790,8 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     p.log.info(
       [
         "Bootstrap CEO invite will be created after the server starts.",
-        `Next: ${pc.cyan("myrmidon run")}`,
-        `Then: ${pc.cyan("myrmidon auth bootstrap-ceo")}`,
+        `Next: ${pc.cyan("paperclipai run")}`,
+        `Then: ${pc.cyan("paperclipai auth bootstrap-ceo")}`,
       ].join("\n"),
     );
   }
