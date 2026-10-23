@@ -21,6 +21,8 @@ import type {
   ToolConnectionTestCallStatus,
   ToolConnectionTestDecision,
 } from "@paperclipai/shared";
+import { Trans } from "react-i18next";
+import { i18n, useTranslation } from "@/i18n";
 import { Link } from "@/lib/router";
 import { toolsApi } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
@@ -77,7 +79,7 @@ function actionSubLine(entry: ToolCatalogEntry): string | null {
 // Decision badges
 // ---------------------------------------------------------------------------
 
-type DecisionMeta = { label: string; className: string };
+type DecisionMeta = { className: string };
 
 type TestAgentWithAccess = ToolConnectionTestAgent & {
   effectiveAccess: ToolConnectionAccessSummary;
@@ -104,6 +106,7 @@ export function ActionTestDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const testAgentsQuery = useQuery({
     queryKey: queryKeys.tools.testAgents(connectionId),
     queryFn: () => toolsApi.listTestAgents(connectionId),
@@ -145,38 +148,38 @@ export function ActionTestDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Test {title}</DialogTitle>
+          <DialogTitle>{t("area.apps-detail.test-panel.dialogTitle", { title })}</DialogTitle>
           <DialogDescription>
-            Run a real action with the same permissions and credentials an agent would use.
+            {t("area.apps-detail.test-panel.dialogDescription")}
           </DialogDescription>
         </DialogHeader>
 
         {testAgentsQuery.isLoading ? (
           <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Loading agents…
+            {t("area.apps-detail.test-panel.loadingAgents")}
           </div>
         ) : testAgentsQuery.isError ? (
           <TestLoadError
-            message="We couldn't load the agents available for testing."
+            message={t("area.apps-detail.test-panel.loadAgentsFailed")}
             onRetry={() => { void testAgentsQuery.refetch(); }}
           />
         ) : agents.length === 0 ? (
-          <p className="py-6 text-sm text-muted-foreground">No agents are available to test as.</p>
+          <p className="py-6 text-sm text-muted-foreground">{t("area.apps-detail.test-panel.noAgentsAvailable")}</p>
         ) : accessQuery.isError && !accessQuery.data ? (
           <TestLoadError
-            message={`We couldn't load ${selectedAgentBase?.name ?? "this agent"}'s permissions.`}
+            message={t("area.apps-detail.test-panel.loadPermissionsFailed", { name: selectedAgentBase?.name ?? t("area.apps-detail.test-panel.thisAgent") })}
             onRetry={() => { void accessQuery.refetch(); }}
           />
         ) : !selectedAgent ? (
           <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Loading agent permissions…
+            {t("area.apps-detail.test-panel.loadingPermissions")}
           </div>
         ) : (
           <div className="space-y-5">
             <div className="rounded-md border border-border bg-muted/30 p-4">
-              <p className="text-xs font-medium text-muted-foreground">Act as</p>
+              <p className="text-xs font-medium text-muted-foreground">{t("area.apps-detail.test-panel.actAs")}</p>
               <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
                 <AgentPicker
                   agents={agents}
@@ -208,21 +211,24 @@ export function ActionTestDialog({
 
 const DECISION_META: Record<ToolConnectionTestDecision, DecisionMeta> = {
   allowed: {
-    label: "Allowed",
     className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
   },
   ask_first: {
-    label: "Ask first",
     className: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   },
   off: {
-    label: "Off",
     className: "border-border bg-muted text-muted-foreground",
   },
 };
 
 function DecisionBadge({ decision }: { decision: ToolConnectionTestDecision }) {
+  const { t } = useTranslation();
   const meta = DECISION_META[decision];
+  const label = {
+    allowed: t("area.apps-detail.test-panel.decisionAllowed"),
+    ask_first: t("area.apps-detail.test-panel.decisionAskFirst"),
+    off: t("area.apps-detail.test-panel.decisionOff"),
+  }[decision];
   return (
     <span
       className={cn(
@@ -230,7 +236,7 @@ function DecisionBadge({ decision }: { decision: ToolConnectionTestDecision }) {
         meta.className,
       )}
     >
-      {meta.label}
+      {label}
     </span>
   );
 }
@@ -252,6 +258,7 @@ export function TestPanel({
   /** New, not-yet-reviewed actions — shown as Off so they're reachable to test. */
   quarantined?: ToolCatalogEntry[];
 }) {
+  const { t } = useTranslation();
   const hasActions = active.length > 0 || quarantined.length > 0;
   const testAgentsQuery = useQuery({
     queryKey: queryKeys.tools.testAgents(connectionId),
@@ -338,7 +345,7 @@ export function TestPanel({
       <div className="space-y-4">
         <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Loading agents…
+          {t("area.apps-detail.test-panel.loadingAgents")}
         </div>
         <Skeleton className="h-20 w-full" />
         <Skeleton className="h-12 w-full" />
@@ -350,7 +357,7 @@ export function TestPanel({
   if (testAgentsQuery.isError) {
     return (
       <TestLoadError
-        message="We couldn't load the agents available for testing."
+        message={t("area.apps-detail.test-panel.loadAgentsFailed")}
         onRetry={() => { void testAgentsQuery.refetch(); }}
       />
     );
@@ -359,13 +366,13 @@ export function TestPanel({
   if (agents.length === 0) {
     return (
       <div className="py-6 text-center">
-        <p className="text-sm font-medium text-foreground">No agents to test as</p>
+        <p className="text-sm font-medium text-foreground">{t("area.apps-detail.test-panel.noAgentsTitle")}</p>
         <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-          Only agents you can assign tasks to can preview {appName}. Give an agent access in{" "}
-          <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "permissions")}>
-            Permissions
-          </Link>{" "}
-          to test it here.
+          <Trans
+            i18nKey="area.apps-detail.test-panel.noAgentsBody"
+            values={{ appName }}
+            components={[<Link key="permissions" className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "permissions")} />]}
+          />
         </p>
       </div>
     );
@@ -374,7 +381,7 @@ export function TestPanel({
   if (testAgentAccessQuery.isError && !testAgentAccessQuery.data) {
     return (
       <TestLoadError
-        message={`We couldn't load ${selectedAgentBase?.name ?? "this agent"}'s permissions.`}
+        message={t("area.apps-detail.test-panel.loadPermissionsFailed", { name: selectedAgentBase?.name ?? t("area.apps-detail.test-panel.thisAgent") })}
         onRetry={() => { void testAgentAccessQuery.refetch(); }}
       />
     );
@@ -385,7 +392,7 @@ export function TestPanel({
       <div className="space-y-4">
         <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Loading agent permissions…
+          {t("area.apps-detail.test-panel.loadingPermissions")}
         </div>
         <Skeleton className="h-20 w-full" />
         <Skeleton className="h-12 w-full" />
@@ -414,34 +421,34 @@ export function TestPanel({
       )}
 
       <section className="space-y-4 border-t border-border pt-8">
-        <h2 className="text-lg font-semibold text-foreground">Actions</h2>
+        <h2 className="text-lg font-semibold text-foreground">{t("area.apps-detail.test-panel.actionsTitle")}</h2>
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-(--sz-12rem) flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
-              aria-label="Find an action"
-              placeholder="Find an action…"
+              aria-label={t("area.apps-detail.test-panel.findAction")}
+              placeholder={t("area.apps-detail.test-panel.findActionPlaceholder")}
               className="pl-9"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
           </div>
-          <FilterChip label={`All ${active.length + quarantinedActions.length}`} active={kindFilter === "all"} onClick={() => setKindFilter("all")} />
-          <FilterChip label={`Read ${readActions.length}`} active={kindFilter === "read"} onClick={() => setKindFilter("read")} />
-          <FilterChip label={`Write ${writeActions.length}`} active={kindFilter === "write"} onClick={() => setKindFilter("write")} />
+          <FilterChip label={t("area.apps-detail.test-panel.filterAll", { count: active.length + quarantinedActions.length })} active={kindFilter === "all"} onClick={() => setKindFilter("all")} />
+          <FilterChip label={t("area.apps-detail.test-panel.filterRead", { count: readActions.length })} active={kindFilter === "read"} onClick={() => setKindFilter("read")} />
+          <FilterChip label={t("area.apps-detail.test-panel.filterWrite", { count: writeActions.length })} active={kindFilter === "write"} onClick={() => setKindFilter("write")} />
         </div>
-        <p className="text-xs text-muted-foreground">{visibleCount} matches · sorted A–Z</p>
+        <p className="text-xs text-muted-foreground">{t("area.apps-detail.test-panel.matches", { count: visibleCount })}</p>
       </section>
 
       {visibleCount === 0 ? (
         <div className="py-6 text-center text-sm text-muted-foreground">
-          No actions match “{query}”. Clear the search to see them all.
+          {t("area.apps-detail.test-panel.noMatches", { query })}
         </div>
       ) : (
         <div className="space-y-6">
           {visibleRead.length > 0 && selectedAgent && (
             <ActionGroup
-              heading={`Read (${visibleRead.length})`}
+              heading={t("area.apps-detail.test-panel.groupRead", { count: visibleRead.length })}
               entries={visibleRead}
               decisionFor={decisionFor}
               agent={selectedAgent}
@@ -450,7 +457,7 @@ export function TestPanel({
           )}
           {visibleWrite.length > 0 && selectedAgent && (
             <ActionGroup
-              heading={`Write (${visibleWrite.length})`}
+              heading={t("area.apps-detail.test-panel.groupWrite", { count: visibleWrite.length })}
               entries={visibleWrite}
               decisionFor={decisionFor}
               agent={selectedAgent}
@@ -459,8 +466,8 @@ export function TestPanel({
           )}
           {visibleQuarantined.length > 0 && selectedAgent && (
             <ActionGroup
-              heading={`New (${visibleQuarantined.length})`}
-              subheading="New actions wait, switched off, until you turn them on."
+              heading={t("area.apps-detail.test-panel.groupNew", { count: visibleQuarantined.length })}
+              subheading={t("area.apps-detail.test-panel.groupNewHint")}
               entries={visibleQuarantined}
               decisionFor={() => "off" as const}
               agent={selectedAgent}
@@ -478,25 +485,27 @@ export function TestPanel({
 // ---------------------------------------------------------------------------
 
 function EmptyState({ connectionId, appName }: { connectionId: string; appName: string }) {
+  const { t } = useTranslation();
   return (
     <div className="py-8 text-center">
-      <p className="text-base font-bold text-foreground">Nothing to test yet</p>
+      <p className="text-base font-bold text-foreground">{t("area.apps-detail.test-panel.emptyTitle")}</p>
       <p className="mx-auto mt-1.5 max-w-md text-sm text-muted-foreground">
-        Once {appName} is connected, the actions it offers will show up here so you can try them out.
+        {t("area.apps-detail.test-panel.emptyBody", { appName })}
       </p>
       <Button asChild className="mt-4" variant="outline">
-        <Link to={appTabHref(connectionId, "permissions")}>Go to Permissions</Link>
+        <Link to={appTabHref(connectionId, "permissions")}>{t("area.apps-detail.test-panel.goToPermissions")}</Link>
       </Button>
     </div>
   );
 }
 
 function TestLoadError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  const { t } = useTranslation();
   return (
     <div className="py-8 text-center">
       <p className="text-sm font-medium text-foreground">{message}</p>
       <Button className="mt-3" size="sm" variant="outline" onClick={onRetry}>
-        Try again
+        {t("area.apps-detail.test-panel.tryAgain")}
       </Button>
     </div>
   );
@@ -519,17 +528,18 @@ function TestAsHeader({
   onSelect: (agentId: string) => void;
   connectionId: string;
 }) {
+  const { t } = useTranslation();
   return (
     <section className="space-y-5">
       <div>
-        <h2 className="text-lg font-semibold text-foreground">Test an action</h2>
+        <h2 className="text-lg font-semibold text-foreground">{t("area.apps-detail.test-panel.headerTitle")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Run a real action as an agent.
+          {t("area.apps-detail.test-panel.headerDescription")}
         </p>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-medium text-muted-foreground">Agent</p>
+          <p className="text-xs font-medium text-muted-foreground">{t("area.apps-detail.test-panel.agentLabel")}</p>
           <AgentPicker
             agents={agents}
             selectedAgent={selectedAgent}
@@ -564,6 +574,7 @@ function AgentPicker({
   appName: string;
   inline?: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -580,7 +591,7 @@ function AgentPicker({
             "items-center gap-1.5 text-foreground outline-none hover:text-primary focus-visible:text-primary",
             inline ? "inline-flex font-semibold underline-offset-2 hover:underline" : "mt-0.5 flex text-lg font-bold",
           )}
-          aria-label="Choose which agent to test as"
+          aria-label={t("area.apps-detail.test-panel.pickerAria")}
         >
           {selectedAgent.name}
           <ChevronsUpDown className={cn("text-muted-foreground", inline ? "h-3.5 w-3.5" : "h-4 w-4")} />
@@ -591,8 +602,8 @@ function AgentPicker({
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
-              aria-label="Search agents"
-              placeholder="Search agents…"
+              aria-label={t("area.apps-detail.test-panel.searchAgents")}
+              placeholder={t("area.apps-detail.test-panel.searchAgentsPlaceholder")}
               className="h-8 pl-8 text-sm"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -602,7 +613,7 @@ function AgentPicker({
         </div>
         <div className="max-h-60 overflow-y-auto p-1">
           {filtered.length === 0 ? (
-            <p className="px-3 py-4 text-center text-xs text-muted-foreground">No agents match.</p>
+            <p className="px-3 py-4 text-center text-xs text-muted-foreground">{t("area.apps-detail.test-panel.noAgentsMatch")}</p>
           ) : (
             filtered.map((agent) => {
               const detail = agent.title?.trim() || agent.role;
@@ -636,23 +647,36 @@ function AgentPicker({
           )}
         </div>
         <div className="border-t border-border px-3 py-2 text-(length:--text-micro) text-muted-foreground">
-          <p>Only agents you can assign tasks to are listed.</p>
-          <p>Pick one to preview what they'd see in {appName}.</p>
+          <p>{t("area.apps-detail.test-panel.pickerListed")}</p>
+          <p>{t("area.apps-detail.test-panel.pickerPreview", { appName })}</p>
         </div>
         <div className="border-t border-border p-3">
-          <p className="text-xs font-semibold text-foreground">What the badges mean</p>
+          <p className="text-xs font-semibold text-foreground">{t("area.apps-detail.test-panel.badgesTitle")}</p>
           <ul className="mt-1.5 space-y-1 text-xs text-muted-foreground">
-            <li><span className="font-medium text-foreground">Allowed</span> — runs immediately when you press Run.</li>
-            <li><span className="font-medium text-foreground">Ask first</span> — Run is parked in Review for your OK.</li>
             <li>
-              <span className="font-medium text-foreground">Off</span> — won't run. Change it in{" "}
-              <Link className="text-primary hover:underline" to={appTabHref(connectionId, "permissions")}>
-                Permissions
-              </Link>.
+              <Trans
+                i18nKey="area.apps-detail.test-panel.badgeAllowed"
+                components={[<span key="label" className="font-medium text-foreground" />]}
+              />
+            </li>
+            <li>
+              <Trans
+                i18nKey="area.apps-detail.test-panel.badgeAskFirst"
+                components={[<span key="label" className="font-medium text-foreground" />]}
+              />
+            </li>
+            <li>
+              <Trans
+                i18nKey="area.apps-detail.test-panel.badgeOff"
+                components={[
+                  <span key="label" className="font-medium text-foreground" />,
+                  <Link key="permissions" className="text-primary hover:underline" to={appTabHref(connectionId, "permissions")} />,
+                ]}
+              />
             </li>
           </ul>
           <p className="mt-2 text-(length:--text-micro) text-muted-foreground">
-            Badges reflect this agent's current settings, not yours. Swap agents to see how an action would behave for each.
+            {t("area.apps-detail.test-panel.badgesNote")}
           </p>
         </div>
       </PopoverContent>
@@ -834,11 +858,16 @@ function splitRequiredOptional(schema: JsonSchemaNode): JsonSchemaNode {
   return { ...schema, properties: next };
 }
 
-const GUT_CHECK: Record<ToolConnectionTestDecision, (app: string, agent: string) => string> = {
-  allowed: (app, agent) => `This runs a real call against ${app} as ${agent}.`,
-  ask_first: () => `Waiting for your OK before this call leaves Myrmidon.`,
-  off: (_app, agent) => `No call will be made — this action is off for ${agent}.`,
-};
+function gutCheck(decision: ToolConnectionTestDecision, app: string, agent: string): string {
+  switch (decision) {
+    case "allowed":
+      return i18n.t("area.apps-detail.test-panel.gutAllowed", { app, agent });
+    case "ask_first":
+      return i18n.t("area.apps-detail.test-panel.gutAskFirst");
+    default:
+      return i18n.t("area.apps-detail.test-panel.gutOff", { agent });
+  }
+}
 
 function ActionTester({
   entry,
@@ -853,6 +882,7 @@ function ActionTester({
   decision: ToolConnectionTestDecision;
   agent: TestAgentWithAccess;
 } & RowSharedProps) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const rawSchema = (entry.inputSchema ?? { type: "object", properties: {} }) as JsonSchemaNode;
@@ -961,28 +991,28 @@ function ActionTester({
           onChange={setValues}
           errors={errors}
           disabled={running}
-          advancedLabel="More options"
+          advancedLabel={t("area.apps-detail.test-panel.moreOptions")}
         />
       ) : (
-        <p className="text-xs text-muted-foreground">This action takes no inputs.</p>
+        <p className="text-xs text-muted-foreground">{t("area.apps-detail.test-panel.noInputs")}</p>
       )}
 
-      <p className="text-xs text-muted-foreground">{GUT_CHECK[decision](appName, agent.name)}</p>
+      <p className="text-xs text-muted-foreground">{gutCheck(decision, appName, agent.name)}</p>
 
       <div className="flex items-center gap-2">
         <Button onClick={onRun} disabled={running} size="sm">
           {running ? (
             <>
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Running…
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("area.apps-detail.test-panel.running")}
             </>
           ) : (
             <>
-              <Play className="h-3.5 w-3.5" /> {outcome ? "Run again" : "Run"}
+              <Play className="h-3.5 w-3.5" /> {outcome ? t("area.apps-detail.test-panel.runAgain") : t("area.apps-detail.test-panel.run")}
             </>
           )}
         </Button>
         <Button onClick={onReset} disabled={running} size="sm" variant="ghost">
-          Reset
+          {t("area.apps-detail.test-panel.reset")}
         </Button>
       </div>
 
@@ -992,7 +1022,7 @@ function ActionTester({
 
       {run.isError && !running && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-          Couldn't reach {agent.name}. {run.error instanceof Error ? run.error.message : "Please try again."}
+          {t("area.apps-detail.test-panel.couldntReach", { name: agent.name })} {run.error instanceof Error ? run.error.message : t("area.apps-detail.test-panel.tryAgainLater")}
         </div>
       )}
 
@@ -1020,20 +1050,25 @@ function RunningCard({
   elapsedMs: number;
   onCancel: () => void;
 }) {
-  const verb = entry.isReadOnly ? "Reading from" : entry.isWrite ? "Writing to" : "Calling";
+  const { t } = useTranslation();
+  const runningLine = entry.isReadOnly
+    ? t("area.apps-detail.test-panel.runningRead", { appName, agent: agentName })
+    : entry.isWrite
+      ? t("area.apps-detail.test-panel.runningWrite", { appName, agent: agentName })
+      : t("area.apps-detail.test-panel.runningCall", { appName, agent: agentName });
   return (
     <div className="rounded-md border border-border bg-muted/30 p-4">
       <div className="flex items-center gap-2">
         <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-        <span className="text-sm font-medium text-foreground">Running…</span>
+        <span className="text-sm font-medium text-foreground">{t("area.apps-detail.test-panel.running")}</span>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        {verb} {appName} as {agentName}.
+        {runningLine}
       </p>
       <div className="mt-3 flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">Started {seconds(elapsedMs)} ago · Press cancel to stop</span>
+        <span className="text-xs text-muted-foreground">{t("area.apps-detail.test-panel.startedAgo", { time: seconds(elapsedMs) })}</span>
         <Button onClick={onCancel} size="sm" variant="outline">
-          Cancel
+          {t("common.cancel")}
         </Button>
       </div>
     </div>
@@ -1055,6 +1090,7 @@ function ResultPanel({
   appName: string;
   connectionId: string;
 }) {
+  const { t } = useTranslation();
   const { result } = outcome;
   if (result.decision === "ask_first") {
     return <AskFirstResult outcome={outcome} entry={entry} appName={appName} connectionId={connectionId} />;
@@ -1062,7 +1098,7 @@ function ResultPanel({
   if (result.decision === "off") {
     return (
       <div className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
-        {result.error?.message ?? "This action is off and won't run."}
+        {result.error?.message ?? t("area.apps-detail.test-panel.offWontRun")}
       </div>
     );
   }
@@ -1093,7 +1129,7 @@ function mcpToolError(value: unknown): { message: string; reasonCode: string | n
   const message =
     (typeof envelope.content === "string" && envelope.content.trim() !== "" && envelope.content)
     || (typeof envelope.error === "string" && envelope.error.trim() !== "" && envelope.error)
-    || "The app returned an error result.";
+    || i18n.t("area.apps-detail.test-panel.appErrorResult");
   return { message, reasonCode: "tool_error" };
 }
 
@@ -1131,11 +1167,11 @@ function writeVerb(entry: ToolCatalogEntry): string | null {
 
 function successHeadline(value: unknown, entry: ToolCatalogEntry, appName: string): string {
   const verb = writeVerb(entry);
-  if (!entry.isReadOnly && verb) return `Worked. Row ${verb}.`;
+  if (!entry.isReadOnly && verb) return i18n.t(`area.apps-detail.test-panel.workedRow_${verb}`);
   const rows = asRows(value);
-  if (rows) return `Worked. ${rows.length} ${rows.length === 1 ? "row" : "rows"} came back.`;
-  if (isEmptyResult(value)) return "Worked. No data to show.";
-  return `Worked. ${appName} sent back the result.`;
+  if (rows) return i18n.t("area.apps-detail.test-panel.workedRows", { count: rows.length });
+  if (isEmptyResult(value)) return i18n.t("area.apps-detail.test-panel.workedNoData");
+  return i18n.t("area.apps-detail.test-panel.workedSentBack", { appName });
 }
 
 function AllowedResult({
@@ -1149,6 +1185,7 @@ function AllowedResult({
   appName: string;
   connectionId: string;
 }) {
+  const { t } = useTranslation();
   const value = outcome.result.result;
   return (
     <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 p-4">
@@ -1158,12 +1195,12 @@ function AllowedResult({
       </div>
       <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
         <Clock className="h-3 w-3" />
-        Ran as {outcome.agentName} · {seconds(outcome.durationMs)} · {relTime(outcome.ranAt)}
+        {t("area.apps-detail.test-panel.ranAs", { agent: outcome.agentName, duration: seconds(outcome.durationMs), time: relTime(outcome.ranAt) })}
       </p>
 
       {!isEmptyResult(value) && (
         <div className="mt-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Preview</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("area.apps-detail.test-panel.preview")}</p>
           <div className="mt-1.5">
             <PrettyPreview value={value} />
           </div>
@@ -1173,19 +1210,19 @@ function AllowedResult({
       <RawResponseDisclosure value={value} />
 
       <p className="mt-3 text-xs text-muted-foreground">
-        This call is in the{" "}
-        <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_">
-          Audit log
-        </Link>
-        .
+        <Trans
+          i18nKey="area.apps-detail.test-panel.auditLogCall"
+          components={[<Link key="audit" className="text-primary hover:underline" to="/activity?mode=agents&action=tool_" />]}
+        />
       </p>
-      <p className="mt-1 text-xs text-muted-foreground">Last run finished in {seconds(outcome.durationMs)}.</p>
+      <p className="mt-1 text-xs text-muted-foreground">{t("area.apps-detail.test-panel.lastRunFinished", { duration: seconds(outcome.durationMs) })}</p>
     </div>
   );
 }
 
 /** Pretty preview: table for row arrays, depth-limited JSON otherwise, plain text for strings. */
 function PrettyPreview({ value }: { value: unknown }) {
+  const { t } = useTranslation();
   const rows = asRows(value);
   if (rows) {
     const columns = Array.from(new Set(rows.flatMap((r) => Object.keys(r)))).slice(0, 6);
@@ -1211,7 +1248,7 @@ function PrettyPreview({ value }: { value: unknown }) {
           </tbody>
         </table>
         {rows.length > shown.length && (
-          <p className="px-2.5 py-1.5 text-(length:--text-micro) text-muted-foreground">… {rows.length - shown.length} more rows</p>
+          <p className="px-2.5 py-1.5 text-(length:--text-micro) text-muted-foreground">{t("area.apps-detail.test-panel.moreRows", { count: rows.length - shown.length })}</p>
         )}
       </div>
     );
@@ -1245,6 +1282,7 @@ function collapseDeep(value: unknown, maxDepth: number, depth = 0): unknown {
 }
 
 function RawResponseDisclosure({ value }: { value: unknown }) {
+  const { t } = useTranslation();
   const [showRaw, setShowRaw] = useState(false);
   if (value === undefined || value === null) return null;
   return (
@@ -1254,7 +1292,7 @@ function RawResponseDisclosure({ value }: { value: unknown }) {
         onClick={() => setShowRaw((prev) => !prev)}
         className="text-xs font-semibold uppercase tracking-wide text-primary hover:underline"
       >
-        {showRaw ? "Hide raw response" : "Show raw response"}
+        {showRaw ? t("area.apps-detail.test-panel.hideRaw") : t("area.apps-detail.test-panel.showRaw")}
       </button>
       {showRaw && (
         <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-background p-3 text-xs text-foreground">
@@ -1278,37 +1316,37 @@ function ErrorResult({
   connectionId: string;
   error: { message: string; reasonCode: string | null };
 }) {
+  const { t } = useTranslation();
   const hints = errorHints(error.message, error.reasonCode);
   return (
     <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
       <div className="flex items-center gap-2">
         <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-        <span className="text-sm font-medium text-foreground">It didn't work.</span>
+        <span className="text-sm font-medium text-foreground">{t("area.apps-detail.test-panel.didntWork")}</span>
       </div>
       <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
         <Clock className="h-3 w-3" />
-        Tried as {outcome.agentName} · {seconds(outcome.durationMs)} · {relTime(outcome.ranAt)}
+        {t("area.apps-detail.test-panel.triedAs", { agent: outcome.agentName, duration: seconds(outcome.durationMs), time: relTime(outcome.ranAt) })}
       </p>
       <div className="mt-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">What {appName} said</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("area.apps-detail.test-panel.whatAppSaid", { appName })}</p>
         <p className="mt-1 break-words text-sm text-foreground">{error.message}</p>
-        {error.reasonCode && <p className="mt-0.5 text-xs text-muted-foreground">code: {error.reasonCode}</p>}
+        {error.reasonCode && <p className="mt-0.5 text-xs text-muted-foreground">{t("area.apps-detail.test-panel.errorCode", { code: error.reasonCode })}</p>}
       </div>
       <div className="mt-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">What to try</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("area.apps-detail.test-panel.whatToTry")}</p>
         <ul className="mt-1 list-disc space-y-0.5 pl-4 text-sm text-foreground">
           {hints.map((hint) => (
             <li key={hint}>{hint}</li>
           ))}
         </ul>
       </div>
-      <p className="mt-3 text-xs text-muted-foreground">Adjust the input above and try again.</p>
+      <p className="mt-3 text-xs text-muted-foreground">{t("area.apps-detail.test-panel.adjustInput")}</p>
       <p className="mt-1 text-xs text-muted-foreground">
-        Also visible in the{" "}
-        <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_">
-          Audit log
-        </Link>
-        .
+        <Trans
+          i18nKey="area.apps-detail.test-panel.alsoInAuditLog"
+          components={[<Link key="audit" className="text-primary hover:underline" to="/activity?mode=agents&action=tool_" />]}
+        />
       </p>
     </div>
   );
@@ -1348,6 +1386,7 @@ function AskFirstResult({
   appName: string;
   connectionId: string;
 }) {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const actionRequestId = outcome.result.actionRequestId;
@@ -1404,37 +1443,37 @@ function AskFirstResult({
   const where = formatWhere(status?.parameters);
   const statusLabel =
     phase === "running"
-      ? "Approved · running"
+      ? t("area.apps-detail.test-panel.statusRunning")
       : phase === "denied"
-        ? "Denied — see Review for why"
+        ? t("area.apps-detail.test-panel.statusDenied")
         : phase === "cancelled"
-          ? "Cancelled"
+          ? t("area.apps-detail.test-panel.statusCancelled")
           : phase === "expired"
-            ? "Expired — send it again"
-            : `Waiting · ${relTime(requestedAt)}`;
+            ? t("area.apps-detail.test-panel.statusExpired")
+            : t("area.apps-detail.test-panel.statusWaiting", { time: relTime(requestedAt) });
   const settled = phase === "denied" || phase === "cancelled" || phase === "expired";
 
   return (
     <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
       <div className="flex items-center gap-2">
         <ShieldQuestion className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-        <span className="text-sm font-medium text-foreground">Sent for your OK.</span>
+        <span className="text-sm font-medium text-foreground">{t("area.apps-detail.test-panel.sentForOk")}</span>
       </div>
-      <p className="mt-0.5 text-xs text-muted-foreground">{outcome.agentName} needs your approval before this runs.</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">{t("area.apps-detail.test-panel.needsApproval", { agent: outcome.agentName })}</p>
 
       <dl className="mt-3 space-y-1.5 text-sm">
         <div className="flex gap-3">
-          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Action</dt>
+          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("area.apps-detail.test-panel.rowAction")}</dt>
           <dd className="text-foreground">{entry.title ?? entry.toolName}</dd>
         </div>
         {where && (
           <div className="flex gap-3">
-            <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Where</dt>
+            <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("area.apps-detail.test-panel.rowWhere")}</dt>
             <dd className="break-words text-foreground">{where}</dd>
           </div>
         )}
         <div className="flex gap-3">
-          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</dt>
+          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("area.apps-detail.test-panel.rowStatus")}</dt>
           <dd className={cn("flex items-center gap-1.5 text-foreground", settled && "text-muted-foreground")}>
             {phase === "running" && <Loader2 className="h-3 w-3 animate-spin" />}
             {statusLabel}
@@ -1444,21 +1483,20 @@ function AskFirstResult({
 
       {!settled && (
         <p className="mt-3 text-sm text-foreground">
-          Approve it in the{" "}
-          <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "review")}>
-            Review tab
-          </Link>{" "}
-          to finish the test. You can also cancel the request.
+          <Trans
+            i18nKey="area.apps-detail.test-panel.approveInReview"
+            components={[<Link key="review" className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "review")} />]}
+          />
         </p>
       )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button asChild size="sm" variant="outline">
-          <Link to={appTabHref(connectionId, "review")}>Open Review tab</Link>
+          <Link to={appTabHref(connectionId, "review")}>{t("area.apps-detail.test-panel.openReview")}</Link>
         </Button>
         {phase === "waiting" && actionRequestId && selectedCompanyId && (
           <Button size="sm" variant="ghost" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
-            {cancel.isPending ? "Cancelling…" : "Cancel this request"}
+            {cancel.isPending ? t("area.apps-detail.test-panel.cancelling") : t("area.apps-detail.test-panel.cancelRequest")}
           </Button>
         )}
       </div>
@@ -1482,6 +1520,7 @@ function OffExplanation({
   allAgents: ToolConnectionTestAgent[];
   onSelectAgent: (agentId: string) => void;
 }) {
+  const { t } = useTranslation();
   const title = entry.title ?? entry.toolName;
   const permHref = `${appTabHref(connectionId, "permissions")}?focus=${encodeURIComponent(entry.id)}`;
 
@@ -1491,8 +1530,8 @@ function OffExplanation({
   const others = allAgents.filter((a) => a.id !== agent.id);
 
   const whyBody = entry.status === "quarantined"
-    ? "This action is new and hasn't been turned on yet."
-    : `${agent.name}'s access profile sets this action to Off.`;
+    ? t("area.apps-detail.test-panel.whyQuarantined")
+    : t("area.apps-detail.test-panel.whyProfile", { agent: agent.name });
 
   // "Last changed by {Actor} · {relativeTime}" — only the access config carries
   // this; a quarantined action has never been configured, so there's nothing to
@@ -1500,7 +1539,9 @@ function OffExplanation({
   const { lastChangedAt, lastChangedByName } = agent.effectiveAccess;
   const auditHint =
     entry.status !== "quarantined" && lastChangedAt
-      ? `Last changed${lastChangedByName ? ` by ${lastChangedByName}` : ""} · ${relTime(new Date(lastChangedAt))}`
+      ? lastChangedByName
+        ? t("area.apps-detail.test-panel.lastChangedBy", { name: lastChangedByName, time: relTime(new Date(lastChangedAt)) })
+        : t("area.apps-detail.test-panel.lastChanged", { time: relTime(new Date(lastChangedAt)) })
       : null;
 
   return (
@@ -1509,30 +1550,30 @@ function OffExplanation({
         <div className="flex items-start gap-2">
           <Ban className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="text-sm text-muted-foreground">
-            <p className="font-medium text-foreground">{title} is off for {agent.name}.</p>
-            <p className="mt-0.5">It won't run here, and it won't run from a task either.</p>
+            <p className="font-medium text-foreground">{t("area.apps-detail.test-panel.offTitle", { title, agent: agent.name })}</p>
+            <p className="mt-0.5">{t("area.apps-detail.test-panel.offWontRunHere")}</p>
             <p className="mt-2">
-              Want to test it? Turn it on for {agent.name} in{" "}
-              <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "permissions")}>
-                Permissions
-              </Link>{" "}
-              — set it to Allowed or Ask first.
+              <Trans
+                i18nKey="area.apps-detail.test-panel.offWantToTest"
+                values={{ agent: agent.name }}
+                components={[<Link key="permissions" className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "permissions")} />]}
+              />
             </p>
           </div>
         </div>
         <Button asChild size="sm">
-          <Link to={permHref}>Open Permissions →</Link>
+          <Link to={permHref}>{t("area.apps-detail.test-panel.openPermissions")}</Link>
         </Button>
-        <p className="text-xs text-muted-foreground">No call will be made — this action is off for {agent.name}.</p>
+        <p className="text-xs text-muted-foreground">{t("area.apps-detail.test-panel.gutOff", { agent: agent.name })}</p>
       </div>
 
       <aside>
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Why this is off</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("area.apps-detail.test-panel.whyTitle")}</p>
         <p className="mt-1.5 text-xs text-muted-foreground">{whyBody}</p>
         {auditHint && <p className="mt-1.5 text-(length:--text-micro) text-muted-foreground">{auditHint}</p>}
         {others.length > 0 && (
           <div className="mt-3">
-            <p className="text-(length:--text-micro) font-medium text-muted-foreground">Try as a different agent:</p>
+            <p className="text-(length:--text-micro) font-medium text-muted-foreground">{t("area.apps-detail.test-panel.tryOther")}</p>
             <div className="mt-1 flex flex-wrap gap-1.5">
               {others.slice(0, 4).map((other) => (
                 <button
@@ -1572,26 +1613,17 @@ function safeStringify(value: unknown): string {
 export function errorHints(message: string, reasonCode: string | null | undefined): string[] {
   const haystack = `${reasonCode ?? ""} ${message}`.toUpperCase();
   if (haystack.includes("NOT_FOUND")) {
-    return [
-      "Double-check the ID or name you entered — pick it from a dropdown if one is offered.",
-      "Make sure this agent has access to that resource in the connected account.",
-    ];
+    return [i18n.t("area.apps-detail.test-panel.hintNotFound1"), i18n.t("area.apps-detail.test-panel.hintNotFound2")];
   }
   if (haystack.includes("PERMISSION") || haystack.includes("FORBIDDEN") || haystack.includes("UNAUTHORIZED")) {
-    return [
-      "The connected account may not have permission for this action.",
-      "Reconnect the app from Setup if its access was recently changed.",
-    ];
+    return [i18n.t("area.apps-detail.test-panel.hintPermission1"), i18n.t("area.apps-detail.test-panel.hintPermission2")];
   }
   if (haystack.includes("INVALID_ARGUMENT") || haystack.includes("INVALID") || haystack.includes("BAD_REQUEST")) {
-    return [
-      "Check the field formats above — a value may be the wrong type or shape.",
-      "Open “More options” to confirm any advanced fields are filled in correctly.",
-    ];
+    return [i18n.t("area.apps-detail.test-panel.hintInvalid1"), i18n.t("area.apps-detail.test-panel.hintInvalid2")];
   }
   if (haystack.includes("RATE_LIMIT") || haystack.includes("RESOURCE_EXHAUSTED") || haystack.includes("429")) {
-    return ["The app is rate-limiting calls right now — wait a moment and run it again."];
+    return [i18n.t("area.apps-detail.test-panel.hintRateLimit")];
   }
   // Locked generic fallback (copy-spec decision #2).
-  return ["Check the inputs above and try again."];
+  return [i18n.t("area.apps-detail.test-panel.hintGeneric")];
 }

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { healthApi } from "@/api/health";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { useLocalAiLogin } from "../ai-connections/useLocalAiLogin";
@@ -62,6 +63,7 @@ export function AgentProviderConnection({
     onComplete: (result: { connectionId: string; grantId: string; method: "subscription" | "api_key" }) => void;
   };
 }) {
+  const { t } = useTranslation();
   const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: localEnvironment });
   const canUseLocalLogin = localEnvironment && (health.data?.localAiLoginSupported ?? health.data?.deploymentMode === "local_trusted");
   const epoch = useRef(0);
@@ -119,7 +121,7 @@ export function AgentProviderConnection({
       ? "subscription" : savedKeys.options.length ? "api" : "subscription"
   );
   const localLogin = useLocalAiLogin(companyId, managedAccount?.intent ?? {
-    provider: aiProvider, method: "subscription", name: `My ${provider} subscription`,
+    provider: aiProvider, method: "subscription", name: t("area.apps-connections-2.agent-provider-connection.defaultNameSubscription", { provider }),
     ownership: "personal", agentIds: [], allAgents: true,
   }, canUseLocalLogin && method === "subscription" && !savedSubscription && !storedLogin.data,
   { allowHostClaude: health.data?.deploymentMode === "local_trusted" });
@@ -179,7 +181,7 @@ export function AgentProviderConnection({
         connection = { env: {}, aiConnection: { provider: aiProvider, method: "subscription", mode: "responsible_user" } };
       }
       if (connection.credentials) {
-        await aiConnectionsApi.create(companyId, { provider: aiProvider, method: "api_key", name: `My ${provider} API`, ownership: "personal", apiKey: connection.credentials[envKey], agentIds: [], allAgents: true });
+        await aiConnectionsApi.create(companyId, { provider: aiProvider, method: "api_key", name: t("area.apps-connections-2.agent-provider-connection.defaultNameApi", { provider }), ownership: "personal", apiKey: connection.credentials[envKey], agentIds: [], allAgents: true });
         connection = { env: {}, aiConnection: { provider: aiProvider, method: "api_key", mode: "responsible_user" } };
       }
       if (run !== epoch.current) return;
@@ -192,7 +194,7 @@ export function AgentProviderConnection({
       if (connected) onConnected(connection);
       else
         setError(
-          "The provider did not respond. Check the connection and try again.",
+          t("area.apps-connections-2.agent-provider-connection.providerNoResponse"),
         );
     } catch (cause) {
       if (run !== epoch.current) return;
@@ -200,7 +202,7 @@ export function AgentProviderConnection({
       setError(
         cause instanceof Error
           ? cause.message
-          : "Could not connect to the provider.",
+          : t("area.apps-connections-2.agent-provider-connection.connectFailed"),
       );
     } finally {
       if (run === epoch.current) setBusy(false);
@@ -217,7 +219,7 @@ export function AgentProviderConnection({
   return (
     <div className="min-w-0 max-w-full">
       <ModelSourceTiles
-        label="Connect your model provider"
+        label={t("area.apps-connections-2.agent-provider-connection.modelProviderLabel")}
         sources={[
           {
             id: adapterType,
@@ -250,8 +252,7 @@ export function AgentProviderConnection({
       )}
       {!opened && savedKeys.options.length > 0 && (
         <p className="mt-2 text-sm text-muted-foreground">
-          {savedKeys.options.length} saved API{" "}
-          {savedKeys.options.length === 1 ? "key available" : "keys available"}.
+          {t("area.apps-connections-2.agent-provider-connection.savedKeysAvailable", { count: savedKeys.options.length })}
         </p>
       )}
       {method === "subscription" &&
@@ -278,8 +279,8 @@ export function AgentProviderConnection({
               <OnboardingLoginCard
                 instruction={
                   savedKeys.options.length
-                    ? "Choose a saved API key or enter a new one"
-                    : `Provide your ${provider} API key to connect`
+                    ? t("area.apps-connections-2.agent-provider-connection.chooseSavedKey")
+                    : t("area.apps-connections-2.agent-provider-connection.provideKey", { provider })
                 }
               >
                 <SavedProviderKeySelect
@@ -295,14 +296,14 @@ export function AgentProviderConnection({
                 />
                 {!selectedKey && (
                   <OnboardingCardField
-                    label="API key"
+                    label={t("area.apps-connections-2.agent-provider-connection.apiKeyLabel")}
                     masked
                     autoFocus
                     value={apiKey}
                     placeholder={
                       storedConnection
-                        ? "Key entered. Retry the connection."
-                        : "Enter API key here"
+                        ? t("area.apps-connections-2.agent-provider-connection.keyEntered")
+                        : t("area.apps-connections-2.agent-provider-connection.apiKeyPlaceholder")
                     }
                     onChange={(value) => {
                       setSelectedKeyId("");
@@ -320,7 +321,7 @@ export function AgentProviderConnection({
                 adapterType={adapterType}
                 environmentId={environmentId}
                 chrome="onboarding"
-                aiConnection={managedAccount?.intent ?? { provider: aiProvider, method: "subscription", name: `My ${provider} subscription`, ownership: "personal", agentIds: [], allAgents: true }}
+                aiConnection={managedAccount?.intent ?? { provider: aiProvider, method: "subscription", name: t("area.apps-connections-2.agent-provider-connection.defaultNameSubscription", { provider }), ownership: "personal", agentIds: [], allAgents: true }}
                 autoStart
                 onStored={() => {}}
                 onPromptReady={(url) => {
@@ -336,7 +337,7 @@ export function AgentProviderConnection({
                 }}
                 onConnected={(sessionId) => {
                   if (managedAccount) {
-                    if (!sessionId) { setError("The login did not return a saved connection. Try again."); return; }
+                    if (!sessionId) { setError(t("area.apps-connections-2.agent-provider-connection.loginNoConnection")); return; }
                     const run = epoch.current;
                     setLoginPhase("connecting");
                     void aiConnectionsApi.loginResult(companyId, sessionId).then((result) => {
@@ -344,7 +345,7 @@ export function AgentProviderConnection({
                     }).catch(() => {
                       if (run !== epoch.current) return;
                       setLoginPhase("ready");
-                      setError("Could not retrieve the saved connection. Go back and retry.");
+                      setError(t("area.apps-connections-2.agent-provider-connection.retrieveFailed"));
                     });
                     return;
                   }
@@ -358,10 +359,10 @@ export function AgentProviderConnection({
             ) : (
               <p className="text-sm text-muted-foreground">
                 {storedLogin.data
-                  ? "Use your saved Claude subscription for this agent."
+                  ? t("area.apps-connections-2.agent-provider-connection.useSavedClaude")
                   : canLogin
-                    ? "Use the existing provider connection for this environment."
-                    : "This environment does not support browser sign-in. Choose a sign-in environment or connect with an API key."}
+                    ? t("area.apps-connections-2.agent-provider-connection.useExistingConnection")
+                    : t("area.apps-connections-2.agent-provider-connection.noBrowserSignIn")}
               </p>
             )}
           </div>
@@ -369,7 +370,7 @@ export function AgentProviderConnection({
       </motion.div>
       {method === "subscription" && storedLogin.isError && (
         <p role="alert" className="mt-4 text-sm text-destructive">
-          Could not check your saved Claude subscription. Try again.
+          {t("area.apps-connections-2.agent-provider-connection.checkSavedFailed")}
         </p>
       )}
       {error && (
@@ -378,7 +379,7 @@ export function AgentProviderConnection({
         </p>
       )}
       {localEnvironment && health.isError && (
-        <p role="alert" className="mt-4 text-sm text-destructive">Could not prepare sign-in. Reload this page to try again.</p>
+        <p role="alert" className="mt-4 text-sm text-destructive">{t("area.apps-connections-2.agent-provider-connection.prepareFailed")}</p>
       )}
       <FooterNav
         onBack={() => {
@@ -387,17 +388,17 @@ export function AgentProviderConnection({
         }}
         primaryLabel={
           opened && needsLogin
-            ? loginPhase === "waiting" ? "Waiting for code"
-              : loginPhase === "connecting" ? "Connecting"
-              : `Sign in to ${provider}`
+            ? loginPhase === "waiting" ? t("area.apps-connections-2.agent-provider-connection.waitingForCode")
+              : loginPhase === "connecting" ? t("area.apps-connections-2.agent-provider-connection.connecting")
+              : t("area.apps-connections-2.agent-provider-connection.signInTo", { provider })
             : busy
-            ? "Connecting"
+            ? t("area.apps-connections-2.agent-provider-connection.connecting")
             : method === "subscription" &&
                 (storedLogin.data || savedSubscription)
-              ? "Use saved subscription"
+              ? t("area.apps-connections-2.agent-provider-connection.useSavedSubscription")
               : method === "api" && selectedKey
-                ? "Use saved API key"
-                : "Connect"
+                ? t("area.apps-connections-2.agent-provider-connection.useSavedKey")
+                : t("area.apps-connections-2.agent-provider-connection.connect")
         }
         primaryDisabled={
           managedAccount?.disabled ||

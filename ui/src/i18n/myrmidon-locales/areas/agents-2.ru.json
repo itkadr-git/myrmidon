@@ -212,6 +212,8 @@
         "saving": "Сохраняем…",
         "selectAgents": "Выбрать агентов",
         "selectedCount_one": "Выбран {{count}} агент",
+        "selectedCount_few": "Выбрано {{count}} агента",
+        "selectedCount_many": "Выбрано {{count}} агентов",
         "selectedCount_other": "Выбрано агентов: {{count}}",
         "title": "Разрешить агентам разбирать мои входящие"
       },
