@@ -72,7 +72,8 @@ func TestMemoryRoutesRequireAuth(t *testing.T) {
 func TestMemoryRoutesForwardToUpstream(t *testing.T) {
 	var gotPath, gotQuery, gotBot string
 	var exportPaths []string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var upstream *httptest.Server
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/default/banks/fleetd/transfer/export") {
 			exportPaths = append(exportPaths, r.Method+" "+r.URL.Path)
 			switch {
