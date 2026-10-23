@@ -2,71 +2,13 @@
 // (myrmidon-locales/areas/<area>.<locale>.json).
 //   1. no key is defined twice for a locale across base + area files;
 //   2. an area file only uses its own namespace `area.<area>.*`;
-//   3. every area has both en and ru, with the same keys (plural suffixes
-//      are folded: ru needs _few/_many where en has only _one/_other) and
-//      the same {{placeholders}}.
+//   3. every area has both en and ru, with the same keys; plural groups
+//      carry the full form set (en _one+_other, ru _one+_few+_many+_other)
+//      and the same {{placeholders}} per group;
+//   4. a string in one file against an object in another is a conflict.
 import { describe, expect, it } from "vitest";
 import { collectForkMessages, parseForkCatalogPath } from "./myrmidon-i18n";
-
-type Catalog = Record<string, unknown>;
-
-const PLURAL_SUFFIX = /_(zero|one|two|few|many|other)$/;
-
-function isPlainObject(value: unknown): value is Catalog {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-/** Flatten a nested catalog into dotted leaf keys -> string value. */
-export function flattenCatalog(catalog: Catalog, prefix = ""): Map<string, string> {
-  const out = new Map<string, string>();
-  for (const [key, value] of Object.entries(catalog)) {
-    const path = prefix ? `${prefix}.${key}` : key;
-    if (isPlainObject(value)) {
-      for (const [k, v] of flattenCatalog(value, path)) out.set(k, v);
-    } else {
-      out.set(path, String(value));
-    }
-  }
-  return out;
-}
-
-/** Keys defined by more than one file for the same locale. */
-export function findKeyConflicts(files: Record<string, Catalog>): string[] {
-  const owners = new Map<string, string>();
-  const conflicts: string[] = [];
-  for (const [path, catalog] of Object.entries(files).sort(([a], [b]) => a.localeCompare(b))) {
-    const parsed = parseForkCatalogPath(path);
-    if (!parsed) continue;
-    for (const key of flattenCatalog(catalog).keys()) {
-      const id = `${parsed.locale}:${key}`;
-      const owner = owners.get(id);
-      if (owner) conflicts.push(`${id} defined in ${owner} and ${path}`);
-      else owners.set(id, path);
-    }
-  }
-  return conflicts;
-}
-
-const foldPlural = (key: string) => key.replace(PLURAL_SUFFIX, "");
-const placeholders = (value: string) => [...value.matchAll(/\{\{\s*([\w.]+)/g)].map((m) => m[1]).sort();
-
-/** Parity problems between the en and ru catalogs of one area. */
-export function findAreaParityProblems(en: Catalog, ru: Catalog): string[] {
-  const problems: string[] = [];
-  const enFlat = flattenCatalog(en);
-  const ruFlat = flattenCatalog(ru);
-  const enKeys = new Set([...enFlat.keys()].map(foldPlural));
-  const ruKeys = new Set([...ruFlat.keys()].map(foldPlural));
-  for (const key of enKeys) if (!ruKeys.has(key)) problems.push(`missing in ru: ${key}`);
-  for (const key of ruKeys) if (!enKeys.has(key)) problems.push(`missing in en: ${key}`);
-  for (const [key, value] of ruFlat) {
-    const enValue = enFlat.get(key);
-    if (enValue !== undefined && placeholders(enValue).join() !== placeholders(value).join()) {
-      problems.push(`placeholders differ: ${key}`);
-    }
-  }
-  return problems;
-}
+import { findAreaParityProblems, findKeyConflicts, type Catalog } from "./catalog-utils";
 
 const areaModules = import.meta.glob("./myrmidon-locales/areas/*.json", {
   eager: true,
@@ -142,14 +84,29 @@ describe("area catalog helpers", () => {
     expect(conflicts).toHaveLength(1);
   });
 
-  it("findAreaParityProblems folds plural suffixes and checks placeholders", () => {
+  it("findKeyConflicts reports a string against an object across files", () => {
+    const conflicts = findKeyConflicts({
+      "./myrmidon-locales/areas/x.en.json": { area: { shared: "text" } },
+      "./myrmidon-locales/areas/y.en.json": { area: { shared: { t: "2" } } },
+    });
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toContain("string");
+  });
+
+  it("findAreaParityProblems requires the full plural set per language", () => {
     const en = { area: { x: { n_one: "{{count}} item", n_other: "{{count}} items", a: "Hi {{name}}" } } };
-    const ru = {
-      area: { x: { n_one: "{{count}} шт", n_few: "{{count}} шт", n_many: "{{count}} шт", n_other: "{{count}} шт", a: "Привет" } },
+    const ruFull = {
+      area: { x: { n_one: "{{count}} шт", n_few: "{{count}} шт", n_many: "{{count}} шт", n_other: "{{count}} шт", a: "Привет {{name}}" } },
     };
-    expect(findAreaParityProblems(en, ru)).toEqual(["placeholders differ: area.x.a"]);
-    expect(findAreaParityProblems(en, { area: { x: { a: "Привет {{name}}" } } })).toEqual([
-      "missing in ru: area.x.n",
+    expect(findAreaParityProblems(en, ruFull)).toEqual([]);
+    // ru with only _one/_other: the soft behaviour the first version accepted
+    const ruSoft = { area: { x: { n_one: "{{count}} шт", n_other: "{{count}} шт", a: "Привет {{name}}" } } };
+    expect(findAreaParityProblems(en, ruSoft)).toEqual(["ru plural area.x.n lacks forms: few, many"]);
+    expect(findAreaParityProblems(en, { area: { x: { ...ruFull.area.x, a: "Привет" } } })).toEqual([
+      "placeholders differ: area.x.a",
     ]);
+    // a lone n_one is an ordinary key, not a plural group
+    expect(findAreaParityProblems({ area: { x: { n_one: "1" } } }, { area: { x: { n_one: "1" } } })).toEqual([]);
+    expect(findAreaParityProblems(en, { area: { x: { a: "Привет {{name}}" } } })).toContain("missing in ru: area.x.n");
   });
 });
