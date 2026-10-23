@@ -158,6 +158,20 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     };
   }
 
+  function assertApproverAuthority(req: Request, companyId: string, approverKind: string | null): void {
+    const actor = req.actor;
+    if (!approverKind || actor.type !== "board") {
+      throw forbidden("Only an authorized board user may approve this rule.", { code: "approver_authority_required" });
+    }
+    const membership = actor.memberships?.find((entry) => entry.companyId === companyId && entry.status === "active");
+    const authorized = approverKind === "owner"
+      ? membership?.membershipRole === "owner"
+      : approverKind === "adm" && (membership?.membershipRole === "admin" || actor.isInstanceAdmin === true);
+    if (!authorized) {
+      throw forbidden(`This user is not authorized to approve as ${approverKind}.`, { code: "approver_authority_required" });
+    }
+  }
+
   /** Gate 2: an agent caller needs a tool grant; a board user passes. */
   async function assertKnowledgeToolAccess(req: Request, toolName: string): Promise<void> {
     const actor = actorOf(req);
@@ -499,7 +513,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const actor = actorOf(req);
       const revisionId = typeof req.body?.revisionId === "string" ? req.body.revisionId : undefined;
       try {
-        const item = await loadItemForMutation(mod, req.params.idOrSlug as string);
+        const item = await loadItemForMutation(mod, itemIdOrSlug(req));
         // Gate 4b runs BEFORE the tool-grant gateway: a `rule` approval by an
         // agent is forbidden outright (тест П4), whatever grants, matrix or
         // the agent's own instructions say. Loading the item is the only way
@@ -511,6 +525,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
         // approverKind and a caller without the matching grade is refused by
         // the domain gate (403).
         const approverKindInput = approverKindFromRequest(req, companyId);
+        assertApproverAuthority(req, companyId, req.body?.approverKind ?? null);
         await assertRuleGrade(req, companyId, item);
         if (approverKindInput === null) {
           throw forbidden("approving needs an operator, admin or owner membership of the company", {

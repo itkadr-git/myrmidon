@@ -36,6 +36,18 @@ const boardActor = {
   companyIds: [COMPANY_ID],
   memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "operator" }],
 };
+const admActor = {
+  ...boardActor,
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "admin", status: "active" }],
+};
+const ownerActor = {
+  type: "board",
+  source: "session",
+  userId: "owner-a",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "owner", status: "active" }],
+};
 const agentActor = {
   type: "agent",
   source: "agent_key",
@@ -45,7 +57,7 @@ const agentActor = {
   companyIds: [COMPANY_ID],
 };
 
-type ItemOverrides = Partial<{ id: string; slug: string; kind: string; folderPath: string; status: string; roles: string[] }>;
+type ItemOverrides = Partial<{ id: string; slug: string; kind: string; folderPath: string; status: string; roles: string[]; approverKind: string | null; approvalRequired: boolean }>;
 
 function makeItem(overrides: ItemOverrides = {}) {
   return {
@@ -233,9 +245,21 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     const res = await request(app(deps, boardActor))
       .post(`${base}/items/rules/no-secrets/approve`)
       .send({ approverKind: "adm", revisionId: "rev-2" });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("approver_authority_required");
+    expect(deps.module.approve).not.toHaveBeenCalled();
+  });
+
+  it("allows an authorized ADM membership to approve an adm rule", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ kind: "rule", slug: "rules/adm-only", approverKind: "adm", approvalRequired: true });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    const res = await request(app(deps, admActor))
+      .post(`${base}/items/rules/adm-only/approve`)
+      .send({ approverKind: "adm", revisionId: "rev-2" });
     expect(res.status).toBe(200);
     expect(deps.module.approve).toHaveBeenCalledWith(
-      "rules/no-secrets",
+      "rules/adm-only",
       expect.objectContaining({ kind: "adm" }),
       { revisionId: "rev-2" },
     );
@@ -364,6 +388,33 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     expect(deps.module.approve).not.toHaveBeenCalled();
   });
 
+  it("rejects a company admin claiming owner authority", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ kind: "rule", slug: "rules/owner-only", approverKind: "owner", approvalRequired: true });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    const res = await request(app(deps, boardActor))
+      .post(`${base}/items/rules/owner-only/approve`)
+      .send({ approverKind: "owner", revisionId: "rev-2" });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("approver_authority_required");
+    expect(deps.module.approve).not.toHaveBeenCalled();
+  });
+
+  it("allows a verified owner to approve an owner rule and preserves the kind in audit input", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ kind: "rule", slug: "rules/owner-only", approverKind: "owner", approvalRequired: true });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    const res = await request(app(deps, ownerActor))
+      .post(`${base}/items/rules/owner-only/approve`)
+      .send({ approverKind: "owner", revisionId: "rev-2" });
+    expect(res.status).toBe(200);
+    expect(deps.module.approve).toHaveBeenCalledWith(
+      "rules/owner-only",
+      expect.objectContaining({ kind: "owner" }),
+      { revisionId: "rev-2" },
+    );
+  });
+
   it("rejects an owner rule approval without a presented approver kind", async () => {
     const deps = makeDeps({ grants: true });
     const item = makeItem({ kind: "rule", slug: "rules/owner-only", approverKind: "owner", approvalRequired: true });
@@ -373,6 +424,18 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       .send({ revisionId: "rev-2" });
     expect(res.status).toBe(403);
     expect(res.body.code).toBe("approver_kind_mismatch");
+    expect(deps.module.approve).not.toHaveBeenCalled();
+  });
+
+  it("rejects a company owner claiming ADM authority", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ kind: "rule", slug: "rules/adm-only", approverKind: "adm", approvalRequired: true });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    const res = await request(app(deps, ownerActor))
+      .post(`${base}/items/rules/adm-only/approve`)
+      .send({ approverKind: "adm", revisionId: "rev-2" });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("approver_authority_required");
     expect(deps.module.approve).not.toHaveBeenCalled();
   });
 
