@@ -374,6 +374,7 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
                   summary: input.summary ?? null,
                   folder: input.folderPath ?? "",
                   tags: input.tags ?? [],
+                  roles: alreadyThere.roles ?? [],
                   approvalRequired: input.approvalRequired ?? false,
                   approverKind: input.approverKind ?? null,
                   status: alreadyThere.status as "draft" | "in_review" | "published" | "archived" | "superseded",
