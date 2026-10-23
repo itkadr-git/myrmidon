@@ -44,10 +44,10 @@ export function CompanySettingsPluginPage() {
   useEffect(() => {
     if (!pageSlot) return;
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
+      { label: t("area.settings-company.company-settings-plugin-page.breadcrumbSettings"), href: "/company/settings" },
       { label: pageSlot.displayName },
     ]);
-  }, [pageSlot, setBreadcrumbs]);
+  }, [pageSlot, setBreadcrumbs, t]);
 
   if (!resolvedCompanyId) {
     if (hasInvalidCompanyPrefix) {

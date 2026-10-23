@@ -468,6 +468,7 @@
       "company-settings-plugin-page": {
         "selectAnOrganizationToView": "Select an organization to view this page.",
         "loading": "Loading...",
+        "breadcrumbSettings": "Settings",
         "duplicateRoute": "Multiple plugins declare the company settings route <0>{{path}}</0>. Disable one plugin or change its route.",
         "pluginExtensionsUnavailable": "Plugin extensions unavailable: {{message}}"
       },

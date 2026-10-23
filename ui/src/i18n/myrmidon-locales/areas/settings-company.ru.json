@@ -524,6 +524,7 @@
       "company-settings-plugin-page": {
         "selectAnOrganizationToView": "Выберите организацию, чтобы открыть эту страницу.",
         "loading": "Загрузка…",
+        "breadcrumbSettings": "Настройки",
         "duplicateRoute": "Несколько плагинов объявляют маршрут настроек организации <0>{{path}}</0>. Отключите один из плагинов или смените его маршрут.",
         "pluginExtensionsUnavailable": "Расширения плагинов недоступны: {{message}}"
       },
