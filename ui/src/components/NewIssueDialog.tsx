@@ -172,6 +172,9 @@ type StagedIssueFile = {
 };
 
 import { Badge } from "@/components/ui/badge";
+// myrmidon(OPE-8950): dialog copy runs through the fork i18n catalog.
+import { Trans } from "react-i18next";
+import { t, useTranslation } from "@/i18n";
 import {
   buildAssigneeAdapterOverrides,
   ISSUE_OVERRIDE_ADAPTER_TYPES,
@@ -180,23 +183,23 @@ import {
 
 const STAGED_FILE_ACCEPT = "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown";
 
-const ISSUE_THINKING_EFFORT_OPTIONS = {
+const issueThinkingEffortOptions = () => ({
   claude_local: [
-    { value: "", label: "Default" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
+    { value: "", label: t("area.issue-threads-runs-2.new-issue-dialog.effortDefault") },
+    { value: "low", label: t("area.issue-threads-runs-2.new-issue-dialog.effortLow") },
+    { value: "medium", label: t("area.issue-threads-runs-2.new-issue-dialog.effortMedium") },
+    { value: "high", label: t("area.issue-threads-runs-2.new-issue-dialog.effortHigh") },
   ],
   opencode_local: [
-    { value: "", label: "Default" },
-    { value: "minimal", label: "Minimal" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-    { value: "xhigh", label: "X-High" },
-    { value: "max", label: "Max" },
+    { value: "", label: t("area.issue-threads-runs-2.new-issue-dialog.effortDefault") },
+    { value: "minimal", label: t("area.issue-threads-runs-2.new-issue-dialog.effortMinimal") },
+    { value: "low", label: t("area.issue-threads-runs-2.new-issue-dialog.effortLow") },
+    { value: "medium", label: t("area.issue-threads-runs-2.new-issue-dialog.effortMedium") },
+    { value: "high", label: t("area.issue-threads-runs-2.new-issue-dialog.effortHigh") },
+    { value: "xhigh", label: t("area.issue-threads-runs-2.new-issue-dialog.effortXHigh") },
+    { value: "max", label: t("area.issue-threads-runs-2.new-issue-dialog.effortMax") },
   ],
-} as const;
+}) as const;
 
 function loadDraft(): IssueDraft | null {
   try {
@@ -274,19 +277,19 @@ function buildStatusOptions(): ReadonlyArray<{ value: string; label: string; col
   return [
     {
       value: "backlog",
-      label: "Backlog",
+      label: t("area.issue-threads-runs-2.new-issue-dialog.statusBacklog"),
       color: palette.backlog ?? issueStatusTextDefault,
-      description: "Parked - assignee will not be woken",
+      description: t("area.issue-threads-runs-2.new-issue-dialog.statusBacklogDesc"),
     },
     {
       value: "todo",
-      label: "Todo",
+      label: t("area.issue-threads-runs-2.new-issue-dialog.statusTodo"),
       color: palette.todo ?? issueStatusTextDefault,
-      description: "Executable - assignee will be woken",
+      description: t("area.issue-threads-runs-2.new-issue-dialog.statusTodoDesc"),
     },
-    { value: "in_progress", label: "In Progress", color: palette.in_progress ?? issueStatusTextDefault },
-    { value: "in_review", label: "In Review", color: palette.in_review ?? issueStatusTextDefault },
-    { value: "done", label: "Done", color: palette.done ?? issueStatusTextDefault },
+    { value: "in_progress", label: t("area.issue-threads-runs-2.new-issue-dialog.statusInProgress"), color: palette.in_progress ?? issueStatusTextDefault },
+    { value: "in_review", label: t("area.issue-threads-runs-2.new-issue-dialog.statusInReview"), color: palette.in_review ?? issueStatusTextDefault },
+    { value: "done", label: t("area.issue-threads-runs-2.new-issue-dialog.statusDone"), color: palette.done ?? issueStatusTextDefault },
   ];
 }
 
@@ -318,17 +321,17 @@ function shouldWarnAboutRunUserSecrets(status: string, assigneeAgentId: string |
   return Boolean(assigneeAgentId) && (status === "todo" || status === "in_progress");
 }
 
-const priorities = [
-  { value: "critical", label: "Critical", icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
-  { value: "high", label: "High", icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault },
-  { value: "medium", label: "Medium", icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
-  { value: "low", label: "Low", icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
+const buildPriorities = () => [
+  { value: "critical", label: t("area.issue-threads-runs-2.new-issue-dialog.prioCritical"), icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
+  { value: "high", label: t("area.issue-threads-runs-2.new-issue-dialog.prioHigh"), icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault },
+  { value: "medium", label: t("area.issue-threads-runs-2.new-issue-dialog.prioMedium"), icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
+  { value: "low", label: t("area.issue-threads-runs-2.new-issue-dialog.prioLow"), icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
 ];
 
-const EXECUTION_WORKSPACE_MODES = [
-  { value: "shared_workspace", label: "Project default" },
-  { value: "isolated_workspace", label: "New isolated workspace" },
-  { value: "reuse_existing", label: "Reuse existing workspace" },
+const buildExecutionWorkspaceModes = () => [
+  { value: "shared_workspace", label: t("area.issue-threads-runs-2.new-issue-dialog.modeSharedWorkspace") },
+  { value: "isolated_workspace", label: t("area.issue-threads-runs-2.new-issue-dialog.modeIsolatedWorkspace") },
+  { value: "reuse_existing", label: t("area.issue-threads-runs-2.new-issue-dialog.modeReuseExisting") },
 ] as const;
 
 function defaultExecutionWorkspaceModeForIssueDefaults(
@@ -374,6 +377,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   projectSelectorRef: RefObject<HTMLButtonElement | null>;
   onChange: (value: string) => void;
 }) {
+  const { t } = useTranslation();
   const [draftValue, setDraftValue] = useState(value);
 
   useEffect(() => {
@@ -383,7 +387,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   return (
     <textarea
       className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-      placeholder="Task title"
+      placeholder={t("area.issue-threads-runs-2.new-issue-dialog.titlePlaceholder")}
       rows={1}
       value={draftValue}
       onChange={(e) => {
@@ -437,6 +441,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
   imageUploadHandler: (file: File) => Promise<string>;
   onChange: (value: string) => void;
 }) {
+  const { t } = useTranslation();
   const [draftValue, setDraftValue] = useState(value);
 
   useEffect(() => {
@@ -451,7 +456,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
         setDraftValue(nextValue);
         onChange(nextValue);
       }}
-      placeholder="Add description..."
+      placeholder={t("area.issue-threads-runs-2.new-issue-dialog.descriptionPlaceholder")}
       bordered={false}
       mentions={mentions}
       contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-(--sz-220px)" : "min-h-(--sz-120px)")}
@@ -466,7 +471,9 @@ export function NewIssueDialog() {
   const dialogBodyRef = useRef<HTMLDivElement>(null);
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
   const workModeOptions = useMemo(() => workModeMetaList(), []);
-  const statuses = useMemo(() => buildStatusOptions(), []);
+  const { t } = useTranslation();
+  const statuses = useMemo(() => buildStatusOptions(), [t]);
+  const priorities = useMemo(() => buildPriorities(), [t]);
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
@@ -673,11 +680,11 @@ export function NewIssueDialog() {
         const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
         const issueRef = issue.identifier ?? issue.id;
         pushToast({
-          title: `Created ${issueRef} with upload warnings`,
-          body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`,
+          title: t("area.issue-threads-runs-2.new-issue-dialog.toastCreatedWithWarnings", { ref: issueRef }),
+          body: t("area.issue-threads-runs-2.new-issue-dialog.toastFilesFailed", { count: failures.length }),
           tone: "warn",
           action: prefix
-            ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
+            ? { label: t("area.issue-threads-runs-2.new-issue-dialog.toastOpen", { ref: issueRef }), href: `/${prefix}/issues/${issueRef}` }
             : undefined,
         });
       }
@@ -689,7 +696,7 @@ export function NewIssueDialog() {
 
   const uploadDescriptionImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!effectiveCompanyId) throw new Error("No organization selected");
+      if (!effectiveCompanyId) throw new Error(t("area.issue-threads-runs-2.new-issue-dialog.noOrganizationSelected"));
       return assetsApi.uploadImage(effectiveCompanyId, file, "issues/drafts");
     },
   });
@@ -958,8 +965,8 @@ export function NewIssueDialog() {
       assigneeAdapterType === "codex_local"
         ? codexReasoningEffortOptions(effectiveAssigneeModel)
         : assigneeAdapterType === "opencode_local"
-          ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+          ? issueThinkingEffortOptions().opencode_local
+          : issueThinkingEffortOptions().claude_local;
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
       setAssigneeThinkingEffort("");
     }
@@ -1205,18 +1212,18 @@ export function NewIssueDialog() {
     && !isUsingParentExecutionWorkspace;
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
-      ? "Claude options"
+      ? t("area.issue-threads-runs-2.new-issue-dialog.claudeOptions")
       : assigneeAdapterType === "codex_local"
-        ? "Codex options"
+        ? t("area.issue-threads-runs-2.new-issue-dialog.codexOptions")
         : assigneeAdapterType === "opencode_local"
-          ? "OpenCode options"
-        : "Agent options";
+          ? t("area.issue-threads-runs-2.new-issue-dialog.opencodeOptions")
+        : t("area.issue-threads-runs-2.new-issue-dialog.agentOptions");
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
       ? codexReasoningEffortOptions(effectiveAssigneeModel)
       : assigneeAdapterType === "opencode_local"
-        ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-      : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+        ? issueThinkingEffortOptions().opencode_local
+      : issueThinkingEffortOptions().claude_local;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const recentAssigneeOptionIds = useMemo(
     () => recentAssigneeIds.map((id) => assigneeValueFromSelection({ assigneeAgentId: id })),
@@ -1264,7 +1271,7 @@ export function NewIssueDialog() {
   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
   const createIssueErrorMessage =
-    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create task. Try again.";
+    createIssue.error instanceof Error ? createIssue.error.message : t("area.issue-threads-runs-2.new-issue-dialog.createFailed");
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
   const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
 
@@ -1437,7 +1444,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{isSubIssueMode ? "New sub-task" : "New task"}</span>
+            <span>{isSubIssueMode ? t("area.issue-threads-runs-2.new-issue-dialog.newSubTask") : t("area.issue-threads-runs-2.new-issue-dialog.newTask")}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -1490,19 +1497,19 @@ export function NewIssueDialog() {
           <div className="px-4 pb-2">
             <div className="overflow-x-auto overscroll-x-contain">
               <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
-              <span className="w-6 shrink-0 text-center">For</span>
+              <span className="w-6 shrink-0 text-center">{t("area.issue-threads-runs-2.new-issue-dialog.for")}</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
                 value={assigneeValue}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
-                placeholder="Assignee"
+                placeholder={t("area.issue-threads-runs-2.new-issue-dialog.assignee")}
                 className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
                 triggerDataSlot="new-issue-compact-control"
                 disablePortal
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees..."
-                emptyMessage="No assignees found."
+                noneLabel={t("area.issue-threads-runs-2.new-issue-dialog.assigneeNone")}
+                searchPlaceholder={t("area.issue-threads-runs-2.new-issue-dialog.assigneeSearch")}
+                emptyMessage={t("area.issue-threads-runs-2.new-issue-dialog.assigneeEmpty")}
                 onChange={(value) => {
                   const nextAssignee = parseAssigneeValue(value);
                   if (nextAssignee.assigneeAgentId) {
@@ -1532,7 +1539,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     )
                   ) : (
-                    <span className="text-muted-foreground">Assignee</span>
+                    <span className="text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.assignee")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1545,7 +1552,7 @@ export function NewIssueDialog() {
                       {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
                       <span className="truncate">{option.label}</span>
                       {assignee && getTrustPreset(assignee.permissions) === "low_trust_review" ? (
-                        <ShieldAlert className="ml-auto h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-label="Low-trust review agent" />
+                        <ShieldAlert className="ml-auto h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-label={t("area.issue-threads-runs-2.new-issue-dialog.lowTrustAria")} />
                       ) : null}
                     </>
                   );
@@ -1557,13 +1564,13 @@ export function NewIssueDialog() {
                 value={projectId}
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
-                placeholder="Project"
+                placeholder={t("area.issue-threads-runs-2.new-issue-dialog.project")}
                 className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
                 triggerDataSlot="new-issue-compact-control"
                 disablePortal
-                noneLabel="No project"
-                searchPlaceholder="Search projects..."
-                emptyMessage="No projects found."
+                noneLabel={t("area.issue-threads-runs-2.new-issue-dialog.projectNone")}
+                searchPlaceholder={t("area.issue-threads-runs-2.new-issue-dialog.projectSearch")}
+                emptyMessage={t("area.issue-threads-runs-2.new-issue-dialog.projectEmpty")}
                 onChange={handleProjectChange}
                 onConfirm={() => {
                   descriptionEditorRef.current?.focus();
@@ -1578,7 +1585,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Project</span>
+                    <span className="text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.project")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1602,7 +1609,7 @@ export function NewIssueDialog() {
                   <button
                     type="button"
                     className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-accent/50 transition-colors"
-                    title="Add reviewer, approver, or watchdog"
+                    title={t("area.issue-threads-runs-2.new-issue-dialog.addParticipantTitle")}
                   >
                     <MoreHorizontal className="h-4 w-4" />
                   </button>
@@ -1620,7 +1627,7 @@ export function NewIssueDialog() {
                     }}
                   >
                     <Eye className="h-3 w-3" />
-                    Reviewer
+                    {t("area.issue-threads-runs-2.new-issue-dialog.reviewer")}
                   </button>
                   <button
                     className={cn(
@@ -1634,7 +1641,7 @@ export function NewIssueDialog() {
                     }}
                   >
                     <ShieldCheck className="h-3 w-3" />
-                    Approver
+                    {t("area.issue-threads-runs-2.new-issue-dialog.approver")}
                   </button>
                   <button
                     className={cn(
@@ -1655,7 +1662,7 @@ export function NewIssueDialog() {
                     }}
                   >
                     <ScanEye className="h-3 w-3" />
-                    Watchdog
+                    {t("area.issue-threads-runs-2.new-issue-dialog.watchdog")}
                   </button>
                 </PopoverContent>
               </Popover>
@@ -1670,11 +1677,11 @@ export function NewIssueDialog() {
                 value={reviewerValue}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
-                placeholder="Reviewer"
+                placeholder={t("area.issue-threads-runs-2.new-issue-dialog.reviewer")}
                 disablePortal
-                noneLabel="No reviewer"
-                searchPlaceholder="Search reviewers..."
-                emptyMessage="No reviewers found."
+                noneLabel={t("area.issue-threads-runs-2.new-issue-dialog.reviewerNone")}
+                searchPlaceholder={t("area.issue-threads-runs-2.new-issue-dialog.reviewerSearch")}
+                emptyMessage={t("area.issue-threads-runs-2.new-issue-dialog.reviewerEmpty")}
                 onChange={setReviewerValue}
                 renderTriggerValue={(option) =>
                   option ? (
@@ -1688,7 +1695,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Reviewer</span>
+                    <span className="text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.reviewer")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1715,11 +1722,11 @@ export function NewIssueDialog() {
                 value={approverValue}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
-                placeholder="Approver"
+                placeholder={t("area.issue-threads-runs-2.new-issue-dialog.approver")}
                 disablePortal
-                noneLabel="No approver"
-                searchPlaceholder="Search approvers..."
-                emptyMessage="No approvers found."
+                noneLabel={t("area.issue-threads-runs-2.new-issue-dialog.approverNone")}
+                searchPlaceholder={t("area.issue-threads-runs-2.new-issue-dialog.approverSearch")}
+                emptyMessage={t("area.issue-threads-runs-2.new-issue-dialog.approverEmpty")}
                 onChange={setApproverValue}
                 renderTriggerValue={(option) =>
                   option ? (
@@ -1733,7 +1740,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Approver</span>
+                    <span className="text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.approver")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1761,7 +1768,7 @@ export function NewIssueDialog() {
                     <button
                       type="button"
                       className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors min-w-0"
-                      title="Configure watchdog"
+                      title={t("area.issue-threads-runs-2.new-issue-dialog.configureWatchdog")}
                     >
                       {selectedWatchdogAgent ? (
                         <>
@@ -1772,20 +1779,20 @@ export function NewIssueDialog() {
                           ) : null}
                         </>
                       ) : (
-                        <span className="text-muted-foreground">Set watchdog</span>
+                        <span className="text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.setWatchdog")}</span>
                       )}
                     </button>
                   </PopoverTrigger>
                   <PopoverContent className="w-80 p-3 space-y-3" align="start">
                     <div className="space-y-1.5">
-                      <div className="text-xs font-medium text-foreground">Watchdog agent</div>
+                      <div className="text-xs font-medium text-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.watchdogAgent")}</div>
                       <InlineEntitySelector
                         value={watchdogAgentId}
                         options={watchdogAgentOptions}
-                        placeholder="Select agent"
-                        noneLabel="No watchdog agent"
-                        searchPlaceholder="Search agents..."
-                        emptyMessage="No agents found."
+                        placeholder={t("area.issue-threads-runs-2.new-issue-dialog.selectAgent")}
+                        noneLabel={t("area.issue-threads-runs-2.new-issue-dialog.watchdogAgentNone")}
+                        searchPlaceholder={t("area.issue-threads-runs-2.new-issue-dialog.agentSearch")}
+                        emptyMessage={t("area.issue-threads-runs-2.new-issue-dialog.agentEmpty")}
                         onChange={setWatchdogAgentId}
                         renderTriggerValue={(option) =>
                           option ? (
@@ -1796,7 +1803,7 @@ export function NewIssueDialog() {
                               <span className="truncate">{option.label}</span>
                             </>
                           ) : (
-                            <span className="text-muted-foreground">Select agent</span>
+                            <span className="text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.selectAgent")}</span>
                           )
                         }
                         renderOption={(option) => {
@@ -1811,11 +1818,11 @@ export function NewIssueDialog() {
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <div className="text-xs font-medium text-foreground">Instructions <span className="font-normal text-muted-foreground">(optional)</span></div>
+                      <div className="text-xs font-medium text-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.instructions")} <span className="font-normal text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.optional")}</span></div>
                       <Textarea
                         value={watchdogInstructions}
                         onChange={(event) => setWatchdogInstructions(event.target.value)}
-                        placeholder="What should the watchdog watch for and how should it keep work moving?"
+                        placeholder={t("area.issue-threads-runs-2.new-issue-dialog.watchdogPlaceholder")}
                         rows={4}
                         className="text-xs"
                       />
@@ -1831,10 +1838,10 @@ export function NewIssueDialog() {
                           setWatchdogEditorOpen(false);
                         }}
                       >
-                        Remove
+                        {t("common.remove")}
                       </button>
                       <Button type="button" size="sm" className="h-7 text-xs" onClick={() => setWatchdogEditorOpen(false)}>
-                        Done
+                        {t("status.done")}
                       </Button>
                     </div>
                   </PopoverContent>
@@ -1848,7 +1855,7 @@ export function NewIssueDialog() {
             <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
               <div className="flex items-center gap-1.5">
                 <ListTree className="h-3.5 w-3.5 shrink-0" />
-                <span className="shrink-0">Sub-task of</span>
+                <span className="shrink-0">{t("area.issue-threads-runs-2.new-issue-dialog.subTaskOf")}</span>
                 <span className="font-medium text-foreground">{parentIssueLabel}</span>
               </div>
               {newIssueDefaults.parentTitle ? (
@@ -1863,9 +1870,9 @@ export function NewIssueDialog() {
           {currentProject && currentProjectSupportsExecutionWorkspace && (
             <div className="px-4 py-3 space-y-2">
             <div className="space-y-1.5">
-              <div className="text-xs font-medium">Execution workspace</div>
+              <div className="text-xs font-medium">{t("area.issue-threads-runs-2.new-issue-dialog.executionWorkspace")}</div>
               <div className="text-(length:--text-micro) text-muted-foreground">
-                Control whether this task runs in the shared workspace, a new isolated workspace, or an existing one.
+                {t("area.issue-threads-runs-2.new-issue-dialog.executionWorkspaceHint")}
               </div>
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
@@ -1877,7 +1884,7 @@ export function NewIssueDialog() {
                   }
                 }}
               >
-                {EXECUTION_WORKSPACE_MODES.map((option) => (
+                {buildExecutionWorkspaceModes().map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
@@ -1900,12 +1907,12 @@ export function NewIssueDialog() {
               */}
               {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (
                 <div className="text-(length:--text-micro) text-muted-foreground">
-                  Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? "existing execution workspace"}.
+                  {t("area.issue-threads-runs-2.new-issue-dialog.reusingWorkspace", { name: selectedReusableExecutionWorkspace.name, branch: selectedReusableExecutionWorkspace.branchName ?? t("area.issue-threads-runs-2.new-issue-dialog.existingWorkspaceFallback") })}
                 </div>
               )}
               {showParentWorkspaceWarning ? (
                 <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-(length:--text-micro) text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
-                  Warning: this sub-task will no longer use the parent task workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                  {parentExecutionWorkspaceLabel ? t("area.issue-threads-runs-2.new-issue-dialog.parentWorkspaceWarningNamed", { label: parentExecutionWorkspaceLabel }) : t("area.issue-threads-runs-2.new-issue-dialog.parentWorkspaceWarning")}
                 </div>
               ) : null}
             </div>
@@ -1924,11 +1931,11 @@ export function NewIssueDialog() {
             {assigneeOptionsOpen && (
               <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
                 <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Model lane</div>
+                  <div className="text-xs text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.modelLane")}</div>
                   <div
                     className="flex w-full overflow-hidden rounded-md border border-border"
                     role="radiogroup"
-                    aria-label="Model lane"
+                    aria-label={t("area.issue-threads-runs-2.new-issue-dialog.modelLane")}
                   >
                     {(["primary", "custom"] as const).map((lane) => (
                       <button
@@ -1942,35 +1949,35 @@ export function NewIssueDialog() {
                         )}
                         onClick={() => setAssigneeModelLane(lane)}
                       >
-                        {lane === "primary" ? "Primary" : "Custom"}
+                        {lane === "primary" ? t("area.issue-threads-runs-2.new-issue-dialog.lanePrimary") : t("area.issue-threads-runs-2.new-issue-dialog.laneCustom")}
                       </button>
                     ))}
                   </div>
                   {assigneeModelLane === "primary" && (
-                    <p className="text-(length:--text-micro) text-muted-foreground">Runs on the agent's primary model.</p>
+                    <p className="text-(length:--text-micro) text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.primaryLaneHint")}</p>
                   )}
                   {assigneeModelLane === "custom" && (
-                    <p className="text-(length:--text-micro) text-muted-foreground">Override the model and effort for this task only.</p>
+                    <p className="text-(length:--text-micro) text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.customLaneHint")}</p>
                   )}
                 </div>
                 {assigneeModelLane === "custom" && (
                   <div className="space-y-1.5">
-                    <div className="text-xs text-muted-foreground">Model</div>
+                    <div className="text-xs text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.model")}</div>
                     <InlineEntitySelector
                       value={assigneeModelOverride}
                       options={modelOverrideOptions}
-                      placeholder="Default model"
+                      placeholder={t("area.issue-threads-runs-2.new-issue-dialog.defaultModel")}
                       disablePortal
-                      noneLabel="Default model"
-                      searchPlaceholder="Search models..."
-                      emptyMessage="No models found."
+                      noneLabel={t("area.issue-threads-runs-2.new-issue-dialog.defaultModel")}
+                      searchPlaceholder={t("area.issue-threads-runs-2.new-issue-dialog.modelSearch")}
+                      emptyMessage={t("area.issue-threads-runs-2.new-issue-dialog.modelEmpty")}
                       onChange={setAssigneeModelOverride}
                     />
                   </div>
                 )}
                 {assigneeModelLane === "custom" && (
                   <div className="space-y-1.5">
-                    <div className="text-xs text-muted-foreground">Thinking effort</div>
+                    <div className="text-xs text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.thinkingEffort")}</div>
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {thinkingEffortOptions.map((option) => (
                         <button
@@ -1989,7 +1996,7 @@ export function NewIssueDialog() {
                 )}
                 {assigneeAdapterType === "claude_local" && assigneeModelLane === "custom" && (
                   <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-                    <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
+                    <div className="text-xs text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.enableChrome")}</div>
                     <ToggleSwitch
                       checked={assigneeChrome}
                       onCheckedChange={() => setAssigneeChrome((value) => !value)}
@@ -2028,7 +2035,7 @@ export function NewIssueDialog() {
               <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
               {stagedDocuments.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-xs font-medium text-muted-foreground">Documents</div>
+                  <div className="text-xs font-medium text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.documents")}</div>
                   <div className="space-y-2">
                     {stagedDocuments.map((file) => (
                       <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
@@ -2052,7 +2059,7 @@ export function NewIssueDialog() {
                           className="shrink-0 text-muted-foreground"
                           onClick={() => removeStagedFile(file.id)}
                           disabled={createIssue.isPending}
-                          title="Remove document"
+                          title={t("area.issue-threads-runs-2.new-issue-dialog.removeDocument")}
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
@@ -2064,7 +2071,7 @@ export function NewIssueDialog() {
 
               {stagedAttachments.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-xs font-medium text-muted-foreground">Attachments</div>
+                  <div className="text-xs font-medium text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.attachments")}</div>
                   <div className="space-y-2">
                     {stagedAttachments.map((file) => (
                       <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
@@ -2083,7 +2090,7 @@ export function NewIssueDialog() {
                           className="shrink-0 text-muted-foreground"
                           onClick={() => removeStagedFile(file.id)}
                           disabled={createIssue.isPending}
-                          title="Remove attachment"
+                          title={t("area.issue-threads-runs-2.new-issue-dialog.removeAttachment")}
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
@@ -2149,7 +2156,7 @@ export function NewIssueDialog() {
                 ) : (
                   <>
                     <Minus className="h-3 w-3 text-muted-foreground" />
-                    Priority
+                    {t("area.issue-threads-runs-2.new-issue-dialog.priority")}
                   </>
                 )}
               </button>
@@ -2193,7 +2200,7 @@ export function NewIssueDialog() {
             disabled={createIssue.isPending}
           >
             <Paperclip className="h-3 w-3" />
-            Upload
+            {t("common.upload")}
           </button>
 
           {/* Work mode chip */}
@@ -2256,7 +2263,7 @@ export function NewIssueDialog() {
               {SHOW_TASK_PRIORITY_UI && (
               <div className="sm:hidden">
                 <div className="px-2 py-1 text-(length:--text-nano) font-medium uppercase text-muted-foreground">
-                  Priority
+                  {t("area.issue-threads-runs-2.new-issue-dialog.priority")}
                 </div>
                 {priorities.map((p) => (
                   <button
@@ -2281,11 +2288,11 @@ export function NewIssueDialog() {
               )}
               <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
                 <Calendar className="h-3 w-3" />
-                Start date
+                {t("area.issue-threads-runs-2.new-issue-dialog.startDate")}
               </button>
               <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
                 <Calendar className="h-3 w-3" />
-                Due date
+                {t("area.issue-threads-runs-2.new-issue-dialog.dueDate")}
               </button>
             </PopoverContent>
           </Popover>
@@ -2298,7 +2305,11 @@ export function NewIssueDialog() {
           >
             <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
             <span className="leading-snug">
-              Assigning implies executable intent - leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">Todo</span> or <span className="font-medium">In Progress</span>.
+              <Trans
+                t={t}
+                i18nKey="area.issue-threads-runs-2.new-issue-dialog.backlogNote"
+                components={[<></>, <span className="font-medium" />, <></>, <span className="font-medium" />, <></>, <span className="font-medium" />]}
+              />
             </span>
           </div>
         ) : null}
@@ -2306,8 +2317,15 @@ export function NewIssueDialog() {
         {selectedAssigneeAgent?.status === "paused" ? (
           <div data-testid="new-issue-paused-assignee-note" className="mx-4 mb-2">
             <InlineBanner tone="warning" icon={PauseCircle} compact>
-              <span className="font-medium">{selectedAssigneeAgent.name}</span> is paused and will not start work on this task until it is resumed
-              {selectedAssigneeAgent.pauseReason === "import" ? " — it arrived paused from an organization import" : ""}. You can resume it from the task page after creating the task.
+              <Trans
+                t={t}
+                i18nKey="area.issue-threads-runs-2.new-issue-dialog.pausedNote"
+                values={{
+                  name: selectedAssigneeAgent.name,
+                  reason: selectedAssigneeAgent.pauseReason === "import" ? t("area.issue-threads-runs-2.new-issue-dialog.pausedImportReason") : "",
+                }}
+                components={[<></>, <span className="font-medium" />]}
+              />
             </InlineBanner>
           </div>
         ) : null}
@@ -2319,7 +2337,7 @@ export function NewIssueDialog() {
           >
             <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
             <span className="leading-snug">
-              Low-trust review agent. It can only act inside its assigned review boundary; task, project, or run policy defines the concrete scope.
+              {t("area.issue-threads-runs-2.new-issue-dialog.lowTrustNote")}
             </span>
           </div>
         ) : null}
@@ -2333,7 +2351,7 @@ export function NewIssueDialog() {
             onClick={discardDraft}
             disabled={createIssue.isPending || !canDiscardDraft}
           >
-            Discard Draft
+            {t("area.issue-threads-runs-2.new-issue-dialog.discardDraft")}
           </Button>
           <div className="flex items-center gap-3">
             {createIssue.isError ? (
@@ -2350,7 +2368,7 @@ export function NewIssueDialog() {
             >
               <span className="inline-flex items-center justify-center gap-1.5">
                 {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Task" : "Create Task"}</span>
+                <span>{createIssue.isPending ? t("area.issue-threads-runs-2.new-issue-dialog.creating") : isSubIssueMode ? t("area.issue-threads-runs-2.new-issue-dialog.createSubTask") : t("area.issue-threads-runs-2.new-issue-dialog.createTask")}</span>
               </span>
             </Button>
           </div>
