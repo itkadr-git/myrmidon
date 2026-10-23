@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { ActivityEvent, Issue, Agent, ProviderTraceMetadata } from "@paperclipai/shared";
+import type { ActivityEvent, Issue, Agent, ProviderTraceMetadata } from "area.issue-threads-runs-1.issue-run-ledger.paperclipai/shared";
 import {
   isResponsibleUserDenialCode,
   responsibleUserLabel,
-} from "@paperclipai/shared";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+} from "area.issue-threads-runs-1.issue-run-ledger.paperclipai/shared";
+import { useMutation, useQuery, useQueryClient } from "area.issue-threads-runs-1.issue-run-ledger.tanstack/react-query";
 import { Link } from "@/lib/router";
+import { Trans } from "react-i18next";
+import { i18n, useTranslation } from "@/i18n";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
 import {
   activityApi,
@@ -90,62 +92,61 @@ type LivenessCopy = {
   description: string;
 };
 
-const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
+const livenessCopyMap = (): Record<RunLivenessState, LivenessCopy> => ({
   completed: {
-    label: "Completed",
+    label: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.completed.label"),
     tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-    description: "Task reached a terminal state.",
+    description: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.completed.description"),
   },
   advanced: {
-    label: "Advanced",
+    label: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.advanced.label"),
     tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
-    description: "Run produced concrete evidence of progress.",
+    description: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.advanced.description"),
   },
   plan_only: {
-    label: "Plan only",
+    label: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.planOnly.label"),
     tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-    description: "Run described future work without concrete action evidence.",
+    description: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.planOnly.description"),
   },
   empty_response: {
-    label: "Empty response",
+    label: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.emptyResponse.label"),
     tone: "border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-300",
-    description: "Run finished without useful output.",
+    description: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.emptyResponse.description"),
   },
   blocked: {
-    label: "Blocked",
+    label: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.blocked.label"),
     tone: "border-yellow-500/30 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300",
-    description: "Run or task declared a blocker.",
+    description: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.blocked.description"),
   },
   failed: {
-    label: "Failed",
+    label: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.failed.label"),
     tone: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
-    description: "Run ended unsuccessfully.",
+    description: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.failed.description"),
   },
   needs_followup: {
-    label: "Needs follow-up",
+    label: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.needsFollowup.label"),
     tone: "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300",
-    description:
-      "Run produced useful output but did not prove concrete progress.",
+    description: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.needsFollowup.description"),
   },
-};
+});
 
-const PENDING_LIVENESS_COPY: LivenessCopy = {
-  label: "Checks after finish",
+const pendingLivenessCopy = (): LivenessCopy => ({
+  label: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.pending.label"),
   tone: "border-border bg-background text-muted-foreground",
-  description: "Liveness is evaluated after the run finishes.",
-};
+  description: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.pending.description"),
+});
 
-const RETRY_PENDING_LIVENESS_COPY: LivenessCopy = {
-  label: "Retry pending",
+const retryPendingLivenessCopy = (): LivenessCopy => ({
+  label: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.retryPending.label"),
   tone: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
-  description: "Myrmidon queued an automatic retry that has not started yet.",
-};
+  description: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.retryPending.description"),
+});
 
-const MISSING_LIVENESS_COPY: LivenessCopy = {
-  label: "No liveness data",
+const missingLivenessCopy = (): LivenessCopy => ({
+  label: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.missing.label"),
   tone: "border-border bg-background text-muted-foreground",
-  description: "This run has no persisted liveness classification.",
-};
+  description: i18n.t("area.issue-threads-runs-1.issue-run-ledger.liveness.missing.description"),
+});
 
 const TERMINAL_CHILD_STATUSES = new Set<Issue["status"]>(["done", "cancelled"]);
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running"]);
@@ -159,22 +160,22 @@ type RunOutputSilenceCopy = {
   tone: string;
 };
 
-const RUN_OUTPUT_SILENCE_COPY: Partial<
+const runOutputSilenceCopy = (): Partial<
   Record<RunOutputSilenceLevel, RunOutputSilenceCopy>
-> = {
+> => ({
   suspicious: {
-    label: "Output silence",
+    label: i18n.t("area.issue-threads-runs-1.issue-run-ledger.silence.suspicious"),
     tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   },
   critical: {
-    label: "Critical silence",
+    label: i18n.t("area.issue-threads-runs-1.issue-run-ledger.silence.critical"),
     tone: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
   },
   snoozed: {
-    label: "Silence snoozed",
+    label: i18n.t("area.issue-threads-runs-1.issue-run-ledger.silence.snoozed"),
     tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
   },
-};
+});
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value))
@@ -201,14 +202,18 @@ function formatDuration(
   const endMs = end ? new Date(end).getTime() : Date.now();
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
   const totalSeconds = Math.max(0, Math.round((endMs - startMs) / 1000));
-  if (totalSeconds < 60) return `${totalSeconds}s`;
+  if (totalSeconds < 60) return i18n.t("area.issue-threads-runs-1.issue-run-ledger.duration.s", { s: totalSeconds });
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   if (minutes < 60)
-    return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+    return seconds > 0
+      ? i18n.t("area.issue-threads-runs-1.issue-run-ledger.duration.ms", { m: minutes, s: seconds })
+      : i18n.t("area.issue-threads-runs-1.issue-run-ledger.duration.m", { m: minutes });
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
-  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  return remainingMinutes > 0
+    ? i18n.t("area.issue-threads-runs-1.issue-run-ledger.duration.hm", { h: hours, m: remainingMinutes })
+    : i18n.t("area.issue-threads-runs-1.issue-run-ledger.duration.h", { h: hours });
 }
 
 function toIsoString(value: string | Date | null | undefined) {
@@ -292,17 +297,17 @@ function runSummary(
   agentMap: ReadonlyMap<string, Pick<Agent, "name">>,
 ) {
   const agentName = compactAgentName(run, agentMap);
-  if (run.status === "running") return `Running now by ${agentName}`;
-  if (run.status === "queued") return `Queued for ${agentName}`;
+  if (run.status === "running") return i18n.t("area.issue-threads-runs-1.issue-run-ledger.summary.running", { agent: agentName });
+  if (run.status === "queued") return i18n.t("area.issue-threads-runs-1.issue-run-ledger.summary.queued", { agent: agentName });
   if (run.status === "scheduled_retry")
-    return `Automatic retry scheduled for ${agentName}`;
-  return `${statusLabel(run.status)} by ${agentName}`;
+    return i18n.t("area.issue-threads-runs-1.issue-run-ledger.summary.scheduledRetry", { agent: agentName });
+  return i18n.t("area.issue-threads-runs-1.issue-run-ledger.summary.byAgent", { status: statusLabel(run.status), agent: agentName });
 }
 
 function livenessCopyForRun(run: LedgerRun) {
-  if (run.status === "scheduled_retry") return RETRY_PENDING_LIVENESS_COPY;
-  if (run.livenessState) return LIVENESS_COPY[run.livenessState];
-  return isActiveRun(run) ? PENDING_LIVENESS_COPY : MISSING_LIVENESS_COPY;
+  if (run.status === "scheduled_retry") return retryPendingLivenessCopy();
+  if (run.livenessState) return livenessCopyMap()[run.livenessState];
+  return isActiveRun(run) ? pendingLivenessCopy() : missingLivenessCopy();
 }
 
 function stopReasonLabel(run: RunForIssue) {
@@ -312,56 +317,56 @@ function stopReasonLabel(run: RunForIssue) {
   const effectiveTimeoutSec = readNumber(result?.effectiveTimeoutSec);
   const timeoutText =
     effectiveTimeoutSec && effectiveTimeoutSec > 0
-      ? `${effectiveTimeoutSec}s timeout`
+      ? i18n.t("area.issue-threads-runs-1.issue-run-ledger.stop.timeoutSeconds", { s: effectiveTimeoutSec })
       : null;
 
   if (timeoutFired || stopReason === "timeout") {
-    return timeoutText ? `timeout (${timeoutText})` : "timeout";
+    return timeoutText ? i18n.t("area.issue-threads-runs-1.issue-run-ledger.stop.timeoutWith", { detail: timeoutText }) : i18n.t("area.issue-threads-runs-1.issue-run-ledger.stop.timeout");
   }
   if (
     stopReason === "max_turns_exhausted" ||
     stopReason === "turn_limit_exhausted"
   )
-    return "max turns exhausted";
-  if (stopReason === "budget_paused") return "budget paused";
-  if (stopReason === "cancelled") return "cancelled";
-  if (stopReason === "paused") return "paused by board";
-  if (stopReason === "process_lost") return "process lost";
+    return i18n.t("area.issue-threads-runs-1.issue-run-ledger.stop.maxTurnsExhausted");
+  if (stopReason === "budget_paused") return i18n.t("area.issue-threads-runs-1.issue-run-ledger.stop.budgetPaused");
+  if (stopReason === "cancelled") return i18n.t("area.issue-threads-runs-1.issue-run-ledger.stop.cancelled");
+  if (stopReason === "paused") return i18n.t("area.issue-threads-runs-1.issue-run-ledger.stop.pausedByBoard");
+  if (stopReason === "process_lost") return i18n.t("area.issue-threads-runs-1.issue-run-ledger.stop.processLost");
   if (stopReason === "unmanaged_background_task_stopped")
-    return "unmanaged background task stopped";
-  if (stopReason === "adapter_failed") return "adapter failed";
+    return i18n.t("area.issue-threads-runs-1.issue-run-ledger.stop.unmanagedBackgroundTaskStopped");
+  if (stopReason === "adapter_failed") return i18n.t("area.issue-threads-runs-1.issue-run-ledger.stop.adapterFailed");
   if (stopReason === "completed")
-    return timeoutText ? `completed (${timeoutText})` : "completed";
+    return timeoutText ? i18n.t("area.issue-threads-runs-1.issue-run-ledger.stop.completedWith", { detail: timeoutText }) : i18n.t("area.issue-threads-runs-1.issue-run-ledger.stop.completed");
   return timeoutText;
 }
 
 function stopStatusLabel(run: LedgerRun, stopReason: string | null) {
   if (stopReason) return stopReason;
-  if (run.status === "scheduled_retry") return "Retry pending";
-  if (run.status === "queued") return "Waiting to start";
-  if (run.status === "running") return "Still running";
-  if (!run.livenessState) return "Unavailable";
-  return "No stop reason";
+  if (run.status === "scheduled_retry") return i18n.t("area.issue-threads-runs-1.issue-run-ledger.stopStatus.retryPending");
+  if (run.status === "queued") return i18n.t("area.issue-threads-runs-1.issue-run-ledger.stopStatus.waitingToStart");
+  if (run.status === "running") return i18n.t("area.issue-threads-runs-1.issue-run-ledger.stopStatus.stillRunning");
+  if (!run.livenessState) return i18n.t("area.issue-threads-runs-1.issue-run-ledger.stopStatus.unavailable");
+  return i18n.t("area.issue-threads-runs-1.issue-run-ledger.stopStatus.noStopReason");
 }
 
 function lastUsefulActionLabel(run: LedgerRun) {
-  if (run.status === "scheduled_retry") return "Waiting for next attempt";
+  if (run.status === "scheduled_retry") return i18n.t("area.issue-threads-runs-1.issue-run-ledger.lastAction.waitingForNextAttempt");
   if (run.lastUsefulActionAt) return relativeTime(run.lastUsefulActionAt);
-  if (isActiveRun(run)) return "No action recorded yet";
+  if (isActiveRun(run)) return i18n.t("area.issue-threads-runs-1.issue-run-ledger.lastAction.noneYet");
   if (
     run.livenessState === "plan_only" ||
     run.livenessState === "needs_followup"
   ) {
-    return "No concrete action";
+    return i18n.t("area.issue-threads-runs-1.issue-run-ledger.lastAction.noConcreteAction");
   }
-  if (run.livenessState === "empty_response") return "No useful output";
-  if (!run.livenessState) return "Unavailable";
-  return "None recorded";
+  if (run.livenessState === "empty_response") return i18n.t("area.issue-threads-runs-1.issue-run-ledger.lastAction.noUsefulOutput");
+  if (!run.livenessState) return i18n.t("area.issue-threads-runs-1.issue-run-ledger.lastAction.unavailable");
+  return i18n.t("area.issue-threads-runs-1.issue-run-ledger.lastAction.noneRecorded");
 }
 
 function continuationLabel(run: LedgerRun) {
   if (!run.continuationAttempt || run.continuationAttempt <= 0) return null;
-  return `Continuation attempt ${run.continuationAttempt}`;
+  return i18n.t("area.issue-threads-runs-1.issue-run-ledger.continuationAttempt", { attempt: run.continuationAttempt });
 }
 
 function hasExhaustedContinuation(run: RunForIssue) {
@@ -391,13 +396,13 @@ function compactAgentName(
 function formatSilenceAge(ms: number | null | undefined) {
   if (!ms || ms <= 0) return null;
   const totalMinutes = Math.floor(ms / 60_000);
-  if (totalMinutes < 1) return "under 1 minute";
+  if (totalMinutes < 1) return i18n.t("area.issue-threads-runs-1.issue-run-ledger.silenceAge.underMinute");
   if (totalMinutes < 60)
-    return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+    return i18n.t("area.issue-threads-runs-1.issue-run-ledger.silenceAge.minutes", { count: totalMinutes });
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  if (minutes === 0) return `${hours} hour${hours === 1 ? "" : "s"}`;
-  return `${hours}h ${minutes}m`;
+  if (minutes === 0) return i18n.t("area.issue-threads-runs-1.issue-run-ledger.silenceAge.hours", { count: hours });
+  return i18n.t("area.issue-threads-runs-1.issue-run-ledger.duration.hm", { h: hours, m: minutes });
 }
 
 function canBoardRecordWatchdogDecision(
@@ -422,11 +427,11 @@ function canBoardRecordWatchdogDecision(
 
 function watchdogDecisionErrorMessage(error: unknown) {
   if (error instanceof ApiError && error.status === 403) {
-    return "Only the board or the assigned recovery owner can record watchdog decisions";
+    return i18n.t("area.issue-threads-runs-1.issue-run-ledger.watchdog.forbidden");
   }
   return error instanceof Error && error.message.trim().length > 0
     ? error.message
-    : "Myrmidon could not record the watchdog decision.";
+    : i18n.t("area.issue-threads-runs-1.issue-run-ledger.watchdog.recordFailed");
 }
 
 export function IssueRunLedger({
@@ -511,7 +516,7 @@ export function IssueRunLedger({
         error instanceof ApiError ? String(error.status) : "error";
       setWatchdogDecisionError(message);
       pushToast({
-        title: "Watchdog decision not recorded",
+        title: i18n.t("area.issue-threads-runs-1.issue-run-ledger.watchdog.notRecordedTitle"),
         body: message,
         tone: "error",
         dedupeKey: `watchdog-decision:${issueId}:${dedupeSuffix}`,
@@ -538,7 +543,7 @@ export function IssueRunLedger({
         companyId,
       );
       if (!("id" in result))
-        throw new Error(result.message ?? "Trace re-run was skipped.");
+        throw new Error(result.message ?? i18n.t("area.issue-threads-runs-1.issue-run-ledger.trace.skipped"));
       return result;
     },
     onSuccess: () => {
@@ -551,11 +556,11 @@ export function IssueRunLedger({
     },
     onError: (error) =>
       pushToast({
-        title: "Trace re-run not started",
+        title: i18n.t("area.issue-threads-runs-1.issue-run-ledger.trace.notStartedTitle"),
         body:
           error instanceof Error
             ? error.message
-            : "Myrmidon could not start the trace re-run.",
+            : i18n.t("area.issue-threads-runs-1.issue-run-ledger.trace.startFailed"),
         tone: "error",
         dedupeKey: `provider-trace-rerun:${issueId}`,
       }),
@@ -606,6 +611,7 @@ export function IssueRunLedgerContent({
   onRerunWithTrace,
   providerTraceMetadata = new Map(),
 }: IssueRunLedgerContentProps) {
+  const { t } = useTranslation();
   const [inspectedRun, setInspectedRun] = useState<LedgerRun | null>(null);
   const ledgerRuns = useMemo(
     () => mergeRuns(runs, liveRuns, activeRun),
@@ -664,18 +670,18 @@ export function IssueRunLedgerContent({
   }, [activityEvents, canRenderActivityEvents, ledgerRuns]);
 
   return (
-    <section className="space-y-3" aria-label="Task run ledger">
+    <section className="space-y-3" aria-label={t("area.issue-threads-runs-1.issue-run-ledger.ariaLabel")}>
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <h3 className="text-sm font-medium text-muted-foreground">
-            Run ledger
+            {t("area.issue-threads-runs-1.issue-run-ledger.title")}
           </h3>
           <p className="text-xs text-muted-foreground">
             {latestRun
               ? runSummary(latestRun, agentMap)
               : issueStatus === "in_progress"
-                ? "Waiting for the first run record."
-                : "No runs linked yet."}
+                ? t("area.issue-threads-runs-1.issue-run-ledger.waitingForFirstRun")
+                : t("area.issue-threads-runs-1.issue-run-ledger.noRuns")}
           </p>
         </div>
         {latestRun ? (
@@ -683,7 +689,7 @@ export function IssueRunLedgerContent({
             to={`/agents/${latestRun.agentId}/runs/${latestRun.runId}`}
             className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
           >
-            Latest run
+            {t("area.issue-threads-runs-1.issue-run-ledger.latestRun")}
           </Link>
         ) : null}
       </div>
@@ -691,11 +697,11 @@ export function IssueRunLedgerContent({
       {children.total > 0 ? (
         <div className="rounded-md border border-border/70 px-3 py-2">
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="font-medium text-foreground">Child work</span>
+            <span className="font-medium text-foreground">{t("area.issue-threads-runs-1.issue-run-ledger.childWork")}</span>
             <span className="text-muted-foreground">
               {children.active.length > 0
-                ? `${children.active.length} active, ${children.done} done, ${children.cancelled} cancelled`
-                : `all ${children.total} terminal (${children.done} done, ${children.cancelled} cancelled)`}
+                ? t("area.issue-threads-runs-1.issue-run-ledger.childSummaryActive", { active: children.active.length, done: children.done, cancelled: children.cancelled })
+                : t("area.issue-threads-runs-1.issue-run-ledger.childSummaryTerminal", { total: children.total, done: children.done, cancelled: children.cancelled })}
             </span>
           </div>
           {children.active.length > 0 ? (
@@ -717,7 +723,7 @@ export function IssueRunLedgerContent({
               ))}
               {children.active.length > 4 ? (
                 <span className="rounded-md border border-border px-2 py-1 text-(length:--text-micro) text-muted-foreground">
-                  +{children.active.length - 4} more
+                  {t("area.issue-threads-runs-1.issue-run-ledger.moreChildren", { count: children.active.length - 4 })}
                 </span>
               ) : null}
             </div>
@@ -736,32 +742,36 @@ export function IssueRunLedgerContent({
         >
           <p className="font-medium">
             {latestSilentRun.outputSilence.level === "critical"
-              ? "Critical output silence"
-              : "Output silence watchdog warning"}
+              ? t("area.issue-threads-runs-1.issue-run-ledger.silenceNotice.criticalTitle")
+              : t("area.issue-threads-runs-1.issue-run-ledger.silenceNotice.warningTitle")}
           </p>
           <p className="mt-1">
-            Latest active run has been silent for{" "}
-            {formatSilenceAge(latestSilentRun.outputSilence.silenceAgeMs) ??
-              "an extended period"}
-            .
+            {t("area.issue-threads-runs-1.issue-run-ledger.silenceNotice.silentFor", {
+              age:
+                formatSilenceAge(latestSilentRun.outputSilence.silenceAgeMs) ??
+                t("area.issue-threads-runs-1.issue-run-ledger.silenceNotice.extendedPeriod"),
+            })}
             {latestSilentRun.outputSilence.evaluationIssueIdentifier ? (
               <>
                 {" "}
-                Review{" "}
-                <Link
-                  to={`/issues/${latestSilentRun.outputSilence.evaluationIssueIdentifier}`}
-                  className="font-medium underline underline-offset-2"
-                >
-                  {latestSilentRun.outputSilence.evaluationIssueIdentifier}
-                </Link>{" "}
-                for recovery context.
+                <Trans
+                  i18nKey="area.issue-threads-runs-1.issue-run-ledger.silenceNotice.reviewIssue"
+                  components={[
+                    <Link
+                      key="issue"
+                      to={`/issues/${latestSilentRun.outputSilence.evaluationIssueIdentifier}`}
+                      className="font-medium underline underline-offset-2"
+                    />,
+                  ]}
+                  values={{ identifier: latestSilentRun.outputSilence.evaluationIssueIdentifier }}
+                />
               </>
             ) : null}
           </p>
           <p className="mt-1">
             {latestSilentRun.outputSilence.evaluationIssueIdentifier
-              ? "This signal is informational. Myrmidon did not create new delegated recovery work."
-              : "This signal is informational. Myrmidon did not create or assign a recovery task."}
+              ? t("area.issue-threads-runs-1.issue-run-ledger.silenceNotice.informationalDelegated")
+              : t("area.issue-threads-runs-1.issue-run-ledger.silenceNotice.informationalNoTask")}
           </p>
           {onWatchdogDecision && canRecordWatchdogDecisions ? (
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -778,7 +788,7 @@ export function IssueRunLedgerContent({
                 }
                 disabled={pendingWatchdogDecision != null}
               >
-                Continue monitoring
+                {t("area.issue-threads-runs-1.issue-run-ledger.silenceNotice.continueMonitoring")}
               </button>
               <button
                 type="button"
@@ -797,7 +807,7 @@ export function IssueRunLedgerContent({
                 }
                 disabled={pendingWatchdogDecision != null}
               >
-                Snooze 1h
+                {t("area.issue-threads-runs-1.issue-run-ledger.silenceNotice.snooze1h")}
               </button>
               <button
                 type="button"
@@ -813,7 +823,7 @@ export function IssueRunLedgerContent({
                 }
                 disabled={pendingWatchdogDecision != null}
               >
-                Mark false positive
+                {t("area.issue-threads-runs-1.issue-run-ledger.silenceNotice.markFalsePositive")}
               </button>
             </div>
           ) : null}
@@ -828,8 +838,8 @@ export function IssueRunLedgerContent({
       {feedItems.length === 0 ? (
         <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
           {renderActivityEvent
-            ? "Runs and activity will appear here once this task has history."
-            : "Historical runs without liveness metadata will appear here once linked to this task."}
+            ? t("area.issue-threads-runs-1.issue-run-ledger.emptyWithActivity")
+            : t("area.issue-threads-runs-1.issue-run-ledger.emptyHistorical")}
         </div>
       ) : (
         <div className="space-y-1.5">
@@ -864,22 +874,25 @@ export function IssueRunLedgerContent({
                 className="space-y-1.5 rounded-lg border border-border/60 px-3 py-2 text-xs text-muted-foreground"
               >
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="font-medium text-foreground">Run</span>
+                  <span className="font-medium text-foreground">{t("area.issue-threads-runs-1.issue-run-ledger.run")}</span>
                   <Link
                     to={`/agents/${run.agentId}/runs/${run.runId}`}
                     className="min-w-0 max-w-full truncate font-mono text-foreground hover:underline"
                   >
                     {run.runId.slice(0, 8)}
                   </Link>
-                  <span>by {agentName}</span>
+                  <span>{t("area.issue-threads-runs-1.issue-run-ledger.byAgent", { agent: agentName })}</span>
                   {onBehalfOfLabel ? (
                     <span
                       data-testid="run-on-behalf-of"
                       className="min-w-0 max-w-full truncate text-muted-foreground"
-                      title={`Acting on behalf of ${onBehalfOfLabel}`}
+                      title={t("area.issue-threads-runs-1.issue-run-ledger.actingOnBehalfOf", { name: onBehalfOfLabel })}
                     >
-                      on behalf of{" "}
-                      <span className="text-foreground">{onBehalfOfLabel}</span>
+                      <Trans
+                        i18nKey="area.issue-threads-runs-1.issue-run-ledger.onBehalfOf"
+                        components={[<span key="name" className="text-foreground" />]}
+                        values={{ name: onBehalfOfLabel }}
+                      />
                     </span>
                   ) : null}
                   <span className="rounded-md border border-border px-1.5 py-0.5 text-(length:--text-micro) capitalize text-muted-foreground">
@@ -888,7 +901,7 @@ export function IssueRunLedgerContent({
                   {run.isLive ? (
                     <span className="inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 text-(length:--text-micro) text-blue-700 dark:text-blue-300">
                       <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-                      live
+                      {t("area.issue-threads-runs-1.issue-run-ledger.live")}
                     </span>
                   ) : null}
                   <ProviderTraceStatusBadge
@@ -907,7 +920,7 @@ export function IssueRunLedgerContent({
                   </span>
                   {exhausted ? (
                     <span className="rounded-md border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-(length:--text-micro) font-medium text-red-700 dark:text-red-300">
-                      Exhausted
+                      {t("area.issue-threads-runs-1.issue-run-ledger.exhausted")}
                     </span>
                   ) : null}
                   {continuation ? (
@@ -926,14 +939,14 @@ export function IssueRunLedgerContent({
                     </span>
                   ) : null}
                   {run.outputSilence &&
-                  RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level] ? (
+                  runOutputSilenceCopy()[run.outputSilence.level] ? (
                     <span
                       className={cn(
                         "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
-                        RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level]?.tone,
+                        runOutputSilenceCopy()[run.outputSilence.level]?.tone,
                       )}
                     >
-                      {RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level]?.label}
+                      {runOutputSilenceCopy()[run.outputSilence.level]?.label}
                     </span>
                   ) : null}
                   {sourceResolvedFold ? <SourceResolvedFoldBadge /> : null}
@@ -945,21 +958,21 @@ export function IssueRunLedgerContent({
                     className="rounded-md border border-border px-1.5 py-0.5 text-(length:--text-micro) text-foreground hover:bg-accent/40"
                     onClick={() => setInspectedRun(run)}
                   >
-                    Inspect run
+                    {t("area.issue-threads-runs-1.issue-run-ledger.inspectRun")}
                   </button>
                 </div>
 
                 <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
                   <div className="min-w-0">
-                    <span className="text-foreground">Elapsed</span>{" "}
-                    {duration ?? "unknown"}
+                    <span className="text-foreground">{t("area.issue-threads-runs-1.issue-run-ledger.elapsed")}</span>{" "}
+                    {duration ?? t("area.issue-threads-runs-1.issue-run-ledger.unknown")}
                   </div>
                   <div className="min-w-0">
-                    <span className="text-foreground">Last useful action</span>{" "}
+                    <span className="text-foreground">{t("area.issue-threads-runs-1.issue-run-ledger.lastUsefulAction")}</span>{" "}
                     {lastUsefulActionLabel(run)}
                   </div>
                   <div className="min-w-0">
-                    <span className="text-foreground">Stop</span>{" "}
+                    <span className="text-foreground">{t("area.issue-threads-runs-1.issue-run-ledger.stop.label")}</span>{" "}
                     {stopStatusLabel(run, stopReason)}
                   </div>
                 </div>
@@ -972,13 +985,17 @@ export function IssueRunLedgerContent({
                     ) : null}
                     {retryState.retryOfRunId ? (
                       <p>
-                        Retry of{" "}
-                        <Link
-                          to={`/agents/${run.agentId}/runs/${retryState.retryOfRunId}`}
-                          className="font-mono text-foreground hover:underline"
-                        >
-                          {retryState.retryOfRunId.slice(0, 8)}
-                        </Link>
+                        <Trans
+                          i18nKey="area.issue-threads-runs-1.issue-run-ledger.retryOf"
+                          components={[
+                            <Link
+                              key="run"
+                              to={`/agents/${run.agentId}/runs/${retryState.retryOfRunId}`}
+                              className="font-mono text-foreground hover:underline"
+                            />,
+                          ]}
+                          values={{ runId: retryState.retryOfRunId.slice(0, 8) }}
+                        />
                       </p>
                     ) : null}
                   </div>
@@ -1004,7 +1021,7 @@ export function IssueRunLedgerContent({
                 {run.nextAction ? (
                   <div className="min-w-0 rounded-md bg-accent/40 px-2 py-1.5 text-xs leading-5">
                     <span className="font-medium text-foreground">
-                      Next action:{" "}
+                      {t("area.issue-threads-runs-1.issue-run-ledger.nextAction")}{" "}
                     </span>
                     <span className="break-words text-muted-foreground">
                       {run.nextAction}
@@ -1016,7 +1033,7 @@ export function IssueRunLedgerContent({
           })}
           {feedItems.length > 20 ? (
             <div className="px-3 py-2 text-xs text-muted-foreground">
-              {feedItems.length - 20} older items not shown
+              {t("area.issue-threads-runs-1.issue-run-ledger.olderItemsNotShown", { count: feedItems.length - 20 })}
             </div>
           ) : null}
         </div>
