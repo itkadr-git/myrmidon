@@ -74,46 +74,6 @@ func TestMemoryRoutesForwardToUpstream(t *testing.T) {
 	var exportPaths []string
 	var upstream *httptest.Server
 	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/default/banks/fleetd/memories/recall" {
-			gotPath = r.URL.Path
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode upstream body: %v", err)
-			}
-			if q, ok := body["botKey"].(string); ok {
-				gotBot = q
-			}
-			if q, ok := body["query"].(string); ok {
-				gotQuery = q
-			}
-			_, _ = w.Write([]byte(`{"memories":[]}`))
-			return
-		}
-		if r.URL.Path == "/v1/default/banks/fleetd/memories" && r.Method == http.MethodPost {
-			gotPath = r.URL.Path
-			_, _ = w.Write([]byte(`{"operation_id":"retain-1"}`))
-			return
-		}
-		if r.URL.Path == "/v1/default/banks/fleetd/memories/recall" {
-			gotPath = r.URL.Path
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode upstream body: %v", err)
-			}
-			if q, ok := body["botKey"].(string); ok {
-				gotBot = q
-			}
-			if q, ok := body["query"].(string); ok {
-				gotQuery = q
-			}
-			_, _ = w.Write([]byte(`{"memories":[]}`))
-			return
-		}
-		if r.URL.Path == "/v1/default/banks/fleetd/memories" && r.Method == http.MethodPost {
-			gotPath = r.URL.Path
-			_, _ = w.Write([]byte(`{"operation_id":"retain-1"}`))
-			return
-		}
 		if strings.HasPrefix(r.URL.Path, "/v1/default/banks/fleetd/transfer/export") {
 			exportPaths = append(exportPaths, r.Method+" "+r.URL.Path)
 			switch {
