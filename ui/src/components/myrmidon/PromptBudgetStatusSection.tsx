@@ -4,7 +4,9 @@
 // endpoint of the same release; the thresholds are edited on the "Prompt
 // budget" settings panel.
 import { useQuery } from "@tanstack/react-query";
+import { Trans } from "react-i18next";
 import { Gauge } from "lucide-react";
+import { i18n, useTranslation } from "@/i18n";
 import {
   promptBudgetApi,
   promptBudgetStatusQueryKey,
@@ -17,11 +19,11 @@ const LEVEL_STYLES: Record<string, string> = {
   crit: "bg-destructive/10 text-destructive",
 };
 
-const LEVEL_LABELS: Record<string, string> = {
-  ok: "Within budget",
-  warn: "Warn threshold crossed",
-  crit: "Crit threshold crossed",
-};
+const levelLabels = (): Record<string, string> => ({
+  ok: i18n.t("area.costs-budgets-2.prompt-budget-status-section.levels.ok"),
+  warn: i18n.t("area.costs-budgets-2.prompt-budget-status-section.levels.warn"),
+  crit: i18n.t("area.costs-budgets-2.prompt-budget-status-section.levels.crit"),
+});
 
 export function PromptBudgetStatusSection({
   companyId,
@@ -30,6 +32,7 @@ export function PromptBudgetStatusSection({
   companyId: string;
   agentId: string;
 }) {
+  const { t } = useTranslation();
   const { data } = useQuery({
     queryKey: promptBudgetStatusQueryKey(companyId),
     queryFn: () => promptBudgetApi.getStatus(companyId),
@@ -45,44 +48,44 @@ export function PromptBudgetStatusSection({
     >
       <div className="flex items-center gap-2">
         <Gauge className="size-4 text-muted-foreground" />
-        <h3 className="text-sm font-medium">Prompt budget</h3>
+        <h3 className="text-sm font-medium">{t("area.costs-budgets-2.prompt-budget-status-section.title")}</h3>
         {run ? (
           <span
             className={`rounded px-2 py-0.5 text-xs font-medium ${LEVEL_STYLES[run.level] ?? LEVEL_STYLES.ok}`}
             data-testid="prompt-budget-level"
           >
-            {LEVEL_LABELS[run.level] ?? run.level}
+            {levelLabels()[run.level] ?? run.level}
           </span>
         ) : null}
       </div>
       {run ? (
         <div className="space-y-1 text-sm">
           <p>
-            Last run used <span className="font-medium">{run.pct}%</span> of the window —{" "}
-            <span className="font-mono">
-              {run.total} / {entry.windowTokens}
-            </span>{" "}
-            tokens
-            {entry.windowIsFallback ? " (fallback window)" : ""}
+            <Trans
+              i18nKey="area.costs-budgets-2.prompt-budget-status-section.lastRun"
+              values={{ pct: run.pct, total: run.total, window: entry.windowTokens }}
+              components={[<span className="font-medium" />, <span className="font-mono" />]}
+            />
+            {entry.windowIsFallback ? t("area.costs-budgets-2.prompt-budget-status-section.fallbackWindow") : ""}
           </p>
           {Object.keys(run.parts).length > 0 ? (
             <ul className="list-disc pl-4 text-muted-foreground" data-testid="prompt-budget-parts">
               {topParts(run.parts, 3).map((part) => (
                 <li key={part.name}>
-                  {part.name} — {part.tokens} tokens
+                  {t("area.costs-budgets-2.prompt-budget-status-section.part", { name: part.name, count: part.tokens })}
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="text-muted-foreground">No per-part breakdown recorded for this run.</p>
+            <p className="text-muted-foreground">{t("area.costs-budgets-2.prompt-budget-status-section.noParts")}</p>
           )}
           <p className="text-xs text-muted-foreground">
-            Thresholds: warn {entry.settings.warnPct}%, crit {entry.settings.critPct}%
-            {entry.settings.enabled ? "" : " — signalling off"}
+            {t("area.costs-budgets-2.prompt-budget-status-section.thresholds", { warn: entry.settings.warnPct, crit: entry.settings.critPct })}
+            {entry.settings.enabled ? "" : t("area.costs-budgets-2.prompt-budget-status-section.signallingOff")}
           </p>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">No run with a recorded prompt size yet.</p>
+        <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.prompt-budget-status-section.noRun")}</p>
       )}
     </section>
   );
