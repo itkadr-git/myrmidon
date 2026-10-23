@@ -113,7 +113,7 @@
         "createGroup": "Create group",
         "agentsHeading": "Agents",
         "applyAll": "Apply to all ({{restarts}} restart required)",
-        "needChoice_one": "{{count}} agent needs a choice",
+        "needChoice_one": "{{count}} agent need a choice",
         "needChoice_other": "{{count}} agents need a choice",
         "modeIsolated": "Isolated (per agent)",
         "modeShared": "Shared root",
