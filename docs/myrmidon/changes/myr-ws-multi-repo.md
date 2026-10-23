@@ -10,6 +10,12 @@
   with exit 7 as before); `myr-ws close KEY owner/repo` closes one. `myr-ws restore KEY owner/repo`
   picks the archive of that repository; `list` already shows every copy.
 
+### A failed `myr-ws open` no longer turns the agent to error (OPE-8946)
+
+- Any failure to open the task copy for a run (exit code outside 3/4/5, timeout, no path in the output) now
+  starts the run in `/scratch` with a `run.workspace_fallback` warning, like the quota refusals. Before, it
+  failed the run, and repeated failed runs put the agent in `error` status.
+
 ## changelog-ru
 
 ### `myr-ws`: одна задача может держать копии двух репозиториев (OPE-8946)
@@ -21,16 +27,6 @@
 - `myr-ws close KEY` закрывает все копии задачи (первая грязная или не отправленная копия
   останавливает закрытие с кодом 7, как раньше); `myr-ws close KEY owner/repo` закрывает одну.
   `myr-ws restore KEY owner/repo` берёт архив этого репозитория; `list` и так показывает все копии.
-
-## changelog-en
-
-### A failed `myr-ws open` no longer turns the agent to error (OPE-8946)
-
-- Any failure to open the task copy for a run (exit code outside 3/4/5, timeout, no path in the output) now
-  starts the run in `/scratch` with a `run.workspace_fallback` warning, like the quota refusals. Before, it
-  failed the run, and repeated failed runs put the agent in `error` status.
-
-## changelog-ru
 
 ### Ошибка `myr-ws open` больше не переводит агента в error (OPE-8946)
 
