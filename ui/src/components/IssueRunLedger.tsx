@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { ActivityEvent, Issue, Agent, ProviderTraceMetadata } from "area.issue-threads-runs-1.issue-run-ledger.paperclipai/shared";
+import type { ActivityEvent, Issue, Agent, ProviderTraceMetadata } from "@paperclipai/shared";
 import {
   isResponsibleUserDenialCode,
   responsibleUserLabel,
-} from "area.issue-threads-runs-1.issue-run-ledger.paperclipai/shared";
-import { useMutation, useQuery, useQueryClient } from "area.issue-threads-runs-1.issue-run-ledger.tanstack/react-query";
+} from "@paperclipai/shared";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { Trans } from "react-i18next";
 import { i18n, useTranslation } from "@/i18n";
