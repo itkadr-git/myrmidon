@@ -23,6 +23,7 @@ import {
   ProposalActions,
   ProposalJustification,
   ProposedBadge,
+  RotateTargetBadge,
   bindingEnvKey,
   bindingSecretLabel,
   useProposalReview,
@@ -68,7 +69,10 @@ function ProposalRow({
         {/* Headline */}
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           {isSecret ? (
-            <SecretPathName name={proposal.proposedName ?? "—"} className="text-sm" />
+            <>
+              <SecretPathName name={proposal.proposedName ?? "—"} className="text-sm" />
+              {proposal.rotationTargetSecretId ? <RotateTargetBadge /> : null}
+            </>
           ) : (
             <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-sm">
               {proposal.target ? (
