@@ -14,12 +14,14 @@ import {
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { errorHandler } from "../../middleware/index.js";
 import {
+  GUARDRAIL_MAX_EVENTS_PER_RUN,
+  GUARDRAIL_SCAN_MAX_CHARS,
+  GUARDRAIL_SNIPPET_MAX_CHARS,
   GUARDRAIL_SURFACE_RUN_OUTPUT,
   listGuardrailEvents,
   readGuardrailOutputSettings,
   recordGuardrailEvent,
   recordRunOutputGuardrailEvents,
-  GUARDRAIL_SNIPPET_MAX_CHARS,
 } from "./events.js";
 import { myrmidonGuardrailsRoutes } from "./routes.js";
 import { scanGuardrailText } from "./detect.js";
@@ -309,6 +311,55 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): run-output scan", () => {
     expect(events.every((row) => row.surface === GUARDRAIL_SURFACE_RUN_OUTPUT)).toBe(true);
     // flag-only: the scanned text itself is untouched
     expect(scanGuardrailText(text).total).toBe(2);
+  });
+
+  it("caps run-output event writes at the configured limit", async () => {
+    const id = await seedRun();
+    const text = Array.from({ length: GUARDRAIL_MAX_EVENTS_PER_RUN + 3 }, (_, i) => `person${i}@example.com`).join(" ");
+    const result = await recordRunOutputGuardrailEvents(db, {
+      companyId,
+      runId: id,
+      issueId: null,
+      text,
+      now: () => new Date(),
+      env: envOn,
+    });
+    expect(result?.totalPii).toBe(GUARDRAIL_MAX_EVENTS_PER_RUN + 3);
+    expect(result?.recorded).toBe(GUARDRAIL_MAX_EVENTS_PER_RUN);
+    expect(await db.select().from(guardrailEvents)).toHaveLength(GUARDRAIL_MAX_EVENTS_PER_RUN);
+  });
+
+  it("bounds scanning at the configured text limit", async () => {
+    const id = await seedRun();
+    const result = await recordRunOutputGuardrailEvents(db, {
+      companyId,
+      runId: id,
+      issueId: null,
+      text: `${"x".repeat(GUARDRAIL_SCAN_MAX_CHARS)} late@example.com`,
+      now: () => new Date(),
+      env: envOn,
+    });
+    expect(result).toMatchObject({ recorded: 0, total: 0, totalSecrets: 0, totalPii: 0 });
+    expect(await db.select().from(guardrailEvents)).toHaveLength(0);
+  });
+
+  it("stores bounded snippets with shape-redacted detections", async () => {
+    const id = await seedRun();
+    const text = `before ${"x".repeat(250)} agent-a@example.com ${"y".repeat(250)} ghp_${"A".repeat(36)}`;
+    await recordRunOutputGuardrailEvents(db, {
+      companyId,
+      runId: id,
+      issueId: null,
+      text,
+      now: () => new Date(),
+      env: envOn,
+    });
+    const rows = await db.select().from(guardrailEvents);
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => (row.snippet?.length ?? 0) <= GUARDRAIL_SNIPPET_MAX_CHARS)).toBe(true);
+    expect(rows.every((row) => !row.snippet?.includes("agent-a@example.com"))).toBe(true);
+    expect(rows.every((row) => !row.snippet?.includes(`ghp_${"A".repeat(36)}`))).toBe(true);
+    expect(rows.every((row) => row.snippet?.includes("[REDACTED:")).toBe(true);
   });
 
   it("respects the categories csv from env", async () => {

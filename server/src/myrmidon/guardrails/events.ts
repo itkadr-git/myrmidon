@@ -160,34 +160,36 @@ export async function recordRunOutputGuardrailEvents(
     text: string | null;
     now(): Date;
     env?: NodeJS.ProcessEnv;
+    modeHint?: "flag" | "mask" | "block";
   },
 ): Promise<{ recorded: number; total: number; totalSecrets: number; totalPii: number } | null> {
   const settings = readGuardrailOutputSettings(input.env);
   if (!settings.enabled) return null;
   if (typeof input.text !== "string" || input.text.trim().length === 0) return null;
   try {
-    // Bounded scan: only the head of a huge output is examined.
     const text = input.text.slice(0, GUARDRAIL_SCAN_MAX_CHARS);
-    const report = summarizeGuardrailHits(detectGuardrailHits(text, settings.categories));
-    if (report.hits.length === 0) return { recorded: 0, total: 0, totalSecrets: 0, totalPii: 0 };
-    // Redact EVERY detected fragment (all categories, independent of the
-    // enabled ones) in the whole text first, then cut each snippet from the
-    // redacted copy around its placeholder. A raw value is never in a snippet.
+    // Redact against every detector before selecting enabled categories for
+    // the journal; this keeps neighbouring disabled-family hits private too.
     const allHits = detectGuardrailHits(text, GUARDRAIL_CATEGORIES);
+    const enabledHits = allHits.filter((hit) => settings.categories.includes(hit.kind));
+    const report = summarizeGuardrailHits(enabledHits);
+    if (report.hits.length === 0) return { recorded: 0, total: 0, totalSecrets: 0, totalPii: 0 };
     const redacted = redactGuardrailHits(text, allHits);
     let recorded = 0;
     for (const hit of report.hits) {
       if (recorded >= GUARDRAIL_MAX_EVENTS_PER_RUN) break;
-      const allIndex = allHits.findIndex((other) => other.span[0] < hit.span[1] && hit.span[0] < other.span[1]);
+      const allIndex = allHits.findIndex((other) => other.span[0] <= hit.span[0] && other.span[1] >= hit.span[1]);
       if (allIndex < 0) continue;
       const snippet = guardrailSnippet(redacted.text, redacted.spans[allIndex]!, GUARDRAIL_SNIPPET_MAX_CHARS);
+      const baseSeverity = hit.kind === "secret" ? "warn" : "info";
+      const severity = input.modeHint === "block" ? "error" : input.modeHint === "mask" ? "warn" : baseSeverity;
       await recordGuardrailEvent(db, {
         companyId: input.companyId,
         issueId: input.issueId,
         runId: input.runId,
         kind: hit.kind,
         surface: GUARDRAIL_SURFACE_RUN_OUTPUT,
-        severity: hit.kind === "secret" ? "warn" : "info",
+        severity,
         snippet,
         occurredAt: input.now(),
       });
@@ -195,8 +197,6 @@ export async function recordRunOutputGuardrailEvents(
     }
     return { recorded, total: report.total, totalSecrets: report.totalSecrets, totalPii: report.totalPii };
   } catch {
-    // Flag-only and best-effort: a journaling failure is swallowed, the
-    // run result itself is never affected in 1.6.1.
     return null;
   }
 }

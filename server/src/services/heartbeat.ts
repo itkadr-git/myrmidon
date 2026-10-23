@@ -26901,16 +26901,17 @@ export function heartbeatService(
               presentationDecision.commentAction === "create" &&
               resolved.text
             ) {
-              // myrmidon(1.6-GRD): flag-only output scan of the final run text
-              // before it becomes the visible issue comment; never blocks,
-              // never masks here — the event journal records the hits.
-              await guardrailsOnRunOutput({
+              const outputGuardrailDecision = await guardrailsOnRunOutput({
                 db,
                 companyId: livenessRun.companyId,
                 runId: livenessRun.id,
                 issueId,
                 text: resolved.text,
-              }).catch(() => null);
+                agentId: agent.id,
+                env: process.env,
+              });
+              // Replace the final assistant text before it reaches any external presentation.
+              resolved = { ...resolved, text: outputGuardrailDecision?.text ?? resolved.text };
               // The presentation resolver exposes only the final assistant
               // surface selected from completed final messages or accepted
               // semantic results. For an exactly bound external-chat run,
