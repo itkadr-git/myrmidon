@@ -1,6 +1,6 @@
 {
-  "id": "515e0fb2-bd4c-41a2-b1ae-16e16c8b3521",
-  "prevId": "37ab596e-0412-4aa0-8041-a6620277410f",
+  "id": "6bd5ca28-4ae8-4492-854e-d1da771fde73",
+  "prevId": "fa48508d-bfe7-44ed-9efe-f7cfd4a3b3ba",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -56535,8 +56535,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.provider_usage_snapshots": {
-      "name": "provider_usage_snapshots",
+    "public.corpus_shadow_log": {
+      "name": "corpus_shadow_log",
       "schema": "",
       "columns": {
         "id": {
@@ -56546,138 +56546,68 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "credential_ref": {
-          "name": "credential_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "window_kind": {
-          "name": "window_kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "window_started_at": {
-          "name": "window_started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "resets_at": {
-          "name": "resets_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "observed_at": {
-          "name": "observed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "used": {
-          "name": "used",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "limits": {
-          "name": "limits",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_event_id": {
-          "name": "source_event_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
+        "ts": {
+          "name": "ts",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
+        "bot_id": {
+          "name": "bot_id",
+          "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+          "notNull": false
         },
-        "owner_issue_id": {
-          "name": "owner_issue_id",
-          "type": "uuid",
+        "dataset": {
+          "name": "dataset",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "query": {
+          "name": "query",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ragflow_chunk_ids": {
+          "name": "ragflow_chunk_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ragflow_latency_ms": {
+          "name": "ragflow_latency_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "module_chunk_ids": {
+          "name": "module_chunk_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "module_latency_ms": {
+          "name": "module_latency_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "module_error": {
+          "name": "module_error",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         }
       },
       "indexes": {
-        "provider_usage_snapshots_window_uq": {
-          "name": "provider_usage_snapshots_window_uq",
+        "corpus_shadow_log_ts_idx": {
+          "name": "corpus_shadow_log_ts_idx",
           "columns": [
             {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "credential_ref",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "window_kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "window_started_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "provider_usage_snapshots_company_observed_idx": {
-          "name": "provider_usage_snapshots_company_observed_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "observed_at",
+              "expression": "ts",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -56689,116 +56619,11 @@
           "with": {}
         }
       },
-      "foreignKeys": {
-        "provider_usage_snapshots_company_id_companies_id_fk": {
-          "name": "provider_usage_snapshots_company_id_companies_id_fk",
-          "tableFrom": "provider_usage_snapshots",
-          "tableTo": "companies",
-          "schemaTo": "",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "provider_usage_snapshots_owner_issue_id_issues_id_fk": {
-          "name": "provider_usage_snapshots_owner_issue_id_issues_id_fk",
-          "tableFrom": "provider_usage_snapshots",
-          "tableTo": "issues",
-          "schemaTo": "",
-          "columnsFrom": [
-            "owner_issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.provider_usage_event_receipts": {
-      "name": "provider_usage_event_receipts",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "event_id": {
-          "name": "event_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "received_at": {
-          "name": "received_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "provider_usage_event_receipts_company_event_uq": {
-          "name": "provider_usage_event_receipts_company_event_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "event_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "provider_usage_event_receipts_company_id_companies_id_fk": {
-          "name": "provider_usage_event_receipts_company_id_companies_id_fk",
-          "tableFrom": "provider_usage_event_receipts",
-          "tableTo": "companies",
-          "schemaTo": "",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     }
   },

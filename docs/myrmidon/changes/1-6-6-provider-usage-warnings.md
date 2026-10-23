@@ -15,7 +15,7 @@ divergence-section: Трек 6 — безопасность и модели
   up in the attention feed and as a comment in the issue that owns the secret.
   Raw keys and OAuth values are never stored.
 - The secrets registry shows the remaining usage per key (`GET .../provider-usage`), matched by the secret key or id.
-- Migrations `0410` and `0411` add the usage snapshot, event receipt and warning
+- Migrations `0411` and `0412` add the usage snapshot, event receipt and warning
   delivery tables.
 
 ## changelog-ru
@@ -31,5 +31,5 @@ divergence-section: Трек 6 — безопасность и модели
   ленте внимания и комментарием в задаче-владельце секрета. Сырые ключи и значения
   OAuth не хранятся.
 - Реестр секретов показывает остаток расхода по каждому ключу (`GET .../provider-usage`), соответствие по ключу или id секрета.
-- Миграции `0410` и `0411` добавляют таблицы снимков расхода, квитанций событий и
+- Миграции `0411` и `0412` добавляют таблицы снимков расхода, квитанций событий и
   доставки предупреждений.
