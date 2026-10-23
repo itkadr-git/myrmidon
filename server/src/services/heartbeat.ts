@@ -26140,8 +26140,8 @@ export function heartbeatService(
             if (managedMcpConfig) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
             }
-            const guardedDispatch =
-              await dispatchResolvedInteractionContinuationWithAtomicGate(
+            const dispatch = () =>
+              dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {
                   legacyAdapterEntered = true;
                   return adapter.execute({
@@ -26236,13 +26236,18 @@ export function heartbeatService(
                   });
                 },
               );
-            if (!guardedDispatch.dispatched) return;
-            adapterResult = externalSession.connectionId
+            const guardedDispatch = externalSession.connectionId
               ? await externalSessionScheduler.schedule(
                   `${run.companyId}:${externalSession.connectionId}:${externalSession.grantId}`,
-                  () => guardedDispatch.resultPromise,
+                  async () => {
+                    const guarded = await dispatch();
+                    if (guarded.dispatched) await guarded.resultPromise;
+                    return guarded;
+                  },
                 )
-              : await guardedDispatch.resultPromise;
+              : await dispatch();
+            if (!guardedDispatch.dispatched) return;
+            adapterResult = await guardedDispatch.resultPromise;
           }
           // Adapter returned cleanly, which means its workspace-restore finally
           // block also ran without throwing. Record the workspace_finalize
