@@ -112,7 +112,7 @@ function SuccessfulRunRetryNowControl({
           {retryNow.isPending ? (
             <span className="inline-flex items-center gap-1.5">
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-              {t("area.approvals-decisions-notices-2.issue-blocked-notice.retrying")}
+              {t("common.retrying")}
             </span>
           ) : success ? (
             <span className="inline-flex items-center gap-1.5">
@@ -681,7 +681,7 @@ export function IssueBlockedNotice({
                     count={reopenSuppressedOtherCount}
                     values={{
                       id: reopenSuppressedLeafId,
-                      status: reopenSuppressedLeafStatus ?? "",
+                      status: reopenSuppressedLeafStatus ? ` (${reopenSuppressedLeafStatus})` : "",
                     }}
                     components={[<span key="0" className="font-mono" />]}
                   />
