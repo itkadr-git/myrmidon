@@ -182,4 +182,48 @@ describe("reduceSiteHealth", () => {
     expect(SITE_HEALTH_TIMEOUT_MS).toBe(5_000);
     expect(SITE_HEALTH_MISS_THRESHOLD).toBe(3);
   });
+  describe("explicit operator clear during an ongoing outage", () => {
+    const outageStart = 100_000;
+    const ongoing = (overrides: Parameters<typeof createSiteHealthSnapshot>[0]) =>
+      createSiteHealthSnapshot({ lastSeenAt: 70_000, missCount: 5, unavailableSince: outageStart, ...overrides });
+
+    it("manual drain: clearing the flag resumes the outage clock and failover fires at 10 min from the original start, once", () => {
+      const held = ongoing({ state: "draining", manualDrain: true });
+      // While held, even past 10 min, no failover.
+      expect(tick(held, outageStart + SITE_HEALTH_FAILOVER_AFTER_MS + 30_000).intents).toEqual([]);
+      // Operator clears: caller persists manualDrain=false, state becomes ordinary unreachable.
+      const cleared = ongoing({ state: "unreachable", manualDrain: false });
+      const before = tick(cleared, outageStart + SITE_HEALTH_FAILOVER_AFTER_MS - 1);
+      expect(before).toMatchObject({ state: "unreachable", missCount: 6, unavailableSince: outageStart, intents: [] });
+      const at = tick(before, outageStart + SITE_HEALTH_FAILOVER_AFTER_MS);
+      expect(at).toMatchObject({ failoverIssued: true, intents: ["failover"] });
+      expect(tick(at, outageStart + SITE_HEALTH_FAILOVER_AFTER_MS + 30_000).intents).toEqual([]);
+    });
+
+    it("manual drain: clearing the flag does not re-emit drain for an already-draining site", () => {
+      const cleared = ongoing({ state: "draining", manualDrain: false });
+      expect(tick(cleared, outageStart + 30_000)).toMatchObject({ state: "unreachable", intents: [] });
+    });
+
+    it("manual drain: success while held keeps failoverIssued and the hold; success after clear resets the episode", () => {
+      const held = ongoing({ state: "draining", manualDrain: true, failoverIssued: true });
+      expect(tick(held, 200_000, "success")).toMatchObject({ state: "draining", manualDrain: true, failoverIssued: true, missCount: 0, unavailableSince: null });
+      const cleared = createSiteHealthSnapshot({ state: "unreachable", manualDrain: false, failoverIssued: true, missCount: 4, unavailableSince: outageStart });
+      expect(tick(cleared, 200_000, "success")).toMatchObject({ state: "healthy", failoverIssued: false, missCount: 0, unavailableSince: null });
+    });
+
+    it("quarantine: operator clear returns to ordinary outage handling without re-quarantine on timeouts", () => {
+      const held = ongoing({ state: "quarantined" });
+      expect(tick(held, outageStart + SITE_HEALTH_FAILOVER_AFTER_MS).intents).toEqual([]);
+      const cleared = ongoing({ state: "unreachable" });
+      expect(tick(cleared, outageStart + SITE_HEALTH_FAILOVER_AFTER_MS)).toMatchObject({ state: "unreachable", intents: ["failover"] });
+    });
+
+    it("quarantine: a cleared site that again presents a bad certificate is re-quarantined once", () => {
+      const cleared = ongoing({ state: "unreachable" });
+      const again = tick(cleared, 130_000, "invalid_certificate");
+      expect(again).toMatchObject({ state: "quarantined", intents: ["quarantine"] });
+      expect(tick(again, 160_000, "invalid_certificate").intents).toEqual([]);
+    });
+  });
 });
