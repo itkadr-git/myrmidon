@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   listGrokSkills,
   syncGrokSkills,
-} from "@paperclipai/adapter-grok-local/server";
+} from "@myrmidon/adapter-grok-local/server";
 
 describe("grok local skill sync", () => {
   const paperclipKey = "paperclipai/paperclip/myrmidon";

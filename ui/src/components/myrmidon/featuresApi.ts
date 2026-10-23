@@ -5,7 +5,7 @@
 // (value and where it came from), its settings panel and its health. PATCH
 // flips the inline switch of a feature that has one (instance admins only).
 import { api } from "@/api/client";
-import type { FeaturesReport, FeatureView } from "@paperclipai/shared";
+import type { FeaturesReport, FeatureView } from "@myrmidon/shared";
 
 export const featuresQueryKey = ["myrmidon", "features"] as const;
 

@@ -3,7 +3,7 @@
 // The memory service address, the optional key secret name and the switch behind
 // the agent card Memory tab. The server re-reads them on every request, so a
 // change applies without a restart.
-import type { AgentMemorySettings, PatchAgentMemorySettings } from "@paperclipai/shared";
+import type { AgentMemorySettings, PatchAgentMemorySettings } from "@myrmidon/shared";
 import { api } from "@/api/client";
 
 export interface AgentMemorySettingsView {

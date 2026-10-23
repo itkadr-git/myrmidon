@@ -3,7 +3,7 @@
 // not carry is dropped on read (getGeneral) and on write (updateGeneral), so the
 // board setting would never reach the sweeper.
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { instanceSettingsService } from "./instance-settings.js";
 
 /**

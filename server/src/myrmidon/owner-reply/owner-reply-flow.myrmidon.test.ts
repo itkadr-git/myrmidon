@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 // myrmidon(1.6.5-F21-A): plan + handler, with the database faked. The real
 // services are what CI's embedded-PG tier exercises; here the point is that the
 // decisions are taken from the sentence and the cards, and written once.
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import type { OwnerReplyCard } from "./parse-owner-reply.js";
 import { listPendingOwnerCardsForIssue, type PendingOwnerCard } from "./pending-owner-cards.js";
 import { planOwnerReply } from "./owner-reply-plan.js";

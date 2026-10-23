@@ -20,7 +20,7 @@
 // expiry). Failures are journaled as `myrmidon.github_app.denied`.
 
 import { and, eq, isNull } from "drizzle-orm";
-import { agents, companySecrets, type Db } from "@paperclipai/db";
+import { agents, companySecrets, type Db } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import type { GitCredential } from "../../services/git-credentials.js";
 import { readGitHubSharedIdentitySettings } from "./store.js";

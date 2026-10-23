@@ -44,7 +44,7 @@ import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types
 import type {
   AdapterLoginPanelMode,
   AdapterLoginTimeoutPolicy,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden } from "../errors.js";

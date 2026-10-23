@@ -16,7 +16,7 @@ import {
   DEBATE_RESULT_DOCUMENT_KEY,
   defaultDebateSettings,
   type DebateSettingsResolution,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { debateService, type DebateServiceDeps, type DebateActor } from "./service.js";
 import { readCasteDebate, withPreservedCastes, writeCasteDebate, type CasteDebateStoreDeps } from "./castes.js";
 

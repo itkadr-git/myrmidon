@@ -1,5 +1,5 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { badRequest, forbidden, notFound } from "../../errors.js";
 import { getActorInfo } from "../../routes/authz.js";
 import { authorizePoolChatInvocation } from "./access.js";

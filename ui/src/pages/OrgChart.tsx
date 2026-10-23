@@ -12,7 +12,7 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { Download, Maximize2, Minus, Network, Plus, Upload } from "lucide-react";
-import { type Agent } from "@paperclipai/shared";
+import { type Agent } from "@myrmidon/shared";
 import { localizedAgentRoleLabel } from "../lib/agent-role-labels";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";

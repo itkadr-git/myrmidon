@@ -1,6 +1,6 @@
 import { useId, useState, type MouseEvent } from "react";
 import { ArrowUpRight, X } from "lucide-react";
-import type { Announcement, AnnouncementAction } from "@paperclipai/shared";
+import type { Announcement, AnnouncementAction } from "@myrmidon/shared";
 import { Link } from "@/lib/router";
 import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";

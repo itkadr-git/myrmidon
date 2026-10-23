@@ -4,9 +4,9 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
-import type { ResolvedForagingSettings } from "@paperclipai/shared";
+import type { ResolvedForagingSettings } from "@myrmidon/shared";
 import { foragingRoutes } from "./routes.js";
 import type { ForagingService } from "./service.js";
 import type { ForagingFindingRow, ForagingSourceRow, ForagingStore } from "./store.js";

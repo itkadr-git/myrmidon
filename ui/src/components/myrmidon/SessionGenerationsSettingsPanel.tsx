@@ -10,7 +10,7 @@ import {
   SESSION_GENERATION_DEFAULT_MAX_MESSAGES,
   normalizeSessionGenerationsSettings,
   type SessionGenerationsSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

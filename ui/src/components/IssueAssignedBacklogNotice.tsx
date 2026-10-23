@@ -1,5 +1,5 @@
 import { Flag } from "lucide-react";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Trans } from "react-i18next";
 import { useTranslation } from "@/i18n";

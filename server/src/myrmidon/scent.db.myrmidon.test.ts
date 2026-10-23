@@ -8,8 +8,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { activityLog, agents, companies, createDb, issues, projects } from "@paperclipai/db";
-import { DEFAULT_SCENT_SETTINGS, defaultStrengthForPriority, type IssueScent } from "@paperclipai/shared";
+import { activityLog, agents, companies, createDb, issues, projects } from "@myrmidon/db";
+import { DEFAULT_SCENT_SETTINGS, defaultStrengthForPriority, type IssueScent } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

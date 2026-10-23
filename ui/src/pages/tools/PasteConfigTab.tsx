@@ -9,7 +9,7 @@ import type {
   McpJsonImportPreview,
   ToolAppConnectionActionSummary,
   ToolOAuthStartResult,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { i18n, useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

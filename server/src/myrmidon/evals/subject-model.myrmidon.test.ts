@@ -16,7 +16,7 @@ import {
   createDb,
   evalReferenceTasks as evalTasksTable,
   evalRuns as evalRunsTable,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

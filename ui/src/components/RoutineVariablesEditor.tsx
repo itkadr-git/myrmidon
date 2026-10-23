@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, HelpCircle } from "lucide-react";
-import { isValidRoutineDateString, syncRoutineVariablesWithTemplate, type RoutineVariable } from "@paperclipai/shared";
+import { isValidRoutineDateString, syncRoutineVariablesWithTemplate, type RoutineVariable } from "@myrmidon/shared";
 import { Trans } from "react-i18next";
 import { i18n, useTranslation } from "@/i18n";
 import { Badge } from "@/components/ui/badge";

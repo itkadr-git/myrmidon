@@ -1,5 +1,5 @@
-import { SECRET_PROVIDERS, type SecretProvider } from "@paperclipai/shared";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { SECRET_PROVIDERS, type SecretProvider } from "@myrmidon/shared";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export function getConfiguredSecretProvider(): SecretProvider {
   const configuredProvider = readProductEnv("SECRETS_PROVIDER");

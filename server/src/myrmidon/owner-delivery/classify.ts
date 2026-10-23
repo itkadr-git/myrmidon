@@ -1,6 +1,6 @@
 // myrmidon(1.6.5-OWNER-DM-FILTER): shared classification of owner-DM chat
 // publications. The delivery journal (part C) labels each entry with it; the
-// verdict itself comes from `isOwnerDecisionAudience` (@paperclipai/shared) —
+// verdict itself comes from `isOwnerDecisionAudience` (@myrmidon/shared) —
 // the same predicate the part A/B filter uses, so the journal never disagrees
 // with what the filter lets through:
 //
@@ -10,7 +10,7 @@
 //   (an interaction addressed to an agent is never an owner decision)
 //   otherwise "operational".
 
-import { isOwnerDecisionAudience } from "@paperclipai/shared";
+import { isOwnerDecisionAudience } from "@myrmidon/shared";
 
 /** The frozen journal classification values (inter-part contract). */
 export type OwnerDeliveryClassification = "owner_decision" | "operational";

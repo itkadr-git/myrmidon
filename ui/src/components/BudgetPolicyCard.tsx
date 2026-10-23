@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { BudgetPolicySummary } from "@paperclipai/shared";
+import type { BudgetPolicySummary } from "@myrmidon/shared";
 import { AlertTriangle, PauseCircle, ShieldAlert, Wallet } from "lucide-react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "@/i18n";

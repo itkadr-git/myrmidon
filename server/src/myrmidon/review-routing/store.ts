@@ -24,14 +24,14 @@ import {
   issueWorkProducts,
   runIdentityContexts,
   type Db,
-} from "@paperclipai/db";
-import { isAgentStatusInvokable } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { isAgentStatusInvokable } from "@myrmidon/shared";
 import {
   REVIEW_ROUTING_ASSIGNED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
   REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY,
   REVIEW_ROUTING_PR_KIND_METADATA_KEY,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
 

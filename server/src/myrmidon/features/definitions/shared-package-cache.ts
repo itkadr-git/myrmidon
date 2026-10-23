@@ -7,7 +7,7 @@
 // A bot recreated with the binds is the positive signal. Without either the
 // entry says unknown rather than guessing.
 
-import { botDiskCachePathProblem, resolveSharedPackageCachePath } from "@paperclipai/shared";
+import { botDiskCachePathProblem, resolveSharedPackageCachePath } from "@myrmidon/shared";
 import { isBotContainersEnabled } from "../../bot-containers/agent-config.js";
 import { entry, errorFields, healthOff, iso, makeHealth } from "../health.js";
 import { SHARED_PACKAGE_CACHE_FEATURE_KEY } from "../reporters.js";

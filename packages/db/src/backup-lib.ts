@@ -6,7 +6,7 @@ import { open as openFile, statfs, type FileHandle } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type BackupRetentionPolicy = {
   dailyDays: number;
@@ -16,7 +16,7 @@ export type BackupRetentionPolicy = {
   // when true, tiered pruning is skipped and all previous <prefix>-* files are
   // deleted after the new dump passes verification. Kept as a local copy of the
   // shared type (packages/shared/src/types/instance.ts): the db package does not
-  // depend on @paperclipai/shared, so the flag is mirrored here instead.
+  // depend on @myrmidon/shared, so the flag is mirrored here instead.
   keepLastOnly?: boolean;
 };
 

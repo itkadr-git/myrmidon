@@ -19,11 +19,11 @@ import type {
   IssueDocument,
   IssueDocumentSummary,
   IssueWorkProduct,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type {
   PaperclipQuestionResponse,
   PaperclipQuestionSet,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 
 export type { PaperclipQuestionResponse, PaperclipQuestionSet };
 

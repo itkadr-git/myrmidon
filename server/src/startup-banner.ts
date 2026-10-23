@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
-import type { BindMode, DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { BindMode, DeploymentExposure, DeploymentMode } from "@myrmidon/shared";
 
 import { parse as parseEnvFileContents } from "dotenv";
-import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type UiMode = "none" | "static" | "vite-dev";
 

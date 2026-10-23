@@ -6,7 +6,7 @@
 // vendor path in charge.
 
 import { afterEach, describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import type {
   ChannelConnector,
   ChannelConnectorStore,

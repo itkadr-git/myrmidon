@@ -4,7 +4,7 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { healthRoutes } from "../routes/health.js";
 import { resolveWorkspaceSeedMarkerDir } from "../services/workspace-readiness.js";
 import {

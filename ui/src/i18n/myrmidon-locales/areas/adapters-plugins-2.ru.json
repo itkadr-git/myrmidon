@@ -116,7 +116,7 @@
           "title": "Установка плагина",
           "description": "Введите имя npm-пакета плагина, который хотите установить.",
           "packageNameLabel": "Имя npm-пакета",
-          "packageNamePlaceholder": "@paperclipai/plugin-example",
+          "packageNamePlaceholder": "@myrmidon/plugin-example",
           "installing": "Устанавливаем...",
           "confirm": "Установить"
         },

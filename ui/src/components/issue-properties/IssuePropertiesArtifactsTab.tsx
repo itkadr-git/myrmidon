@@ -6,13 +6,13 @@ import type {
   Issue,
   IssueDocument,
   IssueWorkProduct,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   MARKDOWN_REVIEW_DOCUMENT_MAX_BYTES,
   artifactReviewDocumentKey,
   getMarkdownWorkProductAttachmentMetadata,
   isArtifactReviewDocumentKey,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   ChevronDown,
   ChevronRight,
