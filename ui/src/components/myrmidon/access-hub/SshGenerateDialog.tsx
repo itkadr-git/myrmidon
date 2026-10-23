@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Copy } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import {
   Dialog,
   DialogContent,
@@ -38,6 +39,7 @@ export function SshGenerateDialogBody({
   onCopyPublicKey,
   onClose,
 }: SshGenerateDialogBodyProps) {
+  const { t } = useTranslation();
   const [name, setName] = useState("");
   const [selectedHosts, setSelectedHosts] = useState<string[]>([]);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -50,7 +52,7 @@ export function SshGenerateDialogBody({
 
   async function submit() {
     if (!name.trim()) {
-      setValidationError("Give the key a name.");
+      setValidationError(t("area.access-hub.ssh-generate-dialog.nameRequired"));
       return;
     }
     setValidationError(null);
@@ -65,16 +67,16 @@ export function SshGenerateDialogBody({
     return (
       <div className="flex flex-col gap-3" data-testid="access-hub-ssh-material">
         <p className="text-sm text-muted-foreground">
-          Public key — shown once. Copy it to every selected host now; the card keeps the fingerprint only.
+          {t("area.access-hub.ssh-generate-dialog.publicKeyNotice")}
         </p>
         <span className="break-all font-mono text-xs text-foreground">{material.publicKey}</span>
-        <span className="font-mono text-xs text-muted-foreground">Fingerprint: {material.fingerprint}</span>
+        <span className="font-mono text-xs text-muted-foreground">{t("area.access-hub.ssh-generate-dialog.fingerprint", { value: material.fingerprint })}</span>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onCopyPublicKey(material.publicKey)}>
-            <Copy className="mr-1 h-3.5 w-3.5" /> Copy public key
+            <Copy className="mr-1 h-3.5 w-3.5" /> {t("area.access-hub.ssh-generate-dialog.copyPublicKey")}
           </Button>
           <Button type="button" onClick={onClose}>
-            Done
+            {t("area.access-hub.ssh-generate-dialog.done")}
           </Button>
         </DialogFooter>
       </div>
@@ -91,14 +93,14 @@ export function SshGenerateDialogBody({
       }}
     >
       <label className="flex flex-col gap-1 text-sm">
-        Name
-        <Input value={name} onChange={(event) => setName(event.target.value)} aria-label="Key name" />
+        {t("area.access-hub.ssh-generate-dialog.name")}
+        <Input value={name} onChange={(event) => setName(event.target.value)} aria-label={t("area.access-hub.ssh-generate-dialog.keyNameLabel")} />
       </label>
 
       <fieldset className="flex flex-col gap-1">
-        <legend className="text-sm text-muted-foreground">Deploy the public key to</legend>
+        <legend className="text-sm text-muted-foreground">{t("area.access-hub.ssh-generate-dialog.deployLegend")}</legend>
         {hosts.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No hosts in the registry yet — the key can be deployed later.</p>
+          <p className="text-xs text-muted-foreground">{t("area.access-hub.ssh-generate-dialog.noHosts")}</p>
         ) : (
           hosts.map((host) => (
             <label key={host.hostId} className="flex items-center gap-2 text-sm">
@@ -106,7 +108,7 @@ export function SshGenerateDialogBody({
                 type="checkbox"
                 checked={selectedHosts.includes(host.hostId)}
                 onChange={() => toggleHost(host.hostId)}
-                aria-label={`Deploy to ${host.name}`}
+                aria-label={t("area.access-hub.ssh-generate-dialog.deployToLabel", { name: host.name })}
               />
               {host.name}
             </label>
@@ -122,10 +124,10 @@ export function SshGenerateDialogBody({
 
       <DialogFooter>
         <Button type="button" variant="ghost" onClick={onClose}>
-          Cancel
+          {t("common.cancel")}
         </Button>
         <Button type="submit" disabled={busy}>
-          Generate key
+          {t("area.access-hub.ssh-generate-dialog.generateKey")}
         </Button>
       </DialogFooter>
     </form>
@@ -138,13 +140,14 @@ export interface SshGenerateDialogProps extends SshGenerateDialogBodyProps {
 }
 
 export function SshGenerateDialog({ open, onOpenChange, ...body }: SshGenerateDialogProps) {
+  const { t } = useTranslation();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Generate SSH key</DialogTitle>
+          <DialogTitle>{t("area.access-hub.ssh-generate-dialog.title")}</DialogTitle>
           <DialogDescription>
-            Myrmidon creates the pair, keeps the private half and hands you the public half once.
+            {t("area.access-hub.ssh-generate-dialog.description")}
           </DialogDescription>
         </DialogHeader>
         <SshGenerateDialogBody {...body} />
