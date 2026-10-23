@@ -45,3 +45,66 @@ test("a runtime-built prefix without a pattern is reported", () => {
   const problems = checkRegistry({ extracted: new Map(), registry, dynamic });
   assert.ok(problems.some((p) => p.startsWith("MYRMIDON_UNKNOWN_FAMILY_")));
 });
+
+const REGISTRY_MD = REGISTRY_JSON.replace(/\.json$/, ".md");
+
+function parseMatrix(mdText) {
+  const sections = new Map();
+  for (const part of mdText.split(/\n(?=## )/).slice(1)) {
+    const [heading, ...rest] = part.split("\n");
+    sections.set(heading.slice(3).trim(), rest.join("\n"));
+  }
+  const names = (text) => new Set([...text.matchAll(/`([A-Z][A-Z0-9_]*)`/g)].map((m) => m[1]));
+  const classOf = (heading) => {
+    if (heading.startsWith("Продуктовые")) return "product";
+    if (heading === "Секреты") return "secret";
+    if (heading === "Инфраструктура") return "infra";
+    return null;
+  };
+  const byClass = { secret: new Set(), infra: new Set(), product: new Set() };
+  for (const [heading, body] of sections) {
+    const cls = classOf(heading);
+    if (cls) for (const name of names(body)) byClass[cls].add(name);
+  }
+  const patterns = new Map();
+  for (const line of (sections.get("Динамические шаблоны имён") ?? "").split("\n")) {
+    const m = line.match(/^\| (\S+) \| `(.+)` \| (secret|infra|product) \| /);
+    if (m) patterns.set(m[1], { template: m[2], classification: m[3] });
+  }
+  return { byClass, patterns };
+}
+
+test("md matrix matches the JSON registry by names and classes", () => {
+  const { byClass } = parseMatrix(readFileSync(REGISTRY_MD, "utf8"));
+  const jsonClass = new Map(registry.entries.map((e) => [e.name, e.classification]));
+  for (const cls of ["secret", "infra", "product"]) {
+    for (const name of byClass[cls]) {
+      assert.ok(jsonClass.has(name), `${name} is listed in md (${cls}) but absent from JSON`);
+      assert.equal(jsonClass.get(name), cls, `${name}: md says ${cls}, JSON says ${jsonClass.get(name)}`);
+    }
+  }
+  // secrets and infrastructure are listed in md in full; product has a separate UI-present part
+  for (const cls of ["secret", "infra"]) {
+    const expected = registry.entries.filter((e) => e.classification === cls).map((e) => e.name);
+    const missing = expected.filter((name) => !byClass[cls].has(name));
+    assert.deepEqual(missing, [], `${cls} names missing from md`);
+  }
+});
+
+test("md dynamic patterns match JSON by id, template and class", () => {
+  const { patterns } = parseMatrix(readFileSync(REGISTRY_MD, "utf8"));
+  assert.deepEqual([...patterns.keys()].sort(), registry.dynamic_patterns.map((p) => p.id).sort());
+  for (const p of registry.dynamic_patterns) {
+    assert.deepEqual(patterns.get(p.id), { template: p.template, classification: p.classification }, p.id);
+  }
+});
+
+test("oauth client id and secret are separate rules: id is infra, secret is secret", () => {
+  const byId = new Map(registry.dynamic_patterns.map((p) => [p.id, p]));
+  for (const family of ["tool-oauth", "cloud-oauth"]) {
+    assert.equal(byId.get(`${family}-client-id`)?.classification, "infra");
+    assert.equal(byId.get(`${family}-client-secret`)?.classification, "secret");
+    assert.match(byId.get(`${family}-client-secret`).secret_ref_or_instance_setup, /secret-ref/);
+  }
+  assert.ok(!byId.has("tool-oauth-provider"));
+});

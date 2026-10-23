@@ -41,10 +41,10 @@
     "Динамически собираемые имена не перечисляются поимённо, а описаны шаблонами в dynamic_patterns (префикс, допустимый набор значений, класс, источник); скрипт проверки находит в коде все динамические сборки имён и требует шаблон на каждую. Фактический набор имён в рантайме (по ботам/провайдерам экземпляра) определяется данными экземпляра и этим реестром не фиксируется."
   ],
   "counts": {
-    "unique_names": 882,
+    "unique_names": 891,
     "secret": 108,
-    "infra": 365,
-    "product": 409
+    "infra": 372,
+    "product": 411
   },
   "entries": [
     {
@@ -1632,6 +1632,38 @@
       "secret_ref_or_instance_setup": "нужен secret-ref в хранилище секретов доски и выбор секрета в UI (правка оператора 08.10: секрет только в env = пробел)",
       "ticket_or_pr": "OPE-8822",
       "decision": "перенести в хранилище секретов доски + secret-ref + UI (OPE-8822)"
+    },
+    {
+      "name": "MYRMIDON_API_PORT_STRIDE",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": false,
+      "consumer": "server/src/myrmidon/process-orchestrator/config.ts:31",
+      "classification": "infra",
+      "class_basis": "name-rule",
+      "scope": "process",
+      "ui_or_store": "UI нет; классифицировано по имени/пути после аудита 08.10",
+      "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
+      "ticket_or_pr": "не требуется",
+      "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости",
+      "audit_reason": "добавлено после аудита (правило по имени/пути)"
+    },
+    {
+      "name": "MYRMIDON_API_PROCESSES",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": false,
+      "consumer": "server/src/myrmidon/process-orchestrator/config.ts:21",
+      "classification": "infra",
+      "class_basis": "name-rule",
+      "scope": "process",
+      "ui_or_store": "UI нет; классифицировано по имени/пути после аудита 08.10",
+      "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
+      "ticket_or_pr": "не требуется",
+      "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости",
+      "audit_reason": "добавлено после аудита (правило по имени/пути)"
     },
     {
       "name": "MYRMIDON_API_URL",
@@ -4449,6 +4481,21 @@
       "class_basis": "settings-md",
       "scope": "instance",
       "ui_or_store": "добавлено после аудита 08.10 или документировано в SETTINGS.md; сопоставление с UI не делалось (env-only до проверки)",
+      "ticket_or_pr": "зонтик OPE-6249; отдельного тикета нет",
+      "decision": "проверить UI/хранилище по полю и при отсутствии завести тикет (не оценивалось аудитом 08.10)",
+      "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
+    },
+    {
+      "name": "MYRMIDON_CORPUS_SHADOW",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": false,
+      "consumer": "packages/shared/src/myrmidon-behavior-settings.ts:214",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "добавлено после аудита 08.10; сопоставление с UI не делалось (env-only до проверки)",
       "ticket_or_pr": "зонтик OPE-6249; отдельного тикета нет",
       "decision": "проверить UI/хранилище по полю и при отсутствии завести тикет (не оценивалось аудитом 08.10)",
       "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
@@ -9412,6 +9459,21 @@
       "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости"
     },
     {
+      "name": "MYRMIDON_POOL_CHAT_ENABLED",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": false,
+      "consumer": "server/src/app.ts:1217",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "добавлено после аудита 08.10; сопоставление с UI не делалось (env-only до проверки)",
+      "ticket_or_pr": "зонтик OPE-6249; отдельного тикета нет",
+      "decision": "проверить UI/хранилище по полю и при отсутствии завести тикет (не оценивалось аудитом 08.10)",
+      "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
+    },
+    {
       "name": "MYRMIDON_POOL_SWEEP_INTERVAL_SEC",
       "aliases": [],
       "in_main_code": true,
@@ -9471,6 +9533,22 @@
       "ticket_or_pr": "зонтик OPE-6249; отдельного тикета нет",
       "decision": "проверить UI/хранилище по полю и при отсутствии завести тикет (не оценивалось аудитом 08.10)",
       "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
+    },
+    {
+      "name": "MYRMIDON_PROCESS_INDEX",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": false,
+      "consumer": "server/src/myrmidon/process-orchestrator/config.ts:99",
+      "classification": "infra",
+      "class_basis": "name-rule",
+      "scope": "process",
+      "ui_or_store": "UI нет; классифицировано по имени/пути после аудита 08.10",
+      "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
+      "ticket_or_pr": "не требуется",
+      "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости",
+      "audit_reason": "добавлено после аудита (правило по имени/пути)"
     },
     {
       "name": "MYRMIDON_PROCESS_MODE",
@@ -12966,6 +13044,70 @@
       "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости"
     },
     {
+      "name": "MYRMIDON_WORKER_HOST",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": false,
+      "consumer": "server/src/myrmidon/process-orchestrator/config.ts:45",
+      "classification": "infra",
+      "class_basis": "name-rule",
+      "scope": "process",
+      "ui_or_store": "UI нет; классифицировано по имени/пути после аудита 08.10",
+      "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
+      "ticket_or_pr": "не требуется",
+      "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости",
+      "audit_reason": "добавлено после аудита (правило по имени/пути)"
+    },
+    {
+      "name": "MYRMIDON_WORKER_PORT",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": false,
+      "consumer": "server/src/myrmidon/process-orchestrator/config.ts:37",
+      "classification": "infra",
+      "class_basis": "name-rule",
+      "scope": "process",
+      "ui_or_store": "UI нет; классифицировано по имени/пути после аудита 08.10",
+      "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
+      "ticket_or_pr": "не требуется",
+      "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости",
+      "audit_reason": "добавлено после аудита (правило по имени/пути)"
+    },
+    {
+      "name": "MYRMIDON_WORKER_PROCESSES",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": false,
+      "consumer": "server/src/myrmidon/process-orchestrator/config.ts:24",
+      "classification": "infra",
+      "class_basis": "name-rule",
+      "scope": "process",
+      "ui_or_store": "UI нет; классифицировано по имени/пути после аудита 08.10",
+      "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
+      "ticket_or_pr": "не требуется",
+      "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости",
+      "audit_reason": "добавлено после аудита (правило по имени/пути)"
+    },
+    {
+      "name": "MYRMIDON_WORKER_QUEUES",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": false,
+      "consumer": "server/src/myrmidon/process-orchestrator/config.ts:50",
+      "classification": "infra",
+      "class_basis": "name-rule",
+      "scope": "process",
+      "ui_or_store": "UI нет; классифицировано по имени/пути после аудита 08.10",
+      "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
+      "ticket_or_pr": "не требуется",
+      "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости",
+      "audit_reason": "добавлено после аудита (правило по имени/пути)"
+    },
+    {
       "name": "MYRMIDON_WORKSPACES_JSON",
       "aliases": [
         "PAPERCLIP_WORKSPACES_JSON"
@@ -14479,26 +14621,50 @@
       "decision": "перенести в хранилище секретов доски + secret-ref + UI (OPE-8822)"
     },
     {
-      "id": "tool-oauth-provider",
-      "template": "PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_ID | PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_SECRET",
+      "id": "tool-oauth-client-id",
+      "template": "PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_ID",
       "prefix": "PAPERCLIP_TOOL_OAUTH_",
-      "suffix_domain": "PROVIDER = имя OAuth-провайдера инструмента (не-буквенно-цифровые символы заменены на _, верхний регистр); суффикс CLIENT_ID (infra) или CLIENT_SECRET (secret)",
+      "suffix_domain": "PROVIDER = имя OAuth-провайдера инструмента (не-буквенно-цифровые символы заменены на _, верхний регистр); суффикс CLIENT_ID",
+      "classification": "infra",
+      "scope": "instance",
+      "source": "server/src/services/tool-access.ts (oauthEnvName)",
+      "secret_ref_or_instance_setup": "не секрет; настройка экземпляра",
+      "ticket_or_pr": "не требуется",
+      "decision": "оставить в env установки экземпляра (решение аудита 08.10)"
+    },
+    {
+      "id": "tool-oauth-client-secret",
+      "template": "PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_SECRET",
+      "prefix": "PAPERCLIP_TOOL_OAUTH_",
+      "suffix_domain": "PROVIDER = имя OAuth-провайдера инструмента (не-буквенно-цифровые символы заменены на _, верхний регистр); суффикс CLIENT_SECRET",
       "classification": "secret",
       "scope": "instance",
       "source": "server/src/services/tool-access.ts (oauthEnvName)",
-      "secret_ref_or_instance_setup": "CLIENT_SECRET: secret-ref; CLIENT_ID: настройка экземпляра",
+      "secret_ref_or_instance_setup": "secret-ref в хранилище секретов доски",
       "ticket_or_pr": "OPE-8822",
       "decision": "перенести в хранилище секретов доски + secret-ref + UI (OPE-8822)"
     },
     {
-      "id": "cloud-oauth-provider",
-      "template": "MYRMIDON_CLOUD_<ONEDRIVE|GOOGLE_DRIVE|YANDEX_DISK>_CLIENT_ID | ..._CLIENT_SECRET",
+      "id": "cloud-oauth-client-id",
+      "template": "MYRMIDON_CLOUD_<ONEDRIVE|GOOGLE_DRIVE|YANDEX_DISK>_CLIENT_ID",
       "prefix": "MYRMIDON_CLOUD_",
-      "suffix_domain": "закрытый список из 3 провайдеров; CLIENT_SECRET — secret, CLIENT_ID — infra; 6 имён перечислены в entries",
+      "suffix_domain": "закрытый список из 3 провайдеров; суффикс CLIENT_ID; 3 имени перечислены в entries",
+      "classification": "infra",
+      "scope": "instance",
+      "source": "server/src/myrmidon/cloud-connector/oauth.ts",
+      "secret_ref_or_instance_setup": "не секрет; настройка экземпляра",
+      "ticket_or_pr": "не требуется",
+      "decision": "оставить в env установки экземпляра (решение аудита 08.10)"
+    },
+    {
+      "id": "cloud-oauth-client-secret",
+      "template": "MYRMIDON_CLOUD_<ONEDRIVE|GOOGLE_DRIVE|YANDEX_DISK>_CLIENT_SECRET",
+      "prefix": "MYRMIDON_CLOUD_",
+      "suffix_domain": "закрытый список из 3 провайдеров; суффикс CLIENT_SECRET; 3 имени перечислены в entries",
       "classification": "secret",
       "scope": "instance",
       "source": "server/src/myrmidon/cloud-connector/oauth.ts",
-      "secret_ref_or_instance_setup": "CLIENT_SECRET: secret-ref; CLIENT_ID: настройка экземпляра",
+      "secret_ref_or_instance_setup": "secret-ref в хранилище секретов доски",
       "ticket_or_pr": "OPE-8822",
       "decision": "перенести в хранилище секретов доски + secret-ref + UI (OPE-8822)"
     },
