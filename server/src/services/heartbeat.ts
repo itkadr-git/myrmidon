@@ -17992,7 +17992,7 @@ export function heartbeatService(
               eq(agentWakeupRequests.status, "queued"),
               sql`${agentWakeupRequests.payload} ->> 'issueId' = ${claimedIssueId}`,
               sql`${agentWakeupRequests.idempotencyKey} like 'issue-review-admission:%'`,
-              sql`${agentWakeupRequests.createdAt} <= ${claimedAt}`,
+              sql`${agentWakeupRequests.createdAt} <= ${claimedAt.toISOString()}::timestamptz`,
               claimed.wakeupRequestId
                 ? sql`${agentWakeupRequests.id} <> ${claimed.wakeupRequestId}`
                 : sql`true`,
@@ -18000,7 +18000,10 @@ export function heartbeatService(
             ),
           )
           .catch((err) => {
-            logger.warn({ err, runId: claimed.id }, "claimQueuedRun: could not close served review-admission wakes");
+            logger.warn(
+              { err: err instanceof Error ? err.message : String(err), runId: claimed.id },
+              "claimQueuedRun: could not close served review-admission wakes",
+            );
           });
       }
     }
