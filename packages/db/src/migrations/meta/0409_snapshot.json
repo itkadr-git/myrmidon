@@ -1,5 +1,5 @@
 {
-  "id": "37ab596e-0412-4aa0-8041-a6620277410f",
+  "id": "fa48508d-bfe7-44ed-9efe-f7cfd4a3b3ba",
   "prevId": "ea9853cc-8ca3-514c-91d8-b342c953f67f",
   "version": "7",
   "dialect": "postgresql",
@@ -35109,42 +35109,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rpm_limit": {
-          "name": "rpm_limit",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "package_name": {
-          "name": "package_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "tool_call_compatible": {
-          "name": "tool_call_compatible",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "tool_call_checked_at": {
-          "name": "tool_call_checked_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "tool_call_check_error": {
-          "name": "tool_call_check_error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -56533,6 +56497,97 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.corpus_shadow_log": {
+      "name": "corpus_shadow_log",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "ts": {
+          "name": "ts",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "bot_id": {
+          "name": "bot_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dataset": {
+          "name": "dataset",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "query": {
+          "name": "query",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ragflow_chunk_ids": {
+          "name": "ragflow_chunk_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ragflow_latency_ms": {
+          "name": "ragflow_latency_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "module_chunk_ids": {
+          "name": "module_chunk_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "module_latency_ms": {
+          "name": "module_latency_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "module_error": {
+          "name": "module_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "corpus_shadow_log_ts_idx": {
+          "name": "corpus_shadow_log_ts_idx",
+          "columns": [
+            {
+              "expression": "ts",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {},
+      "policies": {},
       "isRLSEnabled": false
     }
   },
