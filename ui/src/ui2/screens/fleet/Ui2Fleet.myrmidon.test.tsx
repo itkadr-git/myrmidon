@@ -65,7 +65,7 @@ describe("myrmidon(UI2) Ui2Fleet screen parity", () => {
   it("loads the dashboard and renders host/service statuses", async () => {
     await renderScreen();
     expect(mockFleetApi.dashboard).toHaveBeenCalledWith("company-1");
-    expect(container.textContent).toContain("Server fleet");
+    expect(container.textContent).toContain("Servers");
     expect(container.textContent).toContain("node-a");
     expect(container.textContent).toContain("worker-a");
     expect(container.textContent).toContain("Running");
@@ -74,7 +74,7 @@ describe("myrmidon(UI2) Ui2Fleet screen parity", () => {
   it("renders the empty state in Russian", async () => {
     mockFleetApi.dashboard.mockResolvedValue({ ok: true, generatedAt: "2026-10-20T00:00:00.000Z", sources: [], hosts: [], containers: [] });
     await renderScreen("ru");
-    expect(container.textContent).toContain("Флот серверов");
+    expect(container.textContent).toContain("Серверы");
     expect(container.textContent).toContain("Ресурсов флота пока нет");
   });
 
