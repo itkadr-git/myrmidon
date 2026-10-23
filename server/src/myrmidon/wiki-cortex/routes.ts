@@ -116,6 +116,7 @@ export function wikiRegulationRoutes(deps: WikiRegulationRoutesDeps) {
   /** K-3: the shared rule-write grade check (see ../rule-grade.ts). */
   const assertApproverGrade = (req: Request, companyId: string, ...roleSets: ReadonlyArray<readonly string[]>) =>
     assertRuleWriteGrade(req, companyId, sensitivityOf, ...roleSets);
+  const base = "/myrmidon/companies/:companyId/wiki-regulations";
 
   /**
    * The company of the path, shadowed the way the other myrmidon routes do it:
