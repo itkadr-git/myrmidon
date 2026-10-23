@@ -182,7 +182,6 @@ describe("myrmidon(1.6.6 T1) fleet routing — tenant isolation", () => {
     expect(a.calls).toEqual([]);
   });
 
-<<<<<<< HEAD
   it("does not fall back to another company's host of the same name", async () => {
     const local = recordingDriver("local");
     const a = recordingDriver("co-a");
@@ -192,7 +191,8 @@ describe("myrmidon(1.6.6 T1) fleet routing — tenant isolation", () => {
     }));
     await expect(routed.start("bot-1")).rejects.toThrow(/names no configured fleet host/);
     expect(a.calls).toEqual([]);
-=======
+  });
+
   it("a card naming an unknown site is an error that names the site registry", async () => {
     const d = deps();
     const routed = fleetRoutingDriver(d, () => ({ adapterConfig: { container: { site: "site-x" } } }));
@@ -245,7 +245,6 @@ describe("myrmidon(1.6.6 T1) fleet routing — tenant isolation", () => {
     release();
     await pending;
     expect(d.fleetA.calls).toEqual(["fleet-a:start:bot-a"]);
->>>>>>> ffe3a6ff5 (fix(fleet): preserve startup integrations and tenant routing)
   });
 });
 
