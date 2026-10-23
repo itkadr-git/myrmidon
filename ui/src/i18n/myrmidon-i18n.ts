@@ -87,17 +87,43 @@ export function withForkCatalog(
   return merged;
 }
 
+/**
+ * Parse a fork catalog file path into its locale (and area, for area files).
+ * Accepted: `.../myrmidon-locales/<locale>.json` and
+ * `.../myrmidon-locales/areas/<area>.<locale>.json`.
+ */
+export function parseForkCatalogPath(path: string): { locale: string; area: string | null } | null {
+  const areaMatch = path.match(/\/areas\/([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.json$/);
+  if (areaMatch) return { area: areaMatch[1], locale: areaMatch[2] };
+  const baseMatch = path.match(/\/([A-Za-z0-9_-]+)\.json$/);
+  return baseMatch ? { area: null, locale: baseMatch[1] } : null;
+}
+
+/** Group fork catalog modules by locale, deep-merging area files over the base. */
+export function collectForkMessages(
+  modules: Record<string, Record<string, unknown>>,
+): Record<string, Record<string, unknown>> {
+  const forkMessages: Record<string, Record<string, unknown>> = {};
+  // Base files first, then area files in path order: deterministic merge.
+  const entries = Object.entries(modules).sort(([a], [b]) => a.localeCompare(b));
+  for (const pass of [false, true]) {
+    for (const [path, messages] of entries) {
+      const parsed = parseForkCatalogPath(path);
+      if (!parsed || (parsed.area !== null) !== pass) continue;
+      forkMessages[parsed.locale] = mergeLocaleMessages(forkMessages[parsed.locale] ?? {}, messages);
+    }
+  }
+  return forkMessages;
+}
+
 /** Resolve init resources with the fork catalog merged in. */
 export function forkI18nResources(vendorResources: Resource): Resource {
-  const forkModules = import.meta.glob("./myrmidon-locales/*.json", {
-    eager: true,
-    import: "default",
-  }) as Record<string, Record<string, unknown>>;
-  const forkMessages: Record<string, Record<string, unknown>> = {};
-  for (const [path, messages] of Object.entries(forkModules)) {
-    const locale = path.match(/\/([A-Za-z0-9_-]+)\.json$/)?.[1];
-    if (locale) forkMessages[locale] = messages;
-  }
+  // myrmidon(OPE-8950): base catalogs plus per-area catalogs (areas/<area>.<locale>.json).
+  const forkModules = import.meta.glob(
+    ["./myrmidon-locales/*.json", "./myrmidon-locales/areas/*.json"],
+    { eager: true, import: "default" },
+  ) as Record<string, Record<string, unknown>>;
+  const forkMessages = collectForkMessages(forkModules);
   const vendorMessages = Object.fromEntries(
     Object.entries(vendorResources).map(([locale, namespaces]) => [
       locale,

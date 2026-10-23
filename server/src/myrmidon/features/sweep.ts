@@ -5,7 +5,7 @@
 // and a fresh start is not read as "no signal". Each pass evaluates the whole
 // registry; the attention clock (attention.ts) is fed by that evaluation.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { sharedFeaturesService } from "./routes.js";
 

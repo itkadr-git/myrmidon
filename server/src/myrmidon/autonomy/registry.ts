@@ -9,7 +9,7 @@
 // PENDING_ENFORCEMENT with its reason, never in the registry — the registry
 // holds only points that exist on this tree.
 
-import type { AutonomyActionClass } from "@paperclipai/shared";
+import type { AutonomyActionClass } from "@myrmidon/shared";
 
 /**
  * Classes the matrix holds but no route seam is expected to enforce:

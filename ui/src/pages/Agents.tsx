@@ -32,7 +32,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot, Plus, List, ListTree, Network } from "lucide-react";
-import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@myrmidon/shared";
 import {
   isStarred,
   resourceMembershipState,
@@ -487,7 +487,7 @@ export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = 
               variant="outline"
               onClick={() => setConfigureState(builtInState)}
             >
-              Set up
+              {t("agents.setUp")}
             </Button>
           </span>
         )}
@@ -706,7 +706,7 @@ export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = 
 
       {effectiveView === "tree" && agents && agents.length > 0 && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected status.
+          {t("agents.noAgentsMatch")}
         </p>
       )}
 

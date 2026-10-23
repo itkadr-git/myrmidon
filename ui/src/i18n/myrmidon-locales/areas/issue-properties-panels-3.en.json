@@ -1,0 +1,108 @@
+{
+  "area": {
+    "issue-properties-panels-3": {
+      "external-object-rows": {
+        "githubPr": "GitHub PR",
+        "githubIssue": "GitHub Issue",
+        "prValue": "PR {{number}}",
+        "issueValue": "Issue {{number}}",
+        "statusIconLabel": "{{provider}}: {{status}}",
+        "linkAriaLabel": "{{provider}} {{type}} - {{status}}: {{title}}",
+        "rowLabel": "External objects",
+        "loadError": "Couldn't load external objects.",
+        "referencesLabel": "References"
+      },
+      "relation-controls": {
+        "removeBlockerAria": "Remove {{issue}} as blocker",
+        "blockerActionsAria": "Actions for blocker {{issue}}",
+        "visitTask": "Visit task",
+        "removeBlocker": "Remove blocker",
+        "taskLinkAria": "Task {{issue}}: {{title}}",
+        "taskAria": "Task: {{title}}",
+        "removeBlockerTitle": "Remove blocker?",
+        "removeBlockerDescription": "Remove {{issue}} as a blocker for this task.",
+        "showFewerAria": "Show fewer items",
+        "showMoreAria": "Show {{hidden}} more items",
+        "showLess": "Show less",
+        "showMore": "Show {{hidden}} more"
+      },
+      "side-panel-frame": {
+        "defaultLabel": "Side panel",
+        "toggle": "Toggle side panel",
+        "restore": "Restore side panel",
+        "maximize": "Maximize side panel",
+        "close": "Close side panel"
+      },
+      "side-panel-launcher": {
+        "alreadyOpen": "Already open",
+        "title": "Open a side panel tab",
+        "description": "Choose a view or resource to open.",
+        "placeholder": "Search tabs and resources…",
+        "emptyMessage": "No matching tabs or resources."
+      },
+      "task-detail-relations-panel": {
+        "subtasksAria": "Subtasks",
+        "progress": "Progress",
+        "completeCount": "{{completed}} of {{total}} complete",
+        "completionAria": "Subtask completion",
+        "rootBlocker": "Root blocker",
+        "blockedSubtask": "Blocked subtask",
+        "nextAction": "Next action",
+        "nextActionAria": "Next subtask action",
+        "allComplete": "All subtasks are complete.",
+        "noRemaining": "No remaining subtask actions.",
+        "empty": "No subtasks yet.",
+        "otherSubtasks": "Other subtasks",
+        "subtasks": "Subtasks",
+        "addSubtask": "Add subtask",
+        "referenced": "Referenced",
+        "referencedEmpty": "This task does not reference another task.",
+        "referencedAria": "Referenced tasks",
+        "mentionedIn": "Mentioned in",
+        "mentionedInEmpty": "No other task mentions this task.",
+        "mentionedInAria": "Tasks that mention this task"
+      },
+      "task-detail-tasks-panel": {
+        "project": "Project",
+        "noProject": "No project",
+        "goToProject": "Go to {{name}} project",
+        "relatedTasksAria": "Related tasks",
+        "subtasks": "Subtasks",
+        "groupTasksAria": "{{name}} tasks",
+        "loading": "Loading tasks…",
+        "loadError": "Could not load all tasks.",
+        "empty": "No tasks yet."
+      },
+      "task-document-panel": {
+        "loading": "Loading document…",
+        "loadError": "The document could not be loaded. Retry from the tab launcher or refresh the task.",
+        "missingTitle": "Document no longer available",
+        "missingDescription": "This tab is preserved so the missing resource is explicit. Close it or choose another document.",
+        "revision": "Revision {{number}}",
+        "updated": "Updated {{date}}",
+        "empty": "Document is empty."
+      },
+      "task-side-panel": {
+        "tasks": "Tasks",
+        "subtasks": "Subtasks",
+        "plan": "Plan",
+        "properties": "Properties",
+        "tasksLoadError": "Could not load all tasks",
+        "tasksTotal": "{{total}} total",
+        "artifacts": "Artifacts",
+        "files": "Files",
+        "revision": "Revision {{number}}",
+        "sectionOpen": "Open",
+        "sectionDocuments": "Task documents",
+        "sectionRecentFiles": "Recent workspace files",
+        "recentFilesError": "Recent files are temporarily unavailable.",
+        "openNewTab": "Open a new tab"
+      },
+      "task-workspace-file-panel": {
+        "copy": "Copy file contents",
+        "copied": "Copied",
+        "download": "Download file"
+      }
+    }
+  }
+}

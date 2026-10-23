@@ -23,7 +23,7 @@
 // wrong value into a JSON blob.
 
 import { eq } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 
 /** The `general.processes` key inside `instance_settings.general`. */
 export const RUN_DISPATCH_SETTINGS_KEY = "processes";

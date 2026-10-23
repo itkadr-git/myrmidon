@@ -5,6 +5,7 @@
 import { useState } from "react";
 import { Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 import { RadioCardGroup } from "@/components/ui/radio-card";
 import { OWNER_DELIVERY_MODE_OPTIONS, ownerDeliveryModeTitle } from "./ownerDeliveryConfig";
 import {
@@ -13,6 +14,26 @@ import {
   type OwnerDeliveryMode,
   type OwnerDeliverySettings,
 } from "./ownerDeliveryApi";
+
+/** Localized wording of a mode (the English copy in ownerDeliveryConfig.ts is the fallback). */
+function useModeCopy() {
+  const { t } = useTranslation();
+  const copy: Record<OwnerDeliveryMode, { title: string; description: string }> = {
+    via_bot: {
+      title: t("area.settings-integrations.owner-delivery-screen.modeViaBotTitle"),
+      description: t("area.settings-integrations.owner-delivery-screen.modeViaBotDescription"),
+    },
+    owner_decisions_only: {
+      title: t("area.settings-integrations.owner-delivery-screen.modeOwnerOnlyTitle"),
+      description: t("area.settings-integrations.owner-delivery-screen.modeOwnerOnlyDescription"),
+    },
+    all: {
+      title: t("area.settings-integrations.owner-delivery-screen.modeAllTitle"),
+      description: t("area.settings-integrations.owner-delivery-screen.modeAllDescription"),
+    },
+  };
+  return copy;
+}
 
 export function OwnerDeliveryScreenView({
   settings,
@@ -25,6 +46,8 @@ export function OwnerDeliveryScreenView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
+  const modeCopy = useModeCopy();
   const [draft, setDraft] = useState<OwnerDeliveryMode | null>(null);
   const stored = settings?.mode;
   const selected = draft ?? stored ?? OWNER_DELIVERY_DEFAULT_MODE;
@@ -34,11 +57,10 @@ export function OwnerDeliveryScreenView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Send className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Owner Telegram delivery</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-integrations.owner-delivery-screen.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Which cards a task owner receives in their Telegram direct messages. Saving applies to the
-          whole instance at once.
+          {t("area.settings-integrations.owner-delivery-screen.description")}
         </p>
       </div>
 
@@ -55,20 +77,20 @@ export function OwnerDeliveryScreenView({
       {settings ? (
         <>
           <RadioCardGroup
-            ariaLabel="Owner Telegram delivery mode"
+            ariaLabel={t("area.settings-integrations.owner-delivery-screen.modeAria")}
             value={selected}
             onValueChange={(value) => {
               if (isOwnerDeliveryMode(value)) setDraft(value);
             }}
             options={OWNER_DELIVERY_MODE_OPTIONS.map((option) => ({
               value: option.value,
-              title: option.title,
-              description: option.description,
+              title: modeCopy[option.value]?.title ?? option.title,
+              description: modeCopy[option.value]?.description ?? option.description,
             }))}
           />
 
           <p className="text-xs text-muted-foreground" data-testid="myrmidon-owner-delivery-current">
-            Current mode: {ownerDeliveryModeTitle(stored ?? OWNER_DELIVERY_DEFAULT_MODE)}
+            {t("area.settings-integrations.owner-delivery-screen.currentMode", { mode: modeCopy[stored ?? OWNER_DELIVERY_DEFAULT_MODE]?.title ?? ownerDeliveryModeTitle(stored ?? OWNER_DELIVERY_DEFAULT_MODE) })}
           </p>
 
           <div>
@@ -79,13 +101,13 @@ export function OwnerDeliveryScreenView({
               disabled={pending}
               onClick={() => onSave({ mode: selected })}
             >
-              {pending ? "Saving…" : "Save"}
+              {pending ? t("area.settings-integrations.owner-delivery-screen.saving") : t("common.save")}
             </Button>
           </div>
         </>
       ) : (
         <p className="text-sm text-muted-foreground" data-testid="myrmidon-owner-delivery-loading">
-          Loading settings…
+          {t("area.settings-integrations.owner-delivery-screen.loading")}
         </p>
       )}
     </section>

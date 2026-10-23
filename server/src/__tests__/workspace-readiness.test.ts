@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
-import type { WorkspaceReadinessProbeResult } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import type { WorkspaceReadinessProbeResult } from "@myrmidon/shared";
 import {
   isManagedWorkspaceInstance,
   resetManagedWorkspaceInstanceCacheForTests,

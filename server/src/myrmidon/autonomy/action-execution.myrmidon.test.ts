@@ -6,8 +6,8 @@
 // directly, and the executors are injected so a "pause" is a spy, not an agent.
 
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
-import { toolActionRequests, toolInvocations } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { toolActionRequests, toolInvocations } from "@myrmidon/db";
 import {
   AUTONOMY_DESCRIPTOR_KEY,
   executeApprovedAutonomyAction,

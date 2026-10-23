@@ -330,6 +330,12 @@ export const wsReportActionSchema = z.object({
 });
 export type WsReportAction = z.infer<typeof wsReportActionSchema>;
 
+/** Stable bot-disk gauges emitted with each report. */
+export const wsDiskReportMetricsSchema = z.object({
+  copies_without_assignee: z.number().int().nonnegative(),
+});
+export type WsDiskReportMetrics = z.infer<typeof wsDiskReportMetricsSchema>;
+
 /** Why a copy does not match the registry/desired state. */
 export const wsForeignSignSchema = z.enum([
   "promisor",
@@ -369,6 +375,7 @@ export const wsDiskReportSchema = z.object({
   actions: z.array(wsReportActionSchema),
   foreign: z.array(wsReportForeignSchema),
   foreignUid: wsReportForeignUidSchema.nullable().optional(),
+  metrics: wsDiskReportMetricsSchema.optional(),
 });
 export type WsDiskReport = z.infer<typeof wsDiskReportSchema>;
 

@@ -1,10 +1,10 @@
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this pass obeys, so an operator can change the throttle and the wake
 // budget without restarting the server — a restart drops every run in flight.
-import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
+import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
@@ -48,6 +48,12 @@ export const IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV = "MYRMIDON_IDLE_PICKUP_WAKE_BU
 export const IDLE_PICKUP_WAKE_BATCH_ENV = "MYRMIDON_IDLE_PICKUP_WAKE_BATCH";
 export const IDLE_WAKE_REASON = "idle_pickup";
 export const IDLE_WAKE_IDEMPOTENCY_PREFIX = "idle_pickup";
+/**
+ * myrmidon(1.6.6 OPE-8988): how long a queued wake request without a run still
+ * counts as covering its issue — the window in which its run is being created.
+ * Past it, a request no run carries is an orphan, not work in flight.
+ */
+export const ORPHAN_WAKE_GRACE_SEC = 600;
 
 /** Default: the sweep runs on every scheduler tick (about 30 s), like the other recovery passes. */
 export const DEFAULT_IDLE_PICKUP_INTERVAL_SEC = 30;
@@ -748,6 +754,24 @@ async function hasCoveringWake(
         ]),
         sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
         wakeNotParkedOnExecutionHold(),
+        // myrmidon(1.6.6 OPE-8988): a queued/claimed request covers the issue
+        // only while it is real work in flight — a live run carries it, or it
+        // is a just-queued request whose run is still being created. On prod
+        // 147 queued and 438 claimed requests had no live run at all (the
+        // oldest from August): each one covered its issue forever, so idle
+        // pickup counted the agent "already active" and never woke it.
+        sql`(
+          ${agentWakeupRequests.status} = 'deferred_issue_execution'
+          or exists (
+            select 1 from ${heartbeatRuns} hr
+            where hr.wakeup_request_id = ${agentWakeupRequests.id}
+              and hr.status in ('queued', 'running', 'scheduled_retry')
+          )
+          or (
+            ${agentWakeupRequests.status} = 'queued'
+            and ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+          )
+        )`,
       ),
     )
     .limit(1)

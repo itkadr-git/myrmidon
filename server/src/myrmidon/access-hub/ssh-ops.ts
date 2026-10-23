@@ -26,7 +26,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import type { DeployPort } from "./ssh-deploy.js";
 
 const execFileAsync = promisify(execFile);

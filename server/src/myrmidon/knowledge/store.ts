@@ -8,7 +8,7 @@
 // into company activity (S9). Nothing here spells dialect SQL: the module
 // keeps the "0 triggers, 0 `sql\`` with dialect operators" guarantee — full
 // text search is the `SearchIndex` PORT (domain.ts), implemented for pg in
-// `@paperclipai/db` (tsvector + pg_trgm + unaccent) and injected by wiring.
+// `@myrmidon/db` (tsvector + pg_trgm + unaccent) and injected by wiring.
 //
 // The pointer discipline (the acceptance criteria):
 //   - `draft()` writes a revision and NEVER touches `delivered_revision_id`;
@@ -23,7 +23,7 @@
 //     byte-for-byte identical.
 
 import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   knowledgeEvents,
   knowledgeItems,
@@ -31,7 +31,7 @@ import {
   knowledgeRevisions,
   knowledgeSources,
   knowledgeSuggestions,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import {
   KnowledgeDomainError,
@@ -57,6 +57,7 @@ import {
   type KnowledgeRevisionStatus,
   type KnowledgeRevisionLang,
   type KnowledgeSourceKind,
+  type KnowledgeSuggestionTrust,
   type KnowledgeTreePage,
   type SearchIndex,
 } from "./domain.js";
@@ -1047,6 +1048,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       targetSlug?: string | null;
       sourceKind?: KnowledgeSourceKind;
       sourceRef?: string | null;
+      /** Provenance trust (1.7 L-5): set by the callers that propose foreign url content. */
+      trust?: KnowledgeSuggestionTrust;
     },
   ): Promise<{ id: string; targetItemId: string | null; status: string; createdAt: string }> {
     assertSingleLine(input.body, "Suggestion body");
@@ -1065,6 +1068,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         rationale: input.rationale ?? null,
         sourceKind: input.sourceKind ?? null,
         sourceRef: input.sourceRef ?? null,
+        trust: input.trust ?? null,
         status: "pending",
         createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
         createdByUserId: actor.actorType === "user" ? (actor.actorId ?? null) : null,
@@ -1111,7 +1115,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     return { id: row.id, status: input.decision };
   }
 
-  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending"): Promise<Array<{ id: string; targetItemId: string | null; body: string; status: string; createdAt: string }>> {
+  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending"): Promise<Array<{ id: string; targetItemId: string | null; body: string; status: string; trust: string | null; createdAt: string }>> {
     const conditions = [eq(knowledgeSuggestions.nestId, nestId)];
     if (status !== "all") conditions.push(eq(knowledgeSuggestions.status, status));
     const rows = await db.select().from(knowledgeSuggestions).where(and(...conditions)).orderBy(asc(knowledgeSuggestions.createdAt));
@@ -1120,6 +1124,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       targetItemId: row.targetItemId,
       body: row.body,
       status: row.status,
+      trust: row.trust ?? null,
       createdAt: row.createdAt.toISOString(),
     }));
   }

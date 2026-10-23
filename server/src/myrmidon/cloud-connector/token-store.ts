@@ -6,7 +6,7 @@
 // value is read and rotated through the vendor secret service, which owns
 // encryption, versioning and the access audit.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { secretService } from "../../services/secrets.js";
 
 export interface CloudTokenWriteInput {

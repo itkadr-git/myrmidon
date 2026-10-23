@@ -28,8 +28,8 @@
 // a backup) and outside maintenance windows.
 
 import { sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { DEFAULT_CONTEXT_COMPACT_MAX_BATCHES, HEARTBEAT_RUN_STATUSES } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { DEFAULT_CONTEXT_COMPACT_MAX_BATCHES, HEARTBEAT_RUN_STATUSES } from "@myrmidon/shared";
 
 /** Rows compacted per statement (O1a). */
 export const CONTEXT_COMPACT_BATCH_SIZE = 500;

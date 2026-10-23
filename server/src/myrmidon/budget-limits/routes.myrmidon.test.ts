@@ -9,10 +9,10 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
 import { budgetLimitsRoutes } from "./routes.js";
-import type { BudgetLimitView, BudgetLimitChangeView } from "@paperclipai/shared";
+import type { BudgetLimitView, BudgetLimitChangeView } from "@myrmidon/shared";
 
 const boardActor = {
   type: "board",

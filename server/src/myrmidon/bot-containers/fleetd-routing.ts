@@ -22,8 +22,14 @@ import type { CompiledProfile } from "./types.js";
 export interface FleetRoutingDeps {
   /** The local docker driver (default host). */
   local: BotContainerDriver;
-  /** A fleetd client per configured host name, or a dynamic map provider. */
-  fleet: ReadonlyMap<string, BotContainerDriver> | (() => ReadonlyMap<string, BotContainerDriver>);
+  /**
+   * A fleetd client per configured host name (static env map), or a provider of
+   * the current map. The provider is asked with the company of the bot's card and
+   * returns only that company's clients by bare name; a routed call of a bot
+   * without a companyId fails closed. Called without a company (list) it returns
+   * all clients.
+   */
+  fleet: ReadonlyMap<string, BotContainerDriver> | ((companyId?: string) => ReadonlyMap<string, BotContainerDriver>);
   /**
    * Awaited before every routing decision: lets a dynamic registry reload its
    * clients (hot-reload) so a CRUD change applies without a server restart.
@@ -39,8 +45,8 @@ export interface RoutedBotAgent {
   adapterConfig: { container?: unknown };
 }
 
-function resolveFleetMap(deps: FleetRoutingDeps): ReadonlyMap<string, BotContainerDriver> {
-  return typeof deps.fleet === "function" ? deps.fleet() : deps.fleet;
+function resolveFleetMap(deps: FleetRoutingDeps, companyId?: string): ReadonlyMap<string, BotContainerDriver> {
+  return typeof deps.fleet === "function" ? deps.fleet(companyId) : deps.fleet;
 }
 
 async function awaitReady(deps: FleetRoutingDeps): Promise<void> {
@@ -60,10 +66,14 @@ async function driverFor(
   const agent = await agentOrPromise;
   const host = agent ? cardFleetHost(agent.adapterConfig) : null;
   if (host === null) return deps.local;
-  const fleetMap = resolveFleetMap(deps);
-  // Tenant isolation: a named host resolves only inside the agent's own
-  // company; without a companyId the bare name is used (static env maps).
-  const driver = fleetMap.get(agent?.companyId ? fleetSiteKey(agent.companyId, host) : host);
+  // Tenant isolation: a provider is asked for the agent's own company only, and
+  // a call without a companyId is refused (fail-closed). A static env map keeps
+  // the bare name (no company-scoped sites there).
+  if (typeof deps.fleet === "function" && !agent?.companyId) {
+    throw new Error(`container.host "${host}" cannot be routed: the bot's card has no companyId`);
+  }
+  const fleetMap = resolveFleetMap(deps, agent?.companyId);
+  const driver = fleetMap.get(typeof deps.fleet !== "function" && agent?.companyId ? fleetSiteKey(agent.companyId, host) : host);
   if (!driver) {
     throw new Error(
       `container.host "${host}" names no configured fleet host (check MYRMIDON_FLEET_HOSTS or fleet sites registry)`,

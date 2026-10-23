@@ -9,7 +9,7 @@
 // same mistake turns it red again.
 
 import { describe, expect, it, vi } from "vitest";
-import { WORKSPACE_QUOTA_EXCEEDED_ACTION, type WorkspaceHygieneLimits } from "@paperclipai/shared";
+import { WORKSPACE_QUOTA_EXCEEDED_ACTION, type WorkspaceHygieneLimits } from "@myrmidon/shared";
 import type { LogActivityInput } from "../../services/activity-log.js";
 import { resolveSweepLimits } from "./index.js";
 import { createWorkspaceHygieneSweep } from "./sweep.js";

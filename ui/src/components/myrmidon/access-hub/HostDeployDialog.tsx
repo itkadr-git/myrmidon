@@ -7,6 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import type { AccessHost, AccessRecord } from "./accessHubApi";
 
@@ -35,6 +36,7 @@ export function HostDeployDialogBody({
   onSubmit,
   onCancel,
 }: HostDeployDialogBodyProps) {
+  const { t } = useTranslation();
   const attached = record.hostRefs;
   const selectable = mode === "deploy" ? hosts.filter((host) => !attached.includes(host.hostId)) : [];
   // Both modes work from an empty selection: deploy adds the picked hosts,
@@ -50,7 +52,7 @@ export function HostDeployDialogBody({
 
   async function submit() {
     if (selected.length === 0) {
-      setValidationError(mode === "deploy" ? "Pick at least one host." : "Pick the hosts to withdraw from.");
+      setValidationError(mode === "deploy" ? t("area.access-hub.host-deploy-dialog.pickAtLeastOne") : t("area.access-hub.host-deploy-dialog.pickToWithdraw"));
       return;
     }
     setValidationError(null);
@@ -78,15 +80,15 @@ export function HostDeployDialogBody({
     >
       <p className="text-sm text-muted-foreground">
         {mode === "deploy"
-          ? `Place ${record.name} on hosts from the registry.`
-          : `Remove ${record.name} from the selected hosts.`}
+          ? t("area.access-hub.host-deploy-dialog.placeDescription", { name: record.name })
+          : t("area.access-hub.host-deploy-dialog.removeDescription", { name: record.name })}
       </p>
 
       <fieldset className="flex flex-col gap-1">
-        <legend className="text-sm text-muted-foreground">Hosts</legend>
+        <legend className="text-sm text-muted-foreground">{t("area.access-hub.host-deploy-dialog.hosts")}</legend>
         {listed.length === 0 ? (
           <p className="text-xs text-muted-foreground">
-            {mode === "deploy" ? "Every registry host already has this access." : "This access is on no host yet."}
+            {mode === "deploy" ? t("area.access-hub.host-deploy-dialog.allHaveIt") : t("area.access-hub.host-deploy-dialog.onNoHost")}
           </p>
         ) : (
           listed.map((host) => (
@@ -95,7 +97,11 @@ export function HostDeployDialogBody({
                 type="checkbox"
                 checked={selected.includes(host.hostId)}
                 onChange={() => toggle(host.hostId)}
-                aria-label={`${mode === "deploy" ? "Deploy to" : "Withdraw from"} ${host.name}`}
+                aria-label={
+                  mode === "deploy"
+                    ? t("area.access-hub.host-deploy-dialog.deployToLabel", { name: host.name })
+                    : t("area.access-hub.host-deploy-dialog.withdrawFromLabel", { name: host.name })
+                }
               />
               {host.name}
             </label>
@@ -111,10 +117,10 @@ export function HostDeployDialogBody({
 
       <DialogFooter>
         <Button type="button" variant="ghost" onClick={onCancel}>
-          Cancel
+          {t("common.cancel")}
         </Button>
         <Button type="submit" disabled={busy}>
-          {mode === "deploy" ? "Deploy" : "Withdraw"}
+          {mode === "deploy" ? t("area.access-hub.host-deploy-dialog.deploy") : t("area.access-hub.host-deploy-dialog.withdraw")}
         </Button>
       </DialogFooter>
     </form>
@@ -127,13 +133,14 @@ export interface HostDeployDialogProps extends HostDeployDialogBodyProps {
 }
 
 export function HostDeployDialog({ open, onOpenChange, ...body }: HostDeployDialogProps) {
+  const { t } = useTranslation();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{body.mode === "deploy" ? "Deploy to hosts" : "Withdraw from hosts"}</DialogTitle>
+          <DialogTitle>{body.mode === "deploy" ? t("area.access-hub.host-deploy-dialog.titleDeploy") : t("area.access-hub.host-deploy-dialog.titleWithdraw")}</DialogTitle>
           <DialogDescription>
-            Hosts come from the fleet host registry. Only the public half of an SSH key reaches a host.
+            {t("area.access-hub.host-deploy-dialog.description")}
           </DialogDescription>
         </DialogHeader>
         <HostDeployDialogBody {...body} />

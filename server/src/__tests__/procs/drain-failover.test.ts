@@ -50,9 +50,9 @@ import {
   agents,
   issues,
   heartbeatRuns,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { eq } from "drizzle-orm";
-import { DEFAULT_PROCESSES_SETTINGS, type ProcessesSettings } from "@paperclipai/shared";
+import { DEFAULT_PROCESSES_SETTINGS, type ProcessesSettings } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -471,6 +471,13 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     // a hair — tolerate at most one, and only inside the drain window.
     const loadPromise = runHeartbeatLoad({ rps: 10, durationMs: 6_000 });
     await new Promise((resolve) => setTimeout(resolve, 1_000)); // load flowing
+    // Wait for the supervisor's async startup transition to finish closing its
+    // own reuse-port listener before draining a child, keeping the survivor's
+    // health probe from racing that listener handoff.
+    await waitFor(
+      () => supervisor!.state() === "split" ? true : `supervisor state is ${supervisor!.state()}`,
+      { timeoutMs: SPLIT_READY_TIMEOUT_MS, label: "supervisor public-listener handoff" },
+    );
     await supervisor!.apply(splitSettings(1));
     const load = await loadPromise;
 
@@ -556,24 +563,27 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     expect(victimPid, "the kill victim is the freshly grown child").not.toBe(survivorPid);
     const forkedBeforeKill = forkedPids.length;
 
-    // IPC readiness precedes durable process-registry writes in child startup.
-    // Wait for the row rather than assuming the registry transaction has won
-    // the race when the supervisor reports ready.
-    let victimBootId: string | undefined;
+    // The supervisor's ready IPC is emitted only after the child has completed
+    // its awaited initial registry tick. Keep polling for the row to tolerate
+    // database scheduling without treating readiness and persistence as a race.
     await waitFor(
       async () => {
         const [row] = await db
           .select({ bootId: boardProcesses.bootId })
           .from(boardProcesses)
           .where(eq(boardProcesses.pid, victimPid));
-        victimBootId = row?.bootId;
-        return victimBootId ? true : `victim pid ${victimPid} not registered yet`;
+        return row?.bootId
+          ? true
+          : "victim process registry row not published yet";
       },
       { timeoutMs: SPLIT_READY_TIMEOUT_MS, label: "victim child registered in board_processes" },
     );
-    if (!victimBootId) {
-      throw new Error(`victim pid ${victimPid} was not registered in board_processes`);
-    }
+    const [victimRow] = await db
+      .select({ bootId: boardProcesses.bootId })
+      .from(boardProcesses)
+      .where(eq(boardProcesses.pid, victimPid));
+    expect(victimRow?.bootId, "victim bootId is registered in board_processes").toBeDefined();
+    const victimBootId = victimRow!.bootId;
 
     // Warm up the grown child so both children are actively serving /api/health before load:
     await waitFor(

@@ -29,7 +29,7 @@ import {
   issueComments,
   issues,
   nativeRunFinalizations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

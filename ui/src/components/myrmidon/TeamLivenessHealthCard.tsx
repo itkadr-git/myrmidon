@@ -15,6 +15,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Activity } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
+import { i18n, useTranslation } from "@/i18n";
 import {
   teamLivenessApi,
   teamLivenessMetricsKey,
@@ -39,27 +40,27 @@ export function metricLines(metrics: TeamLivenessMetrics): MetricLine[] {
   return [
     {
       key: "autoResumes",
-      label: "Auto-resumes",
+      label: i18n.t("area.settings-models-runtime-2.team-liveness-health-card.autoResumes.label"),
       value: metrics.autoResumes,
-      hint: "Agents the board brought back out of error by itself",
+      hint: i18n.t("area.settings-models-runtime-2.team-liveness-health-card.autoResumes.hint"),
     },
     {
       key: "autoResumeExhaustions",
-      label: "Resumes given up",
+      label: i18n.t("area.settings-models-runtime-2.team-liveness-health-card.autoResumeExhaustions.label"),
       value: metrics.autoResumeExhaustions,
-      hint: "Attempts ran out — these need a human look",
+      hint: i18n.t("area.settings-models-runtime-2.team-liveness-health-card.autoResumeExhaustions.hint"),
     },
     {
       key: "wakes",
-      label: "Wakes",
+      label: i18n.t("area.settings-models-runtime-2.team-liveness-health-card.wakes.label"),
       value: metrics.wakes,
-      hint: "Wakes the board created for this company",
+      hint: i18n.t("area.settings-models-runtime-2.team-liveness-health-card.wakes.hint"),
     },
     {
       key: "stalledRuns",
-      label: "Stalled runs",
+      label: i18n.t("area.settings-models-runtime-2.team-liveness-health-card.stalledRuns.label"),
       value: metrics.stalledRuns,
-      hint: "Runs that stopped making progress and were interrupted",
+      hint: i18n.t("area.settings-models-runtime-2.team-liveness-health-card.stalledRuns.hint"),
     },
   ];
 }
@@ -67,8 +68,7 @@ export function metricLines(metrics: TeamLivenessMetrics): MetricLine[] {
 /** "last 24 h" from the window the server reports. */
 export function windowLabel(metrics: TeamLivenessMetrics): string {
   const hours = metrics.windowHours;
-  if (hours === 1) return "last 1 h";
-  return `last ${hours} h`;
+  return i18n.t("area.settings-models-runtime-2.team-liveness-health-card.windowLabel", { hours });
 }
 
 export function TeamLivenessHealthCardView({
@@ -76,6 +76,7 @@ export function TeamLivenessHealthCardView({
   loading,
   error,
 }: TeamLivenessHealthCardViewProps) {
+  const { t } = useTranslation();
   return (
     <div
       className="rounded-lg border border-border bg-background"
@@ -84,7 +85,7 @@ export function TeamLivenessHealthCardView({
       <div className="flex items-center justify-between gap-3 px-5 pt-5 pb-2">
         <div className="flex items-center gap-2">
           <Activity className="h-4 w-4 text-muted-foreground" />
-          <span className="text-base font-medium">Team liveness</span>
+          <span className="text-base font-medium">{t("area.settings-models-runtime-2.team-liveness-health-card.title")}</span>
         </div>
         <span className="text-xs font-medium text-muted-foreground">
           {metrics ? windowLabel(metrics) : "…"}
@@ -93,7 +94,7 @@ export function TeamLivenessHealthCardView({
       <div className="px-5 pb-5 pt-1 space-y-2">
         {loading ? (
           <p className="text-sm text-muted-foreground" data-testid="myrmidon-team-liveness-loading">
-            Loading team liveness...
+            {t("area.settings-models-runtime-2.team-liveness-health-card.loading")}
           </p>
         ) : error ? (
           <p className="text-sm text-destructive" data-testid="myrmidon-team-liveness-error">
@@ -117,9 +118,7 @@ export function TeamLivenessHealthCardView({
               ))}
             </dl>
             <p className="text-xs text-muted-foreground/70">
-              What the board did on its own for this company in the window. A run of
-              "Resumes given up" or "Stalled runs" means an agent needs a human look;
-              the switches behind all four sit in the Team liveness panel.
+              {t("area.settings-models-runtime-2.team-liveness-health-card.footnote")}
             </p>
           </>
         ) : null}

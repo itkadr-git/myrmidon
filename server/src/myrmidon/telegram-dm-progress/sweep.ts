@@ -5,8 +5,8 @@
 // Kept apart from service.ts so the sweep (a vendor service module) does not
 // pull the services barrel in.
 
-import type { Db } from "@paperclipai/db";
-import type { ResolvedTelegramDmProgress } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import type { ResolvedTelegramDmProgress } from "@myrmidon/shared";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { readTelegramDmProgressSettings } from "./settings.js";
 

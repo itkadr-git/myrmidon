@@ -11,8 +11,8 @@ import {
   type SwarmClaimLease,
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
-} from "@paperclipai/shared";
-import { agentWakeupRequests, agents, chatConversations, companies, goals, heartbeatRuns, instanceSettings, issueClaims, issueLabels, issueThreadInteractions, issueWatchdogs, issues } from "@paperclipai/db";
+} from "@myrmidon/shared";
+import { agentWakeupRequests, agents, chatConversations, companies, goals, heartbeatRuns, instanceSettings, issueClaims, issueLabels, issueThreadInteractions, issueWatchdogs, issues } from "@myrmidon/db";
 import { claimCovers, selectQueueForAgent } from "./domain.js";
 import { createSwarmClaimSweeper } from "./sweep.js";
 import type { SwarmClaimEnqueueWakeup } from "./service.js";

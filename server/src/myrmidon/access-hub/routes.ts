@@ -26,9 +26,9 @@
 
 import { Router, type Request } from "express";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
-import { agents, companySecretBindings, companySecrets } from "@paperclipai/db";
+import { agents, companySecretBindings, companySecrets } from "@myrmidon/db";
 import { conflict, notFound, unprocessable } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";

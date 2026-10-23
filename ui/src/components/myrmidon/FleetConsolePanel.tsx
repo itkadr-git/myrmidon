@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useCompany } from "@/context/CompanyContext";
+import { i18n, useTranslation } from "@/i18n";
 import {
   describeServerTarget,
   fleetConsoleApi,
@@ -27,6 +28,9 @@ import {
   type FleetServer,
   type FleetServerInput,
 } from "./fleetConsoleApi";
+
+// myrmidon(OPE-8950): visible strings live in area.settings-bots-host-2.fleet-console-panel.*
+type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 const SELECT_CLASS = "h-9 w-full rounded-md border border-input bg-background px-2 text-sm";
 
@@ -54,6 +58,7 @@ export function FleetConsolePanelView({
   onRegister,
   nowMs = Date.now(),
 }: FleetConsolePanelViewProps) {
+  const { t } = useTranslation() as { t: Translate };
   const [slug, setSlug] = useState("");
   const [name, setName] = useState("");
   const [hostname, setHostname] = useState("");
@@ -90,11 +95,10 @@ export function FleetConsolePanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <MonitorPlay className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Server console</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-bots-host-2.fleet-console-panel.title")}</h2>
         </div>
         <p className="text-sm text-muted-foreground">
-          Open a terminal to a fleet node in the browser. The panel signs a short-lived Guacamole token for the node;
-          the node password stays on the server inside that token. Only a company owner can open a console.
+          {t("area.settings-bots-host-2.fleet-console-panel.description")}
         </p>
       </div>
 
@@ -112,7 +116,7 @@ export function FleetConsolePanelView({
                 {activeToken.serverName} ({activeToken.protocol})
               </div>
               <div className="text-xs text-muted-foreground">
-                Token expires in {secondsUntil(activeToken.expiresAt, nowMs)} s
+                {t("area.settings-bots-host-2.fleet-console-panel.tokenExpires", { seconds: secondsUntil(activeToken.expiresAt, nowMs) })}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -123,26 +127,26 @@ export function FleetConsolePanelView({
                 rel="noreferrer"
                 data-testid="fleet-console-new-tab"
               >
-                Open in a new tab
+                {t("area.settings-bots-host-2.fleet-console-panel.openInNewTab")}
               </a>
               <Button size="sm" variant="outline" onClick={onCloseSession} data-testid="fleet-console-close">
-                Close session
+                {t("area.settings-bots-host-2.fleet-console-panel.closeSession")}
               </Button>
             </div>
           </div>
           <iframe
             className="h-96 w-full rounded-md border border-border bg-background"
             src={activeToken.consoleUrl}
-            title={`Console: ${activeToken.serverName}`}
+            title={t("area.settings-bots-host-2.fleet-console-panel.frameTitle", { name: activeToken.serverName })}
             data-testid="fleet-console-terminal"
           />
         </div>
       ) : null}
 
       <div className="space-y-2">
-        <div className="text-sm font-medium">Fleet servers</div>
+        <div className="text-sm font-medium">{t("area.settings-bots-host-2.fleet-console-panel.serversTitle")}</div>
         {loading ? (
-          <p className="text-sm text-muted-foreground">Loading the registry…</p>
+          <p className="text-sm text-muted-foreground">{t("area.settings-bots-host-2.fleet-console-panel.loading")}</p>
         ) : servers && servers.length > 0 ? (
           <ul className="space-y-2">
             {servers.map((server) => (
@@ -157,7 +161,7 @@ export function FleetConsolePanelView({
                   </div>
                   <div className="text-xs text-muted-foreground">
                     {server.protocol} · {describeServerTarget(server)} · {server.username}
-                    {server.enabled ? "" : " · disabled"}
+                    {server.enabled ? "" : ` · ${t("area.settings-bots-host-2.fleet-console-panel.disabledTag")}`}
                   </div>
                 </div>
                 <Button
@@ -166,43 +170,43 @@ export function FleetConsolePanelView({
                   onClick={() => onOpenConsole(server)}
                   data-testid={`fleet-console-open-${server.slug}`}
                 >
-                  Console
+                  {t("area.settings-bots-host-2.fleet-console-panel.consoleButton")}
                 </Button>
               </li>
             ))}
           </ul>
         ) : (
           <p className="text-sm text-muted-foreground" data-testid="fleet-console-empty">
-            No fleet servers are registered yet. Register the first node below.
+            {t("area.settings-bots-host-2.fleet-console-panel.empty")}
           </p>
         )}
       </div>
 
       <div className="space-y-2 rounded-md border border-border px-3 py-3" data-testid="fleet-console-register">
-        <div className="text-sm font-medium">Register a node</div>
+        <div className="text-sm font-medium">{t("area.settings-bots-host-2.fleet-console-panel.registerTitle")}</div>
         <div className="grid gap-2 md:grid-cols-3">
           <div className="space-y-1">
-            <Label htmlFor="fleet-console-slug">Name key</Label>
+            <Label htmlFor="fleet-console-slug">{t("area.settings-bots-host-2.fleet-console-panel.slugLabel")}</Label>
             <Input
               id="fleet-console-slug"
               value={slug}
               onChange={(event) => setSlug(event.target.value)}
-              placeholder="node-a"
+              placeholder={t("area.settings-bots-host-2.fleet-console-panel.slugPlaceholder")}
               data-testid="fleet-console-register-slug"
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="fleet-console-name">Display name</Label>
+            <Label htmlFor="fleet-console-name">{t("area.settings-bots-host-2.fleet-console-panel.nameLabel")}</Label>
             <Input
               id="fleet-console-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="Node A"
+              placeholder={t("area.settings-bots-host-2.fleet-console-panel.namePlaceholder")}
               data-testid="fleet-console-register-name"
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="fleet-console-host">Host</Label>
+            <Label htmlFor="fleet-console-host">{t("area.settings-bots-host-2.fleet-console-panel.hostLabel")}</Label>
             <Input
               id="fleet-console-host"
               value={hostname}
@@ -212,7 +216,7 @@ export function FleetConsolePanelView({
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="fleet-console-port">Port</Label>
+            <Label htmlFor="fleet-console-port">{t("area.settings-bots-host-2.fleet-console-panel.portLabel")}</Label>
             <Input
               id="fleet-console-port"
               value={port}
@@ -222,7 +226,7 @@ export function FleetConsolePanelView({
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="fleet-console-protocol">Protocol</Label>
+            <Label htmlFor="fleet-console-protocol">{t("area.settings-bots-host-2.fleet-console-panel.protocolLabel")}</Label>
             <select
               id="fleet-console-protocol"
               className={SELECT_CLASS}
@@ -235,22 +239,22 @@ export function FleetConsolePanelView({
             </select>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="fleet-console-username">Node user</Label>
+            <Label htmlFor="fleet-console-username">{t("area.settings-bots-host-2.fleet-console-panel.usernameLabel")}</Label>
             <Input
               id="fleet-console-username"
               value={username}
               onChange={(event) => setUsername(event.target.value)}
-              placeholder="fleet-console"
+              placeholder={t("area.settings-bots-host-2.fleet-console-panel.usernamePlaceholder")}
               data-testid="fleet-console-register-username"
             />
           </div>
           <div className="space-y-1 md:col-span-2">
-            <Label htmlFor="fleet-console-secret">Password secret key</Label>
+            <Label htmlFor="fleet-console-secret">{t("area.settings-bots-host-2.fleet-console-panel.secretLabel")}</Label>
             <Input
               id="fleet-console-secret"
               value={passwordSecretKey}
               onChange={(event) => setPasswordSecretKey(event.target.value)}
-              placeholder="node-a-password"
+              placeholder={t("area.settings-bots-host-2.fleet-console-panel.secretPlaceholder")}
               data-testid="fleet-console-register-secret"
             />
           </div>
@@ -262,9 +266,9 @@ export function FleetConsolePanelView({
             onClick={submit}
             data-testid="fleet-console-register-submit"
           >
-            Register node
+            {t("area.settings-bots-host-2.fleet-console-panel.registerButton")}
           </Button>
-          {!portValid ? <span className="text-xs text-destructive">Port must be between 1 and 65535.</span> : null}
+          {!portValid ? <span className="text-xs text-destructive">{t("area.settings-bots-host-2.fleet-console-panel.portInvalid")}</span> : null}
         </div>
       </div>
     </section>
@@ -272,6 +276,7 @@ export function FleetConsolePanelView({
 }
 
 export function FleetConsolePanel() {
+  const { t } = useTranslation() as { t: Translate };
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = selectedCompanyId ?? "";
@@ -287,7 +292,7 @@ export function FleetConsolePanel() {
   });
 
   const onError = (err: unknown) =>
-    setError(err instanceof Error ? err.message : "The console request failed.");
+    setError(err instanceof Error ? err.message : i18n.t("area.settings-bots-host-2.fleet-console-panel.requestFailed"));
 
   const tokenMutation = useMutation({
     mutationFn: (server: FleetServer) => fleetConsoleApi.requestToken(companyId, server),
@@ -326,7 +331,7 @@ export function FleetConsolePanel() {
       activeToken={activeToken}
       loading={serversQuery.isLoading}
       pending={tokenMutation.isPending || closeMutation.isPending || registerMutation.isPending}
-      error={error ?? (serversQuery.isError ? "The fleet registry could not be read." : null)}
+      error={error ?? (serversQuery.isError ? t("area.settings-bots-host-2.fleet-console-panel.registryUnreadable") : null)}
       onOpenConsole={openConsole}
       onCloseSession={closeSession}
       onRegister={(input) => registerMutation.mutate(input)}
