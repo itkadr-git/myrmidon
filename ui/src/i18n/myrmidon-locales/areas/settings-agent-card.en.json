@@ -57,7 +57,16 @@
         "concurrencyTitle": "Concurrent runs limit",
         "concurrencyDiverged": "Diverged from the board",
         "statusRequestFailed": "The status request failed.",
-        "applyNoAnswer": "the server answered neither applyId nor outcome."
+        "applyNoAnswer": "the server answered neither applyId nor outcome.",
+        "idleStopMode": "Idle stop mode",
+        "idleStopHint": "Always on containers are excluded from idle-stop. On demand is the default.",
+        "idleStopOnDemand": "On demand",
+        "idleStopAlwaysOn": "Always on",
+        "idleStopContainer": "Container: {{state}}",
+        "idleStopStoppedOnIdle": "stopped on idle",
+        "idleStopUnknown": "unknown",
+        "idleStopLastStopped": "; last stopped {{at}}",
+        "idleStopLastStarted": "; last started {{at}}"
       },
       "agent-card-egress-fields": {
         "title": "Egress",
