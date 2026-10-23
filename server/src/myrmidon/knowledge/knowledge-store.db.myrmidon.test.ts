@@ -460,7 +460,7 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(all[0]!.id).toBe(reg.id);
 
     // Delete
-    const deletedRes = await backend.delete(companyId, { type: "board", id: "user-1" }, reg.id);
+    const deletedRes = await backend.delete(companyId, { type: "board", id: "user-1" }, reg.id, "owner");
     expect(deletedRes.ok).toBe(true);
     expect(await backend.list(companyId)).toHaveLength(0);
 

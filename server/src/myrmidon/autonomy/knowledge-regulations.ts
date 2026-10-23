@@ -520,7 +520,7 @@ export async function deleteKnowledgeAutonomyRegulation(
     return { deleted: true } as const;
   });
 
-  if ("refusal" in outcome) {
+  if ("refusal" in outcome && outcome.refusal) {
     return fail(outcome.refusal);
   }
   if ("notFound" in outcome) {
