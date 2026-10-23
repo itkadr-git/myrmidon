@@ -148,3 +148,71 @@ func TestMemoryClientExportRejectsEmptyBankID(t *testing.T) {
 		t.Fatal("expected empty bank id to be rejected")
 	}
 }
+
+func exportFixtureServer(t *testing.T, statusBody func(base string) string) *httptest.Server {
+	t.Helper()
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/default/banks/b/transfer/export":
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"operation_id":"op-1","status":"pending"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/default/banks/b/operations/op-1":
+			_, _ = w.Write([]byte(statusBody(srv.URL)))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/default/files/download/k1":
+			_, _ = w.Write([]byte("zip"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestMemoryClientExportAcceptsRelativeDownloadURLAndStorageKey(t *testing.T) {
+	for name, meta := range map[string]string{
+		"relative":    `{"download_url":"/v1/default/files/download/k1"}`,
+		"storage_key": `{"storage_key":"k1"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := exportFixtureServer(t, func(string) string {
+				return `{"operation_id":"op-1","status":"completed","result_metadata":` + meta + `}`
+			})
+			client, err := newMemoryClient(&memoryConfig{Enabled: true, URL: srv.URL, Bank: "x", TimeoutMs: 3000})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := client.export(context.Background(), "b")
+			if err != nil || string(got) != "zip" {
+				t.Fatalf("got %q err %v", got, err)
+			}
+		})
+	}
+}
+
+func TestMemoryClientExportReportsFailedOperationErrorMessage(t *testing.T) {
+	srv := exportFixtureServer(t, func(string) string {
+		return `{"operation_id":"op-1","status":"failed","error_message":"disk full"}`
+	})
+	client, err := newMemoryClient(&memoryConfig{Enabled: true, URL: srv.URL, Bank: "x", TimeoutMs: 3000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.export(context.Background(), "b")
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestMemoryClientExportRejectsForeignDownloadHost(t *testing.T) {
+	srv := exportFixtureServer(t, func(string) string {
+		return `{"operation_id":"op-1","status":"completed","result_metadata":{"download_url":"http://evil.example/v1/default/files/download/k1"}}`
+	})
+	client, err := newMemoryClient(&memoryConfig{Enabled: true, URL: srv.URL, Bank: "x", TimeoutMs: 3000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.export(context.Background(), "b"); err == nil {
+		t.Fatal("expected unsafe download URL to be rejected")
+	}
+}

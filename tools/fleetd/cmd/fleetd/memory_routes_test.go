@@ -114,18 +114,18 @@ func TestMemoryRoutesForwardToUpstream(t *testing.T) {
 			_, _ = w.Write([]byte(`{"operation_id":"retain-1"}`))
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/v1/default/banks/fleetd/transfer/export") {
+		if r.URL.Path == "/v1/default/banks/fleetd/transfer/export" && r.Method == http.MethodPost {
 			exportPaths = append(exportPaths, r.Method+" "+r.URL.Path)
-			switch {
-			case r.Method == http.MethodPost:
-				w.WriteHeader(http.StatusAccepted)
-				_, _ = w.Write([]byte(`{"operation_id":"export-1"}`))
-			case r.Method == http.MethodGet:
-				_, _ = w.Write([]byte(`{"status":"completed","result_metadata":{"download_url":"` + upstream.URL + `/v1/default/files/export"}}`))
-			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"operation_id":"export-1","status":"pending"}`))
 			return
 		}
-		if r.URL.Path == "/v1/default/files/export" {
+		if r.URL.Path == "/v1/default/banks/fleetd/operations/export-1" && r.Method == http.MethodGet {
+			exportPaths = append(exportPaths, r.Method+" "+r.URL.Path)
+			_, _ = w.Write([]byte(`{"operation_id":"export-1","id":"export-1","status":"completed","operation_type":"bank_transfer_export","error_message":null,"result_metadata":{"download_url":"` + upstream.URL + `/v1/default/files/download/export-key","storage_key":"export-key","byte_size":9,"filename":"fleetd.zip"}}`))
+			return
+		}
+		if r.URL.Path == "/v1/default/files/download/export-key" {
 			exportPaths = append(exportPaths, r.Method+" "+r.URL.Path)
 			_, _ = w.Write([]byte("zip-bytes"))
 			return
@@ -163,7 +163,7 @@ func TestMemoryRoutesForwardToUpstream(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Body.String() != "zip-bytes" {
 		t.Fatalf("export: got %d %q", rec.Code, rec.Body.String())
 	}
-	if len(exportPaths) != 3 || exportPaths[0] != "POST /v1/default/banks/fleetd/transfer/export" || exportPaths[1] != "GET /v1/default/banks/fleetd/operations/export-1" || exportPaths[2] != "GET /v1/default/files/export" {
+	if len(exportPaths) != 3 || exportPaths[0] != "POST /v1/default/banks/fleetd/transfer/export" || exportPaths[1] != "GET /v1/default/banks/fleetd/operations/export-1" || exportPaths[2] != "GET /v1/default/files/download/export-key" {
 		t.Fatalf("export operation requests = %#v", exportPaths)
 	}
 	if gotBot != "" {
