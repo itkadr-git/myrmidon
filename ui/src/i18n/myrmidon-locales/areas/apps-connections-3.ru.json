@@ -51,6 +51,7 @@
         "statusNeedsAttention": "Требует внимания",
         "statusPaused": "Приостановлено",
         "toolsLoadFailed": "Не удалось загрузить инструменты этого приложения.",
+        "tryAgainButton": "Повторить",
         "tryAgainShort": "Повторите попытку.",
         "verifyReconnectFailed": "Не удалось проверить, кто может переподключить эту учётную запись. Обновите страницу и повторите."
       },
@@ -151,6 +152,7 @@
         "statePausedMsg": "Агенты сейчас не могут использовать эту учётную запись.",
         "stateReplaceCredential": "Замените учётные данные, чтобы восстановить доступ.",
         "stateSignInAgain": "Войдите снова, чтобы восстановить доступ.",
+        "tryAgainButton": "Повторить",
         "tryAgainShort": "Повторите попытку."
       },
       "composio-provenance-chip": {
@@ -443,6 +445,7 @@
           "yourIdentity": "Ваша учётная запись"
         },
         "tryAgain": "Повторите попытку.",
+        "tryAgainButton": "Повторить",
         "zapier": {
           "invalidUrl": "Вставьте корректный URL Zapier, чтобы продолжить.",
           "urlLabel": "MCP URL Zapier",

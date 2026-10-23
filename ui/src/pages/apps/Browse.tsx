@@ -664,7 +664,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               if (chatConnectorsEnabled) void chatEndpointsQuery.refetch();
             }}
           >
-            {t("common.retry")}
+            {t("area.apps-connections-3.browse.tryAgainButton")}
           </Button>
         </div>
       ) : null}

@@ -763,7 +763,7 @@ function ToolsLoadError({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="space-y-3 py-8">
       <p className="text-sm text-destructive">{t("area.apps-connections-3.app-detail.toolsLoadFailed")}</p>
-      <Button size="sm" variant="outline" onClick={onRetry}>{t("common.retry")}</Button>
+      <Button size="sm" variant="outline" onClick={onRetry}>{t("area.apps-connections-3.app-detail.tryAgainButton")}</Button>
     </div>
   );
 }

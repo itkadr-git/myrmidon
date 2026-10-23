@@ -1725,7 +1725,7 @@ export function ConnectionSetupFlow({
               }
             }}
           >
-            {t("common.retry")}
+            {t("area.apps-connections-3.connection-setup-flow.tryAgainButton")}
           </Button>
           <Button type="button" variant="outline" onClick={() => navigate("/apps")}>
             {t("area.apps-connections-3.connection-setup-flow.backToApps")}
@@ -1779,7 +1779,7 @@ export function ConnectionSetupFlow({
         </p>
         <div className="mt-5 flex flex-wrap gap-2">
           <Button type="button" onClick={() => void galleryQuery.refetch()}>
-            {t("common.retry")}
+            {t("area.apps-connections-3.connection-setup-flow.tryAgainButton")}
           </Button>
           <Button type="button" variant="outline" onClick={() => navigate("/apps")}>
             {t("area.apps-connections-3.connection-setup-flow.backToApps")}
@@ -2168,7 +2168,7 @@ export function ConnectionSetupFlow({
             <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>{t("area.apps-connections-3.connection-setup-flow.back")}</Button>
             <Button type="button" disabled={galleryQuery.isFetching} onClick={() => void galleryQuery.refetch()}>
               {galleryQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              {t("common.retry")}
+              {t("area.apps-connections-3.connection-setup-flow.tryAgainButton")}
             </Button>
           </div>
         </div>
@@ -2601,7 +2601,7 @@ export function OAuthConnectStateScreen({
             <Button type="button" onClick={onRetry}>
               {phase === "entry"
                 ? resuming ? t("area.apps-connections-3.connection-setup-flow.oauth.finishWith", { name: serverName }) : t("area.apps-connections-3.connection-setup-flow.access.continueTo", { name: serverName })
-                : t("common.retry")}
+                : t("area.apps-connections-3.connection-setup-flow.tryAgainButton")}
             </Button>
           ) : (
             <Button type="button" disabled>

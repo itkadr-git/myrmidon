@@ -51,6 +51,7 @@
         "statusNeedsAttention": "Needs attention",
         "statusPaused": "Paused",
         "toolsLoadFailed": "Couldn’t load tools for this app.",
+        "tryAgainButton": "Try again",
         "tryAgainShort": "Please try again.",
         "verifyReconnectFailed": "We couldn't verify who can reconnect this identity. Reload the page to try again."
       },
@@ -151,6 +152,7 @@
         "statePausedMsg": "Agents can’t use this account right now.",
         "stateReplaceCredential": "Replace the credential to restore access.",
         "stateSignInAgain": "Sign in again to restore access.",
+        "tryAgainButton": "Try again",
         "tryAgainShort": "Please try again."
       },
       "composio-provenance-chip": {
@@ -443,6 +445,7 @@
           "yourIdentity": "Your identity"
         },
         "tryAgain": "Please try again.",
+        "tryAgainButton": "Try again",
         "zapier": {
           "invalidUrl": "Paste a valid Zapier URL to continue.",
           "urlLabel": "Zapier MCP URL",
