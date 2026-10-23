@@ -182,6 +182,7 @@ describe("myrmidon(1.6.6 T1) fleet routing — tenant isolation", () => {
     expect(a.calls).toEqual([]);
   });
 
+<<<<<<< HEAD
   it("does not fall back to another company's host of the same name", async () => {
     const local = recordingDriver("local");
     const a = recordingDriver("co-a");
@@ -191,6 +192,60 @@ describe("myrmidon(1.6.6 T1) fleet routing — tenant isolation", () => {
     }));
     await expect(routed.start("bot-1")).rejects.toThrow(/names no configured fleet host/);
     expect(a.calls).toEqual([]);
+=======
+  it("a card naming an unknown site is an error that names the site registry", async () => {
+    const d = deps();
+    const routed = fleetRoutingDriver(d, () => ({ adapterConfig: { container: { site: "site-x" } } }));
+    await expect(routed.start("bot-a")).rejects.toThrow(/container\.site "site-x" names no active site/);
+    expect(d.local.calls).toEqual([]);
+  });
+
+  it("passes company id to fleet lookup and fails closed across tenant boundaries", async () => {
+    const d = deps();
+    const seen: Array<string | undefined> = [];
+    const fleetA = recordingDriver("company-1-fleet");
+    const fleetB = recordingDriver("company-2-fleet");
+    const routed = fleetRoutingDriver(
+      {
+        local: d.local,
+        fleet: (companyId) => {
+          seen.push(companyId);
+          return companyId === "company-1"
+            ? new Map([["company-1/host-a", fleetA]])
+            : companyId === "company-2"
+              ? new Map([["company-2/host-a", fleetB]])
+              : new Map();
+        },
+      },
+      (botKey) => ({
+        companyId: botKey === "bot-1" ? "company-1" : botKey === "bot-2" ? "company-2" : undefined,
+        adapterConfig: { container: { site: "host-a" } },
+      }),
+    );
+
+    await routed.start("bot-1");
+    await routed.start("bot-2");
+    expect(fleetA.calls).toEqual(["company-1-fleet:start:bot-1"]);
+    expect(fleetB.calls).toEqual(["company-2-fleet:start:bot-2"]);
+    expect(seen).toEqual(["company-1", "company-2"]);
+    await expect(routed.start("bot-without-company")).rejects.toThrow(/names no active site/);
+    expect(d.local.calls).toEqual([]);
+  });
+
+  it("waits for the registry's first load (ready) before routing", async () => {
+    const d = deps();
+    let release: () => void = () => {};
+    const ready = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const routed = fleetRoutingDriver({ ...d, ready }, () => agent("host-a"));
+    const pending = routed.start("bot-a");
+    await Promise.resolve();
+    expect(d.fleetA.calls).toEqual([]);
+    release();
+    await pending;
+    expect(d.fleetA.calls).toEqual(["fleet-a:start:bot-a"]);
+>>>>>>> ffe3a6ff5 (fix(fleet): preserve startup integrations and tenant routing)
   });
 });
 

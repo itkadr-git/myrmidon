@@ -126,7 +126,13 @@ export interface BotContainersStartupPorts {
    * real one. Its stop is folded into the stop of this run.
    */
   startCloneReportCollection?: typeof startCloneReportCollection;
-  createFleetClientManager?: (deps: FleetClientManagerDeps) => FleetClientManager;
+  startSiteScheduler?: typeof startSiteScheduler;
+  /**
+   * myrmidon(1.6.6 T3): the remote-site clients (registry sites by company and name)
+   * and the one-time import of MYRMIDON_FLEET_HOSTS into the registry. Optional so
+   * a test without a registry builds the runtime without a database round trip.
+   */
+  createFleetClientManager?: typeof createFleetClientManager;
   bootstrapFleetSitesFromEnv?: typeof bootstrapFleetSitesFromEnv;
   /**
    * myrmidon(1.6.6 REMOTE-SITES-T5): the site-scheduler lane (30 s). Opt-in
@@ -194,7 +200,12 @@ export function startBotContainers(
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the collector needs a registered
   // runtime (it reads the reports through its driver), so it starts after the
   // registration and stops with this run.
-  const stopCollector = ports.startCloneReportCollection?.(db, { env }) ?? null;
+  let stopCollector: (() => void) | undefined;
+  try {
+    stopCollector = ports.startCloneReportCollection?.(db, { env });
+  } catch (err) {
+    ports.log.error({ err }, "failed to start clone hygiene report collection");
+  }
   // myrmidon(1.6.6 REMOTE-SITES-T5): after the runtime is registered, because a move uses it.
   const stopSiteScheduler = ports.startSiteScheduler?.(db, { env }) ?? null;
 
