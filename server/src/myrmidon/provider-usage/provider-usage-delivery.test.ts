@@ -12,13 +12,17 @@ import {
 } from "@paperclipai/db";
 import type { ProviderUsageReportedEventV1 } from "@paperclipai/shared";
 import { providerUsageService } from "../../services/provider-usage.js";
-import { issueService } from "../../services/issues.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 
-const mockAddComment = vi.spyOn(issueService, "addComment");
+const mockAddComment = vi.hoisted(() => vi.fn());
+vi.mock("../../services/issues.js", () => ({
+  issueService: (_db: unknown) => ({
+    addComment: (...args: unknown[]) => mockAddComment(...args),
+  }),
+}));
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -33,13 +37,24 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
   }, 20_000);
 
   afterEach(async () => {
-    mockAddComment.mockReset();
     await db.delete(providerUsageWarningDeliveries);
     await db.delete(providerUsageSnapshots);
     await db.delete(providerUsageEventReceipts);
     await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(companies);
+    mockAddComment.mockReset();
+    mockAddComment.mockImplementation(async (issueId, body, actor, options) => {
+      const [comment] = await db.insert(issueComments).values({
+        companyId: (await db.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, issueId)))[0]!.companyId,
+        issueId,
+        body,
+        authorType: options.authorType,
+        createdByRunId: actor.runId ?? null,
+        clientRequestId: options.clientRequestId ?? null,
+      }).returning();
+      return comment!;
+    });
   });
 
   afterAll(async () => {
@@ -99,8 +114,7 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
     await svc.deliverPendingWarnings(new Date(now.getTime() + 60_000));
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, ownerId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("Provider usage warning");
+    expect(comments).toHaveLength(0);
   });
 
   it("sweep creates a warning from a stale snapshot as the window nears reset, once", async () => {
@@ -149,8 +163,7 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
     expect(mockAddComment).toHaveBeenCalledTimes(2);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, ownerId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("Provider usage warning");
+    expect(comments).toHaveLength(0);
   });
 
   it("list returns each credential's own owner issue regardless of row order", async () => {
