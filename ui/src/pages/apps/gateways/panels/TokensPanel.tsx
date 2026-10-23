@@ -71,14 +71,16 @@ function ExpiryValue({ token }: { token: ToolMcpGatewayToken }) {
   const expiresAt = toDate(token.expiresAt);
   if (!expiresAt) return <>{i18n.t("area.apps-gateways-2.tokens-panel.noExpiry")}</>;
   if (expiresAt.getTime() <= Date.now()) {
-    return <><Trans
-        i18nKey="area.apps-gateways-2.tokens-panel.expiredAgo"
-        components={{ 0: <span className="font-medium text-foreground" />, 1: <RelativeTime value={token.expiresAt} /> }}
-      /></>;
+    return (
+      <>
+        <span className="font-medium text-foreground">{i18n.t("area.apps-gateways-2.tokens-panel.status.expired")}</span>{" "}
+        <RelativeTime value={token.expiresAt} />
+      </>
+    );
   }
   return (
     <>
-      <Trans i18nKey="area.apps-gateways-2.tokens-panel.expiresIn" components={{ 0: <RelativeTime value={token.expiresAt} /> }} />
+      {i18n.t("area.apps-gateways-2.tokens-panel.expiresPrefix")} <RelativeTime value={token.expiresAt} />
     </>
   );
 }
@@ -417,7 +419,7 @@ export function TokensPanel({
                 <Trans
                   i18nKey="area.apps-gateways-2.tokens-panel.revokeDialogBody"
                   values={{ name: confirmToken.name }}
-                  components={{ 0: <span className="font-medium text-foreground" /> }}
+                  components={[<span className="font-medium text-foreground" />]}
                 />
               </p>
             </div>

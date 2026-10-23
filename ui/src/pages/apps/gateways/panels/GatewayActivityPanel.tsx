@@ -101,7 +101,7 @@ function ActivityRow({ event }: { event: ToolGatewayActivityEvent }) {
             <Trans
               i18nKey="area.apps-gateways-2.gateway-activity-panel.activityRow.summary"
               values={{ actor, tool, app }}
-              components={{ 0: <span className="font-medium" />, 1: <span className="font-medium" /> }}
+              components={[<span className="font-medium" />, <span className="font-medium" />]}
             />
           </span>
         </span>

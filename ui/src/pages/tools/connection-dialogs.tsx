@@ -351,7 +351,7 @@ export function AddConnectionDialog({
                   <Trans
                     i18nKey="area.apps-gateways-2.connection-dialogs.willBeCreatedAs"
                     values={{ name: applicationName.trim(), type: inferredType }}
-                    components={{ 0: <span className="font-medium text-foreground" /> }}
+                    components={[<span className="font-medium text-foreground" />]}
                   />
                 </div>
               ) : null}
@@ -482,7 +482,7 @@ export function AddConnectionDialog({
                     <p className="text-xs text-muted-foreground">
                       <Trans
                         i18nKey="area.apps-gateways-2.connection-dialogs.vaultHint"
-                        components={{ 0: <span className="font-mono" /> }}
+                        components={[<span className="font-mono" />]}
                       />
                     </p>
                   </>

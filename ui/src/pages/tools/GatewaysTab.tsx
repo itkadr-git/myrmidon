@@ -1,4 +1,3 @@
-import { Trans } from "react-i18next";
 import { type FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -558,15 +557,13 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                                 <div className="flex shrink-0 items-center gap-2">
                                   <span className="text-xs text-muted-foreground">
                                     {token.revokedAt ? (
-                                      <Trans
-                                        i18nKey="area.apps-gateways-2.gateways-tab.revokedAgo"
-                                        components={{ 0: <RelativeTime value={token.revokedAt} /> }}
-                                      />
+                                      <>
+                                        {t("area.apps-gateways-2.gateways-tab.revokedPrefix")} <RelativeTime value={token.revokedAt} />
+                                      </>
                                     ) : token.expiresAt ? (
-                                      <Trans
-                                        i18nKey="area.apps-gateways-2.gateways-tab.expiresIn"
-                                        components={{ 0: <RelativeTime value={token.expiresAt} /> }}
-                                      />
+                                      <>
+                                        {t("area.apps-gateways-2.gateways-tab.expiresPrefix")} <RelativeTime value={token.expiresAt} />
+                                      </>
                                     ) : (
                                       t("area.apps-gateways-2.gateways-tab.noExpiry")
                                     )}

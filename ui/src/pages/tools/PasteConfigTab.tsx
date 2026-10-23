@@ -264,7 +264,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
       <p className="text-xs text-muted-foreground">
         <Trans
           i18nKey="area.apps-gateways-2.paste-config-tab.justUrl"
-          components={{ 0: <Link to="/apps" className="text-primary hover:underline" /> }}
+          components={[<Link to="/apps" className="text-primary hover:underline" />]}
         />
       </p>
 
