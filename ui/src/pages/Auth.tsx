@@ -5,6 +5,7 @@ import { useTranslation } from "@/i18n";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { getRememberedInvitePath } from "../lib/invite-memory";
+import { resolveSignInEmail } from "../lib/login-identifier"; // myrmidon(OPE-8985)
 import { Button } from "@/components/ui/button";
 import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -43,7 +44,7 @@ export function AuthPage() {
   const mutation = useMutation({
     mutationFn: async () => {
       if (mode === "sign_in") {
-        await authApi.signInEmail({ email: email.trim(), password });
+        await authApi.signInEmail({ email: resolveSignInEmail(email), password });
         return;
       }
       await authApi.signUpEmail({
@@ -140,7 +141,7 @@ export function AuthPage() {
                 id="email"
                 name="email"
                 className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                type="email"
+                type={mode === "sign_in" ? "text" : "email"}
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 autoComplete="username"
@@ -150,6 +151,9 @@ export function AuthPage() {
                 aria-describedby={error ? errorId : undefined}
                 autoFocus={mode === "sign_in"}
               />
+              {mode === "sign_in" && (
+                <p className="mt-1 text-xs text-muted-foreground">{t("area.access-secrets-2.auth.loginHint")}</p>
+              )}
             </div>
             <div>
               <label htmlFor="password" className="text-xs text-muted-foreground mb-1 block">{t("area.access-secrets-2.auth.passwordLabel")}</label>
