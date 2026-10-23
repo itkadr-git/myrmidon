@@ -380,12 +380,15 @@ func (s *server) memoryExport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown bot", http.StatusNotFound)
 		return
 	}
-	data, err := s.memory.export(r.Context(), req.BotKey)
+	data, err := s.memory.export(r.Context(), s.memory.bank)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	writeRawJSON(w, data)
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="memory-export.zip"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func writeRawJSON(w http.ResponseWriter, data []byte) {

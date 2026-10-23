@@ -97,33 +97,54 @@ func TestMemoryClientRetainUsesAsyncBatch(t *testing.T) {
 	}
 }
 
-func TestMemoryClientExportUsesSiteAgentContract(t *testing.T) {
-	var got map[string]any
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/default/banks/fleetd/memories/export" {
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+func TestMemoryClientExportUsesAsyncBankTransferContract(t *testing.T) {
+	var paths []string
+	var gotAuth string
+	var upstream *httptest.Server
+	payload := []byte("PK\\x03\\x04archive")
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.RequestURI())
+		gotAuth = r.Header.Get("Authorization")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/default/banks/bot-bank/transfer/export":
+			if r.URL.Query().Get("include_data") != "true" || r.URL.Query().Get("include_bank_config") != "true" || r.URL.Query().Get("include_history") != "false" {
+				t.Errorf("export flags = %v", r.URL.Query())
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"operation_id":"op-123","status":"pending"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/default/banks/bot-bank/operations/op-123":
+			_, _ = w.Write([]byte(`{"operation_id":"op-123","status":"completed","result_metadata":{"download_url":"` + upstream.URL + `/v1/default/files/download/archive-key"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/default/files/download/archive-key":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(payload)
+		default:
+			t.Errorf("unexpected upstream request: %s %s", r.Method, r.URL.RequestURI())
+			http.NotFound(w, r)
 		}
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Fatal(err)
-		}
-		_, _ = w.Write([]byte(`{"items":[]}`))
 	}))
 	defer upstream.Close()
-	client, err := newMemoryClient(&memoryConfig{Enabled: true, URL: upstream.URL, Bank: "fleetd"})
+	client, err := newMemoryClient(&memoryConfig{Enabled: true, URL: upstream.URL, Token: "test-token", Bank: "unused-config-bank", TimeoutMs: 3000})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.export(context.Background(), "bot-1"); err != nil {
+	got, err := client.export(context.Background(), "bot-bank")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got["botKey"] != "bot-1" {
-		t.Fatalf("export body = %#v", got)
+	if string(got) != string(payload) {
+		t.Fatalf("archive = %q", got)
+	}
+	if gotAuth != "Bearer test-token" {
+		t.Fatalf("authorization = %q", gotAuth)
+	}
+	if len(paths) != 3 {
+		t.Fatalf("request sequence = %#v", paths)
 	}
 }
 
-func TestMemoryClientExportRejectsInvalidBotKey(t *testing.T) {
+func TestMemoryClientExportRejectsEmptyBankID(t *testing.T) {
 	client := &memoryClient{}
-	if _, err := client.export(context.Background(), "../secret"); err == nil {
-		t.Fatal("expected invalid bot key to be rejected")
+	if _, err := client.export(context.Background(), " "); err == nil {
+		t.Fatal("expected empty bank id to be rejected")
 	}
 }

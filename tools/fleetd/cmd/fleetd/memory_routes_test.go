@@ -71,7 +71,24 @@ func TestMemoryRoutesRequireAuth(t *testing.T) {
 
 func TestMemoryRoutesForwardToUpstream(t *testing.T) {
 	var gotPath, gotQuery, gotBot string
+	var exportPaths []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/default/banks/fleetd/transfer/export") {
+			exportPaths = append(exportPaths, r.Method+" "+r.URL.Path)
+			switch {
+			case r.Method == http.MethodPost:
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"operation_id":"export-1"}`))
+			case r.Method == http.MethodGet:
+				_, _ = w.Write([]byte(`{"status":"completed","result_metadata":{"download_url":"` + upstream.URL + `/v1/default/files/export"}}`))
+			}
+			return
+		}
+		if r.URL.Path == "/v1/default/files/export" {
+			exportPaths = append(exportPaths, r.Method+" "+r.URL.Path)
+			_, _ = w.Write([]byte("zip-bytes"))
+			return
+		}
 		gotPath = r.URL.Path
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -102,11 +119,14 @@ func TestMemoryRoutesForwardToUpstream(t *testing.T) {
 		t.Fatalf("retain path = %q", gotPath)
 	}
 	rec = routeMemory(s, http.MethodPost, "/v1/memory/export", s.cfg.Token, `{"botKey":"bot-1"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("export: got %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || rec.Body.String() != "zip-bytes" {
+		t.Fatalf("export: got %d %q", rec.Code, rec.Body.String())
 	}
-	if gotPath != "/v1/default/banks/fleetd/memories/export" || gotBot != "bot-1" {
-		t.Fatalf("export upstream saw %q / %q", gotPath, gotBot)
+	if len(exportPaths) != 3 || exportPaths[0] != "POST /v1/default/banks/fleetd/transfer/export" || exportPaths[1] != "GET /v1/default/banks/fleetd/operations/export-1" || exportPaths[2] != "GET /v1/default/files/export" {
+		t.Fatalf("export operation requests = %#v", exportPaths)
+	}
+	if gotBot != "" {
+		t.Fatalf("botKey must not be forwarded to Hindsight: %q", gotBot)
 	}
 	rec = routeMemory(s, http.MethodPost, "/v1/memory/export", s.cfg.Token, `{"botKey":"unknown"}`)
 	if rec.Code != http.StatusNotFound {

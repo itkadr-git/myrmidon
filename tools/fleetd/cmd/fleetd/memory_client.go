@@ -15,6 +15,7 @@ import (
 const (
 	defaultMemoryTimeout = 15 * time.Second
 	maxMemoryResponse    = 2 << 20
+	maxMemoryExport      = 64 << 20
 )
 
 // memoryConfig is optional. The zero value keeps centralized memory disabled.
@@ -164,11 +165,115 @@ func validMemoryBotKey(key string) bool {
 	return validBotKey(key)
 }
 
-func (c *memoryClient) export(ctx context.Context, botKey string) ([]byte, error) {
-	if !validMemoryBotKey(botKey) {
-		return nil, fmt.Errorf("invalid bot key")
+func (c *memoryClient) export(ctx context.Context, bankID string) ([]byte, error) {
+	if strings.TrimSpace(bankID) == "" {
+		return nil, fmt.Errorf("memory bank id is required")
 	}
-	return c.request(ctx, http.MethodPost, "/export", map[string]any{"botKey": botKey})
+	bankPath := "/v1/default/banks/" + url.PathEscape(bankID)
+	startURL := c.baseURL + bankPath + "/transfer/export?include_data=true&include_bank_config=true&include_history=false"
+	startReq, err := http.NewRequestWithContext(ctx, http.MethodPost, startURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("memory export request create: %w", err)
+	}
+	startReq.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		startReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	startData, err := c.doMemoryRequest(startReq, maxMemoryResponse)
+	if err != nil {
+		return nil, fmt.Errorf("memory export start: %w", err)
+	}
+	var operation struct {
+		OperationID string `json:"operation_id"`
+	}
+	if err := json.Unmarshal(startData, &operation); err != nil || strings.TrimSpace(operation.OperationID) == "" {
+		return nil, fmt.Errorf("memory export start returned invalid operation")
+	}
+
+	operationURL := c.baseURL + bankPath + "/operations/" + url.PathEscape(operation.OperationID)
+	deadline := time.NewTimer(c.timeout)
+	defer deadline.Stop()
+	poll := time.NewTicker(250 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		statusReq, err := http.NewRequestWithContext(ctx, http.MethodGet, operationURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("memory export status request create: %w", err)
+		}
+		statusReq.Header.Set("Accept", "application/json")
+		if c.token != "" {
+			statusReq.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		statusData, err := c.doMemoryRequest(statusReq, maxMemoryResponse)
+		if err != nil {
+			return nil, fmt.Errorf("memory export status: %w", err)
+		}
+		var status struct {
+			Status         string `json:"status"`
+			ResultMetadata struct {
+				DownloadURL string `json:"download_url"`
+			} `json:"result_metadata"`
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(statusData, &status); err != nil {
+			return nil, fmt.Errorf("memory export status returned invalid response")
+		}
+		switch status.Status {
+		case "completed":
+			downloadURL, err := c.validateExportDownloadURL(status.ResultMetadata.DownloadURL)
+			if err != nil {
+				return nil, err
+			}
+			downloadReq, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+			if err != nil {
+				return nil, fmt.Errorf("memory export download request create: %w", err)
+			}
+			if c.token != "" {
+				downloadReq.Header.Set("Authorization", "Bearer "+c.token)
+			}
+			return c.doMemoryRequest(downloadReq, maxMemoryExport)
+		case "failed", "cancelled":
+			return nil, fmt.Errorf("memory export operation %s: %s", status.Status, status.Error)
+		case "pending", "processing", "running", "":
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-deadline.C:
+				return nil, fmt.Errorf("memory export operation timed out")
+			case <-poll.C:
+			}
+		default:
+			return nil, fmt.Errorf("memory export operation has unknown status %q", status.Status)
+		}
+	}
+}
+
+func (c *memoryClient) validateExportDownloadURL(raw string) (string, error) {
+	parsed, err := url.Parse(raw)
+	base, _ := url.Parse(c.baseURL)
+	if err != nil || parsed == nil || base == nil || parsed.Scheme != base.Scheme || parsed.Host != base.Host || parsed.User != nil {
+		return "", fmt.Errorf("memory export returned an unsafe download URL")
+	}
+	return raw, nil
+}
+
+func (c *memoryClient) doMemoryRequest(req *http.Request, limit int64) ([]byte, error) {
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("upstream unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("upstream read: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("upstream response too large")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("upstream returned HTTP %d", resp.StatusCode)
+	}
+	return data, nil
 }
 
 func decodeMemoryBody(r *http.Request, out any) error {
