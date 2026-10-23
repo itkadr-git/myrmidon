@@ -56,7 +56,7 @@ index cadf8bf..0e71549 100644
 +            # (refusal 3/4/5, other exit code, timeout, bad output) falls back to
 +            # /scratch with a run warning event instead of failing the turn: a
 +            # workspace that cannot be opened is a turn problem, not an agent fault
-+            # (OPE-8946), and a failed run would push the agent towards status error.
++            #, and a failed run would push the agent towards status error.
 +            if run.workspace is not None:
 +                from agent.runtime_cwd import reset_session_cwd, set_session_cwd
 +                from tools.run_workspace import (
@@ -132,7 +132,7 @@ index 0000000..360e518
 +exit code, timeout, undecodable output) never fail the run: it starts in
 +the fallback directory ``/scratch`` instead and the run stream carries a
 +warning event — a silent failure would send the agent's edits to the wrong
-+directory, and a failed run would count against the agent's health (OPE-8946).
++directory, and a failed run would count against the agent's health.
 +A request without the field behaves exactly as before.
 +
 +Concurrency: the resolved path lives in a ContextVar bound in
@@ -160,7 +160,7 @@ index 0000000..360e518
 +
 +# Contract C6 (packages/shared/src/myrmidon-bot-workspace.ts in the board repo):
 +# exit codes 3/4/5 fall back to RUN_WORKSPACE_FALLBACK_DIR with a warning
-+# event. OPE-8946: so does every other open failure (other exit code, timeout,
++# event. So does every other open failure (other exit code, timeout,
 +# bad output) — an unopenable workspace is a turn error, never a reason to fail
 +# the run and flip the agent to status error. The warning carries the cause.
 +RUN_WORKSPACE_FALLBACK_DIR = "/scratch"
