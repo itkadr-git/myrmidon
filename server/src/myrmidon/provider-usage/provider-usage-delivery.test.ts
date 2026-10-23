@@ -18,11 +18,16 @@ import {
 } from "../../__tests__/helpers/embedded-postgres.js";
 
 const mockAddComment = vi.hoisted(() => vi.fn());
-vi.mock("../../services/issues.js", () => ({
-  issueService: (_db: unknown) => ({
-    addComment: (...args: unknown[]) => mockAddComment(...args),
-  }),
-}));
+vi.mock("../../services/issues.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../services/issues.js")>();
+  return {
+    ...actual,
+    issueService: (db: Parameters<typeof actual.issueService>[0]) => ({
+      ...actual.issueService(db),
+      addComment: (...args: Parameters<ReturnType<typeof actual.issueService>["addComment"]>) => mockAddComment(...args),
+    }),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -139,8 +144,7 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
     const now = new Date("2026-10-14T09:00:00Z");
     await svc.ingest(companyId, report(companyId, "evt-retry", "cred-retry", 90), now, ownerId);
 
-    mockAddComment.mockRejectedValueOnce(new Error("temporary comment failure"))
-      .mockResolvedValueOnce({ id: randomUUID() } as never);
+    mockAddComment.mockRejectedValueOnce(new Error("temporary comment failure"));
 
     const failed = await svc.deliverPendingWarnings(now);
     expect(failed).toEqual({ delivered: 0, failed: 1 });
@@ -163,7 +167,8 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
     expect(mockAddComment).toHaveBeenCalledTimes(2);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, ownerId));
-    expect(comments).toHaveLength(0);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Provider usage warning");
   });
 
   it("list returns each credential's own owner issue regardless of row order", async () => {
