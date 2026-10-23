@@ -112,7 +112,12 @@ function statusText(status: BotContainerStatus | null, statusError: string | nul
   if (status.containerError) return i18n.t("area.settings-agent-card.agent-card-container-fields.statusUnavailableWith", { error: status.containerError });
   if (!status.container) return i18n.t("area.settings-agent-card.agent-card-container-fields.statusNoAgentStatus");
   const image = status.container.image ? ` (${status.container.image})` : "";
-  return `${stateLabel(status.container.state)}${image}`;
+  const runtime = status.idleStopRuntime;
+  const timestamps = runtime?.lastStoppedAt || runtime?.lastStartedAt
+    ? `; last stopped ${runtime.lastStoppedAt ? new Date(runtime.lastStoppedAt).toLocaleString() : "never"}; last started ${runtime.lastStartedAt ? new Date(runtime.lastStartedAt).toLocaleString() : "never"}`
+    : "";
+  const label = runtime?.idleStopped ? "Stopped on idle (starts before the next run)" : stateLabel(status.container.state);
+  return `${label}${image}${timestamps}`;
 }
 
 /** One line for the rollout category of the saved card, or null when the server did not say. */
@@ -276,6 +281,26 @@ export function AgentCardContainerFieldsView({
                 </p>
               )}
             </Field>
+
+            <div className="space-y-3 rounded-md border border-border p-3" data-testid="myrmidon-bot-idle-stop">
+              <Field label="Idle stop mode" hint="Always on containers are excluded from idle-stop. On demand is the default.">
+                <select
+                  className={inputClass}
+                  aria-label="Idle stop mode"
+                  data-testid="myrmidon-bot-idle-stop-mode"
+                  value={card.idleStopMode === "always_on" ? "always_on" : "on_demand"}
+                  onChange={(event) => onChange({ ...card, idleStopMode: event.target.value as "always_on" | "on_demand" })}
+                >
+                  <option value="on_demand">On demand</option>
+                  <option value="always_on">Always on</option>
+                </select>
+              </Field>
+              <div className="text-xs text-muted-foreground" data-testid="myrmidon-bot-idle-stop-runtime">
+                Container: {status?.idleStopRuntime?.idleStopped ? "stopped on idle" : status?.container ? stateLabel(status.container.state).toLowerCase() : "unknown"}
+                {status?.idleStopRuntime?.lastStoppedAt && `; last stopped ${new Date(status.idleStopRuntime.lastStoppedAt).toLocaleString()}`}
+                {status?.idleStopRuntime?.lastStartedAt && `; last started ${new Date(status.idleStopRuntime.lastStartedAt).toLocaleString()}`}
+              </div>
+            </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               {NUMBER_FIELD_ORDER.map((field) => (

@@ -18,6 +18,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "../lib/utils";
 import { useSignOut } from "@/hooks/useSignOut";
 import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSettingsPanel"; // myrmidon(R3)
+import { IdleStopSettingsPanel } from "@/components/myrmidon/IdleStopSettingsPanel"; // myrmidon(OPE-7898)
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
 import { RunQueuePrioritySettingsPanel } from "@/components/myrmidon/RunQueuePrioritySettingsPanel"; // myrmidon(1.6.5 RUN-PRIORITY B)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
@@ -160,6 +161,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       )}
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
+      <IdleStopSettingsPanel /> {/* myrmidon(OPE-7898) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
       <RunQueuePrioritySettingsPanel /> {/* myrmidon(1.6.5 RUN-PRIORITY B) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}

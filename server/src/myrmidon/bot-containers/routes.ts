@@ -62,16 +62,14 @@ import {
 } from "./clone-hygiene.js";
 import { isImageAllowed, parseImageAllowlist } from "./template.js";
 import type { BotContainerState } from "./driver.js";
+import { idleStopRuntimeFromStatus } from "../idle-stop-runtime.js";
 
 export interface BotContainerRouteAgent {
   id: string;
   companyId: string;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
-  /** The card's scheduling policy; read for heartbeat.maxConcurrentRuns. */
   runtimeConfig: Record<string, unknown>;
-  /** myrmidon(BOT-ROLLOUT): the agent's lifecycle status (idle, paused, running, …) —
-   *  the same value the rollout script reads off the agents list to decide a switch. */
   status?: string | null;
 }
 
@@ -157,6 +155,12 @@ export interface BotContainerStatusResponse {
   /** The gateway is limiting runs below the board's limit (unmanaged gateway with
    *  recently rate-limited runs). Null when there is nothing to warn about. */
   gatewayConcurrencyWarning: string | null;
+  idleStopMode: "on_demand" | "always_on";
+  idleStopRuntime: {
+    idleStopped: boolean;
+    lastStoppedAt: string | null;
+    lastStartedAt: string | null;
+  } | null;
   /** myrmidon(L6-PROFILE-UPDATE-STARVATION): when the card has a profile change
    *  that has not been applied yet, the ISO timestamp of the agent's open
    *  maintenance window (when the update started waiting); null when nothing
@@ -287,6 +291,8 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
       gatewayConcurrency: null,
       gatewayConcurrencyNote: null,
       gatewayConcurrencyWarning: null,
+      idleStopMode: ((agent.adapterConfig.container as { idleStopMode?: string } | undefined)?.idleStopMode === "always_on" ? "always_on" : "on_demand"),
+      idleStopRuntime: null,
       profileUpdatePendingSince: null,
     };
 
@@ -299,6 +305,12 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
           state: status.state,
           image: status.image ?? null,
           ...(status.idleStopped ? { idleStopped: true } : {}),
+        };
+        const idleRuntime = idleStopRuntimeFromStatus(status);
+        body.idleStopRuntime = {
+          idleStopped: idleRuntime.idleStopped,
+          lastStoppedAt: idleRuntime.lastStoppedAt?.toISOString() ?? null,
+          lastStartedAt: idleRuntime.lastStartedAt?.toISOString() ?? null,
         };
         // myrmidon(CONCURRENCY-SYNC): the applied limit, as recorded by the last apply's
         // marker. Only a container that exists can carry one.

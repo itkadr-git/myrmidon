@@ -203,6 +203,7 @@ import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js
 import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js"; // myrmidon(REVIEW-REWORK)
 import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
 import { buildPromptBudgetSweeper } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
+import { resolveRunScratchSweeperConfig, startRunScratchSweeper } from "./services/run-scratch-sweeper.js"; // myrmidon(1.6.6 TMP-HYGIENE)
 import { buildMonitoringLinkWatchdog } from "./myrmidon/monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus parse worker — one pass per gate,
 // a no-op while the module is off or its ports (parts A/B) are not wired.
@@ -2266,7 +2267,7 @@ async function startServerWithDatabaseTeardown(
     // Initialize IDLE-STOP service after bot containers (needs the driver from runtime)
     const botContainerRuntime = getBotContainerRuntime();
     if (botContainerRuntime) {
-      initializeIdleStopService(botContainerRuntime.driver, db as any);
+      await initializeIdleStopService(botContainerRuntime.driver, db as any);
     }
     runContextColumnsBackfill = startRunContextColumnsBackfill(db as any, logger); // OPE-5007 П2: batched, per-batch-commit fill of the thin run-context columns (the migration only adds them)
     startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
@@ -2840,6 +2841,14 @@ async function startServerWithDatabaseTeardown(
     }, backupIntervalMs);
   }
   
+  // myrmidon(1.6.6 TMP-HYGIENE): the janitor of orphaned heartbeat run scratch
+  // directories runs in every process role: it is local, idempotent, and the
+  // volume it reports lives in this process's /metrics state.
+  startRunScratchSweeper({
+    config: resolveRunScratchSweeperConfig((name) => readProductEnv(name)),
+    logger,
+  });
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.

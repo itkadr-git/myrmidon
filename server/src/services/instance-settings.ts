@@ -300,6 +300,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.modelMenu ? { modelMenu: parsed.data.modelMenu } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
+      // myrmidon(OPE-7898): the stored IDLE-STOP policy survives every general read and write.
+      // Without this line the normalizer drops the key: the board setting never roundtrips.
+      ...(parsed.data.idleStop ? { idleStop: parsed.data.idleStop } : {}),
       // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
       ...(parsed.data.botDiskQuota ? { botDiskQuota: parsed.data.botDiskQuota } : {}),
       // myrmidon(BOT-ROLLOUT): the stored release bot-image rollout settings survive every general write

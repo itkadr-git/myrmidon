@@ -29,6 +29,13 @@ vi.mock('@myrmidon/db', () => ({
   },
 }));
 
+const settingsState: { general: Record<string, unknown> } = { general: {} };
+vi.mock('../services/instance-settings.js', () => ({
+  instanceSettingsService: () => ({
+    getGeneral: async () => settingsState.general,
+  }),
+}));
+
 vi.mock('./maintenance/store.js', () => ({
   readMaintenanceDocument: vi.fn().mockResolvedValue({ windows: [] }),
 }));
@@ -47,6 +54,7 @@ describe('IdleStopService', () => {
   };
 
   beforeEach(() => {
+    settingsState.general = {};
     mockLogger = {
       info: vi.fn(),
       warn: vi.fn(),
@@ -563,9 +571,36 @@ describe('IdleStopService', () => {
       };
 
       idleStopService = new IdleStopService(mockDriver as any, mockDb, disabledConfig);
+      vi.mocked(mockDriver.status).mockResolvedValue({ botKey: 'any-bot', state: 'running' });
 
       await expect(idleStopService.ensureStartedAndHealthy('any-bot')).resolves.toBeUndefined();
-      expect(mockDriver.status).not.toHaveBeenCalled();
+      expect(mockDriver.start).not.toHaveBeenCalled();
+    });
+
+    it('still wakes a container it idle-stopped when switched off', async () => {
+      idleStopService = new IdleStopService(mockDriver as any, mockDb, { ...testConfig, enabled: false });
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey: 'b', state: 'stopped', idleStopped: true })
+        .mockResolvedValueOnce({ botKey: 'b', state: 'running' });
+      vi.mocked(mockDriver.start).mockResolvedValue(undefined);
+
+      await idleStopService.ensureStartedAndHealthy('b');
+
+      expect(mockDriver.start).toHaveBeenCalledWith('b');
+    });
+
+    it('applies settings changed on the board without restart', async () => {
+      idleStopService = new IdleStopService(mockDriver as any, mockDb, { ...testConfig, enabled: false });
+      settingsState.general = { idleStop: { enabled: true, healthTimeoutMs: 1234 } };
+      vi.mocked(mockDriver.status).mockResolvedValue({ botKey: 'b', state: 'stopped' });
+      vi.mocked(mockDriver.start).mockResolvedValue(undefined);
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey: 'b', state: 'stopped' })
+        .mockResolvedValueOnce({ botKey: 'b', state: 'running' });
+
+      await idleStopService.ensureStartedAndHealthy('b');
+
+      expect(mockDriver.start).toHaveBeenCalledWith('b');
     });
   });
 
@@ -589,10 +624,69 @@ describe('IdleStopService', () => {
       };
 
       idleStopService = new IdleStopService(mockDriver as any, mockDb, disabledConfig);
+      vi.mocked(mockDriver.status).mockResolvedValue({ botKey: 'any-bot', state: 'running' });
 
       const result = await idleStopService.wake('any-bot');
 
       expect(result).toBe(true);
+      expect(mockDriver.start).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('defaults and per-bot mode', () => {
+    it('is enabled by default', () => {
+      const service = new IdleStopService(mockDriver, mockDb, {}, mockLogger);
+      service.start();
+      expect(mockLogger.info).toHaveBeenCalledWith('Starting IDLE-STOP service: afterSec=1800, healthTimeoutMs=30000');
+      service.stop();
+    });
+
+    it('never stops an always_on bot', async () => {
+      const botKey = '550e8400-e29b-41d4-a716-446655440000';
+      mockDb.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            then: vi.fn().mockImplementation((resolve: any) =>
+              resolve([{ agentId: botKey, adapterConfig: { container: { enabled: true, idleStopMode: 'always_on' } } }]),
+            ),
+          }),
+        }),
+      });
+      vi.mocked(mockDriver.list).mockResolvedValue([{ botKey, state: 'running' }]);
+
+      await idleStopService.performSweep();
+
+      expect(mockDriver.stopIdle).not.toHaveBeenCalled();
+      expect(mockDriver.stop).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('readRuntimeState', () => {
+    it('reads last stop/start times from the container inspect', async () => {
+      vi.mocked(mockDriver.status).mockResolvedValue({
+        botKey: 'b',
+        state: 'stopped',
+        idleStopped: true,
+        inspect: { State: { StartedAt: '2026-10-20T01:00:00.000Z', FinishedAt: '2026-10-20T02:00:00.000Z' } },
+      });
+
+      const state = await idleStopService.readRuntimeState('b');
+
+      expect(state.idleStopped).toBe(true);
+      expect(state.lastStartedAt?.toISOString()).toBe('2026-10-20T01:00:00.000Z');
+      expect(state.lastStoppedAt?.toISOString()).toBe('2026-10-20T02:00:00.000Z');
+    });
+
+    it('treats the docker zero time as never', async () => {
+      vi.mocked(mockDriver.status).mockResolvedValue({
+        botKey: 'b',
+        state: 'running',
+        inspect: { State: { StartedAt: '2026-10-20T01:00:00.000Z', FinishedAt: '0001-01-01T00:00:00Z' } },
+      });
+
+      const state = await idleStopService.readRuntimeState('b');
+
+      expect(state.lastStoppedAt).toBeNull();
     });
   });
 });

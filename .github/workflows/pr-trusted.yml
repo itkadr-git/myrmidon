@@ -326,6 +326,9 @@ jobs:
       - name: Test feature module boundary check
         run: node --test ./scripts/check-module-boundaries.test.mjs
 
+      - name: Check env registry completeness
+        run: node --test ./scripts/check-env-registry.test.mjs && node scripts/check-env-registry.mjs
+
       - name: Test PR quality-gate scripts
         run: node --test '.github/scripts/tests/*.test.mjs'
 
