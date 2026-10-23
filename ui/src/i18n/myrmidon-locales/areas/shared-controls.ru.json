@@ -1,0 +1,146 @@
+{
+  "area": {
+    "shared-controls": {
+      "execution-participant-picker": {
+        "reviewers": "Ревьюеры",
+        "approvers": "Согласующие",
+        "searchReviewers": "Поиск ревьюеров...",
+        "searchApprovers": "Поиск согласующих...",
+        "noReviewers": "Без ревьюеров",
+        "noApprovers": "Без согласующих",
+        "assignToMe": "Назначить на меня",
+        "requester": "Заказчик"
+      },
+      "file-tree": {
+        "frontmatter": {
+          "name": "Название",
+          "title": "Заголовок",
+          "kind": "Тип",
+          "reportsTo": "Подчиняется",
+          "skills": "Навыки",
+          "status": "Статус",
+          "description": "Описание",
+          "priority": "Приоритет",
+          "assignee": "Ответственный",
+          "project": "Проект",
+          "recurring": "Повторяется",
+          "targetDate": "Срок"
+        },
+        "ariaLabel": "Файлы",
+        "emptyTitle": "Нет файлов",
+        "emptyDescription": "Файлы появятся здесь, когда станут доступны.",
+        "collapse": "Свернуть: {{name}}",
+        "expand": "Развернуть: {{name}}"
+      },
+      "filter-bar": {
+        "clearAll": "Сбросить все"
+      },
+      "goal-tree": {
+        "subtreeLabel": "Подцели: {{title}}",
+        "empty": "Целей нет."
+      },
+      "live-run-widget": {
+        "title": "Активные прогоны",
+        "description": "Общий чат-вид прогона из активности задачи.",
+        "stopping": "Остановка…",
+        "stop": "Остановить",
+        "openRun": "Открыть прогон"
+      },
+      "member-multi-select": {
+        "selectPeople": "Выберите людей",
+        "peopleSelected_one": "Выбран {{count}} человек",
+        "peopleSelected_few": "Выбрано {{count}} человека",
+        "peopleSelected_many": "Выбрано {{count}} человек",
+        "peopleSelected_other": "Выбрано {{count}} человека",
+        "filterPlaceholder": "Фильтр по людям",
+        "emptyMessage": "Участников пока нет.",
+        "allow": "Разрешить: {{name}}",
+        "noMatches": "Ничего не найдено.",
+        "nonePicked": "Никто не выбран",
+        "pickedCount": "Выбрано: {{count}}",
+        "saving": "Сохранение…",
+        "andMore": "и ещё {{count}}"
+      },
+      "reports-to-picker": {
+        "unknownManager": "Неизвестный руководитель (устаревший ID)",
+        "reportsTo": "Подчиняется: {{name}}",
+        "reportsToTerminated": "Подчиняется: {{name}} (уволен)",
+        "disabledEmptyLabel": "Подчинение: нет (CEO)",
+        "chooseLabel": "Подчиняется...",
+        "noManager": "Без руководителя",
+        "currentTerminated": "Сейчас: {{name}} (уволен)",
+        "missingManager": "Сохранённого руководителя нет в этой организации. Выберите нового или сбросьте."
+      },
+      "swipe-to-archive": {
+        "archive": "В архив"
+      },
+      "task-tree-controls": {
+        "menu": {
+          "pauseWork": "Приостановить работу",
+          "pauseSubtree": "Приостановить поддерево",
+          "resumeWork": "Возобновить работу",
+          "resumeSubtree": "Возобновить поддерево",
+          "cancelSubtree": "Отменить поддерево...",
+          "restoreSubtree": "Восстановить поддерево..."
+        },
+        "dialog": {
+          "cancelTitle": "Отменить поддерево?",
+          "restoreTitle": "Восстановить поддерево",
+          "resumeWorkTitle": "Возобновить работу",
+          "resumeSubtreeTitle": "Возобновить поддерево",
+          "willCancel_one": "Будет отменена {{count}} задача.",
+          "willCancel_few": "Будут отменены {{count}} задачи.",
+          "willCancel_many": "Будут отменены {{count}} задач.",
+          "willCancel_other": "Будут отменены {{count}} задачи.",
+          "willRestore_one": "Будет восстановлена {{count}} задача.",
+          "willRestore_few": "Будут восстановлены {{count}} задачи.",
+          "willRestore_many": "Будут восстановлены {{count}} задач.",
+          "willRestore_other": "Будут восстановлены {{count}} задачи.",
+          "willResume_one": "Будет возобновлена {{count}} задача.",
+          "willResume_few": "Будут возобновлены {{count}} задачи.",
+          "willResume_many": "Будут возобновлены {{count}} задач.",
+          "willResume_other": "Будут возобновлены {{count}} задачи.",
+          "retryPreview": "Повторить предпросмотр",
+          "wakeAgents": "Разбудить затронутых агентов ({{count}})",
+          "keepTasks": "Оставить задачи",
+          "applying": "Применяется…",
+          "cancelTasks_one": "Отменить {{count}} задачу",
+          "cancelTasks_few": "Отменить {{count}} задачи",
+          "cancelTasks_many": "Отменить {{count}} задач",
+          "cancelTasks_other": "Отменить {{count}} задачи",
+          "restoreTasks_one": "Восстановить {{count}} задачу",
+          "restoreTasks_few": "Восстановить {{count}} задачи",
+          "restoreTasks_many": "Восстановить {{count}} задач",
+          "restoreTasks_other": "Восстановить {{count}} задачи"
+        },
+        "notice": {
+          "subtreePaused": "Поддерево приостановлено.",
+          "taskPaused": "Задача приостановлена."
+        }
+      },
+      "search-filter-bar": {
+        "searchMe": "я мои me mine",
+        "unassigned": "Без исполнителя",
+        "searchUnassigned": "без исполнителя никто unassigned none nobody",
+        "status": "Статус",
+        "openItems": "Открытые",
+        "searchAssignees": "Поиск исполнителей…",
+        "noAssignees": "Нет исполнителей",
+        "project": "Проект",
+        "searchProjects": "Поиск проектов…",
+        "noProjects": "Нет проектов",
+        "label": "Метка",
+        "searchLabels": "Поиск меток…",
+        "noLabels": "Нет меток",
+        "priority": "Приоритет",
+        "updated": "Обновлено",
+        "priorityOptions": {
+          "critical": "Критичный",
+          "high": "Высокий",
+          "medium": "Средний",
+          "low": "Низкий"
+        }
+      }
+    }
+  }
+}

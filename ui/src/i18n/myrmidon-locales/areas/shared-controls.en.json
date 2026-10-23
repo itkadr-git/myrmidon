@@ -1,0 +1,134 @@
+{
+  "area": {
+    "shared-controls": {
+      "execution-participant-picker": {
+        "reviewers": "Reviewers",
+        "approvers": "Approvers",
+        "searchReviewers": "Search reviewers...",
+        "searchApprovers": "Search approvers...",
+        "noReviewers": "No reviewers",
+        "noApprovers": "No approvers",
+        "assignToMe": "Assign to me",
+        "requester": "Requester"
+      },
+      "file-tree": {
+        "frontmatter": {
+          "name": "Name",
+          "title": "Title",
+          "kind": "Kind",
+          "reportsTo": "Reports to",
+          "skills": "Skills",
+          "status": "Status",
+          "description": "Description",
+          "priority": "Priority",
+          "assignee": "Responsible",
+          "project": "Project",
+          "recurring": "Recurring",
+          "targetDate": "Target date"
+        },
+        "ariaLabel": "Files",
+        "emptyTitle": "No files",
+        "emptyDescription": "Files will appear here when they are available.",
+        "collapse": "Collapse {{name}}",
+        "expand": "Expand {{name}}"
+      },
+      "filter-bar": {
+        "clearAll": "Clear all"
+      },
+      "goal-tree": {
+        "subtreeLabel": "{{title}} subtree",
+        "empty": "No goals."
+      },
+      "live-run-widget": {
+        "title": "Live Runs",
+        "description": "Uses the shared chat-style run surface from task activity.",
+        "stopping": "Stopping…",
+        "stop": "Stop",
+        "openRun": "Open run"
+      },
+      "member-multi-select": {
+        "selectPeople": "Select people",
+        "peopleSelected_one": "{{count}} person selected",
+        "peopleSelected_other": "{{count}} people selected",
+        "filterPlaceholder": "Filter people",
+        "emptyMessage": "No members yet.",
+        "allow": "Allow {{name}}",
+        "noMatches": "No matches.",
+        "nonePicked": "No people selected",
+        "pickedCount": "{{count}} selected",
+        "saving": "Saving…",
+        "andMore": "and {{count}} more"
+      },
+      "reports-to-picker": {
+        "unknownManager": "Unknown manager (stale ID)",
+        "reportsTo": "Reports to {{name}}",
+        "reportsToTerminated": "Reports to {{name}} (terminated)",
+        "disabledEmptyLabel": "Reports to: N/A (CEO)",
+        "chooseLabel": "Reports to...",
+        "noManager": "No manager",
+        "currentTerminated": "Current: {{name}} (terminated)",
+        "missingManager": "Saved manager is missing from this organization. Choose a new manager or clear."
+      },
+      "swipe-to-archive": {
+        "archive": "Archive"
+      },
+      "task-tree-controls": {
+        "menu": {
+          "pauseWork": "Pause work",
+          "pauseSubtree": "Pause subtree",
+          "resumeWork": "Resume work",
+          "resumeSubtree": "Resume subtree",
+          "cancelSubtree": "Cancel subtree...",
+          "restoreSubtree": "Restore subtree..."
+        },
+        "dialog": {
+          "cancelTitle": "Cancel subtree?",
+          "restoreTitle": "Restore subtree",
+          "resumeWorkTitle": "Resume work",
+          "resumeSubtreeTitle": "Resume subtree",
+          "willCancel_one": "{{count}} task will be cancelled.",
+          "willCancel_other": "{{count}} tasks will be cancelled.",
+          "willRestore_one": "{{count}} task will be restored.",
+          "willRestore_other": "{{count}} tasks will be restored.",
+          "willResume_one": "{{count}} task will resume.",
+          "willResume_other": "{{count}} tasks will resume.",
+          "retryPreview": "Retry preview",
+          "wakeAgents": "Wake affected agents ({{count}})",
+          "keepTasks": "Keep tasks",
+          "applying": "Applying…",
+          "cancelTasks_one": "Cancel {{count}} task",
+          "cancelTasks_other": "Cancel {{count}} tasks",
+          "restoreTasks_one": "Restore {{count}} task",
+          "restoreTasks_other": "Restore {{count}} tasks"
+        },
+        "notice": {
+          "subtreePaused": "Subtree is paused.",
+          "taskPaused": "Task is paused."
+        }
+      },
+      "search-filter-bar": {
+        "searchMe": "me mine",
+        "unassigned": "Unassigned",
+        "searchUnassigned": "unassigned none nobody",
+        "status": "Status",
+        "openItems": "Open items",
+        "searchAssignees": "Search assignees…",
+        "noAssignees": "No assignees",
+        "project": "Project",
+        "searchProjects": "Search projects…",
+        "noProjects": "No projects",
+        "label": "Label",
+        "searchLabels": "Search labels…",
+        "noLabels": "No labels",
+        "priority": "Priority",
+        "updated": "Updated",
+        "priorityOptions": {
+          "critical": "Critical",
+          "high": "High",
+          "medium": "Medium",
+          "low": "Low"
+        }
+      }
+    }
+  }
+}
