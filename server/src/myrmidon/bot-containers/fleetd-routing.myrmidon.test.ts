@@ -193,10 +193,10 @@ describe("myrmidon(1.6.6 T1) fleet routing — tenant isolation", () => {
     expect(a.calls).toEqual([]);
   });
 
-  it("a card naming an unknown site is an error that names the site registry", async () => {
+  it("a card naming an unknown host is an error that names the host config", async () => {
     const d = deps();
-    const routed = fleetRoutingDriver(d, () => ({ adapterConfig: { container: { site: "site-x" } } }));
-    await expect(routed.start("bot-a")).rejects.toThrow(/container\.site "site-x" names no active site/);
+    const routed = fleetRoutingDriver(d, () => ({ adapterConfig: { container: { host: "site-x" } } }));
+    await expect(routed.start("bot-a")).rejects.toThrow(/container\.host "site-x" names no configured fleet host/);
     expect(d.local.calls).toEqual([]);
   });
 
@@ -219,7 +219,7 @@ describe("myrmidon(1.6.6 T1) fleet routing — tenant isolation", () => {
       },
       (botKey) => ({
         companyId: botKey === "bot-1" ? "company-1" : botKey === "bot-2" ? "company-2" : undefined,
-        adapterConfig: { container: { site: "host-a" } },
+        adapterConfig: { container: { host: "host-a" } },
       }),
     );
 
@@ -228,7 +228,7 @@ describe("myrmidon(1.6.6 T1) fleet routing — tenant isolation", () => {
     expect(fleetA.calls).toEqual(["company-1-fleet:start:bot-1"]);
     expect(fleetB.calls).toEqual(["company-2-fleet:start:bot-2"]);
     expect(seen).toEqual(["company-1", "company-2"]);
-    await expect(routed.start("bot-without-company")).rejects.toThrow(/names no active site/);
+    await expect(routed.start("bot-without-company")).rejects.toThrow(/no companyId/);
     expect(d.local.calls).toEqual([]);
   });
 
@@ -238,7 +238,7 @@ describe("myrmidon(1.6.6 T1) fleet routing — tenant isolation", () => {
     const ready = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const routed = fleetRoutingDriver({ ...d, ready }, () => agent("host-a"));
+    const routed = fleetRoutingDriver({ ...d, ready: () => ready }, () => agent("host-a"));
     const pending = routed.start("bot-a");
     await Promise.resolve();
     expect(d.fleetA.calls).toEqual([]);

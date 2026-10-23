@@ -126,13 +126,12 @@ export interface BotContainersStartupPorts {
    * real one. Its stop is folded into the stop of this run.
    */
   startCloneReportCollection?: typeof startCloneReportCollection;
-  startSiteScheduler?: typeof startSiteScheduler;
   /**
    * myrmidon(1.6.6 T3): the remote-site clients (registry sites by company and name)
    * and the one-time import of MYRMIDON_FLEET_HOSTS into the registry. Optional so
    * a test without a registry builds the runtime without a database round trip.
    */
-  createFleetClientManager?: typeof createFleetClientManager;
+  createFleetClientManager?: (deps: FleetClientManagerDeps) => FleetClientManager;
   bootstrapFleetSitesFromEnv?: typeof bootstrapFleetSitesFromEnv;
   /**
    * myrmidon(1.6.6 REMOTE-SITES-T5): the site-scheduler lane (30 s). Opt-in
