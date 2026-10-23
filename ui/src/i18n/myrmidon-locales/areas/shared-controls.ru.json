@@ -30,7 +30,8 @@
         "emptyTitle": "Нет файлов",
         "emptyDescription": "Файлы появятся здесь, когда станут доступны.",
         "collapse": "Свернуть: {{name}}",
-        "expand": "Развернуть: {{name}}"
+        "expand": "Развернуть: {{name}}",
+        "errorBadge": "ошибка"
       },
       "filter-bar": {
         "clearAll": "Сбросить все"

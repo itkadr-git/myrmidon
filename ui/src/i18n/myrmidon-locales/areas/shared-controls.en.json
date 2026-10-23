@@ -30,7 +30,8 @@
         "emptyTitle": "No files",
         "emptyDescription": "Files will appear here when they are available.",
         "collapse": "Collapse {{name}}",
-        "expand": "Expand {{name}}"
+        "expand": "Expand {{name}}",
+        "errorBadge": "error"
       },
       "filter-bar": {
         "clearAll": "Clear all"
