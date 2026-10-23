@@ -66,7 +66,16 @@ export function createPoolChatHttpTransport(options: PoolChatHttpTransportOption
         body: JSON.stringify(body),
       });
       if (!response.ok) throw new Error("provider request failed");
-      const payload = (await response.json()) as Record<string, any>;
+      let payload: Record<string, any>;
+      try {
+        const parsed: unknown = await response.json();
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          throw new Error("invalid provider response shape");
+        }
+        payload = parsed as Record<string, any>;
+      } catch {
+        throw new Error("provider response invalid");
+      }
       const text = options.provider === "google"
         ? payload.candidates?.[0]?.content?.parts
           ?.map((part: any) => part?.text)

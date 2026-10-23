@@ -106,6 +106,7 @@ describe("pool-chat transports", () => {
     ["empty parts", { candidates: [{ content: { parts: [] } }] }],
     ["non-text parts", { candidates: [{ content: { parts: [{ inlineData: { data: "private" } }] } }] }],
     ["malformed JSON", null],
+    ["array response", []],
   ])("rejects Gemini %s without exposing response content", async (_label, payload) => {
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => payload }));
     vi.stubGlobal("fetch", fetchMock);
