@@ -5,7 +5,7 @@ import type {
   RunnerGoalAction,
   RunnerGoalActionRequest,
   RunnerGoalProjection,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { issuesApi } from "@/api/issues";
 import { i18n, useTranslation } from "@/i18n";
 import { useCompanyLiveEvent } from "@/context/LiveUpdatesProvider";

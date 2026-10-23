@@ -33,7 +33,7 @@ import {
 import { AgentIcon } from "../components/AgentIconPicker";
 import { cn, formatDateTime } from "../lib/utils";
 import { i18n, useTranslation } from "@/i18n";
-import type { FeedbackVoteValue } from "@paperclipai/shared";
+import type { FeedbackVoteValue } from "@myrmidon/shared";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { MyrmidonLoadingMark } from "@/components/myrmidon/MyrmidonLoadingMark"; // myrmidon(B1a)
 

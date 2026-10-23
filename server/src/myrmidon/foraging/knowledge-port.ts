@@ -22,8 +22,8 @@
 // `unverified` and the sweep continues (the same contract as candidate-port).
 
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { corpusDatasets, corpusDocuments } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { corpusDatasets, corpusDocuments } from "@myrmidon/db";
 import type { KnowledgeModule } from "../knowledge/service.js";
 import type { ForagingCandidateInput, ForagingCandidatePort } from "./domain.js";
 

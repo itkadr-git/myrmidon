@@ -11,6 +11,7 @@
 import { AlertTriangle, ShieldCheck } from "lucide-react";
 import { useCallback, useState } from "react";
 
+import { useTranslation } from "@/i18n";
 import { InlineBanner } from "@/components/InlineBanner";
 import { Button } from "@/components/ui/button";
 import { classifySkillDenial, type SkillDenial } from "@/lib/skill-policy-denial";
@@ -71,9 +72,10 @@ export function SkillPolicyDenialNotice({
   onDismiss?: () => void;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const actions = onDismiss ? (
     <Button variant="ghost" size="sm" onClick={onDismiss}>
-      Dismiss
+      {t("common.dismiss")}
     </Button>
   ) : undefined;
 

@@ -42,7 +42,7 @@ import { i18n, useTranslation } from "@/i18n";
 import type {
   AgentPermissions,
   EmailEndpointSummary,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 const selectClass =
   "w-full rounded-md border border-input bg-background px-3 py-2 text-sm";
 const DEFAULT_DOMAIN = "agentmail.to";

@@ -16,7 +16,7 @@
 // implementation is a no-op returning [] — the shadow rows still prove the
 // wiring, and p95 of the module leg reflects the no-op until then.
 import { desc } from "drizzle-orm";
-import { corpusShadowLog, type Db } from "@paperclipai/db";
+import { corpusShadowLog, type Db } from "@myrmidon/db";
 
 /**
  * The retrieval port the shadow leg calls — structurally the `SearchIndex`

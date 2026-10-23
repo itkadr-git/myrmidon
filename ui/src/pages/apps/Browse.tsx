@@ -15,13 +15,13 @@ import {
   ServerCog,
   Trash2,
 } from "lucide-react";
-import type { ToolApplication, ToolConnection } from "@paperclipai/shared";
+import type { ToolApplication, ToolConnection } from "@myrmidon/shared";
 import {
   getAppDefinitionForUrl,
   getAppStoreDefinition,
   isToolConnectionAttentionHealth,
   aiSubscriptionNeedsIsolatedLogin,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { useNavigate } from "@/lib/router";
 import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
 import { appCopyFor } from "@/lib/app-gallery-copy";

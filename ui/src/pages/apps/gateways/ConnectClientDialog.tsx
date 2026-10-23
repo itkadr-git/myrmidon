@@ -15,7 +15,7 @@ import type {
   ToolMcpGatewayClientSnippet,
   ToolMcpGatewayTokenCreated,
   ToolMcpGatewayWithTokens,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Trans } from "react-i18next";
 import { toolsApi } from "@/api/tools";
 import { SearchableSelect, type SearchableSelectGroup } from "@/components/SearchableSelect";

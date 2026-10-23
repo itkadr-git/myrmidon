@@ -10,8 +10,8 @@
 // Values are applied without a restart: PROCS-1.2 routes them into the
 // process supervisor, which forks or drains the api children and moves the
 // worker's own listener between single and split.
+import type { Db } from "@myrmidon/db";
 import { sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
 import {
   describeProcessesEffect,
   mergeProcessesSettings,
@@ -23,7 +23,7 @@ import {
   type ProcessesSettingSource,
   type ProcessesSettings,
   type ProcessesSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import type { LogActivityInput } from "../../services/activity-log.js";

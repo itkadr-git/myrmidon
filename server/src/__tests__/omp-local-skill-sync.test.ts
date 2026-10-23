@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   listOmpSkills,
   syncOmpSkills,
-} from "@paperclipai/adapter-omp-local/server";
+} from "@myrmidon/adapter-omp-local/server";
 
 // myrmidon(OMP-LOCAL): targeted skill sync tests for omp_local
 

@@ -16,7 +16,7 @@ import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
   isCodexLocalFastModeSupported,
   isCodexLocalManualModel,
-} from "@paperclipai/adapter-codex-local";
+} from "@myrmidon/adapter-codex-local";
 import {
   PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS,
   PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS,
@@ -26,7 +26,7 @@ import {
   resolvePaperclipRunnerPermissionMode,
   type PaperclipRunnerPermissionMode,
   type PaperclipRunnerProvider,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";

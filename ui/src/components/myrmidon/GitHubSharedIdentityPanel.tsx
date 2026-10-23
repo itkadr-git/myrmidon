@@ -17,7 +17,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Plus, Trash2 } from "lucide-react";
-import type { Agent, CompanySecret } from "@paperclipai/shared";
+import type { Agent, CompanySecret } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";

@@ -10,8 +10,8 @@
 // instance-admin only, the same rule runtime-limits follows.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { createBehaviorSettingsPatchSchema, type BehaviorSettingsPatch } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { createBehaviorSettingsPatchSchema, type BehaviorSettingsPatch } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import type { BehaviorSettingsService } from "./service.js";

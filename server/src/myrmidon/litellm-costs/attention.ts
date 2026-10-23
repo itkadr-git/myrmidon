@@ -20,7 +20,7 @@
 // first pass right after the server start records the same way, so a
 // misconfigured key surfaces immediately, not after one interval.
 
-import type { AttentionSeverity } from "@paperclipai/shared";
+import type { AttentionSeverity } from "@myrmidon/shared";
 
 /** Stable per-company dedup key: one card while the catalog stays empty. */
 export const EMPTY_CATALOG_ATTENTION_DEDUP_PREFIX = "litellm_empty_catalog:";

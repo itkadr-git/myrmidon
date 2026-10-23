@@ -7,7 +7,7 @@ import {
   lowTrustReviewPresetPolicySchema,
   trustAuthorizationPolicySchema,
   trustPresetSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 type JsonRecord = Record<string, unknown>;
 

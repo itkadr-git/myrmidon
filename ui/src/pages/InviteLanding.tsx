@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
-import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
+import { AGENT_ADAPTER_TYPES } from "@myrmidon/shared";
+import type { AgentAdapterType, JoinRequest } from "@myrmidon/shared";
 import { Trans } from "react-i18next";
 import { i18n, useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";

@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, gt, inArray, notInArray, sql } from "drizzle-orm";
-import { agents, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, heartbeatRunEvents, heartbeatRuns, type Db } from "@myrmidon/db";
 
 export type AttentionExhaustedRunsOptions = {
   /**

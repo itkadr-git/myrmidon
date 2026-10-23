@@ -10,7 +10,7 @@
 
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
-import { agents, myrmidonFleetSites, type Db } from "@paperclipai/db";
+import { agents, myrmidonFleetSites, type Db } from "@myrmidon/db";
 import { fleetMoveStore } from "./fleet-move-store.js";
 import { fleetMoveRoutes } from "./fleet-move-routes.js";
 import { FleetMoveService, type SiteAgentClient } from "./fleet-move-service.js";

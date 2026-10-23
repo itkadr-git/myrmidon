@@ -8,7 +8,7 @@
 import {
   behaviorSettingRegistry,
   type ResolvedBehaviorSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 let liveSettings: Record<string, unknown> = {};
 let liveSources: Record<string, string> = {};

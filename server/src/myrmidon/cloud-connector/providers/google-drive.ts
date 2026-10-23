@@ -7,7 +7,7 @@
 // — so an own root is walked down from "root" by the folder path the owner
 // recorded, and a shared root starts at the drive+item pair.
 
-import type { CloudRoot } from "@paperclipai/shared/myrmidon-cloud-connector";
+import type { CloudRoot } from "@myrmidon/shared/myrmidon-cloud-connector";
 import { CloudConnectorError, type CloudItem, type CloudListing } from "../types.js";
 import { normalizeCloudName, joinCloudPath } from "../paths.js";
 import type { CloudLocation, CloudProvider, CloudSearchHit } from "./provider.js";

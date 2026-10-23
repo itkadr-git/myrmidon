@@ -21,7 +21,7 @@
 import type {
   PoolAccountChannelView,
   PoolAccountRoleSignal,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export const CODEX_POOL_ALERT_DEDUP_PREFIX = "codex_pool:";
 

@@ -5,7 +5,7 @@
 // (vm-alertmanager) webhooks, dedups alerts by (source, key) in the
 // instance_settings JSON column, and auto-closes the board issue on recovery.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { monitoringAlertsRoutes } from "./routes.js";
 
 export {

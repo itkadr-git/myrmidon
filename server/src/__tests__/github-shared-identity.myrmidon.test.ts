@@ -42,7 +42,7 @@ import {
   toolApplications,
   toolConnectionInstalls,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { errorHandler } from "../middleware/index.js";
 import { runtimeConnectionIntentRoutes } from "../routes/connection-intents.js";
 import { createRuntimeToolsToken } from "../runtime-tools-token.js";

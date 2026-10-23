@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { useTranslation } from "@/i18n";
 import type { TFunction } from "i18next";
-import type { ExecutionProjection } from "@paperclipai/shared";
+import type { ExecutionProjection } from "@myrmidon/shared";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { cn } from "@/lib/utils";
 import type {

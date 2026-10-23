@@ -9,7 +9,7 @@ import {
   workspaceGitSchedulerOptionsFromEnv,
   type WorkspaceGitRunner,
 } from "./workspace-git-operation-scheduler.js";
-import { WORKSPACE_GIT_SCAN_SATURATED_CODE } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { WORKSPACE_GIT_SCAN_SATURATED_CODE } from "@myrmidon/adapter-utils/git-workspace-sync";
 
 const tempPaths: string[] = [];
 

@@ -45,13 +45,27 @@ describe("chat connector UI contract", () => {
     expect(issue).toMatch(
       /agentsApi\.retryFailedRun\(\s*failedRun\.agentId,\s*failedRun\.runId,\s*companyId/,
     );
-    expect(issue).toContain("Retry queued");
+    expect(issue).toContain('"area.issue-threads-runs-2.issue-detail.retryQueued"');
+    expect(
+      collectStrings(
+        JSON.parse(
+          source("../../../i18n/myrmidon-locales/areas/issue-threads-runs-2.en.json"),
+        ),
+      ),
+    ).toContain("Retry queued");
     for (const file of ["Inbox.tsx", "LegacyInbox.tsx"]) {
       const page = source(`../../${file}`);
       expect(page).toMatch(
-        /const retryRunMutation = useMutation\(\{[\s\S]*?onError: \(error\) => \{\s*pushToast\(\{\s*title: "Run retry failed"/,
+        /const retryRunMutation = useMutation\(\{[\s\S]*?onError: \(error\) => \{\s*pushToast\(\{\s*title: t\("area\.inbox-status-cards-2\.(?:legacy-)?inbox\.retryRunFailed"\)/,
       );
     }
+    expect(
+      collectStrings(
+        JSON.parse(
+          source("../../../i18n/myrmidon-locales/areas/inbox-status-cards-2.en.json"),
+        ),
+      ),
+    ).toContain("Run retry failed");
   });
   it("keeps the exact dual-purpose choice and immutable searchable agent selection", () => {
     const setup = source("./ChatEndpointSetup.tsx");
@@ -315,7 +329,7 @@ describe("chat connector UI contract", () => {
     expect(setup).not.toContain("managed Microsoft app");
     expect(setup).toContain("endpoint.providerAccountId && !repairing");
     expect(setup).not.toContain('field("webhookSecret"');
-    expect(setup).not.toContain("@paperclipai/teams-connect");
+    expect(setup).not.toContain("@myrmidon/teams-connect");
     expect(setup).not.toContain("Copy setup command");
     expect(setup).not.toContain("Add {agentName} to Slack");
     expect(setup).not.toContain("Create in GitHub");

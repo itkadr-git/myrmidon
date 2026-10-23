@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   authUsers,
   boardApiKeys,
@@ -8,8 +8,8 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
-} from "@paperclipai/db";
-import { normalizeBoardApiKeyScope } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { normalizeBoardApiKeyScope } from "@myrmidon/shared";
 import { conflict, forbidden, notFound } from "../errors.js";
 
 export const BOARD_API_KEY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -202,7 +202,7 @@ export function boardAuthService(db: Db) {
     userId: string;
     name: string;
     expiresAt?: Date | null;
-    scope?: import("@paperclipai/shared").BoardApiKeyScope | null;
+    scope?: import("@myrmidon/shared").BoardApiKeyScope | null;
   }) {
     const token = createBoardApiToken();
     const created = await db

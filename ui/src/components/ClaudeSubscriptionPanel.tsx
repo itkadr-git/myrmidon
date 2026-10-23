@@ -1,4 +1,4 @@
-import type { QuotaWindow } from "@paperclipai/shared";
+import type { QuotaWindow } from "@myrmidon/shared";
 import { i18n, t as translate, useTranslation } from "@/i18n";
 import { cn, quotaSourceDisplayName } from "@/lib/utils";
 
