@@ -2429,7 +2429,14 @@
       "idx": 409,
       "version": "7",
       "when": 1792395509000,
-      "tag": "0409_knowledge_rules",
+      "tag": "0409_corpus_shadow_log",
+      "breakpoints": true
+    },
+    {
+      "idx": 410,
+      "version": "7",
+      "when": 1792395510000,
+      "tag": "0410_knowledge_rules",
       "breakpoints": true
     }
   ]
