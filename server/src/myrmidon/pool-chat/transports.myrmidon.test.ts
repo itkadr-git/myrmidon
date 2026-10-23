@@ -66,6 +66,58 @@ describe("pool-chat transports", () => {
     }
   });
 
+  it("rejects Gemini non-2xx responses without exposing provider details", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 429,
+      json: async () => ({ error: { message: "api_key=provider-secret" } }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const transport = createPoolChatHttpTransport({ provider: "google", endpoint: "https://generativelanguage.test/generate", apiKey: "google-secret" });
+      await expect(transport.send({ model: "gemini-2.0-flash", messages, maxOutputTokens: 128 }))
+        .rejects.toThrow("provider request failed");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("redacts Gemini network failures", async () => {
+    const fetchMock = vi.fn(async () => { throw new Error("request to https://provider.test/?token=provider-secret failed"); });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const transport = createPoolChatHttpTransport({ provider: "google", endpoint: "https://generativelanguage.test/generate", apiKey: "google-secret" });
+      let thrown: unknown;
+      try {
+        await transport.send({ model: "gemini-2.0-flash", messages, maxOutputTokens: 128 });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(redactTransportError(thrown)).toBe("provider_transport_failed");
+      expect(String(thrown)).not.toContain("provider-secret");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    ["missing candidates", {}],
+    ["empty parts", { candidates: [{ content: { parts: [] } }] }],
+    ["non-text parts", { candidates: [{ content: { parts: [{ inlineData: { data: "private" } }] } }] }],
+    ["malformed JSON", null],
+  ])("rejects Gemini %s without exposing response content", async (_label, payload) => {
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => payload }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const transport = createPoolChatHttpTransport({ provider: "google", endpoint: "https://generativelanguage.test/generate", apiKey: "google-secret" });
+      await expect(transport.send({ model: "gemini-2.0-flash", messages, maxOutputTokens: 128 }))
+        .rejects.toThrow("provider response invalid");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("uses bearer auth and the OpenAI payload for ChatGPT", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => ({ ok: true, json: async () => ({ choices: [{ message: { content: "answer" } }] }) }));
     vi.stubGlobal("fetch", fetchMock);
