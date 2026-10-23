@@ -369,8 +369,10 @@ function statusLabel(status: SecretStatus) {
       return t("area.access-secrets-3.secrets.statusArchived");
     case "deleted":
       return t("area.access-secrets-3.secrets.statusDeleted");
-    default:
-      return status.charAt(0).toUpperCase() + status.slice(1);
+    default: {
+      const unknownStatus: string = status;
+      return unknownStatus.charAt(0).toUpperCase() + unknownStatus.slice(1);
+    }
   }
 }
 
