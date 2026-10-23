@@ -7,6 +7,7 @@ import type {
   RunnerGoalProjection,
 } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
+import { i18n, useTranslation } from "@/i18n";
 import { useCompanyLiveEvent } from "@/context/LiveUpdatesProvider";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -15,14 +16,29 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Textarea } from "@/components/ui/textarea";
 import type { RunnerGoalComposerCommand } from "./TaskChatComposer";
 
-const PENDING_LABELS: Record<string, string> = {
-  starting: "Starting",
-  editing: "Saving",
-  replacing: "Replacing",
-  pausing: "Pausing after current turn",
-  resuming: "Resuming",
-  clearing: "Clearing",
-  continuing: "Continuing in a new run",
+const pendingActionLabel = (action: string): string | null => {
+  switch (action) {
+    case "starting": return i18n.t("area.task-chat-1.runner-goal-widget.pendingStarting");
+    case "editing": return i18n.t("area.task-chat-1.runner-goal-widget.pendingEditing");
+    case "replacing": return i18n.t("area.task-chat-1.runner-goal-widget.pendingReplacing");
+    case "pausing": return i18n.t("area.task-chat-1.runner-goal-widget.pendingPausing");
+    case "resuming": return i18n.t("area.task-chat-1.runner-goal-widget.pendingResuming");
+    case "clearing": return i18n.t("area.task-chat-1.runner-goal-widget.pendingClearing");
+    case "continuing": return i18n.t("area.task-chat-1.runner-goal-widget.pendingContinuing");
+    default: return null;
+  }
+};
+
+const goalStatusLabel = (status: string): string => {
+  switch (status) {
+    case "active": return i18n.t("area.task-chat-1.runner-goal-widget.statusActive");
+    case "paused": return i18n.t("area.task-chat-1.runner-goal-widget.statusPaused");
+    case "blocked": return i18n.t("area.task-chat-1.runner-goal-widget.statusBlocked");
+    case "limited": return i18n.t("area.task-chat-1.runner-goal-widget.statusLimited");
+    case "usage_limited": return i18n.t("area.task-chat-1.runner-goal-widget.statusUsageLimited");
+    case "complete": return i18n.t("area.task-chat-1.runner-goal-widget.statusComplete");
+    default: return status.replaceAll("_", " ");
+  }
 };
 
 function requestId() {
@@ -32,11 +48,11 @@ function requestId() {
 }
 
 function formatDuration(seconds: number) {
-  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 60) return i18n.t("area.task-chat-1.runner-goal-widget.seconds", { value: seconds });
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 60) return i18n.t("area.task-chat-1.runner-goal-widget.minutes", { value: minutes });
   const hours = Math.floor(minutes / 60);
-  return `${hours}h ${minutes % 60}m`;
+  return i18n.t("area.task-chat-1.runner-goal-widget.hoursMinutes", { hours, minutes: minutes % 60 });
 }
 
 function formatTokens(tokens: number) {
@@ -95,9 +111,9 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
     setActionError(null);
     try {
       const current = query.data ?? (await query.refetch()).data;
-      if (!current?.agentId) throw new Error(current?.capability.reason ?? "Select an agent to use /goal.");
+      if (!current?.agentId) throw new Error(current?.capability.reason ?? i18n.t("area.task-chat-1.runner-goal-widget.errSelectAgent"));
       if (current.capability.availability !== "available") {
-        throw new Error(current.capability.reason ?? "Session goals are unsupported by this agent.");
+        throw new Error(current.capability.reason ?? i18n.t("area.task-chat-1.runner-goal-widget.errUnsupported"));
       }
       await mutation.mutateAsync({
         requestId: requestId(),
@@ -108,14 +124,14 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
         ...(action === "replace" ? { confirmReplace } : {}),
       });
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "The goal action could not be applied.");
+      setActionError(error instanceof Error ? error.message : i18n.t("area.task-chat-1.runner-goal-widget.errActionFailed"));
       throw error;
     }
   }, [mutation, query]);
 
   const edit = useCallback(async () => {
     const current = query.data ?? (await query.refetch()).data;
-    if (!current?.goal) throw new Error("There is no current session goal to edit.");
+    if (!current?.goal) throw new Error(i18n.t("area.task-chat-1.runner-goal-widget.errNoGoalToEdit"));
     mutation.reset();
     setActionError(null);
     setExpanded(true);
@@ -126,7 +142,7 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
     if (command.action === "focus") {
       const current = query.data ?? (await query.refetch()).data;
       if (!current?.goal && !current?.pendingAction) {
-        throw new Error("Add an objective after /goal to start a goal.");
+        throw new Error(i18n.t("area.task-chat-1.runner-goal-widget.errAddObjective"));
       }
       setExpanded(true);
       return;
@@ -181,17 +197,18 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
 export type RunnerGoalControl = ReturnType<typeof useRunnerGoalControl>;
 
 export function RunnerGoalWidget({ control }: { control: RunnerGoalControl }) {
+  const { t } = useTranslation();
   const projection = control.data;
   const goal = projection?.goal ?? null;
   const capability = projection?.capability;
   const can = (action: "set" | "pause" | "resume" | "clear") =>
     capability?.availability === "available" && capability.actions.includes(action);
   const resumable = goal && ["paused", "blocked", "limited", "usage_limited"].includes(goal.status);
-  const pendingLabel = projection?.pendingAction ? PENDING_LABELS[projection.pendingAction] : null;
+  const pendingLabel = projection?.pendingAction ? pendingActionLabel(projection.pendingAction) : null;
   const mutationError = control.actionError ?? (control.mutation?.error instanceof Error
     ? control.mutation.error.message
     : control.mutation?.error
-      ? "The goal action could not be applied."
+      ? t("area.task-chat-1.runner-goal-widget.errActionFailed")
       : null);
   // Expansion controls the objective's detail, not whether an empty card exists.
   // In particular, a cleared goal must disappear even after it was expanded.
@@ -200,22 +217,22 @@ export function RunnerGoalWidget({ control }: { control: RunnerGoalControl }) {
   return (
     <section
       className="rounded-xl border border-border/80 bg-card/95 px-3 py-2 shadow-sm"
-      aria-label="Agent session goal"
+      aria-label={t("area.task-chat-1.runner-goal-widget.sessionGoalAria")}
       data-testid="runner-goal-widget"
     >
       <div className="flex items-start gap-2">
         <Flag className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs font-semibold">Session goal</span>
+            <span className="text-xs font-semibold">{t("area.task-chat-1.runner-goal-widget.sessionGoal")}</span>
             {goal ? (
               <span className="rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium capitalize" role="status">
-                {goal.status.replaceAll("_", " ")}
+                {goalStatusLabel(goal.status)}
               </span>
             ) : null}
             {goal?.workingNow ? (
               <span className="inline-flex items-center gap-1 text-xs text-primary" role="status">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" /> Working now
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" /> {t("area.task-chat-1.runner-goal-widget.workingNow")}
               </span>
             ) : null}
             {pendingLabel ? (
@@ -228,7 +245,7 @@ export function RunnerGoalWidget({ control }: { control: RunnerGoalControl }) {
             <p className={cn("mt-1 text-sm leading-snug", control.expanded ? "max-h-40 overflow-auto" : "line-clamp-2")}>{goal.objective}</p>
           ) : (
             <p className="mt-1 text-xs text-muted-foreground">
-              {capability?.reason ?? "Type /goal followed by an objective to pursue work across turns."}
+              {capability?.reason ?? t("area.task-chat-1.runner-goal-widget.hint")}
             </p>
           )}
           {goal ? (
@@ -236,33 +253,34 @@ export function RunnerGoalWidget({ control }: { control: RunnerGoalControl }) {
               <span>{formatDuration(goal.elapsedSeconds)}</span>
               {capability?.usageReporting ? (
                 <span>
-                  {formatTokens(goal.tokensUsed)} tokens
-                  {goal.tokenBudget ? ` / ${formatTokens(goal.tokenBudget)}` : ""}
+                  {goal.tokenBudget
+                    ? t("area.task-chat-1.runner-goal-widget.tokensOfBudget", { value: formatTokens(goal.tokensUsed), budget: formatTokens(goal.tokenBudget) })
+                    : t("area.task-chat-1.runner-goal-widget.tokens", { value: formatTokens(goal.tokensUsed) })}
                 </span>
               ) : null}
-              {goal.iterations > 0 ? <span>{goal.iterations} iterations</span> : null}
+              {goal.iterations > 0 ? <span>{t("area.task-chat-1.runner-goal-widget.iterations", { count: goal.iterations })}</span> : null}
               {goal.lastReason ? <span className="truncate">{goal.lastReason}</span> : null}
             </div>
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {goal && can("set") ? (
-            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void control.edit().catch(() => {})} aria-label="Edit goal">
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void control.edit().catch(() => {})} aria-label={t("area.task-chat-1.runner-goal-widget.editGoal")}>
               <Pencil className="h-3.5 w-3.5" aria-hidden />
             </Button>
           ) : null}
           {goal?.status === "active" && can("pause") ? (
-            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void control.executeAction("pause").catch(() => {})} aria-label="Pause goal">
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void control.executeAction("pause").catch(() => {})} aria-label={t("area.task-chat-1.runner-goal-widget.pauseGoal")}>
               <Pause className="h-3.5 w-3.5" aria-hidden />
             </Button>
           ) : null}
           {resumable && can("resume") ? (
-            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void control.executeAction("resume").catch(() => {})} aria-label="Resume goal">
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void control.executeAction("resume").catch(() => {})} aria-label={t("area.task-chat-1.runner-goal-widget.resumeGoal")}>
               <Play className="h-3.5 w-3.5" aria-hidden />
             </Button>
           ) : null}
           {goal && can("clear") ? (
-            <Button size="icon" variant="ghost" className={cn("h-7 w-7", "text-muted-foreground hover:text-destructive")} onClick={() => void control.executeAction("clear").catch(() => {})} aria-label="Clear goal">
+            <Button size="icon" variant="ghost" className={cn("h-7 w-7", "text-muted-foreground hover:text-destructive")} onClick={() => void control.executeAction("clear").catch(() => {})} aria-label={t("area.task-chat-1.runner-goal-widget.clearGoal")}>
               <Trash2 className="h-3.5 w-3.5" aria-hidden />
             </Button>
           ) : null}
@@ -280,15 +298,15 @@ export function RunnerGoalWidget({ control }: { control: RunnerGoalControl }) {
             void control.submitDialog();
           }}>
             <DialogHeader>
-              <DialogTitle>{control.dialog?.action === "replace" ? "Replace session goal?" : "Edit session goal"}</DialogTitle>
+              <DialogTitle>{control.dialog?.action === "replace" ? t("area.task-chat-1.runner-goal-widget.replaceTitle") : t("area.task-chat-1.runner-goal-widget.editTitle")}</DialogTitle>
               <DialogDescription>
                 {control.dialog?.action === "replace"
-                  ? "This clears the unfinished goal and starts a new goal with the objective below."
-                  : "Update the objective without clearing the goal's progress."}
+                  ? t("area.task-chat-1.runner-goal-widget.replaceDescription")
+                  : t("area.task-chat-1.runner-goal-widget.editDescription")}
               </DialogDescription>
             </DialogHeader>
             <label className="block space-y-2">
-              <span className="text-sm font-medium">Goal objective</span>
+              <span className="text-sm font-medium">{t("area.task-chat-1.runner-goal-widget.goalObjective")}</span>
               <Textarea
                 value={control.dialog?.objective ?? ""}
                 maxLength={4_000}
@@ -308,9 +326,9 @@ export function RunnerGoalWidget({ control }: { control: RunnerGoalControl }) {
             </label>
             {mutationError ? <p className="text-sm text-destructive" role="alert">{mutationError}</p> : null}
             <DialogFooter>
-              <Button type="button" variant="outline" disabled={control.mutation?.isPending} onClick={() => control.setDialog(null)}>Cancel</Button>
+              <Button type="button" variant="outline" disabled={control.mutation?.isPending} onClick={() => control.setDialog(null)}>{t("common.cancel")}</Button>
               <Button type="submit" disabled={!control.dialog?.objective.trim() || control.mutation?.isPending}>
-                {control.mutation?.isPending ? "Saving…" : control.dialog?.action === "replace" ? "Replace goal" : "Save goal"}
+                {control.mutation?.isPending ? t("area.task-chat-1.runner-goal-widget.saving") : control.dialog?.action === "replace" ? t("area.task-chat-1.runner-goal-widget.replaceGoal") : t("area.task-chat-1.runner-goal-widget.saveGoal")}
               </Button>
             </DialogFooter>
           </form>

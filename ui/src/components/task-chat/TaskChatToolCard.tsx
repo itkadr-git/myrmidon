@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useTaskChatExpansion } from "./expansion-state";
 import { cn } from "@/lib/utils";
 import {
@@ -30,6 +31,7 @@ const STATUS_ICON = {
  * inset). Full diff bodies stay out of the activity feed.
  */
 export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
+  const { t } = useTranslation();
   const { Icon, spin, tone } = STATUS_ICON[item.status];
   const RowIcon = toolTaxonomy(item.rawName ?? item.name).icon;
   const [showDetail, setShowDetail] = useTaskChatExpansion(item.id, false);
@@ -78,7 +80,9 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
               ) : (
                 <ShieldX className="h-3 w-3" />
               )}
-              {item.decision}
+              {item.decision === "allowed"
+                ? t("area.task-chat-runner.tool-card.allowed")
+                : t("area.task-chat-runner.tool-card.rejected")}
             </span>
           ) : null}
           {expandable ? (
@@ -96,7 +100,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
           />
           {item.status === "interrupted" ? (
             <span className="text-(length:--text-micro) text-muted-foreground">
-              Interrupted
+              {t("area.task-chat-runner.tool-card.interrupted")}
             </span>
           ) : null}
         </span>
@@ -120,7 +124,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
           data-testid="task-chat-tool-change-summary"
         >
           <div className="flex min-w-0 items-center gap-2 text-(length:--text-micro) text-muted-foreground">
-            <span className="shrink-0">Changed</span>
+            <span className="shrink-0">{t("area.task-chat-runner.tool-card.changed")}</span>
             {item.diff.path ? (
               <span className="min-w-0 truncate font-mono text-foreground">
                 {item.diff.path}

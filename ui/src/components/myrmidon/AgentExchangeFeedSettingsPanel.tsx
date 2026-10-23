@@ -6,6 +6,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ListVideo } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import type {
   AgentExchangeFeedSettings,
   AgentExchangeFeedSettingsPatch,
@@ -34,6 +35,7 @@ export function AgentExchangeFeedSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<AgentExchangeFeedSettings | null>(null);
   const current = draft ?? view?.settings ?? null;
   const dirty = draft !== null && view != null;
@@ -48,13 +50,10 @@ export function AgentExchangeFeedSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <ListVideo className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Agent exchange feed</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-integrations.agent-exchange-feed-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          The screen that shows the owner what the agents discussed: every room with its outcome, what it cost and
-          the link to the task. From there one button turns an outcome into a skill candidate, which waits for an
-          approval before it is delivered to anyone. Saving takes effect at the next read of the feed — no server
-          restart.
+          {t("area.settings-integrations.agent-exchange-feed-settings-panel.description")}
         </p>
       </div>
 
@@ -67,7 +66,7 @@ export function AgentExchangeFeedSettingsPanelView({
       {view && current ? (
         <div className="space-y-4">
           <label className="block space-y-1" data-testid="agent-exchange-feed-limit">
-            <span className="text-sm font-medium">Rooms per page</span>
+            <span className="text-sm font-medium">{t("area.settings-integrations.agent-exchange-feed-settings-panel.roomsPerPage")}</span>
             <Input
               type="number"
               className="max-w-[10rem]"
@@ -80,8 +79,11 @@ export function AgentExchangeFeedSettingsPanelView({
               }}
             />
             <span className="block text-xs text-muted-foreground">
-              {MIN_FEED_LIMIT}–{MAX_FEED_LIMIT} rooms, newest first. The screen says when a company has more.
-              Source: {describeAgentExchangeFeedSource(view.sources.feedLimit)}
+              {t("area.settings-integrations.agent-exchange-feed-settings-panel.limitHint", {
+                min: MIN_FEED_LIMIT,
+                max: MAX_FEED_LIMIT,
+                source: describeAgentExchangeFeedSource(view.sources.feedLimit),
+              })}
             </span>
           </label>
 
@@ -89,13 +91,14 @@ export function AgentExchangeFeedSettingsPanelView({
             <ToggleSwitch
               checked={current.skillCandidateEnabled}
               onCheckedChange={(checked) => patch({ skillCandidateEnabled: checked })}
-              aria-label="Offer the to-skill button"
+              aria-label={t("area.settings-integrations.agent-exchange-feed-settings-panel.toSkillAria")}
             />
             <span className="text-sm">
-              Offer the «to skill» button
+              {t("area.settings-integrations.agent-exchange-feed-settings-panel.toSkillLabel")}
               <span className="block text-xs text-muted-foreground">
-                Registers the outcome of a room as a skill candidate that waits for an approval. Source:{" "}
-                {describeAgentExchangeFeedSource(view.sources.skillCandidateEnabled)}
+                {t("area.settings-integrations.agent-exchange-feed-settings-panel.toSkillHint", {
+                  source: describeAgentExchangeFeedSource(view.sources.skillCandidateEnabled),
+                })}
               </span>
             </span>
           </label>
@@ -110,19 +113,20 @@ export function AgentExchangeFeedSettingsPanelView({
                 setDraft(null);
               }}
             >
-              {pending ? "Saving..." : "Save"}
+              {pending ? t("area.settings-integrations.agent-exchange-feed-settings-panel.saving") : t("common.save")}
             </Button>
-            {dirty ? <span className="text-xs text-muted-foreground">Unsaved changes</span> : null}
+            {dirty ? <span className="text-xs text-muted-foreground">{t("area.settings-integrations.agent-exchange-feed-settings-panel.unsaved")}</span> : null}
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading the feed settings...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-integrations.agent-exchange-feed-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function AgentExchangeFeedSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: agentExchangeFeedSettingsQueryKey,
@@ -143,11 +147,11 @@ export function AgentExchangeFeedSettingsPanel() {
         query.isError
           ? query.error instanceof Error
             ? query.error.message
-            : "Could not load the feed settings."
+            : t("area.settings-integrations.agent-exchange-feed-settings-panel.loadError")
           : mutation.isError
             ? mutation.error instanceof Error
               ? mutation.error.message
-              : "Could not save the feed settings."
+              : t("area.settings-integrations.agent-exchange-feed-settings-panel.saveError")
             : null
       }
       onSave={(patch) => mutation.mutate(patch)}
