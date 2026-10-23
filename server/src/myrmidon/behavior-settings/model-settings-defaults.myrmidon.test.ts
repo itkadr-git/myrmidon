@@ -1,6 +1,6 @@
 // myrmidon(1.7 SETTINGS-TO-UI D): the registered defaults keep today's behavior.
 import { describe, expect, it } from "vitest";
-import { behaviorSettingRegistry, resolveSetting } from "@paperclipai/shared";
+import { behaviorSettingRegistry, resolveSetting } from "@myrmidon/shared";
 
 describe("myrmidon(1.7 SETTINGS-TO-UI D) defaults without settings", () => {
   it("auxiliary models default to null, a saved empty value is kept and means unset", () => {

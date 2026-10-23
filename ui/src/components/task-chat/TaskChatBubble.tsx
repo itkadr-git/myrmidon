@@ -1,6 +1,6 @@
 import { useCallback, useContext, useState, type ReactNode } from "react";
 import { useEmailComment } from "@/components/EmailMessageCard";
-import type { IssueAttachment } from "@paperclipai/shared";
+import type { IssueAttachment } from "@myrmidon/shared";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { useTranslation } from "@/i18n";
 import { cn } from "@/lib/utils";

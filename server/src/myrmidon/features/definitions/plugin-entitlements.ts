@@ -8,7 +8,7 @@ import {
   PLUGIN_ENTITLEMENT_KEYS_SETTINGS_KEY,
   isPluginEntitlementKeyActive,
   normalizePluginEntitlementKeys,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { entry, healthOff, makeHealth } from "../health.js";
 import type { FeatureDefinition } from "../types.js";
 

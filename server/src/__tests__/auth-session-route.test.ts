@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { activityLog, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { activityLog, companies, companyMemberships, instanceUserRoles } from "@myrmidon/db";
 import {
   actorMiddleware,
   humanizeCloudStackSlug,

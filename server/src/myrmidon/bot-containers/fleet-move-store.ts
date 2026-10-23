@@ -7,7 +7,7 @@ import {
   myrmidonFleetMoves,
   type Db,
   type FleetMovePhaseLogEntry,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type { FleetMoveRecord, MovePhase, MovePhaseLogEntry } from "./fleet-move-service.js";
 
 type FleetMoveRow = typeof myrmidonFleetMoves.$inferSelect;

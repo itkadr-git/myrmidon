@@ -16,9 +16,9 @@
 // testable without a database or an agent runtime.
 
 import { createHash } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
-import { toolActionRequests, toolInvocations } from "@paperclipai/db";
+import { toolActionRequests, toolInvocations } from "@myrmidon/db";
 
 /** `tool_invocations.tool_name` prefix that marks a held autonomy action. */
 export const AUTONOMY_ACTION_TOOL_PREFIX = "autonomy_action_";

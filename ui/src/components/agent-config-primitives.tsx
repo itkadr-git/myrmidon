@@ -18,7 +18,7 @@ import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { Trans } from "react-i18next";
 import { i18n, useTranslation } from "@/i18n";
 import { cn } from "../lib/utils";
-import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS } from "@myrmidon/shared";
 
 /* ---- Help text for (?) tooltips ---- */
 /* Lazy getters: the language can change after module load. */

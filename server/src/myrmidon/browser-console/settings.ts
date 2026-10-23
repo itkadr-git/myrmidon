@@ -13,7 +13,7 @@ import {
   DEFAULT_BROWSER_VNC_PORT,
   parseBrowserVncTarget,
   type BrowserVncTarget,
-} from "@paperclipai/shared/myrmidon-browser-console";
+} from "@myrmidon/shared/myrmidon-browser-console";
 import { FLEET_CONSOLE_SECRET_KEY_NAME, FLEET_CONSOLE_URL_ENV, FLEET_CONSOLE_TOKEN_TTL_MS } from "../fleet-console/settings.js";
 
 /** The address of the x11vnc endpoint that guacd must reach (`host[:port]`). */

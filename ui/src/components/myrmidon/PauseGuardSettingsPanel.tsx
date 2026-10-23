@@ -19,7 +19,7 @@ import {
   MIN_PAUSE_GUARD_THRESHOLD_MINUTES,
   type PauseGuardSettings,
   type PauseGuardSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

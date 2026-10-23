@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentConfigurationSummary, CompanySecret } from "@paperclipai/shared";
+import type { AgentConfigurationSummary, CompanySecret } from "@myrmidon/shared";
 import type { PaperclipConfig } from "../config/schema.js";
 import { secretsCheck } from "../checks/secrets-check.js";
 import {

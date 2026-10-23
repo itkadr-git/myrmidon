@@ -4,7 +4,7 @@ import {
   type Agent,
   type ToolCallEvent,
   type ToolConnectionLifecycleEvent,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Link } from "@/lib/router";
 import { i18n, useTranslation } from "@/i18n";
 import { Skeleton } from "@/components/ui/skeleton";

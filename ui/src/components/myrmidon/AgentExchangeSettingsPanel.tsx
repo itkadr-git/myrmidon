@@ -6,7 +6,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessagesSquare } from "lucide-react";
 import { useTranslation } from "@/i18n";
-import type { AgentExchangeSettings, AgentExchangeSettingsPatch } from "@paperclipai/shared";
+import type { AgentExchangeSettings, AgentExchangeSettingsPatch } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";

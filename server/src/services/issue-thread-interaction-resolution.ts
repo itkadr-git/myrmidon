@@ -1,8 +1,8 @@
 import type {
   IssueThreadInteractionCanonicalResolverPolicy,
   IssueThreadInteractionResolverPolicy,
-} from "@paperclipai/shared";
-import { normalizeIssueThreadInteractionResolverPolicy } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { normalizeIssueThreadInteractionResolverPolicy } from "@myrmidon/shared";
 import { HttpError } from "../errors.js";
 
 export const ISSUE_THREAD_INTERACTION_RESOLUTION_DENIAL_CODES = [

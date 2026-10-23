@@ -7,7 +7,7 @@
 // injected fetch and clock so the flow is testable without a network.
 
 import { createHash, randomBytes } from "node:crypto";
-import type { CloudProviderId } from "@paperclipai/shared/myrmidon-cloud-connector";
+import type { CloudProviderId } from "@myrmidon/shared/myrmidon-cloud-connector";
 
 /** The token bundle we keep in the connector's secret, never in a bot. */
 export interface CloudTokenBundle {

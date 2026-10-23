@@ -1,5 +1,5 @@
 import { Play } from "lucide-react";
-import type { IssueWorkProduct } from "@paperclipai/shared";
+import type { IssueWorkProduct } from "@myrmidon/shared";
 import {
   formatBytes,
   getIssueOutputs,

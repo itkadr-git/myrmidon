@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { CostByBiller, CostByProviderModel } from "@paperclipai/shared";
+import type { CostByBiller, CostByProviderModel } from "@myrmidon/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { useTranslation } from "@/i18n";
 import { QuotaBar } from "./QuotaBar";

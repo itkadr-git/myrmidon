@@ -9,7 +9,7 @@
 // migration: an old image keeps working on the new schema.
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 
 export const TELEGRAM_NOTIFY_GENERAL_KEY = "myrmidonTelegramNotify";
 

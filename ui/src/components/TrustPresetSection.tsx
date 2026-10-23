@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { AgentPermissions, TrustPreset } from "@paperclipai/shared";
+import type { AgentPermissions, TrustPreset } from "@myrmidon/shared";
 import { Lock, ShieldAlert } from "lucide-react";
 import type { TFunction } from "i18next";
 import { Button } from "@/components/ui/button";

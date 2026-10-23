@@ -148,7 +148,7 @@ async function prepareWorkspace() {
     return;
   }
   console.log("[dev:procs] building plugin sdk...");
-  await runPnpmStep(["--filter", "@paperclipai/plugin-sdk", "build"]);
+  await runPnpmStep(["--filter", "@myrmidon/plugin-sdk", "build"]);
   // The vite UI build peaks at ~2 GB; only pay it when the served dist is
   // missing (the stand runs with the middleware off, so it serves dist/).
   if (existsSync(path.resolve(serverPackageRoot(), "..", "ui/dist/index.html"))) {
@@ -156,7 +156,7 @@ async function prepareWorkspace() {
     return;
   }
   console.log("[dev:procs] building ui dist...");
-  await runPnpmStep(["--filter", "@paperclipai/ui", "build"]);
+  await runPnpmStep(["--filter", "@myrmidon/ui", "build"]);
 }
 
 const children: { name: string; proc: ChildProcess }[] = [];

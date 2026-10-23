@@ -1,4 +1,4 @@
-import type { CompanySkillVersion } from "@paperclipai/shared";
+import type { CompanySkillVersion } from "@myrmidon/shared";
 import { i18n, useTranslation } from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 import {

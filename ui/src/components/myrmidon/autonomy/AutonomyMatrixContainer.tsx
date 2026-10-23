@@ -18,7 +18,7 @@ import type {
   AutonomyActionClass,
   AutonomyMatrix,
   AutonomyVerdict,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 function readable(error: unknown): string {
   if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;

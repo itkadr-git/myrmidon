@@ -8,7 +8,7 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import type { CompanySecret, UserSecretDefinition } from "@paperclipai/shared";
+import type { CompanySecret, UserSecretDefinition } from "@myrmidon/shared";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/i18n";
 import {

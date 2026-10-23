@@ -21,7 +21,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { myrmidonInstallIdentity, type Db } from "@paperclipai/db";
+import { myrmidonInstallIdentity, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { licenseFilePath } from "./client-license.js";
 

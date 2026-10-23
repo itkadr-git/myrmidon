@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
-import { agents, userInboxAgentPolicies, type Db } from "@paperclipai/db";
-import type { InboxAgentPolicy, UpdateInboxAgentPolicy } from "@paperclipai/shared";
+import { agents, userInboxAgentPolicies, type Db } from "@myrmidon/db";
+import type { InboxAgentPolicy, UpdateInboxAgentPolicy } from "@myrmidon/shared";
 import { unprocessable } from "../errors.js";
 
 export function inboxAgentPolicyService(db: Db) {

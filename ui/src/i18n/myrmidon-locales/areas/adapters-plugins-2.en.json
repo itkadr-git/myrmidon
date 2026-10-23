@@ -114,7 +114,7 @@
           "title": "Install Plugin",
           "description": "Enter the npm package name of the plugin you wish to install.",
           "packageNameLabel": "npm Package Name",
-          "packageNamePlaceholder": "@paperclipai/plugin-example",
+          "packageNamePlaceholder": "@myrmidon/plugin-example",
           "installing": "Installing...",
           "confirm": "Install"
         },

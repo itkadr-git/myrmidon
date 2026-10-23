@@ -1,4 +1,4 @@
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type CloudInstanceEnv = Record<string, string | undefined>;
 
