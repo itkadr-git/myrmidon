@@ -1,0 +1,285 @@
+{
+  "area": {
+    "search-timeline-audit-2": {
+      "timeline": {
+        "rangeError": {
+          "missingDates": "Choose a start and end date.",
+          "badOrder": "Start date must be before end date."
+        },
+        "legend": {
+          "delegated": "Delegated",
+          "automation": "Automation",
+          "cancelled": "Cancelled",
+          "now": "Now"
+        },
+        "stats": {
+          "runs": "Runs",
+          "agents": "Agents",
+          "runTime": "Run time",
+          "tokensUsed": "Tokens used",
+          "notTracked": "Not tracked"
+        },
+        "page": {
+          "projectTitle": "Project Timeline",
+          "breadcrumb": "Timeline",
+          "selectOrganization": "Select an organization to view its work timeline.",
+          "title": "Work Timeline",
+          "range": "Range",
+          "presetToday": "Today",
+          "preset7d": "7 days",
+          "preset30d": "30 days",
+          "startDate": "Timeline start date",
+          "endDate": "Timeline end date",
+          "rangeTo": "to",
+          "zoomControls": "Timeline zoom controls",
+          "zoomOut": "Zoom out",
+          "zoomIn": "Zoom in",
+          "zoomReset": "Reset zoom",
+          "loadError": "Couldn't load the timeline. The aggregation endpoint may be unavailable.",
+          "emptyProject": "No project activity in this window.",
+          "empty": "No activity in this window.",
+          "summary_one": "{{count}} run · {{from}} to {{to}}",
+          "summary_other": "{{count}} runs · {{from}} to {{to}}",
+          "summaryCapped_one": "{{count}} run · {{from}} to {{to}} · window capped",
+          "summaryCapped_other": "{{count}} runs · {{from}} to {{to}} · window capped"
+        }
+      },
+      "audit-hub": {
+        "title": "Audit",
+        "selectOrganization": "Select an organization to view Audit.",
+        "description": "Review what happened, inspect agent runs, and understand the costs and budget controls behind your organization."
+      },
+      "company-activity-production": {
+        "breadcrumb": "Activity",
+        "selectCompany": "Select a company to view activity."
+      },
+      "company-activity": {
+        "breadcrumb": "Activity",
+        "selectOrganization": "Select an organization to view activity."
+      },
+      "routine-audit-activity": {
+        "loading": "Loading routine activity…",
+        "loadFailed": "Failed to load routine activity.",
+        "tryAgain": "Try again",
+        "empty": "No routine activity yet.",
+        "listLabel": "Routine activity"
+      },
+      "audit-runs": {
+        "duration": {
+          "seconds": "{{seconds}}s",
+          "minutes": "{{minutes}}m {{seconds}}s"
+        },
+        "routineRunFallback": "Routine run",
+        "routineScoped": {
+          "loading": "Loading routine runs…",
+          "tryAgain": "Try again",
+          "empty": "No routine runs yet.",
+          "title": "Routine runs",
+          "description": "Executions created by this routine, newest first.",
+          "listLabel": "Routine runs",
+          "footer": "Showing the {{limit}} most recent routine runs."
+        },
+        "page": {
+          "title": "Runs",
+          "description": "Recent agent executions across the organization. Open a run to inspect its transcript, output, and task context.",
+          "agent": "Agent",
+          "allAgents": "All agents",
+          "status": "Status",
+          "allStatuses": "All statuses",
+          "clearFilters": "Clear filters",
+          "loading": "Loading runs…",
+          "loadFailed": "Failed to load runs.",
+          "tryAgain": "Try again",
+          "emptyFiltered": "No runs match these filters.",
+          "empty": "No runs yet.",
+          "unknownAgent": "Unknown agent",
+          "listLabel": "Recent runs",
+          "sourceRun": "{{source}} run",
+          "footer": "Showing the {{limit}} most recent runs."
+        }
+      },
+      "audit-feed-production": {
+        "domains": {
+          "all": "All actions",
+          "issue": "Tasks",
+          "agent": "Agents",
+          "heartbeat": "Runs",
+          "approval": "Approvals",
+          "project": "Projects",
+          "goal": "Goals",
+          "tool": "Tools",
+          "cost": "Costs",
+          "company": "Company"
+        },
+        "entities": {
+          "all": "All entities",
+          "issue": "Task",
+          "agent": "Agent",
+          "project": "Project",
+          "goal": "Goal",
+          "company": "Company"
+        },
+        "actor": {
+          "user": "User",
+          "plugin": "Plugin",
+          "agent": "Agent",
+          "system": "System"
+        },
+        "entityNode": {
+          "task": "the task"
+        },
+        "row": {
+          "aUser": "a user",
+          "document": "Document",
+          "onBehalfOf": "on behalf of {{name}}",
+          "viewRun": "View run"
+        },
+        "upsell": {
+          "title": "Agent audit is a Myrmidon Enterprise view",
+          "body": "The agent audit log gives you a searchable, exportable record of everything your agents did — every comment, task change, approval, and run — with the responsible person for each action. Ask an administrator to grant you the <0>audit:view_agent_actions</0> permission to view it."
+        },
+        "toast": {
+          "exported": "Audit exported",
+          "exportedBody": "Your CSV download has started.",
+          "exportFailed": "Export failed",
+          "exportFailedBody": "Could not export the audit log."
+        },
+        "header": {
+          "title": "Activity",
+          "agents": "Every recorded agent action, newest first — with the responsible person and run behind each one.",
+          "all": "Everything happening in your company, newest first — people, agents, and the system. Each line is one recorded action."
+        },
+        "tabs": {
+          "label": "Activity scope",
+          "all": "All activity",
+          "agents": "Agent actions"
+        },
+        "filters": {
+          "agent": "Agent",
+          "responsibleUser": "Responsible user",
+          "action": "Action",
+          "entity": "Entity",
+          "allAgents": "All agents",
+          "allResponsibleUsers": "All responsible users",
+          "fromDate": "From date",
+          "toDate": "To date",
+          "clear": "Clear filters",
+          "exporting": "Exporting…",
+          "export": "Export CSV"
+        },
+        "state": {
+          "refreshing": "Refreshing audit access…",
+          "loadFailed": "Failed to load the audit log.",
+          "tryAgain": "Try again",
+          "emptyFilteredTitle": "No actions match these filters",
+          "emptyTitle": "Nothing here yet",
+          "emptyFilteredHint": "Try a wider date range or different filters.",
+          "emptyAgentsHint": "As soon as your agents start doing things, their actions show up here.",
+          "emptyAllHint": "As soon as anyone in your company does something, it shows up here."
+        },
+        "list": {
+          "loadMore": "Load more"
+        },
+        "footer": "Recorded by Myrmidon — entries can't be edited. Sensitive values are never stored."
+      },
+      "audit-feed": {
+        "domains": {
+          "all": "All actions",
+          "issue": "Tasks",
+          "agent": "Agents",
+          "heartbeat": "Runs",
+          "approval": "Approvals",
+          "project": "Projects",
+          "goal": "Goals",
+          "tool": "Apps & tools",
+          "cost": "Costs",
+          "company": "Organization"
+        },
+        "entities": {
+          "all": "All entities",
+          "issue": "Task",
+          "agent": "Agent",
+          "heartbeatRun": "Run",
+          "routine": "Routine",
+          "project": "Project",
+          "goal": "Goal",
+          "company": "Organization",
+          "toolConnection": "Connection"
+        },
+        "actor": {
+          "user": "User",
+          "plugin": "Plugin",
+          "agent": "Agent",
+          "system": "System"
+        },
+        "entityNode": {
+          "task": "the task",
+          "connection": "the connection"
+        },
+        "row": {
+          "aUser": "a user",
+          "document": "Document",
+          "onBehalfOf": "on behalf of {{name}}",
+          "viewRun": "View run"
+        },
+        "upsell": {
+          "title": "Agent audit is a Myrmidon Enterprise view",
+          "body": "The agent audit log gives you a searchable, exportable record of everything your agents did — every comment, task change, approval, and run — with the responsible person for each action. Ask an administrator to grant you the <0>audit:view_agent_actions</0> permission to view it."
+        },
+        "toast": {
+          "exported": "Audit exported",
+          "exportedBody": "Your CSV download has started.",
+          "exportFailed": "Export failed",
+          "exportFailedBody": "Could not export the audit log."
+        },
+        "header": {
+          "title": "Activity",
+          "agents": "Every recorded agent action, newest first — with the responsible person and run behind each one.",
+          "all": "Everything happening in your organization, newest first — people, agents, and the system. Each line is one recorded action."
+        },
+        "tabs": {
+          "label": "Activity scope",
+          "all": "Activity",
+          "agentsDisabled": "Agent Actions requires audit access",
+          "agents": "Agent Actions"
+        },
+        "scope": {
+          "run": "Scoped to run {{id}}",
+          "agent": "Scoped to one agent",
+          "entity": "Scoped to {{name}}",
+          "entityFallback": "entity"
+        },
+        "filters": {
+          "agent": "Agent",
+          "responsibleUser": "Responsible user",
+          "action": "Action",
+          "entity": "Entity",
+          "from": "From",
+          "to": "To",
+          "allAgents": "All agents",
+          "allResponsibleUsers": "All responsible users",
+          "fromDate": "From date",
+          "toDate": "To date",
+          "clear": "Clear filters",
+          "exporting": "Exporting…",
+          "export": "Export CSV"
+        },
+        "state": {
+          "refreshing": "Refreshing audit access…",
+          "loadFailed": "Failed to load the audit log.",
+          "tryAgain": "Try again",
+          "emptyFilteredTitle": "No actions match these filters",
+          "emptyTitle": "Nothing here yet",
+          "emptyFilteredHint": "Try a wider date range or different filters.",
+          "emptyAgentsHint": "As soon as your agents start doing things, their actions show up here.",
+          "emptyAllHint": "As soon as anyone in your organization does something, it shows up here."
+        },
+        "list": {
+          "label": "Audit activity",
+          "loadMore": "Load more"
+        },
+        "footer": "Recorded by Myrmidon — entries can't be edited. Sensitive values are never stored."
+      }
+    }
+  }
+}
