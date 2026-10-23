@@ -136,6 +136,11 @@ describe("guarded files use only existing area keys", () => {
   const known = (key: string) =>
     en.has(key) || ["_one", "_other", "_few", "_many", "_zero", "_two"].some((suffix) => en.has(key + suffix));
 
+  it("findAreaKeys reads static t() and i18n.t() keys only", () => {
+    const keys = findAreaKeys('t("area.a.b"); i18n.t(\'area.c.d\'); t(`area.x.${k}`); t("common.save"); split("area.q")');
+    expect(keys.map((k) => k.key)).toEqual(["area.a.b", "area.c.d"]);
+  });
+
   for (const rel of GUARDED) {
     it(`${rel} references existing keys`, () => {
       const missing = findAreaKeys(readFileSync(join(UI_ROOT, rel), "utf8"))
