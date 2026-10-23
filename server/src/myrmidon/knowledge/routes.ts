@@ -160,13 +160,13 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
 
   function assertApproverAuthority(req: Request, companyId: string, approverKind: string | null): void {
     const actor = req.actor;
-    if (!approverKind || actor.type !== "board") {
-      throw forbidden("Only an authorized board user may approve this rule.", { code: "approver_authority_required" });
+    if (actor.type !== "board") {
+      throw forbidden("Only a board user may approve a rule.", { code: "approver_authority_required" });
     }
     const membership = actor.memberships?.find((entry) => entry.companyId === companyId && entry.status === "active");
-    const authorized = approverKind === "owner"
-      ? membership?.membershipRole === "owner"
-      : approverKind === "adm" && (membership?.membershipRole === "admin" || actor.isInstanceAdmin === true);
+    const requiredKind = approverKind === "owner" ? "owner" : "admin";
+    const authorized = membership?.membershipRole === requiredKind ||
+      (approverKind === "adm" && actor.isInstanceAdmin === true);
     if (!authorized) {
       throw forbidden(`This user is not authorized to approve as ${approverKind}.`, { code: "approver_authority_required" });
     }
@@ -514,10 +514,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const revisionId = typeof req.body?.revisionId === "string" ? req.body.revisionId : undefined;
       try {
         const item = await loadItemForMutation(mod, itemIdOrSlug(req));
-        // Gate 4b runs BEFORE the tool-grant gateway: a `rule` approval by an
-        // agent is forbidden outright (тест П4), whatever grants, matrix or
-        // the agent's own instructions say. Loading the item is the only way
-        // to see its kind; the load itself needs no grant.
+        // Reject agents before grants, then authorize the verified board membership.
         assertRuleApproveAllowed(req, item.kind);
         await assertKnowledgeToolAccess(req, "rule_approve");
         // §3.4 / K-3: the approver's grade comes from the actor's membership
@@ -525,7 +522,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
         // approverKind and a caller without the matching grade is refused by
         // the domain gate (403).
         const approverKindInput = approverKindFromRequest(req, companyId);
-        assertApproverAuthority(req, companyId, req.body?.approverKind ?? null);
+        assertApproverAuthority(req, companyId, approverKindInput);
         await assertRuleGrade(req, companyId, item);
         if (approverKindInput === null) {
           throw forbidden("approving needs an operator, admin or owner membership of the company", {
@@ -534,7 +531,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
         }
         res.json({
           item: await mod.approve(
-            req.params.idOrSlug as string,
+            itemIdOrSlug(req),
             { actorType: actor.actorType, actorId: actor.actorId, kind: approverKindInput },
             { revisionId },
           ),
