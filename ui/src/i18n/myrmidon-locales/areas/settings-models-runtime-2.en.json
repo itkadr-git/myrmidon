@@ -1,0 +1,174 @@
+{
+  "area": {
+    "settings-models-runtime-2": {
+      "review-rework-settings-panel": {
+        "title": "Review-return loop (REVIEW-REWORK)",
+        "description": "A review verdict that returns a pull request (RETURN) opens a rework task for the PR's author and blocks the review on it; a new head in the PR releases the review back to its reviewer, and a merged or closed PR settles the review. The switch and the fallback executor apply without a restart — the sweep re-reads them on every pass.",
+        "enabledLabel": "Enable the loop",
+        "enabledHint": "Off leaves the board as it was: a RETURN verdict creates no task and the review keeps waking on an unchanged PR.",
+        "fallbackLabel": "Fallback executor (agent UUID)",
+        "fallbackPlaceholder": "Empty = the role queue claims it",
+        "fallbackHint": "The rework first goes to the PR's author (the review's return assignee), then to the assignee of the task the PR delivers. This is the last rung; empty means nobody — an unassigned todo task, which the role queue of SWARM-CLAIM claims.",
+        "fallbackError": "Enter an agent UUID, or leave it empty for the role queue",
+        "saving": "Saving…",
+        "changes": "Changes"
+      },
+      "run-stall-settings-panel": {
+        "title": "Run stall detection",
+        "description": "The sweep that interrupts a running run whose own recorded progress stopped advancing: the task goes back to todo and the assignee is woken. A run working for hours with fresh progress is never touched — this is not a duration limit. Saving takes effect immediately, without a restart. Whether the sweep runs and its silence threshold are set in the <link>Team liveness settings</link> (one source of truth for all three liveness passes); they are shown here read-only.",
+        "interruptLabel": "Interrupt stalled runs:",
+        "on": "on",
+        "off": "off",
+        "thresholdLabel": "Silence threshold:",
+        "readOnlyHint": "Read-only here: change them in the Team liveness settings (runStallEnabled, runStallThresholdSec).",
+        "checkIntervalSec": {
+          "label": "Sweep interval, seconds",
+          "hint": "Minimum spacing between two scan passes; the scheduler queue itself ticks more often. From 15; default 60."
+        },
+        "pageSize": {
+          "label": "Page size",
+          "hint": "How many running runs one scan pass inspects at most, stalest progress first. From 1 to 200; default 50."
+        },
+        "wholeNumberError": "Enter a whole number greater than zero",
+        "save": "Save run stall detection",
+        "saving": "Saving...",
+        "loading": "Loading run stall detection...",
+        "saveFailed": "Saving the run stall detection failed.",
+        "loadFailed": "Failed to load run stall detection."
+      },
+      "runtime-limits-settings-panel": {
+        "title": "Run limits",
+        "description": "How many agent runs this server starts at once, how fast, and how much memory it and the host keep free. A run over a ceiling waits in the queue and starts when a slot frees. Saving takes effect immediately: queued runs start within a minute and no running run is interrupted. Leave a field empty to switch that limit off.",
+        "maxConcurrentRuns": {
+          "label": "Concurrent runs",
+          "hint": "Runs this server starts at once. Runs over the ceiling stay queued and start when a slot frees."
+        },
+        "maxStartsPerMinute": {
+          "label": "Starts per minute (start ramp)",
+          "hint": "How many runs may start in a sliding minute, so a restart, a bulk resolve or a mass wake does not start everything in one burst. Default 5."
+        },
+        "minFreeMemoryMb": {
+          "label": "Free memory to keep, MB",
+          "hint": "A run starts only if the server container keeps this much memory free after it. This is the hard floor: below it everything waits, including the answer to a message the owner wrote in a chat. That answer is held by this floor alone — measured on the container and on the host's available memory — and not by the host floor below. Default 1500."
+        },
+        "runMemoryEstimateMb": {
+          "label": "Memory per run, MB",
+          "hint": "What one run is budgeted when free memory is counted."
+        },
+        "minFreeHostMemoryMb": {
+          "label": "Free host memory to keep, MB",
+          "hint": "A new run starts only while the host (where the bot containers run) has at least this much available memory; otherwise it waits in the queue. The automatic runs wait here — a turn started by a message the owner wrote in a chat does not: it is admitted by the floor above (applied to the container and to the host's available memory) and goes to the front of the queue. Default 15360 (15 GB)."
+        },
+        "maxHostLoadPercentPerCore": {
+          "label": "Max host load per core, % of a core",
+          "hint": "A new run starts only while the host's 1-minute load average is this many percent of one CPU core ABOVE the load the host carries on its own (100 = one core fully busy). The host's own background — the services that keep it busy without any run — does not close the ceiling: only the load the runs add counts. A turn started by a message the owner wrote in a chat does not wait for this ceiling either. Default 90. Empty switches the ceiling off."
+        },
+        "fairShare": {
+          "label": "Single-agent start share, % per 10 min",
+          "hint": "The most starts one agent may take in a 10-minute window, in percent. Past its share its new runs wait until the other agents have had their turn, so a hot agent cannot occupy the queue. Default 15. Empty switches the limit off (100 = no limit)."
+        },
+        "wholeNumberOrEmptyError": "Enter a whole number greater than zero, or leave it empty",
+        "percentOrEmptyError": "Enter a whole number from 1 to 100, or leave it empty",
+        "required": "Required",
+        "noLimit": "No limit",
+        "save": "Save run limits",
+        "saving": "Saving...",
+        "loading": "Loading run limits...",
+        "saveFailed": "Saving the run limits failed.",
+        "loadFailed": "Failed to load run limits."
+      },
+      "team-liveness-health-card": {
+        "title": "Team liveness",
+        "windowLabel": "last {{hours}} h",
+        "autoResumes": {
+          "label": "Auto-resumes",
+          "hint": "Agents the board brought back out of error by itself"
+        },
+        "autoResumeExhaustions": {
+          "label": "Resumes given up",
+          "hint": "Attempts ran out — these need a human look"
+        },
+        "wakes": {
+          "label": "Wakes",
+          "hint": "Wakes the board created for this company"
+        },
+        "stalledRuns": {
+          "label": "Stalled runs",
+          "hint": "Runs that stopped making progress and were interrupted"
+        },
+        "loading": "Loading team liveness...",
+        "footnote": "What the board did on its own for this company in the window. A run of \"Resumes given up\" or \"Stalled runs\" means an agent needs a human look; the switches behind all four sit in the Team liveness panel."
+      },
+      "team-liveness-settings-panel": {
+        "title": "Team liveness",
+        "description": "What the board does on its own when a run fails, when a run stops making progress, and when an agent sits idle with ready work. The three sweeps read these values on their next pass: saving takes effect without a restart and without dropping a run in flight. A field you do not change keeps coming from the server environment. An agent card can switch a behaviour off for that one agent.",
+        "autoResumeEnabled": {
+          "label": "Auto-resume an agent left in error",
+          "hint": "The board resumes an agent whose run failed, with backoff, instead of leaving it in error until an operator acts."
+        },
+        "runStallEnabled": {
+          "label": "Interrupt a run that stops making progress",
+          "hint": "A run that records no progress for the stall threshold is interrupted, its task goes back to the queue and its assignee is woken."
+        },
+        "idlePickupEnabled": {
+          "label": "Wake an idle agent that has ready work",
+          "hint": "The board wakes an agent that is idle while a ready task is assigned to it, so the team does not wait for a reassignment by hand."
+        },
+        "runStallThresholdSec": {
+          "label": "Stall threshold, seconds",
+          "hint": "How long a running run may record no progress before it counts as stalled. Default 1200 (20 minutes)."
+        },
+        "idlePickupIntervalSec": {
+          "label": "Wake pass interval, seconds",
+          "hint": "How often the board looks for an idle agent with ready work. Default 30."
+        },
+        "idlePickupWakeBudgetPerMin": {
+          "label": "Wakes per minute, whole company",
+          "hint": "The company-wide ceiling on automatic wakes: every wake is a full agent run. Default 5."
+        },
+        "idlePickupWakeBatch": {
+          "label": "Wakes per pass",
+          "hint": "How many of that minute's wakes one pass may spend at once; the rest wait for the next pass. Never above the minute ceiling. Default 5."
+        },
+        "wholeNumberError": "Enter a whole number greater than zero",
+        "seconds": "{{value}} s",
+        "now": "now {{value}}",
+        "save": "Save team liveness",
+        "saving": "Saving...",
+        "loading": "Loading team liveness settings...",
+        "saveFailed": "Saving the team liveness settings failed.",
+        "loadFailed": "Failed to load the team liveness settings."
+      },
+      "tool-policy-cache-settings-panel": {
+        "title": "Tool gateway policy cache",
+        "description": "The tool gateway keeps one snapshot of a company's tool policies, profiles, bindings and profile entries in memory instead of reading four tables on every call. A change made through the board shows up on the very next decision; this window only bounds changes written to the database by other means. Saving applies to the next gateway call without a restart. 0 switches the cache off.",
+        "ttlLabel": "Snapshot lifetime, seconds",
+        "seconds": "{{value}} s",
+        "off": "off",
+        "now": "now {{value}}",
+        "default": "default {{value}}",
+        "counters_one": "This process: {{count}} company cached, {{hits}} hits, {{misses}} misses.",
+        "counters_other": "This process: {{count}} companies cached, {{hits}} hits, {{misses}} misses.",
+        "wholeSecondsError": "Enter a whole number of seconds from 0 to {{max}}",
+        "save": "Save cache lifetime",
+        "saving": "Saving...",
+        "useDefault": "Use the default",
+        "loading": "Loading tool policy cache settings...",
+        "saveFailed": "Saving the tool policy cache settings failed.",
+        "loadFailed": "Failed to load the tool policy cache settings."
+      },
+      "castes-screen": {
+        "keyPlaceholder": "e.g. data-steward",
+        "modelPlaceholder": "qwen-plus",
+        "selectColor": "Select color {{color}}"
+      },
+      "corpus-screen": {
+        "parsingBaseUrlPlaceholder": "http://parsing:8080"
+      },
+      "foraging": {
+        "rolePlaceholder": "engineer",
+        "urlPlaceholder": "https://example.com/changelog"
+      }
+    }
+  }
+}
