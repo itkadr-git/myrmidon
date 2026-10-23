@@ -7,11 +7,12 @@
 // of its own: everything testable in it is pushed down into domain.ts/service.ts.
 
 import type { BotContainerSpec, BotExtraMount, BotSharedMount } from "./driver.js";
-import { BOT_KEY_PATTERN } from "./template.js";
+import { BOT_KEY_PATTERN, isImageAllowed, parseImageAllowlist } from "./template.js";
 import type { SharedMountSettings } from "@paperclipai/shared";
 import { resolveBotSharedMount } from "./shared-mount.js";
 import { FLEET_HOST_NAME_PATTERN } from "./fleetd-hosts.js";
 
+const BOT_IMAGE_ALLOWLIST_ENV = "MYRMIDON_BOT_IMAGE_ALLOWLIST";
 export const BOT_CONTAINERS_ENV = "MYRMIDON_BOT_CONTAINERS";
 
 export function isBotContainersEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -46,6 +47,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 export function botContainerCardSaveProblem(
   adapterType: string | null | undefined,
   adapterConfig: Record<string, unknown> | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
 ): string | null {
   if (adapterType !== HERMES_GATEWAY_ADAPTER_TYPE) return null;
   const raw = adapterConfig?.container;
@@ -75,6 +77,34 @@ export function botContainerCardSaveProblem(
     if (typeof raw.hostPinned !== "boolean") {
       return `adapterConfig.container.hostPinned must be a boolean (got ${JSON.stringify(raw.hostPinned)})`;
     }
+  }
+  const imageProblem = botContainerImageSaveProblem(raw.image, env);
+  if (imageProblem) return imageProblem;
+  return null;
+}
+
+const IMMUTABLE_IMAGE_DIGEST_PATTERN = /@sha256:[0-9a-f]{64}$/;
+
+/**
+ * myrmidon(1.6.6, OPE-8916): why an enabled card's `container.image` may not be
+ * SAVED, or null. The image must be pinned by digest (`name@sha256:<64 hex>`): a
+ * tag such as `myrmidon-hermes:latest` is refused by dockergate when the container
+ * is created, which left a bot without a container after a UI save. When
+ * MYRMIDON_BOT_IMAGE_ALLOWLIST names images, the image must match one of them too;
+ * an instance with no allowlist set is not blocked here (the driver still refuses
+ * to create the container).
+ */
+export function botContainerImageSaveProblem(image: unknown, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (typeof image !== "string" || image.trim().length === 0) {
+    return "adapterConfig.container.image is required while the container is enabled: name a bot image pinned by digest (name@sha256:<64 hex>)";
+  }
+  const trimmed = image.trim();
+  if (!IMMUTABLE_IMAGE_DIGEST_PATTERN.test(trimmed)) {
+    return `adapterConfig.container.image "${trimmed}" is not pinned by digest: use name@sha256:<64 hex>, a tag such as :latest is refused when the container is created`;
+  }
+  const allowlist = parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]);
+  if (allowlist.length > 0 && !isImageAllowed(trimmed, allowlist)) {
+    return `adapterConfig.container.image "${trimmed}" is not in ${BOT_IMAGE_ALLOWLIST_ENV}`;
   }
   return null;
 }
