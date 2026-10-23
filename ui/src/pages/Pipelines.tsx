@@ -4841,7 +4841,7 @@ function ReviewQueueSection({
                     <Button type="button" size="sm" disabled={pending} onClick={(event) => {
                       event.stopPropagation();
                       onApprove(row);
-                    }>
+                    }}>
                       {t("area.pipelines-cases.pipelines.review.approve")}
                     </Button>
                     <Button type="button" size="sm" variant="outline" disabled={pending} onClick={(event) => {
@@ -4856,7 +4856,7 @@ function ReviewQueueSection({
                     <Button type="button" size="sm" disabled={pending} onClick={(event) => {
                       event.stopPropagation();
                       onApprove(row);
-                    }>
+                    }}>
                       {t("area.pipelines-cases.pipelines.review.approve")}
                     </Button>
                     <Button type="button" size="sm" variant="outline" disabled={pending} onClick={(event) => {
