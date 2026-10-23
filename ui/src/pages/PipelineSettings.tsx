@@ -1129,7 +1129,7 @@ function CarriedFieldTokenHelper({
 function AutomationVariableTokenHelper({
   groups,
   onInsert,
-  label = t("area.settings-company.pipeline-settings.availableVariables"),
+  label = i18n.t("area.settings-company.pipeline-settings.availableVariables"),
 }: {
   groups: AutomationVariableGroup[];
   onInsert: (fieldKey: string) => void;

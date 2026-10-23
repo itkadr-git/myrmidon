@@ -240,7 +240,7 @@
         "workspaceNoLongerOnRecord": "Workspace no longer on record",
         "sshHost": "SSH host",
         "provisionedAndMaintainedForYou": "Provisioned and maintained for you.",
-        "testing": "Testing…",
+        "testing": "Testing...",
         "testConnection": "Test connection",
         "testProvider": "Test provider",
         "yourAgentRunsOnA": "Your agent runs on a computer managed by Myrmidon.",
