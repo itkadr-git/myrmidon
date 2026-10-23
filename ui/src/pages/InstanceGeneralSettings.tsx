@@ -42,7 +42,8 @@ import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; /
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
-import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
+import { useTranslation } from "@/i18n";
+import { Trans } from "react-i18next"; // myrmidon(UI-RU)
 
 // myrmidon(BACKUP-KEEP-LAST): the shared `BackupRetentionPolicy` gains
 // `keepLastOnly?: boolean` together with the server side of this feature. This local
@@ -53,7 +54,7 @@ type BackupRetentionSettings = BackupRetentionPolicy & { keepLastOnly?: boolean 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function InstanceGeneralSettings({ embedded = false }: { embedded?: boolean }) {
-  const { t } = useTranslation(); // myrmidon(UI-RU)
+  const { t, i18n } = useTranslation(); // myrmidon(UI-RU)
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -125,14 +126,12 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
   const showFeedbackDataSharing = !hiddenSettings.has("instance.general.feedbackDataSharingPreference");
   const showSignOut = !hiddenSettings.has("instance.general.signOut");
   const visibleTopics = [
-    ...(showCensorUsernameInLogs ? ["log display"] : []),
-    ...(showKeyboardShortcuts ? ["keyboard shortcuts"] : []),
-    ...(showBackupRetention ? ["backup retention"] : []),
-    ...(showFeedbackDataSharing ? ["data sharing"] : []),
+    ...(showCensorUsernameInLogs ? [t("area.settings-company.instance-general-settings.topicLogDisplay")] : []),
+    ...(showKeyboardShortcuts ? [t("area.settings-company.instance-general-settings.topicKeyboardShortcuts")] : []),
+    ...(showBackupRetention ? [t("area.settings-company.instance-general-settings.topicBackupRetention")] : []),
+    ...(showFeedbackDataSharing ? [t("area.settings-company.instance-general-settings.topicDataSharing")] : []),
   ];
-  const topicSummary = visibleTopics.length > 2
-    ? `${visibleTopics.slice(0, -1).join(", ")}, and ${visibleTopics[visibleTopics.length - 1]}`
-    : visibleTopics.join(" and ");
+  const topicSummary = new Intl.ListFormat(i18n.language, { style: "long", type: "conjunction" }).format(visibleTopics);
   const visibleActionError = signOutMutation.error instanceof Error
     ? signOutMutation.error.message
     : signOutMutation.error
@@ -455,11 +454,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
             })}
           </div>
           <p className="text-xs text-muted-foreground">
-            To retest the first-use prompt in local dev, remove the{" "}
-            <code>feedbackDataSharingPreference</code> key from the{" "}
-            <code>instance_settings.general</code> JSON row for this instance, or set it back to{" "}
-            <code>"prompt"</code>. Unset and <code>"prompt"</code> both mean no default has been
-            chosen yet.
+            <Trans i18nKey="area.settings-company.instance-general-settings.retestHint" components={[<code />]} />
           </p>
         </div>
       </section>
