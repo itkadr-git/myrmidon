@@ -17,7 +17,7 @@ Plan of the wave: `ui/src/i18n/guarded/_areas.md` (areas, files, string counts).
 - Files are deep-merged; a key defined in two files is a test error.
 
 ### Key naming
-`area.<area>.<screen>.<what>` in camelCase, for example `area.pages1.secrets.createButton`, `area.pages1.secrets.emptyTitle`. `<screen>` is the component or page; `<what>` says the role (title, description, placeholder, button, error...), not the text.
+`area.<area>.<screen>.<what>` in camelCase, for example `area.pages-1.secrets.createButton`, `area.pages-1.secrets.emptyTitle`. `<screen>` is the component or page; `<what>` says the role (title, description, placeholder, button, error...), not the text.
 
 ### Interpolation and plurals
 - Variables: `"deleted": "Deleted {{name}}"`, call `t("area.x.s.deleted", { name })`. Never concatenate translated fragments.
@@ -32,25 +32,25 @@ Codes and enum values, identifiers, ids, `data-testid`, class names, URLs and ro
 Create `ui/src/i18n/guarded/<area>.txt`: one path per line relative to `ui/src` (see `_areas.md` for your area). The test `legacy-screens-no-english` then fails on any English JSX text or `title/label/placeholder/...` attribute in those files. Lines starting with `#` are comments.
 
 ### Example
-`guarded/pages1.txt`:
+`guarded/pages-1.txt`:
 ```
 pages/Secrets.tsx
 ```
-`myrmidon-locales/areas/pages1.en.json`:
+`myrmidon-locales/areas/pages-1.en.json`:
 ```json
-{ "area": { "pages1": { "secrets": {
+{ "area": { "pages-1": { "secrets": {
   "title": "Secrets",
   "createButton": "Create secret",
   "count_one": "{{count}} secret",
   "count_other": "{{count}} secrets"
 } } } }
 ```
-`pages1.ru.json` has the same keys (`count_one/_few/_many/_other`). In code:
+`pages-1.ru.json` has the same keys (`count_one/_few/_many/_other`). In code:
 ```tsx
 const { t } = useTranslation();
-<h1>{t("area.pages1.secrets.title")}</h1>
-<Button>{t("area.pages1.secrets.createButton")}</Button>
-<span>{t("area.pages1.secrets.count", { count: items.length })}</span>
+<h1>{t("area.pages-1.secrets.title")}</h1>
+<Button>{t("area.pages-1.secrets.createButton")}</Button>
+<span>{t("area.pages-1.secrets.count", { count: items.length })}</span>
 ```
 Checks: `areas` catalogs tests (no conflicts, own namespace, en/ru parity) and the guard test. Run through CI only.
 
@@ -69,7 +69,7 @@ Checks: `areas` catalogs tests (no conflicts, own namespace, en/ru parity) and t
 - Файлы сливаются глубоко; ключ, определённый в двух файлах, - ошибка теста.
 
 ### Имена ключей
-`area.<area>.<screen>.<что>` в camelCase, например `area.pages1.secrets.createButton`, `area.pages1.secrets.emptyTitle`. `<screen>` - компонент или страница; `<что>` - роль (title, description, placeholder, button, error...), а не сам текст.
+`area.<area>.<screen>.<что>` в camelCase, например `area.pages-1.secrets.createButton`, `area.pages-1.secrets.emptyTitle`. `<screen>` - компонент или страница; `<что>` - роль (title, description, placeholder, button, error...), а не сам текст.
 
 ### Интерполяция и множественные числа
 - Переменные: `"deleted": "Удалено: {{name}}"`, вызов `t("area.x.s.deleted", { name })`. Переведённые куски не склеивать.
@@ -83,4 +83,4 @@ Checks: `areas` catalogs tests (no conflicts, own namespace, en/ru parity) and t
 Создайте `ui/src/i18n/guarded/<area>.txt`: по пути на строку относительно `ui/src` (файлы вашей области - в `_areas.md`). Тест `legacy-screens-no-english` упадёт на английском тексте JSX и атрибутах `title/label/placeholder/...` в этих файлах. Строки с `#` - комментарии.
 
 ### Пример
-См. английский раздел выше: `guarded/pages1.txt`, `areas/pages1.en.json` и `pages1.ru.json` с теми же ключами (для ru `count_one/_few/_many/_other`), в коде `t("area.pages1.secrets.title")`. Тесты запускает только CI.
+См. английский раздел выше: `guarded/pages-1.txt`, `areas/pages-1.en.json` и `pages-1.ru.json` с теми же ключами (для ru `count_one/_few/_many/_other`), в коде `t("area.pages-1.secrets.title")`. Тесты запускает только CI.
