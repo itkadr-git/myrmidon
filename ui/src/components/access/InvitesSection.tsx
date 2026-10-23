@@ -4,6 +4,8 @@ import { Check, Copy } from "lucide-react";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { Link } from "@/lib/router";
@@ -51,6 +53,8 @@ export function InvitesSection() {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [humanRole, setHumanRole] = useState<"owner" | "admin" | "operator" | "viewer">("operator");
+  const [inviteeEmail, setInviteeEmail] = useState("");
+  const [emailError, setEmailError] = useState<string | null>(null);
   const [latestInviteUrl, setLatestInviteUrl] = useState<string | null>(null);
   const [latestInviteCopied, setLatestInviteCopied] = useState(false);
   const latestInviteInputRef = useRef<HTMLInputElement | null>(null);
@@ -112,11 +116,14 @@ export function InvitesSection() {
       accessApi.createCompanyInvite(selectedCompanyId!, {
         allowedJoinTypes: "human",
         humanRole,
+        defaultsPayload: { email: inviteeEmail.trim() },
         agentMessage: null,
       }),
     onSuccess: async (invite) => {
       setLatestInviteUrl(invite.inviteUrl);
       setLatestInviteCopied(false);
+      setInviteeEmail("");
+      setEmailError(null);
       const copied = await copyText(invite.inviteUrl, "Copy the invite URL manually from the field below.");
 
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
@@ -171,16 +178,33 @@ export function InvitesSection() {
   return (
     <div className="max-w-6xl space-y-8">
       <p className="max-w-3xl text-sm text-muted-foreground">
-        Invite people to request access to this organization. New invite links are copied to your clipboard when they are
-        generated.
+        Create an account for a person in this organization. New invite links are copied to your clipboard when they are generated.
       </p>
 
       <section className="space-y-4 rounded-xl border border-border p-5">
         <div className="space-y-1">
           <h2 className="text-sm font-semibold">Invite a person</h2>
           <p className="text-sm text-muted-foreground">
-            Generate a human invite link and choose the default access it should request.
+            Enter an email address and choose the new member's access.
           </p>
+        </div>
+
+        <div className="max-w-md space-y-2">
+          <Label htmlFor="invitee-email">Email address</Label>
+          <Input
+            id="invitee-email"
+            type="email"
+            autoComplete="email"
+            required
+            value={inviteeEmail}
+            aria-invalid={emailError ? true : undefined}
+            aria-describedby={emailError ? "invitee-email-error" : undefined}
+            onChange={(event) => {
+              setInviteeEmail(event.target.value);
+              setEmailError(null);
+            }}
+          />
+          {emailError ? <p id="invitee-email-error" role="alert" className="text-sm text-destructive">{emailError}</p> : null}
         </div>
 
         <fieldset className="space-y-3">
@@ -224,7 +248,14 @@ export function InvitesSection() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <Button onClick={() => createInviteMutation.mutate()} disabled={createInviteMutation.isPending}>
+          <Button onClick={() => {
+            const email = inviteeEmail.trim();
+            if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+              setEmailError("Enter a valid email address.");
+              return;
+            }
+            createInviteMutation.mutate();
+          }} disabled={createInviteMutation.isPending}>
             {createInviteMutation.isPending ? "Creating…" : "Create invite"}
           </Button>
           <span className="text-sm text-muted-foreground">Invite history below keeps the audit trail.</span>
