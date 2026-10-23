@@ -1,0 +1,9 @@
+# OPE-8950 area routines-1
+components/RoutineContextualSidebar.tsx
+components/RoutineHistoryTab.tsx
+components/RoutineOverview.tsx
+components/RoutineRunVariablesDialog.tsx
+components/RoutineSaveBar.tsx
+components/RoutineSubSidebar.tsx
+components/RoutineTriggerCard.tsx
+components/RoutineVariablesEditor.tsx

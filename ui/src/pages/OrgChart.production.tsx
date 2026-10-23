@@ -12,7 +12,8 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { Download, Maximize2, Minus, Network, Plus, Upload } from "lucide-react";
-import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { type Agent } from "@paperclipai/shared";
+import { localizedAgentRoleLabel } from "../lib/agent-role-labels";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 
@@ -160,6 +161,7 @@ function touchCenter(a: React.Touch, b: React.Touch, container: HTMLDivElement):
 // ── Status dot colors (raw hex for SVG) ─────────────────────────────────
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { useTranslation } from "@/i18n";
 
 const statusDotColor: Record<string, string> = {
   running: "var(--hex-22d3ee)",
@@ -174,6 +176,7 @@ const defaultDotColor = "var(--hex-a3a3a3)";
 // ── Main component ──────────────────────────────────────────────────────
 
 export function OrgChart() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
@@ -204,8 +207,8 @@ export function OrgChart() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("area.agents-3.org-chart.orgChart.breadcrumb") }]);
+  }, [setBreadcrumbs, t]);
 
   // Layout computation
   const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
@@ -439,7 +442,7 @@ export function OrgChart() {
   }, [pan, zoom]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
+    return <EmptyState icon={Network} message={t("area.agents-3.org-chart.orgChart.selectACompanyToView")} />;
   }
 
   if (isLoading) {
@@ -447,7 +450,7 @@ export function OrgChart() {
   }
 
   if (orgTree && orgTree.length === 0) {
-    return <EmptyState icon={Network} message="No organizational hierarchy defined." />;
+    return <EmptyState icon={Network} message={t("agents.noHierarchy")} />;
   }
 
   return (
@@ -457,7 +460,7 @@ export function OrgChart() {
           <Link to="/company/import">
             <Button variant="outline" size="sm">
               <Upload className="mr-1.5 h-3.5 w-3.5" />
-              Import company
+              {t("area.agents-3.org-chart.orgChart.importCompany")}
             </Button>
           </Link>
         )}
@@ -465,7 +468,7 @@ export function OrgChart() {
           <Link to="/company/export">
             <Button variant="outline" size="sm">
               <Download className="mr-1.5 h-3.5 w-3.5" />
-              Export company
+              {t("area.agents-3.org-chart.orgChart.exportCompany")}
             </Button>
           </Link>
         )}
@@ -502,8 +505,8 @@ export function OrgChart() {
                 });
               }
             }}
-            title="Zoom in"
-            aria-label="Zoom in"
+            title={t("area.agents-3.org-chart.orgChart.zoomIn")}
+            aria-label={t("area.agents-3.org-chart.orgChart.zoomIn")}
           >
             <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
@@ -518,16 +521,16 @@ export function OrgChart() {
                 });
               }
             }}
-            title="Zoom out"
-            aria-label="Zoom out"
+            title={t("area.agents-3.org-chart.orgChart.zoomOut")}
+            aria-label={t("area.agents-3.org-chart.orgChart.zoomOut")}
           >
             <Minus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
           <button
             className="flex size-9 items-center justify-center rounded border border-border bg-background text-(length:--text-nano) transition-colors hover:bg-accent sm:size-7"
             onClick={fitToScreen}
-            title="Fit to screen"
-            aria-label="Fit chart to screen"
+            title={t("area.agents-3.org-chart.orgChart.fitToScreen")}
+            aria-label={t("area.agents-3.org-chart.orgChart.fitChartToScreen")}
           >
             <Maximize2 className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
@@ -611,7 +614,7 @@ export function OrgChart() {
                       {node.name}
                     </span>
                     <span className="text-(length:--text-micro) text-muted-foreground leading-tight mt-0.5">
-                      {agent?.title ?? roleLabel(node.role)}
+                      {agent?.title ?? localizedAgentRoleLabel(node.role, t)}
                     </span>
                     {agent && (
                       <span className="text-(length:--text-nano) text-muted-foreground/60 font-mono leading-tight mt-1">
@@ -634,8 +637,3 @@ export function OrgChart() {
   );
 }
 
-const roleLabels: Record<string, string> = AGENT_ROLE_LABELS;
-
-function roleLabel(role: string): string {
-  return roleLabels[role] ?? role;
-}

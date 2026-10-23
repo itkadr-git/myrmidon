@@ -33,6 +33,7 @@ import {
   pauseGuardQueryKey,
   type PauseGuardView,
 } from "./pauseGuardApi";
+import { i18n, useTranslation } from "@/i18n";
 
 export interface PauseGuardDraft {
   enabled: boolean;
@@ -63,13 +64,13 @@ function wholeNumber(
   max: number,
 ): { value: number | null; error: string | null } {
   const text = raw.trim();
-  if (!text) return { value: null, error: "Required" };
+  if (!text) return { value: null, error: i18n.t("area.settings-models-runtime-1.pause-guard-settings-panel.errors.required") };
   if (!/^\d+$/.test(text)) {
-    return { value: null, error: `Enter a whole number between ${min} and ${max}` };
+    return { value: null, error: i18n.t("area.settings-models-runtime-1.pause-guard-settings-panel.errors.range", { min, max }) };
   }
   const value = Number(text);
   if (!Number.isSafeInteger(value) || value < min || value > max) {
-    return { value: null, error: `Enter a whole number between ${min} and ${max}` };
+    return { value: null, error: i18n.t("area.settings-models-runtime-1.pause-guard-settings-panel.errors.range", { min, max }) };
   }
   return { value, error: null };
 }
@@ -120,6 +121,7 @@ export function PauseGuardSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<PauseGuardDraft | null>(null);
   const current = draft ?? (view ? toPauseGuardDraft(view.settings) : null);
   const { patch, errors } = current
@@ -137,12 +139,10 @@ export function PauseGuardSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <AlarmClockCheck className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Forgotten pauses</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-models-runtime-1.pause-guard-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          The board resumes agents that an operator paused and left paused longer than the threshold, so their queued runs and
-          stranded tasks come back on their own. Pauses the board sets for its own reasons — budget, archived company, import —
-          are never lifted, and names on the allowlist are skipped. Saving takes effect at the next pass; nothing is restarted.
+          {t("area.settings-models-runtime-1.pause-guard-settings-panel.description")}
         </p>
       </div>
 
@@ -155,7 +155,7 @@ export function PauseGuardSettingsPanelView({
       {view && current ? (
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-1">
-            <Label htmlFor="pause-guard-enabled">Guard is on</Label>
+            <Label htmlFor="pause-guard-enabled">{t("area.settings-models-runtime-1.pause-guard-settings-panel.enabledLabel")}</Label>
             <div className="flex items-center gap-2">
               <ToggleSwitch
                 id="pause-guard-enabled"
@@ -167,12 +167,12 @@ export function PauseGuardSettingsPanelView({
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              Switched off, no pause is ever lifted automatically: an operator resume is the only way back.
+              {t("area.settings-models-runtime-1.pause-guard-settings-panel.enabledHint")}
             </p>
           </div>
 
           <div className="space-y-1">
-            <Label htmlFor="pause-guard-threshold">Pause longer than, minutes</Label>
+            <Label htmlFor="pause-guard-threshold">{t("area.settings-models-runtime-1.pause-guard-settings-panel.thresholdLabel")}</Label>
             <Input
               id="pause-guard-threshold"
               inputMode="numeric"
@@ -188,12 +188,12 @@ export function PauseGuardSettingsPanelView({
               ) : null}
             </div>
             <p className="text-xs text-muted-foreground">
-              A pause older than this is treated as forgotten. Default 20 minutes.
+              {t("area.settings-models-runtime-1.pause-guard-settings-panel.thresholdHint")}
             </p>
           </div>
 
           <div className="space-y-1">
-            <Label htmlFor="pause-guard-interval">Check every, seconds</Label>
+            <Label htmlFor="pause-guard-interval">{t("area.settings-models-runtime-1.pause-guard-settings-panel.intervalLabel")}</Label>
             <Input
               id="pause-guard-interval"
               inputMode="numeric"
@@ -207,12 +207,12 @@ export function PauseGuardSettingsPanelView({
               {errors.intervalSec ? <span className="ml-2 text-destructive">{errors.intervalSec}</span> : null}
             </div>
             <p className="text-xs text-muted-foreground">
-              How often the board looks for forgotten pauses. Default 600 (every 10 minutes).
+              {t("area.settings-models-runtime-1.pause-guard-settings-panel.intervalHint")}
             </p>
           </div>
 
           <div className="space-y-1">
-            <Label htmlFor="pause-guard-max">Resumes per pass, at most</Label>
+            <Label htmlFor="pause-guard-max">{t("area.settings-models-runtime-1.pause-guard-settings-panel.maxLabel")}</Label>
             <Input
               id="pause-guard-max"
               inputMode="numeric"
@@ -228,13 +228,12 @@ export function PauseGuardSettingsPanelView({
               ) : null}
             </div>
             <p className="text-xs text-muted-foreground">
-              A ceiling on one pass, so a fleet-wide resume does not start every backlog at once. Default 20; the rest wait for
-              the next pass and raise a notice on the attention desk.
+              {t("area.settings-models-runtime-1.pause-guard-settings-panel.maxHint")}
             </p>
           </div>
 
           <div className="space-y-1 md:col-span-2">
-            <Label htmlFor="pause-guard-allowlist">Never resume these agents</Label>
+            <Label htmlFor="pause-guard-allowlist">{t("area.settings-models-runtime-1.pause-guard-settings-panel.allowlistLabel")}</Label>
             <Textarea
               id="pause-guard-allowlist"
               rows={4}
@@ -247,8 +246,7 @@ export function PauseGuardSettingsPanelView({
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              Agent names, one per line or separated by commas. Empty by default: an agent stays paused exactly as long as the
-              operator left it.
+              {t("area.settings-models-runtime-1.pause-guard-settings-panel.allowlistHint")}
             </p>
           </div>
 
@@ -261,18 +259,19 @@ export function PauseGuardSettingsPanelView({
                 if (patch) onSave(patch);
               }}
             >
-              {pending ? "Saving..." : "Save pause guard"}
+              {pending ? t("area.settings-models-runtime-1.shared.saving") : t("area.settings-models-runtime-1.pause-guard-settings-panel.saveButton")}
             </Button>
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading pause guard settings...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-models-runtime-1.pause-guard-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function PauseGuardSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -283,7 +282,7 @@ export function PauseGuardSettingsPanel() {
   const save = useMutation({
     mutationFn: pauseGuardApi.update,
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the pause guard settings failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-models-runtime-1.pause-guard-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: pauseGuardQueryKey });
@@ -293,7 +292,7 @@ export function PauseGuardSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load the pause guard settings."}
+        {query.error instanceof Error ? query.error.message : t("area.settings-models-runtime-1.pause-guard-settings-panel.loadFailed")}
       </div>
     );
   }

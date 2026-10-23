@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, Loader2 } from "lucide-react";
+import { Trans } from "react-i18next";
 import type { ToolProfileWithDetails } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
+import { i18n, useTranslation } from "@/i18n";
 import { toolsApi, type ToolProfileBindingInput } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -37,10 +39,10 @@ function slugifyProfileKey(name: string): string {
     .slice(0, 160);
 }
 
-const STEP_LABELS: Array<{ step: WizardStep; label: string }> = [
-  { step: 1, label: "Name" },
-  { step: 2, label: "Choose tools" },
-  { step: 3, label: "Assign" },
+const stepLabels = (): Array<{ step: WizardStep; label: string }> => [
+  { step: 1, label: i18n.t("area.tools-profiles-2.profile-wizard.step.name") },
+  { step: 2, label: i18n.t("area.tools-profiles-2.profile-wizard.step.chooseTools") },
+  { step: 3, label: i18n.t("area.tools-profiles-2.profile-wizard.step.assign") },
 ];
 
 export function ProfileWizard({
@@ -55,6 +57,7 @@ export function ProfileWizard({
   initialStep?: WizardStep;
 }) {
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const data = useProfilesData(companyId);
@@ -153,7 +156,7 @@ export function ProfileWizard({
       if (!draftId) {
         const created = await toolsApi.createProfile(companyId, {
           profileKey: profileKey || slugifyProfileKey(name) || "profile",
-          name: name.trim() || "Untitled profile",
+          name: name.trim() || t("area.tools-profiles-2.profile-wizard.untitled"),
           description: description.trim() || null,
           status: "draft",
           defaultAction: newToolsAction,
@@ -164,7 +167,7 @@ export function ProfileWizard({
       }
       const updated = await toolsApi.updateProfile(draftId, {
         profileKey: profileKey || undefined,
-        name: name.trim() || "Untitled profile",
+        name: name.trim() || t("area.tools-profiles-2.profile-wizard.untitled"),
         description: description.trim() || null,
         defaultAction: newToolsAction,
         entries,
@@ -179,12 +182,12 @@ export function ProfileWizard({
       invalidate();
     },
     onError: (error: unknown) =>
-      pushToast({ title: "Could not save", body: String((error as Error)?.message ?? error), tone: "error" }),
+      pushToast({ title: t("area.tools-profiles-2.profile-wizard.toast.saveFailed"), body: String((error as Error)?.message ?? error), tone: "error" }),
   });
 
   const finish = useMutation({
     mutationFn: async () => {
-      if (!draftId) throw new Error("No draft to finish");
+      if (!draftId) throw new Error(t("area.tools-profiles-2.profile-wizard.noDraft"));
       const entries = buildEntries(appGroups, selections, advancedRules, newToolsAction);
       const profile = await toolsApi.updateProfile(draftId, {
         defaultAction: newToolsAction,
@@ -200,12 +203,12 @@ export function ProfileWizard({
       return toolsApi.updateProfile(draftId, { status: "active" });
     },
     onSuccess: (profile) => {
-      pushToast({ title: "Profile saved", tone: "success" });
+      pushToast({ title: t("area.tools-profiles-2.profile-wizard.toast.profileSaved"), tone: "success" });
       invalidate();
       navigate(`/apps/advanced/profiles/${profile.id}${selectedAgentIds.size === 0 && !companyDefault ? "?created=1" : ""}`);
     },
     onError: (error: unknown) =>
-      pushToast({ title: "Could not save profile", body: String((error as Error)?.message ?? error), tone: "error" }),
+      pushToast({ title: t("area.tools-profiles-2.profile-wizard.toast.profileSaveFailed"), body: String((error as Error)?.message ?? error), tone: "error" }),
   });
 
   const saveAndExit = () => {
@@ -214,7 +217,11 @@ export function ProfileWizard({
       { goToStep: step, completedStep: completed },
       {
         onSuccess: () => {
-          pushToast({ title: "Draft saved", body: "Pick it back up from the profiles list.", tone: "success" });
+          pushToast({
+            title: t("area.tools-profiles-2.profile-wizard.toast.draftSaved"),
+            body: t("area.tools-profiles-2.profile-wizard.toast.draftSavedBody"),
+            tone: "success",
+          });
           navigate("/apps/advanced/profiles");
         },
       },
@@ -224,7 +231,7 @@ export function ProfileWizard({
   const busy = saveDraft.isPending || finish.isPending;
   const step1Valid = name.trim().length > 0 && (template !== "copy" || Boolean(copyFromId));
 
-  if (profileId && profiles.isLoading) return <LoadingState label="Loading draft…" />;
+  if (profileId && profiles.isLoading) return <LoadingState label={t("area.tools-profiles-2.profile-wizard.loadingDraft")} />;
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 pb-24">
@@ -287,8 +294,11 @@ export function ProfileWizard({
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
             {step >= 2 ? (
               <span>
-                Allows <span className="font-medium text-foreground">{live.allowed}</span> of {live.total}{" "}
-                tools
+                <Trans
+                  i18nKey="area.tools-profiles-2.profile-wizard.allowsCount"
+                  values={{ allowed: live.allowed, total: live.total }}
+                  components={[<span key="allowed" className="font-medium text-foreground" />]}
+                />
               </span>
             ) : null}
             {draftId ? (
@@ -298,7 +308,7 @@ export function ProfileWizard({
                 disabled={busy}
                 className="font-medium text-primary hover:underline disabled:opacity-50"
               >
-                Save &amp; finish later
+                {t("area.tools-profiles-2.profile-wizard.saveLater")}
               </button>
             ) : null}
           </div>
@@ -306,11 +316,11 @@ export function ProfileWizard({
           <div className="flex items-center gap-2">
             {step > 1 ? (
               <Button variant="outline" disabled={busy} onClick={() => setStep((s) => (s - 1) as WizardStep)}>
-                Back
+                {t("area.tools-profiles-2.profile-wizard.back")}
               </Button>
             ) : (
               <Button variant="ghost" disabled={busy} onClick={() => navigate("/apps/advanced/profiles")}>
-                Cancel
+                {t("common.cancel")}
               </Button>
             )}
 
@@ -322,7 +332,7 @@ export function ProfileWizard({
                 }
               >
                 {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
-                Continue
+                {t("area.tools-profiles-2.profile-wizard.continue")}
               </Button>
             ) : null}
 
@@ -332,14 +342,14 @@ export function ProfileWizard({
                 onClick={() => saveDraft.mutate({ goToStep: 3, completedStep: 2 })}
               >
                 {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
-                Continue
+                {t("area.tools-profiles-2.profile-wizard.continue")}
               </Button>
             ) : null}
 
             {step === 3 ? (
               <Button disabled={busy} onClick={() => finish.mutate()}>
                 {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
-                Save profile
+                {t("area.tools-profiles-2.profile-wizard.saveProfile")}
               </Button>
             ) : null}
           </div>
@@ -393,16 +403,20 @@ async function reconcileBindings(
     } catch (error) {
       const rollbacks = await Promise.allSettled(completed.reverse().map((done) => done.rollback()));
       const rollbackFailures = rollbacks.filter((result) => result.status === "rejected").length;
-      const suffix = rollbackFailures > 0 ? `; ${rollbackFailures} rollback operation(s) also failed` : "";
-      throw new Error(`Could not update assignment ${operation.key}${suffix}`, { cause: error });
+      const message =
+        rollbackFailures > 0
+          ? i18n.t("area.tools-profiles-2.profile-wizard.assignErrorRollback", { key: operation.key, count: rollbackFailures })
+          : i18n.t("area.tools-profiles-2.profile-wizard.assignError", { key: operation.key });
+      throw new Error(message, { cause: error });
     }
   }
 }
 
 function Stepper({ current }: { current: WizardStep }) {
+  const labels = stepLabels();
   return (
     <ol className="flex items-center gap-2 text-sm">
-      {STEP_LABELS.map(({ step, label }, idx) => {
+      {labels.map(({ step, label }, idx) => {
         const done = current > step;
         const active = current === step;
         return (
@@ -420,7 +434,7 @@ function Stepper({ current }: { current: WizardStep }) {
             <span className={cn("font-medium", active ? "text-foreground" : "text-muted-foreground")}>
               {label}
             </span>
-            {idx < STEP_LABELS.length - 1 ? <span className="mx-1 text-muted-foreground">→</span> : null}
+            {idx < labels.length - 1 ? <span className="mx-1 text-muted-foreground">→</span> : null}
           </li>
         );
       })}
@@ -453,11 +467,12 @@ export function StepName({
   profileKey: string;
   onProfileKey: (v: string) => void;
 }) {
+  const { t: tr } = useTranslation();
   const [advancedOpen, setAdvancedOpen] = useState(false);
   return (
     <div className="space-y-6">
       <div className="space-y-2">
-        <h3 className="text-sm font-medium text-foreground">Start from</h3>
+        <h3 className="text-sm font-medium text-foreground">{tr("area.tools-profiles-2.profile-wizard.stepName.startFrom")}</h3>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {TEMPLATES.map((t) => (
             <button
@@ -480,9 +495,9 @@ export function StepName({
 
       {template === "copy" ? (
         <div className="space-y-2">
-          <h3 className="text-sm font-medium text-foreground">Which profile?</h3>
+          <h3 className="text-sm font-medium text-foreground">{tr("area.tools-profiles-2.profile-wizard.stepName.whichProfile")}</h3>
           {copyOptions.length === 0 ? (
-            <p className="text-sm text-muted-foreground">You don't have another profile to copy yet.</p>
+            <p className="text-sm text-muted-foreground">{tr("area.tools-profiles-2.profile-wizard.stepName.noOtherProfile")}</p>
           ) : (
             <div className="space-y-1.5">
               {copyOptions.map((p) => (
@@ -506,21 +521,21 @@ export function StepName({
 
       <div className="space-y-3">
         <div className="space-y-1.5">
-          <Label htmlFor="profile-name">Name</Label>
+          <Label htmlFor="profile-name">{tr("area.tools-profiles-2.profile-wizard.stepName.nameLabel")}</Label>
           <Input
             id="profile-name"
             value={name}
             onChange={(e) => onName(e.target.value)}
-            placeholder="e.g. Everyday work"
+            placeholder={tr("area.tools-profiles-2.profile-wizard.stepName.namePlaceholder")}
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="profile-description">Description (optional)</Label>
+          <Label htmlFor="profile-description">{tr("area.tools-profiles-2.profile-wizard.stepName.descriptionLabel")}</Label>
           <Textarea
             id="profile-description"
             value={description}
             onChange={(e) => onDescription(e.target.value)}
-            placeholder="What is this profile for?"
+            placeholder={tr("area.tools-profiles-2.profile-wizard.stepName.descriptionPlaceholder")}
             rows={2}
           />
         </div>
@@ -529,11 +544,11 @@ export function StepName({
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
         <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
           <ChevronDown className={cn("h-4 w-4 transition-transform", advancedOpen && "rotate-180")} />
-          Advanced
+          {tr("area.tools-profiles-2.profile-wizard.stepName.advanced")}
         </CollapsibleTrigger>
         <CollapsibleContent className="pt-2">
           <div className="space-y-1.5">
-            <Label htmlFor="profile-key">Identifier</Label>
+            <Label htmlFor="profile-key">{tr("area.tools-profiles-2.profile-wizard.stepName.identifier")}</Label>
             <Input
               id="profile-key"
               value={profileKey}
@@ -541,7 +556,7 @@ export function StepName({
               className="font-mono text-xs"
             />
             <p className="text-xs text-muted-foreground">
-              Used in exports and the API. Auto-filled from the name.
+              {tr("area.tools-profiles-2.profile-wizard.stepName.identifierHint")}
             </p>
           </div>
         </CollapsibleContent>
@@ -582,6 +597,7 @@ export function StepAssign({
   companyDefault: boolean;
   onCompanyDefault: (v: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const [moreOpen, setMoreOpen] = useState(false);
   // Per-agent overlap context from already-loaded bindings — no extra fetch.
   const contextByAgent = useMemo(() => {
@@ -610,16 +626,16 @@ export function StepAssign({
           onChange={(e) => onCompanyDefault(e.target.checked)}
         />
         <span className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium text-foreground">Make this the organization default</span>
+          <span className="text-sm font-medium text-foreground">{t("area.tools-profiles-2.profile-wizard.stepAssign.orgDefault")}</span>
           <span className="text-xs text-muted-foreground">
-            Every agent without its own profile uses this one.
-            {defaultProfileName ? ` Replaces “${defaultProfileName}”.` : ""}
+            {t("area.tools-profiles-2.profile-wizard.stepAssign.orgDefaultHint")}
+            {defaultProfileName ? ` ${t("area.tools-profiles-2.profile-wizard.stepAssign.replaces", { name: defaultProfileName })}` : ""}
           </span>
         </span>
       </label>
 
       <div className="space-y-2">
-        <h3 className="text-sm font-medium text-foreground">Assign to agents</h3>
+        <h3 className="text-sm font-medium text-foreground">{t("area.tools-profiles-2.profile-wizard.stepAssign.assignToAgents")}</h3>
         <AgentMultiSelect
           agents={agents}
           selectedAgentIds={selectedAgentIds}
@@ -631,34 +647,35 @@ export function StepAssign({
           getDescription={(agent) => {
             const context = contextByAgent.get(agent.id) ?? [];
             const bits = [...context];
-            if (defaultProfileName) bits.push("organization default");
-            return bits.length > 0 ? `already has: ${bits.join(" · ")}` : "no profiles yet";
+            if (defaultProfileName) bits.push(t("area.tools-profiles-2.profile-wizard.stepAssign.orgDefaultShort"));
+            return bits.length > 0
+              ? t("area.tools-profiles-2.profile-wizard.stepAssign.alreadyHas", { list: bits.join(" · ") })
+              : t("area.tools-profiles-2.profile-wizard.stepAssign.noProfilesYet");
           }}
         />
         <p className="text-xs text-muted-foreground">
-          If an agent has several profiles, it can use anything any of them allows.
+          {t("area.tools-profiles-2.profile-wizard.stepAssign.severalProfiles")}
         </p>
       </div>
 
       {(projects.length > 0 || routines.length > 0) && onToggleProject && onToggleRoutine ? (
         <Collapsible open={moreOpen} onOpenChange={setMoreOpen} className="rounded-lg border border-border">
           <CollapsibleTrigger className="flex w-full items-center justify-between px-4 py-3 text-left">
-            <span className="text-sm font-medium text-foreground">More targets</span>
+            <span className="text-sm font-medium text-foreground">{t("area.tools-profiles-2.profile-wizard.stepAssign.moreTargets")}</span>
             <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", moreOpen && "rotate-180")} />
           </CollapsibleTrigger>
           <CollapsibleContent className="space-y-4 border-t border-border px-4 py-3">
             <p className="text-xs text-muted-foreground">
-              Assign this profile to a whole project or a scheduled routine instead of (or as well as)
-              individual agents.
+              {t("area.tools-profiles-2.profile-wizard.stepAssign.moreTargetsHint")}
             </p>
             <TargetChecklist
-              label="Projects"
+              label={t("area.tools-profiles-2.profile-wizard.stepAssign.projects")}
               options={projects}
               selected={selectedProjectIds ?? new Set()}
               onToggle={onToggleProject}
             />
             <TargetChecklist
-              label="Routines"
+              label={t("area.tools-profiles-2.profile-wizard.stepAssign.routines")}
               options={routines}
               selected={selectedRoutineIds ?? new Set()}
               onToggle={onToggleRoutine}

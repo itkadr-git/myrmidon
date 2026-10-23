@@ -487,7 +487,7 @@ export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = 
               variant="outline"
               onClick={() => setConfigureState(builtInState)}
             >
-              Set up
+              {t("agents.setUp")}
             </Button>
           </span>
         )}
@@ -706,7 +706,7 @@ export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = 
 
       {effectiveView === "tree" && agents && agents.length > 0 && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected status.
+          {t("agents.noAgentsMatch")}
         </p>
       )}
 

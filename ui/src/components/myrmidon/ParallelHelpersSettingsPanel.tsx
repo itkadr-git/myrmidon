@@ -13,6 +13,7 @@ import type { ParallelHelpersSettings } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { i18n, useTranslation } from "@/i18n";
 import { parallelHelpersApi, parallelHelpersQueryKey, type ParallelHelpersView } from "./parallelHelpersApi";
 
 interface DraftParse {
@@ -29,29 +30,32 @@ type NumberKey = "maxPerAgent" | "defaultMaxPerAgent" | "buildSlots" | "hostMemo
  */
 const HELPERS_HOST_LOAD_WARN_ABOVE = 50;
 
-const NUMBER_FIELDS: Array<{ key: NumberKey; label: string; hint: string; optional: boolean }> = [
+const NUMBER_KEYS: NumberKey[] = ["maxPerAgent", "defaultMaxPerAgent", "buildSlots", "hostMemoryMb"];
+
+// A function, not a module constant: the texts follow the interface language.
+const getNumberFields = (): Array<{ key: NumberKey; label: string; hint: string; optional: boolean }> => [
   {
     key: "maxPerAgent",
-    label: "Helpers per agent (ceiling)",
-    hint: "The highest value any agent card in this company may set. Cards above it are clamped server-side. There is no built-in upper limit (HELPERS-NO-CAP): the number you set here is the limit; high values increase host load.",
+    label: i18n.t("area.settings-models-runtime-1.parallel-helpers-settings-panel.fields.maxPerAgent.label"),
+    hint: i18n.t("area.settings-models-runtime-1.parallel-helpers-settings-panel.fields.maxPerAgent.hint"),
     optional: true,
   },
   {
     key: "defaultMaxPerAgent",
-    label: "Default helpers per agent",
-    hint: "What an agent gets when its card says nothing. New agents inherit it.",
+    label: i18n.t("area.settings-models-runtime-1.parallel-helpers-settings-panel.fields.defaultMaxPerAgent.label"),
+    hint: i18n.t("area.settings-models-runtime-1.parallel-helpers-settings-panel.fields.defaultMaxPerAgent.hint"),
     optional: true,
   },
   {
     key: "buildSlots",
-    label: "Shared build slots",
-    hint: "Concurrent build slots on the shared dev host, for the capacity hint below. Empty = unknown (not checked).",
+    label: i18n.t("area.settings-models-runtime-1.parallel-helpers-settings-panel.fields.buildSlots.label"),
+    hint: i18n.t("area.settings-models-runtime-1.parallel-helpers-settings-panel.fields.buildSlots.hint"),
     optional: true,
   },
   {
     key: "hostMemoryMb",
-    label: "Dev host memory, MB",
-    hint: "Memory of the host running the bots, for the capacity hint below. Empty = unknown (not checked).",
+    label: i18n.t("area.settings-models-runtime-1.parallel-helpers-settings-panel.fields.hostMemoryMb.label"),
+    hint: i18n.t("area.settings-models-runtime-1.parallel-helpers-settings-panel.fields.hostMemoryMb.hint"),
     optional: true,
   },
 ];
@@ -60,11 +64,11 @@ const NUMBER_FIELDS: Array<{ key: NumberKey; label: string; hint: string; option
 export function parseParallelHelpersDraft(draft: Record<NumberKey, string>): DraftParse {
   const errors: Partial<Record<keyof ParallelHelpersSettings, string>> = {};
   const parsed = {} as Record<NumberKey, number | null>;
-  for (const { key } of NUMBER_FIELDS) {
+  for (const key of NUMBER_KEYS) {
     const raw = draft[key].trim();
     const value = raw ? Number(raw) : null;
     if (raw && (value === null || !Number.isInteger(value) || value <= 0)) {
-      errors[key] = "Enter a whole number greater than zero, or leave it empty";
+      errors[key] = i18n.t("area.settings-models-runtime-1.parallel-helpers-settings-panel.errors.number");
       continue;
     }
     parsed[key] = value;
@@ -104,6 +108,7 @@ export function ParallelHelpersSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<Record<NumberKey, string> | null>(null);
   const current = draft ?? (view ? toDraft(view.settings) : null);
   const { patch, errors } = current
@@ -117,7 +122,7 @@ export function ParallelHelpersSettingsPanelView({
     draftCeiling !== null ? draftCeiling : (effectiveCeiling ?? null);
   const hostLoadWarning =
     ceilingToWarn !== null && ceilingToWarn > HELPERS_HOST_LOAD_WARN_ABOVE
-      ? `A ceiling of ${ceilingToWarn} means each agent card may ask for up to ${ceilingToWarn} helpers at once. Values this high put a real load on the host — make sure this is intended, not a typo. It is not limited by the product.`
+      ? t("area.settings-models-runtime-1.parallel-helpers-settings-panel.hostLoadWarning", { ceiling: ceilingToWarn })
       : null;
 
   return (
@@ -125,12 +130,10 @@ export function ParallelHelpersSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Users className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Parallel helpers</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-models-runtime-1.parallel-helpers-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          The allowed range and default for the &quot;Parallel helpers&quot; block on agent cards. Agents use
-          helpers to run independent parts of a task in parallel. Saving applies on each bot&apos;s next
-          reconcile tick, without a restart. Leave a field empty to keep the built-in default.
+          {t("area.settings-models-runtime-1.parallel-helpers-settings-panel.description")}
         </p>
       </div>
 
@@ -142,13 +145,13 @@ export function ParallelHelpersSettingsPanelView({
 
       {view ? (
         <div className="grid gap-3 md:grid-cols-2">
-          {NUMBER_FIELDS.map(({ key, label, hint }) => (
+          {getNumberFields().map(({ key, label, hint }) => (
             <div key={key} className="space-y-1">
               <Label htmlFor={`parallel-helpers-${key}`}>{label}</Label>
               <Input
                 id={`parallel-helpers-${key}`}
                 inputMode="numeric"
-                placeholder="Default"
+                placeholder={t("area.settings-models-runtime-1.parallel-helpers-settings-panel.defaultPlaceholder")}
                 value={current ? current[key] : ""}
                 onChange={(event) =>
                   setDraft({ ...(current ?? toDraft(view.settings)), [key]: event.target.value })
@@ -164,8 +167,7 @@ export function ParallelHelpersSettingsPanelView({
           ))}
           <div className="md:col-span-2 space-y-1">
             <div className="text-xs text-muted-foreground" data-testid="parallel-helpers-effective">
-              In force: ceiling {view.effective.ceiling}, default {view.effective.defaultPerAgent} per agent.
-              Cards are clamped to the ceiling when they compile.
+              {t("area.settings-models-runtime-1.parallel-helpers-settings-panel.inForce", { ceiling: view.effective.ceiling, default: view.effective.defaultPerAgent })}
             </div>
             {hostLoadWarning ? (
               <div
@@ -184,7 +186,7 @@ export function ParallelHelpersSettingsPanelView({
               </div>
             ) : (
               <div className="text-xs text-muted-foreground" data-testid="parallel-helpers-capacity-ok">
-                Helper usage: {view.capacity.requestedTotal} slot(s) across {view.capacity.enabledAgents} agent(s).
+                {t("area.settings-models-runtime-1.parallel-helpers-settings-panel.usage", { slots: view.capacity.requestedTotal, agents: view.capacity.enabledAgents })}
               </div>
             )}
           </div>
@@ -197,18 +199,19 @@ export function ParallelHelpersSettingsPanelView({
                 if (patch) onSave(patch);
               }}
             >
-              {pending ? "Saving..." : "Save parallel helpers"}
+              {pending ? t("area.settings-models-runtime-1.shared.saving") : t("area.settings-models-runtime-1.parallel-helpers-settings-panel.saveButton")}
             </Button>
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading parallel helpers settings...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-models-runtime-1.parallel-helpers-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function ParallelHelpersSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -219,7 +222,7 @@ export function ParallelHelpersSettingsPanel() {
   const save = useMutation({
     mutationFn: parallelHelpersApi.update,
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the parallel helpers settings failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-models-runtime-1.parallel-helpers-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: parallelHelpersQueryKey });
@@ -229,7 +232,7 @@ export function ParallelHelpersSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load parallel helpers settings."}
+        {query.error instanceof Error ? query.error.message : t("area.settings-models-runtime-1.parallel-helpers-settings-panel.loadFailed")}
       </div>
     );
   }
