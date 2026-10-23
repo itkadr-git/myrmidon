@@ -291,7 +291,10 @@ class WsClient:
 
 
 def clear_site_data(cdp_port: int, domain: str, ws_factory=None) -> None:
-    """Cookies of the whole browser plus storage of one origin, over CDP.
+    """Cookies and storage of one domain (and its subdomains), over CDP.
+
+    Cookies of other domains are left alone: they are listed and only the
+    matching ones are deleted one by one.
 
     `ws_factory(port) -> websocket-like` is the test seam: production resolves
     the browser endpoint from /json/version and opens the hand-rolled client;
@@ -305,7 +308,16 @@ def clear_site_data(cdp_port: int, domain: str, ws_factory=None) -> None:
     ])
     try:
         ws.call("Network.enable")
-        ws.call("Network.clearBrowserCookies")
+        listed = ws.call("Network.getAllCookies")
+        cookies = (listed.get("result") or {}).get("cookies") or []
+        for cookie in cookies:
+            cookie_domain = str(cookie.get("domain", "")).lstrip(".").lower()
+            if cookie_domain == domain.lower() or cookie_domain.endswith("." + domain.lower()):
+                ws.call("Network.deleteCookies", {
+                    "name": cookie["name"],
+                    "domain": cookie["domain"],
+                    "path": cookie.get("path", "/"),
+                })
         for scheme in ("https", "http"):
             ws.call(
                 "Storage.clearDataForOrigin",
