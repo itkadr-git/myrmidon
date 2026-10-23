@@ -1,3 +1,6 @@
+import { Trans } from "react-i18next";
+import type { TFunction } from "i18next";
+import { useTranslation } from "@/i18n";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 interface ShortcutEntry {
@@ -13,50 +16,50 @@ interface ShortcutSection {
   shortcuts: ShortcutEntry[];
 }
 
-const sections: ShortcutSection[] = [
+const buildSections = (t: TFunction): ShortcutSection[] => [
   {
-    title: "Inbox",
+    title: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.sectionInbox"),
     shortcuts: [
-      { keys: ["j"], label: "Move down" },
-      { keys: ["↓"], label: "Move down" },
-      { keys: ["k"], label: "Move up" },
-      { keys: ["↑"], label: "Move up" },
-      { keys: ["←"], label: "Collapse selected group" },
-      { keys: ["→"], label: "Expand selected group" },
-      { keys: ["Enter"], label: "Open selected item" },
-      { keys: ["a"], label: "Archive item" },
-      { keys: ["y"], label: "Archive item" },
-      { keys: ["r"], label: "Mark as read" },
-      { keys: ["U"], label: "Mark as unread" },
+      { keys: ["j"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.moveDown") },
+      { keys: ["↓"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.moveDown") },
+      { keys: ["k"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.moveUp") },
+      { keys: ["↑"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.moveUp") },
+      { keys: ["←"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.collapseGroup") },
+      { keys: ["→"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.expandGroup") },
+      { keys: ["Enter"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.openItem") },
+      { keys: ["a"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.archiveItem") },
+      { keys: ["y"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.archiveItem") },
+      { keys: ["r"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.markRead") },
+      { keys: ["U"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.markUnread") },
     ],
   },
   {
-    title: "Task detail",
+    title: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.sectionTaskDetail"),
     shortcuts: [
-      { keys: ["y"], label: "Quick-archive back to inbox" },
-      { keys: ["g", "i"], label: "Go to inbox" },
-      { keys: ["g", "c"], label: "Focus comment composer" },
+      { keys: ["y"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.quickArchive") },
+      { keys: ["g", "i"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.goInbox") },
+      { keys: ["g", "c"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.focusComment") },
     ],
   },
   {
-    title: "Decisions",
+    title: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.sectionDecisions"),
     shortcuts: [
-      { keys: ["j"], label: "Move down" },
-      { keys: ["↓"], label: "Move down" },
-      { keys: ["k"], label: "Move up" },
-      { keys: ["↑"], label: "Move up" },
-      { keys: ["Enter"], label: "Open or close selected decision" },
-      { keys: ["x"], label: "Dismiss selected decision" },
+      { keys: ["j"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.moveDown") },
+      { keys: ["↓"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.moveDown") },
+      { keys: ["k"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.moveUp") },
+      { keys: ["↑"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.moveUp") },
+      { keys: ["Enter"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.toggleDecision") },
+      { keys: ["x"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.dismissDecision") },
     ],
   },
   {
-    title: "Global",
+    title: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.sectionGlobal"),
     shortcuts: [
-      { keys: ["/"], label: "Search current page or quick search" },
-      { keys: ["c"], label: "New task" },
-      { keys: ["["], label: "Toggle sidebar" },
-      { keys: ["]"], label: "Toggle panel" },
-      { keys: ["?"], label: "Show keyboard shortcuts" },
+      { keys: ["/"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.search") },
+      { keys: ["c"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.newTask") },
+      { keys: ["["], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.toggleSidebar") },
+      { keys: ["]"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.togglePanel") },
+      { keys: ["?"], label: t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.showShortcuts") },
     ],
   },
 ];
@@ -70,6 +73,8 @@ function KeyCap({ children }: { children: string }) {
 }
 
 export function KeyboardShortcutsCheatsheetContent() {
+  const { t } = useTranslation();
+  const sections = buildSections(t);
   return (
     <>
       <div className="divide-y divide-border border-t border-border">
@@ -90,7 +95,7 @@ export function KeyboardShortcutsCheatsheetContent() {
                       <span key={key} className="flex items-center gap-1">
                         {i > 0 && (
                           <span className="text-xs text-muted-foreground">
-                            {shortcut.combo ? "+" : "then"}
+                            {shortcut.combo ? "+" : t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.then")}
                           </span>
                         )}
                         <KeyCap>{key}</KeyCap>
@@ -105,7 +110,7 @@ export function KeyboardShortcutsCheatsheetContent() {
       </div>
       <div className="border-t border-border px-5 py-3">
         <p className="text-xs text-muted-foreground">
-          Press <KeyCap>Esc</KeyCap> to close &middot; Shortcuts are disabled in text fields
+          <Trans i18nKey="area.shell-misc-1.keyboard-shortcuts-cheatsheet.footer" components={[<KeyCap key="esc">Esc</KeyCap>]} />
         </p>
       </div>
     </>
@@ -119,11 +124,12 @@ export function KeyboardShortcutsCheatsheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md gap-0 p-0 overflow-hidden" showCloseButton={false}>
         <DialogHeader className="px-5 pt-5 pb-3">
-          <DialogTitle className="text-base">Keyboard shortcuts</DialogTitle>
+          <DialogTitle className="text-base">{t("area.shell-misc-1.keyboard-shortcuts-cheatsheet.title")}</DialogTitle>
         </DialogHeader>
         <KeyboardShortcutsCheatsheetContent />
       </DialogContent>
