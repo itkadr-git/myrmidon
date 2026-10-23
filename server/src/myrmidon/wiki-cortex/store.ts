@@ -10,32 +10,16 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
-  agentCastes,
   knowledgeItems,
   knowledgeRevisions,
   myrmidonWikiRegulations,
   type Db,
   type MyrmidonWikiRegulationRevision,
 } from "@myrmidon/db";
-import { BUILTIN_SENSITIVE_CASTES } from "@myrmidon/shared";
+import { resolveCasteSensitivity } from "../caste-sensitivity.js";
 import { ruleApproverKind } from "../knowledge/rules.js";
 import type { RegulationStore } from "./service.js";
 import type { RegulationPageRecord, RegulationRevisionRecord } from "./types.js";
-
-async function resolveCasteSensitivity(db: Db, companyId: string): Promise<{ sensitive: ReadonlySet<string> }> {
-  try {
-    const rows = await db
-      .select({ key: agentCastes.key, sensitive: agentCastes.sensitive })
-      .from(agentCastes)
-      .where(eq(agentCastes.companyId, companyId));
-    if (rows.length > 0) {
-      return { sensitive: new Set(rows.filter((r) => r.sensitive).map((r) => r.key)) };
-    }
-  } catch {
-    // In case agentCastes is not in mock db
-  }
-  return { sensitive: new Set(BUILTIN_SENSITIVE_CASTES) };
-}
 
 function toKnowledgePageRecord(
   item: typeof knowledgeItems.$inferSelect,

@@ -22,6 +22,7 @@ import {
   type AutonomyMatrix,
 } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
+import { assertApprovable } from "./domain.js";
 import { knowledgeRoutes, type KnowledgeRoutesDeps } from "./routes.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
@@ -233,6 +234,41 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       .send({ approverKind: "engineer", revisionId: "rev-2" });
     expect(res.status).toBe(200);
     expect(deps.module.approve).toHaveBeenCalledTimes(1);
+  });
+
+  it("K-3: the approver grade comes from the membership, not the body: an operator posting approverKind owner is 403 on a smm rule", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ kind: "rule", slug: "rules/smm/publications" });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    // the real S4 gate in place of the stub: the rule of a sensitive caste is the owner's
+    (deps.module.approve as ReturnType<typeof vi.fn>).mockImplementation(async (_id: string, approver: { actorType: "user"; actorId: string; kind: string | null }) => {
+      assertApprovable({ kind: "rule", approvalRequired: true, approverKind: "owner" }, approver);
+      return item;
+    });
+    const operatorActor = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "member" }] };
+    const refused = await request(app(deps, operatorActor))
+      .post(`${base}/items/rules/smm/publications/approve`)
+      .send({ approverKind: "owner", revisionId: "rev-2" });
+    expect(refused.status).toBe(403);
+    expect(deps.module.approve).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "operator" }),
+      expect.anything(),
+    );
+    // an admin membership is not the owner either
+    const adminActor = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "admin" }] };
+    expect(
+      (await request(app(deps, adminActor)).post(`${base}/items/rules/smm/publications/approve`).send({ approverKind: "owner" })).status,
+    ).toBe(403);
+    // the owner passes whatever the body says
+    const ownerActor = { ...boardActor, isInstanceAdmin: true };
+    const ok = await request(app(deps, ownerActor)).post(`${base}/items/rules/smm/publications/approve`).send({ approverKind: "operator" });
+    expect(ok.status).toBe(200);
+    expect(deps.module.approve).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "owner" }),
+      expect.anything(),
+    );
   });
 
   it("write gate: a payload flagged by the injection scanner is 422 before the store", async () => {

@@ -25,7 +25,6 @@
 import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
-  agentCastes,
   knowledgeEvents,
   knowledgeItems,
   knowledgeLinks,
@@ -33,8 +32,8 @@ import {
   knowledgeSources,
   knowledgeSuggestions,
 } from "@myrmidon/db";
-import { BUILTIN_SENSITIVE_CASTES } from "@myrmidon/shared";
 import { logActivity } from "../../services/activity-log.js";
+import { resolveCasteSensitivity } from "../caste-sensitivity.js";
 import { ruleApproverKind } from "./rules.js";
 import {
   KnowledgeDomainError,
@@ -356,21 +355,6 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     }
   }
 
-  async function resolveCasteSensitivity(companyId: string): Promise<{ sensitive: ReadonlySet<string> }> {
-    try {
-      const rows = await db
-        .select({ key: agentCastes.key, sensitive: agentCastes.sensitive })
-        .from(agentCastes)
-        .where(eq(agentCastes.companyId, companyId));
-      if (rows.length > 0) {
-        return { sensitive: new Set(rows.filter((r) => r.sensitive).map((r) => r.key)) };
-      }
-    } catch {
-      // In case agentCastes is not in mock db
-    }
-    return { sensitive: new Set(BUILTIN_SENSITIVE_CASTES) };
-  }
-
   // ---------------------------------------------------------------- create
 
   async function create(input: CreateKnowledgeInput, actor: KnowledgeActor): Promise<KnowledgeItemDto> {
@@ -392,7 +376,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
 
     let approverKind = input.approverKind ?? null;
     if (kind === "rule") {
-      const sensitivity = await resolveCasteSensitivity(input.companyId);
+      const sensitivity = await resolveCasteSensitivity(db, input.companyId);
       approverKind = ruleApproverKind(roles, sensitivity);
     }
     assertRuleFields(kind, approvalRequired, approverKind);
@@ -693,7 +677,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     const current = await loadItem(nestId, idOrSlug);
     let approverKind = current.approverKind;
     if (current.kind === "rule") {
-      const sensitivity = await resolveCasteSensitivity(current.companyId);
+      const sensitivity = await resolveCasteSensitivity(db, current.companyId);
       approverKind = ruleApproverKind(current.roles ?? [], sensitivity);
     }
     const gateItem: KnowledgeApprovalGateItem = {

@@ -65,6 +65,7 @@ import type { AutonomyMatrix } from "@myrmidon/shared";
 import { HttpError, forbidden, notFound, unprocessable } from "../../errors.js";
 import { assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { validate } from "../../middleware/validate.js";
+import { approverKindFromRequest } from "../approver-kind.js";
 import { KnowledgeDomainError } from "./domain.js";
 import type { KnowledgeItemStatus, KnowledgeKind } from "./domain.js";
 import { createKnowledgeModule, type KnowledgeModule } from "./service.js";
@@ -486,10 +487,11 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
         // to see its kind; the load itself needs no grant.
         assertRuleApproveAllowed(req, item.kind);
         await assertKnowledgeToolAccess(req, "rule_approve");
-        // §3.4: the approver presents their kind explicitly in the request;
-        // S4 compares it against the item's approverKind. A caller without
-        // the matching kind is refused by the domain gate (403).
-        const approverKindInput = typeof req.body?.approverKind === "string" ? req.body.approverKind : null;
+        // §3.4 / K-3: the approver's grade comes from the actor's membership
+        // (never from the request body); S4 compares it against the item's
+        // approverKind and a caller without the matching grade is refused by
+        // the domain gate (403).
+        const approverKindInput = approverKindFromRequest(req, companyId);
         res.json({
           item: await mod.approve(
             req.params.idOrSlug as string,

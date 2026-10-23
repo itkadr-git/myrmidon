@@ -31,6 +31,7 @@ import {
   type AutonomyMatrix,
 } from "@myrmidon/shared";
 import { badRequest, unprocessable } from "../../errors.js";
+import { approverKindFromRequest } from "../approver-kind.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { logActivity } from "../../services/activity-log.js";
@@ -99,25 +100,6 @@ function actorFromRequest(req: Request): AutonomyActorRef {
   if (info.actorType === "agent" && info.agentId) return { type: "agent", id: info.agentId };
   if (info.actorType === "user") return { type: "board", id: info.actorId };
   return { type: "system", id: "system" };
-}
-
-/**
- * myrmidon(1.6.6 K-3): the grade a board actor presents to the rule approval
- * gate. The instance admin and the local implicit board are the owner; a
- * company membership maps by its role (owner, admin, otherwise operator).
- * Never taken from the request body: the caller cannot type its own grade.
- */
-export function approverKindFromRequest(req: Request, companyId: string): string {
-  const actor = req.actor as {
-    source?: string;
-    isInstanceAdmin?: boolean;
-    memberships?: Array<{ companyId: string; status?: string; membershipRole?: string | null }>;
-  };
-  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return "owner";
-  const membership = actor.memberships?.find((m) => m.companyId === companyId && m.status === "active");
-  if (membership?.membershipRole === "owner") return "owner";
-  if (membership?.membershipRole === "admin") return "admin";
-  return "operator";
 }
 
 /**
