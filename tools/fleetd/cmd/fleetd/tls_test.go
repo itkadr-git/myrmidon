@@ -148,7 +148,7 @@ func TestTLSConfigRequiredAtServeTime(t *testing.T) {
 
 func newTLSTestServer(srv *server, conf *tls.Config) *httptest.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
+	mux.HandleFunc("/v1/bots", srv.requireAuth(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	ts := httptest.NewUnstartedServer(mux)
 	ts.TLS = conf
 	ts.StartTLS()

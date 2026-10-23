@@ -50,6 +50,9 @@ function makeSecretProposal(overrides: Partial<SecretProposalView> = {}): Secret
     proposedDescription: null,
     valueFingerprintSha256: "abcdef0123456789abcdef",
     valueLength: 40,
+    rotationTargetSecretId: null,
+    rotationTargetName: null,
+    rotationTargetStatus: null,
     secretId: null,
     secretName: null,
     secretProposalId: null,
@@ -284,6 +287,35 @@ describe("ProposalsTab", () => {
     expect(mockSecretsApi.approveProposal).toHaveBeenCalledWith("company-1", "prop-binding-1", {
       cascade: true,
     });
+  });
+
+  it("surfaces a rotation proposal and approves it without identity overrides", async () => {
+    mockSecretsApi.listProposals.mockResolvedValue([
+      makeSecretProposal({
+        rotationTargetSecretId: "secret-1",
+        rotationTargetName: "adm/host-root-ssh-key",
+        rotationTargetStatus: "active",
+      }),
+    ]);
+    await renderTab();
+    await waitForReact(() => Boolean(findButton("Approve")));
+
+    // Row flags the proposal as a rotation, not just a create.
+    expect(document.body.textContent ?? "").toContain("Rotates existing");
+
+    await act(async () => findButton("Approve")?.click());
+    await flushReact();
+    // The dialog names the target secret and hides the re-folder/rename inputs.
+    const dialogText = document.body.textContent ?? "";
+    expect(dialogText).toContain("Approve & rotate secret");
+    expect(dialogText).toContain("adm/host-root-ssh-key");
+    expect(document.getElementById("approve-name")).toBeNull();
+    expect(document.getElementById("approve-folder")).toBeNull();
+
+    await act(async () => findButton("Approve & rotate")?.click());
+    await waitForReact(() => mockSecretsApi.approveProposal.mock.calls.length > 0);
+    // No identity/vault overrides are sent — the rotate keeps name, key and vault.
+    expect(mockSecretsApi.approveProposal).toHaveBeenCalledWith("company-1", "prop-secret-1", {});
   });
 
   it("requires a reason to reject", async () => {

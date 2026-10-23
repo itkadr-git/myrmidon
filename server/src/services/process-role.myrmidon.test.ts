@@ -9,7 +9,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   PROCESS_ROLE_API_HOST,
-  PROCESS_ROLE_API_PORT,
   PROCESS_ROLE_ENV,
   PROCESS_ROLE_VALUES,
   PROCESS_ROLE_WORKER_HOST,
@@ -97,7 +96,7 @@ describe("process role matrix", () => {
     expect(profile.migrations).toBe("await");
     expect(profile.listen).toEqual({
       host: PROCESS_ROLE_API_HOST,
-      port: PROCESS_ROLE_API_PORT,
+      port: null,
       reusePort: true,
     });
     expect(profile.loopbackListen).toBeNull();
