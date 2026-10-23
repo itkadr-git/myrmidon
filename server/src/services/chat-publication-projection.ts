@@ -3,7 +3,7 @@ import type {
   SafeExternalChatCard,
   SafeExternalChatCardAction,
   SafeExternalChatCardKind,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { redactSensitiveText } from "../redaction.js";
 // myrmidon(B1): product name in the user-facing fallback text below; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
@@ -103,6 +103,8 @@ export interface ChatPublicationProjectionInput {
   classification: "external";
   source: ExternalChatPublicationSource;
   text: string;
+  /** Preserved for text-only interaction publications without a card. */
+  interactionId?: string | null;
   attachmentIds?: readonly string[] | null;
   progressState?: SafeChatPublicationPayload["progressState"];
   interaction?: {
@@ -419,6 +421,12 @@ export function projectSafeChatPublication(
   }
   const attachmentIds = projectAttachmentIds(input.attachmentIds);
   const interaction = input.interaction ? projectCard(input.interaction) : null;
+  const interactionId = input.interactionId?.trim() || null;
+  if (interactionId && !SAFE_IDENTIFIER_RE.test(interactionId)) {
+    throw new UnsafeChatPublicationError(
+      "External chat interaction id is invalid",
+    );
+  }
   if (input.interaction && input.card) {
     throw new UnsafeChatPublicationError(
       "An external chat publication carries an interaction card or a plain card, not both",
@@ -432,6 +440,7 @@ export function projectSafeChatPublication(
     text: projectSafeChatPublicationText(input.text),
     ...(attachmentIds ? { attachmentIds } : {}),
     ...(input.progressState ? { progressState: input.progressState } : {}),
+    ...(interactionId ? { interactionId } : {}),
     ...(interaction ?? {}),
     ...(plainCard ? { card: plainCard } : {}),
   };

@@ -22,7 +22,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/shared";
 import {
   JSONRPC_VERSION,
   JSONRPC_ERROR_CODES,
@@ -43,7 +43,7 @@ import {
   DUPLEX_CHANNEL_EXIT_NOTIFICATION,
   encodeChannelBytes,
   decodeChannelBytes,
-} from "@paperclipai/plugin-sdk";
+} from "@myrmidon/plugin-sdk";
 import type {
   JsonRpcId,
   PluginInvocationContext,
@@ -57,8 +57,8 @@ import type {
   WorkerToHostMethodName,
   WorkerToHostMethods,
   InitializeParams,
-} from "@paperclipai/plugin-sdk";
-import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+} from "@myrmidon/plugin-sdk";
+import { getActiveStepContext } from "@myrmidon/adapter-utils/acpx-engine/startup-timing";
 import {
   isLoginCommandKey,
   validateLoginSessionHome,

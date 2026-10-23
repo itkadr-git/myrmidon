@@ -5,7 +5,7 @@ import {
   type IssueAttachment,
   type IssueDocumentSummary,
   type IssueWorkProduct,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { isAgentAttachment } from "@/lib/issue-artifacts";
 
 interface TaskArtifactArrivalOptions {

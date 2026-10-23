@@ -3,7 +3,7 @@ import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../../../myrmidon/maintenance/
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   activityLog,
   agentWakeupRequests,
@@ -14,7 +14,7 @@ import {
   issueComments,
   issueRecoveryActions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

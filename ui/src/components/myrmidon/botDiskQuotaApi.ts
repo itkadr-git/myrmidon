@@ -3,7 +3,7 @@ import { api } from "@/api/client";
 import type {
   BotDiskQuotaSettings,
   BotDiskQuotaSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export interface BotDiskQuotaSweepView {
   at: string;

@@ -1,0 +1,37 @@
+{
+  "area": {
+    "shell-misc-2": {
+      "route-error-boundary": {
+        "title": "На этой странице произошла ошибка",
+        "description": "При отрисовке страницы что-то пошло не так. Можно вернуться назад и повторить или перезагрузить страницу.",
+        "backButton": "Назад",
+        "reloadButton": "Перезагрузить страницу"
+      },
+      "scroll-to-bottom": {
+        "ariaLabel": "Прокрутить вниз"
+      },
+      "toast-viewport": {
+        "dismissAriaLabel": "Закрыть уведомление"
+      },
+      "breadcrumb": {
+        "navAriaLabel": "Навигационная цепочка",
+        "moreSrOnly": "Ещё"
+      },
+      "command": {
+        "title": "Палитра команд",
+        "description": "Найдите команду для запуска..."
+      },
+      "not-found": {
+        "breadcrumb": "Не найдено",
+        "orgTitle": "Организация не найдена",
+        "pageTitle": "Страница не найдена",
+        "orgDescription": "Нет организации с префиксом «{{prefix}}».",
+        "unknownPrefix": "неизвестен",
+        "pageDescription": "Такого маршрута не существует.",
+        "requestedPath": "Запрошенный путь:",
+        "openDashboard": "Открыть дашборд",
+        "goHome": "На главную"
+      }
+    }
+  }
+}

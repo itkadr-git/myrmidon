@@ -36,9 +36,9 @@ import {
   INSTANCE_FEATURE_CATALOG,
   instanceExperimentalSettingsSchema,
   type ManagedExperimentalFeatureKey,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 export type ManagedConfigEnv = Record<string, string | undefined>;

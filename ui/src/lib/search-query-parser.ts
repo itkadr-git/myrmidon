@@ -6,7 +6,7 @@ import {
   normalizeAgentUrlKey,
   type IssuePriority,
   type IssueStatus,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { CompanySearchParams } from "@/api/search";
 
 const SEARCH_FILTER_PARAM_KEYS = [

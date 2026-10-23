@@ -3,6 +3,14 @@
 // myrmidon(1.6.1-TG-NOTIFY-B): entry point of the jobs half of the Telegram notify
 // track. The settings routes belong to part A; this module exports only what
 // server/src/index.ts and the tests need.
+//
+// myrmidon(1.6.6 CH-CONNECTOR-D) batch 3 (OPE-6976, call map OPE-6629 points
+// 64-67): the direct path is deprecated. The core (`server/src/index.ts`,
+// `server/src/app.ts`) reaches the notify jobs entry through the bridge seam
+// `channel-connectors/bridge/notify.js` only; with the bridge flag on a
+// registered channel connector serves the theme and this module stays behind
+// the seam as the legacy fallback. Do not add a new direct importer; removal is
+// the follow-up step, not this PR.
 
 export {
   startTelegramNotifyJobs,

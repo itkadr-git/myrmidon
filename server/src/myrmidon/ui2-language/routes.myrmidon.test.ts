@@ -7,8 +7,8 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
-import type { Ui2Language } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import type { Ui2Language } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { ui2LanguageRoutes } from "./routes.js";
 import { UI2_LANGUAGE_ACTION, type Ui2LanguageServiceDeps } from "./service.js";

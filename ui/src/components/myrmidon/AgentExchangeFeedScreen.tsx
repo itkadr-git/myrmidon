@@ -10,8 +10,9 @@
 // library as a candidate and waits for an approval on the skills screen.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
+import { useTranslation } from "@/i18n";
 import { ListVideo, Sparkles } from "lucide-react";
-import type { AgentExchangeFeedResponse, AgentExchangeFeedRoom } from "@paperclipai/shared";
+import type { AgentExchangeFeedResponse, AgentExchangeFeedRoom } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { useCompany } from "@/context/CompanyContext";
 import {
@@ -34,6 +35,7 @@ function RoomRow({
   pending: boolean;
   skillCandidateEnabled: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       className="space-y-2 border-b border-border px-4 py-3 last:border-b-0"
@@ -46,15 +48,19 @@ function RoomRow({
           </Link>
           <div className="text-xs text-muted-foreground">
             {room.participants.map((participant) => `${participant.label} (${participant.model})`).join(", ") ||
-              "no participants recorded"}
+              t("area.settings-integrations.agent-exchange-feed-screen.noParticipants")}
           </div>
         </div>
         <div className="text-right text-xs text-muted-foreground">
           <div>
-            {formatAgentExchangeRoomStatus(room)} · round {room.currentRound}/{room.maxRounds}
+            {formatAgentExchangeRoomStatus(room)} ·{" "}
+            {t("area.settings-integrations.agent-exchange-feed-screen.roundProgress", { current: room.currentRound, max: room.maxRounds })}
           </div>
           <div>
-            {room.tokensUsed.toLocaleString()} tokens · {formatAgentExchangeRoomCost(room)}
+            {t("area.settings-integrations.agent-exchange-feed-screen.tokensAndCost", {
+              tokens: room.tokensUsed.toLocaleString(),
+              cost: formatAgentExchangeRoomCost(room),
+            })}
           </div>
         </div>
       </div>
@@ -63,11 +69,11 @@ function RoomRow({
         {room.summarized ? (
           <>
             <span className="text-muted-foreground">
-              Outcome: <code>{room.summaryDocumentKey}</code>
+              {t("area.settings-integrations.agent-exchange-feed-screen.outcome")} <code>{room.summaryDocumentKey}</code>
             </span>
             {room.skillCandidate ? (
               <Link to="/skills/lifecycle" className="text-muted-foreground hover:underline">
-                Candidate skill: {room.skillCandidate.name} — waiting for approval
+                {t("area.settings-integrations.agent-exchange-feed-screen.candidateSkill", { name: room.skillCandidate.name })}
               </Link>
             ) : skillCandidateEnabled ? (
               <Button
@@ -78,17 +84,17 @@ function RoomRow({
                 onClick={() => onToSkill(room)}
               >
                 <Sparkles className="mr-1 h-3.5 w-3.5" />
-                {pending ? "Registering..." : "To skill"}
+                {pending ? t("area.settings-integrations.agent-exchange-feed-screen.registering") : t("area.settings-integrations.agent-exchange-feed-screen.toSkill")}
               </Button>
             ) : (
               <span className="text-muted-foreground">
-                The «to skill» button is switched off in the feed settings.
+                {t("area.settings-integrations.agent-exchange-feed-screen.toSkillOff")}
               </span>
             )}
           </>
         ) : (
           <span className="text-muted-foreground">
-            No outcome yet — the room has to be finalized before it can become a skill.
+            {t("area.settings-integrations.agent-exchange-feed-screen.noOutcome")}
           </span>
         )}
       </div>
@@ -111,17 +117,16 @@ export function AgentExchangeFeedScreenView({
   pendingRoomId: string | null;
   notice: string | null;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="max-w-4xl space-y-6" data-testid="myrmidon-agent-exchange-feed-screen">
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <ListVideo className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Agent exchanges</h1>
+          <h1 className="text-lg font-semibold">{t("area.settings-integrations.agent-exchange-feed-screen.title")}</h1>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          What the agents discussed outside the task threads: every room with its outcome, what it cost and the link
-          to the task. A useful outcome becomes a skill candidate with one button — the candidate waits for an
-          approval before it reaches anyone.
+          {t("area.settings-integrations.agent-exchange-feed-screen.description")}
         </p>
       </div>
 
@@ -135,21 +140,25 @@ export function AgentExchangeFeedScreenView({
       ) : null}
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Loading the rooms...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-integrations.agent-exchange-feed-screen.loading")}</p>
       ) : !feed || feed.rooms.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No discussion rooms yet. A room is opened on a task card; its outcome shows up here with what it cost.
+          {t("area.settings-integrations.agent-exchange-feed-screen.empty")}
         </p>
       ) : (
         <div className="space-y-3">
           <div className="text-xs text-muted-foreground" data-testid="agent-exchange-feed-totals">
-            {feed.totals.rooms} rooms · {feed.totals.summarizedRooms} with an outcome · {feed.totals.candidateRooms}{" "}
-            candidates · {feed.totals.tokensUsed.toLocaleString()} tokens · $
-            {(feed.totals.costCents / 10_000).toFixed(4)}
+            {t("area.settings-integrations.agent-exchange-feed-screen.totals", {
+              rooms: feed.totals.rooms,
+              summarized: feed.totals.summarizedRooms,
+              candidates: feed.totals.candidateRooms,
+              tokens: feed.totals.tokensUsed.toLocaleString(),
+              cost: (feed.totals.costCents / 10_000).toFixed(4),
+            })}
             {feed.totals.costUnknownRooms > 0
-              ? ` · ${feed.totals.costUnknownRooms} with an unknown price`
+              ? ` · ${t("area.settings-integrations.agent-exchange-feed-screen.unknownPrice", { count: feed.totals.costUnknownRooms })}`
               : ""}
-            {feed.truncated ? ` · showing the newest ${feed.limit}` : ""}
+            {feed.truncated ? ` · ${t("area.settings-integrations.agent-exchange-feed-screen.showingNewest", { limit: feed.limit })}` : ""}
           </div>
           <div className="rounded-md border border-border">
             {feed.rooms.map((room) => (
@@ -169,6 +178,7 @@ export function AgentExchangeFeedScreenView({
 }
 
 export function AgentExchangeFeedScreen() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const query = useQuery({
@@ -189,8 +199,8 @@ export function AgentExchangeFeedScreen() {
   const notice =
     mutation.isSuccess && mutation.data
       ? mutation.data.result.created
-        ? `Registered «${mutation.data.result.name}» as a skill candidate. It waits for an approval on the skill lifecycle screen.`
-        : `«${mutation.data.result.name}» is already a skill candidate — nothing was created twice.`
+        ? t("area.settings-integrations.agent-exchange-feed-screen.registered", { name: mutation.data.result.name })
+        : t("area.settings-integrations.agent-exchange-feed-screen.alreadyCandidate", { name: mutation.data.result.name })
       : null;
 
   return (
@@ -201,11 +211,11 @@ export function AgentExchangeFeedScreen() {
         query.isError
           ? query.error instanceof Error
             ? query.error.message
-            : "Could not load the agent exchanges."
+            : t("area.settings-integrations.agent-exchange-feed-screen.loadError")
           : mutation.isError
             ? mutation.error instanceof Error
               ? mutation.error.message
-              : "Could not register the skill candidate."
+              : t("area.settings-integrations.agent-exchange-feed-screen.registerError")
             : null
       }
       pendingRoomId={mutation.isPending ? mutation.variables?.roomId ?? null : null}

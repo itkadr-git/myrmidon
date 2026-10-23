@@ -4,7 +4,7 @@
 // Off by default: until MYRMIDON_DEPLOY_ENABLED=1 the routes answer 503 on
 // writes, so an instance that never opted in behaves exactly as before.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { maintenanceService } from "../maintenance/service.js";
 import { maintenanceHeartbeatPort } from "../maintenance/index.js";

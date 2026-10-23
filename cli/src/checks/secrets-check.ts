@@ -4,7 +4,7 @@ import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const AWS_CREDENTIAL_SOURCE_HINT =
   "Provide AWS runtime credentials through the AWS SDK default credential chain: IAM role/workload identity, AWS_PROFILE/SSO/shared credentials, web identity, container/instance metadata, or short-lived shell credentials";
@@ -60,7 +60,7 @@ export function secretsCheck(config: PaperclipConfig, configPath?: string): Chec
       status: "fail",
       message: `${provider} is configured, but this build only supports local_encrypted and aws_secrets_manager`,
       canRepair: false,
-      repairHint: "Run `paperclipai configure --section secrets` and choose local_encrypted or aws_secrets_manager",
+      repairHint: "Run `myrmidon configure --section secrets` and choose local_encrypted or aws_secrets_manager",
     };
   }
 

@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import {
@@ -297,10 +297,11 @@ export function maintenanceService(
       return;
     }
     // myrmidon(L6-PROFILE-UPDATE-STARVATION): backstop. A window still open
-    // (entering/on) past drain deadline + grace is retired with an error
-    // record, so windows never pile up and later same-scope enters are not
-    // blocked. On/entering alike: `on` windows the operator never closed are
-    // a leak of the same shape (admission stays gated).
+    // `entering` past drain deadline + grace is moved to `leaving` with an error
+    // record and finished through finishLeaving (queue wake + onExited hook +
+    // retire), so windows never pile up and later same-scope enters are not
+    // blocked. `on` windows are not touched: the reconciler may be applying the
+    // profile in them.
     if (isStuckOpenWindow(window, now(), readMaintenanceSettings().stuckGraceMs)) {
       await retireStuckWindow(window);
       return;
@@ -383,16 +384,20 @@ export function maintenanceService(
   // activity log (constant message, no exception payload) and removes the
   // window, so the scope is not blocked.
   async function retireStuckWindow(window: MaintenanceWindow) {
-    const at = now();
-    await write((doc) => ({
-      next: doc.windows.some((w) => w.id === window.id) ? retireWindow(doc, window.id, at) : null,
-      result: null,
-    }));
+    const at = now().toISOString();
+    const { changed } = await write((doc) => {
+      const current = doc.windows.find((w) => w.id === window.id);
+      if (!current || current.state !== "entering") return { next: null, result: null };
+      return { next: updateWindow(doc, window.id, { state: "leaving", exitRequestedAt: at }), result: null };
+    });
+    if (!changed) return;
     await audit(window, "stuck_window_retired", SYSTEM_ACTOR, {
       state: window.state,
       drainDeadlineAt: window.drainDeadlineAt,
     });
-    logger.error({ windowId: window.id, scope: window.scope, state: window.state }, "retired a maintenance window stuck open past the drain deadline grace");
+    logger.error({ windowId: window.id, scope: window.scope, state: window.state }, "retiring a maintenance window stuck entering past the drain deadline grace");
+    // Same tail as a normal exit: wake the queue, run onExited, retire.
+    await finishLeaving({ ...window, state: "leaving", exitRequestedAt: at });
   }
 
   /** Interrupt each run once; returns the ids recorded on the window. */

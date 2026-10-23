@@ -1,4 +1,4 @@
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   activityLog,
   agentTaskSessions as agentTaskSessionsTable,
@@ -12,7 +12,7 @@ import {
   pluginLogs,
   principalPermissionGrants,
   projects as projectsTable,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { eq, and, like, desc, inArray, sql, isNull, isNotNull, gt, lte } from "drizzle-orm";
 import type {
   HostServices,
@@ -26,9 +26,9 @@ import type {
   PluginIssueAssigneeSummary,
   PluginIssueOrchestrationSummary,
   PluginExecutionWorkspaceMetadata,
-} from "@paperclipai/plugin-sdk";
-import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+} from "@myrmidon/plugin-sdk";
+import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@myrmidon/shared";
+import { pluginOperationIssueOriginKind } from "@myrmidon/shared";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES, normalizeUploadAttachmentContentType } from "../attachment-types.js";
 import { getStorageService } from "../storage/index.js";
 import { companyService } from "./companies.js";
@@ -79,11 +79,11 @@ import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { redactEventPayload, sanitizeRecord } from "../redaction.js";
-import type { WorkerHostCallContext } from "@paperclipai/plugin-sdk";
+import type { WorkerHostCallContext } from "@myrmidon/plugin-sdk";
 import {
   normalizeProviderFamily,
   SANDBOX_STARTUP_SPAN_ATTRS,
-} from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+} from "@myrmidon/adapter-utils/acpx-engine/startup-timing";
 import { recordProviderPluginSpan, type ParsedTraceparent } from "../instrumentation.js";
 
 // ---------------------------------------------------------------------------
@@ -702,7 +702,7 @@ export function buildHostServices(
   notifyWorker?: (method: string, params: unknown) => void,
   options: {
     pluginWorkerManager?: PluginWorkerManager;
-    manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1;
+    manifest?: import("@myrmidon/shared").PaperclipPluginManifestV1;
     heartbeatRuntimeEnv?: Record<string, string | undefined>;
   } = {},
 ): HostServices & { dispose(): void } {
@@ -1565,7 +1565,7 @@ export function buildHostServices(
         await scopedBus.emit(params.name, params.companyId, params.payload);
       },
       async subscribe(params: { eventPattern: string; filter?: Record<string, unknown> | null }) {
-        const handler = async (event: import("@paperclipai/plugin-sdk").PluginEvent) => {
+        const handler = async (event: import("@myrmidon/plugin-sdk").PluginEvent) => {
           if (notifyWorker) {
             notifyWorker("onEvent", { event });
           }

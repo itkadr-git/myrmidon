@@ -4,7 +4,7 @@
 // alarm. Pure string building, so the wording a human reads at 03:00 is
 // covered by tests instead of by hope.
 
-import type { IssuePriority } from "@paperclipai/shared";
+import type { IssuePriority } from "@myrmidon/shared";
 import {
   monitoringLinkAlertIdempotencyKey,
   type MonitoringLinkAlertVerdict,

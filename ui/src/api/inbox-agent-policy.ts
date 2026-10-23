@@ -1,4 +1,4 @@
-import type { InboxAgentPolicy, UpdateInboxAgentPolicy } from "@paperclipai/shared";
+import type { InboxAgentPolicy, UpdateInboxAgentPolicy } from "@myrmidon/shared";
 import { api } from "./client";
 
 /**

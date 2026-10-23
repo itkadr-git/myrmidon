@@ -26,7 +26,7 @@ import {
   evalReferenceTasks as evalTasksTable,
   evalRuns as evalRunsTable,
   knowledgeItems,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,

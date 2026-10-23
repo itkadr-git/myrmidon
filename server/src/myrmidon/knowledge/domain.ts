@@ -23,8 +23,8 @@
 // layer, so the module code keeps the "0 dialect-specific sql\` strings"
 // guarantee.
 
-/** The knowledge kinds (§3.2). */
-export const KNOWLEDGE_KINDS = ["note", "wiki", "answer", "task_outcome", "rule"] as const;
+/** The knowledge kinds (§3.2). `skill_card` = a skill's knowledge card (§5.5, K-7). */
+export const KNOWLEDGE_KINDS = ["note", "wiki", "answer", "task_outcome", "rule", "skill_card"] as const;
 export type KnowledgeKind = (typeof KNOWLEDGE_KINDS)[number];
 
 /** Item workflow statuses (§2.4). */
@@ -76,6 +76,10 @@ export type KnowledgeSourceKind = (typeof KNOWLEDGE_SOURCE_KINDS)[number];
 
 export const KNOWLEDGE_SUGGESTION_STATUSES = ["pending", "accepted", "declined"] as const;
 export type KnowledgeSuggestionStatus = (typeof KNOWLEDGE_SUGGESTION_STATUSES)[number];
+
+/** The provenance trust of a suggestion (§2.2): `external` = foreign url only (1.7 L-5). */
+export const KNOWLEDGE_SUGGESTION_TRUSTS = ["internal", "external"] as const;
+export type KnowledgeSuggestionTrust = (typeof KNOWLEDGE_SUGGESTION_TRUSTS)[number];
 
 /** Actor kinds an event / approval can carry. */
 export const KNOWLEDGE_ACTOR_TYPES = ["agent", "user", "system"] as const;
