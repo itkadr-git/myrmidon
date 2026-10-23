@@ -227,7 +227,7 @@
           "description_other": "Последних записей лога: {{count}}"
         },
         "health": {
-          "title": "Состояние здоровья",
+          "title": "Работоспособность",
           "checking": "Проверяем состояние...",
           "overall": "Итог",
           "lifecycle": "Жизненный цикл",
@@ -334,7 +334,7 @@
       },
       "launchers": {
         "unknownError": "Неизвестная ошибка",
-        "unavailable": "Запускатели плагинов недоступны: {{message}}"
+        "unavailable": "Средства запуска плагинов недоступны: {{message}}"
       },
       "plugin-page": {
         "breadcrumbPlugins": "Плагины",
