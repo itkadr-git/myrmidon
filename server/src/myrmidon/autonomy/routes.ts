@@ -24,12 +24,12 @@
 import { Router, type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   autonomyMatrixPatchSchema,
   type AutonomyActorRef,
   type AutonomyMatrix,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest, unprocessable } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";

@@ -13,9 +13,9 @@
  * execution-policy-bootstrap.
  */
 import fs from "node:fs";
-import { adapterRegistrySchema, type AdapterRegistryEntryParsed } from "@paperclipai/shared";
+import { adapterRegistrySchema, type AdapterRegistryEntryParsed } from "@myrmidon/shared";
 import { logger } from "../middleware/logger.js";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import { listServerAdapters } from "../adapters/registry.js";
 import { setAdapterDisabled } from "./adapter-plugin-store.js";
 

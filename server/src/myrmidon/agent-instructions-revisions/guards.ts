@@ -19,7 +19,7 @@ import {
   changeConsentGateService,
 } from "../../services/change-consent-gate.js";
 import { accessService, agentService } from "../../services/index.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 
 type AgentRow = {
   id: string;

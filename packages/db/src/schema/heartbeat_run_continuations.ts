@@ -2,7 +2,7 @@ import { index, integer, jsonb, pgTable, timestamp, uniqueIndex, uuid } from "dr
 import type {
   ExecutionContinuationEnvelope,
   ExecutionContinuationWakeLinks,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";

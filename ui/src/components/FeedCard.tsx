@@ -3,7 +3,7 @@ import { i18n, useTranslation } from "@/i18n";
 import { AgentIcon } from "./AgentIconPicker";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
-import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
+import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@myrmidon/shared";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
 import {
   FileText,

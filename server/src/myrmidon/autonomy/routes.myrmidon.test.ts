@@ -13,7 +13,7 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import { AUTONOMY_SAFE_DEFAULTS, type AutonomyActionClass, type AutonomyChangeLogEntry, type AutonomyRegulation } from "@paperclipai/shared";
+import { AUTONOMY_SAFE_DEFAULTS, type AutonomyActionClass, type AutonomyChangeLogEntry, type AutonomyRegulation } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { autonomyRoutes } from "./routes.js";
 import type { AutonomyRegulationsBackend } from "./knowledge-regulations.js";

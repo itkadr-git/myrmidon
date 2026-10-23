@@ -9,16 +9,16 @@ import type {
   PromptBreakdown,
   RuntimeStatusUpdate,
   UsageSummary,
-} from "@paperclipai/adapter-utils";
-import { githubLauncherPayload } from "@paperclipai/adapter-utils/github-launcher";
-import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
-import { classifyInputOverflow } from "@paperclipai/adapter-utils/input-overflow";
+} from "@myrmidon/adapter-utils";
+import { githubLauncherPayload } from "@myrmidon/adapter-utils/github-launcher";
+import { measureSections } from "@myrmidon/adapter-utils/prompt-meter";
+import { classifyInputOverflow } from "@myrmidon/adapter-utils/input-overflow";
 import {
   INPUT_LIMIT_CONFIG_KEY,
   decideInputLimit,
   readInputLimitHint,
   trimTextToChars,
-} from "@paperclipai/adapter-utils/input-limit";
+} from "@myrmidon/adapter-utils/input-limit";
 import {
   asNumber,
   asString,
@@ -28,7 +28,7 @@ import {
   isPaperclipRecoveryWakePayload,
   selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 import {
   ADAPTER_TYPE,
   CREATE_CANCEL_GRACE_MS,
@@ -506,7 +506,7 @@ function buildGitHubBrokerField(
 // myrmidon(1.6.5 BOT-DISK-H5a, contract C6): the `workspace` field of a
 // /v1/runs request — `{key, repo, baseRef}` — from which the gateway runs
 // `myr-ws open` before the model starts. The shapes mirror
-// `runWorkspaceFieldSchema` of @paperclipai/shared (this package does not
+// `runWorkspaceFieldSchema` of @myrmidon/shared (this package does not
 // depend on it; execute.test.ts checks the output against the real schema).
 // key: the board identifier of the run's issue; repo: `owner/name` derived
 // from the project workspace's repo URL (github.com only: https, ssh:// or scp-like

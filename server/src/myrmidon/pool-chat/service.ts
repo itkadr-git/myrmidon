@@ -1,5 +1,5 @@
-import type { Db } from "@paperclipai/db";
-import { poolChatModuleInstances, poolChatQuotaReservations, poolChatRequestAttempts, poolChatRequests } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { poolChatModuleInstances, poolChatQuotaReservations, poolChatRequestAttempts, poolChatRequests } from "@myrmidon/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { conflict, notFound, HttpError } from "../../errors.js";
 import { canonicalRequestHash, type PoolChatRequestBody } from "./protocol.js";

@@ -16,12 +16,12 @@
 // than re-derived, so "ready" means one thing on both paths.
 
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agents, issues, type Db } from "@paperclipai/db";
+import { agents, issues, type Db } from "@myrmidon/db";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_DEFAULT_UNASSIGNED_ROLE,
   type SwarmQueueCandidate,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
 import { projectScopedClaimGate } from "../project-membership.js";
 import {

@@ -7,7 +7,7 @@
 // (agents are company-scoped; the settings are instance-level, so the walk
 // crosses companies the same way the runtime-limits audit does).
 
-import { agents as agentsTable, type Db } from "@paperclipai/db";
+import { agents as agentsTable, type Db } from "@myrmidon/db";
 import { parallelHelpersRoutes } from "./routes.js";
 import { parallelHelpersService, type ParallelHelpersService } from "./service.js";
 

@@ -25,7 +25,7 @@ import {
   issues,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { ownerDeliveryRoutes } from "../myrmidon/owner-delivery/routes.js";
 import {
   describeEmbeddedPostgres,

@@ -14,7 +14,7 @@ import {
   issueScreenToken,
   screenConsoleUrl,
 } from "./console-token.js";
-import { parseBrowserVncTarget, DEFAULT_BROWSER_VNC_PORT } from "@paperclipai/shared/myrmidon-browser-console";
+import { parseBrowserVncTarget, DEFAULT_BROWSER_VNC_PORT } from "@myrmidon/shared/myrmidon-browser-console";
 
 // The fleet-console test key: 32 hex, AES-128-CBC key + HMAC input material.
 const SECRET = Array.from({ length: 16 }, (_, index) => (index + 1).toString(16).padStart(2, "0")).join("");

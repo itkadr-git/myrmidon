@@ -12,7 +12,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { useTranslation } from "@/i18n";
 import { ListVideo, Sparkles } from "lucide-react";
-import type { AgentExchangeFeedResponse, AgentExchangeFeedRoom } from "@paperclipai/shared";
+import type { AgentExchangeFeedResponse, AgentExchangeFeedRoom } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { useCompany } from "@/context/CompanyContext";
 import {

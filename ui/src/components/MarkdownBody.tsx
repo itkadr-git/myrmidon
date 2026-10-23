@@ -43,7 +43,7 @@ import { i18n, useTranslation } from "@/i18n";
 import type {
   ExternalObjectLivenessState,
   ExternalObjectStatusCategory,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /**
  * Host-resolved external-object metadata for inline markdown decoration.

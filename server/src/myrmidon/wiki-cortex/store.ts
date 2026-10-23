@@ -16,8 +16,8 @@ import {
   myrmidonWikiRegulations,
   type Db,
   type MyrmidonWikiRegulationRevision,
-} from "@paperclipai/db";
-import { BUILTIN_SENSITIVE_CASTES } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { BUILTIN_SENSITIVE_CASTES } from "@myrmidon/shared";
 import { ruleApproverKind } from "../knowledge/rules.js";
 import type { RegulationStore } from "./service.js";
 import type { RegulationPageRecord, RegulationRevisionRecord } from "./types.js";

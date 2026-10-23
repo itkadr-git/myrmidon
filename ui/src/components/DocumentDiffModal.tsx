@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { i18n, useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import type { QueryKey } from "@tanstack/react-query";
-import type { DocumentRevision } from "@paperclipai/shared";
+import type { DocumentRevision } from "@myrmidon/shared";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { buildLineDiff, type DiffRow } from "../lib/line-diff";

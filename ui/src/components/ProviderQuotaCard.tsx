@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Trans } from "react-i18next";
 import { i18n, useTranslation } from "@/i18n";
-import type { CostByProviderModel, CostWindowSpendRow, QuotaWindow } from "@paperclipai/shared";
+import type { CostByProviderModel, CostWindowSpendRow, QuotaWindow } from "@myrmidon/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { QuotaBar } from "./QuotaBar";

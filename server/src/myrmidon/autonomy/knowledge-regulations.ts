@@ -11,13 +11,13 @@ import {
   knowledgeItems,
   knowledgeRevisions,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   BUILTIN_SENSITIVE_CASTES,
   type AutonomyActorRef,
   type AutonomyRegulation,
   type AutonomyRegulationRevision,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { approverKindSatisfies } from "../knowledge/domain.js";
 import { ruleApproverKind } from "../knowledge/rules.js";
 import {

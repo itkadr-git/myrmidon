@@ -17,8 +17,8 @@
 // whose previous run is still going is skipped, not queued.
 
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, companies } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { agents, companies } from "@myrmidon/db";
 import type { Logger } from "pino";
 import { logger } from "../../middleware/logger.js";
 import { readPromptBudgetSettings, type PromptBudgetSettingsService } from "./settings.js";

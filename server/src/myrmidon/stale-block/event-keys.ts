@@ -16,8 +16,8 @@
 // cite it.
 
 import { and, eq, or } from "drizzle-orm";
-import { issueRecoveryActions, type Db } from "@paperclipai/db";
-import type { IssueUnblockDescriptor } from "@paperclipai/shared";
+import { issueRecoveryActions, type Db } from "@myrmidon/db";
+import type { IssueUnblockDescriptor } from "@myrmidon/shared";
 
 /** Event-key prefix for the recovery-incident liveness of one issue. */
 export const STALE_BLOCK_RECOVERY_LIVENESS_EVENT_PREFIX = "recovery.liveness:";

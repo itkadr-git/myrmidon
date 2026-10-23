@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { deriveOriginatingActor, type Issue } from "@paperclipai/shared";
+import { deriveOriginatingActor, type Issue } from "@myrmidon/shared";
 import { Columns3 } from "lucide-react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Button } from "@/components/ui/button";

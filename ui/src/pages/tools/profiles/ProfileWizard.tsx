@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, Loader2 } from "lucide-react";
 import { Trans } from "react-i18next";
-import type { ToolProfileWithDetails } from "@paperclipai/shared";
+import type { ToolProfileWithDetails } from "@myrmidon/shared";
 import { useNavigate } from "@/lib/router";
 import { i18n, useTranslation } from "@/i18n";
 import { toolsApi, type ToolProfileBindingInput } from "@/api/tools";

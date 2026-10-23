@@ -20,7 +20,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { hidesCompanyPage, type Company } from "@paperclipai/shared";
+import { hidesCompanyPage, type Company } from "@myrmidon/shared";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useTranslation } from "@/i18n";
 import { authApi } from "@/api/auth";

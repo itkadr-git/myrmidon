@@ -43,7 +43,7 @@ import {
 } from "./agent-config.js";
 import type { ApplyBotContainerOptions, ApplyBotContainerOutcome, BotContainerAgent, BotContainerRuntimeDeps } from "./index.js";
 import type { BotApplyJobStore } from "./apply-jobs.js";
-import type { BotApplyJobStatus } from "@paperclipai/db";
+import type { BotApplyJobStatus } from "@myrmidon/db";
 import {
   APPLIED_LIMIT_PENDING_NOTE,
   compareGatewayConcurrency,
@@ -54,7 +54,7 @@ import {
   type GatewayConcurrencyStatus,
 } from "./concurrency-sync.js";
 import { readMaxConcurrentRuns } from "./profile-input.js";
-import { hasReleaseBotImage, resolveBotImageRolloutStatus, type BotImageRolloutStatus } from "@paperclipai/shared";
+import { hasReleaseBotImage, resolveBotImageRolloutStatus, type BotImageRolloutStatus } from "@myrmidon/shared";
 import {
   parseCloneReport,
   type GitRefCheck,

@@ -1,6 +1,6 @@
 // myrmidon(FEATURES): entry points of the Instance -> Features page.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { featuresRoutes, sharedFeaturesService } from "./routes.js";
 
 export { FEATURE_REGISTRY, findFeature } from "./registry.js";

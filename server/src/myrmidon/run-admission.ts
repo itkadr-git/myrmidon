@@ -4,7 +4,7 @@ import {
   RUN_LIMITS_ENV_KEYS,
   readRunLimitsFromEnv,
   type RunLimits,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../middleware/logger.js";
 
 /**

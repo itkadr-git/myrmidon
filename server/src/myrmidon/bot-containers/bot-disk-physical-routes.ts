@@ -27,8 +27,8 @@
 import http from "node:http";
 import https from "node:https";
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import type { WsDiskApiResponse } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import type { WsDiskApiResponse } from "@myrmidon/shared";
 import { assertBoardOrgAccess } from "../../routes/authz.js";
 import { readBotDiskReports } from "./bot-disk-report-store.js";
 import { botDiskService } from "./bot-disk-service.js";

@@ -26,7 +26,7 @@ import {
   knowledgeRevisions,
   knowledgeSources,
   myrmidonWikiRegulations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -772,6 +772,6 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
 
   it("domain.ts imports nothing from the database layer", () => {
     const text = readFileSync(join(moduleDir, "domain.ts"), "utf8");
-    expect(text).not.toMatch(/@paperclipai\/db|drizzle/);
+    expect(text).not.toMatch(/@myrmidon\/db|drizzle/);
   });
 });

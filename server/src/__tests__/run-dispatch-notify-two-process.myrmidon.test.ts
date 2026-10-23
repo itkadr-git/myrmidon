@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -106,7 +106,7 @@ describeEmbeddedPostgres("run start dispatch, notify mode: two processes, one da
     db = createDb(tempDb.connectionString);
     // The dispatcher reads the mode from the singleton row of
     // instance_settings.general.processes — seed the notify mode once.
-    const { instanceSettings } = await import("@paperclipai/db");
+    const { instanceSettings } = await import("@myrmidon/db");
     const inserted = await db
       .insert(instanceSettings)
       .values({
@@ -244,7 +244,7 @@ describeEmbeddedPostgres("run start dispatch, notify mode: two processes, one da
   // held in `running` by the gate (4 agents x 50 slots), so the case measures
   // starts, not 200 serial executions; the same load is run through both modes.
   async function runLoad(mode: "notify" | "inline") {
-    const { instanceSettings } = await import("@paperclipai/db");
+    const { instanceSettings } = await import("@myrmidon/db");
     await db
       .update(instanceSettings)
       .set({ general: { processes: { runStartDispatch: mode, queuedResweepSec: 30 } } })
@@ -350,7 +350,7 @@ describeEmbeddedPostgres("run start dispatch, notify mode: two processes, one da
   }, 90_000);
 
   async function resetNotifyMode() {
-    const { instanceSettings } = await import("@paperclipai/db");
+    const { instanceSettings } = await import("@myrmidon/db");
     await db
       .update(instanceSettings)
       .set({ general: { processes: { runStartDispatch: "notify", queuedResweepSec: 30 } } })
