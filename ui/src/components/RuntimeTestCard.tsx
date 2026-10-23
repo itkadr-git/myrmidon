@@ -8,35 +8,8 @@ import {
 import type { AdapterEnvironmentTestResult } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 export type TestState = "idle" | "running" | "pass" | "fail";
-
-const copy = {
-  idle: {
-    title: "Test your agent",
-    description: "Check that your runtime and model can respond.",
-    action: "Run test",
-  },
-  running: {
-    title: "Testing connection",
-    description: "Checking the runtime and waiting for a model response…",
-    action: "Testing…",
-  },
-  pass: {
-    title: "Connection successful",
-    description: "Your runtime checks passed. Review the details below.",
-    action: "Test again",
-  },
-  warn: {
-    title: "Connection needs attention",
-    description: "Review the test details before running your agent.",
-    action: "Test again",
-  },
-  fail: {
-    title: "Couldn't connect",
-    description: "Check your model and provider connection, then try again.",
-    action: "Retry test",
-  },
-} as const;
 
 export function RuntimeTestCard({
   state,
@@ -51,6 +24,34 @@ export function RuntimeTestCard({
   onTest: () => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
+  const copy = {
+    idle: {
+      title: t("area.agents-2.runtime-test-card.idle.title"),
+      description: t("area.agents-2.runtime-test-card.idle.description"),
+      action: t("area.agents-2.runtime-test-card.idle.action"),
+    },
+    running: {
+      title: t("area.agents-2.runtime-test-card.running.title"),
+      description: t("area.agents-2.runtime-test-card.running.description"),
+      action: t("area.agents-2.runtime-test-card.running.action"),
+    },
+    pass: {
+      title: t("area.agents-2.runtime-test-card.pass.title"),
+      description: t("area.agents-2.runtime-test-card.pass.description"),
+      action: t("area.agents-2.runtime-test-card.pass.action"),
+    },
+    warn: {
+      title: t("area.agents-2.runtime-test-card.warn.title"),
+      description: t("area.agents-2.runtime-test-card.warn.description"),
+      action: t("area.agents-2.runtime-test-card.warn.action"),
+    },
+    fail: {
+      title: t("area.agents-2.runtime-test-card.fail.title"),
+      description: t("area.agents-2.runtime-test-card.fail.description"),
+      action: t("area.agents-2.runtime-test-card.fail.action"),
+    },
+  };
   const content = copy[state];
   const Icon =
     state === "running"
@@ -62,7 +63,7 @@ export function RuntimeTestCard({
           : Play;
   return (
     <section
-      aria-label="Runtime test"
+      aria-label={t("area.agents-2.runtime-test-card.ariaLabel")}
       className="rounded-lg border border-border bg-card"
     >
       <div className="flex items-start gap-3 p-4 sm:items-center">
@@ -117,7 +118,7 @@ export function RuntimeTestCard({
               aria-hidden="true"
               className="size-3 transition-transform group-open:rotate-90"
             />
-            Test details
+            {t("area.agents-2.runtime-test-card.detailsSummary")}
           </summary>
           <ul className="space-y-3 px-4 pb-4">
             {result.checks.map((check) => (

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { isUuidLike, type EnvSecretRefBinding } from "@myrmidon/shared";
 import { cn } from "@/lib/utils";
+import { i18n, useTranslation } from "@/i18n";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -185,7 +186,7 @@ export function validateField(
 
   // Required check
   if (isRequired && (value === undefined || value === null || value === "")) {
-    return "This field is required";
+    return i18n.t("area.documents-artifacts-2.json-schema-form.validation.required");
   }
 
   // Skip further validation if empty and not required
@@ -195,16 +196,16 @@ export function validateField(
     return null;
   }
   if (type === "secret-ref" && typeof value === "object") {
-    return "Invalid secret reference";
+    return i18n.t("area.documents-artifacts-2.json-schema-form.validation.invalidSecretRef");
   }
 
   if (type === "string" || type === "secret-ref") {
     const str = String(value);
     if (schema.minLength != null && str.length < schema.minLength) {
-      return `Must be at least ${schema.minLength} characters`;
+      return i18n.t("area.documents-artifacts-2.json-schema-form.validation.minLength", { min: schema.minLength });
     }
     if (schema.maxLength != null && str.length > schema.maxLength) {
-      return `Must be at most ${schema.maxLength} characters`;
+      return i18n.t("area.documents-artifacts-2.json-schema-form.validation.maxLength", { max: schema.maxLength });
     }
     if (schema.pattern) {
       // Guard against ReDoS: reject overly complex patterns from plugin JSON Schemas.
@@ -214,7 +215,7 @@ export function validateField(
         try {
           const re = new RegExp(schema.pattern);
           if (!re.test(str)) {
-            return `Must match pattern: ${schema.pattern}`;
+            return i18n.t("area.documents-artifacts-2.json-schema-form.validation.pattern", { pattern: schema.pattern });
           }
         } catch {
           // Invalid regex in schema — skip
@@ -225,34 +226,34 @@ export function validateField(
 
   if (type === "number" || type === "integer") {
     const num = Number(value);
-    if (isNaN(num)) return "Must be a valid number";
+    if (isNaN(num)) return i18n.t("area.documents-artifacts-2.json-schema-form.validation.validNumber");
     if (schema.minimum != null && num < schema.minimum) {
-      return `Must be at least ${schema.minimum}`;
+      return i18n.t("area.documents-artifacts-2.json-schema-form.validation.minimum", { min: schema.minimum });
     }
     if (schema.maximum != null && num > schema.maximum) {
-      return `Must be at most ${schema.maximum}`;
+      return i18n.t("area.documents-artifacts-2.json-schema-form.validation.maximum", { max: schema.maximum });
     }
     if (schema.exclusiveMinimum != null && num <= schema.exclusiveMinimum) {
-      return `Must be greater than ${schema.exclusiveMinimum}`;
+      return i18n.t("area.documents-artifacts-2.json-schema-form.validation.exclusiveMinimum", { min: schema.exclusiveMinimum });
     }
     if (schema.exclusiveMaximum != null && num >= schema.exclusiveMaximum) {
-      return `Must be less than ${schema.exclusiveMaximum}`;
+      return i18n.t("area.documents-artifacts-2.json-schema-form.validation.exclusiveMaximum", { max: schema.exclusiveMaximum });
     }
     if (type === "integer" && !Number.isInteger(num)) {
-      return "Must be a whole number";
+      return i18n.t("area.documents-artifacts-2.json-schema-form.validation.wholeNumber");
     }
     if (schema.multipleOf != null && num % schema.multipleOf !== 0) {
-      return `Must be a multiple of ${schema.multipleOf}`;
+      return i18n.t("area.documents-artifacts-2.json-schema-form.validation.multipleOf", { step: schema.multipleOf });
     }
   }
 
   if (type === "array") {
     const arr = value as unknown[];
     if (schema.minItems != null && arr.length < schema.minItems) {
-      return `Must have at least ${schema.minItems} items`;
+      return i18n.t("area.documents-artifacts-2.json-schema-form.validation.minItems", { min: schema.minItems });
     }
     if (schema.maxItems != null && arr.length > schema.maxItems) {
-      return `Must have at most ${schema.maxItems} items`;
+      return i18n.t("area.documents-artifacts-2.json-schema-form.validation.maxItems", { max: schema.maxItems });
     }
   }
 
@@ -487,6 +488,7 @@ const EnumField = React.memo(({
   error?: string;
   options: unknown[];
 }) => {
+  const { t } = useTranslation();
   // Optional enums get a leading blank row so the user can express "not
   // configured"; it is also the selected row when no value is set.
   const showUnsetOption = !isRequired;
@@ -525,12 +527,12 @@ const EnumField = React.memo(({
         disabled={disabled}
       >
         <SelectTrigger className="w-full">
-          <SelectValue placeholder="Select an option" />
+          <SelectValue placeholder={t("area.documents-artifacts-2.json-schema-form.selectOption")} />
         </SelectTrigger>
         <SelectContent>
           {showUnsetOption && (
-            <SelectItem value={ENUM_UNSET_VALUE} textValue="None">
-              <span className="text-muted-foreground">None</span>
+            <SelectItem value={ENUM_UNSET_VALUE} textValue={t("common.none")}>
+              <span className="text-muted-foreground">{t("common.none")}</span>
             </SelectItem>
           )}
           {options.map((option) => (
@@ -573,6 +575,7 @@ const SecretField = React.memo(({
   defaultValue?: unknown;
   maxLength?: number;
 }) => {
+  const { t } = useTranslation();
   const [isVisible, setIsVisible] = useState(false);
   const isTextArea = maxLength != null && maxLength > TEXTAREA_THRESHOLD;
 
@@ -636,7 +639,7 @@ const SecretField = React.memo(({
           value={
             stringValue.length === 0
               ? ""
-              : `Sensitive — ${stringValue.length} characters hidden. Click the eye to reveal.`
+              : t("area.documents-artifacts-2.json-schema-form.sensitiveHidden", { length: stringValue.length })
           }
           readOnly
           placeholder={String(defaultValue ?? "")}
@@ -659,7 +662,7 @@ const SecretField = React.memo(({
           <Eye className="h-4 w-4 text-muted-foreground" />
         )}
         <span className="sr-only">
-          {isVisible ? "Hide secret" : "Show secret"}
+          {isVisible ? t("area.documents-artifacts-2.json-schema-form.hideSecret") : t("area.documents-artifacts-2.json-schema-form.showSecret")}
         </span>
       </Button>
     </div>
@@ -688,7 +691,7 @@ const SecretField = React.memo(({
           <Eye className="h-4 w-4 text-muted-foreground" />
         )}
         <span className="sr-only">
-          {isVisible ? "Hide secret" : "Show secret"}
+          {isVisible ? t("area.documents-artifacts-2.json-schema-form.hideSecret") : t("area.documents-artifacts-2.json-schema-form.showSecret")}
         </span>
       </Button>
     </div>
@@ -699,7 +702,7 @@ const SecretField = React.memo(({
       label={label}
       description={
         description ||
-        "Pick an existing organization secret, or paste a raw value (Myrmidon will store it as a secret on save)."
+        t("area.documents-artifacts-2.json-schema-form.secretDescription")
       }
       required={isRequired}
       error={error}
@@ -710,9 +713,9 @@ const SecretField = React.memo(({
           value={bindingValue}
           onChange={handlePickerChange}
           label=""
-          placeholder="Select an existing secret"
+          placeholder={t("area.documents-artifacts-2.json-schema-form.selectSecret")}
           allowVersionSelector={false}
-          emptyHint="No active secrets yet. Create one or paste a raw value below."
+          emptyHint={t("area.documents-artifacts-2.json-schema-form.noSecrets")}
           disabled={disabled}
         />
         {!isBoundToSecret ? (
@@ -729,7 +732,7 @@ const SecretField = React.memo(({
                   }}
                   disabled={disabled}
                 >
-                  Hide raw value input
+                  {t("area.documents-artifacts-2.json-schema-form.hideRawInput")}
                 </button>
               ) : null}
             </div>
@@ -740,7 +743,7 @@ const SecretField = React.memo(({
               onClick={() => setShowRawInput(true)}
               disabled={disabled}
             >
-              Or paste a raw value
+              {t("area.documents-artifacts-2.json-schema-form.pasteRawValue")}
             </button>
           )
         ) : null}
@@ -905,6 +908,7 @@ const ArrayField = React.memo(({
   errors: Record<string, string>;
   path: string;
 }) => {
+  const { t } = useTranslation();
   const items = Array.isArray(value) ? value : [];
   const itemSchema = propSchema.items as JsonSchemaNode;
   const isComplex = resolveType(itemSchema) === "object";
@@ -935,7 +939,7 @@ const ArrayField = React.memo(({
           }}
         >
           <Plus className="mr-2 h-4 w-4" />
-          {isComplex ? "Add item" : "Add"}
+          {isComplex ? t("area.documents-artifacts-2.json-schema-form.addItem") : t("area.documents-artifacts-2.json-schema-form.add")}
         </Button>
       </div>
 
@@ -947,7 +951,7 @@ const ArrayField = React.memo(({
           >
             <div className="flex-1">
               <div className="mb-2 text-xs font-medium text-muted-foreground">
-                Item {index + 1}
+                {t("area.documents-artifacts-2.json-schema-form.itemNumber", { index: index + 1 })}
               </div>
               <FormField
                 propSchema={itemSchema}
@@ -980,13 +984,13 @@ const ArrayField = React.memo(({
               }}
             >
               <Trash2 className="h-4 w-4" />
-              <span className="sr-only">Remove item</span>
+              <span className="sr-only">{t("area.documents-artifacts-2.json-schema-form.removeItem")}</span>
             </Button>
           </div>
         ))}
         {items.length === 0 && (
           <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
-            No items added yet.
+            {t("area.documents-artifacts-2.json-schema-form.noItems")}
           </div>
         )}
       </div>
@@ -1213,8 +1217,10 @@ export function JsonSchemaForm({
   errors = {},
   disabled,
   className,
-  advancedLabel = "Advanced options",
+  advancedLabel,
 }: JsonSchemaFormProps) {
+  const { t } = useTranslation();
+  const advancedTitle = advancedLabel ?? t("area.documents-artifacts-2.json-schema-form.advancedOptions");
   const type = resolveType(schema);
 
   const handleRootScalarChange = useCallback((newVal: unknown) => {
@@ -1259,7 +1265,7 @@ export function JsonSchemaForm({
     const groupOrder: string[] = [];
     const groups = new Map<string, Array<[string, JsonSchemaNode]>>();
     const advancedKeys = new Set<string>();
-    const DEFAULT_GROUP = "More options";
+    const DEFAULT_GROUP = t("area.documents-artifacts-2.json-schema-form.moreOptions");
 
     for (const entry of Object.entries(properties)) {
       const [key, propSchema] = entry;
@@ -1287,7 +1293,7 @@ export function JsonSchemaForm({
       })),
       advancedKeys,
     };
-  }, [properties]);
+  }, [properties, t]);
 
   const hasAdvanced = advancedGroups.length > 0;
 
@@ -1319,7 +1325,7 @@ export function JsonSchemaForm({
           className,
         )}
       >
-        No configuration options available.
+        {t("area.documents-artifacts-2.json-schema-form.noOptions")}
       </div>
     );
   }
@@ -1359,7 +1365,7 @@ export function JsonSchemaForm({
             onClick={() => setIsAdvancedOpen((open) => !open)}
             aria-expanded={isAdvancedOpen}
           >
-            <span className="text-sm font-medium">{advancedLabel}</span>
+            <span className="text-sm font-medium">{advancedTitle}</span>
             {isAdvancedOpen ? (
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
             ) : (

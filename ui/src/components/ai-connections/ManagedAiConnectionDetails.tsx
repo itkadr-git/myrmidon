@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { Button } from "@/components/ui/button";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -13,6 +14,7 @@ export function ManagedAiConnectionRow({
 }: {
   connection: ToolConnection;
 }) {
+  const { t } = useTranslation();
   const metadata = connection.config?.ai as
     | {
         provider: "anthropic" | "openai" | "openrouter" | "xai";
@@ -24,8 +26,8 @@ export function ManagedAiConnectionRow({
     <p className="text-xs text-muted-foreground">
       {aiMethodLabel(metadata.provider, metadata.method)} ·{" "}
       {connection.credentialPolicy === "per_user"
-        ? "Personal"
-        : "Company shared"}
+        ? t("area.apps-connections-2.managed-ai-connection-details.row.personal")
+        : t("area.apps-connections-2.managed-ai-connection-details.row.companyShared")}
     </p>
   );
 }
@@ -34,6 +36,7 @@ export function ManagedAiConnectionDetails({
 }: {
   connection: ToolConnection;
 }) {
+  const { t } = useTranslation();
   const client = useQueryClient();
   const navigate = useNavigate();
   const runs = useQuery({
@@ -83,8 +86,8 @@ export function ManagedAiConnectionDetails({
     return (
       <p role="status" className="text-sm text-muted-foreground">
         {accounts.isPending || grants.isPending
-          ? "Loading AI account…"
-          : "This account is not available to you."}
+          ? t("area.apps-connections-2.managed-ai-connection-details.details.loading")
+          : t("area.apps-connections-2.managed-ai-connection-details.details.unavailable")}
       </p>
     );
   return (
@@ -99,7 +102,7 @@ export function ManagedAiConnectionDetails({
           <div className="space-y-2">
             {runs.error && (
               <p role="alert">
-                Could not load active runs. Retry before revoking.
+                {t("area.apps-connections-2.managed-ai-connection-details.details.runsError")}
               </p>
             )}
             {runs.data?.map((run) => (
@@ -116,7 +119,7 @@ export function ManagedAiConnectionDetails({
                   disabled={stop.isPending}
                   onClick={() => stop.mutate(run.id)}
                 >
-                  Stop run
+                  {t("area.apps-connections-2.managed-ai-connection-details.details.stopRun")}
                 </Button>
               </div>
             ))}

@@ -56,9 +56,16 @@ describe("chat connector UI contract", () => {
     for (const file of ["Inbox.tsx", "LegacyInbox.tsx"]) {
       const page = source(`../../${file}`);
       expect(page).toMatch(
-        /const retryRunMutation = useMutation\(\{[\s\S]*?onError: \(error\) => \{\s*pushToast\(\{\s*title: "Run retry failed"/,
+        /const retryRunMutation = useMutation\(\{[\s\S]*?onError: \(error\) => \{\s*pushToast\(\{\s*title: t\("area\.inbox-status-cards-2\.(?:legacy-)?inbox\.retryRunFailed"\)/,
       );
     }
+    expect(
+      collectStrings(
+        JSON.parse(
+          source("../../../i18n/myrmidon-locales/areas/inbox-status-cards-2.en.json"),
+        ),
+      ),
+    ).toContain("Run retry failed");
   });
   it("keeps the exact dual-purpose choice and immutable searchable agent selection", () => {
     const setup = source("./ChatEndpointSetup.tsx");
