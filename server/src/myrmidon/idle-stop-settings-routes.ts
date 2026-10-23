@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { z } from "zod";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidon/db";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "../routes/authz.js";
 import { validate } from "../middleware/validate.js";
@@ -9,7 +9,7 @@ import { agentService } from "../services/agents.js";
 import { botKeyForAgent } from "./bot-containers/agent-config.js";
 import { getBotContainerRuntime } from "./bot-containers/routes-wiring.js";
 import { idleStopRuntimeFromStatus } from "./idle-stop-runtime.js";
-import { idleStopSettingsSchema, patchIdleStopSettingsSchema, normalizeIdleStopSettings, mergeIdleStopSettings, patchIdleStopBotModesSchema } from "@paperclipai/shared";
+import { idleStopSettingsSchema, patchIdleStopSettingsSchema, normalizeIdleStopSettings, mergeIdleStopSettings, patchIdleStopBotModesSchema } from "@myrmidon/shared";
 
 export function idleStopSettingsRoutes(db: Db, invalidateConfigCache?: () => void) {
   const router = Router();
