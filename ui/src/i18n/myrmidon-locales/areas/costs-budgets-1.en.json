@@ -38,8 +38,8 @@
           "failed_other": "failed: {{count}}",
           "other_one": "other: {{count}}",
           "other_other": "other: {{count}}",
-          "issuesTotal_one": "{{date}}: {{count}} task",
-          "issuesTotal_other": "{{date}}: {{count}} tasks"
+          "issuesTotal_one": "{{date}}: {{count}} issue",
+          "issuesTotal_other": "{{date}}: {{count}} issues"
         },
         "noRuns": "No runs yet",
         "noTasks": "No tasks",
