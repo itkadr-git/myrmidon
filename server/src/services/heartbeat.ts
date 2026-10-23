@@ -21330,7 +21330,8 @@ export function heartbeatService(
           else if (queuedIndex < ownerChatTurns) break;
         }
       } finally {
-        admission.release(admitted - claimedRuns.length);
+        // myrmidon(1.6.6 OPE-8988): an empty claim is no start of this agent.
+        admission.release(admitted - claimedRuns.length, { agentId });
       }
       if (admitted < availableSlots && admitted < startableRuns.length) {
         scheduleAdmissionResweep();
