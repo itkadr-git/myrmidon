@@ -2438,6 +2438,13 @@
       "when": 1792395510000,
       "tag": "0410_model_provider_key_compatibility",
       "breakpoints": true
+    },
+    {
+      "idx": 411,
+      "version": "7",
+      "when": 1792395511000,
+      "tag": "0411_pool_chat_module_instance",
+      "breakpoints": true
     }
   ]
 }
