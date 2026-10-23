@@ -327,5 +327,7 @@ export {
 export { botApplyJobs, BOT_APPLY_JOB_STATUSES, type BotApplyJobStatus } from "./bot_apply_jobs.js";
 // myrmidon(1.6.5 PROCS-0.1): the process registry and leader leases of the board.
 export { boardProcesses, boardLeases } from "./board_processes.js";
+// myrmidon(1.6.6-CORPUS-SHADOW A): shadow log of the corpus-module comparison.
+export { corpusShadowLog } from "./corpus_shadow_log.js";
 // myrmidon(OPE-8836): the single, permanent installation id of the board (licensing).
 export { myrmidonInstallIdentity } from "./myrmidon_install_identity.js";
