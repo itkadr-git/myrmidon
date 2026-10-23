@@ -392,7 +392,7 @@ export function FileTree({
                 statusBadge.error ?? statusBadgeDefault,
               )}
             >
-              error
+              {t("area.shared-controls.file-tree.errorBadge")}
             </Badge>
             <span className="min-w-0 text-destructive">{error.message}</span>
           </div>
