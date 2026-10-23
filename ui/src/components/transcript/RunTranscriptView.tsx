@@ -922,7 +922,7 @@ function TranscriptMessageBlock({
       {!isAssistant && (
         <div className="mb-1.5 flex items-center gap-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
           <User className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
-          <span>{t("area.issue-threads-runs-2.run-transcript-view.user")}</span>
+          <span>{t("common.user")}</span>
         </div>
       )}
       <MarkdownBody

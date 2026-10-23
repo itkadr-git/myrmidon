@@ -95,7 +95,6 @@
         "input": "Вход",
         "result": "Результат",
         "commandFailed": "Команда завершилась с ошибкой",
-        "user": "Пользователь",
         "streaming": "Идёт потоковая передача",
         "providerReported": "Сообщено провайдером",
         "requested": "Запрошена",
@@ -171,7 +170,6 @@
         "newSubTask": "Новая подзадача",
         "newTask": "Новая задача",
         "for": "Кому",
-        "assignee": "Исполнитель",
         "assigneeNone": "Без исполнителя",
         "assigneeSearch": "Поиск исполнителей…",
         "assigneeEmpty": "Исполнители не найдены.",
@@ -271,7 +269,6 @@
       },
       "issue-thread-interaction-card": {
         "unknownActor": "Неизвестно",
-        "boardActor": "Доска",
         "statusPending": "Ожидает",
         "statusAccepted": "Принято",
         "statusRejected": "Отклонено",

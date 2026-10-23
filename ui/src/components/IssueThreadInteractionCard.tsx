@@ -140,7 +140,7 @@ function resolveActorLabel(args: {
     return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
   }
   if (userId) {
-    return formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ?? t("area.issue-threads-runs-2.issue-thread-interaction-card.boardActor");
+    return formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ?? t("common.board");
   }
   return t("area.issue-threads-runs-2.issue-thread-interaction-card.unknownActor");
 }

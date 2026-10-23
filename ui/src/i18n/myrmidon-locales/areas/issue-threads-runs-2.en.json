@@ -91,7 +91,6 @@
         "input": "Input",
         "result": "Result",
         "commandFailed": "Command failed",
-        "user": "User",
         "streaming": "Streaming",
         "providerReported": "Provider-reported",
         "requested": "Requested",
@@ -149,7 +148,6 @@
         "newSubTask": "New sub-task",
         "newTask": "New task",
         "for": "For",
-        "assignee": "Assignee",
         "assigneeNone": "No assignee",
         "assigneeSearch": "Search assignees...",
         "assigneeEmpty": "No assignees found.",
@@ -247,7 +245,6 @@
       },
       "issue-thread-interaction-card": {
         "unknownActor": "Unknown",
-        "boardActor": "Board",
         "statusPending": "Pending",
         "statusAccepted": "Accepted",
         "statusRejected": "Rejected",

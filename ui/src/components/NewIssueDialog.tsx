@@ -1503,7 +1503,7 @@ export function NewIssueDialog() {
                 value={assigneeValue}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
-                placeholder={t("area.issue-threads-runs-2.new-issue-dialog.assignee")}
+                placeholder={t("common.assignee")}
                 className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
                 triggerDataSlot="new-issue-compact-control"
                 disablePortal
@@ -1539,7 +1539,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     )
                   ) : (
-                    <span className="text-muted-foreground">{t("area.issue-threads-runs-2.new-issue-dialog.assignee")}</span>
+                    <span className="text-muted-foreground">{t("common.assignee")}</span>
                   )
                 }
                 renderOption={(option) => {
