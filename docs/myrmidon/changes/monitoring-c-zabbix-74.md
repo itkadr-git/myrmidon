@@ -1,5 +1,5 @@
 ---
-settings-section: 1.6.6 — MONITORING C: fleet dashboard connections (VictoriaMetrics + Zabbix)
+settings-section: 1.6.6 — MONITORING C: подключения дашборда флота (VictoriaMetrics + Zabbix)
 ---
 
 ## changelog-en
