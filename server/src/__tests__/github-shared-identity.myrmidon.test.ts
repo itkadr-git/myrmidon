@@ -565,9 +565,17 @@ const support = await getEmbeddedPostgresTestSupport();
       permissions: { metadata: "read", contents: "write", pull_requests: "write", issues: "read", workflows: "write" },
     });
     // The issuance audit carries the permission list, never the token.
+    // The rows are ordered client-side: the migration adding
+    // activity_log_company_action_created_idx (company_id, action, created_at
+    // DESC) lets Postgres satisfy this company_id-only select from the new
+    // index, whose (action, created_at DESC) order puts the later (widened)
+    // issuance first — array order must not depend on the plan.
     const activity = await db.select().from(activityLog).where(eq(activityLog.companyId, input.companyId));
-    const issued = activity.filter((row) => row.action === "myrmidon.github_app.issued");
+    const issued = activity
+      .filter((row) => row.action === "myrmidon.github_app.issued")
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
     expect(issued).toHaveLength(2);
+    expect(issued[0]!.details).toMatchObject({ permissions: { issues: "none", workflows: "none" } });
     expect(issued[1]!.details).toMatchObject({ permissions: { workflows: "write", issues: "read" } });
   });
 
