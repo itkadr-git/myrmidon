@@ -161,6 +161,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(environments);
     await db.delete(issueInboxArchives);
     await db.delete(issues);
+    await db.delete(projects);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
