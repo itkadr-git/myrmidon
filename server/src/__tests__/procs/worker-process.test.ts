@@ -166,12 +166,29 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
 
   it("scenario 4: a double SIGTERM drains the worker once, the api answers 503 + Retry-After for single routes (OPE-9107)", async () => {
     const exited = new Promise<void>((resolve) => worker!.child.once("exit", () => resolve()));
+    // The second signal goes out only once the worker has logged the start of
+    // its shutdown, straight from the stdout/stderr stream (no fixed sleep):
+    // by then the first shutdown is running and the second one must join it.
+    const shutdownStarted = new Promise<void>((resolve, reject) => {
+      let seen = "";
+      const timer = setTimeout(
+        () => reject(new Error(`no "shutdown started" line from the worker:\n${worker!.output()}`)),
+        60_000,
+      );
+      const onData = (chunk: Buffer) => {
+        seen = `${seen}${chunk.toString("utf8")}`.slice(-2_000);
+        if (!seen.includes("myrmidon(OPE-9107): shutdown started")) return;
+        clearTimeout(timer);
+        worker!.child.stdout?.off("data", onData);
+        worker!.child.stderr?.off("data", onData);
+        resolve();
+      };
+      worker!.child.stdout?.on("data", onData);
+      worker!.child.stderr?.on("data", onData);
+    });
     worker!.child.kill("SIGTERM");
-    // Signals of one kind coalesce while pending, so the second one goes out a
-    // moment later, while the first shutdown is still draining.
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    const stillDraining = worker!.alive();
-    if (stillDraining) worker!.child.kill("SIGTERM");
+    await shutdownStarted;
+    worker!.child.kill("SIGTERM");
     const duringDrain = await Promise.all(
       Array.from({ length: 4 }, async () => await requestApi(api!.baseUrl, "/api/health")),
     );
@@ -187,10 +204,9 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
     expect(worker!.child.signalCode, worker!.output()).toBeNull();
     expect(worker!.child.exitCode, worker!.output()).toBe(0);
     const joined = worker!.output().split("shutdown already in progress; joining it").length - 1;
-    // At most one join, and exactly one when the second signal found the first
-    // shutdown still running; never a second run of the shutdown.
-    expect(joined, worker!.output()).toBeLessThanOrEqual(1);
-    if (stillDraining) expect(joined, worker!.output()).toBe(1);
+    expect(joined, worker!.output()).toBe(1);
+    const started = worker!.output().split("myrmidon(OPE-9107): shutdown started").length - 1;
+    expect(started, worker!.output()).toBe(1);
     expect(worker!.output()).not.toMatch(/shutdown failed/);
 
     // The worker's port is closed ...
