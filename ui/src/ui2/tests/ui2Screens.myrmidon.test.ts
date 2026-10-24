@@ -9,6 +9,7 @@
 // paths stay stable so parity comparison stays possible.
 
 import { describe, expect, it } from "vitest";
+import { isUi2PhoneTabActive } from "../shell/Ui2PhoneNav";
 import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
 import { UI2_ROUTE_TABLE } from "../routes";
 import { isUi2RouteElementAPlaceholder } from "../routes";
@@ -68,6 +69,18 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(byKey.get("costs")?.legacyPath).toBe("/activity/costs");
     expect(byKey.get("agent-overview")?.legacyPath).toBe("/agents/:agentId");
     expect(byKey.get("agents-fleet")?.legacyPath).toBe("/agents");
+  });
+
+  it("activates exactly one tab at /agents in the six-tab phone grid", () => {
+    expect(UI2_PHONE_TABS).toHaveLength(6);
+    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/agents"));
+    expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.agents"]);
+  });
+
+  it("activates only More at /agents/all in the six-tab phone grid", () => {
+    expect(UI2_PHONE_TABS).toHaveLength(6);
+    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/agents/all"));
+    expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.more"]);
   });
 
   it("maps canonical agent API statuses without treating active as running", () => {

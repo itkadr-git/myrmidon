@@ -22,8 +22,10 @@ export const UI2_LOCALES: readonly Ui2Locale[] = ["en", "ru"] as const;
 export const UI2_DEFAULT_LOCALE: Ui2Locale = "en";
 
 const en = {
-  "ui2.screens.fleet.title": "Server fleet",
+  "ui2.screens.fleet.title": "Servers",
   "ui2.screens.fleet.subtitle": "Live status of hosts and services.",
+  "ui2.screens.fleet.monitoringError": "Monitoring is not configured or is unavailable.",
+  "ui2.screens.fleet.monitoringUnavailable": "Monitoring data is unavailable.",
   "ui2.screens.fleet.empty": "No fleet resources yet",
   "ui2.screens.fleet.emptyBody": "Hosts and services will appear here when they are registered.",
   "ui2.screens.fleet.hosts": "Hosts",
@@ -66,6 +68,9 @@ const en = {
   "ui2.agents.status.error": "Error",
   "ui2.agents.status.paused": "Paused",
   "ui2.screens.agents": "Agents",
+  "ui2.nav.agents": "Agents",
+  "ui2.nav.servers": "Servers",
+  "ui2.nav.more": "More",
 
   "ui2.decisions.title": "Decisions",
   "ui2.decisions.subtitle": "The queue of decisions that wait for you",
@@ -403,8 +408,10 @@ const en = {
 export type Ui2MessageKey = keyof typeof en;
 
 const ru: Record<Ui2MessageKey, string> = {
-  "ui2.screens.fleet.title": "Флот серверов",
+  "ui2.screens.fleet.title": "Серверы",
   "ui2.screens.fleet.subtitle": "Текущий статус узлов и служб.",
+  "ui2.screens.fleet.monitoringError": "Мониторинг не настроен или недоступен.",
+  "ui2.screens.fleet.monitoringUnavailable": "Данные мониторинга недоступны.",
   "ui2.screens.fleet.empty": "Ресурсов флота пока нет",
   "ui2.screens.fleet.emptyBody": "Зарегистрированные узлы и службы появятся здесь.",
   "ui2.screens.fleet.hosts": "Узлы",
@@ -447,6 +454,9 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.agents.status.error": "Ошибка",
   "ui2.agents.status.paused": "Приостановлен",
   "ui2.screens.agents": "Агенты",
+  "ui2.nav.agents": "Агенты",
+  "ui2.nav.servers": "Серверы",
+  "ui2.nav.more": "Ещё",
 
   "ui2.decisions.title": "Решения",
   "ui2.decisions.subtitle": "Очередь решений, которые ждут вас",
