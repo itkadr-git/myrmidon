@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { logger } from "../middleware/logger.js";
 import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
 import {
+  agentWakeupRequests,
   agents,
   heartbeatRuns,
   issues,
@@ -191,6 +192,20 @@ export async function reconcileAbandonedExecutionControl(
           if (updatedRun && updatedRun.status !== run.status) {
             terminalRunToReport = updatedRun;
           }
+          // myrmidon(1.6.6 OPE-8998): the wake request this run carried ends
+          // with it. Leaving it `claimed` made it an orphan that idle pickup
+          // read as work in flight (prod: 221 claimed requests behind runs this
+          // path had failed).
+          if (run.wakeupRequestId)
+            await tx
+              .update(agentWakeupRequests)
+              .set({ status: "failed", finishedAt: now, error: cause, updatedAt: now })
+              .where(
+                and(
+                  eq(agentWakeupRequests.id, run.wakeupRequestId),
+                  sql`${agentWakeupRequests.status} in ('queued', 'claimed')`,
+                ),
+              );
           await tx
             .update(agents)
             .set({ status: "idle", updatedAt: now })

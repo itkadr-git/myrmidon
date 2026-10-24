@@ -17973,6 +17973,40 @@ export function heartbeatService(
     publishRunLifecyclePluginEvent(claimed);
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
+    // myrmidon(1.6.6 OPE-8998): the review-admission records written inside the
+    // in_review transition (insertReviewAdmissionWakeup) are served by whichever
+    // run of this agent starts on the issue next; the post-commit wake creates
+    // its own request, so the admission record stayed `queued` without a run
+    // forever (prod: 147, each one later read as a wake in flight). Close them
+    // as coalesced into this run.
+    {
+      const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
+      if (claimedIssueId) {
+        await db
+          .update(agentWakeupRequests)
+          .set({ status: "coalesced", finishedAt: claimedAt, updatedAt: claimedAt })
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, claimed.companyId),
+              eq(agentWakeupRequests.agentId, claimed.agentId),
+              eq(agentWakeupRequests.status, "queued"),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${claimedIssueId}`,
+              sql`${agentWakeupRequests.idempotencyKey} like 'issue-review-admission:%'`,
+              sql`${agentWakeupRequests.createdAt} <= ${claimedAt.toISOString()}::timestamptz`,
+              claimed.wakeupRequestId
+                ? sql`${agentWakeupRequests.id} <> ${claimed.wakeupRequestId}`
+                : sql`true`,
+              sql`not exists (select 1 from ${heartbeatRuns} hr where hr.wakeup_request_id = ${agentWakeupRequests.id})`,
+            ),
+          )
+          .catch((err) => {
+            logger.warn(
+              { err: err instanceof Error ? err.message : String(err), runId: claimed.id },
+              "claimQueuedRun: could not close served review-admission wakes",
+            );
+          });
+      }
+    }
 
     // IDLE-STOP: wake the container before proceeding with run execution
     const idleStopService = getIdleStopService();
@@ -21337,7 +21371,8 @@ export function heartbeatService(
           else if (queuedIndex < ownerChatTurns) break;
         }
       } finally {
-        admission.release(admitted - claimedRuns.length);
+        // myrmidon(1.6.6 OPE-8988): an empty claim is no start of this agent.
+        admission.release(admitted - claimedRuns.length, { agentId });
       }
       if (admitted < availableSlots && admitted < startableRuns.length) {
         scheduleAdmissionResweep();
