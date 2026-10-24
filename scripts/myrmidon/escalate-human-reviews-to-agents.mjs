@@ -4,6 +4,8 @@
 // default senior chain (server/src/services/review-escalation-chain.ts):
 //   managers of the previous reviewer upward (agents.reports_to),
 //   then the project lead (projects.lead_agent_id), then the top agent `adm`.
+// Escalated = escalationReason review_round_limit, or the legacy shape
+// (counter >= limit and lastDecisionOutcome changes_requested, no reason field).
 // Skipped: the previous reviewer, the executor (returnAssignee), paused and
 // terminated agents. No agent -> the issue is reported and left untouched.
 //
@@ -66,22 +68,38 @@ export function escalatedState(state, agentId) {
   };
 }
 
-/** Pure: only stages escalated to a user at the round limit; plain human reviews are not ours. */
-export function isEscalatedToUser(state) {
-  return Boolean(
-    state &&
-      state.status === "pending" &&
-      state.escalationReason === "review_round_limit" &&
-      state.currentParticipant?.type === "user" &&
-      (state.escalationToParticipant == null || state.escalationToParticipant.type === "user"),
-  );
+export const DEFAULT_MAX_REVIEW_ROUNDS = 3;
+
+/** Same rule as resolveMaxReviewRounds on the server. */
+export function maxReviewRounds(policy) {
+  const configured = policy?.reviewEscalationPolicy?.maxReviewRounds ?? policy?.maxReviewRounds;
+  return typeof configured === "number" && configured > 0 ? configured : DEFAULT_MAX_REVIEW_ROUNDS;
+}
+
+/**
+ * Pure: a stage escalated to a user at the round limit. Either the explicit
+ * mark (escalationReason = review_round_limit) or the legacy shape written by
+ * the old code, which handed the stage to responsibleUserId without a reason:
+ * the round counter reached the limit and the last decision was changes_requested.
+ * A plain human review (counter below the limit) is not ours.
+ */
+export function isEscalatedToUser(state, policy = null) {
+  if (!state || state.status !== "pending" || state.currentParticipant?.type !== "user") return false;
+  if (state.escalationReason === "review_round_limit") {
+    return state.escalationToParticipant == null || state.escalationToParticipant.type === "user";
+  }
+  return (state.changesRequestedCount ?? 0) >= maxReviewRounds(policy) && state.lastDecisionOutcome === "changes_requested";
 }
 
 /** Pure: plan one issue. */
 export function planIssue(row, agents) {
   const state = row.execution_state;
   const from = state.escalationFromParticipant;
-  const reviewerAgentId = from?.type === "agent" ? from.agentId ?? null : row.assignee_agent_id ?? null;
+  // Legacy escalations carry no escalationFromParticipant: the previous reviewer
+  // is the first agent of the current stage's roster.
+  const stage = (row.execution_policy?.stages ?? []).find((st) => st.id === state.currentStageId);
+  const rosterAgent = (stage?.participants ?? []).find((pt) => pt.type === "agent" && pt.agentId)?.agentId ?? null;
+  const reviewerAgentId = from?.type === "agent" ? from.agentId ?? null : row.assignee_agent_id ?? rosterAgent;
   const ret = state.returnAssignee;
   const chain = buildSeniorChain({
     agents,
@@ -108,13 +126,13 @@ export function selectSql(only) {
   const filter = only?.length ? `and i.identifier in (${only.map(lit).join(",")})` : "";
   return `select coalesce(json_agg(t), '[]'::json) from (
     select i.id, i.identifier, i.company_id, i.status, i.assignee_agent_id, i.assignee_user_id,
-           i.execution_state, p.lead_agent_id as project_lead_agent_id
+           i.execution_state, i.execution_policy, p.lead_agent_id as project_lead_agent_id
     from issues i left join projects p on p.id = i.project_id
     where i.status = 'in_review'
       and i.execution_state->>'status' = 'pending'
       and i.execution_state->'currentParticipant'->>'type' = 'user'
-      and i.execution_state->>'escalationReason' = 'review_round_limit'
-      and coalesce(i.execution_state->'escalationToParticipant'->>'type', 'user') = 'user'
+      and (i.execution_state->>'escalationReason' = 'review_round_limit'
+           or i.execution_state->>'lastDecisionOutcome' = 'changes_requested')
       ${filter}
     order by i.identifier) t`;
 }
@@ -132,7 +150,7 @@ export async function run({ port, apply, only, snapshotPath, log = console.log }
   const rows = port.query(selectSql(only));
   const plans = [];
   const byCompany = new Map();
-  for (const row of rows.filter((r) => isEscalatedToUser(r.execution_state))) {
+  for (const row of rows.filter((r) => isEscalatedToUser(r.execution_state, r.execution_policy))) {
     if (!byCompany.has(row.company_id)) {
       byCompany.set(row.company_id, port.query(
         `select coalesce(json_agg(t), '[]'::json) from (select id, name, status, reports_to, paused_at from agents where company_id = ${lit(row.company_id)}) t`,

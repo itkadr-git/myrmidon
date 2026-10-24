@@ -56,12 +56,41 @@ describe("escalate-human-reviews-to-agents", () => {
     assert.equal(out.applied, 0);
     assert.ok(calls.every((sql) => !/\bupdate issues\b/.test(sql)));
   });
-  it("selects only round-limit escalations in SQL", () => {
+  it("selects round-limit and legacy candidates in SQL", () => {
     assert.match(selectSql(null), /escalationReason'\s*=\s*'review_round_limit'/);
+    assert.match(selectSql(null), /lastDecisionOutcome'\s*=\s*'changes_requested'/);
   });
   it("passes the connection through the environment, not argv", () => {
     const env = pgEnvFromUrl("postgres://u:p%40ss@db.example:5433/mydb?sslmode=require", {});
     assert.deepEqual([env.PGHOST, env.PGPORT, env.PGUSER, env.PGPASSWORD, env.PGDATABASE, env.PGSSLMODE], ["db.example", "5433", "u", "p@ss", "mydb", "require"]);
     assert.equal(env.DATABASE_URL, undefined);
+  });
+  const legacyState = {
+    status: "pending", currentStageId: "s", currentParticipant: { type: "user", userId: USER, agentId: null },
+    returnAssignee: { type: "agent", agentId: id(4), userId: null }, changesRequestedCount: 3, lastDecisionOutcome: "changes_requested",
+  };
+  it("recognises the legacy escalation without escalationReason", () => {
+    assert.equal(isEscalatedToUser(legacyState, null), true);
+    assert.equal(isEscalatedToUser({ ...legacyState, changesRequestedCount: 2 }, null), false);
+    assert.equal(isEscalatedToUser({ ...legacyState, lastDecisionOutcome: null }, null), false);
+    assert.equal(isEscalatedToUser({ ...legacyState, changesRequestedCount: 1 }, { maxReviewRounds: 1 }), true);
+    assert.equal(isEscalatedToUser({ ...legacyState, changesRequestedCount: 2 }, { reviewEscalationPolicy: { maxReviewRounds: 5 } }), false);
+  });
+  it("moves a legacy escalation to the reviewer's manager and leaves a normal human review", async () => {
+    const policy = { stages: [{ id: "s", participants: [{ type: "agent", agentId: id(3) }] }] };
+    const legacy = { ...row, id: id(12), identifier: "OPE-3", execution_state: legacyState, execution_policy: policy };
+    const normal = { ...row, id: id(13), identifier: "OPE-4", execution_state: { ...legacyState, changesRequestedCount: 1 }, execution_policy: policy };
+    const updates = [];
+    const port = { query(sql) {
+      if (/from issues i/.test(sql)) return [legacy, normal];
+      if (/update issues/.test(sql)) { updates.push(sql); return [{ id: legacy.id }]; }
+      return agents;
+    } };
+    const out = await run({ port, apply: true, snapshotPath: null, log: () => {} });
+    assert.equal(out.plans.length, 1);
+    assert.equal(out.plans[0].identifier, "OPE-3");
+    assert.equal(out.plans[0].toAgentId, id(2));
+    assert.equal(updates.length, 1);
+    assert.match(updates[0], /assignee_user_id = NULL/);
   });
 });
