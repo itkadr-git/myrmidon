@@ -1,4 +1,4 @@
-import { definePlugin } from "@paperclipai/plugin-sdk";
+import { definePlugin } from "@myrmidon/plugin-sdk";
 import type {
   PluginLogger,
   PluginEnvironmentAcquireLeaseParams,
@@ -14,7 +14,7 @@ import type {
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
-} from "@paperclipai/plugin-sdk";
+} from "@myrmidon/plugin-sdk";
 import { CloudflareBridgeError, createCloudflareBridgeClient } from "./bridge-client.js";
 import {
   parseCloudflareDriverConfig,

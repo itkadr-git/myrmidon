@@ -11,7 +11,7 @@ import { useParams } from "@/lib/router";
 import { agentRouteRef } from "@/lib/utils";
 import { useTranslation } from "@/i18n";
 import { TaskDetailSurface } from "./IssueDetail";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@myrmidon/shared";
 
 export function AgentChat() {
   const { t } = useTranslation();

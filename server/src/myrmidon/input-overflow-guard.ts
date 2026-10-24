@@ -1,11 +1,11 @@
 import { and, desc, eq, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { heartbeatRuns } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { heartbeatRuns } from "@myrmidon/db";
 import {
   INPUT_OVERFLOW_ERROR_FAMILY,
   classifyInputOverflow,
   type InputOverflowMatch,
-} from "@paperclipai/adapter-utils/input-overflow";
+} from "@myrmidon/adapter-utils/input-overflow";
 
 /**
  * Provider input-overflow guard (OPE-6168, upstream #12023 family).

@@ -9,7 +9,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { FolderKind, FolderListItem, FolderListResult } from "@paperclipai/shared";
+import type { FolderKind, FolderListItem, FolderListResult } from "@myrmidon/shared";
 import { i18n, useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import {

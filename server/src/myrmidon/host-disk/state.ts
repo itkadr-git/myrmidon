@@ -1,4 +1,4 @@
-import type { HostDiskConsumerEntry, HostDiskUsageSample } from "@paperclipai/shared";
+import type { HostDiskConsumerEntry, HostDiskUsageSample } from "@myrmidon/shared";
 
 /**
  * In-process state of the host disk sweep (myrmidon BOT-DISK, part E).

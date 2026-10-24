@@ -7,7 +7,7 @@ import type {
   ToolMcpGatewayTokenAction,
   ToolMcpGatewayTokenCreated,
   ToolMcpGatewayWithTokens,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { toolsApi } from "@/api/tools";
 import { Button } from "@/components/ui/button";
 import {

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import type { AdapterModel } from "@paperclipai/adapter-utils";
-import { asString, runChildProcess } from "@paperclipai/adapter-utils/server-utils";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import type { AdapterModel } from "@myrmidon/adapter-utils";
+import { asString, runChildProcess } from "@myrmidon/adapter-utils/server-utils";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const MODELS_CACHE_TTL_MS = 60_000;
 

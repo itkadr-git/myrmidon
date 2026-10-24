@@ -15,7 +15,7 @@
 // every myrmidon sweep. server/src/index.ts gets one marked call.
 
 import { isNotNull } from "drizzle-orm";
-import { companies, type Db } from "@paperclipai/db";
+import { companies, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import { secretService } from "../../services/index.js";

@@ -1,4 +1,4 @@
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,

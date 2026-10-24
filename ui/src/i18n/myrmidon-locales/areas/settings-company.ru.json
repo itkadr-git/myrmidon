@@ -855,6 +855,7 @@
         "bindingsUpdated": "Привязки обновлены",
         "browseSkillsFromEveryAvailable": "Просматривайте навыки из всех доступных источников.",
         "deliveryCheckFailedToStart": "Не удалось запустить проверку доставки",
+        "deliveryCheckPrompt": "Проверка доставки: убедись, что этот навык тебе доступен, и коротко ответь его названием.",
         "deliveryCheckStarted": "Проверка доставки запущена",
         "discoveringSkills": "Поиск навыков",
         "errorCreatingSecret": "Ошибка при создании секрета.",
@@ -1365,7 +1366,20 @@
         "saving": "Сохранение…",
         "saveProfile": "Сохранить профиль",
         "storedFor": "Хранится в файловом хранилище Myrmidon для организации {{name}}.",
-        "avatarHint": "Нажмите на аватар, чтобы загрузить новое изображение. {{hint}}"
+        "avatarHint": "Нажмите на аватар, чтобы загрузить новое изображение. {{hint}}",
+        "changePasswordTitle": "Сменить пароль",
+        "currentPassword": "Текущий пароль",
+        "newPassword": "Новый пароль",
+        "newPasswordHint": "Не короче {{min}} символов.",
+        "confirmPassword": "Повторите новый пароль",
+        "signOutOtherDevices": "Выйти на других устройствах",
+        "changePasswordButton": "Сменить пароль",
+        "passwordChanged": "Пароль изменён.",
+        "passwordsDoNotMatch": "Новый пароль и повтор не совпадают.",
+        "passwordTooShort": "Новый пароль должен быть не короче {{min}} символов.",
+        "passwordTooLong": "Новый пароль должен быть не длиннее {{max}} символов.",
+        "wrongCurrentPassword": "Текущий пароль указан неверно.",
+        "failedToChangePassword": "Не удалось сменить пароль."
       },
       "user-profile": {
         "touched": "Затронуто",
@@ -1403,6 +1417,42 @@
         "noIssueLinkedUsage": "Расхода токенов по задачам пока нет.",
         "noProviderUsage": "Расход по провайдерам пока не определён.",
         "users": "Пользователи"
+      },
+      "idle-stop-settings-panel": {
+        "loading": "Загрузка настроек IDLE-STOP…",
+        "unavailable": "Настройки IDLE-STOP недоступны.",
+        "saveError": "Не удалось сохранить настройки IDLE-STOP.",
+        "validationError": "Порог простоя — от 60 до 31536000 секунд, таймаут проверки состояния — от 1000 до 600000 мс.",
+        "title": "IDLE-STOP",
+        "description": "Останавливает простаивающие контейнеры ботов и запускает их перед следующим прогоном. Изменения применяются без перезапуска.",
+        "enabledByDefault": "Включено по умолчанию",
+        "afterSecLabel": "Порог простоя (секунды)",
+        "healthTimeoutLabel": "Таймаут проверки состояния (мс)",
+        "saved": "Сохранено",
+        "stoppedOnIdle": "Остановлен при простое",
+        "unknown": "Неизвестно",
+        "running": "Работает",
+        "stopped": "Остановлен",
+        "botsList": {
+          "loading": "Загрузка ботов…",
+          "unavailable": "Список ботов недоступен.",
+          "modeError": "Не удалось изменить режим.",
+          "heading": "Боты",
+          "summary": "Ботов с контейнером: {{total}}; по умолчанию — «{{onDemand}}».",
+          "selectedAlwaysOn": "Выбранные: всегда включены",
+          "selectedOnDemand": "Выбранные: по запросу",
+          "allOnDemand": "Все: по запросу",
+          "allAlwaysOn": "Все: всегда включены",
+          "columnBot": "Бот",
+          "columnMode": "Режим",
+          "columnContainer": "Контейнер",
+          "columnLastStopped": "Последняя остановка",
+          "columnLastStarted": "Последний запуск",
+          "selectBot": "Выбрать: {{name}}",
+          "modeFor": "Режим остановки при простое: {{name}}",
+          "onDemand": "По запросу",
+          "alwaysOn": "Всегда включён"
+        }
       }
     }
   }

@@ -28,7 +28,7 @@ import request from "supertest";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { activityLog, companies, companySecrets, createDb, instanceSettings } from "@paperclipai/db";
+import { activityLog, companies, companySecrets, createDb, instanceSettings } from "@myrmidon/db";
 import { errorHandler } from "../middleware/index.js";
 import {
   getEmbeddedPostgresTestSupport,

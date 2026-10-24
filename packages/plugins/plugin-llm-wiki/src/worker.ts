@@ -6,7 +6,7 @@ import {
   type PluginJobContext,
   type PluginManagedRoutineDeclaration,
   type PluginManagedRoutineResolution,
-} from "@paperclipai/plugin-sdk";
+} from "@myrmidon/plugin-sdk";
 import {
   FOLDER_HEALTH_CHECK_JOB_KEY,
   PAPERCLIP_DISTILL_SKILL_KEY,

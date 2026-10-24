@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { emailApi } from "@/api/email";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { EmailPublicationSummary } from "@paperclipai/shared";
+import type { EmailPublicationSummary } from "@myrmidon/shared";
 import { useTranslation } from "@/i18n";
 
 // Email actions belong to the agent's task conversation. Only surface mail

@@ -16,7 +16,7 @@ let providerPromise: Promise<SecretProvider> | null = null;
 
 /** The existing server provider is the only place that implements the cipher. */
 export function loadProvider(): Promise<SecretProvider> {
-  providerPromise ??= import("@paperclipai/server/secrets/local-encrypted-provider").then(
+  providerPromise ??= import("@myrmidon/server/secrets/local-encrypted-provider").then(
     (mod) => mod.localEncryptedProvider as unknown as SecretProvider,
   );
   return providerPromise;

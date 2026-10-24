@@ -5,7 +5,7 @@
 // registries use. Nothing here persists: the counters are recomputed on the
 // fly by the metrics endpoint, so a restart simply zeroes the window.
 
-import type { AttentionSeverity } from "@paperclipai/shared";
+import type { AttentionSeverity } from "@myrmidon/shared";
 
 export interface SwarmClaimSignal {
   companyId: string;

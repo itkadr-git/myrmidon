@@ -24,7 +24,7 @@ import type {
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
   CompanySkillVersion,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { companySkillsApi } from "../api/companySkills";
 import { foldersApi } from "../api/folders";
 import { agentsApi } from "../api/agents";
@@ -177,7 +177,7 @@ import {
   XOctagon,
 } from "lucide-react";
 import { GithubIcon } from "../components/icons/github-icon";
-import type { FolderListItem, FolderListResult } from "@paperclipai/shared";
+import type { FolderListItem, FolderListResult } from "@myrmidon/shared";
 import { i18n, useTranslation } from "@/i18n";
 import { Trans } from "react-i18next";
 
@@ -2810,7 +2810,10 @@ export function SkillDeliveryCheckSection({
   });
 
   const checkMutation = useMutation({
-    mutationFn: () => companySkillsApi.createTestRun(companyId, skillId, { agentId: selectedAgentId }),
+    mutationFn: () => companySkillsApi.createTestRun(companyId, skillId, {
+      agentId: selectedAgentId,
+      content: t("area.settings-company.company-skills.deliveryCheckPrompt"),
+    }),
     onSuccess: (run) => {
       setActiveRunId(run.id);
       setLastRun(run);

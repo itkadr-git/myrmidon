@@ -32,7 +32,7 @@ import {
   routineRuns,
   routines,
   secretAccessEvents,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

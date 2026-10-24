@@ -19,21 +19,23 @@
 //   5. The K-1 domain gates on top.
 
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
-import { knowledgeProposeSchema, isKnowledgeAutoSection, defaultAutonomyMatrix, resolveAutonomy } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { knowledgeProposeSchema, isKnowledgeAutoSection, defaultAutonomyMatrix, resolveAutonomy } from "@myrmidon/shared";
 import {
   KNOWLEDGE_APPROVAL_REQUIRED_CODE,
   KNOWLEDGE_INJECTION_FLAGGED_CODE,
   KNOWLEDGE_RULE_APPROVE_FORBIDDEN_CODE,
   KNOWLEDGE_TOOL_ACCESS_DENIED_CODE,
-} from "@paperclipai/shared";
-import type { AutonomyMatrix } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import type { AutonomyMatrix } from "@myrmidon/shared";
 import { HttpError, forbidden, notFound, unprocessable } from "../../errors.js";
 import { assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { KnowledgeDomainError } from "./domain.js";
 import { createKnowledgeModule, type KnowledgeModule } from "./service.js";
 import { guardrailsInjectionEnabled, injectionScoreThreshold, scanForInjection } from "../guardrails/injection.js";
 import { dbAutonomyStore, agentRoleFromDb } from "../autonomy/store.js";
+import { assertRuleWriteGrade, builtinCasteSensitivity, type CasteSensitivityResolver } from "../rule-grade.js";
+import { resolveCasteSensitivity } from "../caste-sensitivity.js";
 
 // ---------------------------------------------------------------------------
 // Tool definitions (tools/list payload)
@@ -186,6 +188,12 @@ export interface KnowledgeMcpDeps {
     revisionId: string | null;
     toolName: string;
   }): Promise<{ actionRequestId: string | null }>;
+  /**
+   * The company's caste directory (which castes are sensitive) for the rule
+   * grade check. Production reads the database; without it the built-in
+   * sensitive castes apply.
+   */
+  casteSensitivity?: CasteSensitivityResolver;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -293,6 +301,18 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
         KNOWLEDGE_RULE_APPROVE_FORBIDDEN_CODE,
       );
     }
+  }
+
+  /**
+   * K-3: publishing a rule delivers it to a caste, so it passes the one shared
+   * grade check (../rule-grade.ts), the same as the REST routes. This is the
+   * only tool of this surface that publishes, delivers, withdraws or re-roles
+   * a rule: there is no approve, rollback, archive, supersede or import tool
+   * here (the test pins the tool list, so a new one cannot skip the gate).
+   */
+  async function assertRuleGrade(req: Request, companyId: string, item: { kind: string; roles?: readonly string[] | null }) {
+    if (item.kind !== "rule") return;
+    await assertRuleWriteGrade(req, companyId, deps.casteSensitivity ?? builtinCasteSensitivity, item.roles ?? []);
   }
 
   async function loadItem(mod: KnowledgeModule, idOrSlug: string) {
@@ -408,6 +428,7 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
         const revisionId = typeof args.revisionId === "string" ? args.revisionId : undefined;
         const item = await loadItem(mod, idOrSlug);
         await assertPublishAllowed(req, companyId, item, revisionId ?? null);
+        await assertRuleGrade(req, companyId, item);
         return { item: await mod.publish(idOrSlug, actorRef, revisionId) };
       }
       default:
@@ -491,6 +512,7 @@ export function myrmidonKnowledgeMcpRoutes(db: Db, env: NodeJS.ProcessEnv = proc
   return knowledgeMcpRoutes({
     moduleFor: (companyId) => createKnowledgeModule(db, companyId),
     roleForAgent: agentRoleFromDb(db),
+    casteSensitivity: (companyId) => resolveCasteSensitivity(db, companyId),
     matrixFor: async () => {
       try {
         const store = dbAutonomyStore(db);

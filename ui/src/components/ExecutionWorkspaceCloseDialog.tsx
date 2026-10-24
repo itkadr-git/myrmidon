@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionWorkspace } from "@paperclipai/shared";
+import type { ExecutionWorkspace } from "@myrmidon/shared";
 import { Link } from "@/lib/router";
 import { Loader2 } from "lucide-react";
 import { Trans } from "react-i18next";

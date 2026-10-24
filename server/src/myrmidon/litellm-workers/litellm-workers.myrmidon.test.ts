@@ -17,7 +17,7 @@ import {
   litellmWorkersSignalSteps,
   renderLitellmWorkersSignalCommand,
   type LitellmWorkersCeilings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { HttpError } from "../../errors.js";
 import {
   LitellmWorkerCpuSampler,

@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/shared";
 
 /**
  * Bundled plugin auto-provisioning.

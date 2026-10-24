@@ -1,5 +1,5 @@
 import { lazy, Suspense, type ReactNode } from "react";
-import type { ToolConnectionCredentialSource } from "@paperclipai/shared";
+import type { ToolConnectionCredentialSource } from "@myrmidon/shared";
 import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
@@ -106,6 +106,7 @@ import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
 import { UsersAdmin } from "./pages/UsersAdmin";
+import { PasswordSetPage } from "./pages/PasswordSet"; // myrmidon(OPE-8985)
 import { InstanceFeatures } from "./pages/InstanceFeatures"; // myrmidon(FEATURES)
 import { BoardApiKeysPage } from "./pages/BoardApiKeys";
 import { LicensesPage } from "./components/myrmidon/LicensesPage"; // myrmidon(LICENSING)
@@ -833,6 +834,7 @@ export function App() {
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
+        <Route path="password-set/:token" element={<PasswordSetPage />} />
         <Route element={streamlinedUiLoaded ? <CloudAccessGate /> : <PaperclipLoading />}>
           <Route path="chat-identity/confirm" element={
             <ChatConnectorsExperimentalGate><ChatIdentityConfirm /></ChatConnectorsExperimentalGate>

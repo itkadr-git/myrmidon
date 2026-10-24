@@ -17,7 +17,7 @@
 // runs through one queue (see `withBehaviorSettingsTransition`), exactly as the
 // runtime-limits transition does.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   behaviorSettingRegistry,
   resolveBehaviorSettings,
@@ -25,7 +25,7 @@ import {
   type BehaviorSettingsPatch,
   type ResolvedBehaviorSettings,
   type SettingScope,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";

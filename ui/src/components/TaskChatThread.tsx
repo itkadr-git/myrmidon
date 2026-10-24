@@ -1,8 +1,8 @@
 // myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { i18n, useTranslation } from "@/i18n";
-import type { ActivityEvent } from "@paperclipai/shared";
+import type { ActivityEvent } from "@myrmidon/shared";
 import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
-import { requiresExecutionReconciliation } from "@paperclipai/shared";
+import { requiresExecutionReconciliation } from "@myrmidon/shared";
 import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
 import { TaskChatScrollReady } from "@/components/task-chat/scroll-navigation";
 import {
@@ -80,7 +80,7 @@ import type {
   FeedbackVoteValue,
   IssueDocument,
   IssueThreadInteraction,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   TaskChatThreadView,
   taskChatContentKey,

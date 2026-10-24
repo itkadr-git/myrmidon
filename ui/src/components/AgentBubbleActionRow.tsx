@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type {
   FeedbackDataSharingPreference,
   FeedbackVoteValue,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Trans } from "react-i18next";
 import { useTranslation } from "@/i18n";
 import { cn, formatShortDate } from "../lib/utils";

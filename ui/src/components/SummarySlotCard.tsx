@@ -8,7 +8,7 @@ import type {
   SummarySlotKey,
   SummarySlotRevision,
   SummarySlotScopeKind,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Bot, Clock3, History, Loader2, RefreshCw, Sparkles } from "lucide-react";
 
 import { agentsApi } from "@/api/agents";

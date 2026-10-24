@@ -22,6 +22,9 @@ needs one. It is an independent product maintained as a fork of
   enforcement, prompt-cost advice, run admission limits.
 - [Knowledge and learning](Knowledge-and-learning) — regulations, foraging
   from approved sources, reference-task evals, quality baselines.
+- [POST-TASK-REFLECT design](../myrmidon/design/post-task-reflect.md)
+  ([Russian](../myrmidon/design/post-task-reflect.ru.md)) — the proposal for
+  capturing reusable role lessons after task outcomes.
 - [Autonomy and guardrails](Safety-and-guardrails) — the role × action
   matrix, injection flagging, emergency stop.
 - [Connectors and tools](Connectors-and-tools) — the browser bridge, MCP

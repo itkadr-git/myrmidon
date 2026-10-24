@@ -1,8 +1,8 @@
 import { createPublicKey, timingSafeEqual, verify, type JsonWebKey } from "node:crypto";
 import { eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { instanceSettings } from "@paperclipai/db";
-import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import type { Db } from "@myrmidon/db";
+import { instanceSettings } from "@myrmidon/db";
+import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export const CLOUD_RUNTIME_IDENTITY_HEADER = "x-paperclip-cloud-runtime-identity";
 export const CLOUD_RUNTIME_IDENTITY_AUDIENCE = "paperclip-runtime-identity/v1";

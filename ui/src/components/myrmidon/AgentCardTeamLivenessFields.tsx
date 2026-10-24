@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { i18n, useTranslation } from "@/i18n";
 import { CollapsibleSection, Field } from "../agent-config-primitives";
-import type { TeamLivenessSettings } from "@paperclipai/shared";
+import type { TeamLivenessSettings } from "@myrmidon/shared";
 import {
   TEAM_LIVENESS_SWITCH_KEYS,
   readTeamLivenessBlock,

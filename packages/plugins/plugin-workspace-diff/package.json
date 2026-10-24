@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/plugin-workspace-diff",
+  "name": "@myrmidon/plugin-workspace-diff",
   "version": "0.1.0",
   "description": "First-party execution workspace Changes tab powered by plugin-local workspace metadata",
   "license": "MIT",
@@ -42,16 +42,16 @@
     "diff"
   ],
   "scripts": {
-    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "prebuild": "pnpm --filter @myrmidon/plugin-sdk ensure-build-deps",
     "build": "tsc && node ./scripts/build-ui.mjs",
     "clean": "rm -rf dist",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "typecheck": "pnpm --filter @myrmidon/plugin-sdk ensure-build-deps && tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "prepack": "rm -f package.dev.json && cp package.json package.dev.json && node ../../../scripts/generate-plugin-package-json.mjs",
     "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
   },
   "dependencies": {
-    "@paperclipai/plugin-sdk": "workspace:*",
+    "@myrmidon/plugin-sdk": "workspace:*",
     "@pierre/diffs": "^1.3.6"
   },
   "devDependencies": {

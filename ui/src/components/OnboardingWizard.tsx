@@ -5,7 +5,7 @@ import { LocalProviderLoginInstructions } from "./AdapterLoginChrome";
 import { useLocalAiLogin } from "./ai-connections/useLocalAiLogin";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { aiProviderForAdapter } from "./ai-connections/AiConnectionField";
-import type { AiConnectionBinding } from "@paperclipai/shared";
+import type { AiConnectionBinding } from "@myrmidon/shared";
 import { storeProviderApiKey } from "../lib/provider-credential";
 import { SavedProviderKeySelect, useSavedProviderKeys } from "./onboarding/SavedProviderKeySelect";
 import { useEffect, useState, useMemo, useRef } from "react";
@@ -17,8 +17,8 @@ import type {
   ClaudeOAuthTokenStatusResponse,
   Environment,
   InstanceSettings,
-} from "@paperclipai/shared";
-import { AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@myrmidon/shared";
 import { useCasteOptionsForCompany, casteLabelFor } from "./myrmidon/castes/useCasteOptions"; // myrmidon(1.6.1 CUSTOM-CASTES C)
 import { AdapterLoginPanel } from "./AgentConfigForm";
 import {
@@ -104,11 +104,11 @@ import {
   selectReusableOnboardingProject,
 } from "../lib/onboarding-launch";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
-import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
-import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
-import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
+import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@myrmidon/adapter-codex-local";
+import { DEFAULT_CURSOR_LOCAL_MODEL } from "@myrmidon/adapter-cursor-local";
+import { DEFAULT_GEMINI_LOCAL_MODEL } from "@myrmidon/adapter-gemini-local";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "@myrmidon/adapter-kimi-local";
+import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@myrmidon/adapter-opencode-local";
 import {
   canGoBackFromOnboardingStep,
   canJumpToOnboardingStep,
