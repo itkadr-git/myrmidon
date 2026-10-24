@@ -257,13 +257,7 @@ describe("myrmidon(UI2) Ui2Decisions screen parity", () => {
     const cached = queryClient.getQueryData(cacheKey);
     expect(cached).toEqual([decisionFixture()]);
   });
-});
 
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  
   it("renders the waiting queue with item types and no duplicate of open decisions", async () => {
     await renderScreen();
 
@@ -306,5 +300,11 @@ async function act(callback: () => void | Promise<void>) {
     expect(container.textContent).toContain("0 waiting");
   });
 });
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
   await result;
 }
