@@ -12819,6 +12819,41 @@ export function heartbeatService(
     void reportRunFailure(db, updated);
   }
 
+  // myrmidon(1.6.6 OPE-8998): a wake request ends with its run. Terminal
+  // statuses were written by many paths (reaper, lease release, deadline,
+  // adapter failure), and the ones that skipped the request left it `claimed`
+  // behind a failed/interrupted run (prod: 438 such rows), where idle pickup
+  // read it as work in flight. Every run status write goes through
+  // setRunStatus / setRunStatusFromLive, so the request is closed here, right
+  // after the run row, and only while it is still queued or claimed.
+  async function closeWakeupOfTerminalRun(run: typeof heartbeatRuns.$inferSelect) {
+    if (!run.wakeupRequestId || !isHeartbeatRunTerminalStatus(run.status)) return;
+    const wakeStatus =
+      run.status === "succeeded" ? "completed" : run.status === "cancelled" ? "cancelled" : "failed";
+    const now = new Date();
+    try {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: wakeStatus,
+          finishedAt: now,
+          updatedAt: now,
+          ...(wakeStatus === "failed" ? { error: run.error ?? `run ${run.status}` } : {}),
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.id, run.wakeupRequestId),
+            inArray(agentWakeupRequests.status, ["queued", "claimed"]),
+          ),
+        );
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), runId: run.id },
+        "could not close the wake request of a terminal run",
+      );
+    }
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -12881,6 +12916,7 @@ export function heartbeatService(
       });
       publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
+      await closeWakeupOfTerminalRun(updated);
     }
 
     return updated;
@@ -12974,6 +13010,7 @@ export function heartbeatService(
       });
       publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
+      await closeWakeupOfTerminalRun(updated);
       return { run: updated, updated: true as const };
     }
 

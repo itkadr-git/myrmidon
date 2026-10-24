@@ -583,6 +583,44 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     expect(live.runId).toBe(liveRun!.id);
   }, 30_000);
 
+  it("myrmidon(1.6.6 OPE-8998): an orphaned run finalized as failed or interrupted closes its wake request", async () => {
+    pinAdmission({ maxConcurrentRuns: 0 });
+    applyRunPrioritySettings(readRunPriorityFromEnv({}));
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Orphan", role: "engineer" });
+    const issueId = await seedIssue(companyId, {
+      title: "Orphaned run",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+    const run = await wakeAndQueue(agentId, issueId);
+    const wakeupRequestId = run.wakeupRequestId!;
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "running", startedAt: new Date(Date.now() - 60 * MINUTE_MS) })
+      .where(eq(heartbeatRuns.id, run.id));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "claimed", claimedAt: new Date(Date.now() - 60 * MINUTE_MS) })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 });
+
+    const storedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run.id))
+      .then((rows) => rows[0]!);
+    expect(["failed", "interrupted"]).toContain(storedRun.status);
+    const wake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0]!);
+    expect(wake.status).toBe("failed");
+    expect(wake.finishedAt).not.toBeNull();
+  }, 30_000);
+
   it("keeps a queued run on a hidden todo startable (Summarizer pattern)", async () => {
     // Hidden todos are the supported summary-slot / status-card pattern: the
     // Summarizer is woken through the regular queue on a hidden todo, so the
