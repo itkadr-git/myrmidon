@@ -761,7 +761,23 @@ async function hasCoveringWake(
         // oldest from August): each one covered its issue forever, so idle
         // pickup counted the agent "already active" and never woke it.
         sql`(
-          ${agentWakeupRequests.status} = 'deferred_issue_execution'
+          (
+            -- myrmidon(1.6.6 OPE-8988): a deferred wake waits for the issue's
+            -- execution lock to clear; it covers the issue only while that lock
+            -- is still held, or briefly while the promotion after release is in
+            -- flight. A deferred wake whose lock is long gone was never promoted
+            -- (OPE-8268) and covered its issue forever (prod 24.10: 10 such, the
+            -- oldest a day old). Parked holds (executionWait) are excluded above.
+            ${agentWakeupRequests.status} = 'deferred_issue_execution'
+            and (
+              exists (
+                select 1 from ${issues} li
+                where li.id::text = ${agentWakeupRequests.payload} ->> 'issueId'
+                  and (li.execution_run_id is not null or li.checkout_run_id is not null)
+              )
+              or ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+            )
+          )
           or exists (
             select 1 from ${heartbeatRuns} hr
             where hr.wakeup_request_id = ${agentWakeupRequests.id}
