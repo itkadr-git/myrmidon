@@ -66,6 +66,17 @@ export function escalatedState(state, agentId) {
   };
 }
 
+/** Pure: only stages escalated to a user at the round limit; plain human reviews are not ours. */
+export function isEscalatedToUser(state) {
+  return Boolean(
+    state &&
+      state.status === "pending" &&
+      state.escalationReason === "review_round_limit" &&
+      state.currentParticipant?.type === "user" &&
+      (state.escalationToParticipant == null || state.escalationToParticipant.type === "user"),
+  );
+}
+
 /** Pure: plan one issue. */
 export function planIssue(row, agents) {
   const state = row.execution_state;
@@ -102,6 +113,8 @@ export function selectSql(only) {
     where i.status = 'in_review'
       and i.execution_state->>'status' = 'pending'
       and i.execution_state->'currentParticipant'->>'type' = 'user'
+      and i.execution_state->>'escalationReason' = 'review_round_limit'
+      and coalesce(i.execution_state->'escalationToParticipant'->>'type', 'user') = 'user'
       ${filter}
     order by i.identifier) t`;
 }
@@ -119,7 +132,7 @@ export async function run({ port, apply, only, snapshotPath, log = console.log }
   const rows = port.query(selectSql(only));
   const plans = [];
   const byCompany = new Map();
-  for (const row of rows) {
+  for (const row of rows.filter((r) => isEscalatedToUser(r.execution_state))) {
     if (!byCompany.has(row.company_id)) {
       byCompany.set(row.company_id, port.query(
         `select coalesce(json_agg(t), '[]'::json) from (select id, name, status, reports_to, paused_at from agents where company_id = ${lit(row.company_id)}) t`,
@@ -151,17 +164,42 @@ export async function run({ port, apply, only, snapshotPath, log = console.log }
   return { plans, applied };
 }
 
+/** Connection settings go through the environment, never through argv (the URL carries the password). */
+export function pgEnvFromUrl(url, base = process.env) {
+  const u = new URL(url);
+  const env = { ...base };
+  for (const k of ["PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE", "PGSSLMODE"]) delete env[k];
+  if (u.hostname) env.PGHOST = decodeURIComponent(u.hostname);
+  if (u.port) env.PGPORT = u.port;
+  if (u.username) env.PGUSER = decodeURIComponent(u.username);
+  if (u.password) env.PGPASSWORD = decodeURIComponent(u.password);
+  const db = decodeURIComponent(u.pathname.replace(/^\//, ""));
+  if (db) env.PGDATABASE = db;
+  const ssl = u.searchParams.get("sslmode");
+  if (ssl) env.PGSSLMODE = ssl;
+  delete env.DATABASE_URL;
+  return env;
+}
+
 export function psqlPort(url) {
+  const env = pgEnvFromUrl(url);
   return {
     query(sql) {
-      const out = execFileSync("psql", [url, "-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-c", sql], { encoding: "utf8" });
+      let out;
+      try {
+        out = execFileSync("psql", ["-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-c", sql], { encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] });
+      } catch (err) {
+        // Never print err.cmd / err.message: they carry the command line.
+        const detail = String(err?.stderr ?? "").trim().split("\n").slice(-3).join(" | ");
+        throw new Error(`psql failed (exit ${err?.status ?? "?"})${detail ? `: ${detail}` : ""}`);
+      }
       const line = out.split("\n").find((l) => l.trim().startsWith("["));
       return line ? JSON.parse(line) : [];
     },
   };
 }
 
-function main(argv) {
+async function main(argv) {
   const apply = argv.includes("--apply");
   const dry = argv.includes("--dry-run");
   if (apply === dry) {
@@ -176,8 +214,15 @@ function main(argv) {
   const arg = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : null; };
   const only = arg("--only")?.split(",").filter(Boolean) ?? null;
   const snapshotPath = apply ? arg("--snapshot") ?? `ope-9031-snapshot-${new Date().toISOString().replace(/[:.]/g, "-")}.json` : null;
-  run({ port: psqlPort(url), apply, only, snapshotPath });
-  return 0;
+  try {
+    const { plans, applied } = await run({ port: psqlPort(url), apply, only, snapshotPath });
+    // An apply that left planned moves undone (state changed) is not a clean run.
+    if (apply && applied !== plans.filter((p) => !p.skipped).length) return 1;
+    return 0;
+  } catch (err) {
+    console.error(`escalate-human-reviews-to-agents: ${err instanceof Error ? err.message : "failed"}`);
+    return 1;
+  }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) process.exit(main(process.argv.slice(2)));
+if (process.argv[1] === fileURLToPath(import.meta.url)) process.exit(await main(process.argv.slice(2)));

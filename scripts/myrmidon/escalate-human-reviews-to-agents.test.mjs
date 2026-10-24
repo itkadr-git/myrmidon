@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildSeniorChain, escalatedState, planIssue, run } from "./escalate-human-reviews-to-agents.mjs";
+import { buildSeniorChain, escalatedState, isEscalatedToUser, pgEnvFromUrl, planIssue, run, selectSql } from "./escalate-human-reviews-to-agents.mjs";
 
 const id = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const USER = "yzDw6KlDhnBeq3EsLzWPtVvtxcvUcFVo";
@@ -14,7 +14,8 @@ const agents = [
 const state = {
   status: "pending", currentStageId: "s", currentParticipant: { type: "user", userId: USER, agentId: null },
   returnAssignee: { type: "agent", agentId: id(4), userId: null },
-  escalationFromParticipant: { type: "agent", agentId: id(3), userId: null }, changesRequestedCount: 3,
+  escalationFromParticipant: { type: "agent", agentId: id(3), userId: null }, escalationReason: "review_round_limit",
+  escalationToParticipant: { type: "user", userId: USER, agentId: null }, changesRequestedCount: 3,
 };
 const row = { id: id(10), identifier: "OPE-1", company_id: id(99), status: "in_review", assignee_agent_id: null,
   assignee_user_id: USER, execution_state: state, project_lead_agent_id: id(5) };
@@ -43,5 +44,24 @@ describe("escalate-human-reviews-to-agents", () => {
     const out = await run({ port, apply: false, snapshotPath: "/nonexistent/should-not-be-written.json", log: () => {} });
     assert.equal(out.applied, 0);
     assert.ok(calls.every((sql) => !/\bupdate issues\b/.test(sql)));
+  });
+  it("leaves a plain human review (no round-limit escalation) alone", async () => {
+    const plain = { ...row, id: id(11), identifier: "OPE-2", execution_state: { ...state, escalationReason: undefined, escalationToParticipant: undefined } };
+    assert.equal(isEscalatedToUser(plain.execution_state), false);
+    assert.equal(isEscalatedToUser(state), true);
+    const calls = [];
+    const port = { query(sql) { calls.push(sql); return /from issues i/.test(sql) ? [plain] : agents; } };
+    const out = await run({ port, apply: true, snapshotPath: null, log: () => {} });
+    assert.equal(out.plans.length, 0);
+    assert.equal(out.applied, 0);
+    assert.ok(calls.every((sql) => !/\bupdate issues\b/.test(sql)));
+  });
+  it("selects only round-limit escalations in SQL", () => {
+    assert.match(selectSql(null), /escalationReason'\s*=\s*'review_round_limit'/);
+  });
+  it("passes the connection through the environment, not argv", () => {
+    const env = pgEnvFromUrl("postgres://u:p%40ss@db.example:5433/mydb?sslmode=require", {});
+    assert.deepEqual([env.PGHOST, env.PGPORT, env.PGUSER, env.PGPASSWORD, env.PGDATABASE, env.PGSSLMODE], ["db.example", "5433", "u", "p@ss", "mydb", "require"]);
+    assert.equal(env.DATABASE_URL, undefined);
   });
 });
