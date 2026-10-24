@@ -39,10 +39,11 @@ describe("metrics self-check probe", () => {
 
     // database too. The bridge fallback and chat-ingress counters are the
     // ninth and tenth: in-process counters with no database behind them.
+    // (the single-route proxy counter of PROCS-1.5 is the ninth board family)
     // The four run scratch families (1.6.6 TMP-HYGIENE) are in-process state
     // too, so they survive a broken database as well.
     // The four remote-site families (1.6.6 REMOTE-SITES-T4) are in-process state as well.
-    expect(result.families_ok).toBe(1 + 8 + 2 + 4 + 4);
+    expect(result.families_ok).toBe(1 + 9 + 2 + 4 + 4);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&

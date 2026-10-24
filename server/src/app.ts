@@ -87,6 +87,7 @@ import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { attentionRoutes } from "./routes/attention.js";
+import { singletonProxyMiddleware, type SingletonProxyOptions } from "./myrmidon/singleton-proxy/index.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
 import { decisionQueueRoutes } from "./routes/decision-queues.js";
@@ -737,6 +738,12 @@ export async function createApp(
      * `false`; the default keeps every existing caller on today's behavior.
      */
     backgroundWork?: boolean;
+    /**
+     * myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy to the
+     * worker. Passed by the `api` role only; omitted (single process, worker)
+     * the app serves every route itself, as before.
+     */
+    singletonProxy?: SingletonProxyOptions | null;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
@@ -793,6 +800,12 @@ export async function createApp(
   // Default is unset → Express trusts nothing, which is the only safe choice
   // when the server may be reachable without a known reverse proxy in front.
   applyTrustProxy(app, parseTrustProxyEnv(process.env.TRUST_PROXY));
+
+  // myrmidon(1.6.6 PROCS-1.5 / OPE-5412): an api process of a split board
+  // forwards the single routes (attention, plugins, bot-container,
+  // workspace-runtime) to the worker. Before the body parsers on purpose — the
+  // request body is streamed through unread. Absent in the single process.
+  if (opts.singletonProxy) app.use(singletonProxyMiddleware(opts.singletonProxy));
 
   app.use(
     COMPANY_IMPORT_API_PATH,
