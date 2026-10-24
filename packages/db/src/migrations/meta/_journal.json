@@ -2466,6 +2466,13 @@
       "when": 1792395514000,
       "tag": "0414_fleet_site_health_move_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 415,
+      "version": "7",
+      "when": 1792830000000,
+      "tag": "0415_preserve_migration_columns",
+      "breakpoints": true
     }
   ]
 }
