@@ -1,0 +1,10 @@
+adapters/claude-local/config-fields.tsx
+adapters/codex-local/config-fields.tsx
+adapters/cursor/config-fields.tsx
+adapters/gemini-local/config-fields.tsx
+adapters/grok-local/config-fields.tsx
+adapters/hermes-gateway/config-fields.tsx
+adapters/http/config-fields.tsx
+adapters/kimi-local/config-fields.tsx
+adapters/omp-local/config-fields.tsx
+adapters/openclaw-gateway/config-fields.tsx

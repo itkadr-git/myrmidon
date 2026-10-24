@@ -189,6 +189,31 @@ describe("prometheus exposition format", () => {
     expect(idle).toContain('myrmidon_chat_ingress_total{path="direct"} 0');
   });
 
+  // myrmidon(1.6.6 TMP-HYGIENE): the run scratch janitor volume.
+  it("renders the run scratch volume, zero included, and no samples when unread", () => {
+    const read = renderMetricsText(
+      snapshot({
+        runScratch: {
+          removedDirsTotal: 2,
+          removedBytesTotal: 2048,
+          remainingDirs: 0,
+          remainingBytes: 0,
+          lastSweepAt: "2026-10-03T12:00:00.000Z",
+        },
+      }),
+    );
+    expect(read).toContain("# TYPE myrmidon_run_scratch_removed_bytes_total counter");
+    expect(read).toContain("\nmyrmidon_run_scratch_removed_dirs_total 2\n");
+    expect(read).toContain("\nmyrmidon_run_scratch_removed_bytes_total 2048\n");
+    expect(read).toContain("# TYPE myrmidon_run_scratch_remaining_bytes gauge");
+    expect(read).toContain("\nmyrmidon_run_scratch_remaining_dirs 0\n");
+    expect(read).toContain("\nmyrmidon_run_scratch_remaining_bytes 0\n");
+
+    const unread = renderMetricsText(snapshot());
+    expect(unread).toContain("# HELP myrmidon_run_scratch_remaining_bytes ");
+    expect(unread).not.toContain("\nmyrmidon_run_scratch_remaining_bytes ");
+  });
+
   it("renders the ingress family without samples when the counter was not read", () => {
     const text = renderMetricsText(snapshot());
 

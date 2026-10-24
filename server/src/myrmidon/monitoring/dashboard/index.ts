@@ -4,7 +4,7 @@
 // clients and the aggregation service. Read-only against both sources; secret
 // values are resolved per request and never leave the process.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { monitoringDashboardRoutes } from "./routes.js";
 
 export {

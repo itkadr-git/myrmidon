@@ -6,7 +6,7 @@ import {
   type ModelMenuCatalogModel,
   type ModelMenuSettings,
   type ModelMenuSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import type { LogActivityInput } from "../../services/activity-log.js";
 import type { ModelMenuAdapterType, ModelMenuView } from "./state.js";

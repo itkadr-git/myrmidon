@@ -7,7 +7,7 @@ import type {
   CompanyPortabilityExportResult,
   CompanyPortabilityManifest,
   Project,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { useNavigate, useLocation } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -59,6 +59,7 @@ import {
   FRONTMATTER_FIELD_LABELS,
   FileTree,
 } from "../components/FileTree";
+import { i18n, useTranslation } from "@/i18n";
 
 /**
  * Extract the set of agent/project/task slugs that are "checked" based on
@@ -541,9 +542,10 @@ function ExportPreviewPane({
   orgChartPreviewUrl?: string;
   onSkillClick?: (skill: string) => void;
 }) {
+  const { t } = useTranslation();
   if (!selectedFile || content === null) {
     return (
-      <EmptyState icon={Package} message="Select a file to preview its contents." />
+      <EmptyState icon={Package} message={t("area.settings-company.company-export.selectAFileToPreview")} />
     );
   }
 
@@ -580,7 +582,7 @@ function ExportPreviewPane({
           </pre>
         ) : (
           <div className="rounded-lg border border-border bg-accent/10 px-4 py-3 text-sm text-muted-foreground">
-            Binary asset preview is not available for this file type.
+            {t("area.settings-company.company-export.binaryAssetPreviewIsNot")}
           </div>
         )}
       </div>
@@ -626,10 +628,11 @@ function isAbortError(error: unknown): boolean {
 }
 
 function previewErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Failed to load export data.";
+  return error instanceof Error ? error.message : i18n.t("area.settings-company.company-export.failedToLoadExportData");
 }
 
 export function CompanyExport() {
+  const { t } = useTranslation();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -737,9 +740,9 @@ export function CompanyExport() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Export" },
+      { label: selectedCompany?.name ?? t("area.settings-company.company-export.organization"), href: "/dashboard" },
+      { label: t("area.settings-company.company-export.settings"), href: "/company/settings" },
+      { label: t("area.settings-company.company-export.export") },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
@@ -780,7 +783,7 @@ export function CompanyExport() {
       if (request.requestId !== previewRequestIdRef.current || isAbortError(err)) return;
       pushToast({
         tone: "error",
-        title: "Export failed",
+        title: t("area.settings-company.company-export.exportFailed"),
         body: previewErrorMessage(err),
       });
     },
@@ -814,15 +817,15 @@ export function CompanyExport() {
       downloadZip(result, resultCheckedFiles, result.files);
       pushToast({
         tone: "success",
-        title: "Export downloaded",
-        body: `${resultCheckedFiles.size} file${resultCheckedFiles.size === 1 ? "" : "s"} exported as ${result.rootPath}.zip`,
+        title: t("area.settings-company.company-export.exportDownloaded"),
+        body: t("area.settings-company.company-export.exportedAs", { count: resultCheckedFiles.size, path: `${result.rootPath}.zip` }),
       });
     },
     onError: (err) => {
       pushToast({
         tone: "error",
-        title: "Export failed",
-        body: err instanceof Error ? err.message : "Failed to build export package.",
+        title: t("area.settings-company.company-export.exportFailed"),
+        body: err instanceof Error ? err.message : t("area.settings-company.company-export.failedToBuildExportPackage"),
       });
     },
   });
@@ -1028,7 +1031,7 @@ export function CompanyExport() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Package} message="Select an organization to export." />;
+    return <EmptyState icon={Package} message={t("area.settings-company.company-export.selectAnOrganizationToExport")} />;
   }
 
   if (exportPreviewMutation.isPending && !exportData) {
@@ -1039,9 +1042,9 @@ export function CompanyExport() {
     return (
       <EmptyState
         icon={Package}
-        title="Export preview cancelled"
-        message="The preview request was cancelled. Your export settings are unchanged."
-        action="Retry preview"
+        title={t("area.settings-company.company-export.exportPreviewCancelled")}
+        message={t("area.settings-company.company-export.thePreviewRequestWasCancelled")}
+        action={t("area.settings-company.company-export.retryPreview")}
         onAction={startPreviewRequest}
         hideActionIcon
       />
@@ -1052,10 +1055,10 @@ export function CompanyExport() {
     return (
       <EmptyState
         icon={Package}
-        title="Export preview failed"
+        title={t("area.settings-company.company-export.exportPreviewFailed")}
         message={previewErrorMessage(exportPreviewMutation.error)}
-        description="Retry the preview. You do not need to reload this page."
-        action="Retry preview"
+        description={t("area.settings-company.company-export.retryThePreviewYouDo")}
+        action={t("area.settings-company.company-export.retryPreview")}
         onAction={startPreviewRequest}
         hideActionIcon
       />
@@ -1066,9 +1069,9 @@ export function CompanyExport() {
     return (
       <EmptyState
         icon={Package}
-        title="Export preview unavailable"
-        message="No export preview is loaded."
-        action="Load preview"
+        title={t("area.settings-company.company-export.exportPreviewUnavailable")}
+        message={t("area.settings-company.company-export.noExportPreviewIsLoaded")}
+        action={t("area.settings-company.company-export.loadPreview")}
         onAction={startPreviewRequest}
         hideActionIcon
       />
@@ -1088,15 +1091,15 @@ export function CompanyExport() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-4 text-sm">
             <span className="font-medium">
-              {selectedCompany?.name ?? "Organization"} export
+              {t("area.settings-company.company-export.exportTitle", { name: selectedCompany?.name ?? t("area.settings-company.company-export.organization") })}
             </span>
             <span className="text-muted-foreground">
-              Exporting {selectedCount.toLocaleString()} of {totalFiles.toLocaleString()} file{totalFiles === 1 ? "" : "s"}
+              {t("area.settings-company.company-export.exportingOf", { count: totalFiles, selected: selectedCount.toLocaleString(), total: totalFiles.toLocaleString() })}
               {selectedCount > 0 && ` (~${formatBytes(estimatedZipBytes)})`}
             </span>
             {warnings.length > 0 && (
               <span className="text-amber-500">
-                {warnings.length} warning{warnings.length === 1 ? "" : "s"}
+                {t("area.settings-company.company-export.warningsCount", { count: warnings.length })}
               </span>
             )}
           </div>
@@ -1113,8 +1116,8 @@ export function CompanyExport() {
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {downloadMutation.isPending
-              ? "Building export..."
-              : `Export ${selectedCount.toLocaleString()} file${selectedCount === 1 ? "" : "s"}`}
+              ? t("area.settings-company.company-export.buildingExport")
+              : t("area.settings-company.company-export.exportButton", { count: selectedCount, value: selectedCount.toLocaleString() })}
           </Button>
         </div>
       </div>
@@ -1131,7 +1134,7 @@ export function CompanyExport() {
       {/* Export fidelity: data the bundle will not carry */}
       {fidelityReport && fidelityReport.warnings.length > 0 && (
         <div className="mx-5 mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
-          <h3 className="mb-1.5 text-xs font-medium">Not included in this export</h3>
+          <h3 className="mb-1.5 text-xs font-medium">{t("area.settings-company.company-export.notIncludedInThisExport")}</h3>
           {fidelityReport.warnings.map((warning) => (
             <div
               key={warning.code}
@@ -1150,11 +1153,11 @@ export function CompanyExport() {
       <div className="grid gap-4 xl:h-(--sz-calc-30) xl:grid-cols-(--gtc-25) xl:gap-0">
         <aside className="flex max-h-(--sz-24rem) flex-col overflow-hidden border-b border-border xl:max-h-none xl:border-b-0 xl:border-r">
           <div className="border-b border-border px-4 py-3 shrink-0">
-            <h2 className="text-base font-semibold">Package files</h2>
+            <h2 className="text-base font-semibold">{t("area.settings-company.company-export.packageFiles")}</h2>
           </div>
           <div className="border-b border-border px-4 py-3 shrink-0">
-            <h3 className="mb-2 text-xs font-medium text-muted-foreground">What to include</h3>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5" role="group" aria-label="What to include">
+            <h3 className="mb-2 text-xs font-medium text-muted-foreground">{t("area.settings-company.company-export.whatToInclude")}</h3>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5" role="group" aria-label={t("area.settings-company.company-export.whatToInclude")}>
               {EXPORT_CATEGORY_ORDER.map((key) => {
                 const isAttachments = key === "attachments";
                 const disabled = isAttachments && !isAttachmentsCategoryEnabled(categories);
@@ -1171,7 +1174,7 @@ export function CompanyExport() {
                     )}
                     title={
                       disabled
-                        ? "Attachments travel with tasks and routines; re-enable one of them to include attachments."
+                        ? t("area.settings-company.company-export.attachmentsTravelWithTasksAnd")
                         : undefined
                     }
                   >
@@ -1192,7 +1195,7 @@ export function CompanyExport() {
               })}
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              Task and routine history is opt-in because it can be large.
+              {t("area.settings-company.company-export.taskAndRoutineHistoryIs")}
             </p>
           </div>
           <div className="border-b border-border px-3 py-2 shrink-0">
@@ -1202,7 +1205,7 @@ export function CompanyExport() {
                 type="text"
                 value={treeSearch}
                 onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="Search files..."
+                placeholder={t("area.settings-company.company-export.searchFiles")}
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 data-page-search-target="true"
               />
@@ -1226,7 +1229,7 @@ export function CompanyExport() {
                   onClick={() => setTaskLimit((prev) => prev + TASKS_PAGE_SIZE)}
                   className="w-full rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent/30 hover:text-foreground transition-colors"
                 >
-                  Show more tasks ({visibleTaskChildren} of {totalTaskChildren})
+                  {t("area.settings-company.company-export.showMoreTasks", { shown: visibleTaskChildren, total: totalTaskChildren })}
                 </button>
               </div>
             )}
@@ -1251,14 +1254,14 @@ export function CompanyExport() {
               <div className="flex max-w-md flex-col items-center gap-3">
                 <LoaderCircle className="h-6 w-6 animate-spin text-muted-foreground" />
                 <div>
-                  <p className="text-sm font-medium">Updating export preview…</p>
+                  <p className="text-sm font-medium">{t("area.settings-company.company-export.updatingExportPreview")}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Large task histories can take a minute. You can untick Tasks or cancel this update.
+                    {t("area.settings-company.company-export.largeTaskHistoriesCanTake")}
                   </p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={handleCancelPreview}>
                   <X />
-                  Cancel update
+                  {t("area.settings-company.company-export.cancelUpdate")}
                 </Button>
               </div>
             </div>
@@ -1269,14 +1272,14 @@ export function CompanyExport() {
             >
               <div className="flex max-w-md flex-col items-center gap-3">
                 <div>
-                  <p className="text-sm font-medium">Preview update cancelled</p>
+                  <p className="text-sm font-medium">{t("area.settings-company.company-export.previewUpdateCancelled")}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    The previous preview remains available. Retry when you are ready.
+                    {t("area.settings-company.company-export.thePreviousPreviewRemainsAvailable")}
                   </p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={startPreviewRequest}>
                   <RotateCcw />
-                  Retry preview
+                  {t("area.settings-company.company-export.retryPreview")}
                 </Button>
               </div>
             </div>
@@ -1288,14 +1291,14 @@ export function CompanyExport() {
             >
               <div className="flex max-w-md flex-col items-center gap-3">
                 <div>
-                  <p className="text-sm font-medium text-destructive">Export preview failed</p>
+                  <p className="text-sm font-medium text-destructive">{t("area.settings-company.company-export.exportPreviewFailed")}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {previewErrorMessage(exportPreviewMutation.error)}
                   </p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={startPreviewRequest}>
                   <RotateCcw />
-                  Retry preview
+                  {t("area.settings-company.company-export.retryPreview")}
                 </Button>
               </div>
             </div>

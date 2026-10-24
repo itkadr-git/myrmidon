@@ -8,15 +8,15 @@
 // run, so new weights reach the queue without a restart. Both sweeps read the
 // in-force settings fresh on every pass (`currentRunPrioritySettings`).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   mergeRunPrioritySettings,
   type RunPriorityPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { applyRunPrioritySettings, resolveRunPriority, type RunPriorityView } from "./state.js";
-import type { RunPrioritySettings } from "@paperclipai/shared";
+import type { RunPrioritySettings } from "@myrmidon/shared";
 
 /** Who changed the settings, for the activity log. */
 export interface RunPriorityActor {

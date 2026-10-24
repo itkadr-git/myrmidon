@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   approvals,
@@ -12,12 +12,12 @@ import {
   issueRecoveryActions,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   AttentionArchiveManifestEntry,
   AttentionItem,
   AttentionSourceKind,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import type { AuthorizationActor } from "./authorization.js";

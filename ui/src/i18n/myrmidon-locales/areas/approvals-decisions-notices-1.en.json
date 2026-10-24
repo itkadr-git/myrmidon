@@ -1,0 +1,318 @@
+{
+  "area": {
+    "approvals-decisions-notices-1": {
+      "approval-card": {
+        "requestedBy": "Requested by",
+        "createdAgo": "Approval request created {{time}}",
+        "decisionNote": "Decision note.",
+        "approving": "Approving...",
+        "approve": "Approve",
+        "rejecting": "Rejecting...",
+        "reject": "Reject",
+        "viewDetails": "View details",
+        "status": {
+          "approved": "Approved",
+          "rejected": "Rejected",
+          "revision_requested": "Revision requested",
+          "pending": "Pending"
+        }
+      },
+      "approval-payload": {
+        "typeLabel": {
+          "hire_agent": "Hire Agent",
+          "approve_ceo_strategy": "CEO Strategy",
+          "budget_override_required": "Budget Override",
+          "request_board_approval": "Board Approval"
+        },
+        "skills": "Skills",
+        "name": "Name",
+        "role": "Role",
+        "title": "Title",
+        "icon": "Icon",
+        "capabilities": "Capabilities",
+        "adapter": "Adapter",
+        "scope": "Scope",
+        "window": "Window",
+        "metric": "Metric",
+        "summary": "Summary",
+        "recommendedAction": "Recommended action",
+        "onApproval": "On approval",
+        "risks": "Risks",
+        "proposedComment": "Proposed comment",
+        "limitObserved": "Limit {{limit}} · Observed {{observed}}"
+      },
+      "execution-blocker-notice": {
+        "recoveryLabel": "Task recovery",
+        "autoRecoveryStopped": "Automatic recovery of this task stopped."
+      },
+      "decision-resolver": {
+        "loading": "Loading decision…",
+        "unavailable": "This decision is no longer available — it may have been resolved elsewhere."
+      },
+      "decision-queue-rail": {
+        "queuesLabel": "Decision queues",
+        "all": "All",
+        "recentActivity": "Recent activity"
+      },
+      "decision-date-chips": {
+        "range": {
+          "all": "All",
+          "today": "Today",
+          "yesterday": "Yesterday",
+          "last_7_days": "Last 7 days",
+          "this_month": "This month"
+        },
+        "custom": "Custom",
+        "from": "From",
+        "to": "To",
+        "clear": "Clear"
+      },
+      "decisions-toolbar": {
+        "count_one": "{{count}} decision",
+        "count_other": "{{count}} decisions",
+        "filter": "Filter",
+        "clear": "Clear",
+        "type": "Type",
+        "severity": "Severity",
+        "project": "Project",
+        "workspace": "Workspace",
+        "noProject": "No project",
+        "noWorkspace": "No workspace",
+        "groupBy": {
+          "none": "None",
+          "date": "Date",
+          "type": "Type",
+          "project": "Project",
+          "severity": "Severity"
+        },
+        "sortOrder": {
+          "newest": "Newest first",
+          "oldest": "Oldest first"
+        },
+        "severityLevel": {
+          "critical": "Critical",
+          "high": "High",
+          "medium": "Medium",
+          "low": "Low"
+        }
+      },
+      "decision-triage-strip": {
+        "snoozeOneHour": "1 hour",
+        "snoozeFourHours": "4 hours",
+        "snoozeTomorrow": "Tomorrow",
+        "snoozeNextWeek": "Next week",
+        "expired": "Expired",
+        "expiresInMinutes": "Expires in {{value}} min",
+        "expiresInHours": "Expires in {{value}} h",
+        "expiresInDays": "Expires in {{value}} d",
+        "tryAgain": "Please try again.",
+        "errSetDecideBy": "Could not set when to decide",
+        "errSnooze": "Could not snooze",
+        "errAddToQueue": "Could not add to queue",
+        "errRemoveFromQueue": "Could not remove from queue",
+        "errRouteToAgent": "Could not ask that agent for a recommendation",
+        "errCreateQueue": "Could not create queue",
+        "noLinkedTaskError": "This decision has no linked task to route from.",
+        "routeCommentOnTask": "{{mention}} — could you look at this decision on {{task}}, prepare a recommendation, and re-surface it on the decisions desk? (routed from the desk)",
+        "routeComment": "{{mention}} — could you look at this decision, prepare a recommendation, and re-surface it on the decisions desk? (routed from the desk)",
+        "asked": "Asked {{name}} for a recommendation",
+        "whenToDecide": "When to decide",
+        "decideBy": {
+          "today": "Today",
+          "this_week": "This week",
+          "whenever": "Whenever"
+        },
+        "pickDate": "Pick date",
+        "queues": "Queues",
+        "removeFromQueue": "Remove from {{title}}",
+        "snoozedUntil": "Snoozed until {{date}}",
+        "clear": "Clear",
+        "snooze": "Snooze",
+        "noLinkedTask": "No linked task to ask about",
+        "queue": "Queue",
+        "newQueuePlaceholder": "New queue name…",
+        "create": "Create",
+        "noOtherQueues": "No other queues yet.",
+        "newQueue": "New queue…",
+        "askAgent": "Ask agent for recommendation"
+      },
+      "decision-card": {
+        "unknownStatus": "unknown",
+        "issueFallback": "issue {{id}}",
+        "blockerCount_one": "{{count}} blocker",
+        "blockerCount_other": "{{count}} blockers",
+        "issueCount_one": "{{count}} issue",
+        "issueCount_other": "{{count}} issues",
+        "effect": {
+          "comment": "Comment on {{target}}",
+          "create": "Create issue “{{title}}” under {{parent}}",
+          "setStatus": "Set {{target}} to {{status}}",
+          "reassign": "Reassign {{target}}",
+          "unblock": "Unblock {{target}} — remove {{blockers}}",
+          "cancelTree": "Cancel {{target}} and its sub-tree ({{issues}})",
+          "apply": "Apply effect"
+        },
+        "failure": {
+          "denied": "blocked by the permission boundary (fail-closed)",
+          "invalidReference": "a referenced issue no longer exists",
+          "targetChanged": "the target changed since this was proposed",
+          "executionFailed": "the effect errored while running",
+          "generic": "the effect could not run"
+        },
+        "result": {
+          "skipped": "Skipped {{target}} — target changed since proposal",
+          "failed": "Failed on {{target}} — {{cause}}",
+          "running": "Running on {{target}}…",
+          "commented": "Commented on {{target}}",
+          "created": "Created {{issue}}",
+          "createdNew": "Created a new issue",
+          "setStatus": "Set {{target}} to {{status}}",
+          "reassigned": "Reassigned {{target}}",
+          "removedBlockers": "Removed {{blockers}} from {{target}}",
+          "cancelledIssues": "Cancelled {{issues}} under {{target}}",
+          "applied": "Applied effect on {{target}}"
+        },
+        "badge": {
+          "pending": "Pending",
+          "expired": "Expired",
+          "cancelled": "Cancelled",
+          "dismissed": "Dismissed",
+          "decided": "Decided",
+          "partial": "Partial",
+          "failed": "Failed"
+        },
+        "destructive": "Destructive",
+        "proposedBy": "Proposed by",
+        "anAgent": "an agent",
+        "whileRunning": "while running",
+        "appliesTo": "applies to",
+        "viewRun": "view run",
+        "staleTitle_one": "{{count}} target changed since this was proposed",
+        "staleTitle_other": "{{count}} targets changed since this was proposed",
+        "changed": "changed",
+        "staleHint": "Options that require an unchanged target are disabled below.",
+        "blockedStale": "Blocked · stale",
+        "cancelsTree": "This cancels an entire issue tree",
+        "willBeCancelled_one": "{{count}} issue will be cancelled:",
+        "willBeCancelled_other": "{{count}} issues will be cancelled:",
+        "cancelsAllBelow": "This issue and every sub-issue beneath it will be cancelled.",
+        "typeToConfirm": "Type <token>{{token}}</token> to confirm.",
+        "confirmInputLabel": "Type the issue identifier to confirm",
+        "cancelIssues_one": "Cancel {{count}} issue",
+        "cancelIssues_other": "Cancel {{count}} issues",
+        "cancelTree": "Cancel tree",
+        "notNow": "Not now?",
+        "dismissNoEffects": "Dismiss — no effects",
+        "windowClosed": "The decision window closed",
+        "expired": {
+          "targetGone": "A target issue was cancelled before this was decided.",
+          "targetCompleted": "All target issues were completed before this was decided.",
+          "noResponse": "No response before the expiry deadline.",
+          "proposerWoken": "The proposer was re-woken."
+        },
+        "withdrawn": "This decision was withdrawn by the proposer before a response.",
+        "dismissedNoEffects": "Dismissed — no effects were run.",
+        "partialWarning": "Some effects may already have been applied. Review the results before asking the proposer to re-propose."
+      },
+      "attention-queue-row": {
+        "snoozeOneHour": "1 hour",
+        "snoozeFourHours": "4 hours",
+        "snoozeTomorrowMorning": "Tomorrow morning",
+        "snoozeNextWeek": "Next week",
+        "decideBy": {
+          "today": "Today",
+          "this_week": "This week",
+          "whenever": "Whenever"
+        },
+        "collapse": "Collapse decision",
+        "expand": "Expand decision",
+        "seeLess": "See less",
+        "seeMore": "See more",
+        "open": "Open",
+        "restore": "Restore",
+        "setBy": "Set by {{who}}",
+        "reappearsAt": "Reappears {{date}}",
+        "reappears": "Reappears {{when}}",
+        "rowActions": "Row actions",
+        "openSource": "Open source",
+        "missingIssue": "Missing issue reference for this decision.",
+        "completeInDetail": "This decision must be completed from its detail view.",
+        "decisionActions": "Decision actions",
+        "toast": {
+          "couldNot": {
+            "approved": "Could not approve",
+            "rejected": "Could not reject",
+            "revision": "Could not send for revision",
+            "confirmed": "Could not confirm"
+          },
+          "approval": {
+            "approved": "Approval approved",
+            "rejected": "Approval rejected",
+            "revision": "Approval sent for revision",
+            "confirmed": "Approval confirmed"
+          },
+          "joinRequest": {
+            "approved": "Join request approved",
+            "rejected": "Join request rejected",
+            "revision": "Join request sent for revision",
+            "confirmed": "Join request confirmed"
+          },
+          "holdLifted": "Execution hold lifted — task resumed",
+          "confirmationAccepted": "Confirmation accepted",
+          "confirmationDeclined": "Confirmation declined"
+        },
+        "moreImages": "{{n}} more",
+        "viewIssue": "View issue",
+        "snooze": "Snooze",
+        "custom": "Custom",
+        "snoozeUntil": "Snooze until…",
+        "anAgent": "an agent",
+        "you": "you",
+        "soon": "soon",
+        "inMinutes": "in {{value}} min",
+        "inHours": "in {{value}} h",
+        "inDays": "in {{value}} d",
+        "decisionNotePlaceholder": "Optional decision note…",
+        "requestRevision": "Request revision",
+        "reject": "Reject",
+        "approve": "Approve",
+        "sourceKind": {
+          "approval": "Approval",
+          "decision": "Decision",
+          "issue_thread_interaction": "Decision requested",
+          "join_request": "Join request",
+          "recovery_action": "Recovery",
+          "productivity_review": "Task",
+          "blocker_attention": "Blocked dependency",
+          "review": "Review",
+          "failed_run": "Failed run",
+          "budget_alert": "Budget",
+          "agent_error_alert": "Agent error",
+          "stack_update": "Stack update",
+          "model_fallback_alert": "Model fallback",
+          "bot_media_mcp": "Media not connected",
+          "stale_block": "Stale block lifted",
+          "host_disk_alert": "Host disk",
+          "wip_limit": "WIP limit",
+          "bot_disk_lifecycle": "Bot disk",
+          "bot_disk_quota": "Bot disk quota",
+          "bot_disk_archive": "Bot disk archive",
+          "bot_image_stale": "Bot image",
+          "review_routing": "Review routing",
+          "prompt_budget_alert": "Prompt budget",
+          "pause_guard": "Forgotten pauses",
+          "foraging_limit": "Learning limit",
+          "execution_hold": "Execution hold",
+          "replay_blocked": "Replay blocked",
+          "owner_pending_card": "Owner card",
+          "secret_off_run_reads": "Off-run secret reads",
+          "secret_off_run_grant_expiring": "Off-run secret grant expiring",
+          "empty_model_catalog": "Model catalog",
+          "queue_stall": "Queue stall",
+          "codex_pool_alert": "Codex pool alert",
+          "issue_monitor_overdue": "Overdue issue monitor"
+        }
+      }
+    }
+  }
+}

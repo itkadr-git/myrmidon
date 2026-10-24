@@ -10,11 +10,11 @@
 
 import { sql, and, asc, eq, inArray, isNull, isNotNull, exists, notExists, notInArray, lt, or } from "drizzle-orm";
 import { isUniqueViolation } from "../../db-errors.js";
-import { issueClaims, issues, heartbeatRuns, type Db } from "@paperclipai/db";
+import { issueClaims, issues, heartbeatRuns, type Db } from "@myrmidon/db";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   type SwarmClaimLease,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** A lease row reshaped into the shared contract both parts order and render. */
 function toLease(row: typeof issueClaims.$inferSelect): SwarmClaimLease {

@@ -7,7 +7,7 @@ import {
   issues,
   toolConnections,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { and, eq, sql } from "drizzle-orm";
 import {
   logActivity,

@@ -1,4 +1,4 @@
-import type { Agent } from "@paperclipai/plugin-sdk";
+import type { Agent } from "@myrmidon/plugin-sdk";
 
 /**
  * Bank resolution for the forked hindsight plugin.

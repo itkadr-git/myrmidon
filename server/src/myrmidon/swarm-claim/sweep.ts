@@ -37,7 +37,7 @@
 // row for the next pass.
 
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { companies, agentWakeupRequests, heartbeatRuns, issues, issueClaims, type Db } from "@paperclipai/db";
+import { companies, agentWakeupRequests, heartbeatRuns, issues, issueClaims, type Db } from "@myrmidon/db";
 import { wakeNotParkedOnExecutionHold } from "../settled-holds/ready-predicate.js";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
@@ -49,7 +49,7 @@ import {
   resolveSwarmClaimSettings,
   type SwarmClaimSettings,
   type SwarmClaimLease,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
 import { SWARM_CLAIM_SWEEP_FEATURE_KEY } from "../features/reporters.js"; // myrmidon(FEATURES)

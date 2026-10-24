@@ -2,8 +2,8 @@ import {
   SETTING_DEFAULTS_ENV_KEY,
   parseSettingDefaults,
   type OperatorSettingDefaults,
-} from "@paperclipai/shared";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+} from "@myrmidon/shared";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import { logger } from "../middleware/logger.js";
 
 export { SETTING_DEFAULTS_ENV_KEY };

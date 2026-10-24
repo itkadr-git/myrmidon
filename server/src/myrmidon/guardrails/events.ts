@@ -16,8 +16,8 @@
 // (input injection) and later parts reuse recordGuardrailEvent directly.
 
 import { desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { guardrailEvents } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { guardrailEvents } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import { maskSecretsInText } from "../secret-masking.js";
 import {

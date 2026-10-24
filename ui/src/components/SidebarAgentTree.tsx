@@ -10,7 +10,7 @@ import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "../lib/utils";
 import type { AgentTreeNode } from "../lib/agent-tree";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@myrmidon/shared";
 
 export interface SidebarAgentTreeRowProps {
   nodes: AgentTreeNode[];

@@ -1,4 +1,4 @@
-import { requiresExecutionReconciliation } from "@paperclipai/shared";
+import { requiresExecutionReconciliation } from "@myrmidon/shared";
 import { useMemo, useState } from "react";
 import type {
   Agent,
@@ -8,7 +8,7 @@ import type {
   IssueRecoveryActionOutcome,
   IssueRecoveryActionStatus,
   IssueScheduledRetry,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   Eye,
   GitBranch,

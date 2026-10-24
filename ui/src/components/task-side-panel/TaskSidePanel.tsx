@@ -12,7 +12,7 @@ import {
   isArtifactReviewDocumentKey,
   type Issue,
   type IssueDocument,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   Box,
   FileCode2,
@@ -429,7 +429,7 @@ export function TaskSidePanel({
   useEffect(() => {
     if (activeTab) return;
     window.requestAnimationFrame(() => {
-      bodyRef.current?.querySelector<HTMLInputElement>(`input[aria-label="${t("area.issue-properties-panels-3.side-panel-launcher.placeholder")}"]`)?.focus();
+      bodyRef.current?.querySelector<HTMLInputElement>("input[data-side-panel-launcher-input]")?.focus();
     });
   }, [activeTab, t]);
 

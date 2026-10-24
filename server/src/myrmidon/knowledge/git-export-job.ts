@@ -12,8 +12,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Db } from "@paperclipai/db";
-import { companies } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { companies } from "@myrmidon/db";
 import { isNotNull } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { createKnowledgeModule } from "./service.js";

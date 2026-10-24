@@ -1,4 +1,4 @@
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 
 export function shouldLoadWorkingDirectoryEnv(input: {
   cwdEnvExists: boolean;

@@ -5,7 +5,7 @@ import {
   capabilityEvalSuiteLookup,
 } from "@paperclip-runner-local/capability";
 
-import "@paperclipai/paperclip-runner/styles.css";
+import "@myrmidon/paperclip-runner/styles.css";
 import "./explorer.css";
 
 import evalReport from "virtual:capability-eval-report";
