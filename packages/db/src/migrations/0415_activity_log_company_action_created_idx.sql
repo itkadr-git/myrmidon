@@ -23,11 +23,16 @@
 -- (activity.latest); it is bounded by company ids, one action and a 7-day
 -- lookback, so the index shape matches the where-clause prefix exactly.
 --
--- Build cost on the production table (1.15M rows, 1.5 GB): a btree over the
--- whole table. Drizzle migrations run inside one transaction, so
--- CONCURRENTLY is unavailable — the same accepted trade-off as 0307/0308/
--- 0381. The migration runs at deploy time before the server starts serving
--- the features report; expect an index build on the order of tens of
--- seconds to ~2 minutes on the production instance, once, forward-only.
--- paperclip:migration-safety-ignore large-create-index-not-concurrently: Drizzle migrations run transactionally, so CONCURRENTLY is unavailable; this forward-only index is required to serve the feature-health activity_log lookups (1.6.6 board latency defect).
+-- Production rollout follows the 0307/0308 pattern: the index is created by
+-- hand on the production board database BEFORE the deploy (ADM_ACTION,
+-- pg_get_indexdef-identical statement, see the PR description):
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS "activity_log_company_action_created_idx"
+--     ON "activity_log" USING btree ("company_id","action","created_at" DESC);
+-- CONCURRENTLY takes no SHARE lock, so activity_log writes continue during
+-- the build. This migration is then a no-op on production (CREATE INDEX IF
+-- NOT EXISTS keeps the hand-made index; the deploy-time lock window is zero)
+-- and only builds the index on a fresh installation where the table is
+-- small/empty. The deploy gate (<50 ms for the outage query) is measured
+-- after the manual CONCURRENTLY build, before the rollout.
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: Drizzle migrations run transactionally, so CONCURRENTLY is unavailable; the index is created by hand on production before the deploy (0307/0308 pattern) and this statement is a no-op there.
 CREATE INDEX IF NOT EXISTS "activity_log_company_action_created_idx" ON "activity_log" USING btree ("company_id","action","created_at" DESC);
