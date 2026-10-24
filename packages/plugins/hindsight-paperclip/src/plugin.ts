@@ -1,5 +1,5 @@
-import { definePlugin } from "@paperclipai/plugin-sdk";
-import type { PaperclipPlugin, ScopeKey } from "@paperclipai/plugin-sdk";
+import { definePlugin } from "@myrmidon/plugin-sdk";
+import type { PaperclipPlugin, ScopeKey } from "@myrmidon/plugin-sdk";
 import { formatMemories, HindsightClient, type FetchLike } from "./client.js";
 import { resolveBank } from "./bank.js";
 

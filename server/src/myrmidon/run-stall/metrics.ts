@@ -3,8 +3,8 @@
 // is a query over the runs the sweep already marks with its own error code.
 
 import { and, count, eq, gte, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { heartbeatRuns } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { heartbeatRuns } from "@myrmidon/db";
 import { RUN_STALL_ERROR_CODE } from "./constants.js";
 
 /** Default window of the health metric: what happened in the last day. */

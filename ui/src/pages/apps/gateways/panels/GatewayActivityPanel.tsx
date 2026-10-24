@@ -1,24 +1,26 @@
 import { useMemo, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import type { ToolMcpGatewayWithTokens, ToolRedactedValueSummary } from "@paperclipai/shared";
+import { Trans } from "react-i18next";
+import type { ToolMcpGatewayWithTokens, ToolRedactedValueSummary } from "@myrmidon/shared";
 import { toolsApi, type ToolAuditOutcome, type ToolGatewayActivityEvent } from "@/api/tools";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
+import { i18n, useTranslation } from "@/i18n";
 import { queryKeys } from "@/lib/queryKeys";
 import { ErrorState, RelativeTime } from "@/pages/tools/shared";
 
 const PAGE_SIZE = 25;
 
-const OUTCOME_META: Record<ToolAuditOutcome, { label: string; status: string }> = {
-  allowed: { label: "Allowed", status: "allowed" },
-  blocked: { label: "Blocked", status: "denied" },
-  asked_first: { label: "Asked first", status: "require-approval" },
-  waiting: { label: "Waiting", status: "deferred" },
-  failed: { label: "Failed", status: "failed" },
-  unknown: { label: "Recorded", status: "unchecked" },
-};
+const outcomeMeta = (): Record<ToolAuditOutcome, { label: string; status: string }> => ({
+  allowed: { label: i18n.t("area.apps-gateways-2.gateway-activity-panel.outcome.allowed"), status: "allowed" },
+  blocked: { label: i18n.t("area.apps-gateways-2.gateway-activity-panel.outcome.blocked"), status: "denied" },
+  asked_first: { label: i18n.t("area.apps-gateways-2.gateway-activity-panel.outcome.askedFirst"), status: "require-approval" },
+  waiting: { label: i18n.t("area.apps-gateways-2.gateway-activity-panel.outcome.waiting"), status: "deferred" },
+  failed: { label: i18n.t("area.apps-gateways-2.gateway-activity-panel.outcome.failed"), status: "failed" },
+  unknown: { label: i18n.t("area.apps-gateways-2.gateway-activity-panel.outcome.unknown"), status: "unchecked" },
+});
 
 function detailString(details: Record<string, unknown> | null, key: string): string | null {
   const value = details?.[key];
@@ -48,7 +50,7 @@ function durationLabel(event: ToolGatewayActivityEvent): string | null {
   const started = event.invocation?.startedAt ? new Date(event.invocation.startedAt).getTime() : Number.NaN;
   const completed = event.invocation?.completedAt ? new Date(event.invocation.completedAt).getTime() : Number.NaN;
   if (!Number.isFinite(started) || !Number.isFinite(completed) || completed < started) return null;
-  return `${completed - started} ms`;
+  return i18n.t("area.apps-gateways-2.gateway-activity-panel.durationMs", { value: completed - started });
 }
 
 function Fact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
@@ -63,11 +65,14 @@ function Fact({ label, value, mono = false }: { label: string; value: string; mo
 }
 
 function ActivityRow({ event }: { event: ToolGatewayActivityEvent }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const outcome = OUTCOME_META[event.normalizedOutcome] ?? OUTCOME_META.unknown;
-  const actor = event.agentDisplayName ?? "Client";
-  const app = event.appDisplayName ?? event.connectionDisplayName ?? event.applicationDisplayName ?? "App";
-  const tool = event.toolDisplayName ?? event.invocation?.toolName ?? "Tool call";
+  const meta = outcomeMeta();
+  const outcome = meta[event.normalizedOutcome] ?? meta.unknown;
+  const actor = event.agentDisplayName ?? t("area.apps-gateways-2.gateway-activity-panel.activityRow.defaultActor");
+  const app =
+    event.appDisplayName ?? event.connectionDisplayName ?? event.applicationDisplayName ?? t("area.apps-gateways-2.gateway-activity-panel.activityRow.defaultApp");
+  const tool = event.toolDisplayName ?? event.invocation?.toolName ?? t("area.apps-gateways-2.gateway-activity-panel.activityRow.defaultTool");
   const rawTool = event.invocation?.toolName ?? detailString(event.details, "tool") ?? detailString(event.details, "toolName");
   const reason = detailString(event.details, "reasonCode");
   const argumentsText = formatSummary(
@@ -93,7 +98,11 @@ function ActivityRow({ event }: { event: ToolGatewayActivityEvent }) {
         )}
         <span className="min-w-0 flex-1">
           <span className="block text-foreground">
-            <span className="font-medium">{actor}</span> used <span className="font-medium">{tool}</span> in {app}
+            <Trans
+              i18nKey="area.apps-gateways-2.gateway-activity-panel.activityRow.summary"
+              values={{ actor, tool, app }}
+              components={[<span className="font-medium" />, <span className="font-medium" />]}
+            />
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-2 whitespace-nowrap">
@@ -107,18 +116,18 @@ function ActivityRow({ event }: { event: ToolGatewayActivityEvent }) {
       {open ? (
         <div className="border-t border-border bg-muted/30 px-4 py-3 pl-10 text-xs">
           <dl>
-            {rawTool ? <Fact label="Tool" value={rawTool} mono /> : null}
-            {event.invocation?.status ? <Fact label="Call status" value={event.invocation.status} /> : null}
-            {event.invocation?.policyDecision ? <Fact label="Decision" value={event.invocation.policyDecision} /> : null}
-            {reason ? <Fact label="Reason" value={reason} mono /> : null}
-            {duration ? <Fact label="Duration" value={duration} /> : null}
-            {event.invocation?.id ? <Fact label="Invocation ID" value={event.invocation.id} mono /> : null}
-            {event.invocation?.errorCode ? <Fact label="Error code" value={event.invocation.errorCode} mono /> : null}
-            {event.invocation?.errorMessage ? <Fact label="Error" value={event.invocation.errorMessage} /> : null}
+            {rawTool ? <Fact label={t("area.apps-gateways-2.gateway-activity-panel.activityRow.factTool")} value={rawTool} mono /> : null}
+            {event.invocation?.status ? <Fact label={t("area.apps-gateways-2.gateway-activity-panel.activityRow.factCallStatus")} value={event.invocation.status} /> : null}
+            {event.invocation?.policyDecision ? <Fact label={t("area.apps-gateways-2.gateway-activity-panel.activityRow.factDecision")} value={event.invocation.policyDecision} /> : null}
+            {reason ? <Fact label={t("area.apps-gateways-2.gateway-activity-panel.activityRow.factReason")} value={reason} mono /> : null}
+            {duration ? <Fact label={t("area.apps-gateways-2.gateway-activity-panel.activityRow.factDuration")} value={duration} /> : null}
+            {event.invocation?.id ? <Fact label={t("area.apps-gateways-2.gateway-activity-panel.activityRow.factInvocationId")} value={event.invocation.id} mono /> : null}
+            {event.invocation?.errorCode ? <Fact label={t("area.apps-gateways-2.gateway-activity-panel.activityRow.factErrorCode")} value={event.invocation.errorCode} mono /> : null}
+            {event.invocation?.errorMessage ? <Fact label={t("area.apps-gateways-2.gateway-activity-panel.activityRow.factError")} value={event.invocation.errorMessage} /> : null}
           </dl>
           {argumentsText ? (
             <div className="mt-2 space-y-1">
-              <div className="text-muted-foreground">Arguments (redacted)</div>
+              <div className="text-muted-foreground">{t("area.apps-gateways-2.gateway-activity-panel.activityRow.argumentsRedacted")}</div>
               <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
                 {argumentsText}
               </pre>
@@ -126,7 +135,7 @@ function ActivityRow({ event }: { event: ToolGatewayActivityEvent }) {
           ) : null}
           {resultText ? (
             <div className="mt-3 space-y-1">
-              <div className="text-muted-foreground">Result (redacted)</div>
+              <div className="text-muted-foreground">{t("area.apps-gateways-2.gateway-activity-panel.activityRow.resultRedacted")}</div>
               <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
                 {resultText}
               </pre>
@@ -145,6 +154,7 @@ export function GatewayActivityPanel({
   companyId: string;
   gateway: ToolMcpGatewayWithTokens;
 }) {
+  const { t } = useTranslation();
   const activityQuery = useInfiniteQuery({
     queryKey: queryKeys.tools.activity(companyId, { gateway: gateway.id, window: "30d" }),
     queryFn: ({ pageParam }) =>
@@ -179,11 +189,11 @@ export function GatewayActivityPanel({
   return (
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
-        Calls through this gateway from the last 30 days. Open a row to inspect its tool, redacted arguments, result, and decision.
+        {t("area.apps-gateways-2.gateway-activity-panel.description")}
       </p>
       {events.length === 0 ? (
         <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-          No calls have gone through this gateway yet.
+          {t("area.apps-gateways-2.gateway-activity-panel.emptyTitle")}
         </div>
       ) : (
         <ul className="divide-y divide-border rounded-lg border border-border">
@@ -198,7 +208,7 @@ export function GatewayActivityPanel({
             onClick={() => activityQuery.fetchNextPage()}
             disabled={activityQuery.isFetchingNextPage}
           >
-            {activityQuery.isFetchingNextPage ? "Loading…" : "Load more"}
+            {activityQuery.isFetchingNextPage ? t("common.loading") : t("area.apps-gateways-2.gateway-activity-panel.loadMore")}
           </Button>
         </div>
       ) : null}

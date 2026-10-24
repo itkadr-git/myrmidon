@@ -7,10 +7,12 @@
 // of its own: everything testable in it is pushed down into domain.ts/service.ts.
 
 import type { BotContainerSpec, BotExtraMount, BotSharedMount } from "./driver.js";
-import { BOT_KEY_PATTERN } from "./template.js";
-import type { SharedMountSettings } from "@paperclipai/shared";
+import { BOT_KEY_PATTERN, isImageAllowed, parseImageAllowlist } from "./template.js";
+import type { SharedMountSettings } from "@myrmidon/shared";
 import { resolveBotSharedMount } from "./shared-mount.js";
+import { FLEET_HOST_NAME_PATTERN } from "./fleetd-hosts.js";
 
+const BOT_IMAGE_ALLOWLIST_ENV = "MYRMIDON_BOT_IMAGE_ALLOWLIST";
 export const BOT_CONTAINERS_ENV = "MYRMIDON_BOT_CONTAINERS";
 
 export function isBotContainersEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -45,6 +47,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 export function botContainerCardSaveProblem(
   adapterType: string | null | undefined,
   adapterConfig: Record<string, unknown> | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
 ): string | null {
   if (adapterType !== HERMES_GATEWAY_ADAPTER_TYPE) return null;
   const raw = adapterConfig?.container;
@@ -55,12 +58,54 @@ export function botContainerCardSaveProblem(
   }
   if (raw.enabled !== true) return null;
   const { memoryMb, cpus, pidsLimit } = raw;
+  if (raw.idleStopMode !== undefined && raw.idleStopMode !== "always_on" && raw.idleStopMode !== "on_demand") return "adapterConfig.container.idleStopMode must be always_on or on_demand";
   const missing: string[] = [];
   if (typeof memoryMb !== "number" || !Number.isFinite(memoryMb) || memoryMb <= 0) missing.push("memoryMb (a positive number)");
   if (typeof cpus !== "number" || !Number.isFinite(cpus) || cpus <= 0) missing.push("cpus (a positive number)");
   if (typeof pidsLimit !== "number" || !Number.isInteger(pidsLimit) || pidsLimit <= 0) missing.push("pidsLimit (a positive integer)");
   if (missing.length > 0) {
     return `adapterConfig.container is enabled but lacks ${missing.join(", ")}; defaults are memoryMb ${BOT_CONTAINER_DEFAULTS.memoryMb}, cpus ${BOT_CONTAINER_DEFAULTS.cpus}, pidsLimit ${BOT_CONTAINER_DEFAULTS.pidsLimit}`;
+  }
+  if (raw.host !== undefined && raw.host !== null) {
+    if (typeof raw.host !== "string" || !FLEET_HOST_NAME_PATTERN.test(raw.host.trim())) {
+      return `adapterConfig.container.host must be a host name matching ${FLEET_HOST_NAME_PATTERN} (got ${JSON.stringify(raw.host)})`;
+    }
+    if (raw.host.trim() === "local") {
+      return 'adapterConfig.container.host "local" is not a host: omit container.host for the local driver';
+    }
+  }
+  if (raw.hostPinned !== undefined && raw.hostPinned !== null) {
+    if (typeof raw.hostPinned !== "boolean") {
+      return `adapterConfig.container.hostPinned must be a boolean (got ${JSON.stringify(raw.hostPinned)})`;
+    }
+  }
+  const imageProblem = botContainerImageSaveProblem(raw.image, env);
+  if (imageProblem) return imageProblem;
+  return null;
+}
+
+const IMMUTABLE_IMAGE_DIGEST_PATTERN = /@sha256:[0-9a-f]{64}$/;
+
+/**
+ * myrmidon(1.6.6, OPE-8916): why an enabled card's `container.image` may not be
+ * SAVED, or null. The image must be pinned by digest (`name@sha256:<64 hex>`): a
+ * tag such as `myrmidon-hermes:latest` is refused by dockergate when the container
+ * is created, which left a bot without a container after a UI save. When
+ * MYRMIDON_BOT_IMAGE_ALLOWLIST names images, the image must match one of them too;
+ * an instance with no allowlist set is not blocked here (the driver still refuses
+ * to create the container).
+ */
+export function botContainerImageSaveProblem(image: unknown, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (typeof image !== "string" || image.trim().length === 0) {
+    return "adapterConfig.container.image is required while the container is enabled: name a bot image pinned by digest (name@sha256:<64 hex>)";
+  }
+  const trimmed = image.trim();
+  if (!IMMUTABLE_IMAGE_DIGEST_PATTERN.test(trimmed)) {
+    return `adapterConfig.container.image "${trimmed}" is not pinned by digest: use name@sha256:<64 hex>, a tag such as :latest is refused when the container is created`;
+  }
+  const allowlist = parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]);
+  if (allowlist.length > 0 && !isImageAllowed(trimmed, allowlist)) {
+    return `adapterConfig.container.image "${trimmed}" is not in ${BOT_IMAGE_ALLOWLIST_ENV}`;
   }
   return null;
 }
@@ -115,6 +160,10 @@ export interface BotContainerAgentConfig {
   /** myrmidon(1.6.1-BOT-DISK-D): the shared directory this bot gets at `/shared`;
    *  absent when the instance setting is off or the bot is not allowlisted. */
   sharedMount?: BotSharedMount;
+  /** Named fleet host or undefined for local driver. */
+  host?: string;
+  /** Whether the host assignment is pinned. */
+  hostPinned?: boolean;
 }
 
 export type BotContainerAgentConfigResult =
@@ -178,6 +227,27 @@ export function readBotContainerAgentConfig(
   const diskQuotaMb =
     typeof c.diskQuotaMb === "number" && Number.isInteger(c.diskQuotaMb) && c.diskQuotaMb > 0 ? c.diskQuotaMb : undefined;
   const sharedMount = resolveBotSharedMount(agentId, sharedMountSettings);
+
+  let host: string | undefined;
+  if (c.host !== undefined && c.host !== null) {
+    if (typeof c.host !== "string" || !FLEET_HOST_NAME_PATTERN.test(c.host.trim())) {
+      return { ok: false, reason: `container.host must be a host name matching ${FLEET_HOST_NAME_PATTERN} (got ${JSON.stringify(c.host)})` };
+    }
+    const trimmed = c.host.trim();
+    if (trimmed === "local") {
+      return { ok: false, reason: 'container.host "local" is not a host: omit container.host for the local driver' };
+    }
+    host = trimmed;
+  }
+
+  let hostPinned: boolean | undefined;
+  if (c.hostPinned !== undefined && c.hostPinned !== null) {
+    if (typeof c.hostPinned !== "boolean") {
+      return { ok: false, reason: `container.hostPinned must be a boolean (got ${JSON.stringify(c.hostPinned)})` };
+    }
+    hostPinned = c.hostPinned;
+  }
+
   return {
     ok: true,
     config: {
@@ -188,6 +258,8 @@ export function readBotContainerAgentConfig(
       extraMounts: extraMounts.mounts,
       ...(diskQuotaMb !== undefined ? { diskQuotaMb } : {}),
       ...(sharedMount ? { sharedMount } : {}),
+      ...(host !== undefined ? { host } : {}),
+      ...(hostPinned !== undefined ? { hostPinned } : {}),
     },
   };
 }

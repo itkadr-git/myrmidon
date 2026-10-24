@@ -21,8 +21,8 @@
 //    attempted key and name every skip; nothing here throws per agent.
 
 import { and, eq } from "drizzle-orm";
-import { agents, modelProviderModels, modelProviders, type Db } from "@paperclipai/db";
-import { agentKeySecretName, readGatewayKeySettings } from "@paperclipai/shared";
+import { agents, modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
+import { agentKeySecretName, readGatewayKeySettings } from "@myrmidon/shared";
 import { notFound, unprocessable } from "../../errors.js";
 import { type AgentGatewayKeyDeps } from "../litellm-keys/agent-keys.js";
 

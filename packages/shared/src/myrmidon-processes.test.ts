@@ -67,10 +67,12 @@ describe("processes settings contract (PROCS-1.1)", () => {
     assert.deepEqual(resolved.settings, DEFAULT_PROCESSES_SETTINGS);
   });
 
-  it("lets PAPERCLIP_PROCESS_MODE win over the saved row and marks it 'env'", () => {
+  it("lets the new process-mode env win and supports the legacy alias", () => {
     const resolved = resolveProcessesSettings({ mode: "split" }, { [PROCESSES_MODE_ENV]: "single" });
     assert.equal(resolved.settings.mode, "single");
     assert.equal(resolved.sources.mode, "env");
+    assert.equal(resolveProcessesSettings({ mode: "split" }, { PAPERCLIP_PROCESS_MODE: "single" }).settings.mode, "single");
+    assert.equal(resolveProcessesSettings({ mode: "split" }, { MYRMIDON_PROCESS_MODE: "single", PAPERCLIP_PROCESS_MODE: "split" }).settings.mode, "single");
   });
 
   it("ignores an unreadable escape", () => {

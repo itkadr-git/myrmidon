@@ -1,6 +1,6 @@
-import type { PaperclipQuestion, PaperclipQuestionResponse, PaperclipQuestionSet, TranscriptEntry } from "@paperclipai/adapter-utils";
+import type { PaperclipQuestion, PaperclipQuestionResponse, PaperclipQuestionSet, TranscriptEntry } from "@myrmidon/adapter-utils";
 import type { UIAdapterModule } from "../types";
-import { parseCodexStdoutLine, buildPaperclipRunnerConfig } from "@paperclipai/adapter-codex-local/ui";
+import { parseCodexStdoutLine, buildPaperclipRunnerConfig } from "@myrmidon/adapter-codex-local/ui";
 import { CodexLocalConfigFields } from "../codex-local/config-fields";
 
 type JsonRecord = Record<string, unknown>;

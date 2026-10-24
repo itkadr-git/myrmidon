@@ -55,8 +55,8 @@
 
 import { randomUUID } from "node:crypto";
 import { and, eq, gte, sql } from "drizzle-orm";
-import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
-import { isAgentStatusInvokable, type IssueExecutionPolicy } from "@paperclipai/shared";
+import { agents, heartbeatRuns, type Db } from "@myrmidon/db";
+import { isAgentStatusInvokable, type IssueExecutionPolicy } from "@myrmidon/shared";
 import { applyIssueExecutionPolicyTransition } from "../services/issue-execution-policy.js";
 // myrmidon(B1): the two texts below that people and agents read name the
 // product through product.ts, like the rest of the server-generated text.
@@ -85,10 +85,11 @@ export const STRANDED_AUTO_POLICY_RETRY_SOURCE = "myrmidon.stranded_autopolicy_r
  * check against this key (see `findExistingStrandedAutoPolicyRetryWake` in
  * `server/src/services/recovery/service.ts`) lets a racing duplicate stand
  * down instead of queuing a second continuation wake for a disposition the
- * agent has already been asked for once. No new unique index backs this (no
- * migration): it mirrors the vendor's own un-indexed run-liveness-
- * continuation idempotency check (`run-liveness-continuations.ts`), which
- * this codebase already treats as sufficient for this class of race.
+ * agent has already been asked for once. The check alone is a snapshot read
+ * and cannot close the window, so the key is also backed by a partial unique
+ * index (`agent_wakeup_requests_stranded_autopolicy_retry_idempotency_uq`,
+ * migration `0401_wakeup_key_partial_unique_indexes`): the second insert is
+ * rejected by the database and the racer stands down on the error.
  */
 export function buildStrandedAutoPolicyRetryIdempotencyKey(input: {
   issueId: string;

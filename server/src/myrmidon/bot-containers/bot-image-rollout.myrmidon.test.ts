@@ -7,7 +7,7 @@ import {
   normalizeBotImageRolloutSettings,
   resolveBotImageRolloutSettings,
   resolveBotImageRolloutStatus,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 const RELEASE_DIGEST = `ghcr.io/example/myrmidon-hermes@sha256:${"c".repeat(64)}`;
 

@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import type { AgentListItem } from "@paperclipai/shared";
+import type { AgentListItem } from "@myrmidon/shared";
 import type { LiveRunForIssue } from "@/api/heartbeats";
 import { Link } from "@/lib/router";
 import { agentsApi } from "@/api/agents";

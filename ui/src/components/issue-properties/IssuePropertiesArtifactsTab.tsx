@@ -6,13 +6,13 @@ import type {
   Issue,
   IssueDocument,
   IssueWorkProduct,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   MARKDOWN_REVIEW_DOCUMENT_MAX_BYTES,
   artifactReviewDocumentKey,
   getMarkdownWorkProductAttachmentMetadata,
   isArtifactReviewDocumentKey,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   ChevronDown,
   ChevronRight,
@@ -38,6 +38,7 @@ import { RichWorkProductCard } from "@/components/task-chat/RichWorkProductCard"
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
 import { cn, formatDateTime } from "@/lib/utils";
 import { useLocation } from "@/lib/router";
+import { i18n, useTranslation } from "@/i18n";
 
 interface IssuePropertiesArtifactsTabProps {
   issue: Issue;
@@ -49,9 +50,9 @@ interface IssuePropertiesArtifactsTabProps {
 }
 
 function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n < 1024) return i18n.t("area.issue-properties-panels-2.issue-properties-artifacts-tab.bytes.b", { value: n });
+  if (n < 1024 * 1024) return i18n.t("area.issue-properties-panels-2.issue-properties-artifacts-tab.bytes.kb", { value: (n / 1024).toFixed(1) });
+  return i18n.t("area.issue-properties-panels-2.issue-properties-artifacts-tab.bytes.mb", { value: (n / (1024 * 1024)).toFixed(1) });
 }
 
 /** Work-product status → label + `--status-task-*` base-hue var for `.status-chip`. */
@@ -59,16 +60,16 @@ function workProductStatusBadge(status: string): { label: string; cssVar: string
   switch (status) {
     case "active":
     case "draft":
-      return { label: "In progress", cssVar: "--status-task-in_progress" };
+      return { label: i18n.t("status.in_progress"), cssVar: "--status-task-in_progress" };
     case "ready_for_review":
-      return { label: "For review", cssVar: "--status-task-in_review" };
+      return { label: i18n.t("area.issue-properties-panels-2.issue-properties-artifacts-tab.statusForReview"), cssVar: "--status-task-in_review" };
     case "approved":
     case "merged":
-      return { label: "Done", cssVar: "--status-task-done" };
+      return { label: i18n.t("status.done"), cssVar: "--status-task-done" };
     case "changes_requested":
-      return { label: "Changes requested", cssVar: "--status-task-todo" };
+      return { label: i18n.t("area.issue-properties-panels-2.issue-properties-artifacts-tab.statusChangesRequested"), cssVar: "--status-task-todo" };
     case "failed":
-      return { label: "Failed", cssVar: "--status-task-blocked" };
+      return { label: i18n.t("area.issue-properties-panels-2.issue-properties-artifacts-tab.statusFailed"), cssVar: "--status-task-blocked" };
     default:
       return null;
   }
@@ -97,6 +98,7 @@ function MarkdownWorkProductRow({
   reviewDoc: IssueDocument | undefined;
   openRequestId?: number;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
   const headerRef = useRef<HTMLDivElement | null>(null);
@@ -149,7 +151,7 @@ function MarkdownWorkProductRow({
   if (tooLarge) {
     expandedBody = (
       <p className="text-sm text-muted-foreground">
-        This Markdown file is too large to preview. Use Raw or Download instead.
+        {t("area.issue-properties-panels-2.issue-properties-artifacts-tab.tooLarge")}
       </p>
     );
   } else if (reviewDoc) {
@@ -169,15 +171,15 @@ function MarkdownWorkProductRow({
         <MarkdownBody>{reviewDoc.body}</MarkdownBody>
       </IssueDocumentAnnotations>
     ) : (
-      <p className="text-sm text-muted-foreground">Document is empty.</p>
+      <p className="text-sm text-muted-foreground">{t("area.issue-properties-panels-2.issue-properties-artifacts-tab.documentEmpty")}</p>
     );
   } else if (ensure.isError) {
     expandedBody = (
       <div className="flex flex-col items-start gap-1.5">
         <p className="text-sm text-muted-foreground">
           {unsupportedError
-            ? "This file can't be previewed as Markdown. Use Raw or Download instead."
-            : "Preview failed to load."}
+            ? t("area.issue-properties-panels-2.issue-properties-artifacts-tab.previewUnsupported")
+            : t("area.issue-properties-panels-2.issue-properties-artifacts-tab.previewFailed")}
         </p>
         {!unsupportedError ? (
           <button
@@ -188,13 +190,13 @@ function MarkdownWorkProductRow({
               ensure.mutate();
             }}
           >
-            Retry
+            {t("common.retry")}
           </button>
         ) : null}
       </div>
     );
   } else {
-    expandedBody = <p className="text-sm text-muted-foreground">Preparing preview…</p>;
+    expandedBody = <p className="text-sm text-muted-foreground">{t("area.issue-properties-panels-2.issue-properties-artifacts-tab.preparingPreview")}</p>;
   }
 
   return (
@@ -218,7 +220,7 @@ function MarkdownWorkProductRow({
           ) : null}
           {reviewDoc ? (
             <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">
-              {`Rev ${reviewDoc.latestRevisionNumber ?? 1}`}
+              {t("area.issue-properties-panels-2.issue-properties-artifacts-tab.revision", { number: reviewDoc.latestRevisionNumber ?? 1 })}
             </span>
           ) : null}
           <Chevron className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -235,16 +237,16 @@ function MarkdownWorkProductRow({
           href={metadata.openPath}
           target="_blank"
           rel="noreferrer"
-          aria-label={`Open raw ${workProduct.title}`}
-          title="Open raw"
+          aria-label={t("area.issue-properties-panels-2.issue-properties-artifacts-tab.openRaw", { title: workProduct.title })}
+          title={t("area.issue-properties-panels-2.issue-properties-artifacts-tab.openRawShort")}
           className="shrink-0 px-1.5 py-1.5 text-muted-foreground hover:text-foreground"
         >
           <ExternalLink className="h-3 w-3" />
         </a>
         <a
           href={metadata.downloadPath}
-          aria-label={`Download ${workProduct.title}`}
-          title="Download"
+          aria-label={t("area.issue-properties-panels-2.issue-properties-artifacts-tab.download", { title: workProduct.title })}
+          title={t("area.issue-properties-panels-2.issue-properties-artifacts-tab.downloadShort")}
           className="shrink-0 py-1.5 pr-2 pl-0.5 text-muted-foreground hover:text-foreground"
         >
           <Download className="h-3 w-3" />
@@ -268,6 +270,7 @@ function DocumentRow({
   openRequestId?: number;
   onOpen?: () => void;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
   const headerRef = useRef<HTMLDivElement | null>(null);
@@ -291,7 +294,7 @@ function DocumentRow({
         <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate">{documentDisplayTitle(doc)}</span>
         <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">
-          {`Rev ${doc.latestRevisionNumber ?? 1}`}
+          {t("area.issue-properties-panels-2.issue-properties-artifacts-tab.revision", { number: doc.latestRevisionNumber ?? 1 })}
         </span>
         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       </button>
@@ -309,7 +312,7 @@ function DocumentRow({
           <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1 truncate">{documentDisplayTitle(doc)}</span>
           <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">
-            {`Rev ${doc.latestRevisionNumber ?? 1}`}
+            {t("area.issue-properties-panels-2.issue-properties-artifacts-tab.revision", { number: doc.latestRevisionNumber ?? 1 })}
           </span>
           <Chevron className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </button>
@@ -338,7 +341,7 @@ function DocumentRow({
               <MarkdownBody>{doc.body}</MarkdownBody>
             </IssueDocumentAnnotations>
           ) : (
-            <p className="text-sm text-muted-foreground">Document is empty.</p>
+            <p className="text-sm text-muted-foreground">{t("area.issue-properties-panels-2.issue-properties-artifacts-tab.documentEmpty")}</p>
           )}
         </div>
       ) : null}
@@ -357,6 +360,7 @@ function DocumentRow({
  * thread.
  */
 export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDocument }: IssuePropertiesArtifactsTabProps) {
+  const { t } = useTranslation();
   const { data: attachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issue.id),
     queryFn: () => issuesApi.listAttachments(issue.id),
@@ -432,7 +436,7 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
   if (workProductRows.length === 0 && documentRows.length === 0 && fileRows.length === 0) {
     return (
       <div className="px-1 py-6 text-sm text-muted-foreground">
-        No artifacts yet. Work products, documents, and agent-produced files will appear here.
+        {t("area.issue-properties-panels-2.issue-properties-artifacts-tab.empty")}
       </div>
     );
   }
@@ -447,7 +451,7 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
             {group.runId !== "other" ? (
               <header className="flex items-baseline justify-between gap-2 px-1">
                 <h3 className="truncate text-xs font-medium text-foreground">
-                  {agent?.name ?? `Run ${group.runId.slice(0, 8)}`}
+                  {agent?.name ?? t("area.issue-properties-panels-2.issue-properties-artifacts-tab.run", { id: group.runId.slice(0, 8) })}
                 </h3>
                 <time className="shrink-0 text-(length:--text-micro) text-muted-foreground" dateTime={group.date.toISOString()}>
                   {formatDateTime(group.date)}

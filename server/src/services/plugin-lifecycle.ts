@@ -36,12 +36,12 @@
  * @see PLUGIN_SPEC.md §12.5 — Graceful Shutdown Policy
  */
 import { EventEmitter } from "node:events";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import type {
   PluginStatus,
   PluginRecord,
   PaperclipPluginManifestV1,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { pluginRegistryService } from "./plugin-registry.js";
 import {
   listPluginProviderModels,

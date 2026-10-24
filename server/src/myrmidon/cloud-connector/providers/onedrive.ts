@@ -8,7 +8,7 @@
 // from a bot; it is resolved per root, so one instance serves every company
 // that connected an account.
 
-import type { CloudRoot } from "@paperclipai/shared/myrmidon-cloud-connector";
+import type { CloudRoot } from "@myrmidon/shared/myrmidon-cloud-connector";
 import { CloudConnectorError, type CloudItem, type CloudListing } from "../types.js";
 import { normalizeCloudName, joinCloudPath } from "../paths.js";
 import type { CloudLocation, CloudProvider, CloudSearchHit } from "./provider.js";

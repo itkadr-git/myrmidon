@@ -12,7 +12,7 @@
 // Every request's read-write-audit sequence runs through one queue, so two
 // overlapping PATCHes cannot commit in one order and audit in the other.
 
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
   BOT_DISK_LAYOUT_KEYS,
@@ -34,10 +34,11 @@ import {
   type BotDiskSettings,
   type BotDiskSettingsPatch,
   type ResolvedBotDiskSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { sweepAllBotVolumes } from "./draft-lifecycle.js";
+import { recordBotDiskSweepOutcome } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { refreshGitMirrors } from "./git-mirror.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { dropCloneSignalsExcept, ingestCloneReport, noteCloneReportSeen } from "./clone-hygiene.js";
 import { getBotContainerRuntime } from "./routes-wiring.js";
@@ -318,7 +319,15 @@ export async function runBotDiskSweep(db: Db): Promise<void> {
   const layout = resolveBotDiskLayout(general.botDisk);
   void refreshGitMirrors(layout).catch((err) => logger.warn({ err }, "git mirror refresh failed"));
   const lifecycle = await resolveBotDiskLifecycleConfig({ getGeneral: async () => general });
-  await sweepAllBotVolumes(lifecycle);
+  // myrmidon(FEATURES): the sweep's report reaches the features page, so a pass
+  // that fails on every tick (a volume root that does not exist) is visible.
+  try {
+    const report = await sweepAllBotVolumes(lifecycle);
+    recordBotDiskSweepOutcome(report);
+  } catch (err) {
+    recordBotDiskSweepOutcome(null, err);
+    throw err;
+  }
 }
 
 /**

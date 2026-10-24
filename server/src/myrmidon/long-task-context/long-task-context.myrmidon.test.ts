@@ -7,7 +7,7 @@ import {
   longTaskContextPct,
   normalizeLongTaskContextSettings,
   shouldResetTaskSessionForLongTaskContext,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   COMPRESSION_TIMEOUT_ERROR_SIGNATURES,
   buildLongTaskContextResetNotice,

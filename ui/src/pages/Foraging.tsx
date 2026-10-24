@@ -339,7 +339,7 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
               <input
                 value={role}
                 onChange={(event) => setRole(event.target.value)}
-                placeholder="engineer"
+                placeholder={t("area.settings-models-runtime-2.foraging.rolePlaceholder")}
                 className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
                 data-testid="foraging-source-role"
               />
@@ -349,7 +349,7 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
               <input
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
-                placeholder="https://example.com/changelog"
+                placeholder={t("area.settings-models-runtime-2.foraging.urlPlaceholder")}
                 className="h-9 w-80 rounded-md border border-input bg-background px-3 text-sm text-foreground"
                 data-testid="foraging-source-url"
               />

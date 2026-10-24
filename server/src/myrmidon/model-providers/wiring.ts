@@ -17,12 +17,12 @@
 
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
-import { pluginConfig, plugins, type Db } from "@paperclipai/db";
+import { pluginConfig, plugins, type Db } from "@myrmidon/db";
 import {
   readGatewayKeySettings,
   type PluginRecord,
   type PluginProviderModelDeclaration,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { secretService } from "../../services/index.js";
 import { logActivity } from "../../services/index.js";
 import {

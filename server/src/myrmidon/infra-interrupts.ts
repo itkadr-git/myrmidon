@@ -46,6 +46,9 @@ export const DEFAULT_INFRA_INTERRUPT_ERROR_CODES = [
   "process_lost",
   "server_shutdown_interrupted",
   "issue_reassigned",
+  // myrmidon(1.6.6 REMOTE-SITES-T4): the run's execution site was lost (site-failover finalizes it so
+  // and queues the bounded retry); the work it did is not in question, the site is gone.
+  "site_lost",
 ] as const;
 
 /**

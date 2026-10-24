@@ -41,13 +41,15 @@
 
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
-import { heartbeatRuns, litellmCostEvents, litellmModels, type Db } from "@paperclipai/db";
+import { heartbeatRuns, litellmCostEvents, litellmModels, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 // myrmidon(HERMES-USAGE-COST): the post-sweep pass that fills the vendor ledger.
 import { reconcileUnpricedCostEvents } from "./reconcile.js";
 // myrmidon(1.6.5-F-18): the empty-catalog attention signal the sweep records
 // after every model refresh; the attention feed turns the registry into a card.
 import { recordEmptyCatalogSweep } from "./attention.js";
+
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
 
 export const LITELLM_BASE_URL_ENV = "MYRMIDON_LITELLM_BASE_URL";
 export const LITELLM_KEY_SECRET_ENV = "MYRMIDON_LITELLM_KEY_SECRET";
@@ -105,8 +107,9 @@ export function readLitellmCostSettings(env: NodeJS.ProcessEnv = process.env): L
     }
   }
   let intervalSec = DEFAULT_SWEEP_INTERVAL_SEC;
-  const raw = env[LITELLM_SWEEP_INTERVAL_ENV]?.trim();
-  if (raw) {
+  const configuredInterval = env[LITELLM_SWEEP_INTERVAL_ENV] ?? liveBehaviorSetting<number | null>("litellmCostIntervalSec");
+  const raw = configuredInterval == null ? undefined : String(configuredInterval);
+  if (raw?.trim()) {
     const value = Number(raw);
     if (Number.isInteger(value) && value >= MIN_SWEEP_INTERVAL_SEC && value <= MAX_SWEEP_INTERVAL_SEC) {
       intervalSec = value;
@@ -436,6 +439,8 @@ export interface SweepResult {
   /** myrmidon(HERMES-USAGE-COST): unpriced vendor cost_events filled by the reconcile pass. */
   reconciledCostEvents: number;
   window: { from: Date; to: Date };
+  /** myrmidon(FEATURES): the pass collected nothing because the gateway key secret is missing. */
+  keyMissing?: boolean;
 }
 
 /**
@@ -465,7 +470,15 @@ export async function sweepLitellmCosts(
   const keyValue = await deps.readGatewayKey(companyId, settings.keySecret);
   if (!keyValue) {
     log.warn({ companyId }, "litellm cost sweep skipped: gateway key secret not found");
-    return { collected: 0, written: 0, skippedUnattributed: 0, modelsRefreshed: null, reconciledCostEvents: 0, window };
+    return {
+      collected: 0,
+      written: 0,
+      skippedUnattributed: 0,
+      modelsRefreshed: null,
+      reconciledCostEvents: 0,
+      window,
+      keyMissing: true,
+    };
   }
 
   const entries = await deps.client(settings.baseUrl, keyValue).listSpendLogs(window);

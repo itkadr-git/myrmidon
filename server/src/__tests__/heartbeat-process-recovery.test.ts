@@ -75,7 +75,7 @@ import {
   toolConnections,
   workAssessments,
   workspaceOperations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -181,10 +181,10 @@ vi.mock("../services/local-service-supervisor.js", async () => {
   };
 });
 
-vi.mock("@paperclipai/shared/telemetry", async () => {
+vi.mock("@myrmidon/shared/telemetry", async () => {
   const actual = await vi.importActual<
-    typeof import("@paperclipai/shared/telemetry")
-  >("@paperclipai/shared/telemetry");
+    typeof import("@myrmidon/shared/telemetry")
+  >("@myrmidon/shared/telemetry");
   return {
     ...actual,
     trackAgentFirstHeartbeat: mockTrackAgentFirstHeartbeat,
@@ -235,6 +235,7 @@ import {
   resolveHotRestartReportPath,
   writeHotRestartIntent,
 } from "../services/hot-restart.ts";
+import { logger } from "../middleware/logger.ts";
 import { secretService } from "../services/secrets.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
@@ -246,7 +247,7 @@ import { collectDispositionRepairSourceState } from "../services/recovery/dispos
 import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
 const embeddedPostgresSupport = externalTestDatabaseUrl
   ? { supported: true }
@@ -2334,6 +2335,63 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs[0]?.retryOfRunId).toBeNull();
   });
 
+  // myrmidon(1.6.6 REMOTE-SITES-T4): a run of a lost execution site is finalized as failed(site_lost) with one bounded retry.
+  it("finalizes a run of a lost site as site_lost and queues exactly one retry", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({ agentStatus: "idle", contextSnapshot: { source: "scheduler" } });
+    await db
+      .update(heartbeatRuns)
+      .set({ externalRunId: "gw-1", controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date(Date.now() - 120_000) })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.finalizeSiteLostRun(runId, "myr-vm1");
+
+    expect(result.outcome).toBe("finalized");
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    const failed = runs.find((row) => row.id === runId);
+    const retries = runs.filter((row) => row.retryOfRunId === runId);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "site_lost" });
+    expect(failed?.error).toContain("myr-vm1");
+    expect(failed?.contextSnapshot).toMatchObject({ siteLost: { site: "myr-vm1" } });
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatchObject({ id: result.retryRunId, status: "scheduled_retry" });
+    expect(retries[0]?.contextSnapshot).toMatchObject({ issueId });
+  });
+
+  it("finalizes a lost-site run once even when two sweeps race, and never twice afterwards", async () => {
+    const { agentId, runId } = await seedRunFixture({ agentStatus: "idle" });
+    await db
+      .update(heartbeatRuns)
+      .set({ externalRunId: "gw-1", controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date(Date.now() - 120_000) })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const results = await Promise.all([heartbeat.finalizeSiteLostRun(runId, "myr-vm1"), heartbeat.finalizeSiteLostRun(runId, "myr-vm1")]);
+    expect(results.filter((r) => r.outcome === "finalized")).toHaveLength(1);
+    expect((await heartbeat.finalizeSiteLostRun(runId, "myr-vm1")).outcome).toBe("not_running");
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.filter((row) => row.retryOfRunId === runId)).toHaveLength(1);
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.filter((row) => (row.payload as Record<string, unknown>)?.retryOfRunId === runId)).toHaveLength(1);
+  });
+
+  it("leaves a run alone while its controller lease is live or a reattach holds it", async () => {
+    const live = await seedRunFixture({ agentStatus: "idle" });
+    await db
+      .update(heartbeatRuns)
+      .set({ controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(heartbeatRuns.id, live.runId));
+    const reattaching = await seedRunFixture({ agentStatus: "idle", contextSnapshot: { reattachGatewayRunId: "gw-9" } });
+    const heartbeat = heartbeatService(db);
+
+    expect((await heartbeat.finalizeSiteLostRun(live.runId, "myr-vm1")).outcome).toBe("not_claimed");
+    expect((await heartbeat.finalizeSiteLostRun(reattaching.runId, "myr-vm1")).outcome).toBe("not_claimed");
+    const rows = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.id, [live.runId, reattaching.runId]));
+    expect(rows.every((row) => row.status === "running")).toBe(true);
+    expect(await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.retryOfRunId, [live.runId, reattaching.runId]))).toHaveLength(0);
+  });
+
   it("skips generic timer wakes without invoking an adapter when no assigned work is actionable", async () => {
     const { companyId, agentId } = await seedIdleTimerAgentFixture();
     const heartbeat = heartbeatService(db);
@@ -4247,7 +4305,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.insert(plugins).values({
       id: pluginId,
       pluginKey: "paperclip.kubernetes-sandbox-provider",
-      packageName: "@paperclipai/kubernetes-sandbox-provider",
+      packageName: "@myrmidon/kubernetes-sandbox-provider",
       version: "1.0.0",
       apiVersion: 1,
       categories: ["automation"],
@@ -4453,7 +4511,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.insert(plugins).values({
       id: pluginId,
       pluginKey: "paperclip.kubernetes-sandbox-provider",
-      packageName: "@paperclipai/kubernetes-sandbox-provider",
+      packageName: "@myrmidon/kubernetes-sandbox-provider",
       version: "1.0.0",
       apiVersion: 1,
       categories: ["automation"],
@@ -7980,6 +8038,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runningProcesses.has(runId)).toBe(false);
   });
 
+  it("logs and persists the cancellation source and correlation id", async () => {
+    const { runId, agentId } = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+    });
+    const info = vi.spyOn(logger, "info");
+    try {
+      const cancelled = await heartbeatService(db).cancelRun(runId, "Cancelled by a board operator", {
+        correlationId: "corr-test-1",
+        cancellationSource: { code: "board_operator", endpoint: "POST /api/heartbeat-runs/:runId/cancel", actor: "user-7" },
+      });
+      expect(cancelled?.resultJson).toMatchObject({
+        executionCancellation: {
+          correlationId: "corr-test-1",
+          source: { code: "board_operator", endpoint: "POST /api/heartbeat-runs/:runId/cancel", actor: "user-7" },
+          reason: "Cancelled by a board operator",
+        },
+      });
+      expect(info).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId,
+          agentId,
+          correlationId: "corr-test-1",
+          cancellationSource: expect.objectContaining({ code: "board_operator", actor: "user-7" }),
+        }),
+        "heartbeat run cancellation requested",
+      );
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it("records manual cancellation stop metadata", async () => {
     const { runId } = await seedRunFixture({
       agentStatus: "running",
@@ -7994,6 +8084,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       effectiveTimeoutSec: 0,
       timeoutConfigured: false,
       timeoutFired: false,
+      executionCancellation: {
+        correlationId: expect.any(String),
+        source: { code: "control_plane", actor: "system" },
+        reason: "Cancelled by control plane",
+      },
     });
   });
 

@@ -22,7 +22,7 @@
 //    registers the runtime for the card's "Apply now" (routes-wiring.ts).
 //  - the container image builder and docker-compose network (G1).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { laneInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A)
 import { maintenanceHeartbeatPort, maintenanceService } from "../maintenance/index.js";
 import { heartbeatService } from "../../services/index.js";
@@ -34,7 +34,7 @@ import {
   readBotContainerAgentConfig,
 } from "./agent-config.js";
 import type { BotContainerAgentConfig } from "./agent-config.js";
-import type { SharedMountSettings } from "@paperclipai/shared";
+import type { SharedMountSettings } from "@myrmidon/shared";
 import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js";
 import type { BotContainerDriver } from "./driver.js";
 import { isBotSkillBackimportEnabled } from "./skill-backimport.js";
@@ -135,6 +135,8 @@ export function realBotMaintenancePort(db: Db): BotMaintenancePort {
 
 export interface BotContainerAgent {
   agentId: string;
+  /** Owning company; the fleet router scopes a named host to it (set by readAgent). */
+  companyId?: string;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
 }

@@ -25,6 +25,9 @@ import {
   type ModuleLicenseStatus,
 } from "./licensingApi";
 
+// The license line starts with this prefix; a format token, not a sentence.
+const LICENSE_PLACEHOLDER = "MYR1.…";
+
 const STATE_TONE: Record<ModuleLicenseStatus["state"], string> = {
   valid: "text-green-700 dark:text-green-400",
   expiring: "text-amber-700 dark:text-amber-400",
@@ -54,6 +57,15 @@ function errorCode(error: unknown): string | null {
   return body && typeof body.code === "string" ? body.code : null;
 }
 
+function mismatchIds(error: unknown): { licenseId: string; boardId: string } | null {
+  if (!(error instanceof ApiError)) return null;
+  const details = (error.body as { details?: { licenseInstanceId?: unknown; boardInstanceId?: unknown } } | null)?.details;
+  if (typeof details?.licenseInstanceId === "string" && typeof details?.boardInstanceId === "string") {
+    return { licenseId: details.licenseInstanceId, boardId: details.boardInstanceId };
+  }
+  return null;
+}
+
 type Translate = ReturnType<typeof useTranslation>["t"];
 
 export function moduleStateLabel(t: Translate, status: ModuleLicenseStatus): string {
@@ -64,6 +76,12 @@ export function moduleStateLabel(t: Translate, status: ModuleLicenseStatus): str
   }
   if (status.state === "expiring" && status.expires !== null) {
     return t("licensing.state.expiring", { date: formatLicenseDate(status.expires) });
+  }
+  if (status.state === "wrong_instance" && status.licenseInstanceId && status.boardInstanceId) {
+    return t("licensing.state.wrongInstanceIds", {
+      licenseId: status.licenseInstanceId,
+      boardId: status.boardInstanceId,
+    });
   }
   return t(`licensing.state.${status.state}`);
 }
@@ -99,6 +117,8 @@ export function LicensingSettingsPanel() {
       const key = code ? SAVE_ERROR_KEYS[code] : undefined;
       if (code === "license_path_unwritable") {
         setSaveError(t("licensing.saveError.unwritable", { path: statusQuery.data?.license.path ?? "" }));
+      } else if (code === "license_instance_mismatch" && mismatchIds(error)) {
+        setSaveError(t("licensing.saveError.instanceMismatchIds", mismatchIds(error) ?? {}));
       } else {
         setSaveError(key ? t(key) : t("licensing.saveError.generic"));
       }
@@ -251,7 +271,7 @@ export function LicensingSettingsPanel() {
               id="licensing-license-input"
               rows={3}
               className="font-mono text-xs"
-              placeholder="MYR1.…"
+              placeholder={LICENSE_PLACEHOLDER}
               value={licenseText}
               data-testid="licensing-license-input"
               onChange={(event) => {

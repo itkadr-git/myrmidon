@@ -1,6 +1,6 @@
-import { probeAcpxClaudeInstallation } from "@paperclipai/paperclip-runner/live";
+import { probeAcpxClaudeInstallation } from "@myrmidon/paperclip-runner/live";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
+import { buildSandboxNpmInstallCommand } from "@myrmidon/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 import {
@@ -18,7 +18,7 @@ import {
 } from "../adapters/registry.js";
 import { getPluginProviderModels, replacePluginProviderModels, removePluginProviderModels } from "../myrmidon/plugin-provider-models.js";
 
-vi.mock("@paperclipai/paperclip-runner/live", () => ({ probeAcpxClaudeInstallation: vi.fn(async () => undefined) }));
+vi.mock("@myrmidon/paperclip-runner/live", () => ({ probeAcpxClaudeInstallation: vi.fn(async () => undefined) }));
 
 const externalAdapter: ServerAdapterModule = {
   type: "external_test",

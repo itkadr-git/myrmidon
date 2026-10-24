@@ -1,8 +1,10 @@
 import type { ReactElement, ReactNode } from "react";
+import { Trans } from "react-i18next";
 import { Loader2, ShieldCheck, Terminal, TriangleAlert } from "lucide-react";
 import { BOOTSTRAP_FALLBACK_COMMAND } from "@/bootstrapSetup";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { i18n, useTranslation } from "@/i18n";
 
 type LabFixtureKey =
   | "signed-out-private"
@@ -12,14 +14,14 @@ type LabFixtureKey =
   | "claim-success"
   | "public-invite-only";
 
-const FIXTURE_LABELS: Record<LabFixtureKey, string> = {
-  "signed-out-private": "1 · authenticated/private — signed out (browser claim available)",
-  "signed-in-private": "2 · authenticated/private — signed in (claim CTA primary)",
-  claiming: "3 · authenticated/private — claim in flight",
-  "claim-error": "4 · authenticated/private — claim error (e.g. 409 already claimed)",
-  "claim-success": "5 · authenticated/private — claim succeeded, redirect pending",
-  "public-invite-only": "6 · authenticated/public — invite-only (no browser claim)",
-};
+const fixtureLabels = (): Record<LabFixtureKey, string> => ({
+  "signed-out-private": i18n.t("area.ux-labs.bootstrap-setup-ux-lab.fixtureLabel.signedOutPrivate"),
+  "signed-in-private": i18n.t("area.ux-labs.bootstrap-setup-ux-lab.fixtureLabel.signedInPrivate"),
+  claiming: i18n.t("area.ux-labs.bootstrap-setup-ux-lab.fixtureLabel.claiming"),
+  "claim-error": i18n.t("area.ux-labs.bootstrap-setup-ux-lab.fixtureLabel.claimError"),
+  "claim-success": i18n.t("area.ux-labs.bootstrap-setup-ux-lab.fixtureLabel.claimSuccess"),
+  "public-invite-only": i18n.t("area.ux-labs.bootstrap-setup-ux-lab.fixtureLabel.publicInviteOnly"),
+});
 
 const FIXTURE_ORDER: LabFixtureKey[] = [
   "signed-out-private",
@@ -31,16 +33,17 @@ const FIXTURE_ORDER: LabFixtureKey[] = [
 ];
 
 function CliFallback({ hasActiveInvite }: { hasActiveInvite: boolean }) {
+  const { t } = useTranslation();
   return (
     <div className="mt-6 border-t border-border pt-5">
       <div className="flex items-center gap-2 text-sm font-medium">
         <Terminal className="size-4 text-muted-foreground" aria-hidden />
-        <span>Prefer to finish setup from the host?</span>
+        <span>{t("area.ux-labs.bootstrap-setup-ux-lab.cliFallback.title")}</span>
       </div>
       <p className="mt-2 text-sm text-muted-foreground">
         {hasActiveInvite
-          ? "A bootstrap invite is already active. Check your Myrmidon startup logs for the first‑admin URL, or run this command on the host to rotate it:"
-          : "Run this command on the host that runs Myrmidon to print a one‑time first‑admin invite URL:"}
+          ? t("area.ux-labs.bootstrap-setup-ux-lab.cliFallback.activeInvite")
+          : t("area.ux-labs.bootstrap-setup-ux-lab.cliFallback.noInvite")}
       </p>
       <pre className="mt-3 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 font-mono text-xs">
 {BOOTSTRAP_FALLBACK_COMMAND}
@@ -58,16 +61,16 @@ function StateChrome({ children }: { children: ReactNode }) {
 }
 
 function SignedOutPrivate() {
+  const { t } = useTranslation();
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Myrmidon</h1>
+      <h1 className="text-xl font-semibold">{t("area.ux-labs.bootstrap-setup-ux-lab.finishTitle")}</h1>
       <p className="mt-2 text-sm text-muted-foreground">
-        No admin has claimed this instance yet. Sign in or create your Myrmidon account to become the first
-        admin from this browser.
+        {t("area.ux-labs.bootstrap-setup-ux-lab.signedOut.description")}
       </p>
       <div className="mt-5">
         <Button asChild>
-          <a href="/auth?next=/">Sign in / Create account</a>
+          <a href="/auth?next=/">{t("area.ux-labs.bootstrap-setup-ux-lab.signedOut.signInCta")}</a>
         </Button>
       </div>
       <CliFallback hasActiveInvite={false} />
@@ -76,22 +79,23 @@ function SignedOutPrivate() {
 }
 
 function SignedInPrivate() {
+  const { t } = useTranslation();
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Myrmidon</h1>
+      <h1 className="text-xl font-semibold">{t("area.ux-labs.bootstrap-setup-ux-lab.finishTitle")}</h1>
       <p className="mt-2 text-sm text-muted-foreground">
-        No admin has claimed this instance yet. Claim it now to become the first admin and start onboarding.
+        {t("area.ux-labs.bootstrap-setup-ux-lab.claimDescription")}
       </p>
       <div className="mt-5 flex flex-wrap items-center gap-3">
-        <Button>Claim this instance</Button>
+        <Button>{t("area.ux-labs.bootstrap-setup-ux-lab.claimCta")}</Button>
         <span className="text-sm text-muted-foreground">
-          Signed in as <span className="font-medium text-foreground">jane@appliance.local</span>
+          {t("area.ux-labs.bootstrap-setup-ux-lab.signedInAs")} <span className="font-medium text-foreground">{`jane@appliance.local`}</span>
         </span>
       </div>
       <p className="mt-3 text-xs text-muted-foreground">
-        Wrong account?{" "}
+        {t("area.ux-labs.bootstrap-setup-ux-lab.wrongAccount")}{" "}
         <a href="/auth?next=/" className="underline underline-offset-2">
-          Switch account
+          {t("area.ux-labs.bootstrap-setup-ux-lab.switchAccount")}
         </a>
         .
       </p>
@@ -101,19 +105,20 @@ function SignedInPrivate() {
 }
 
 function ClaimingPrivate() {
+  const { t } = useTranslation();
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Myrmidon</h1>
+      <h1 className="text-xl font-semibold">{t("area.ux-labs.bootstrap-setup-ux-lab.finishTitle")}</h1>
       <p className="mt-2 text-sm text-muted-foreground">
-        No admin has claimed this instance yet. Claim it now to become the first admin and start onboarding.
+        {t("area.ux-labs.bootstrap-setup-ux-lab.claimDescription")}
       </p>
       <div className="mt-5 flex flex-wrap items-center gap-3">
         <Button disabled>
           <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
-          Claiming…
+          {t("area.ux-labs.bootstrap-setup-ux-lab.claiming")}
         </Button>
         <span className="text-sm text-muted-foreground">
-          Signed in as <span className="font-medium text-foreground">jane@appliance.local</span>
+          {t("area.ux-labs.bootstrap-setup-ux-lab.signedInAs")} <span className="font-medium text-foreground">{`jane@appliance.local`}</span>
         </span>
       </div>
       <CliFallback hasActiveInvite={false} />
@@ -122,16 +127,17 @@ function ClaimingPrivate() {
 }
 
 function ClaimErrorPrivate() {
+  const { t } = useTranslation();
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Myrmidon</h1>
+      <h1 className="text-xl font-semibold">{t("area.ux-labs.bootstrap-setup-ux-lab.finishTitle")}</h1>
       <p className="mt-2 text-sm text-muted-foreground">
-        No admin has claimed this instance yet. Claim it now to become the first admin and start onboarding.
+        {t("area.ux-labs.bootstrap-setup-ux-lab.claimDescription")}
       </p>
       <div className="mt-5 flex flex-wrap items-center gap-3">
-        <Button>Claim this instance</Button>
+        <Button>{t("area.ux-labs.bootstrap-setup-ux-lab.claimCta")}</Button>
         <span className="text-sm text-muted-foreground">
-          Signed in as <span className="font-medium text-foreground">jane@appliance.local</span>
+          {t("area.ux-labs.bootstrap-setup-ux-lab.signedInAs")} <span className="font-medium text-foreground">{`jane@appliance.local`}</span>
         </span>
       </div>
       <div
@@ -140,10 +146,12 @@ function ClaimErrorPrivate() {
       >
         <TriangleAlert className="mt-0.5 size-4 flex-shrink-0" aria-hidden />
         <div>
-          <p className="font-medium">Someone else has already claimed this instance.</p>
+          <p className="font-medium">{t("area.ux-labs.bootstrap-setup-ux-lab.claimError.title")}</p>
           <p className="mt-1 text-destructive/90">
-            Refresh to sign in, or ask the existing admin to invite you from{" "}
-            <span className="font-mono">Settings → Access</span>.
+            <Trans
+              i18nKey="area.ux-labs.bootstrap-setup-ux-lab.claimError.hint"
+              components={{ path: <span className="font-mono" /> }}
+            />
           </p>
         </div>
       </div>
@@ -153,6 +161,7 @@ function ClaimErrorPrivate() {
 }
 
 function ClaimSuccess() {
+  const { t } = useTranslation();
   return (
     <StateChrome>
       <div className="flex items-start gap-3">
@@ -160,19 +169,19 @@ function ClaimSuccess() {
           <ShieldCheck className="size-5" aria-hidden />
         </div>
         <div>
-          <h1 className="text-xl font-semibold">You&rsquo;re the instance admin</h1>
+          <h1 className="text-xl font-semibold">{t("area.ux-labs.bootstrap-setup-ux-lab.success.title")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Setup is complete. Taking you to onboarding to create your first organization&hellip;
+            {t("area.ux-labs.bootstrap-setup-ux-lab.success.description")}
           </p>
         </div>
       </div>
       <div className="mt-5 flex items-center gap-3">
         <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
-        <span className="text-sm text-muted-foreground">Redirecting&hellip;</span>
+        <span className="text-sm text-muted-foreground">{t("area.ux-labs.bootstrap-setup-ux-lab.success.redirecting")}</span>
       </div>
       <div className="mt-5">
         <Button asChild variant="outline">
-          <a href="/">Continue to dashboard</a>
+          <a href="/">{t("area.ux-labs.bootstrap-setup-ux-lab.success.continue")}</a>
         </Button>
       </div>
     </StateChrome>
@@ -180,17 +189,16 @@ function ClaimSuccess() {
 }
 
 function PublicInviteOnly() {
+  const { t } = useTranslation();
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">This Myrmidon is waiting on its first admin</h1>
+      <h1 className="text-xl font-semibold">{t("area.ux-labs.bootstrap-setup-ux-lab.publicInvite.title")}</h1>
       <p className="mt-2 text-sm text-muted-foreground">
-        This instance runs in invite‑only mode. The operator must generate a one‑time first‑admin invite URL
-        from the host. Once you have the link, open it from this browser to finish setup.
+        {t("area.ux-labs.bootstrap-setup-ux-lab.publicInvite.description")}
       </p>
       <CliFallback hasActiveInvite />
       <p className="mt-4 text-xs text-muted-foreground">
-        Browser‑based claim is intentionally disabled in public mode so anyone on the network can&rsquo;t
-        promote themselves.
+        {t("area.ux-labs.bootstrap-setup-ux-lab.publicInvite.note")}
       </p>
     </StateChrome>
   );
@@ -206,25 +214,24 @@ const FIXTURE_BODIES: Record<LabFixtureKey, ReactElement> = {
 };
 
 export function BootstrapSetupUxLab() {
+  const { t } = useTranslation();
   return (
     <div className="bg-background min-h-screen pb-16">
       <header className="border-b border-border bg-muted/20">
         <div className="mx-auto max-w-3xl px-6 py-6">
-          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">UX Lab</p>
-          <h1 className="mt-1 text-2xl font-semibold">Bootstrap-pending setup states</h1>
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{t("area.ux-labs.bootstrap-setup-ux-lab.header.eyebrow")}</p>
+          <h1 className="mt-1 text-2xl font-semibold">{t("area.ux-labs.bootstrap-setup-ux-lab.header.title")}</h1>
           <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-            Fixtures for the bootstrap-pending screen in <span className="font-mono">CloudAccessGate</span>. Used
-            as the UX spec for{" "}
-            <a className="underline underline-offset-2" href="/PAP/issues/PAP-10113">
-              PAP-10113
-            </a>{" "}
-            and the implementation reference for{" "}
-            <a className="underline underline-offset-2" href="/PAP/issues/PAP-10114">
-              PAP-10114
-            </a>
-            . The browser claim CTA only appears when{" "}
-            <span className="font-mono">deploymentMode === &quot;authenticated&quot;</span> and{" "}
-            <span className="font-mono">deploymentExposure === &quot;private&quot;</span>.
+            <Trans
+              i18nKey="area.ux-labs.bootstrap-setup-ux-lab.header.description"
+              components={{
+                gate: <span className="font-mono" />,
+                spec: <a className="underline underline-offset-2" href="/PAP/issues/PAP-10113" />,
+                impl: <a className="underline underline-offset-2" href="/PAP/issues/PAP-10114" />,
+                mode: <span className="font-mono" />,
+                exposure: <span className="font-mono" />,
+              }}
+            />
           </p>
         </div>
       </header>
@@ -235,7 +242,7 @@ export function BootstrapSetupUxLab() {
               id={`lab-${key}`}
               className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground"
             >
-              {FIXTURE_LABELS[key]}
+              {fixtureLabels()[key]}
             </h2>
             <div className="rounded-lg border border-dashed border-border/70 bg-muted/10 p-2">
               {FIXTURE_BODIES[key]}

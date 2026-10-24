@@ -34,3 +34,22 @@ export {
   type SeedKnowledgeOptions,
   type SeedKnowledgeResult,
 } from "./seed.js";
+// K-2 (part B): the REST surface — /api/myrmidon/companies/:companyId/knowledge/*.
+export { knowledgeRoutes, myrmidonKnowledgeRoutes, type KnowledgeRoutesDeps } from "./routes.js";
+// K-2 (part B): the MCP surface — POST /api/myrmidon/companies/:companyId/knowledge/mcp.
+export {
+  knowledgeMcpRoutes,
+  myrmidonKnowledgeMcpRoutes,
+  KNOWLEDGE_TOOL_DEFINITIONS,
+  KNOWLEDGE_MCP_TOOL_NAMES,
+  type KnowledgeMcpDeps,
+} from "./mcp.js";
+
+export {
+  buildKnowledgeGitTree,
+  readKnowledgeExportSettings,
+  KNOWLEDGE_EXPORT_DEFAULT_BRANCH,
+  type KnowledgeExportSettings,
+  type KnowledgeGitTree,
+} from "./git-export.js";
+export { startKnowledgeExport, stopKnowledgeExport, runKnowledgeExportPass } from "./git-export-job.js";
