@@ -1,6 +1,6 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -1133,11 +1133,14 @@ describe("sandbox callback bridge", () => {
     });
 
     const requestFile = await waitForJsonFile(directories.requestsDir);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+    const responseTempPath = `${responsePath}.tmp`;
     await writeFile(
-      path.posix.join(directories.responsesDir, requestFile),
+      responseTempPath,
       '{"status":200,"headers":{"content-type":"application/json"},"body"',
       "utf8",
     );
+    await rename(responseTempPath, responsePath);
 
     const response = await responsePromise;
     expect(response.status).toBe(502);
