@@ -676,6 +676,12 @@ describe("agent live run routes", () => {
   );
 
   it("returns 304 for a matching heartbeat-runs ETag before listing or redacting runs", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "company_scope:read",
+      action: input.action,
+      reason: "allow_test_scope",
+      explanation: "Allowed by the route test actor.",
+    }));
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl)

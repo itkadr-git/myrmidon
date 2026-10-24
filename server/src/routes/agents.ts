@@ -7032,8 +7032,18 @@ function getActorIdentityPart(req: Request): string {
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
 
-    const actorPart = getActorIdentityPart(req);
-    const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorPart);
+    const actorShape = JSON.stringify([
+      getActorIdentityPart(req),
+      req.actor.type === "board" ? req.actor.companyIds ?? [] : req.actor.companyId,
+      Array.isArray(req.actor.onBehalfOfMemberships)
+        ? req.actor.onBehalfOfMemberships.map((membership) => ({
+            companyId: membership.companyId,
+            status: membership.status,
+            membershipRole: membership.membershipRole,
+          }))
+        : null,
+    ]);
+    const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
 
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
