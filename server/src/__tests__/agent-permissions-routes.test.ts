@@ -529,7 +529,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.headers["cache-control"]).toBe("private, must-revalidate");
     expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledWith(
       companyId,
-      "board:board-user:admin",
+      "board:board-user:admin:configs=yes",
     );
     expect(mockAgentService.listSummaries).toHaveBeenCalledWith(companyId);
     expect(mockAgentService.list).not.toHaveBeenCalled();
@@ -563,7 +563,10 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(304);
     expect(res.text).toBe("");
-    expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledOnce();
+    expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledWith(
+      companyId,
+      "board:board-user:admin:configs=yes",
+    );
     expect(mockAgentService.listSummaries).not.toHaveBeenCalled();
   }, 20_000);
 
@@ -702,6 +705,10 @@ describe.sequential("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));
 
     expect(res.status).toBe(200);
+    expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledWith(
+      companyId,
+      "board:member-user:user:configs=no",
+    );
     expect(res.body).toEqual([
       expect.objectContaining({
         id: agentId,

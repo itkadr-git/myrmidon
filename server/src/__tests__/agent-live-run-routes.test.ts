@@ -17,6 +17,8 @@ const mockHeartbeatService = vi.hoisted(() => ({
   readLog: vi.fn(),
   wakeup: vi.fn(),
   getRun: vi.fn(),
+  listVersionKey: vi.fn().mockResolvedValue('"runs-v1"'),
+  list: vi.fn().mockResolvedValue([]),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -672,6 +674,27 @@ describe("agent live run routes", () => {
       }));
     },
   );
+
+  it("returns 304 for a matching heartbeat-runs ETag before listing or redacting runs", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get("/api/companies/company-1/heartbeat-runs")
+        .set("If-None-Match", '"runs-v1"'),
+    );
+
+    expect(res.status).toBe(304);
+    expect(res.text).toBe("");
+    expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
+      "company-1",
+      undefined,
+      undefined,
+      false,
+      "board:local-board:member",
+    );
+    expect(mockHeartbeatService.list).not.toHaveBeenCalled();
+    expect(mockRunSecretRedactionRegistry.redactForRuns).not.toHaveBeenCalled();
+  });
 
   it("caps company live run polling by default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({

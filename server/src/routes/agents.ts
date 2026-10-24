@@ -4142,12 +4142,12 @@ function getActorIdentityPart(req: Request): string {
       return;
     }
 
-    const actorPart = getActorIdentityPart(req);
+    const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
+    const actorPart = `${getActorIdentityPart(req)}:configs=${canReadConfigs ? "yes" : "no"}`;
     const vk = await svc.listSummariesVersionKey(companyId, actorPart);
     if (notModifiedOrSetEtag(req, res, vk)) return;
 
     const result = await filterAgentsForActor(req, await svc.listSummaries(companyId));
-    const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     // myrmidon(PERF-DIET-G): the list is a slim projection. It carries no
     // adapterConfig (so no per-row env redaction is needed any more) and the
     // model column travels as the SQL-computed `adapterModel`; the full

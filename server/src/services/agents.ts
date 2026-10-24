@@ -550,7 +550,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     companyId: string,
     actorShape: string = "all",
   ): Promise<string> {
-    const { start } = currentUtcMonthWindow();
+    const { start, end } = currentUtcMonthWindow();
     const [agg] = await db
       .select({
         rowCount: sql<number>`count(*)::int`,
@@ -569,6 +569,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
         and(
           eq(costEvents.companyId, companyId),
           gte(costEvents.occurredAt, start),
+          lt(costEvents.occurredAt, end),
         ),
       );
     return versionKeyEtag("agents-list", [
