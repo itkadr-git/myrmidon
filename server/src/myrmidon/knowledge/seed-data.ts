@@ -184,7 +184,6 @@ export const SEED_DECISIONS: SeedDecision[] = [
     decidedBy: OWNER,
     quote: "делаем А2, Б только если понадобится",
     body: "А2 (выпуск после 1.1.1): вызов инструмента через шлюз бота доска сама привязывает к текущему прогону агента — задача, проект, ответственный, GitHub от лица прогона. Только сервер, hermes не трогаем. Отменяет запись «сначала А, потом Б» в части второго этапа.",
-    supersedes: "decisions/2026-09-28-board-manages-containers",
     tags: ["myrmidon", "tools"],
   },
   {
@@ -312,7 +311,6 @@ export const SEED_DECISIONS: SeedDecision[] = [
     decidedBy: OWNER,
     quote: "включён как мост до своего модуля знаний",
     body: "Плагин LLM Wiki включён как мост до своего модуля знаний (был выключен оператором 04.10); знание из него переносится частью K-6. Свой модуль знаний: первая часть (§6.2, модуль в ядре, читаемый агентами) — 1.6.6, остальное (§6.3) — 1.7 (Alex: «а»).",
-    supersedes: "decisions/2026-10-04-wiki-own",
     tags: ["knowledge", "wiki", "release"],
   },
   {
@@ -429,7 +427,6 @@ export const SEED_DECISIONS: SeedDecision[] = [
     decidedBy: OWNER,
     quote: "Этот релиз на стенде тестировать не будем. Сразу выкатываем на бой. Потом создадим отдельный стенд на отдельной машине для тестов.",
     body: "Отменяет пункт «проверка на стенде с Docker» из записи «1.1.0 одним выпуском».",
-    supersedes: "decisions/2026-09-29-1-1-0-one-release",
     tags: ["myrmidon", "release"],
   },
   {
