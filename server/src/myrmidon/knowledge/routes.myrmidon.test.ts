@@ -422,7 +422,7 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     const deps = makeDeps({ grants: true });
     const item = makeItem({ kind: "rule", slug: "rules/no-secrets" });
     (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
-    const noMembershipActor = { ...boardActor, memberships: [] };
+    const noMembershipActor = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "viewer" }] };
     const res = await request(app(deps, noMembershipActor))
       .post(`${base}/items/rules/no-secrets/approve`)
       .send({ approverKind: "adm", revisionId: "rev-2" });
