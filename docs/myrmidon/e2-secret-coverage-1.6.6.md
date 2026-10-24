@@ -56,7 +56,7 @@ Disposition of the exact E1 names of this part (the source lines are those liste
 The E1 `secret` classification of the bootstrap rows stays as the registry has it (the matrix does not alter E1); their accepted disposition is "bootstrap, no ref", with the threat model above.
 
 
-## E2.2 provider/adapter runtime credentials (OPE-9035)
+## E2.2 provider/adapter runtime credentials (OPE-9035, PR #1741)
 
 Finding: a credential an adapter uses belongs to one agent of one company, so the standard store for it is the agent's `adapterConfig.env` as a `secret_ref` binding, resolved by the secrets service for that agent (binding check, status, version, access event). That path exists and is not duplicated here. A process-wide instance setting would give every agent the same key and bypass the per-agent scope, so it is not added for those names. The only instance-scoped consumer in the part is the Codex model discovery, which reads one OpenAI key for the whole board; it is registered as a secret-ref setting.
 
