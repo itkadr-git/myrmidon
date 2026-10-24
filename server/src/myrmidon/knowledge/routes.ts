@@ -168,10 +168,17 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     if (actor.type !== "board") {
       throw forbidden("Only a board user may approve a rule.", { code: "approver_authority_required" });
     }
+    if (approverKind === null) {
+      throw forbidden("This user has no active approver membership in the company.", { code: "approver_authority_required" });
+    }
     const membership = actor.memberships?.find((entry) => entry.companyId === companyId && entry.status === "active");
     const authorized = approverKind === "owner"
-      ? membership?.membershipRole === "owner"
-      : approverKind === "adm" && (membership?.membershipRole === "admin" || actor.isInstanceAdmin === true);
+      ? actor.source === "local_implicit" || membership?.membershipRole === "owner"
+      : approverKind === "adm"
+        ? actor.isInstanceAdmin === true || membership?.membershipRole === "admin"
+        : approverKind === "admin"
+          ? actor.isInstanceAdmin === true || membership?.membershipRole === "admin"
+          : false;
     if (!authorized) {
       throw forbidden(`This user is not authorized to approve as ${approverKind}.`, { code: "approver_authority_required" });
     }
@@ -299,9 +306,9 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
    * shared grade check (../rule-grade.ts). Notes and other kinds are not
    * graded here.
    */
-  async function assertRuleGrade(req: Request, companyId: string, item: { kind: string; roles?: readonly string[] | null }) {
-    if (item.kind !== "rule") return;
-    await assertRuleWriteGrade(req, companyId, deps.casteSensitivity ?? builtinCasteSensitivity, item.roles ?? []);
+  async function assertRuleGrade(req: Request, companyId: string, item: { kind: string; roles?: readonly string[] | null }): Promise<string | null> {
+    if (item.kind !== "rule") return null;
+    return assertRuleWriteGrade(req, companyId, deps.casteSensitivity ?? builtinCasteSensitivity, item.roles ?? []);
   }
 
   // --------------------------------------------------------------- reads
@@ -520,25 +527,32 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const revisionId = typeof req.body?.revisionId === "string" ? req.body.revisionId : undefined;
       try {
         const item = await loadItemForMutation(mod, itemIdOrSlug(req));
-        // Reject agents before grants, then authorize the verified board membership.
         assertRuleApproveAllowed(req, item.kind);
         await assertKnowledgeToolAccess(req, "rule_approve");
-        // §3.4 / K-3: the approver's grade comes from the actor's membership
-        // (never from the request body); S4 compares it against the item's
-        // approverKind and a caller without the matching grade is refused by
-        // the domain gate (403).
         const approverKindInput = approverKindFromRequest(req, companyId);
-        assertApproverAuthority(req, companyId, approverKindInput);
-        await assertRuleGrade(req, companyId, item);
-        if (approverKindInput === null) {
+        const checkedActorGrade = item.kind === "rule"
+          ? await assertRuleGrade(req, companyId, item)
+          : null;
+        const approverKind = item.kind === "rule"
+          ? (item.approverKind ?? (checkedActorGrade === "admin" ? "adm" : checkedActorGrade))
+          : approverKindInput;
+        assertApproverAuthority(req, companyId, approverKind);
+        const actorGrade = checkedActorGrade ?? approverKindInput;
+        if (actorGrade === null) {
           throw forbidden("approving needs an operator, admin or owner membership of the company", {
             code: "approver_kind_mismatch",
           });
         }
+        if (item.approverKind !== null && approverKind !== item.approverKind) {
+          throw forbidden("The actor's membership grade does not match the rule approver grade.", {
+            code: "approver_kind_mismatch",
+          });
+        }
+
         res.json({
           item: await mod.approve(
             itemIdOrSlug(req),
-            { actorType: actor.actorType, actorId: actor.actorId, kind: approverKindInput },
+            { actorType: actor.actorType, actorId: actor.actorId, kind: approverKind },
             { revisionId },
           ),
         });
