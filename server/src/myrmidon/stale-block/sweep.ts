@@ -75,6 +75,9 @@ function loadStaleBlockServices() {
   return staleBlockServices;
 }
 
+/** Transactions of the sweep that stay open longer than this are logged with the path name. */
+const STALE_BLOCK_TX_WARN_MS = 2_000;
+
 export interface StaleBlockSweepDeps {
   db: Db;
   /** Reads whether an event/gate key is still set for the company; injected so tests never touch gates. */
@@ -90,7 +93,7 @@ export interface StaleBlockSweepDeps {
     entityId: string;
     issueId: string;
     details: Record<string, unknown>;
-  }) => Promise<void>;
+  }, dbOrTx?: Db) => Promise<void>;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
 }
@@ -282,7 +285,13 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
     const svc = services.issueService(deps.db);
     let effectiveTargetStatus: "in_progress" | "todo" = isBareBlock ? "todo" : "in_progress";
 
+    const txStartedAtMs = Date.now();
     const done = await deps.db.transaction(async (tx) => {
+      // myrmidon(1.6.6 OPE-9074): the issue row is locked FOR UPDATE below, so
+      // every write in here must go through `tx`. A write through the root
+      // handle queues behind our own lock and the transaction sits idle in
+      // transaction until the database kills it. Bound the damage.
+      await tx.execute(sql`set local idle_in_transaction_session_timeout = '15s'`);
       const locked = await tx
         .select({
           id: issues.id,
@@ -367,7 +376,7 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
             status: { from: "blocked", to: effectiveTargetStatus },
           },
         },
-      });
+      }, tx as unknown as Db);
       await deps.logActivity?.({
         companyId: locked.companyId,
         actorType: "system",
@@ -387,10 +396,17 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
           })),
           commentId: comment.id,
         },
-      });
+      }, tx as unknown as Db);
       void svc;
       return true;
     });
+    const txElapsedMs = Date.now() - txStartedAtMs;
+    if (txElapsedMs > STALE_BLOCK_TX_WARN_MS) {
+      logger.warn(
+        { path: "stale_block_sweep.unblock", issueId: row.id, elapsedMs: txElapsedMs },
+        "stale block sweep transaction held longer than expected",
+      );
+    }
     if (!done) return false;
     for (const publication of publications) publishActivity(publication);
     await services.executeIssuePostCommitActions(deps.db, actions);
