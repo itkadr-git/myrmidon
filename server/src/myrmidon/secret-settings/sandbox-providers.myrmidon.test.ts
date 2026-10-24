@@ -15,6 +15,11 @@ import {
   SANDBOX_PROVIDER_SECRET_SETTINGS,
   resolveSandboxProviderSecret,
 } from "./sandbox-providers.js";
+import {
+  RUNNER_ACPX_CODEX_AUTH_REGISTRY_ENTRY,
+  RUNNER_ACPX_CODEX_AUTH_SETTING,
+  resolveRunnerAcpxCodexAuthEnv,
+} from "./runner-environment.js";
 
 const COMPANY = "11111111-1111-4111-8111-111111111111";
 const SECRET = "22222222-2222-4222-8222-222222222222";
@@ -179,39 +184,63 @@ describe("buildPluginWorkerEnv with instance secret refs", () => {
   });
 });
 
-describe("runner ACPX Codex auth JSON setting", () => {
-  const name = "runner.acpx_codex_auth_json";
-  const row = INSTANCE_SECRET_SETTINGS.find((e) => e.name === name)!;
-  const reg = () => new InstanceSecretSettingRegistry([row]);
-  const store = (): InstanceSecretSettingStore => {
-    let b: InstanceSecretBinding | null = null;
-    return {
-      getBinding: async () => b,
-      resolveValue: async () => REF_VALUE,
-      describeSecret: async () => ({ name: "codex", status: "active", companyId: COMPANY }),
-      setBinding: async (_n, id) => (b = { companyId: COMPANY, secretId: id }),
-      clearBinding: async () => ((b = null), true),
-    };
+describe("runner ACPX Codex auth JSON path", () => {
+  const ctxResolver = (env: NodeJS.ProcessEnv = {}) => {
+    const t = make(env);
+    const resolver = createInstanceSecretSettingResolver({
+      registry: new InstanceSecretSettingRegistry([RUNNER_ACPX_CODEX_AUTH_REGISTRY_ENTRY]),
+      store: (() => {
+        let b: InstanceSecretBinding | null = null;
+        return {
+          getBinding: async () => b,
+          resolveValue: async () => REF_VALUE,
+          describeSecret: async () => ({ name: "codex", status: "active", companyId: COMPANY }),
+          setBinding: async (_n: string, id: string) => (b = { companyId: COMPANY, secretId: id }),
+          clearBinding: async () => ((b = null), true),
+        } satisfies InstanceSecretSettingStore;
+      })(),
+      env,
+      registerForRedaction: (v) => t.redacted.push(v),
+    });
+    return { resolver, t };
   };
+  const NAME = RUNNER_ACPX_CODEX_AUTH_SETTING;
+  const input = { existing: {}, managedCredentialFile: false };
 
-  it("is registered with the env name the runner reads, for the runner environment only", () => {
-    expect(row.envOverride).toBe("PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET");
-    expect(row.consumers).toEqual(["runner-environment"]);
+  it("ref set -> the runner environment receives the value under the name the runner reads", async () => {
+    const { resolver, t } = ctxResolver();
+    await resolver.setRef(NAME, SECRET);
+    expect(await resolveRunnerAcpxCodexAuthEnv(resolver, input)).toEqual({
+      PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: REF_VALUE,
+    });
+    expect(t.redacted).toEqual([REF_VALUE]);
   });
 
-  it("missing, ref, env priority, denied, revoke", async () => {
-    const mk = (env: NodeJS.ProcessEnv = {}) =>
-      createInstanceSecretSettingResolver({ registry: reg(), store: store(), env });
-    const ctx = { consumerId: "runner-environment" };
-    await expect(mk().resolve(name, ctx)).rejects.toMatchObject({ details: { code: "setting_ref_missing" } });
-    const r = mk();
-    await r.setRef(name, SECRET);
-    expect((await r.resolve(name, ctx)).value).toBe(REF_VALUE);
-    await expect(r.resolve(name, { consumerId: "plugin-worker:e2b" })).rejects.toMatchObject({ status: 403 });
-    await r.clearRef(name);
-    await expect(r.resolve(name, ctx)).rejects.toMatchObject({ details: { code: "setting_ref_missing" } });
-    const e = mk({ PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: ENV_VALUE });
-    await e.setRef(name, SECRET);
-    expect(await e.resolve(name, ctx)).toEqual({ source: "env", value: ENV_VALUE });
+  it("ref revoked -> nothing is passed", async () => {
+    const { resolver } = ctxResolver();
+    await resolver.setRef(NAME, SECRET);
+    await resolver.clearRef(NAME);
+    expect(await resolveRunnerAcpxCodexAuthEnv(resolver, input)).toEqual({});
+  });
+
+  it("emergency env has priority over the ref", async () => {
+    const { resolver } = ctxResolver({ PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: ENV_VALUE });
+    await resolver.setRef(NAME, SECRET);
+    expect(await resolveRunnerAcpxCodexAuthEnv(resolver, input)).toEqual({
+      PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: ENV_VALUE,
+    });
+  });
+
+  it("does not add a second credential source (api key, managed file, existing JSON)", async () => {
+    const { resolver } = ctxResolver();
+    await resolver.setRef(NAME, SECRET);
+    expect(await resolveRunnerAcpxCodexAuthEnv(resolver, { existing: { CODEX_API_KEY: "k" }, managedCredentialFile: false })).toEqual({});
+    expect(await resolveRunnerAcpxCodexAuthEnv(resolver, { existing: {}, managedCredentialFile: true })).toEqual({});
+  });
+
+  it("is scoped to the runner environment consumer only", async () => {
+    const { resolver } = ctxResolver();
+    await resolver.setRef(NAME, SECRET);
+    await expect(resolver.resolve(NAME, { consumerId: "plugin-worker:e2b" })).rejects.toMatchObject({ status: 403 });
   });
 });

@@ -1,4 +1,6 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
+import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
+import { resolveRunnerAcpxCodexAuthEnv } from "../myrmidon/secret-settings/runner-environment.js";
 import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
 // myrmidon(1.6.6 RUN-RETRY-POLICY): classification/backoff/attempt limit of a
 // failed run's retry; the schedule this file queues records itself with
@@ -26022,6 +26024,20 @@ export function heartbeatService(
                           process.env,
                           executionWorkspace.cwd,
                         ),
+                        ...(await resolveRunnerAcpxCodexAuthEnv(
+                          createInstanceSecretSettingService(db),
+                          {
+                            existing: {
+                              ...buildNativeProviderEnvironment(
+                                adapterEnv,
+                                process.env,
+                                executionWorkspace.cwd,
+                              ),
+                            },
+                            managedCredentialFile: Boolean(managedAiRuntime),
+                          },
+                          logger,
+                        )),
                         ...(nativeGitHubBridge
                           ? {
                               PAPERCLIP_GITHUB_BROKER_URL:
