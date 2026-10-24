@@ -254,7 +254,7 @@ export async function sweepHeartbeatRunScratch(input: {
       continue;
     }
     const cleaned = await cleanupHeartbeatRunScratch({
-      scratch: { dir, markerPath, metadata: marker },
+      scratch: { dir, runDir: path.join(dir, "run-dir"), markerPath, metadata: marker },
       isProcessGroupAlive: input.isProcessGroupAlive,
     });
     if (cleaned.removed) {
