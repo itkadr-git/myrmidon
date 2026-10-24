@@ -76,8 +76,8 @@ function nonEmpty(value: string | undefined): string | null {
  */
 export function readBotEgressSettings(env: NodeJS.ProcessEnv = process.env): BotEgressSettings {
   // A mode saved from the UI wins over the environment.
-  const rawMode = (env === process.env ? liveSavedSetting<string>("bot_egress_mode") ?? null : null) ??
-    nonEmpty(env[BOT_EGRESS_MODE_ENV]);
+  const saved = env === process.env ? liveSavedSetting<string>("bot_egress_mode") : undefined;
+  const rawMode = saved ? saved : nonEmpty(env[BOT_EGRESS_MODE_ENV]);
   let mode: BotEgressMode = "off";
   if (rawMode !== null) {
     const normalized = rawMode.toLowerCase();
