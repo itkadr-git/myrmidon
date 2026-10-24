@@ -5,6 +5,7 @@ import { instanceSettingsService } from "../../../services/instance-settings.js"
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../../../myrmidon/maintenance/domain.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { logger } from "../../../middleware/logger.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { runContextPersistenceFields } from "@myrmidon/db";
@@ -1071,7 +1072,10 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
       });
     },
     async withIssueExecutionLock(input, fn): Promise<ReleaseTransactionResult & { run: RunSnapshot }> {
-      return db.transaction(async (rawTx: unknown) => {
+      const transactionStartedAt = performance.now();
+      let lockWaitMs = 0;
+      let drainMs = 0;
+      const result = await db.transaction(async (rawTx: unknown) => {
         const tx = rawTx as unknown as Db;
         const run = await tx
           .select()
@@ -1089,6 +1093,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         // Lock the context issue (if any) and every issue that still references this
         // run, in id order, so two concurrent finalizations can never deadlock on
         // each other's row-lock acquisition order.
+        const lockStartedAt = performance.now();
         await tx.execute(
           contextIssueId
             ? sql`
@@ -1111,6 +1116,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
               `,
         );
 
+        lockWaitMs = performance.now() - lockStartedAt;
         const candidateIssues = await tx
           .select()
           .from(issues)
@@ -1270,9 +1276,22 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           run: runSnapshot,
           recoveryOnly,
         };
-        const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
-        return { ...result, run: runSnapshot };
+        const drainStartedAt = performance.now();
+        const drainResult = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
+        drainMs = performance.now() - drainStartedAt;
+        return { ...drainResult, run: runSnapshot };
       });
+      const transactionMs = performance.now() - transactionStartedAt;
+      if (transactionMs > 1_000 || lockWaitMs > 1_000 || drainMs > 1_000) {
+        logger.warn({
+          companyId: input.companyId,
+          runId: input.runId,
+          transactionMs: Math.round(transactionMs),
+          issueLockWaitMs: Math.round(lockWaitMs),
+          drainMs: Math.round(drainMs),
+        }, "wake-queue release transaction exceeded 1s");
+      }
+      return result;
     },
   };
 }

@@ -770,8 +770,12 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     await db.update(issues).set({ executionRunId: runA, checkoutRunId: runB }).where(eq(issues.id, issueA));
     await db.update(issues).set({ executionRunId: runB, checkoutRunId: runA }).where(eq(issues.id, issueB));
 
-    const adapterA = createPostgresWakeQueueAdapter(db, stubDeps);
-    const adapterB = createPostgresWakeQueueAdapter(db, stubDeps);
+    // Separate pools model independent workers and ensure the contention is
+    // exercised across two PostgreSQL connections.
+    const dbA = createDb(tempDb!.connectionString);
+    const dbB = createDb(tempDb!.connectionString);
+    const adapterA = createPostgresWakeQueueAdapter(dbA, stubDeps);
+    const adapterB = createPostgresWakeQueueAdapter(dbB, stubDeps);
     const releaseA = adapterA.withIssueExecutionLock({ companyId, runId: runA, now: new Date() }, async (_locked, _ports) => {
       await new Promise((resolve) => setTimeout(resolve, 25));
       return { outcome: { kind: "released" as const }, postCommitEffects: [] };
@@ -781,13 +785,14 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       return { outcome: { kind: "released" as const }, postCommitEffects: [] };
     });
 
-    await expect(Promise.all([releaseA, releaseB])).resolves.toBeDefined();
+    await expect(Promise.all([releaseA, releaseB])).resolves.toHaveLength(2);
 
     const rows = await db.select().from(issues).where(eq(issues.companyId, companyId));
     for (const row of rows) {
       expect(row.executionRunId).toBeNull();
       expect(row.checkoutRunId).toBeNull();
     }
+    await Promise.all([dbA.$client.end(), dbB.$client.end()]);
   });
 
   it("clears both lock columns on every sibling and keeps a transferred executionRunId", async () => {
