@@ -55,6 +55,9 @@ export async function updateAgentAllowlistsForCompany(
   db: Db,
   agentGatewayKeys: AgentGatewayKeyDeps,
   companyId: string,
+  additionalModelNames: readonly string[] = [],
+  removedModelNames: readonly string[] = [],
+  allowEmpty = false,
 ): Promise<AllowlistSyncResult> {
   const skip = (reason: string): AllowlistSyncResult => ({ attempted: 0, updated: 0, skipped: [reason] });
 
@@ -64,8 +67,11 @@ export async function updateAgentAllowlistsForCompany(
     return skip("gateway-key-management-not-configured");
   }
 
-  const models = await listEnabledModelNames(db, companyId);
-  if (models.length === 0) {
+  const models = [...new Set([
+    ...(await listEnabledModelNames(db, companyId)),
+    ...additionalModelNames,
+  ])].filter((model) => !removedModelNames.includes(model));
+  if (models.length === 0 && !allowEmpty) {
     // Nothing enabled yet: leave keys unrestricted rather than locking the
     // fleet out with an empty allowlist.
     return skip("no-enabled-models");

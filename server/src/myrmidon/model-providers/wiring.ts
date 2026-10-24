@@ -16,8 +16,13 @@
 // setting unset (the default): sync is off, the routes behave as in part A.
 
 import { Router } from "express";
-import type { Db } from "@myrmidon/db";
-import { readGatewayKeySettings } from "@myrmidon/shared";
+import { and, eq } from "drizzle-orm";
+import { pluginConfig, plugins, type Db } from "@myrmidon/db";
+import {
+  readGatewayKeySettings,
+  type PluginRecord,
+  type PluginProviderModelDeclaration,
+} from "@myrmidon/shared";
 import { secretService } from "../../services/index.js";
 import { logActivity } from "../../services/index.js";
 import {
@@ -117,4 +122,103 @@ export function myrmidonModelProviderRoutes(db: Db, env: NodeJS.ProcessEnv = pro
   };
 
   return modelProviderRoutesWithSync(deps);
+}
+
+/** Bridge plugin lifecycle declarations to the company-scoped LiteLLM client. */
+export function createPluginProviderModelSync(
+  db: Db,
+  env: NodeJS.ProcessEnv = process.env,
+): {
+  sync(companyId: string, plugin: PluginRecord): Promise<void>;
+  remove(companyId: string, plugin: PluginRecord): Promise<void>;
+} {
+  const secrets = secretService(db);
+  const settings = readGatewayKeySettings(env);
+  async function getSync(companyId: string) {
+    if (!settings.canManageKeys || !settings.baseUrl || !settings.adminKeySecret) return null;
+    const row = await secrets.getByName(companyId, settings.adminKeySecret);
+    const key = row ? await secrets.resolveSecretValue(companyId, row.id, "latest") : null;
+    if (!key) return null;
+    return createLitellmSyncService({
+      db,
+      litellm: createLitellmSyncClient({ litellmBaseUrl: settings.baseUrl, litellmAdminKey: key }),
+    });
+  }
+  const declaration = (plugin: PluginRecord): PluginProviderModelDeclaration | null =>
+    (plugin.manifestJson as { providerModels?: PluginProviderModelDeclaration } | null)?.providerModels ?? null;
+
+  // Manifest provider names are stable Paperclip identifiers, not LiteLLM
+  // provider names. Keep the board-facing alias while sending LiteLLM the
+  // provider/model pair it can route.
+  const litellmProvider = (provider: string): string => {
+    if (provider === "chatgpt-pool") return "openai";
+    if (provider === "google-ai-gemini") return "gemini";
+    return provider;
+  };
+
+  return {
+    async sync(companyId, plugin) {
+      const provider = declaration(plugin);
+      const gateway = await getSync(companyId);
+      if (!provider || !gateway) return;
+
+      // A manifest credential is only usable when the company owns that secret.
+      // Never register a plugin model against an inferred or cross-tenant key.
+      const credential = await secrets.getByName(companyId, provider.credentialSecretName);
+      if (!credential) {
+        throw new Error(
+          `Provider plugin ${plugin.pluginKey} requires company secret "${provider.credentialSecretName}"`,
+        );
+      }
+
+      const modelNames = provider.models.map((model: PluginProviderModelDeclaration["models"][number]) => `${provider.provider}/${model.id}`);
+      for (const modelName of modelNames) {
+        const modelId = modelName.slice(provider.provider.length + 1);
+        await gateway.registerPluginModel({
+          modelName,
+          providerType: litellmProvider(provider.provider),
+          baseUrl: provider.baseUrl,
+          credentialSecretName: provider.credentialSecretName,
+          additionalConfig: { model: `${litellmProvider(provider.provider)}/${modelId}` },
+        });
+      }
+      // Lifecycle models are separate from provider-table models; add only these
+      // names while retaining all other models in each company key allowlist.
+      await updateAgentAllowlistsForCompany(db, defaultAgentGatewayKeyDeps(db, env), companyId, modelNames);
+    },
+    async remove(companyId, plugin) {
+      const provider = declaration(plugin);
+      const gateway = await getSync(companyId);
+      if (!provider || !gateway) return;
+
+      const modelNames = provider.models.map((model: PluginProviderModelDeclaration["models"][number]) => `${provider.provider}/${model.id}`);
+      const otherReadyPlugins: Array<{
+        id: string;
+        pluginKey: string;
+        manifestJson: unknown;
+        status: string;
+      }> = await db.select({ id: plugins.id, pluginKey: plugins.pluginKey, manifestJson: plugins.manifestJson, status: plugins.status })
+        .from(plugins)
+        .innerJoin(pluginConfig, eq(pluginConfig.pluginId, plugins.id))
+        .where(and(eq(pluginConfig.companyId, companyId), eq(plugins.status, "ready")));
+      const stillOwnedNames = new Set(otherReadyPlugins
+        .filter((owner) => owner.id !== plugin.id)
+        .flatMap((owner) => {
+          const other = declaration(owner as unknown as PluginRecord);
+          return other?.models.map((model: PluginProviderModelDeclaration["models"][number]) => `${other.provider}/${model.id}`) ?? [];
+        }));
+      for (const modelName of modelNames) {
+        if (!stillOwnedNames.has(modelName)) await gateway.unregisterModel(modelName);
+      }
+      const removableModelNames = modelNames.filter((modelName) => !stillOwnedNames.has(modelName));
+      await updateAgentAllowlistsForCompany(
+        db,
+        defaultAgentGatewayKeyDeps(db, env),
+        companyId,
+        [...stillOwnedNames],
+        removableModelNames,
+        true,
+      );
+    },
+  };
 }

@@ -15,7 +15,7 @@ import { plugins as pluginsTable } from "@myrmidon/db";
 import {
   DEFAULT_CHATGPT_POOL_MODELS,
   registerModelProviderConnector,
-  unregisterModelProviderConnector,
+  unregisterModelProviderConnectorForPlugin,
   unregisterModelProviderConnectorsByPlugin,
   type PaperclipPluginManifestV1,
   type PluginRecord,
@@ -80,18 +80,11 @@ export function registerConnectorsForPlugin(plugin: {
 /** Unregisters connectors contributed by a disabled or uninstalled plugin. */
 export function unregisterConnectorsForPlugin(
   pluginKey: string,
-  manifestJson?: PaperclipPluginManifestV1 | null,
+  _manifestJson?: PaperclipPluginManifestV1 | null,
 ): void {
+  unregisterModelProviderConnectorForPlugin("chatgpt-pool", pluginKey);
+  unregisterModelProviderConnectorForPlugin("gemini", pluginKey);
   unregisterModelProviderConnectorsByPlugin(pluginKey);
-  const decls = manifestJson?.modelProviders;
-  if (Array.isArray(decls) && decls.length > 0) {
-    for (const d of decls) {
-      unregisterModelProviderConnector(d.type);
-    }
-  }
-  if (isChatGptPoolKey(pluginKey)) {
-    unregisterModelProviderConnector("chatgpt-pool");
-  }
 }
 
 export interface ModelProviderPluginLifecycleBinding {
@@ -133,6 +126,9 @@ export function bindModelProviderPluginLifecycle(
     return { pluginKey, manifestJson: null };
   }
 
+  const unregisterOwnedConnectors = (pluginKey: string, manifestJson?: PaperclipPluginManifestV1 | null) => {
+    unregisterConnectorsForPlugin(pluginKey, manifestJson);
+  };
   const handlePluginReady = (payload: { pluginId: string; pluginKey: string }) => {
     if (isChatGptPoolKey(payload.pluginKey)) {
       log.info({ pluginKey: payload.pluginKey }, "registering model provider connector for ready plugin");
@@ -152,8 +148,13 @@ export function bindModelProviderPluginLifecycle(
   };
 
   const handlePluginDeactivated = (payload: { pluginId: string; pluginKey: string }) => {
-    log.info({ pluginKey: payload.pluginKey }, "unregistering model provider connector for deactivated plugin");
-    unregisterConnectorsForPlugin(payload.pluginKey);
+    // Remove the event's provider immediately; registry lookup is asynchronous.
+    unregisterOwnedConnectors(payload.pluginKey);
+    void resolvePluginRecord(payload.pluginId, payload.pluginKey)
+      .then((plugin) => unregisterOwnedConnectors(plugin.pluginKey, plugin.manifestJson))
+      .catch((err) => {
+        log.warn({ err, pluginId: payload.pluginId }, "failed to unregister model provider connector");
+      });
   };
 
   const handleStatusChanged = (payload: {

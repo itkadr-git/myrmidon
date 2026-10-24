@@ -116,6 +116,30 @@ describe("myrmidon(1.6.6 OPE-7198) model provider plugin lifecycle bridge", () =
     expect(listAvailableModelProviderTypes()).not.toContain("chatgpt-pool");
   });
 
+  it("keeps a connector type registered while another plugin still owns it", () => {
+    const manifest = {
+      id: "custom.plugin",
+      apiVersion: 1,
+      version: "1.0.0",
+      displayName: "Custom",
+      description: "Custom",
+      author: "Test",
+      categories: ["connector"],
+      capabilities: ["agent.tools.register"],
+      entrypoints: { worker: "./worker.js" },
+      modelProviders: [{ type: "shared-pool", defaultModels: ["shared/model"] }],
+    } as any;
+    registerConnectorsForPlugin({ pluginKey: "plugin.one", manifestJson: manifest });
+    registerConnectorsForPlugin({ pluginKey: "plugin.two", manifestJson: manifest });
+
+    unregisterConnectorsForPlugin("plugin.one", manifest);
+
+    expect(isModelProviderTypeAvailable("shared-pool")).toBe(true);
+    expect(getModelProviderConnector("shared-pool")?.pluginKey).toBe("plugin.two");
+    unregisterConnectorsForPlugin("plugin.two", manifest);
+    expect(isModelProviderTypeAvailable("shared-pool")).toBe(false);
+  });
+
   it("lifecycle events: absent -> installed/ready -> disabled -> re-enabled -> unloaded", async () => {
     const lifecycle = new FakePluginLifecycleManager();
     const pluginId = "plugin-pool-1";
