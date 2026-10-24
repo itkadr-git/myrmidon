@@ -84,9 +84,20 @@ Every error response uses single-line, secret-safe reason codes — for example
    site identity — `siteId` and the starting `epoch` (validated; used for
    lease fencing) — plus the listen address, token, Docker socket, and the
    enrolled bots with their quotas. Port 9100 must not be exposed publicly.
-3. On the board, list the site in `MYRMIDON_FLEET_HOSTS`: name, private URL,
-   token secret reference, egress endpoints, volume root, network and the
-   image allowlist (digest-pinned).
+3. Register the site through the board API; do not edit the database or add an
+   mTLS site to `MYRMIDON_FLEET_HOSTS` (that legacy bootstrap accepts only
+   HTTP and cannot carry client-certificate material). Store the bearer token
+   and board client certificate/key in company secrets, then enroll with
+   `POST /api/companies/{companyId}/fleet/sites`. Only a company owner/admin or
+   instance admin may enroll or delete sites. The request carries the private
+   HTTPS URL, secret references, site CA, capacity and profile; secret values
+   are never sent in the enrollment request. See operator guide §4.1–4.3 for
+   the OpenSSL PKI steps and exact request example. Optionally pin
+   `caFingerprint`; the board validates the client certificate against the CA
+   and refuses connections if the CA later differs from the pin. `GET
+   /api/companies/{companyId}/fleet/sites` lists enrolled sites. Delete with
+   `DELETE /api/companies/{companyId}/fleet/sites/{name}` only after all bots
+   are moved off the site (`204` on success, `409` while bots remain).
 4. Verify `GET /v1/health` locally, then migrate a canary bot: enable the
    container on its agent card and set the site host. The reconciler moves
    the bot through a maintenance window (pause → drain → write profile →
