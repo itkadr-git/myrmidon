@@ -5,7 +5,7 @@
 
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
-import { companySecretBindings } from "@myrmidon/db";
+import { companySecretBindings, companySecrets } from "@myrmidon/db";
 import { secretService } from "../../services/secrets.js";
 import { registerSecretValues } from "../secret-masking.js";
 import {
@@ -59,13 +59,25 @@ export function createDbInstanceSecretSettingStore(db: Db): InstanceSecretSettin
       return row ? { name: row.name, status: row.status, companyId: row.companyId } : null;
     },
     async createSecret(input) {
-      const created = await secrets.create(input.companyId, {
-        name: input.name,
-        provider: "local_encrypted",
-        value: input.value,
-        description: input.description,
-      });
+    const created = await secrets.create(input.companyId, {
+      name: input.name,
+      provider: "local_encrypted",
+      value: input.value,
+      description: input.description,
+    });
       return created.id;
+    },
+    async findSecretByName(companyId, name) {
+      const row = await db
+        .select({ id: companySecrets.id })
+        .from(companySecrets)
+        .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.name, name)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row?.id ?? null;
+    },
+    async deleteSecret(secretId) {
+      await secrets.remove(secretId);
     },
     async setBinding(name, secretId) {
       const [ref] = await secrets.replaceSecretRefsForInstanceTarget(
