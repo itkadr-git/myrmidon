@@ -1275,7 +1275,20 @@
         "saving": "Saving...",
         "saveProfile": "Save profile",
         "storedFor": "Stored in Myrmidon file storage for {{name}}.",
-        "avatarHint": "Click the avatar to upload a new image. {{hint}}"
+        "avatarHint": "Click the avatar to upload a new image. {{hint}}",
+        "changePasswordTitle": "Change password",
+        "currentPassword": "Current password",
+        "newPassword": "New password",
+        "newPasswordHint": "At least {{min}} characters.",
+        "confirmPassword": "Repeat new password",
+        "signOutOtherDevices": "Sign out on other devices",
+        "changePasswordButton": "Change password",
+        "passwordChanged": "Password changed.",
+        "passwordsDoNotMatch": "The new password and its repeat do not match.",
+        "passwordTooShort": "The new password must be at least {{min}} characters.",
+        "passwordTooLong": "The new password must be at most {{max}} characters.",
+        "wrongCurrentPassword": "The current password is incorrect.",
+        "failedToChangePassword": "Failed to change password."
       },
       "user-profile": {
         "touched": "Touched",

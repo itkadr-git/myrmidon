@@ -235,7 +235,7 @@ export {
   myrmidonScopeAgentPrefs,
 } from "./myrmidon_bot_scope.js";
 export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
-export { myrmidonFleetSites, fleetSites, type FleetSiteCapacity, type FleetSiteProfile } from "./myrmidon_fleet_sites.js";
+export { myrmidonFleetSites, fleetSites, type FleetSiteCapacity, type FleetSiteHealth, type FleetSiteProfile } from "./myrmidon_fleet_sites.js";
 export { myrmidonFleetAffinity, fleetAffinity } from "./myrmidon_fleet_affinity.js";
 export { myrmidonFleetMoves, type FleetMovePhaseLogEntry } from "./myrmidon_fleet_moves.js";
 // myrmidon(1.6-SWARM): leases of the per-role task queues.
@@ -331,3 +331,5 @@ export { boardProcesses, boardLeases } from "./board_processes.js";
 export { corpusShadowLog } from "./corpus_shadow_log.js";
 // myrmidon(OPE-8836): the single, permanent installation id of the board (licensing).
 export { myrmidonInstallIdentity } from "./myrmidon_install_identity.js";
+// myrmidon(OPE-8985): users-admin-a — password-set tokens and the block list.
+export { userPasswordSetTokens, userBlocks } from "./user_password_set_tokens.js";

@@ -52,7 +52,7 @@ function notImplemented(name) {
 }
 
 const USAGE =
-  "usage: myr-ws <open <KEY> [owner/repo] [--base <ref>] [--scratch] | list | close <KEY> [--force] | restore <KEY>> [--json]";
+  "usage: myr-ws <open <KEY> [owner/repo] [--base <ref>] [--scratch] | list | close <KEY> [owner/repo] [--force] | restore <KEY> [owner/repo]> [--json]";
 
 /** Splits argv into { command, positionals, flags } (flags: --json, --scratch, --force, --base <ref>). */
 function parseArgs(argv) {

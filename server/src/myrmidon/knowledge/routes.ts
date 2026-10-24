@@ -65,6 +65,9 @@ import type { AutonomyMatrix } from "@myrmidon/shared";
 import { HttpError, forbidden, notFound, unprocessable } from "../../errors.js";
 import { assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { validate } from "../../middleware/validate.js";
+import { approverKindFromRequest } from "../approver-kind.js";
+import { assertRuleWriteGrade, builtinCasteSensitivity, type CasteSensitivityResolver } from "../rule-grade.js";
+import { resolveCasteSensitivity } from "../caste-sensitivity.js";
 import { KnowledgeDomainError } from "./domain.js";
 import type { KnowledgeItemStatus, KnowledgeKind } from "./domain.js";
 import { createKnowledgeModule, type KnowledgeModule } from "./service.js";
@@ -105,6 +108,12 @@ export interface KnowledgeRoutesDeps {
     revisionId: string | null;
     toolName: string;
   }): Promise<{ actionRequestId: string | null }>;
+  /**
+   * The company's caste directory (which castes are sensitive) for the rule
+   * grade check. Production reads the database; without it the built-in
+   * sensitive castes apply.
+   */
+  casteSensitivity?: CasteSensitivityResolver;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
 }
@@ -264,6 +273,16 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     const item = await mod.get(idOrSlug);
     if (!item) throw notFound(`No knowledge item ${JSON.stringify(idOrSlug)} in this company.`);
     return item;
+  }
+
+  /**
+   * K-3: every route that changes what a rule says or delivers passes the one
+   * shared grade check (../rule-grade.ts). Notes and other kinds are not
+   * graded here.
+   */
+  async function assertRuleGrade(req: Request, companyId: string, item: { kind: string; roles?: readonly string[] | null }) {
+    if (item.kind !== "rule") return;
+    await assertRuleWriteGrade(req, companyId, deps.casteSensitivity ?? builtinCasteSensitivity, item.roles ?? []);
   }
 
   // --------------------------------------------------------------- reads
@@ -463,6 +482,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       try {
         const item = await loadItemForMutation(mod, req.params.idOrSlug as string);
         await assertPublishAllowed(req, companyId, item, revisionId ?? null);
+        await assertRuleGrade(req, companyId, item);
         res.json({ item: await mod.publish(req.params.idOrSlug as string, { actorType: actor.actorType, actorId: actor.actorId }, revisionId) });
       } catch (err) {
         throw toHttpError(err);
@@ -486,10 +506,17 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
         // to see its kind; the load itself needs no grant.
         assertRuleApproveAllowed(req, item.kind);
         await assertKnowledgeToolAccess(req, "rule_approve");
-        // §3.4: the approver presents their kind explicitly in the request;
-        // S4 compares it against the item's approverKind. A caller without
-        // the matching kind is refused by the domain gate (403).
-        const approverKindInput = typeof req.body?.approverKind === "string" ? req.body.approverKind : null;
+        // §3.4 / K-3: the approver's grade comes from the actor's membership
+        // (never from the request body); S4 compares it against the item's
+        // approverKind and a caller without the matching grade is refused by
+        // the domain gate (403).
+        const approverKindInput = approverKindFromRequest(req, companyId);
+        await assertRuleGrade(req, companyId, item);
+        if (approverKindInput === null) {
+          throw forbidden("approving needs an operator, admin or owner membership of the company", {
+            code: "approver_kind_mismatch",
+          });
+        }
         res.json({
           item: await mod.approve(
             req.params.idOrSlug as string,
@@ -514,6 +541,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       try {
         const item = await loadItemForMutation(mod, req.params.idOrSlug as string);
         await assertPublishAllowed(req, companyId, item, req.body.toRevisionId);
+        await assertRuleGrade(req, companyId, item);
         res.json({
           item: await mod.rollback(
             req.params.idOrSlug as string,
@@ -538,6 +566,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const item = await loadItemForMutation(mod, req.params.idOrSlug as string);
       assertRuleApproveAllowed(req, item.kind);
       await assertPublishAllowed(req, companyId, item, null);
+      await assertRuleGrade(req, companyId, item);
       res.json({ item: await mod.archive(req.params.idOrSlug as string, { actorType: actor.actorType, actorId: actor.actorId }) });
     } catch (err) {
       throw toHttpError(err);
@@ -556,6 +585,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
         const current = await loadItemForMutation(mod, req.params.idOrSlug as string);
         assertRuleApproveAllowed(req, current.kind);
         await assertPublishAllowed(req, companyId, current, null);
+        await assertRuleGrade(req, companyId, current);
         res.json({
           item: await mod.supersede(
             req.params.idOrSlug as string,
@@ -673,7 +703,13 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     }
     await assertBulkImportAllowed(req, companyId);
     try {
-      res.json(await mod.importTree(buf, { actorType: actor.actorType, actorId: actor.actorId }));
+      res.json(
+        await mod.importTree(
+          buf,
+          { actorType: actor.actorType, actorId: actor.actorId },
+          { approverKind: approverKindFromRequest(req, companyId) },
+        ),
+      );
     } catch (err) {
       throw toHttpError(err);
     }
@@ -690,6 +726,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
 export function myrmidonKnowledgeRoutes(db: Db, env: NodeJS.ProcessEnv = process.env) {
   return knowledgeRoutes({
     moduleFor: (companyId) => createKnowledgeModule(db, companyId),
+    casteSensitivity: (companyId) => resolveCasteSensitivity(db, companyId),
     roleForAgent: agentRoleFromDb(db),
     matrixFor: async () => {
       try {

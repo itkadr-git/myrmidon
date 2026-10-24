@@ -32,6 +32,7 @@ import { PRODUCT_NAME, productPossessive, productSaid } from "../myrmidon/produc
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
+import { claimRunForSiteLost } from "../myrmidon/site-lost-claim.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
@@ -17973,6 +17974,40 @@ export function heartbeatService(
     publishRunLifecyclePluginEvent(claimed);
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
+    // myrmidon(1.6.6 OPE-8998): the review-admission records written inside the
+    // in_review transition (insertReviewAdmissionWakeup) are served by whichever
+    // run of this agent starts on the issue next; the post-commit wake creates
+    // its own request, so the admission record stayed `queued` without a run
+    // forever (prod: 147, each one later read as a wake in flight). Close them
+    // as coalesced into this run.
+    {
+      const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
+      if (claimedIssueId) {
+        await db
+          .update(agentWakeupRequests)
+          .set({ status: "coalesced", finishedAt: claimedAt, updatedAt: claimedAt })
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, claimed.companyId),
+              eq(agentWakeupRequests.agentId, claimed.agentId),
+              eq(agentWakeupRequests.status, "queued"),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${claimedIssueId}`,
+              sql`${agentWakeupRequests.idempotencyKey} like 'issue-review-admission:%'`,
+              sql`${agentWakeupRequests.createdAt} <= ${claimedAt.toISOString()}::timestamptz`,
+              claimed.wakeupRequestId
+                ? sql`${agentWakeupRequests.id} <> ${claimed.wakeupRequestId}`
+                : sql`true`,
+              sql`not exists (select 1 from ${heartbeatRuns} hr where hr.wakeup_request_id = ${agentWakeupRequests.id})`,
+            ),
+          )
+          .catch((err) => {
+            logger.warn(
+              { err: err instanceof Error ? err.message : String(err), runId: claimed.id },
+              "claimQueuedRun: could not close served review-admission wakes",
+            );
+          });
+      }
+    }
 
     // IDLE-STOP: wake the container before proceeding with run execution
     const idleStopService = getIdleStopService();
@@ -20094,9 +20129,16 @@ export function heartbeatService(
         lte(agentWakeupRequests.updatedAt, new Date(now - 30_000)),
       )).returning({ id: agentWakeupRequests.id });
       if (!claimed) continue;
+      // Runs can persist the task key as either issueId (canonical) or taskId
+      // (legacy and some native wake sources). Match both or a free lock has no
+      // terminal owner for the ordinary release drain to adopt.
       const runsOfIssue = db.select().from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, wake.companyId),
-        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        or(
+          eq(heartbeatRuns.nativeIssueId, issueId),
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+          sql`${heartbeatRuns.contextSnapshot}->>'taskId' = ${issueId}`,
+        ),
       ));
       const [latestOfAgent] = await runsOfIssue.orderBy(desc(sql`${heartbeatRuns.agentId} = ${wake.agentId}`),
         desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
@@ -20105,9 +20147,15 @@ export function heartbeatService(
       // Recovery bookkeeping for a fresh failure is written asynchronously;
       // judge only a run old enough that its hold, if any, already exists.
       if (!latestOfAgent.finishedAt || latestOfAgent.finishedAt > new Date(now - 10 * 60_000)) continue;
+      // A live run keyed by nativeIssueId or taskId owns the issue too; missing
+      // it here would promote the deferred wake into a second concurrent run.
       const [live] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, wake.companyId),
-        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        or(
+          eq(heartbeatRuns.nativeIssueId, issueId),
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+          sql`${heartbeatRuns.contextSnapshot}->>'taskId' = ${issueId}`,
+        ),
         inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
       )).limit(1);
       if (live) continue;
@@ -21330,7 +21378,8 @@ export function heartbeatService(
           else if (queuedIndex < ownerChatTurns) break;
         }
       } finally {
-        admission.release(admitted - claimedRuns.length);
+        // myrmidon(1.6.6 OPE-8988): an empty claim is no start of this agent.
+        admission.release(admitted - claimedRuns.length, { agentId });
       }
       if (admitted < availableSlots && admitted < startableRuns.length) {
         scheduleAdmissionResweep();
@@ -32412,6 +32461,70 @@ export function heartbeatService(
       void execution.finally(() => {
         activeRunExecutionPromises.delete(execution);
       });
+    },
+
+    // myrmidon(1.6.6 REMOTE-SITES-T4): finalize one run of a lost execution site as
+    // failed(site_lost) and queue its bounded retry, see myrmidon/site-lost-claim.ts. Only a run
+    // whose lease is expired and that no reattach execution holds is taken (an atomic claim on the
+    // row); the retry rides the same bounded-retry path as a lost process, keyed by this run's id,
+    // so a second call for the same run is a no-op and no wake is duplicated.
+    finalizeSiteLostRun: async (runId: string, siteName: string) => {
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      if (!run || run.status !== "running" || run.runtimeMode === "native") {
+        return { outcome: "not_running" as const, retryRunId: null };
+      }
+      const agent = await getAgent(run.agentId);
+      if (!agent || agent.companyId !== run.companyId) {
+        return { outcome: "not_running" as const, retryRunId: null };
+      }
+      const now = new Date();
+      if (!(await claimRunForSiteLost(db, run, siteName, now))) {
+        return { outcome: "not_claimed" as const, retryRunId: null };
+      }
+      const message = `Execution site "${siteName}" was lost; the run is requeued`;
+      const conversationContinuationEligible = await runUsedConversationAdapter(db, run);
+      const failureWrite = await setRunStatusFromLive(run.id, "failed", ["running"], {
+        error: message,
+        errorCode: "site_lost",
+        finishedAt: now,
+        resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
+          conversationContinuationEligible,
+          resultJson: parseObject(run.resultJson),
+          errorCode: "site_lost",
+          errorMessage: message,
+        }),
+      });
+      if (!failureWrite.updated || !failureWrite.run) {
+        return { outcome: "not_claimed" as const, retryRunId: null };
+      }
+      let finalizedRun: typeof heartbeatRuns.$inferSelect = failureWrite.run;
+      await setWakeupStatus(run.wakeupRequestId, "failed", { finishedAt: now, error: message });
+      finalizedRun =
+        (await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson))) ?? finalizedRun;
+      await releaseEnvironmentLeasesForRun({
+        runId: finalizedRun.id,
+        companyId: finalizedRun.companyId,
+        agentId: finalizedRun.agentId,
+        status: finalizedRun.status,
+        failureReason: finalizedRun.error ?? undefined,
+      });
+      const scheduled = await scheduleBoundedRetryForRun(finalizedRun, agent, { now });
+      const retried = scheduled.outcome === "scheduled" ? scheduled.run : null;
+      if (!retried) await releaseIssueExecutionAndPromote(finalizedRun);
+      await appendRunEvent(finalizedRun, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "error",
+        message: retried ? `${message}; queued retry ${retried.id}` : message,
+        payload: { site: siteName, ...(retried ? { retryRunId: retried.id } : {}) },
+      });
+      await finalizeAgentStatus(run.agentId, "failed", message, {
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+        errorCode: finalizedRun.errorCode,
+        keepIdleOnFailure: true,
+      });
+      await runStartDispatcher.dispatchRunStart(run.agentId);
+      return { outcome: "finalized" as const, retryRunId: retried?.id ?? null };
     },
 
     /**

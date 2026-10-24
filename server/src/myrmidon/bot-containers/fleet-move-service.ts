@@ -47,12 +47,23 @@ export interface MovePhaseLogEntry {
   error?: string;
 }
 
+/** Where the datadir of a move comes from: the live source site, or the last replica of a lost one. */
+export type MoveSource = "live" | "replica";
+
+/** The last replica of a bot's datadir (myrmidon/bot-containers/fleet-replica-store.ts). */
+export interface ReplicaSnapshot {
+  stream: Readable;
+  /** When the replica was taken: the data of the restored bot is as old as this. */
+  capturedAt: Date;
+}
+
 export interface FleetMoveRecord {
   id: string;
   companyId: string;
   botKey: string;
   srcSite: string;
   dstSite: string;
+  source?: MoveSource;
   phase: MovePhase;
   phaseLog: MovePhaseLogEntry[];
   startedAt: Date;
@@ -81,11 +92,13 @@ export interface MoveLock {
 export interface FleetMoveServiceDeps {
   getMove(moveId: string): Promise<FleetMoveRecord | null>;
   getLatestMoveForBot(companyId: string, botKey: string): Promise<FleetMoveRecord | null>;
+  /** Claims the bot's single unfinished-move slot; throws FleetMoveClaimConflict when it is taken. */
   createMove(params: {
     companyId: string;
     botKey: string;
     srcSite: string;
     dstSite: string;
+    source?: MoveSource;
   }): Promise<FleetMoveRecord>;
   updateMove(
     moveId: string,
@@ -97,6 +110,8 @@ export interface FleetMoveServiceDeps {
       leaseExpires?: Date | null;
     },
   ): Promise<FleetMoveRecord>;
+  /** The last replica of the bot on `site`, or null. Required for a move with source "replica". */
+  openReplica?(site: string, botKey: string, companyId: string): Promise<ReplicaSnapshot | null>;
 
   /** Sites are resolved in the company that owns the move (its secrets, its site registry). */
   getDriverForSite(siteName: string, companyId: string): Promise<BotContainerDriver>;
@@ -152,6 +167,14 @@ export class FleetMoveError extends Error {
   }
 }
 
+/** The bot's slot for an unfinished move is taken (the store's atomic claim lost the race). */
+export class FleetMoveClaimConflict extends Error {
+  constructor(botKey: string) {
+    super(`Bot "${botKey}" already has an unfinished move`);
+    this.name = "FleetMoveClaimConflict";
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -181,6 +204,7 @@ export class FleetMoveService {
     companyId: string;
     botKey: string;
     dstSite: string;
+    source?: MoveSource;
   }): Promise<FleetMoveRecord> {
     const run = () => this.startMoveLocked(params);
     return this.deps.lock ? this.deps.lock.run(params.botKey, run) : run();
@@ -190,6 +214,7 @@ export class FleetMoveService {
     companyId: string;
     botKey: string;
     dstSite: string;
+    source?: MoveSource;
   }): Promise<FleetMoveRecord> {
     const card = await this.deps.getAgentCard(params.botKey);
     if (!card) throw new FleetMoveError(`Bot "${params.botKey}" not found`, "not_found");
@@ -214,14 +239,40 @@ export class FleetMoveService {
       throw new FleetMoveError(`Bot "${params.botKey}" is already on site "${params.dstSite}"`, "conflict");
     }
 
-    const record = await this.deps.createMove({
-      companyId: params.companyId,
-      botKey: params.botKey,
-      srcSite,
-      dstSite: params.dstSite,
-    });
+    // The claim is atomic in the store (one unfinished move per bot): the per-bot lock above is
+    // in-process only, so a second board process loses here, not in a read-then-insert gap.
+    let record: FleetMoveRecord;
+    try {
+      record = await this.deps.createMove({
+        companyId: params.companyId,
+        botKey: params.botKey,
+        srcSite,
+        dstSite: params.dstSite,
+        source: params.source ?? "live",
+      });
+    } catch (err) {
+      if (err instanceof FleetMoveClaimConflict) {
+        // Name the move that holds the slot, so the operator knows what to wait for or resume.
+        const open = await this.deps.getLatestMoveForBot(params.companyId, params.botKey).catch(() => null);
+        const holder =
+          open && open.phase !== "done" && open.phase !== "failed"
+            ? ` (move ${open.id} from "${open.srcSite}" to "${open.dstSite}", phase "${open.phase}")`
+            : "";
+        throw new FleetMoveError(
+          `Bot "${params.botKey}" already has an unfinished move${holder}; wait for it to finish, or repeat the request with the same destination to resume it`,
+          "conflict",
+        );
+      }
+      throw err;
+    }
 
     return this.executeMove(record.id);
+  }
+
+  private async openReplicaOrThrow(srcSite: string, botKey: string, companyId: string): Promise<ReplicaSnapshot> {
+    const replica = await this.deps.openReplica?.(srcSite, botKey, companyId);
+    if (!replica) throw new Error(`No replica of "${botKey}" from site "${srcSite}" to restore`);
+    return replica;
   }
 
   /** The gateway URL the card must carry for a bot running on `site`. */
@@ -240,6 +291,8 @@ export class FleetMoveService {
     if (move.phase === "done" || move.phase === "failed") return move;
 
     const { botKey, srcSite, dstSite, companyId } = move;
+    // A replica move never talks to the source site: it is lost.
+    const fromReplica = move.source === "replica";
     const log = this.deps.log;
     let snapshotStream: Readable | null = null;
     // The agent's window is open from the end of the stop phase's enter(); nothing is
@@ -255,29 +308,38 @@ export class FleetMoveService {
         await this.deps.maintenance.enter(botKey);
         windowOpened = true;
 
-        const srcDriver = await this.deps.getDriverForSite(srcSite, companyId);
-        await srcDriver.stop(botKey);
-        const stopped = await srcDriver.status(botKey);
-        if (stopped.state === "running" || stopped.state === "unhealthy") {
-          throw new Error(`Container of "${botKey}" is still ${stopped.state} on "${srcSite}" after stop`);
+        if (!fromReplica) {
+          const srcDriver = await this.deps.getDriverForSite(srcSite, companyId);
+          await srcDriver.stop(botKey);
+          const stopped = await srcDriver.status(botKey);
+          if (stopped.state === "running" || stopped.state === "unhealthy") {
+            throw new Error(`Container of "${botKey}" is still ${stopped.state} on "${srcSite}" after stop`);
+          }
         }
 
         move = await this.deps.updateMove(moveId, {
           phase: "stop",
-          details: `Stopped container on "${srcSite}" and entered maintenance window`,
+          details: fromReplica
+            ? `Entered maintenance window; source site "${srcSite}" is lost and was not contacted`
+            : `Stopped container on "${srcSite}" and entered maintenance window`,
         });
       }
 
       // Phase 2: SNAPSHOT — open the snapshot stream of the stopped datadir.
       if (!completed(move, "snapshot")) {
         log?.info({ moveId, botKey, phase: "snapshot" }, "Phase: snapshot");
-        const srcClient = await this.deps.getSiteAgentClient(srcSite, companyId);
-        snapshotStream = await srcClient.snapshot(botKey);
+        let snapshotNote: string;
+        if (fromReplica) {
+          const replica = await this.openReplicaOrThrow(srcSite, botKey, companyId);
+          snapshotStream = replica.stream;
+          snapshotNote = `Opened the replica of "${srcSite}" taken at ${replica.capturedAt.toISOString()}; data newer than that is lost`;
+        } else {
+          const srcClient = await this.deps.getSiteAgentClient(srcSite, companyId);
+          snapshotStream = await srcClient.snapshot(botKey);
+          snapshotNote = `Opened snapshot stream (tar in zstd, verified by manifest) from "${srcSite}"`;
+        }
 
-        move = await this.deps.updateMove(moveId, {
-          phase: "snapshot",
-          details: `Opened snapshot stream (tar in zstd, verified by manifest) from "${srcSite}"`,
-        });
+        move = await this.deps.updateMove(moveId, { phase: "snapshot", details: snapshotNote });
       }
 
       // Phase 3: RESTORE — the destination verifies the manifest before it puts the datadir in place.
@@ -285,8 +347,9 @@ export class FleetMoveService {
         log?.info({ moveId, botKey, phase: "restore" }, "Phase: restore");
         if (!snapshotStream) {
           // Resumed after a restart: the source is stopped and untouched, so a new snapshot is the same data.
-          const srcClient = await this.deps.getSiteAgentClient(srcSite, companyId);
-          snapshotStream = await srcClient.snapshot(botKey);
+          snapshotStream = fromReplica
+            ? (await this.openReplicaOrThrow(srcSite, botKey, companyId)).stream
+            : await (await this.deps.getSiteAgentClient(srcSite, companyId)).snapshot(botKey);
         }
 
         const dstClient = await this.deps.getSiteAgentClient(dstSite, companyId);
@@ -357,7 +420,9 @@ export class FleetMoveService {
       await this.deps.maintenance.exit(botKey);
       pastPointOfNoReturn = true;
       let quarantineNote = "";
-      if (srcSite !== "local") {
+      if (fromReplica) {
+        quarantineNote = `; source site "${srcSite}" was not contacted, its copy is fenced when it returns`;
+      } else if (srcSite !== "local") {
         try {
           const srcClient = await this.deps.getSiteAgentClient(srcSite, companyId);
           await srcClient.quarantine(botKey);
@@ -379,7 +444,7 @@ export class FleetMoveService {
       // missing. Rolling back now would start a second copy of the bot.
       if (pastPointOfNoReturn) throw err;
 
-      const rollback = await this.rollback(move, srcSite, dstSite, windowOpened);
+      const rollback = await this.rollback(move, srcSite, dstSite, windowOpened, fromReplica);
       return this.deps.updateMove(moveId, {
         phase: "failed",
         error: rollback.ok ? errorMsg : `${errorMsg}; ROLLBACK INCOMPLETE: ${rollback.problems.join("; ")}`,
@@ -398,6 +463,7 @@ export class FleetMoveService {
     srcSite: string,
     dstSite: string,
     windowOpened: boolean,
+    fromReplica = false,
   ): Promise<{ ok: boolean; summary: string; problems: string[] }> {
     const { botKey, companyId } = move;
     if (!windowOpened) {
@@ -429,12 +495,15 @@ export class FleetMoveService {
         await this.deps.updateAgentCard(card.agentId, apiBaseUrl ? { ...back, apiBaseUrl } : back);
       });
     }
-    await attempt(`started the container on "${srcSite}"`, async () => {
-      const srcDriver = await this.deps.getDriverForSite(srcSite, companyId);
-      await srcDriver.start(botKey);
-      const status = await srcDriver.status(botKey);
-      if (status.state !== "running") throw new Error(`container is ${status.state} after start`);
-    });
+    // A replica move never stopped the source (it is lost), so there is nothing to start there.
+    if (!fromReplica) {
+      await attempt(`started the container on "${srcSite}"`, async () => {
+        const srcDriver = await this.deps.getDriverForSite(srcSite, companyId);
+        await srcDriver.start(botKey);
+        const status = await srcDriver.status(botKey);
+        if (status.state !== "running") throw new Error(`container is ${status.state} after start`);
+      });
+    }
     await attempt("exited the maintenance window", () => this.deps.maintenance.exit(botKey));
 
     const ok = problems.length === 0;

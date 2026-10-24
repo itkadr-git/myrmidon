@@ -1082,7 +1082,9 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           throw new Error(`wake-queue: run ${input.runId} was not found while releasing issue execution`);
         }
         const runSnapshot = toRunSnapshot(run);
-        const contextIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+        const contextIssueId = run.nativeIssueId ??
+          readNonEmptyString(parseObject(run.contextSnapshot).issueId) ??
+          readNonEmptyString(parseObject(run.contextSnapshot).taskId);
 
         // Lock the context issue (if any) and every issue that still references this
         // run, in id order, so two concurrent finalizations can never deadlock on

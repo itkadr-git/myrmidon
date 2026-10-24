@@ -177,6 +177,7 @@ export function createCasteStore(deps: CasteStoreDeps) {
             defaultModel: null,
             swarmEligible: true,
             maxActiveTasks: null,
+            sensitive: seed.sensitive,
             builtIn: true,
             // The seed flags ONE template caste as the company default, so a
             // fresh company always resolves a caste (design.md §7.1 п.4). The
