@@ -48,6 +48,9 @@ function make(env: NodeJS.ProcessEnv = {}, registry = defaultInstanceSecretSetti
       const secret = secrets.get(id);
       return secret ? { name: secret.name, status: secret.status, companyId: COMPANY } : null;
     },
+    async createSecret() {
+      return "66666666-6666-4666-8666-666666666666";
+    },
     async setBinding(name, secretId) {
       const binding = { companyId: COMPANY, secretId };
       bindings.set(name, binding);
