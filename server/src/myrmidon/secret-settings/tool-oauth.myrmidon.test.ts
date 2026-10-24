@@ -52,7 +52,7 @@ function make(env: NodeJS.ProcessEnv = {}, registry = defaultInstanceSecretSetti
       return secret ? { name: secret.name, status: secret.status, companyId: COMPANY } : null;
     },
     async createSecret(input) {
-      const id = `created-${secrets.size + 1}`;
+      const id = `66666666-6666-4666-8666-${String(secrets.size).padStart(12, "0")}`;
       secrets.set(id, { name: input.name, status: "active", value: input.value });
       return id;
     },
