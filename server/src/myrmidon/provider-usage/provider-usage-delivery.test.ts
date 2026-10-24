@@ -20,12 +20,14 @@ import {
 
 const mockAddComment = vi.hoisted(() => vi.fn());
 const mockRejectFirstComment = vi.hoisted(() => ({ value: false }));
+const mockRealAddComment = vi.hoisted(() => ({ value: null as null | ((...args: any[]) => Promise<any>) }));
 vi.mock("../../services/issues.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../services/issues.js")>();
   return {
     ...actual,
     issueService: (db: Parameters<typeof actual.issueService>[0]) => {
       const service = actual.issueService(db);
+      mockRealAddComment.value = service.addComment.bind(service);
       return {
         ...service,
         addComment: (...args: Parameters<typeof service.addComment>) => {
@@ -56,8 +58,8 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
     mockRejectFirstComment.value = false;
     mockAddComment.mockReset();
     mockAddComment.mockImplementation(async (...args: Parameters<ReturnType<typeof issueService>["addComment"]>) => {
-      const comment = await issueService(db).addComment(...args);
-      return comment;
+      if (!mockRealAddComment.value) throw new Error("real addComment is not initialized");
+      return mockRealAddComment.value(...args);
     });
   });
 
