@@ -227,7 +227,6 @@ for (const [key, envName, fallback, validate] of [
   ["bot_mount_sources", "MYRMIDON_BOT_MOUNT_SOURCES", [] as string[], textList],
   ["bot_container_github_env_allowlist", "MYRMIDON_BOT_CONTAINER_GITHUB_ENV_ALLOWLIST", [] as string[], environmentNameList],
   ["bot_hindsight_allowed_banks", "MYRMIDON_BOT_HINDSIGHT_ALLOWED_BANKS", [] as string[], textList],
-  ["bot_mcp_servers", "MYRMIDON_BOT_MCP_SERVERS", [] as string[], textList],
 ] as const) {
   behaviorSettingRegistry.register({ key, envName, default: fallback, scope: "instance", section: key === "run_env_allow" ? "guardrails" : "fleet", valueType: "json", validate });
 }
@@ -239,10 +238,15 @@ for (const [key, envName, fallback, validate] of [
 ] as const) {
   behaviorSettingRegistry.register({ key, envName, default: fallback, scope: "instance", section: "fleet", valueType: "number", validate });
 }
-behaviorSettingRegistry.register({
-  key: "browser_fleet", envName: "MYRMIDON_BROWSER_FLEET", default: [] as Record<string, unknown>[],
-  scope: "instance", section: "fleet", valueType: "json", validate: objectArray,
-});
+for (const [key, envName] of [
+  ["bot_mcp_servers", "MYRMIDON_BOT_MCP_SERVERS"],
+  ["browser_fleet", "MYRMIDON_BROWSER_FLEET"],
+] as const) {
+  behaviorSettingRegistry.register({
+    key, envName, default: [] as Record<string, unknown>[],
+    scope: "instance", section: "fleet", valueType: "json", validate: objectArray,
+  });
+}
 for (const [key, envName] of [
   ["bot_containers", "MYRMIDON_BOT_CONTAINERS"],
   ["bot_yolo", "MYRMIDON_BOT_YOLO"],

@@ -95,18 +95,18 @@ describe("myrmidon(W2a) readBotProfileSettings", () => {
     const priorServers = process.env[BOT_MCP_SERVERS_ENV];
     try {
       process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV] = "env-bank";
-      process.env[BOT_MCP_SERVERS_ENV] = JSON.stringify([{ name: "env" }]);
+      process.env[BOT_MCP_SERVERS_ENV] = JSON.stringify([{ name: "env", url: "https://env.example.com/mcp", noAuth: true }]);
       applyLiveBehaviorSettings({
-        settings: { bot_hindsight_allowed_banks: ["managed"], bot_mcp_servers: [{ name: "managed" }] },
+        settings: { bot_hindsight_allowed_banks: ["managed"], bot_mcp_servers: [{ name: "managed", url: "https://managed.example.com/mcp", noAuth: true }] },
         sources: { bot_hindsight_allowed_banks: "ui", bot_mcp_servers: "ui" },
       } as ReturnType<typeof liveBehaviorSettingsView>);
       const saved = readBotProfileSettings();
       expect(saved.hindsightAllowedBanks).toEqual(["managed"]);
-      expect(saved.mcpServers).toEqual([{ name: "managed" }]);
+      expect(saved.mcpServers.map((server) => server.name)).toEqual(["managed"]);
       applyLiveBehaviorSettings({ settings: {}, sources: {} } as ReturnType<typeof liveBehaviorSettingsView>);
       const fromEnv = readBotProfileSettings();
       expect(fromEnv.hindsightAllowedBanks).toEqual(["env-bank"]);
-      expect(fromEnv.mcpServers).toEqual([{ name: "env" }]);
+      expect(fromEnv.mcpServers.map((server) => server.name)).toEqual(["env"]);
     } finally {
       if (priorBanks === undefined) delete process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV];
       else process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV] = priorBanks;
