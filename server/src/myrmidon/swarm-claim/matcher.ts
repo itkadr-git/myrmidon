@@ -79,6 +79,7 @@ import { planClaim } from "./domain.js";
 import {
   SWARM_LOAD_ISSUE_STATUSES,
   SWARM_INDIVIDUAL_QUOTA_TEXT,
+  SWARM_QUOTA_MAX_HOLD_MS,
   isAgentPaused,
   openLoadOf,
   quotaHoldUntil,
@@ -1104,7 +1105,7 @@ export async function listIdleRolePairs(
   options: SwarmPoolReadOptions = {},
 ): Promise<SwarmIdleRolePair[]> {
   const poolNow = options.order?.now ?? new Date();
-  const [agentRows, liveRunAgentIds, lastRunRows, activeClaimCounts, loadByAgent, quotaHoldByAgent] = await Promise.all([
+  const [agentRows, liveRunAgentIds, lastRunRows, activeClaimCounts, loadByAgent] = await Promise.all([
     db
       .select({
         id: agents.id,
@@ -1144,8 +1145,15 @@ export async function listIdleRolePairs(
     // hardcoded zero here would hand it a second task it cannot start.
     liveClaimCountsByAgent(db, companyId),
     openLoadByAgent(db, companyId),
-    quotaHoldsByAgent(db, companyId, poolNow),
   ] as const);
+
+  // The quota facts are read for the candidate agents of this pass only.
+  const quotaHoldByAgent = await quotaHoldsByAgent(
+    db,
+    companyId,
+    poolNow,
+    agentRows.map((agent) => agent.id),
+  );
 
   const liveRuns = new Set(
     liveRunAgentIds.map((row: { agentId: string }) => row.agentId),
@@ -1262,8 +1270,20 @@ async function agentOpenLoad(db: Db, companyId: string, agentId: string): Promis
   return entry ? openLoadOf(entry.assigned, entry.leased) : 0;
 }
 
-/** The longest look-back for a quota failure (matches the hold ceiling). */
-const QUOTA_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * The longest look-back for a quota failure that carries the `provider_quota`
+ * error code: its recorded reset is believed up to this far after the failure
+ * (`SWARM_QUOTA_MAX_HOLD_MS`), so nothing older can still hold an agent.
+ */
+const QUOTA_CODED_LOOKBACK_MS = SWARM_QUOTA_MAX_HOLD_MS;
+
+/**
+ * The look-back for the uncoded evidence (the "Individual quota" text on a run
+ * or on a wake request, a reset field on a run without the code). Such a fact
+ * rarely records a reset, so it holds for the default backoff; six hours cover that
+ * hour plus the run that outlived its start.
+ */
+const QUOTA_UNCODED_LOOKBACK_MS = 6 * 60 * 60 * 1000;
 
 /**
  * 1.6.6 (SWARM-B): agents held by a recorded provider quota failure at `now`.
@@ -1272,31 +1292,53 @@ const QUOTA_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
  * `agent_wakeup_requests.error` (an admission failure with the same text). The
  * hold lasts until the reset the failure recorded (else a default backoff), and a
  * succeeded run after the failure lifts it. Failures of any other kind are not read.
+ *
+ * It runs on every match, so it reads only what can still hold: the candidate
+ * agents of the pass (`agent_id in (...)`), the coded failures of the last
+ * `SWARM_QUOTA_MAX_HOLD_MS` (the partial index on `error_code = 'provider_quota'`),
+ * the uncoded evidence of the last six hours, and the succeeded runs only of agents
+ * that have a failure, and only since the earliest of them.
  */
 export async function quotaHoldsByAgent(
   db: Db,
   companyId: string,
   now: Date,
+  agentIds: readonly string[],
 ): Promise<Map<string, Date>> {
-  const since = new Date(now.getTime() - QUOTA_LOOKBACK_MS);
+  if (agentIds.length === 0) return new Map();
+  const ids = [...agentIds];
+  const codedSince = new Date(now.getTime() - QUOTA_CODED_LOOKBACK_MS);
+  const uncodedSince = new Date(now.getTime() - QUOTA_UNCODED_LOOKBACK_MS);
   const quotaText = SWARM_INDIVIDUAL_QUOTA_TEXT;
-  const [runRows, wakeRows, successRows] = await Promise.all([
+  const runColumns = {
+    agentId: heartbeatRuns.agentId,
+    errorCode: heartbeatRuns.errorCode,
+    error: heartbeatRuns.error,
+    resultJson: heartbeatRuns.resultJson,
+    finishedAt: heartbeatRuns.finishedAt,
+    createdAt: heartbeatRuns.createdAt,
+  };
+  const [codedRows, uncodedRows, wakeRows] = await Promise.all([
     db
-      .select({
-        agentId: heartbeatRuns.agentId,
-        errorCode: heartbeatRuns.errorCode,
-        error: heartbeatRuns.error,
-        resultJson: heartbeatRuns.resultJson,
-        finishedAt: heartbeatRuns.finishedAt,
-        createdAt: heartbeatRuns.createdAt,
-      })
+      .select(runColumns)
       .from(heartbeatRuns)
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
-          gte(heartbeatRuns.createdAt, since),
+          inArray(heartbeatRuns.agentId, ids),
+          gte(heartbeatRuns.createdAt, codedSince),
+          eq(heartbeatRuns.errorCode, "provider_quota"),
+        ),
+      ),
+    db
+      .select(runColumns)
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.agentId, ids),
+          gte(heartbeatRuns.createdAt, uncodedSince),
           or(
-            eq(heartbeatRuns.errorCode, "provider_quota"),
             sql`${heartbeatRuns.error} ilike ${`%${quotaText}%`}`,
             sql`${heartbeatRuns.resultJson} ->> 'providerQuotaRetryNotBefore' is not null`,
           ),
@@ -1313,24 +1355,11 @@ export async function quotaHoldsByAgent(
       .where(
         and(
           eq(agentWakeupRequests.companyId, companyId),
-          gte(agentWakeupRequests.requestedAt, since),
+          inArray(agentWakeupRequests.agentId, ids),
+          gte(agentWakeupRequests.requestedAt, uncodedSince),
           sql`${agentWakeupRequests.error} ilike ${`%${quotaText}%`}`,
         ),
       ),
-    db
-      .select({
-        agentId: heartbeatRuns.agentId,
-        lastSuccessAt: sql<Date | string | null>`max(coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}))`,
-      })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, companyId),
-          gte(heartbeatRuns.createdAt, since),
-          eq(heartbeatRuns.status, "succeeded"),
-        ),
-      )
-      .groupBy(heartbeatRuns.agentId),
   ]);
 
   const failures = new Map<string, SwarmQuotaFailureFact[]>();
@@ -1339,7 +1368,7 @@ export async function quotaHoldsByAgent(
     list.push(fact);
     failures.set(agentId, list);
   };
-  for (const row of runRows) {
+  for (const row of [...codedRows, ...uncodedRows]) {
     push(row.agentId, {
       errorCode: row.errorCode,
       error: row.error,
@@ -1355,6 +1384,30 @@ export async function quotaHoldsByAgent(
       occurredAt: new Date(row.finishedAt ?? row.requestedAt),
     });
   }
+  if (failures.size === 0) return new Map();
+
+  // A success proves the quota is back only if it came after a failure: look for
+  // it only for the agents that have one, and only since the earliest failure
+  // (less the uncoded window: a run may be created before the failure it outlives).
+  let earliest = now.getTime();
+  for (const facts of failures.values()) {
+    for (const fact of facts) earliest = Math.min(earliest, fact.occurredAt.getTime());
+  }
+  const successRows = await db
+    .select({
+      agentId: heartbeatRuns.agentId,
+      lastSuccessAt: sql<Date | string | null>`max(coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}))`,
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, companyId),
+        inArray(heartbeatRuns.agentId, [...failures.keys()]),
+        gte(heartbeatRuns.createdAt, new Date(earliest - QUOTA_UNCODED_LOOKBACK_MS)),
+        eq(heartbeatRuns.status, "succeeded"),
+      ),
+    )
+    .groupBy(heartbeatRuns.agentId);
   const lastSuccess = new Map<string, Date>();
   for (const row of successRows) {
     if (row.lastSuccessAt) lastSuccess.set(row.agentId, new Date(row.lastSuccessAt));

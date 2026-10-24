@@ -37,7 +37,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { matchCompany, matchIssue, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
+import { matchCompany, matchIssue, quotaHoldsByAgent, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -159,6 +159,7 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       error?: string | null;
       resultJson?: Record<string, unknown> | null;
       finishedAt?: Date;
+      createdAt?: Date;
     },
   ) {
     const finishedAt = overrides.finishedAt ?? new Date(NOW.getTime() - 5 * MIN);
@@ -173,6 +174,7 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       invocationSource: "automation",
       startedAt: new Date(finishedAt.getTime() - MIN),
       finishedAt,
+      ...(overrides.createdAt ? { createdAt: overrides.createdAt } : {}),
     });
   }
 
@@ -422,6 +424,38 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
 
       expect(result.pairs).toEqual([]);
       expect(await assigneeOf(task)).toBeNull();
+    });
+
+    it("reads the quota facts of the candidate agents only, and only what can still hold", async () => {
+      const companyId = await seedCompany();
+      const held = await seedAgent(companyId, "agent-held");
+      const outside = await seedAgent(companyId, "agent-outside");
+      const clean = await seedAgent(companyId, "agent-clean");
+      const reset = new Date(NOW.getTime() + 30 * MIN);
+      // A coded failure from three days ago whose recorded reset is still ahead holds.
+      await seedFailedRun(companyId, held, {
+        errorCode: "provider_quota",
+        error: "Individual quota reached",
+        resultJson: { providerQuotaRetryNotBefore: reset.toISOString() },
+        finishedAt: new Date(NOW.getTime() - 3 * 24 * 60 * MIN),
+        createdAt: new Date(NOW.getTime() - 3 * 24 * 60 * MIN),
+      });
+      // A failure of an agent that is not in the pass is not read.
+      await seedFailedRun(companyId, outside, {
+        errorCode: "provider_quota",
+        error: "Individual quota reached",
+        resultJson: { providerQuotaRetryNotBefore: reset.toISOString() },
+        finishedAt: new Date(NOW.getTime() - 10 * MIN),
+        createdAt: new Date(NOW.getTime() - 10 * MIN),
+      });
+      // Another failure kind and a clean agent hold nothing.
+      await seedFailedRun(companyId, clean, { errorCode: "adapter_failed", error: "connection reset by peer" });
+
+      const holds = await quotaHoldsByAgent(db, companyId, NOW, [held, clean]);
+
+      expect([...holds.keys()]).toEqual([held]);
+      expect(holds.get(held)?.getTime()).toBe(reset.getTime());
+      expect((await quotaHoldsByAgent(db, companyId, NOW, [])).size).toBe(0);
     });
   });
 
