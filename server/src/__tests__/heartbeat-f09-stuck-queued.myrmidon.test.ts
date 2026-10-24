@@ -586,7 +586,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     else expect(live.status).toBe("coalesced");
   }, 30_000);
 
-  it("myrmidon(1.6.6 OPE-8998): an orphaned run finalized as failed or interrupted closes its wake request", async () => {
+  it("myrmidon(1.6.6 OPE-8998): a run terminalized on lease release (interrupted) closes its wake request", async () => {
     pinAdmission({ maxConcurrentRuns: 0 });
     applyRunPrioritySettings(readRunPriorityFromEnv({}));
     const { companyId, agentId } = await seedCompanyAndAgent({ name: "Orphan", role: "engineer" });
@@ -607,14 +607,23 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       .set({ status: "claimed", claimedAt: new Date(Date.now() - 60 * MINUTE_MS) })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
 
-    await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 });
+    // terminalizeRunOnLeaseRelease writes the terminal run status through
+    // setRunStatusFromLive and, before OPE-8998, never touched the wake
+    // request, so it stayed `claimed` behind the interrupted run. Without
+    // closeWakeupOfTerminalRun this test fails on the wake.status assertion.
+    const running = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run.id))
+      .then((rows) => rows[0]!);
+    await heartbeat.terminalizeRunOnLeaseRelease(running);
 
     const storedRun = await db
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, run.id))
       .then((rows) => rows[0]!);
-    expect(["failed", "interrupted"]).toContain(storedRun.status);
+    expect(storedRun.status).toBe("interrupted");
     const wake = await db
       .select()
       .from(agentWakeupRequests)
