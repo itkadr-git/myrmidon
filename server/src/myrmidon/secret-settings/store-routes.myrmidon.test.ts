@@ -10,7 +10,7 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb, type Db } from "@myrmidon/db";
+import { companies, createDb, toolApplications, toolConnections, type Db } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -131,6 +131,32 @@ describeEmbeddedPostgres("instance secret settings: routes and store on the real
     await expect(resolver().resolve(NAME, { consumerId: CONSUMER })).rejects.toMatchObject({
       details: { code: "setting_ref_missing" },
     });
+  });
+
+  it("lists an OAuth provider discovered from a connected tool application without values", async () => {
+    const application = await db.insert(toolApplications).values({
+      companyId,
+      name: `Acme OAuth ${randomUUID()}`,
+      applicationKey: `acme_oauth_${randomUUID().replace(/-/g, "")}`,
+      type: "mcp",
+      status: "active",
+    }).returning().then((rows) => rows[0]!);
+    const provider = String(application.applicationKey);
+    await db.insert(toolConnections).values({
+      companyId,
+      applicationId: application.id,
+      name: "Acme connection",
+      uid: `acme-${randomUUID()}`,
+      transport: "mcp_remote",
+      authKind: "oauth",
+      status: "active",
+      enabled: true,
+      config: { oauth: { provider } },
+    });
+    const response = await request(admin()).get("/api/instance/secret-settings");
+    expect(response.status).toBe(200);
+    expect(response.body.settings.map((row: { name: string }) => row.name)).toContain(`tool-oauth.${provider}.client-secret`);
+    expect(JSON.stringify(response.body)).not.toContain(SECRET_VALUE);
   });
 
   it("refuses a consumer outside the scope even with a valid ref, and an unknown secret", async () => {
