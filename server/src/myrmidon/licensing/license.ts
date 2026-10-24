@@ -115,6 +115,7 @@ export function verifyLicense(
   reason: VerifyReason;
   payload?: LicensePayload;
   kid?: string | null;
+  signerKid?: string;
   /** On `instance_mismatch`: the installation id the license was issued for. */
   licenseInstanceId?: string;
 } {
