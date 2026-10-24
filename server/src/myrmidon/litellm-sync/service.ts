@@ -243,7 +243,6 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
 
     // Update credentials for all enabled models
     for (const model of models) {
-      // Unregister and re-register with new credentials
       // Re-register in place so LiteLLM updates the live model configuration.
       await deps.litellm.registerModel({
         litellmModelName: model.litellmModelName,
