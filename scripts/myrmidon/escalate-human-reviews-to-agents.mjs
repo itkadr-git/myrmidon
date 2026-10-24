@@ -211,8 +211,10 @@ export function psqlPort(url) {
         const detail = String(err?.stderr ?? "").trim().split("\n").slice(-3).join(" | ");
         throw new Error(`psql failed (exit ${err?.status ?? "?"})${detail ? `: ${detail}` : ""}`);
       }
-      const line = out.split("\n").find((l) => l.trim().startsWith("["));
-      return line ? JSON.parse(line) : [];
+      // json_agg pretty-prints one element per line; parse the whole output,
+      // not its first line (prod 24.10: "Unexpected end of JSON input").
+      const text = out.trim();
+      return text ? JSON.parse(text) : [];
     },
   };
 }
