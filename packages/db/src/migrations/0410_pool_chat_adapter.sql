@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS "pool_chat_quota_reservations" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"request_id" uuid NOT NULL,
+	"account_ref" text NOT NULL,
 	"units" bigint NOT NULL,
 	"state" text DEFAULT 'reserved' NOT NULL,
 	"settled_units" bigint,

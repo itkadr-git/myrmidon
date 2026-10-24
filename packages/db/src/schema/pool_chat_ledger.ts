@@ -34,6 +34,7 @@ export const poolChatQuotaReservations = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     requestId: uuid("request_id").notNull().references(() => poolChatRequests.id, { onDelete: "cascade" }),
+    accountRef: text("account_ref").notNull(),
 
     units: bigint("units", { mode: "number" }).notNull(),
     state: text("state").notNull().default("reserved"),

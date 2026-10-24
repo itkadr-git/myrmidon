@@ -20,6 +20,24 @@ function providerOf(value: string): PoolChatProvider {
   throw new HttpError(503, "Pool-chat provider is not configured");
 }
 
+function reserveAccount(config: Record<string, unknown>, provider: PoolChatProvider, units: number) {
+  const accounts = Array.isArray(config.accounts) ? [...config.accounts] : [];
+  const account = selectPoolChatAccount({ accounts }, provider, units);
+  const index = accounts.findIndex((value) => value && typeof value === "object" && (value as { accountRef?: unknown }).accountRef === account.accountRef);
+  const selected = accounts[index] as Record<string, unknown>;
+  accounts[index] = { ...selected, usedUnits: (selected.usedUnits as number) + units };
+  return { account, config: { ...config, accounts } };
+}
+
+function adjustAccountUsage(config: Record<string, unknown>, accountRef: string, delta: number): Record<string, unknown> {
+  const accounts = Array.isArray(config.accounts) ? [...config.accounts] : [];
+  const index = accounts.findIndex((value) => value && typeof value === "object" && (value as { accountRef?: unknown }).accountRef === accountRef);
+  if (index < 0) return config;
+  const selected = accounts[index] as Record<string, unknown>;
+  accounts[index] = { ...selected, usedUnits: Math.max(0, (selected.usedUnits as number) + delta) };
+  return { ...config, accounts };
+}
+
 export function poolChatService(db: Db, resolveTransport: PoolChatTransportResolver) {
   return {
     async capabilities(companyId: string, moduleId: string) {
@@ -57,11 +75,10 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
         if (eventReplay.requestHash !== hash) throw conflict("Client message was reused with a different request");
         return eventReplay;
       }
-      const module = await db.select({ provider: poolChatModuleInstances.provider, config: poolChatModuleInstances.config, credentialSecretName: poolChatModuleInstances.credentialSecretName }).from(poolChatModuleInstances).where(and(eq(poolChatModuleInstances.companyId, input.companyId), eq(poolChatModuleInstances.id, input.moduleId), eq(poolChatModuleInstances.status, "active"))).then((rows) => rows[0]);
-      if (!module) throw notFound("Pool-chat module not found");
-      const provider = providerOf(module.provider);
-      const config = module.config ?? {};
       const outcome = await db.transaction(async (tx) => {
+        const module = await tx.select({ provider: poolChatModuleInstances.provider, config: poolChatModuleInstances.config, credentialSecretName: poolChatModuleInstances.credentialSecretName }).from(poolChatModuleInstances).where(and(eq(poolChatModuleInstances.companyId, input.companyId), eq(poolChatModuleInstances.id, input.moduleId), eq(poolChatModuleInstances.status, "active"))).for("update").then((rows) => rows[0]);
+        if (!module) throw notFound("Pool-chat module not found");
+        const provider = providerOf(module.provider);
         const existing = await tx.select().from(poolChatRequests).where(and(eq(poolChatRequests.companyId, input.companyId), eq(poolChatRequests.moduleId, input.moduleId), eq(poolChatRequests.channel, input.channel), eq(poolChatRequests.subjectId, input.subjectId), eq(poolChatRequests.idempotencyKey, input.idempotencyKey))).then((rows) => rows[0]);
         if (existing) {
           if (existing.requestHash !== hash) throw conflict("Idempotency key was reused with a different request");
@@ -80,7 +97,8 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
         }
         // Select and reserve only for a new logical request. Replays must
         // return the durable result even if account availability changed.
-        const account = selectPoolChatAccount(config, provider, 1);
+        const reserved = reserveAccount(module.config ?? {}, provider, 1);
+        const account = reserved.account;
         const [created] = await tx.insert(poolChatRequests).values({ companyId: input.companyId, moduleId: input.moduleId, channel: input.channel, subjectId: input.subjectId, conversationId: input.body.conversationId, clientMessageId: input.body.clientMessageId, idempotencyKey: input.idempotencyKey, requestHash: hash, model: input.body.model, status: "dispatching", reservationUnits: 1 }).onConflictDoNothing().returning();
         if (!created) {
           // A concurrent submit may have won either scoped uniqueness race.
@@ -102,22 +120,27 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
           if (raced.requestHash !== hash) throw conflict("Pool-chat identity was reused with a different request");
           return { request: raced, created: false as const };
         }
-        await tx.insert(poolChatQuotaReservations).values({ companyId: input.companyId, requestId: created.id, units: 1, state: "reserved" });
+        await tx.update(poolChatModuleInstances).set({ config: reserved.config, updatedAt: new Date() }).where(eq(poolChatModuleInstances.id, input.moduleId));
+        await tx.insert(poolChatQuotaReservations).values({ companyId: input.companyId, requestId: created.id, accountRef: account.accountRef, units: 1, state: "reserved" });
         await tx.insert(poolChatRequestAttempts).values({ companyId: input.companyId, requestId: created.id, attemptNo: 1, state: "dispatching", provider, accountRef: account.accountRef, reservedUnits: 1 });
-        return { request: created, created: true as const, accountRef: account.accountRef };
+        return { request: created, created: true as const, accountRef: account.accountRef, module, provider, config: reserved.config };
       });
       // Only the transaction winner may perform upstream I/O. Replays must
       // observe the durable state rather than sending the request again.
       if (!outcome.created) return outcome.request;
       let transport: PoolChatTransport | null;
       try {
-        transport = await resolveTransport({ companyId: input.companyId, provider, moduleId: input.moduleId, credentialSecretName: module.credentialSecretName ?? null, accountRef: outcome.accountRef, config });
+        transport = await resolveTransport({ companyId: input.companyId, provider: outcome.provider, moduleId: input.moduleId, credentialSecretName: outcome.module.credentialSecretName ?? null, accountRef: outcome.accountRef, config: outcome.config });
       } catch {
         // Secret/provider resolution is before upstream I/O, so release the
         // reservation instead of leaving a new request permanently dispatching.
         await db.transaction(async (tx: any) => {
           await tx.update(poolChatRequestAttempts).set({ state: "failed", failureCode: "provider_not_configured", failureDetail: "provider_transport_unavailable", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, outcome.request.id), eq(poolChatRequestAttempts.attemptNo, 1), eq(poolChatRequestAttempts.state, "dispatching")));
-          await tx.update(poolChatQuotaReservations).set({ state: "released", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatQuotaReservations.requestId, outcome.request.id), eq(poolChatQuotaReservations.state, "reserved")));
+          const [reservation] = await tx.update(poolChatQuotaReservations).set({ state: "released", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatQuotaReservations.requestId, outcome.request.id), eq(poolChatQuotaReservations.state, "reserved"))).returning();
+          if (reservation) {
+            const module = await tx.select({ config: poolChatModuleInstances.config }).from(poolChatModuleInstances).where(eq(poolChatModuleInstances.id, input.moduleId)).for("update").then((rows: any[]) => rows[0]);
+            await tx.update(poolChatModuleInstances).set({ config: adjustAccountUsage(module?.config ?? {}, reservation.accountRef, -reservation.units), updatedAt: new Date() }).where(eq(poolChatModuleInstances.id, input.moduleId));
+          }
           await tx.update(poolChatRequests).set({ status: "failed", charged: false, updatedAt: new Date() }).where(and(eq(poolChatRequests.id, outcome.request.id), eq(poolChatRequests.status, "dispatching")));
         });
         throw new HttpError(503, "Pool-chat provider transport is not configured");
@@ -125,7 +148,11 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
       if (!transport) {
         await db.transaction(async (tx: any) => {
           await tx.update(poolChatRequestAttempts).set({ state: "failed", failureCode: "provider_not_configured", failureDetail: "provider_transport_unavailable", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, outcome.request.id), eq(poolChatRequestAttempts.attemptNo, 1), eq(poolChatRequestAttempts.state, "dispatching")));
-          await tx.update(poolChatQuotaReservations).set({ state: "released", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatQuotaReservations.requestId, outcome.request.id), eq(poolChatQuotaReservations.state, "reserved")));
+          const [reservation] = await tx.update(poolChatQuotaReservations).set({ state: "released", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatQuotaReservations.requestId, outcome.request.id), eq(poolChatQuotaReservations.state, "reserved"))).returning();
+          if (reservation) {
+            const module = await tx.select({ config: poolChatModuleInstances.config }).from(poolChatModuleInstances).where(eq(poolChatModuleInstances.id, input.moduleId)).for("update").then((rows: any[]) => rows[0]);
+            await tx.update(poolChatModuleInstances).set({ config: adjustAccountUsage(module?.config ?? {}, reservation.accountRef, -reservation.units), updatedAt: new Date() }).where(eq(poolChatModuleInstances.id, input.moduleId));
+          }
           await tx.update(poolChatRequests).set({ status: "failed", charged: false, updatedAt: new Date() }).where(and(eq(poolChatRequests.id, outcome.request.id), eq(poolChatRequests.status, "dispatching")));
         });
         throw new HttpError(503, "Pool-chat provider transport is not configured");
@@ -144,7 +171,12 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
         request = await db.transaction(async (tx) => {
           const [attempt] = await tx.update(poolChatRequestAttempts).set({ state: "sent", settledUnits: result.inputUnits + result.outputUnits, providerRequestRef: result.providerRequestRef, updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, request.id), eq(poolChatRequestAttempts.attemptNo, 1), eq(poolChatRequestAttempts.state, "dispatching"))).returning({ id: poolChatRequestAttempts.id });
           if (!attempt) return (await tx.select().from(poolChatRequests).where(eq(poolChatRequests.id, request.id)))[0];
-          await tx.update(poolChatQuotaReservations).set({ state: "settled", settledUnits: result.inputUnits + result.outputUnits, updatedAt: new Date() }).where(and(eq(poolChatQuotaReservations.requestId, request.id), eq(poolChatQuotaReservations.state, "reserved")));
+          const settledUnits = result.inputUnits + result.outputUnits;
+          const [reservation] = await tx.update(poolChatQuotaReservations).set({ state: "settled", settledUnits, updatedAt: new Date() }).where(and(eq(poolChatQuotaReservations.requestId, request.id), eq(poolChatQuotaReservations.state, "reserved"))).returning();
+          if (reservation && settledUnits !== reservation.units) {
+            const module = await tx.select({ config: poolChatModuleInstances.config }).from(poolChatModuleInstances).where(eq(poolChatModuleInstances.id, input.moduleId)).for("update").then((rows: any[]) => rows[0]);
+            if (module) await tx.update(poolChatModuleInstances).set({ config: adjustAccountUsage(module.config ?? {}, reservation.accountRef, settledUnits - reservation.units), updatedAt: new Date() }).where(eq(poolChatModuleInstances.id, input.moduleId));
+          }
           const [updated] = await tx.update(poolChatRequests).set({ status: "completed", charged: true, result: { text: result.text }, usage: { inputUnits: result.inputUnits, outputUnits: result.outputUnits }, updatedAt: new Date() }).where(and(eq(poolChatRequests.id, request.id), eq(poolChatRequests.status, "dispatching"))).returning();
           return updated;
         });
