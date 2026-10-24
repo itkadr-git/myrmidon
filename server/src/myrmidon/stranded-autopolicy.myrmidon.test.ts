@@ -9,6 +9,8 @@ import {
   buildStrandedAutoPolicyRetryContext,
   buildStrandedAutoPolicyRetryIdempotencyKey,
   buildStrandedAutoPolicyRetryInstruction,
+  buildStrandedDispositionBlockedPatch,
+  buildStrandedDispositionWakeIdempotencyKey,
   countAttemptsSince,
   decideStrandedAutoPolicy,
   isStrandedAutoPolicyCause,
@@ -633,5 +635,76 @@ describe("buildStrandedAutoPolicyRetryIdempotencyKey", () => {
       // not be treated as a repeat of the earlier one.
       buildStrandedAutoPolicyRetryIdempotencyKey({ issueId: "issue-1", sourceRunId: "run-2" }),
     ).not.toBe(base);
+  });
+});
+
+describe("OPE-9072: escalation chain target and workflow-safe blocked disposition", () => {
+  const exhausted = { attemptsInWindow: 2, maxAttemptsPerDay: 2 };
+
+  it("with no direct manager the chain target (lead or adm) takes the review handoff", () => {
+    expect(decideStrandedAutoPolicy({ ...exhausted, managerAgentId: null, escalationAgentId: "lead-1" })).toEqual({
+      kind: "reassign_to_manager",
+      managerAgentId: "lead-1",
+      ...exhausted,
+    });
+  });
+
+  it("with a workflow the issue is blocked with an agent owner instead of a vendor board card", () => {
+    expect(
+      decideStrandedAutoPolicy({ ...exhausted, managerAgentId: "mgr-1", hasExecutionWorkflow: true }),
+    ).toEqual({ kind: "disposition_blocked", ownerAgentId: "mgr-1", ...exhausted });
+    expect(
+      decideStrandedAutoPolicy({ ...exhausted, managerAgentId: null, escalationAgentId: "adm-1", hasExecutionWorkflow: true }),
+    ).toEqual({ kind: "disposition_blocked", ownerAgentId: "adm-1", ...exhausted });
+  });
+
+  it("adm is never made a reviewer: chain of one adm or manager = adm, no workflow -> blocked owned by adm", () => {
+    expect(
+      decideStrandedAutoPolicy({ ...exhausted, managerAgentId: null, escalationAgentId: "adm-1", targetIsAdm: true }),
+    ).toEqual({ kind: "disposition_blocked", ownerAgentId: "adm-1", ...exhausted });
+    expect(
+      decideStrandedAutoPolicy({ ...exhausted, managerAgentId: "adm-1", targetIsAdm: true, hasExecutionWorkflow: false }),
+    ).toEqual({ kind: "disposition_blocked", ownerAgentId: "adm-1", ...exhausted });
+  });
+
+  it("only an empty chain reaches the vendor board escalation", () => {
+    expect(
+      decideStrandedAutoPolicy({ ...exhausted, managerAgentId: null, escalationAgentId: null, hasExecutionWorkflow: true }),
+    ).toEqual({ kind: "vendor_default", ...exhausted });
+  });
+
+  it("retries still come first and a paused assignee keeps the old behaviour", () => {
+    expect(
+      decideStrandedAutoPolicy({
+        attemptsInWindow: 0, maxAttemptsPerDay: 2, managerAgentId: "mgr-1", hasExecutionWorkflow: true,
+      }).kind,
+    ).toBe("retry");
+    expect(
+      decideStrandedAutoPolicy({
+        ...exhausted, managerAgentId: "mgr-1", escalationAgentId: "adm-1", hasExecutionWorkflow: true, assigneePaused: true,
+      }).kind,
+    ).toBe("vendor_default");
+  });
+
+  it("the blocked patch carries complete metadata and an agent-owned descriptor, no assignee change", () => {
+    const now = new Date("2026-10-24T10:00:00.000Z");
+    const patch = buildStrandedDispositionBlockedPatch({ issueId: "issue-1", ownerAgentId: "adm-1", now });
+    expect(patch.status).toBe("blocked");
+    expect(patch.blockerMetadata).toEqual({
+      blockReason: "recovery",
+      owner: { agentId: "adm-1" },
+      nextCheckAt: "2026-10-24T14:00:00.000Z",
+      timeoutAt: "2026-10-25T10:00:00.000Z",
+      escalationPolicy: "stranded_disposition_chain_v1",
+    });
+    expect(patch.unblockDescriptor.owner).toEqual({ agentId: "adm-1" });
+    expect(patch.unblockDescriptor.action).toContain("final status");
+    expect(Object.keys(patch).sort()).toEqual(["blockerMetadata", "status", "unblockDescriptor"]);
+  });
+
+  it("the wake key is stable per (issue, source run)", () => {
+    const a = buildStrandedDispositionWakeIdempotencyKey({ issueId: "i", sourceRunId: "r1" });
+    expect(a).toBe(buildStrandedDispositionWakeIdempotencyKey({ issueId: "i", sourceRunId: "r1" }));
+    expect(a).not.toBe(buildStrandedDispositionWakeIdempotencyKey({ issueId: "i", sourceRunId: "r2" }));
   });
 });
