@@ -18,6 +18,19 @@ import { RUNNER_ACPX_CODEX_AUTH_REGISTRY_ENTRY } from "./runner-environment.js";
 import { BOT_FLEET_SECRET_SETTINGS } from "./bot-fleet-settings.js"; // myrmidon(SETTINGS-UI E2.3)
 import { PROVIDER_SECRET_SETTINGS } from "./provider-settings.js"; // myrmidon(SETTINGS-UI E2.2)
 
+export const CLOUD_OAUTH_CONSUMER = "cloud-connector.oauth";
+
+/** Cloud connector providers whose OAuth client secret may be a ref (E2.5, OPE-9038). */
+export const CLOUD_OAUTH_PROVIDERS = [
+  { id: "onedrive", envSuffix: "ONEDRIVE", label: "OneDrive" },
+  { id: "google-drive", envSuffix: "GOOGLE_DRIVE", label: "Google Drive" },
+  { id: "yandex-disk", envSuffix: "YANDEX_DISK", label: "Yandex Disk" },
+] as const;
+
+export function cloudOauthClientSecretSettingName(providerId: string): string {
+  return `cloud-oauth.${providerId}.client-secret`;
+}
+
 export const TOOL_OAUTH_CONSUMER = "tool-access.oauth";
 export const TOOL_OAUTH_CLIENT_SECRET_SETTING = "tool-oauth.client-secret";
 
@@ -117,6 +130,13 @@ export class InstanceSecretSettingRegistry {
 
 /** Consumer parts append their entries here. Empty until the first consumer lands. */
 export const INSTANCE_SECRET_SETTINGS: readonly InstanceSecretSettingDescriptor[] = [
+  // E2.5 (OPE-9038): OAuth client secret of each cloud connector provider.
+  ...CLOUD_OAUTH_PROVIDERS.map((provider) => ({
+    name: cloudOauthClientSecretSettingName(provider.id),
+    envOverride: `MYRMIDON_CLOUD_${provider.envSuffix}_CLIENT_SECRET`,
+    description: `${provider.label} OAuth client secret of the cloud connector`,
+    consumers: [CLOUD_OAUTH_CONSUMER],
+  })),
   ...SANDBOX_PROVIDER_REGISTRY_ENTRIES, // E2.8 (OPE-9041)
   RUNNER_ACPX_CODEX_AUTH_REGISTRY_ENTRY, // E2.8 (OPE-9041)
   ...BOT_FLEET_SECRET_SETTINGS, // myrmidon(SETTINGS-UI E2.3)
@@ -149,7 +169,7 @@ export const INSTANCE_SECRET_SETTINGS: readonly InstanceSecretSettingDescriptor[
     description: "Bearer token the board presents to the browser screen-console node",
     consumers: ["browser-console"],
   },
-  // myrmidon(SETTINGS-UI E2.7): telemetry and cloud connector credentials. Auth, handoff and
+  // myrmidon(SETTINGS-UI E2.7): telemetry credentials. Auth, handoff and
   // signing secrets are deliberately absent (bootstrap, env only): see
   // docs/myrmidon/e2-secret-coverage-1.6.6.md.
   {
@@ -157,24 +177,6 @@ export const INSTANCE_SECRET_SETTINGS: readonly InstanceSecretSettingDescriptor[
     envOverride: "MYRMIDON_FEEDBACK_EXPORT_BACKEND_TOKEN",
     description: "Bearer token for the feedback/telemetry export backend (one token for both URLs)",
     consumers: ["feedback-export"],
-  },
-  {
-    name: "cloud.onedrive.client_secret",
-    envOverride: "MYRMIDON_CLOUD_ONEDRIVE_CLIENT_SECRET",
-    description: "OAuth client secret of the OneDrive app",
-    consumers: ["cloud-connector"],
-  },
-  {
-    name: "cloud.google_drive.client_secret",
-    envOverride: "MYRMIDON_CLOUD_GOOGLE_DRIVE_CLIENT_SECRET",
-    description: "OAuth client secret of the Google Drive app",
-    consumers: ["cloud-connector"],
-  },
-  {
-    name: "cloud.yandex_disk.client_secret",
-    envOverride: "MYRMIDON_CLOUD_YANDEX_DISK_CLIENT_SECRET",
-    description: "OAuth client secret of the Yandex Disk app",
-    consumers: ["cloud-connector"],
   },
 ];
 

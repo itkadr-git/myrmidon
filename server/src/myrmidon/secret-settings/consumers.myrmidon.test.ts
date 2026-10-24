@@ -12,7 +12,6 @@ import {
 } from "./resolver.js";
 import { installInstanceSecretResolver, resolveOptionalInstanceSecret } from "./runtime.js";
 import { readTracingHealthSettings, withClickhousePassword } from "../tracing-health/probes.js";
-import { exchangeCode, readOAuthClients, CLOUD_OAUTH_SPECS } from "../cloud-connector/oauth.js";
 import { createFeedbackTraceShareClientFromConfig } from "../../services/feedback-share-client.js";
 import { lazyScreenConsoleClient, ScreenConsoleError } from "../browser-console/screen-console-client.js";
 
@@ -29,9 +28,6 @@ const CASES = [
   { name: "tracing.clickhouse_password", env: "MYRMIDON_TRACING_CLICKHOUSE_PASSWORD", consumer: "tracing-health" },
   { name: "browser_console.node_token", env: "MYRMIDON_BROWSER_CONSOLE_TOKEN", consumer: "browser-console" },
   { name: "feedback_export.backend_token", env: "MYRMIDON_FEEDBACK_EXPORT_BACKEND_TOKEN", consumer: "feedback-export" },
-  { name: "cloud.onedrive.client_secret", env: "MYRMIDON_CLOUD_ONEDRIVE_CLIENT_SECRET", consumer: "cloud-connector" },
-  { name: "cloud.google_drive.client_secret", env: "MYRMIDON_CLOUD_GOOGLE_DRIVE_CLIENT_SECRET", consumer: "cloud-connector" },
-  { name: "cloud.yandex_disk.client_secret", env: "MYRMIDON_CLOUD_YANDEX_DISK_CLIENT_SECRET", consumer: "cloud-connector" },
 ] as const;
 
 function setup() {
@@ -81,7 +77,7 @@ function setup() {
 afterEach(() => installInstanceSecretResolver(null));
 
 describe("E2.6 registered application settings", () => {
-  it("registers the value-carrying application, telemetry and cloud names, none of them bootstrap", () => {
+  it("registers the value-carrying application and telemetry names, none of them bootstrap", () => {
     expect(INSTANCE_SECRET_SETTINGS.map((s) => s.envOverride)).toEqual(expect.arrayContaining(CASES.map((c) => c.env)));
     for (const entry of INSTANCE_SECRET_SETTINGS) {
       expect(entry.envOverride).not.toMatch(/MASTER_KEY|BETTER_AUTH|AGENT_JWT|SIGNING|PEPPER|HANDOFF|READINESS|TENANT_SERVER|DEV_SERVER|AWS_/);
@@ -176,32 +172,6 @@ describe("E2.6 consumer wiring", () => {
     token = "t2";
     await client.resumeBots("b1");
     expect(seen).toEqual(["Bearer t1", "Bearer t2"]);
-  });
-
-  it("cloud connector: client secret from the ref only when env has none", async () => {
-    const { resolver } = setup();
-    await resolver.setRef("cloud.onedrive.client_secret", SECRET_A);
-    const bodies: string[] = [];
-    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
-      bodies.push(String(init.body));
-      return new Response(JSON.stringify({ access_token: "at", refresh_token: "rt", expires_in: 3600 }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }) as unknown as typeof fetch;
-    const clients = readOAuthClients({ MYRMIDON_CLOUD_ONEDRIVE_CLIENT_ID: "cid" }, "https://b.example");
-    const client = clients.onedrive!;
-    expect(client.clientSecret).toBeNull();
-    client.resolveClientSecret = () => resolveOptionalInstanceSecret("cloud.onedrive.client_secret", "cloud-connector", {});
-    await exchangeCode({ spec: CLOUD_OAUTH_SPECS.onedrive, client, code: "c", codeVerifier: null, fetchImpl });
-    expect(new URLSearchParams(bodies[0]).get("client_secret")).toBe(VALUE_A);
-    const withEnv = readOAuthClients(
-      { MYRMIDON_CLOUD_ONEDRIVE_CLIENT_ID: "cid", MYRMIDON_CLOUD_ONEDRIVE_CLIENT_SECRET: ENV_VALUE },
-      "https://b.example",
-    ).onedrive!;
-    withEnv.resolveClientSecret = client.resolveClientSecret;
-    await exchangeCode({ spec: CLOUD_OAUTH_SPECS.onedrive, client: withEnv, code: "c", codeVerifier: null, fetchImpl });
-    expect(new URLSearchParams(bodies[1]).get("client_secret")).toBe(ENV_VALUE);
   });
 
   it("feedback export: config token wins, ref fills a missing one, revoke drops it", async () => {

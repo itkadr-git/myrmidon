@@ -10,11 +10,15 @@
 // values live in the deploy repository); with none set, the connector still
 // serves the folder/grant/journal surface but refuses to start a connect.
 
-import { resolveOptionalInstanceSecret } from "../secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.7)
 import type { Db } from "@myrmidon/db";
 import { Router } from "express";
 import type { CloudRoot } from "@myrmidon/shared/myrmidon-cloud-connector";
 import { OAuthStateStore, readOAuthClients } from "./oauth.js";
+import { createInstanceSecretSettingService } from "../secret-settings/wiring.js"; // E2.5
+import {
+  createCloudOauthClientSecretLookup,
+  type CloudOauthClientSecretLookup,
+} from "../secret-settings/cloud-oauth.js";
 import { createCloudAccessTokenResolver, type CloudAccessTokenResolver } from "./access-token.js";
 import { secretCloudTokenStore, type CloudTokenStore } from "./token-store.js";
 import { CloudProviderRegistry, type CloudProvider } from "./providers/provider.js";
@@ -37,6 +41,8 @@ export interface CloudConnectorWiringOptions {
   /** Extra providers appended to the three built-in clouds (tests, new clouds). */
   providers?: readonly CloudProvider[];
   stateStore?: OAuthStateStore;
+  /** Override for tests; production resolves the client secret ref through the instance resolver. */
+  clientSecretLookup?: CloudOauthClientSecretLookup;
 }
 
 export interface CloudConnectorWiring {
@@ -50,19 +56,19 @@ export function createCloudConnector(options: { db: Db } & CloudConnectorWiringO
   const env = options.env ?? process.env;
   const documentStore = options.store ?? dbCloudConnectorStore(options.db);
   const tokenStore = options.tokenStore ?? secretCloudTokenStore(options.db);
-  const clients = readOAuthClients(env, env.MYRMIDON_CLOUD_CONNECTOR_REDIRECT_BASE ?? null);
-  // myrmidon(SETTINGS-UI E2.7): without an env client secret, resolve a bound secret ref per use.
-  const clientSecretSettings: Record<string, string> = {
-    onedrive: "cloud.onedrive.client_secret",
-    "google-drive": "cloud.google_drive.client_secret",
-    "yandex-disk": "cloud.yandex_disk.client_secret",
+  // myrmidon(SETTINGS-UI E2.5): the secret ref is resolved lazily, per token request.
+  let lookup = options.clientSecretLookup ?? null;
+  const clientSecretLookup: CloudOauthClientSecretLookup = (providerId) => {
+    lookup ??= createCloudOauthClientSecretLookup({
+      resolver: createInstanceSecretSettingService(options.db),
+    });
+    return lookup(providerId);
   };
-  for (const [providerId, client] of Object.entries(clients)) {
-    const settingName = clientSecretSettings[providerId];
-    if (client && settingName && !client.clientSecret) {
-      client.resolveClientSecret = () => resolveOptionalInstanceSecret(settingName, "cloud-connector", env);
-    }
-  }
+  const clients = readOAuthClients(
+    env,
+    env.MYRMIDON_CLOUD_CONNECTOR_REDIRECT_BASE ?? null,
+    clientSecretLookup,
+  );
   const resolveAccountToken: CloudAccessTokenResolver = createCloudAccessTokenResolver({
     store: tokenStore,
     clients,

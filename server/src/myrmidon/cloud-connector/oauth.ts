@@ -64,17 +64,20 @@ export const CLOUD_OAUTH_SPECS: Record<CloudProviderId, OAuthProviderSpec> = {
 
 export interface OAuthClient {
   clientId: string;
+  /** Emergency environment value; wins over a bound secret ref. */
   clientSecret: string | null;
   /**
-   * myrmidon(SETTINGS-UI E2.7): resolved at use when no env secret is set (bound secret ref).
-   * Env wins: this is only consulted when `clientSecret` is null.
+   * Server-side lookup of the client secret held as a secret ref (E2.5). Used only when
+   * `clientSecret` is empty, at token-request time, never at startup.
    */
   resolveClientSecret?: () => Promise<string | null>;
   redirectUri: string;
 }
 
-async function effectiveClientSecret(client: OAuthClient): Promise<string | null> {
-  return client.clientSecret ?? (client.resolveClientSecret ? await client.resolveClientSecret() : null);
+/** The secret to send to the token endpoint: emergency env first, then the bound ref. */
+export async function effectiveClientSecret(client: OAuthClient): Promise<string | null> {
+  if (client.clientSecret) return client.clientSecret;
+  return (await client.resolveClientSecret?.()) ?? null;
 }
 
 /**
@@ -84,6 +87,7 @@ async function effectiveClientSecret(client: OAuthClient): Promise<string | null
 export function readOAuthClients(
   env: NodeJS.ProcessEnv,
   redirectBase: string | null,
+  secretLookup?: (providerId: CloudProviderId) => Promise<string | null>,
 ): Partial<Record<CloudProviderId, OAuthClient>> {
   const clients: Partial<Record<CloudProviderId, OAuthClient>> = {};
   const definitions: Array<[CloudProviderId, string]> = [
@@ -97,6 +101,7 @@ export function readOAuthClients(
     clients[providerId] = {
       clientId,
       clientSecret: env[`MYRMIDON_CLOUD_${suffix}_CLIENT_SECRET`]?.trim() || null,
+      ...(secretLookup ? { resolveClientSecret: () => secretLookup(providerId) } : {}),
       redirectUri: `${(redirectBase ?? "").replace(/\/+$/, "")}/api/myrmidon/cloud-connector/oauth/callback`,
     };
   }
