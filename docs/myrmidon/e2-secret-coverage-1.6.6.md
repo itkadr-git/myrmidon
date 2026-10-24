@@ -56,7 +56,7 @@ Disposition of the exact E1 names of this part (the source lines are those liste
 The E1 `secret` classification of the bootstrap rows stays as the registry has it (the matrix does not alter E1); their accepted disposition is "bootstrap, no ref", with the threat model above.
 
 
-## E2.3 bot/container and fleet credentials (OPE-9036)
+## E2.3 bot/container and fleet credentials (OPE-9036, PR #1743)
 
 Finding: most names of this part are credentials of one bot (agent) of one company, or a pointer to such a credential. They already live as company secrets bound to the agent and resolved per agent with a binding check (`resolveEnvBindings` with the agent as consumer and a system actor). An instance-wide setting would give every bot the same value, so none is added for them. Two names are instance-wide tokens shared by the whole board; they become secret-ref settings.
 
