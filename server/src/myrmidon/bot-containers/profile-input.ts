@@ -466,7 +466,7 @@ export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): Bo
   // Lists saved from the UI win over the environment (nothing changes before one is saved).
   const savedBanks = env === process.env ? liveSavedSetting<string[]>("bot_hindsight_allowed_banks") : undefined;
   const hindsightAllowedBanksValue = Array.isArray(savedBanks)
-    ? JSON.stringify(savedBanks)
+    ? savedBanks.join(",")
     : readSetting(env, BOT_HINDSIGHT_ALLOWED_BANKS_ENV);
   const hindsightAllowedBanks = parseBotHindsightAllowedBanks(hindsightAllowedBanksValue);
   const llmApiKeyEnv = readSetting(env, BOT_LLM_API_KEY_ENV_ENV);
