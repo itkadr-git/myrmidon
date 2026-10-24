@@ -1463,6 +1463,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     enabled: !!issueId,
     placeholderData: keepPreviousDataForSameQueryTail<ActivityEvent[]>(issueId),
   });
+  // Issue detail queries are reconciled by the company live-events stream;
+  // keep a slow fallback only for missed events and stream reconnects.
+  const issueRunFallbackMs = 30_000;
+  const issueActiveRunFallbackMs = 30_000;
   const {
     data: liveRuns,
     isFetched: liveRunsFetched,
@@ -1472,7 +1476,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
     enabled: !!issueId,
-    refetchInterval: 1000,
+    refetchInterval: issueRunFallbackMs,
     placeholderData:
       keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId),
   });
@@ -1489,7 +1493,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
     enabled: activeRunQueryEnabled,
-    refetchInterval: liveRunCount > 0 ? false : 1000,
+    refetchInterval: liveRunCount > 0 ? false : issueActiveRunFallbackMs,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueId,
     ),
@@ -1528,7 +1532,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       ),
     enabled: queuedCommentQueueEnabled,
     refetchInterval: (query) => queuedCommentQueueEnabled &&
-      (liveRuntimeRun || query.state.data?.entries.length) ? 1000 : false,
+      (liveRuntimeRun || query.state.data?.entries.length) ? 5_000 : false,
   });
   const [consumedQueuedCommentIds, setConsumedQueuedCommentIds] = useState<
     ReadonlySet<string>
@@ -1560,7 +1564,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryFn: () => activityApi.runsForIssue(issueId),
     enabled: !!issueId,
     refetchInterval:
-      hasLiveRuns || issueStatus === "in_progress" ? 1000 : false,
+      hasLiveRuns || issueStatus === "in_progress" ? issueRunFallbackMs : false,
     placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
   const resolvedActivity = activity ?? [];
