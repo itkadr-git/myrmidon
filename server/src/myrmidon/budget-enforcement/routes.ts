@@ -7,8 +7,8 @@
 // the same rule the rest of the instance settings follow.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { patchBudgetEnforcementSchema, type BudgetEnforcementPatch } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { patchBudgetEnforcementSchema, type BudgetEnforcementPatch } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import type { BudgetEnforcementService } from "./service.js";

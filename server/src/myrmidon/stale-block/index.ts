@@ -1,7 +1,7 @@
 // myrmidon(STALE-BLOCK): entry point — one import, one call site in the
 // server entry (CONVENTIONS.md §12), no separate scheduler loop of its own.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { isInstanceUnderMaintenance } from "../maintenance/gate.js";
 import { createStaleBlockSweep, type StaleBlockSweep } from "./sweep.js";
@@ -14,6 +14,13 @@ export {
   type StaleBlockReason,
 } from "./policy.js";
 export { readReasonRef, type StaleBlockReasonRef } from "./reason.js";
+export {
+  STALE_BLOCK_RECOVERY_LIVENESS_EVENT_PREFIX,
+  recoveryLivenessEventKey,
+  recoveryLivenessDescriptor,
+  recoveryLivenessIssueId,
+  createRecoveryLivenessEventReader,
+} from "./event-keys.js";
 export {
   readStaleBlockEnabled,
   readStaleBlockSettings,

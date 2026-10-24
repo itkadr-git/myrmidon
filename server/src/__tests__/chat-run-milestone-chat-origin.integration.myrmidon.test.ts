@@ -16,7 +16,7 @@ import {
   issues,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { mergeCoalescedContextSnapshot } from "../services/heartbeat.js";
 import { enqueueChatRunMilestones } from "../services/chat-run-publications.js";

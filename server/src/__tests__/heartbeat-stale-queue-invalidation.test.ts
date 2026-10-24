@@ -14,8 +14,8 @@ import {
   issueDocuments,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
-import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -1086,6 +1086,31 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         observed: 1,
         limit: 1,
       },
+    });
+  });
+
+  it("does not repeat assignment wakes after a daily cap skip", async () => {
+    const { agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: { maxDailyRuns: 0 },
+    });
+
+    expect(await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+    })).toBeNull();
+    expect(await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+    })).toBeNull();
+
+    const wakes = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.daily_run_limit",
     });
   });
 

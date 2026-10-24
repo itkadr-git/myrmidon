@@ -16,7 +16,7 @@
  *
  * Run it on a broker-provisioned host with:
  *
- *   PAPERCLIP_LIVE_BROKER_EXERCISE=1 pnpm --filter @paperclipai/server exec \
+ *   PAPERCLIP_LIVE_BROKER_EXERCISE=1 pnpm --filter @myrmidon/server exec \
  *     vitest run src/__tests__/workspace-runtime-https-live-exercise.test.ts
  *
  * The caller must be the broker's configured service UID/GID and its listeners
@@ -35,7 +35,7 @@ import {
   projects,
   workspaceRuntimeServices,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

@@ -604,7 +604,13 @@ describe("agent routes adapter validation", () => {
       expect(noLimits.status, JSON.stringify(noLimits.body)).toBe(422);
       expect(String(noLimits.body.error ?? noLimits.body.message ?? "")).toContain("memoryMb");
 
-      const complete = await create({ enabled: true, image: "example/hermes@sha256:aa", memoryMb: 2048, cpus: 1, pidsLimit: 512 });
+      const pinned = `example/hermes@sha256:${"a".repeat(64)}`;
+      const limits = { memoryMb: 2048, cpus: 1, pidsLimit: 512 };
+      const byTag = await create({ enabled: true, image: "myrmidon-hermes:latest", ...limits });
+      expect(byTag.status, JSON.stringify(byTag.body)).toBe(422);
+      expect(String(byTag.body.error ?? byTag.body.message ?? "")).toContain("not pinned by digest");
+
+      const complete = await create({ enabled: true, image: pinned, ...limits });
       expect(complete.status, JSON.stringify(complete.body)).toBe(201);
     } finally {
       unregisterServerAdapter("hermes_gateway");

@@ -17,6 +17,8 @@ import {
   assertRuleFields,
   assertSingleLine,
   assertValidSlug,
+  normalizeKnowledgeRevisionLang,
+  assertTranslationOf,
   canTransitionItem,
   draftPointerFields,
   extractLinkTargets,
@@ -36,6 +38,7 @@ const page = (over: Partial<KnowledgeTreePage> = {}): KnowledgeTreePage => ({
   kind: "note",
   folder: "",
   tags: [],
+  roles: [],
   status: "draft",
   approvalRequired: false,
   approverKind: null,
@@ -44,6 +47,15 @@ const page = (over: Partial<KnowledgeTreePage> = {}): KnowledgeTreePage => ({
 });
 
 describe("knowledge domain — slugs and single-line metadata", () => {
+  it("normalizes requested language and refuses same-language translations", () => {
+    expect(normalizeKnowledgeRevisionLang("ru-RU")).toBe("ru");
+    expect(normalizeKnowledgeRevisionLang("EN_us")).toBe("en");
+    expect(normalizeKnowledgeRevisionLang("xx")).toBe("en");
+    assertTranslationOf({ lang: "ru", canonical: { id: "canonical", lang: "en" } });
+    expect(() => assertTranslationOf({ lang: "ru", revisionId: "canonical", canonical: { id: "canonical", lang: "en" } })).toThrow(/cannot translate itself/);
+    expect(() => assertTranslationOf({ lang: "en", canonical: { id: "canonical", lang: "en" } })).toThrow(/different language/);
+  });
+
   it("accepts slash slugs and refuses anything else", () => {
     assertValidSlug("ops/runbooks/db");
     assertValidSlug("x1");

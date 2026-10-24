@@ -14,7 +14,7 @@
 // The summary is persisted into run_identity_contexts.github and returned to
 // the caller; it never contains the token. The env goes to the caller only.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { buildGitAuthInvocation } from "../../services/git-credentials.js";
 import type { GitHubCredentialSummary } from "../../services/github-operation-credentials.js";
 import { secretService } from "../../services/secrets.js";
@@ -65,7 +65,7 @@ export async function applyGitHubAppIdentity(
       return {
         summary: {
           status: "available",
-          source: "app",
+          source: resolution.credential.identitySource === "pat" ? "pat" : "app",
           login: resolution.name,
           repository: resolution.repository,
           authenticationMode: "managed",

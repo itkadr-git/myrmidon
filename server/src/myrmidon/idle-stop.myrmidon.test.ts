@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { IdleStopService, type IdleStopConfig, type IdleStopLogger } from './idle-stop.js';
 import { BotContainerDriver, BotContainerStatus } from './bot-containers/driver.js';
-import { heartbeatRuns, agents } from '@paperclipai/db';
+import { heartbeatRuns, agents, botApplyJobs, instanceSettings } from '@myrmidon/db';
 
-vi.mock('@paperclipai/db', () => ({
+vi.mock('@myrmidon/db', () => ({
   heartbeatRuns: {
     id: 'id',
     agentId: 'agent_id',
@@ -18,6 +18,26 @@ vi.mock('@paperclipai/db', () => ({
     status: 'status',
     adapterConfig: 'adapter_config',
   },
+  botApplyJobs: {
+    id: 'id',
+    botId: 'bot_id',
+    status: 'status',
+  },
+  instanceSettings: {
+    singletonKey: 'singleton_key',
+    general: 'general',
+  },
+}));
+
+const settingsState: { general: Record<string, unknown> } = { general: {} };
+vi.mock('../services/instance-settings.js', () => ({
+  instanceSettingsService: () => ({
+    getGeneral: async () => settingsState.general,
+  }),
+}));
+
+vi.mock('./maintenance/store.js', () => ({
+  readMaintenanceDocument: vi.fn().mockResolvedValue({ windows: [] }),
 }));
 
 describe('IdleStopService', () => {
@@ -34,6 +54,7 @@ describe('IdleStopService', () => {
   };
 
   beforeEach(() => {
+    settingsState.general = {};
     mockLogger = {
       info: vi.fn(),
       warn: vi.fn(),
@@ -44,6 +65,7 @@ describe('IdleStopService', () => {
     mockDriver = {
       status: vi.fn(),
       stop: vi.fn(),
+      stopIdle: vi.fn(),
       start: vi.fn(),
       list: vi.fn(),
       templateDrift: vi.fn(),
@@ -128,49 +150,40 @@ describe('IdleStopService', () => {
         { botKey, state: 'running' },
       ]);
 
-      // call 1 = listBotKeys via mockReturnValueOnce (bypasses this implementation)
-      let selectCallCount = 1;
-      mockDb.select.mockImplementation(() => {
-        selectCallCount++;
-        // 2 = resolveAgentId (hasActiveRuns), 3 = hasActiveRuns, 4 = resolveAgentId (getIdleDurationSec), 5 = getIdleDurationSec
-        if (selectCallCount === 2) {
-          // First resolveAgentId call (in hasActiveRuns)
-          return {
-            from: vi.fn().mockReturnValue({
+      let runsQueryCount = 0;
+      mockDb.select.mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === botApplyJobs) {
+            return {
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  then: vi.fn().mockImplementation((resolve: any) => resolve([])),
+                }),
+              }),
+            };
+          }
+          if (table === agents) {
+            return {
               where: vi.fn().mockReturnValue({
                 limit: vi.fn().mockReturnValue({
                   then: vi.fn().mockImplementation((resolve: any) => resolve([{ id: botKey }])),
                 }),
               }),
-            }),
-          };
-        } else if (selectCallCount === 3) {
-          // hasActiveRuns query
-          return {
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockReturnValue({
-                  then: vi.fn().mockImplementation((resolve: any) => resolve([])), // No active runs
+            };
+          }
+          if (table === heartbeatRuns) {
+            runsQueryCount++;
+            if (runsQueryCount === 1) {
+              return {
+                where: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    then: vi.fn().mockImplementation((resolve: any) => resolve([])), // No active runs
+                  }),
                 }),
-              }),
-            }),
-          };
-        } else if (selectCallCount === 4) {
-          // Second resolveAgentId call (in getIdleDurationSec)
-          return {
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockReturnValue({
-                  then: vi.fn().mockImplementation((resolve: any) => resolve([{ id: botKey }])),
-                }),
-              }),
-            }),
-          };
-        } else {
-          // getIdleDurationSec query
-          const oldDate = new Date(Date.now() - 400000); // 400 seconds ago
-          return {
-            from: vi.fn().mockReturnValue({
+              };
+            }
+            const oldDate = new Date(Date.now() - 400000); // 400 seconds ago
+            return {
               where: vi.fn().mockReturnValue({
                 orderBy: vi.fn().mockReturnValue({
                   limit: vi.fn().mockReturnValue({
@@ -180,14 +193,15 @@ describe('IdleStopService', () => {
                   }),
                 }),
               }),
-            }),
-          };
-        }
-      });
+            };
+          }
+          return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: (r: any) => r([]) }) }) };
+        }),
+      }));
 
       await idleStopService.performSweep();
 
-      expect(mockDriver.stop).toHaveBeenCalledWith(botKey);
+      expect(mockDriver.stopIdle).toHaveBeenCalledWith(botKey);
     });
 
     it('should not stop container that was recently active', async () => {
@@ -198,49 +212,40 @@ describe('IdleStopService', () => {
         { botKey, state: 'running' },
       ]);
 
-      // call 1 = listBotKeys via mockReturnValueOnce (bypasses this implementation)
-      let selectCallCount = 1;
-      mockDb.select.mockImplementation(() => {
-        selectCallCount++;
-        // 2 = resolveAgentId (hasActiveRuns), 3 = hasActiveRuns, 4 = resolveAgentId (getIdleDurationSec), 5 = getIdleDurationSec
-        if (selectCallCount === 2) {
-          // First resolveAgentId call (in hasActiveRuns)
-          return {
-            from: vi.fn().mockReturnValue({
+      let runsQueryCount = 0;
+      mockDb.select.mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === botApplyJobs) {
+            return {
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  then: vi.fn().mockImplementation((resolve: any) => resolve([])),
+                }),
+              }),
+            };
+          }
+          if (table === agents) {
+            return {
               where: vi.fn().mockReturnValue({
                 limit: vi.fn().mockReturnValue({
                   then: vi.fn().mockImplementation((resolve: any) => resolve([{ id: botKey }])),
                 }),
               }),
-            }),
-          };
-        } else if (selectCallCount === 3) {
-          // hasActiveRuns query
-          return {
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockReturnValue({
-                  then: vi.fn().mockImplementation((resolve: any) => resolve([])), // No active runs
+            };
+          }
+          if (table === heartbeatRuns) {
+            runsQueryCount++;
+            if (runsQueryCount === 1) {
+              return {
+                where: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    then: vi.fn().mockImplementation((resolve: any) => resolve([])), // No active runs
+                  }),
                 }),
-              }),
-            }),
-          };
-        } else if (selectCallCount === 4) {
-          // Second resolveAgentId call (in getIdleDurationSec)
-          return {
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockReturnValue({
-                  then: vi.fn().mockImplementation((resolve: any) => resolve([{ id: botKey }])),
-                }),
-              }),
-            }),
-          };
-        } else {
-          // getIdleDurationSec query - recent activity
-          const recentDate = new Date(Date.now() - 200000); // 200 seconds ago
-          return {
-            from: vi.fn().mockReturnValue({
+              };
+            }
+            const recentDate = new Date(Date.now() - 200000); // 200 seconds ago
+            return {
               where: vi.fn().mockReturnValue({
                 orderBy: vi.fn().mockReturnValue({
                   limit: vi.fn().mockReturnValue({
@@ -250,10 +255,11 @@ describe('IdleStopService', () => {
                   }),
                 }),
               }),
-            }),
-          };
-        }
-      });
+            };
+          }
+          return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: (r: any) => r([]) }) }) };
+        }),
+      }));
 
       await idleStopService.performSweep();
 
@@ -273,6 +279,150 @@ describe('IdleStopService', () => {
       expect(mockDriver.stop).not.toHaveBeenCalled();
       // only the listBotKeys agents query ran; no per-container run queries
       expect(mockDb.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not stop container with health status starting', async () => {
+      const botKey = '550e8400-e29b-41d4-a716-446655440000';
+
+      mockListBotKeys(mockDb, [botKey]);
+      vi.mocked(mockDriver.list).mockResolvedValue([
+        {
+          botKey,
+          state: 'running',
+          inspect: { State: { Health: { Status: 'starting' } } } as any,
+        },
+      ]);
+
+      await idleStopService.performSweep();
+
+      expect(mockDriver.stopIdle).not.toHaveBeenCalled();
+      expect(mockDriver.stop).not.toHaveBeenCalled();
+    });
+
+    it('should not stop container with uptime less than afterSec', async () => {
+      const botKey = '550e8400-e29b-41d4-a716-446655440000';
+
+      mockListBotKeys(mockDb, [botKey]);
+      vi.mocked(mockDriver.list).mockResolvedValue([
+        {
+          botKey,
+          state: 'running',
+          inspect: { State: { StartedAt: new Date(Date.now() - 60000).toISOString() } } as any,
+        },
+      ]);
+
+      await idleStopService.performSweep();
+
+      expect(mockDriver.stopIdle).not.toHaveBeenCalled();
+      expect(mockDriver.stop).not.toHaveBeenCalled();
+    });
+
+    it('should not stop container undergoing apply job', async () => {
+      const botKey = '550e8400-e29b-41d4-a716-446655440000';
+
+      mockListBotKeys(mockDb, [botKey]);
+      vi.mocked(mockDriver.list).mockResolvedValue([
+        { botKey, state: 'running' },
+      ]);
+
+      mockDb.select.mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === agents) {
+            return {
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  then: vi.fn().mockImplementation((resolve: any) => resolve([{ id: botKey }])),
+                }),
+              }),
+            };
+          }
+          if (table === heartbeatRuns) {
+            return {
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  then: vi.fn().mockImplementation((resolve: any) => resolve([])),
+                }),
+              }),
+            };
+          }
+          if (table === botApplyJobs) {
+            return {
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  then: vi.fn().mockImplementation((resolve: any) => resolve([{ id: 'job-1' }])),
+                }),
+              }),
+            };
+          }
+          return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: (r: any) => r([]) }) }) };
+        }),
+      }));
+
+      await idleStopService.performSweep();
+
+      expect(mockDriver.stopIdle).not.toHaveBeenCalled();
+      expect(mockDriver.stop).not.toHaveBeenCalled();
+    });
+
+    it('should not stop container under active maintenance window', async () => {
+      const botKey = '550e8400-e29b-41d4-a716-446655440000';
+      const { readMaintenanceDocument } = await import('./maintenance/store.js');
+      vi.mocked(readMaintenanceDocument).mockResolvedValueOnce({
+        windows: [
+          {
+            id: 'win-1',
+            scope: { type: 'agent', id: botKey },
+            state: 'leaving',
+            companyId: 'comp-1',
+            reason: 'rollout',
+            onTimeout: 'interrupt_and_retry',
+            createdAt: '2026-10-19T00:00:00Z',
+          } as any,
+        ],
+      } as any);
+
+      mockListBotKeys(mockDb, [botKey]);
+      vi.mocked(mockDriver.list).mockResolvedValue([
+        { botKey, state: 'running' },
+      ]);
+
+      mockDb.select.mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === agents) {
+            return {
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  then: vi.fn().mockImplementation((resolve: any) => resolve([{ id: botKey }])),
+                }),
+              }),
+            };
+          }
+          if (table === heartbeatRuns) {
+            return {
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  then: vi.fn().mockImplementation((resolve: any) => resolve([])),
+                }),
+              }),
+            };
+          }
+          if (table === botApplyJobs) {
+            return {
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  then: vi.fn().mockImplementation((resolve: any) => resolve([])),
+                }),
+              }),
+            };
+          }
+          return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: (r: any) => r([]) }) }) };
+        }),
+      }));
+
+      await idleStopService.performSweep();
+
+      expect(mockDriver.stopIdle).not.toHaveBeenCalled();
+      expect(mockDriver.stop).not.toHaveBeenCalled();
     });
   });
 
@@ -304,8 +454,18 @@ describe('IdleStopService', () => {
       expect(mockDriver.start).toHaveBeenCalledWith(botKey);
     });
 
+    it('should return true without starting anything for an agent without a bot container', async () => {
+      const botKey = 'host-run-agent';
+      vi.mocked(mockDriver.status).mockResolvedValue({ botKey, state: 'missing' });
+      mockListBotKeys(mockDb, []);
+
+      await expect(idleStopService.wake(botKey)).resolves.toBe(true);
+      expect(mockDriver.start).not.toHaveBeenCalled();
+    });
+
     it('should return false if container is missing', async () => {
       const botKey = 'missing-bot';
+      mockListBotKeys(mockDb, [botKey]);
 
       vi.mocked(mockDriver.status).mockResolvedValue({
         botKey,
@@ -357,8 +517,18 @@ describe('IdleStopService', () => {
       expect(mockDriver.start).toHaveBeenCalledWith(botKey);
     });
 
+    it('should not block a run of an agent without a bot container (antigravity_local, no adapterConfig.container)', async () => {
+      const botKey = 'host-run-agent';
+      vi.mocked(mockDriver.status).mockResolvedValue({ botKey, state: 'missing' });
+      mockListBotKeys(mockDb, []);
+
+      await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
+      expect(mockDriver.start).not.toHaveBeenCalled();
+    });
+
     it('should throw error if container is missing', async () => {
       const botKey = 'missing-bot';
+      mockListBotKeys(mockDb, [botKey]);
 
       vi.mocked(mockDriver.status).mockResolvedValue({
         botKey,
@@ -401,9 +571,36 @@ describe('IdleStopService', () => {
       };
 
       idleStopService = new IdleStopService(mockDriver as any, mockDb, disabledConfig);
+      vi.mocked(mockDriver.status).mockResolvedValue({ botKey: 'any-bot', state: 'running' });
 
       await expect(idleStopService.ensureStartedAndHealthy('any-bot')).resolves.toBeUndefined();
-      expect(mockDriver.status).not.toHaveBeenCalled();
+      expect(mockDriver.start).not.toHaveBeenCalled();
+    });
+
+    it('still wakes a container it idle-stopped when switched off', async () => {
+      idleStopService = new IdleStopService(mockDriver as any, mockDb, { ...testConfig, enabled: false });
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey: 'b', state: 'stopped', idleStopped: true })
+        .mockResolvedValueOnce({ botKey: 'b', state: 'running' });
+      vi.mocked(mockDriver.start).mockResolvedValue(undefined);
+
+      await idleStopService.ensureStartedAndHealthy('b');
+
+      expect(mockDriver.start).toHaveBeenCalledWith('b');
+    });
+
+    it('applies settings changed on the board without restart', async () => {
+      idleStopService = new IdleStopService(mockDriver as any, mockDb, { ...testConfig, enabled: false });
+      settingsState.general = { idleStop: { enabled: true, healthTimeoutMs: 1234 } };
+      vi.mocked(mockDriver.status).mockResolvedValue({ botKey: 'b', state: 'stopped' });
+      vi.mocked(mockDriver.start).mockResolvedValue(undefined);
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey: 'b', state: 'stopped' })
+        .mockResolvedValueOnce({ botKey: 'b', state: 'running' });
+
+      await idleStopService.ensureStartedAndHealthy('b');
+
+      expect(mockDriver.start).toHaveBeenCalledWith('b');
     });
   });
 
@@ -427,10 +624,69 @@ describe('IdleStopService', () => {
       };
 
       idleStopService = new IdleStopService(mockDriver as any, mockDb, disabledConfig);
+      vi.mocked(mockDriver.status).mockResolvedValue({ botKey: 'any-bot', state: 'running' });
 
       const result = await idleStopService.wake('any-bot');
 
       expect(result).toBe(true);
+      expect(mockDriver.start).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('defaults and per-bot mode', () => {
+    it('is enabled by default', () => {
+      const service = new IdleStopService(mockDriver, mockDb, {}, mockLogger);
+      service.start();
+      expect(mockLogger.info).toHaveBeenCalledWith('Starting IDLE-STOP service: afterSec=1800, healthTimeoutMs=30000');
+      service.stop();
+    });
+
+    it('never stops an always_on bot', async () => {
+      const botKey = '550e8400-e29b-41d4-a716-446655440000';
+      mockDb.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            then: vi.fn().mockImplementation((resolve: any) =>
+              resolve([{ agentId: botKey, adapterConfig: { container: { enabled: true, idleStopMode: 'always_on' } } }]),
+            ),
+          }),
+        }),
+      });
+      vi.mocked(mockDriver.list).mockResolvedValue([{ botKey, state: 'running' }]);
+
+      await idleStopService.performSweep();
+
+      expect(mockDriver.stopIdle).not.toHaveBeenCalled();
+      expect(mockDriver.stop).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('readRuntimeState', () => {
+    it('reads last stop/start times from the container inspect', async () => {
+      vi.mocked(mockDriver.status).mockResolvedValue({
+        botKey: 'b',
+        state: 'stopped',
+        idleStopped: true,
+        inspect: { State: { StartedAt: '2026-10-20T01:00:00.000Z', FinishedAt: '2026-10-20T02:00:00.000Z' } },
+      });
+
+      const state = await idleStopService.readRuntimeState('b');
+
+      expect(state.idleStopped).toBe(true);
+      expect(state.lastStartedAt?.toISOString()).toBe('2026-10-20T01:00:00.000Z');
+      expect(state.lastStoppedAt?.toISOString()).toBe('2026-10-20T02:00:00.000Z');
+    });
+
+    it('treats the docker zero time as never', async () => {
+      vi.mocked(mockDriver.status).mockResolvedValue({
+        botKey: 'b',
+        state: 'running',
+        inspect: { State: { StartedAt: '2026-10-20T01:00:00.000Z', FinishedAt: '0001-01-01T00:00:00Z' } },
+      });
+
+      const state = await idleStopService.readRuntimeState('b');
+
+      expect(state.lastStoppedAt).toBeNull();
     });
   });
 });

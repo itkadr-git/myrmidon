@@ -1,7 +1,7 @@
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { activityLog, issues } from "@paperclipai/db";
+import { activityLog, issues } from "@myrmidon/db";
 import {
   resetCompanyIssueFixtures,
   routeApp,
@@ -68,6 +68,36 @@ describe("stale-block reason reference guard (route level)", () => {
     expect(after.status).toBe("todo");
   });
 
+  it("accepts a blocked transition without metadata for a board actor", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Board blocked metadata");
+    const issueId = await seedTodoIssue(companyId, "Board blocked issue");
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Waiting for the external check",
+          reasonRef: { kind: "issue", issueId: "00000000-0000-4000-8000-000000000001" },
+        },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          externalRef: "stale-block-guard-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const after = await ctx.db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(after.status).toBe("blocked");
+  });
+
   it("accepts a blocked transition with a non-empty blockedByIssueIds list", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Stale block guard");
     const issueId = await seedTodoIssue(companyId, "Guarded issue with blockers");
@@ -75,7 +105,18 @@ describe("stale-block reason reference guard (route level)", () => {
 
     const res = await request(routeApp(ctx.db, actor, issueRoutes))
       .patch(`/api/issues/${issueId}`)
-      .send({ status: "blocked", blockedByIssueIds: [blockerId] });
+      .send({
+        status: "blocked",
+        blockedByIssueIds: [blockerId],
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          blockedByIssueIds: [blockerId],
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const after = await ctx.db

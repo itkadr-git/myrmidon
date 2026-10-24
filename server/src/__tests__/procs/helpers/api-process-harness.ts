@@ -333,23 +333,31 @@ export async function startApiProcesses(options: {
   baseDir: string;
   connectionString: string;
   role?: string;
+  /** Bind every API replica to this SO_REUSEPORT port. */
+  sharedPort?: number;
   readyTimeoutMs?: number;
 }): Promise<ApiProcessHandle[]> {
-  const ports = await Promise.all(
-    Array.from({ length: options.count }, () => pickFreePort()),
+  const ports = options.sharedPort !== undefined
+    ? Array.from({ length: options.count }, () => options.sharedPort!)
+    : await Promise.all(Array.from({ length: options.count }, () => pickFreePort()));
+  const starts = Array.from({ length: options.count }, (_, index) =>
+    startApiProcess({
+      baseDir: options.baseDir,
+      index,
+      connectionString: options.connectionString,
+      port: ports[index],
+      role: options.role,
+      readyTimeoutMs: options.readyTimeoutMs,
+    }),
   );
-  const handles: ApiProcessHandle[] = [];
-  for (let index = 0; index < options.count; index += 1) {
-    handles.push(
-      await startApiProcess({
-        baseDir: options.baseDir,
-        index,
-        connectionString: options.connectionString,
-        port: ports[index],
-        role: options.role,
-        readyTimeoutMs: options.readyTimeoutMs,
-      }),
-    );
+  const results = await Promise.allSettled(starts);
+  const handles = results.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure?.status === "rejected") {
+    await stopApiProcesses(handles);
+    throw failure.reason;
   }
   return handles;
 }

@@ -17,7 +17,7 @@ import {
   listAvailableModelProviderTypes,
   registerModelProviderConnector,
   unregisterModelProviderConnector,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest } from "../../errors.js";
 import { errorHandler } from "../../middleware/index.js";
 import { modelProviderRoutes } from "./routes.js";
@@ -40,6 +40,12 @@ const providerView = (id: string): ModelProviderView => ({
   hasKey: true,
   credentialSecretName: `model-provider-key-${id}`,
   free: false,
+  expiresAt: null,
+  packageName: null,
+  rpmLimit: null,
+  toolCallCompatible: null,
+  toolCallCheckedAt: null,
+  toolCallCheckError: null,
   keyValidatedAt: "2026-01-02T00:00:00.000Z",
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-02T00:00:00.000Z",
@@ -108,6 +114,10 @@ function fakeService() {
       return [
         { id: "m1", modelName: "model-a", litellmModelName: "openai/model-a", enabled: false, free: true },
       ];
+    },
+    async checkToolCallCompatibility(input) {
+      calls.push({ op: "checkToolCallCompatibility", companyId: input.companyId, providerId: input.providerId });
+      return providerView(input.providerId);
     },
     async listChannels(companyId, providerId) {
       calls.push({ op: "listChannels", companyId, providerId });

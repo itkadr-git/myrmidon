@@ -43,7 +43,7 @@
 //     in input.env under that name.
 import { createHash } from "node:crypto";
 
-import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@paperclipai/shared";
+import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@myrmidon/shared";
 import { effortForModel } from "../effort-policy/effort-policy.js";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
 import { writeYamlDocument, type YamlMapping, type YamlNode } from "./deterministic-yaml.js";
@@ -438,9 +438,6 @@ const HINDSIGHT_DEFAULT_MODE: HermesProfileHindsightMode = "local_external";
  * compiler can only warn against the floor — see the warning text below.
  */
 const AGENTS_MD_WARN_CHARS = 20_000;
-
-/** In-container mount point of the skills-board volume subtree (containers-plan-senior §2.1). */
-const SKILLS_BOARD_CONTAINER_DIR = "/data/hermes/skills-board";
 
 /** env variable names the image itself sets; a card can never override them. */
 const RESERVED_ENV_NAMES = new Set(["HOME", "PATH", "HERMES_HOME"]);
@@ -1053,7 +1050,9 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     },
     platform_toolsets: { api_server: buildToolsets(adapterConfig.toolsets) },
     platforms: { api_server: { enabled: true } },
-    skills: { external_dirs: [SKILLS_BOARD_CONTAINER_DIR] },
+    // Company skills are delivered per run into Hermes' local skills root.
+    // Keep the legacy profile mount empty so Hermes cannot index each skill twice.
+    skills: { external_dirs: [] },
     sessions: { retention_days: input.instanceDefaults.sessionsRetentionDays },
     terminal: { cwd: "/workspace" },
   };

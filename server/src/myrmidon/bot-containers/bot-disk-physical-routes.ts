@@ -27,8 +27,8 @@
 import http from "node:http";
 import https from "node:https";
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import type { WsDiskApiResponse } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import type { WsDiskApiResponse } from "@myrmidon/shared";
 import { assertBoardOrgAccess } from "../../routes/authz.js";
 import { readBotDiskReports } from "./bot-disk-report-store.js";
 import { botDiskService } from "./bot-disk-service.js";
@@ -177,7 +177,7 @@ export function botDiskPhysicalRoutes(
   router.get("/myrmidon/bot-disk/reports", async (req, res) => {
     assertBoardOrgAccess(req);
     const reports = readBotDiskReports()
-      .map((entry) => ({ ...entry.report, receivedAt: entry.receivedAt }))
+      .map((entry) => ({ ...entry.report, receivedAt: entry.receivedAt, foreignUid: entry.foreignUid ?? null }))
       .sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt));
     res.json({ reports, staleAfterMs: REPORT_STALE_MS });
   });

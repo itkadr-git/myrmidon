@@ -12,8 +12,8 @@
 //   400 body fails upsertUi2LanguageSchema (repo convention: Zod parse failures answer 400)
 
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
-import { upsertUi2LanguageSchema, type Ui2Language } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { upsertUi2LanguageSchema, type Ui2Language } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { getActorInfo } from "../../routes/authz.js";
 // myrmidon(1.7-TG-LOCALE): the Settings → Language screen shows the source of
@@ -21,6 +21,8 @@ import { getActorInfo } from "../../routes/authz.js";
 // bridge's language (null when unset).
 // myrmidon(1.6.5-TG-LOCALE-C): the same read now also reports the instance
 // setting and resolves the full order env → user → instance → default.
+// myrmidon(1.6.6 CH-CONNECTOR-D): the bridge locale is read through the seam.
+import { forcedBridgeLocale } from "../channel-connectors/bridge/locales.js";
 import {
   createUi2LanguageService,
   ui2LanguageAuditEntries,

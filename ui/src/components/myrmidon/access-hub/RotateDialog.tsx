@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { Trans } from "react-i18next";
+import { useTranslation } from "@/i18n";
 import {
   Dialog,
   DialogContent,
@@ -27,6 +29,7 @@ export interface RotateDialogBodyProps {
  * containers that use the secret are restarted now.
  */
 export function RotateDialogBody({ record, busy = false, error = null, onSubmit, onCancel }: RotateDialogBodyProps) {
+  const { t } = useTranslation();
   const [mode, setMode] = useState<RotateMode>("external");
   const [value, setValue] = useState("");
   const [restartContainers, setRestartContainers] = useState(true);
@@ -34,7 +37,7 @@ export function RotateDialogBody({ record, busy = false, error = null, onSubmit,
 
   async function submit() {
     if (mode === "new-value" && !value) {
-      setValidationError("Enter the new value.");
+      setValidationError(t("area.access-hub.rotate-dialog.enterNewValue"));
       return;
     }
     setValidationError(null);
@@ -58,21 +61,24 @@ export function RotateDialogBody({ record, busy = false, error = null, onSubmit,
       }}
     >
       <p className="text-sm text-muted-foreground">
-        Rotating <span className="font-medium text-foreground">{record.name}</span> moves it to v
-        {record.latestVersion + 1}.
+        <Trans
+          i18nKey="area.access-hub.rotate-dialog.rotating"
+          values={{ name: record.name, version: record.latestVersion + 1 }}
+          components={[<span key="name" className="font-medium text-foreground" />]}
+        />
       </p>
 
       <fieldset className="flex flex-col gap-1">
-        <legend className="text-sm text-muted-foreground">New value comes from</legend>
+        <legend className="text-sm text-muted-foreground">{t("area.access-hub.rotate-dialog.sourceLegend")}</legend>
         <label className="flex items-center gap-2 text-sm">
           <input
             type="radio"
             name="access-hub-rotate-source"
             checked={mode === "external"}
             onChange={() => setMode("external")}
-            aria-label="External source"
+            aria-label={t("area.access-hub.rotate-dialog.externalSourceLabel")}
           />
-          The external source of this reference
+          {t("area.access-hub.rotate-dialog.externalSource")}
         </label>
         <label className="flex items-center gap-2 text-sm">
           <input
@@ -80,21 +86,21 @@ export function RotateDialogBody({ record, busy = false, error = null, onSubmit,
             name="access-hub-rotate-source"
             checked={mode === "new-value"}
             onChange={() => setMode("new-value")}
-            aria-label="Value typed here"
+            aria-label={t("area.access-hub.rotate-dialog.typedHereLabel")}
           />
-          A value I type here
+          {t("area.access-hub.rotate-dialog.typedHere")}
         </label>
       </fieldset>
 
       {mode === "new-value" ? (
         <label className="flex flex-col gap-1 text-sm">
-          New value
+          {t("area.access-hub.rotate-dialog.newValue")}
           <Input
             type="password"
             autoComplete="new-password"
             value={value}
             onChange={(event) => setValue(event.target.value)}
-            aria-label="New value"
+            aria-label={t("area.access-hub.rotate-dialog.newValue")}
             data-testid="access-hub-rotate-value-input"
           />
         </label>
@@ -105,14 +111,13 @@ export function RotateDialogBody({ record, busy = false, error = null, onSubmit,
           type="checkbox"
           checked={restartContainers}
           onChange={(event) => setRestartContainers(event.target.checked)}
-          aria-label="Restart affected containers"
+          aria-label={t("area.access-hub.rotate-dialog.restartLabel")}
           className="mt-1"
         />
         <span>
-          Restart the containers that use this access
+          {t("area.access-hub.rotate-dialog.restartTitle")}
           <span className="block text-xs text-muted-foreground">
-            They are restarted one after another in a short maintenance window; each restart takes the new value
-            with it. Leave this off to keep running containers on the old value until their next start.
+            {t("area.access-hub.rotate-dialog.restartHint")}
           </span>
         </span>
       </label>
@@ -125,10 +130,10 @@ export function RotateDialogBody({ record, busy = false, error = null, onSubmit,
 
       <DialogFooter>
         <Button type="button" variant="ghost" onClick={onCancel}>
-          Cancel
+          {t("common.cancel")}
         </Button>
         <Button type="submit" disabled={busy}>
-          Rotate access
+          {t("area.access-hub.rotate-dialog.submit")}
         </Button>
       </DialogFooter>
     </form>
@@ -141,13 +146,14 @@ export interface RotateDialogProps extends RotateDialogBodyProps {
 }
 
 export function RotateDialog({ open, onOpenChange, ...body }: RotateDialogProps) {
+  const { t } = useTranslation();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Rotate access</DialogTitle>
+          <DialogTitle>{t("area.access-hub.rotate-dialog.title")}</DialogTitle>
           <DialogDescription>
-            A rotation bumps the version. Values are never displayed, here or afterwards.
+            {t("area.access-hub.rotate-dialog.description")}
           </DialogDescription>
         </DialogHeader>
         <RotateDialogBody {...body} />

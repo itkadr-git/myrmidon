@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@paperclipai/shared";
+import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@myrmidon/shared";
 import {
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { LogOut, SlidersHorizontal } from "lucide-react";
 import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
@@ -18,21 +18,14 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "../lib/utils";
 import { useSignOut } from "@/hooks/useSignOut";
 import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSettingsPanel"; // myrmidon(R3)
+import { IdleStopSettingsPanel } from "@/components/myrmidon/IdleStopSettingsPanel"; // myrmidon(OPE-7898)
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
-import { ProcessesSettingsPanel } from "@/components/myrmidon/ProcessesSettingsPanel"; // myrmidon(PROCS-1.1)
-// myrmidon(PAUSE-GUARD): the forgotten-pause guard, next to the run limits
-import { PauseGuardSettingsPanel } from "@/components/myrmidon/PauseGuardSettingsPanel";
 import { RunQueuePrioritySettingsPanel } from "@/components/myrmidon/RunQueuePrioritySettingsPanel"; // myrmidon(1.6.5 RUN-PRIORITY B)
-import { RunStallSettingsPanel } from "@/components/myrmidon/RunStallSettingsPanel"; // myrmidon(RUN-STALL-SETTINGS)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
-import { AgentExchangeSettingsPanel } from "@/components/myrmidon/AgentExchangeSettingsPanel"; // myrmidon(1.7-AGENT-EXCHANGE-A)
-import { AgentExchangeFeedSettingsPanel } from "@/components/myrmidon/AgentExchangeFeedSettingsPanel"; // myrmidon(1.7-AGENT-EXCHANGE-B)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
-import { DebateSettingsPanel } from "@/components/myrmidon/DebateSettingsPanel"; // myrmidon(1.7-DEBATE-ASYM-A)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
+import { ModelMenuSettingsPanel } from "@/components/myrmidon/ModelMenuSettingsPanel"; // myrmidon(1.6.6 MODEL-MENU B)
 import { PromptBudgetSettingsPanel } from "@/components/myrmidon/PromptBudgetSettingsPanel"; // myrmidon(1.6.3 PROMPT-BUDGET B)
-import { AttentionFeedSettingsPanel } from "@/components/myrmidon/AttentionFeedSettingsPanel"; // myrmidon(1.6.6 SETTINGS-UI C-4)
-import { DataRetentionSettingsPanel } from "@/components/myrmidon/DataRetentionSettingsPanel"; // myrmidon(1.6.5-DB-RETENTION)
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
 import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
 import { BotDiskQuotaSettingsPanel } from "@/components/myrmidon/BotDiskQuotaSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-C)
@@ -41,22 +34,17 @@ import { SessionGenerationsSettingsPanel } from "@/components/myrmidon/SessionGe
 import { AgentMemorySettingsPanel } from "@/components/myrmidon/AgentMemorySettingsPanel"; // myrmidon(MEMORY-UI)
 import { ParallelHelpersSettingsPanel } from "@/components/myrmidon/ParallelHelpersSettingsPanel"; // myrmidon(PARALLEL-HELPERS)
 import { TeamLivenessSettingsPanel } from "@/components/myrmidon/TeamLivenessSettingsPanel"; // myrmidon(TEAM-LIVENESS-SETTINGS)
-import { ToolPolicyCacheSettingsPanel } from "@/components/myrmidon/ToolPolicyCacheSettingsPanel"; // myrmidon(DB-PERF-C-P4)
 import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel"; // myrmidon(BOT-LSP-DEFAULTS)
 import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSettingsPanel"; // myrmidon(1.6.1 SWARM-SETTINGS-UI)
 import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSettingsPanel"; // myrmidon(REVIEW-REWORK)
-import { ForagingSettingsPanel } from "@/components/myrmidon/ForagingSettingsPanel"; // myrmidon(1.6.1-FORAGING-LIMITS-UI)
-import { WorkspaceHygieneSettingsPanel } from "@/components/myrmidon/WorkspaceHygieneSettingsPanel"; // myrmidon(SETTINGS-UI A)
+import { ModelServiceSettingsPanel } from "@/components/myrmidon/ModelServiceSettingsPanel"; // myrmidon(1.7 SETTINGS-TO-UI D)
 import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel"; // myrmidon(SETTINGS-UI A)
-import { ModelFallbackSignalSettingsPanel } from "@/components/myrmidon/ModelFallbackSignalSettingsPanel"; // myrmidon(SETTINGS-UI A)
-import { LicensingSettingsPanel } from "@/components/myrmidon/LicensingSettingsPanel"; // myrmidon(LICENSING)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
-import { BoardProcessesSettingsPanel } from "@/components/myrmidon/BoardProcessesSettingsPanel"; // myrmidon(1.6.6 PROCS-0.1)
-import { BoardLeasesPanel } from "@/components/myrmidon/BoardLeasesPanel"; // myrmidon(1.6.5 BOARD-PROCESSES)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
-import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
+import { useTranslation } from "@/i18n";
+import { Trans } from "react-i18next"; // myrmidon(UI-RU)
 
 // myrmidon(BACKUP-KEEP-LAST): the shared `BackupRetentionPolicy` gains
 // `keepLastOnly?: boolean` together with the server side of this feature. This local
@@ -67,7 +55,7 @@ type BackupRetentionSettings = BackupRetentionPolicy & { keepLastOnly?: boolean 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function InstanceGeneralSettings({ embedded = false }: { embedded?: boolean }) {
-  const { t } = useTranslation(); // myrmidon(UI-RU)
+  const { t, i18n } = useTranslation(); // myrmidon(UI-RU)
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -139,14 +127,12 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
   const showFeedbackDataSharing = !hiddenSettings.has("instance.general.feedbackDataSharingPreference");
   const showSignOut = !hiddenSettings.has("instance.general.signOut");
   const visibleTopics = [
-    ...(showCensorUsernameInLogs ? ["log display"] : []),
-    ...(showKeyboardShortcuts ? ["keyboard shortcuts"] : []),
-    ...(showBackupRetention ? ["backup retention"] : []),
-    ...(showFeedbackDataSharing ? ["data sharing"] : []),
+    ...(showCensorUsernameInLogs ? [t("area.settings-company.instance-general-settings.topicLogDisplay")] : []),
+    ...(showKeyboardShortcuts ? [t("area.settings-company.instance-general-settings.topicKeyboardShortcuts")] : []),
+    ...(showBackupRetention ? [t("area.settings-company.instance-general-settings.topicBackupRetention")] : []),
+    ...(showFeedbackDataSharing ? [t("area.settings-company.instance-general-settings.topicDataSharing")] : []),
   ];
-  const topicSummary = visibleTopics.length > 2
-    ? `${visibleTopics.slice(0, -1).join(", ")}, and ${visibleTopics[visibleTopics.length - 1]}`
-    : visibleTopics.join(" and ");
+  const topicSummary = new Intl.ListFormat(i18n.language, { style: "long", type: "conjunction" }).format(visibleTopics);
   const visibleActionError = signOutMutation.error instanceof Error
     ? signOutMutation.error.message
     : signOutMutation.error
@@ -175,20 +161,14 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       )}
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
+      <IdleStopSettingsPanel /> {/* myrmidon(OPE-7898) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
-      <ProcessesSettingsPanel /> {/* myrmidon(PROCS-1.1): the processes of the board, applied without a restart */}
-      <PauseGuardSettingsPanel /> {/* myrmidon(PAUSE-GUARD) */}
       <RunQueuePrioritySettingsPanel /> {/* myrmidon(1.6.5 RUN-PRIORITY B) */}
-      <RunStallSettingsPanel /> {/* myrmidon(RUN-STALL-SETTINGS) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
-      <AgentExchangeSettingsPanel /> {/* myrmidon(1.7-AGENT-EXCHANGE-A) */}
-      <AgentExchangeFeedSettingsPanel /> {/* myrmidon(1.7-AGENT-EXCHANGE-B) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
-      <DebateSettingsPanel /> {/* myrmidon(1.7-DEBATE-ASYM-A) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
+      <ModelMenuSettingsPanel /> {/* myrmidon(1.6.6 MODEL-MENU B) */}
       <PromptBudgetSettingsPanel /> {/* myrmidon(1.6.3 PROMPT-BUDGET B) */}
-      <AttentionFeedSettingsPanel /> {/* myrmidon(1.6.6 SETTINGS-UI C-4) */}
-      <DataRetentionSettingsPanel /> {/* myrmidon(1.6.5-DB-RETENTION) */}
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
       <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
       <BotDiskQuotaSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-C) */}
@@ -196,21 +176,14 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <SessionGenerationsSettingsPanel /> {/* myrmidon(PERF-DIET-K) */}
       <ParallelHelpersSettingsPanel /> {/* myrmidon(PARALLEL-HELPERS) */}
       <TeamLivenessSettingsPanel /> {/* myrmidon(TEAM-LIVENESS-SETTINGS) */}
-      <ToolPolicyCacheSettingsPanel /> {/* myrmidon(DB-PERF-C-P4) */}
       <AgentMemorySettingsPanel /> {/* myrmidon(MEMORY-UI) */}
       <BotLspSettingsPanel /> {/* myrmidon(BOT-LSP-DEFAULTS) */}
       <SwarmClaimSettingsPanel /> {/* myrmidon(1.6.1 SWARM-SETTINGS-UI) */}
       <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
-      <ForagingSettingsPanel /> {/* myrmidon(1.6.1-FORAGING-LIMITS-UI) */}
-      <WorkspaceHygieneSettingsPanel /> {/* myrmidon(SETTINGS-UI A, WORKSPACE-HYGIENE) */}
+      <ModelServiceSettingsPanel /> {/* myrmidon(1.7 SETTINGS-TO-UI D) */}
       <ChannelSettingsPanel /> {/* myrmidon(SETTINGS-UI A, 1.7-SETTINGS-TO-UI) */}
-      <ModelFallbackSignalSettingsPanel /> {/* myrmidon(SETTINGS-UI A, BOT-RUNTIME-TUNING D2) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
-      <BoardProcessesSettingsPanel /> {/* myrmidon(1.6.6 PROCS-0.1) */}
-      <BoardLeasesPanel /> {/* myrmidon(1.6.5 BOARD-PROCESSES) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
-      <LicensingSettingsPanel /> {/* myrmidon(LICENSING): install id, license request, issue form */}
-      <AttentionFeedSettingsPanel /> {/* myrmidon(1.6.5 F-15) */}
 
       {showDeploymentStatus && (
       <section>
@@ -483,11 +456,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
             })}
           </div>
           <p className="text-xs text-muted-foreground">
-            To retest the first-use prompt in local dev, remove the{" "}
-            <code>feedbackDataSharingPreference</code> key from the{" "}
-            <code>instance_settings.general</code> JSON row for this instance, or set it back to{" "}
-            <code>"prompt"</code>. Unset and <code>"prompt"</code> both mean no default has been
-            chosen yet.
+            <Trans i18nKey="area.settings-company.instance-general-settings.retestHint" components={[<code />]} />
           </p>
         </div>
       </section>

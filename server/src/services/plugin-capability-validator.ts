@@ -24,7 +24,7 @@ import type {
   PaperclipPluginManifestV1,
   PluginUiSlotType,
   PluginLauncherPlacementZone,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
@@ -65,6 +65,7 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "issue.interactions.read": ["issue.interactions.read"],
   "issue.attachments.list": ["issue.attachments.read"],
   "issue.attachments.get": ["issue.attachments.read"],
+  "issues.uploadAttachment": ["issue.attachments.write"],
   "approvals.list": ["approvals.read"],
   "approvals.get": ["approvals.read"],
   "agents.list": ["agents.read"],

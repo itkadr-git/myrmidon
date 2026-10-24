@@ -2,7 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import { resolveStatusOnResume } from "../myrmidon/pause-drain.js";
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { listAgentProjectIds } from "../myrmidon/project-membership.js";
 import {
   agents,
   toolConnectionInstalls,
@@ -18,7 +19,7 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   agentRuntimeConfigSchema,
@@ -30,10 +31,10 @@ import {
   type AgentApiKeyScope,
   // myrmidon(PERF-DIET-G): the slim list row of GET /companies/:id/agents
   type AgentListItem,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   normalizePaperclipRunnerAdapterConfig,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 // myrmidon(1.6.5 BASE-SKILLS): the company base skills are merged into every
 // agent at creation, whichever path creates it.
 import {
@@ -481,6 +482,9 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     ]);
     const hydrated = await hydrateAgentSpend<(typeof rows)[number]>(rows);
     const eligibilityAgents = allCompanyRows.map(toEligibilityAgent);
+    // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): one membership read for the whole
+    // roster — lead projects + joined project_memberships (OPE-7282 contract).
+    const projectIdsByAgent = await listAgentProjectIds(db, companyId);
     // Field-by-field on purpose: the projection is the contract, so a column
     // added to AgentListItem must be added here too (or the build breaks).
     return hydrated.map((row) => ({
@@ -496,6 +500,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
       capabilities: row.capabilities,
       adapterType: row.adapterType as AgentListItem["adapterType"],
       adapterModel: row.adapterModel,
+      projectIds: projectIdsByAgent.get(row.id) ?? [],
       runtimeConfig: row.runtimeConfig as AgentListItem["runtimeConfig"],
       defaultEnvironmentId: row.defaultEnvironmentId,
       budgetMonthlyCents: row.budgetMonthlyCents,
@@ -550,7 +555,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     companyId: string,
     actorShape: string = "all",
   ): Promise<string> {
-    const { start, end } = currentUtcMonthWindow();
+    const { start } = currentUtcMonthWindow();
     const [agg] = await db
       .select({
         rowCount: sql<number>`count(*)::int`,
@@ -569,7 +574,6 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
         and(
           eq(costEvents.companyId, companyId),
           gte(costEvents.occurredAt, start),
-          lt(costEvents.occurredAt, end),
         ),
       );
     return versionKeyEtag("agents-list", [

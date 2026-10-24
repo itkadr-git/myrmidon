@@ -15,7 +15,8 @@
 
 import { Router, type Request, type Response } from "express";
 import { and, eq, ne } from "drizzle-orm";
-import { companySecrets, type Db } from "@paperclipai/db";
+import { companySecrets, type Db } from "@myrmidon/db";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import { secretService } from "../../../services/secrets.js";
 import {
   clampErrorWindowSec,
@@ -80,7 +81,7 @@ export interface MetricsRoutesDeps {
    * Absent → the production store on `db`.
    */
   processStore?: BoardProcessStore;
-  /** Role override (tests); `PAPERCLIP_PROCESS_ROLE` via the registry domain otherwise. */
+  /** Role override (tests); resolved through the product env aliases otherwise. */
   role?: string;
 }
 
@@ -152,7 +153,7 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
     deps.runSelfCheck ?? runMetricsSelfCheck;
   // myrmidon(1.6.6 OPE-6959): the role of THIS process, stamped on every
   // metric sample and reported by /internal/procs.
-  const role = deps.role ?? resolveBoardProcessRole(env.PAPERCLIP_PROCESS_ROLE);
+  const role = deps.role ?? resolveBoardProcessRole(readProductEnvFrom(env, "PROCESS_ROLE"));
   const processStore: BoardProcessStore = deps.processStore ?? createBoardProcessStore(deps.db);
 
   // myrmidon(1.6.5-PROCS-Q3): the process observers (delay histogram +

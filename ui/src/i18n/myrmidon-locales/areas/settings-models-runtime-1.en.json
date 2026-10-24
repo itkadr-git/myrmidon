@@ -1,0 +1,246 @@
+{
+  "area": {
+    "settings-models-runtime-1": {
+      "shared": {
+        "saving": "Saving..."
+      },
+      "caste-debate-settings-panel": {
+        "roles": {
+          "generator": {
+            "label": "Generator model",
+            "hint": "The constructive pole. A different family than the critic."
+          },
+          "critic": {
+            "label": "Critic model",
+            "hint": "The adversarial pole, penalized for a missed error. Must be a different family than the generator."
+          },
+          "judge": {
+            "label": "Judge model",
+            "hint": "Outside the dispute. A third family — neither debater's."
+          }
+        },
+        "enabledLabel": "Debates for this caste",
+        "roundsLabel": "Rounds (max 3)",
+        "ceilingLabel": "Token ceiling",
+        "guidanceIntro": "Extra guidance per role. It is added to the built-in pole prompt — the critic keeps its missed-error penalty — so a caste narrows where a role looks, it does not change the dispute.",
+        "guidanceLabel": "{{role}} guidance (optional)",
+        "saveButton": "Save caste configuration",
+        "inheritButton": "Inherit instance configuration",
+        "title": "Debates per caste",
+        "description": "Debates are on for every caste unless a caste is switched off here. A caste without its own entry inherits the instance configuration above; saving an entry pins this caste's models, guidance, rounds and ceiling. Changes apply at the next run — no restart.",
+        "casteLabel": "Caste",
+        "selectPlaceholder": "Select a caste...",
+        "loading": "Loading the caste configuration...",
+        "empty": "Pick a caste to see whether debates run for it and what it inherits.",
+        "saveFailed": "Saving the caste configuration failed.",
+        "clearFailed": "Clearing the caste configuration failed."
+      },
+      "debate-settings-panel": {
+        "roles": {
+          "generator": {
+            "label": "Generator model",
+            "hint": "The constructive pole: proposes and defends the answer. Free models by default."
+          },
+          "critic": {
+            "label": "Critic model",
+            "hint": "The adversarial pole: hunts errors, penalized for a miss. Must be a different family than the generator."
+          },
+          "judge": {
+            "label": "Judge model",
+            "hint": "Outside the dispute: rules on the transcript. Must be a third family — neither debater's."
+          }
+        },
+        "title": "Asymmetric debates",
+        "description": "The role models of the debate engine. The generator and the critic must sit in different model families and the judge in a third one — a symmetric configuration is refused by the server. A debate runs at most three rounds, stops on critic agreement or on the token ceiling, and its cost lands on the task. Saving applies at the next run — no server restart.",
+        "gatewayNotConfigured": "the debate gateway is not configured",
+        "roundsLabel": "Rounds (max 3)",
+        "ceilingLabel": "Token ceiling",
+        "saveButton": "Save debate configuration",
+        "clearButton": "Clear to default",
+        "loading": "Loading the debate configuration...",
+        "saveFailed": "Saving the debate configuration failed.",
+        "clearFailed": "Clearing the debate configuration failed.",
+        "loadFailed": "Failed to load the debate configuration."
+      },
+      "foraging-settings-panel": {
+        "hints": {
+          "passBudgetCents": "Ceiling of one pass's cost estimate, in cents ($0.50 = 50). Empty = no per-pass limit.",
+          "dailyBudgetCents": "Company ceiling per UTC day, in cents ($1 = 100). Empty = no daily ceiling.",
+          "monthlyBudgetCents": "Company ceiling per UTC month, in cents. Empty = no monthly ceiling.",
+          "roleBudgetCents": "Daily ceiling for one role, in cents. Empty = no role ceiling.",
+          "agentBudgetCents": "Daily ceiling for one agent, in cents. Empty = no agent ceiling.",
+          "autoOffCostPerTaskCents": "When the mean cost per task (BASELINE) rises above this many cents, learning switches itself off. Empty = the check is off."
+        },
+        "labels": {
+          "passBudgetCents": "Pass budget, cents",
+          "dailyBudgetCents": "Daily company limit, cents",
+          "monthlyBudgetCents": "Monthly company limit, cents",
+          "roleBudgetCents": "Daily role limit, cents",
+          "agentBudgetCents": "Daily agent limit, cents",
+          "autoOffCostPerTaskCents": "Auto-off: cost per task, cents"
+        },
+        "errors": {
+          "interval": "Enter a whole number from 60 to 86400",
+          "hostInterval": "Enter a whole number of at least 5",
+          "cents": "Enter a whole number greater than zero, or leave it empty for no limit"
+        },
+        "title": "Learning (foraging)",
+        "description": "The enable switch, the pass tuning and the spend limits of the source-learning sweep. A limit reached stops the pass (the sources after the stop stay untouched); a signal lands in the attention feed. Every value applies with the next pass, without a restart — environment variables stay forced overrides, and each field shows which side is in force.",
+        "enableLabel": "Enable learning",
+        "intervalLabel": "Pass interval, seconds",
+        "intervalHint": "How often the comparison pass runs (60–86400).",
+        "hostPauseLabel": "Same-host pause, seconds",
+        "hostPauseHint": "The smallest pause between two reads of one host (minimum 5).",
+        "noLimitPlaceholder": "No limit",
+        "softLabel": "Soft mode (ask the owner)",
+        "softHint": "Hard — the stopped pass only raises a notice. Soft — the notice asks the owner to raise the limit or switch learning off. The stop itself never depends on the mode.",
+        "saveButton": "Save learning settings",
+        "loading": "Loading learning settings...",
+        "saveFailed": "Saving the learning settings failed.",
+        "loadFailed": "Failed to load learning settings."
+      },
+      "model-fallback-signal-settings-panel": {
+        "labels": {
+          "enabled": "Signal on",
+          "thresholdPct": "Fallback share, %",
+          "minCalls": "Minimum calls in the window",
+          "windowSec": "Window, seconds",
+          "intervalSec": "Sweep period, seconds"
+        },
+        "hints": {
+          "enabled": "Master switch. Off by default: the sweep only signals when you arm it.",
+          "thresholdPct": "Share of calls made on fallback models that arms the signal, percent.",
+          "minCalls": "Calls the window must hold before the share is trusted — a short window never signals.",
+          "windowSec": "How far back the share is counted, seconds.",
+          "intervalSec": "How often the sweep runs, seconds. A tick whose previous pass is still running is skipped, not queued; changing this re-schedules the loop."
+        },
+        "errors": {
+          "minOnly": "Enter a whole number of {{min}} or more",
+          "range": "Enter a whole number from {{min}} to {{max}}"
+        },
+        "title": "Model fallback signal",
+        "description": "When an agent keeps landing on a fallback model, the board signals it so the operator can fix the routing. Every value applies on the next sweep without a restart; each field shows whether the value in force was saved here, pinned by the environment or left at the default.",
+        "saveButton": "Save model fallback signal settings",
+        "loading": "Loading model fallback settings...",
+        "saveFailed": "Saving the model fallback settings failed.",
+        "loadFailed": "Failed to load model fallback settings."
+      },
+      "model-menu-settings-panel": {
+        "newGroupTitle": "New group",
+        "saveFailed": "Could not save the menu. Try again.",
+        "groupTitleLabel": "Group title",
+        "removeModel": "Remove {{id}}",
+        "addModel": "Add a model",
+        "addModelOption": "Add a model…",
+        "subgroupButton": "Subgroup",
+        "title": "Model menu",
+        "sourceSettings": "Configured here",
+        "sourceAutomatic": "Automatic groups by provider family",
+        "catalogLabel": "Gateway catalog",
+        "catalogSize_one": "{{count}} model in the catalog, {{visible}} visible",
+        "catalogSize_other": "{{count}} models in the catalog, {{visible}} visible",
+        "catalogHidden": ", {{hidden}} hidden",
+        "groupButton": "Group",
+        "hiddenTitle": "Hidden models",
+        "catalogEmpty": "The catalog is empty.",
+        "previewTitle": "The bot shows",
+        "resetButton": "Reset",
+        "footnote": "Saved to the instance settings and read on every /model — the Telegram menu changes at once, without a restart."
+      },
+      "model-service-settings-panel": {
+        "hints": {
+          "compressionHint": "0 turns compression off.",
+          "contextHint": "model=tokens, comma-separated.",
+          "notSetHint": "Empty — not set."
+        },
+        "fields": {
+          "litellmCostIntervalSec": "LiteLLM cost sweep interval, s",
+          "botCompressionThresholdTokens": "Bot compression threshold, tokens",
+          "botModelContextLengths": "Bot model context lengths",
+          "botAuxTitleModel": "Bot auxiliary title model",
+          "botAuxCompressionModel": "Bot auxiliary compression model",
+          "botHelperModel": "Bot helper model",
+          "ctoChatModel": "CTO chat model",
+          "ctoChatTimeoutSec": "CTO chat timeout, s",
+          "ctoChatMaxTasks": "CTO chat max tasks",
+          "evalsModel": "Evals judge model",
+          "evalsTimeoutSec": "Evals timeout, s",
+          "evalsLangfuseExport": "Evals Langfuse export",
+          "ocrBackend": "OCR backend",
+          "ocrModel": "OCR model",
+          "ocrMaxBytes": "OCR max bytes",
+          "ocrMaxPages": "OCR max pages",
+          "ocrMaxChars": "OCR max characters",
+          "ocrTimeoutSec": "OCR timeout, s"
+        },
+        "errors": {
+          "backend": "ragflow or litellm",
+          "int": "Enter a whole number",
+          "map": "Use model=tokens, comma-separated"
+        },
+        "title": "Service models & limits",
+        "description": "Cost sweep, bot tuning, CTO chat, evals judge and OCR limits. Changes apply without a restart; an environment variable stays a forced override and is shown read-only. Service addresses and secret names are set in the environment.",
+        "loading": "Loading model settings...",
+        "saved": "Model settings saved.",
+        "saveButton": "Save model settings",
+        "saveFailed": "Saving the model settings failed.",
+        "loadFailed": "Failed to load model settings."
+      },
+      "parallel-helpers-settings-panel": {
+        "fields": {
+          "maxPerAgent": {
+            "label": "Helpers per agent (ceiling)",
+            "hint": "The highest value any agent card in this company may set. Cards above it are clamped server-side. There is no built-in upper limit (HELPERS-NO-CAP): the number you set here is the limit; high values increase host load."
+          },
+          "defaultMaxPerAgent": {
+            "label": "Default helpers per agent",
+            "hint": "What an agent gets when its card says nothing. New agents inherit it."
+          },
+          "buildSlots": {
+            "label": "Shared build slots",
+            "hint": "Concurrent build slots on the shared dev host, for the capacity hint below. Empty = unknown (not checked)."
+          },
+          "hostMemoryMb": {
+            "label": "Dev host memory, MB",
+            "hint": "Memory of the host running the bots, for the capacity hint below. Empty = unknown (not checked)."
+          }
+        },
+        "errors": {
+          "number": "Enter a whole number greater than zero, or leave it empty"
+        },
+        "hostLoadWarning": "A ceiling of {{ceiling}} means each agent card may ask for up to {{ceiling}} helpers at once. Values this high put a real load on the host — make sure this is intended, not a typo. It is not limited by the product.",
+        "title": "Parallel helpers",
+        "description": "The allowed range and default for the \"Parallel helpers\" block on agent cards. Agents use helpers to run independent parts of a task in parallel. Saving applies on each bot's next reconcile tick, without a restart. Leave a field empty to keep the built-in default.",
+        "defaultPlaceholder": "Default",
+        "inForce": "In force: ceiling {{ceiling}}, default {{default}} per agent. Cards are clamped to the ceiling when they compile.",
+        "usage": "Helper usage: {{slots}} slot(s) across {{agents}} agent(s).",
+        "saveButton": "Save parallel helpers",
+        "loading": "Loading parallel helpers settings...",
+        "saveFailed": "Saving the parallel helpers settings failed.",
+        "loadFailed": "Failed to load parallel helpers settings."
+      },
+      "pause-guard-settings-panel": {
+        "errors": {
+          "required": "Required",
+          "range": "Enter a whole number between {{min}} and {{max}}"
+        },
+        "title": "Forgotten pauses",
+        "description": "The board resumes agents that an operator paused and left paused longer than the threshold, so their queued runs and stranded tasks come back on their own. Pauses the board sets for its own reasons — budget, archived company, import — are never lifted, and names on the allowlist are skipped. Saving takes effect at the next pass; nothing is restarted.",
+        "enabledLabel": "Guard is on",
+        "enabledHint": "Switched off, no pause is ever lifted automatically: an operator resume is the only way back.",
+        "thresholdLabel": "Pause longer than, minutes",
+        "thresholdHint": "A pause older than this is treated as forgotten. Default 20 minutes.",
+        "intervalLabel": "Check every, seconds",
+        "intervalHint": "How often the board looks for forgotten pauses. Default 600 (every 10 minutes).",
+        "maxLabel": "Resumes per pass, at most",
+        "maxHint": "A ceiling on one pass, so a fleet-wide resume does not start every backlog at once. Default 20; the rest wait for the next pass and raise a notice on the attention desk.",
+        "allowlistLabel": "Never resume these agents",
+        "allowlistHint": "Agent names, one per line or separated by commas. Empty by default: an agent stays paused exactly as long as the operator left it.",
+        "saveButton": "Save pause guard",
+        "loading": "Loading pause guard settings...",
+        "saveFailed": "Saving the pause guard settings failed.",
+        "loadFailed": "Failed to load the pause guard settings."
+      }
+    }
+  }
+}

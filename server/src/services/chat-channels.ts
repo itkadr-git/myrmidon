@@ -8,10 +8,10 @@ import { HEIF_CONTENT_TYPES, photonHeifPreview, validatePhotonImage } from "./ph
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 import { PhotonAnswerValidationError, nativePhotonInteraction, publishPhotonPrompt, photonResponseCommand, parsePhotonQuestionAnswer, type PhotonPromptReceipt, type PhotonInteractionBinding, type PhotonDraft } from "./photon/interactions.js";
 import { validateNativeQuestionResponseInput } from "./native-runtime/native-question-bridge.js";
-import type { AskUserQuestionsAnswer, AskUserQuestionsInteraction, IssueThreadInteraction } from "@paperclipai/shared";
+import type { AskUserQuestionsAnswer, AskUserQuestionsInteraction, IssueThreadInteraction } from "@myrmidon/shared";
 import { PhotonCloudClient, PhotonError, photonFailure, photonSharedIdentity, photonSharedScope } from "./photon/cloud.js";
 import { PhotonChatAdapter, photonThreadId, photonReplyReference } from "./photon/adapter.js";
-import { photonChannelConfigurationSchema, type PhotonChannelConfiguration } from "@paperclipai/shared";
+import { photonChannelConfigurationSchema, type PhotonChannelConfiguration } from "@myrmidon/shared";
 import type { LiveEvent as PhotonEvent } from "@photon-ai/advanced-imessage";
 import {
   createHash,
@@ -53,7 +53,7 @@ import {
   readChatControlChronology,
   teamsConversationId,
 } from "./chat-control-chronology.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   createDurableChatWakeupRequest,
   assertDurableChatWakeupReceipt,
@@ -93,7 +93,7 @@ import {
   issues,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   ChatAdapterCapabilities,
   ChatEndpointCallbackSurfaces,
@@ -109,7 +109,7 @@ import type {
   SafeChatPublicationPayload,
   ToolCredentialSecretRef,
   UpdateChatEndpointInput,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   isAgentStatusInvokable,
   CHAT_PROVIDERS,
@@ -117,7 +117,7 @@ import {
   LOW_TRUST_REVIEW_PRESET,
   LOW_TRUST_REVIEW_PRESET_VERSION,
   LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   formatAttachmentSize,
   isAllowedContentType,
@@ -148,7 +148,10 @@ import {
   projectChatPublicationBatch,
 } from "./chat-publication-batches.js";
 
-import { telegramAttachmentForUpload } from "./chat-telegram-photo.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the upload, ephemeral-callback, media and
+// rich-intake themes are reached through the bridge seam, so a channel
+// connector can serve them.
+import { telegramAttachmentForUpload } from "../myrmidon/channel-connectors/bridge/telegram-photo.js";
 import {
   parseTelegramCallbackReceipt,
   readTelegramCallbackProvenance,
@@ -157,19 +160,21 @@ import {
   // myrmidon(B1b): stored rows may still carry the pre-rename notice text.
   isStoredTelegramPrivateActionUnavailableText,
   type TelegramCallbackReceipt,
-} from "./chat-telegram-ephemeral.js";
+} from "../myrmidon/channel-connectors/bridge/telegram-ephemeral.js";
 import {
   hasTelegramMediaProvenance,
   identifyTelegramMedia,
   telegramMediaNeedsIdentification,
-} from "./chat-telegram-media-intake.js";
+} from "../myrmidon/channel-connectors/bridge/telegram-media.js";
 // myrmidon(1.6.1 VOICE-STT B): inbound transcription of Telegram voice/audio.
+// myrmidon(1.6.6 CH-CONNECTOR-D): the voice intake theme is reached through the
+// bridge seam, so a channel connector can serve it.
 import {
   transcribeTelegramVoiceIntake,
   type TelegramVoiceSttCompanyGate,
   type TelegramVoiceTranscriber,
-} from "../myrmidon/telegram-voice-stt-intake/index.js";
-import { normalizeTelegramRichMessage } from "./chat-telegram-rich-intake.js";
+} from "../myrmidon/channel-connectors/bridge/voice-stt.js";
+import { normalizeTelegramRichMessage } from "../myrmidon/channel-connectors/bridge/telegram-rich.js";
 import {
   TELEGRAM_DRAFT_ACTION_KIND,
   TELEGRAM_DRAFT_STOPPED_REASON,
@@ -249,6 +254,8 @@ import {
   type IssueAssignmentWakeupDeps,
 } from "./issue-assignment-wakeup.js";
 import { issueService } from "./issues.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the bridged-DM theme is reached through the
+// bridge seam, so a channel connector can serve it.
 // myrmidon(CA-A): the channel allowlist — the board-decided list of who may
 // write to the bots (channel identity, board account optional), the one-line
 // refusal and the owner's access-request card. Telegram is the first
@@ -259,6 +266,8 @@ import {
 } from "../myrmidon/channel-allowlist/service.js";
 import { handleChannelAccessRefusalGuarded } from "../myrmidon/channel-allowlist/refusal.js";
 import { readChannelAccessMode } from "../myrmidon/channel-allowlist/settings.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the bridged-DM theme is reached through the
+// bridge seam, so a channel connector can serve it.
 import {
   afterTelegramDmMessage,
   decideTelegramDmBinding,
@@ -267,7 +276,7 @@ import {
   handleTelegramDmCommand,
   refuseUnlinkedTelegramDm,
   type TelegramDmBridgeDeps,
-} from "../myrmidon/agent-chat-bridge/bridge.js";
+} from "../myrmidon/channel-connectors/bridge/agent-bridge.js";
 // myrmidon(F06-D): the buttons under a `/model` or `/think` list.
 import {
   CHOOSER_BUTTONS_PER_ROW,
@@ -279,9 +288,11 @@ import {
 // call site and the leading-token strip for an addressed turn's body (reply
 // prefixing and the mention quote live in issues.ts / cross-channel.ts; the
 // addressed reply rides the normal publication lane).
-import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/agent-chat-bridge/addressing.js";
-import { resolveBridgedAddressee } from "../myrmidon/agent-chat-bridge/bridge.js";
-import type { TelegramAddressee } from "../myrmidon/agent-chat-bridge/addressing.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the addressing theme is reached through the
+// bridge seam, so a channel connector can serve it.
+import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/channel-connectors/bridge/addressing.js";
+import { resolveBridgedAddressee } from "../myrmidon/channel-connectors/bridge/agent-bridge.js";
+import type { TelegramAddressee } from "../myrmidon/channel-connectors/bridge/addressing.js";
 // myrmidon(U2): company-wide interaction lookup for callbacks on cards
 // delivered to the owner's Telegram conversation from other tasks.
 import { listInteractionForCallback } from "../myrmidon/owner-delivery/callback-interaction-lookup.js";
@@ -415,7 +426,10 @@ import {
   createOmissionTracker,
   telegramAttachmentOmissionNotice,
 } from "../myrmidon/chat-attachment-omission.js";
-import { TELEGRAM_DM_COMMANDS, telegramDmCommandsForLocale } from "../myrmidon/agent-chat-bridge/commands/index.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the DM command-menu and menu-locale themes are
+// reached through the bridge seam, so a channel connector can serve them.
+import { TELEGRAM_DM_COMMANDS, telegramDmCommandsForLocale } from "../myrmidon/channel-connectors/bridge/commands.js";
+import { telegramDmMenuLocale } from "../myrmidon/channel-connectors/bridge/locales.js";
 import {
   buildAgentsExpiredScreen,
   resolveAgentsButtonClick,
@@ -423,7 +437,14 @@ import {
   stageAgentsScreenPublication,
   type AgentsScreen,
 } from "../myrmidon/agent-chat-bridge/commands/agents-buttons.js";
-import { telegramDmMenuLocale } from "../myrmidon/agent-chat-bridge/locales/index.js";
+// myrmidon(HUB): the connector hub and the inbound read of the webhook path.
+// See server/src/myrmidon/channel-connectors/ingress.ts and
+// docs/myrmidon/design/chat-channel-connector.md, section 4.
+import { myrmidonChannelConnectorHub } from "../myrmidon/channel-connectors/hub.js";
+import {
+  channelLogSinkOf,
+  readInboundEventThroughConnector,
+} from "../myrmidon/channel-connectors/ingress.js";
 // myrmidon(CHAT-HOLD): no silent queue in a bridged Telegram chat.
 import {
   chatNoticeLanguage,
@@ -433,27 +454,32 @@ import {
   classifyChatWait,
   type ChatWaitReason,
 } from "../myrmidon/chat-holds/wait-notice.js";
+// myrmidon(1.6.5 OWNER-CHAT-ADMISSION): gate the notice on owner-turn admission.
 import { currentOwnerChatTurnGate } from "../myrmidon/run-admission.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the DM switches are reached through the
+// bridge seam, so a channel connector can serve them.
 import {
   telegramDmConversationsConfigured,
   telegramDmConversationsEnabled,
-} from "../myrmidon/agent-chat-bridge/settings.js";
+} from "../myrmidon/channel-connectors/bridge/dm-conversations.js";
 // myrmidon(TG-NOTIFY-D): inbound topic settings + gate for Telegram forum
 // topics (server/src/myrmidon/telegram-notify/). Off by default: the
 // settings document lives in instance settings; the gate only relaxes the
 // vendor's addressed requirement when the owner enabled topic inbound. The
 // reader lives in its own module, so the track's contract module
 // (`telegram-notify/settings.ts`, part B) stays untouched.
+// myrmidon(1.6.6 CH-CONNECTOR-D): the topic-inbound settings are reached
+// through the bridge seam, so a channel connector can serve them.
 import {
   readTelegramNotifyInbound,
   type TelegramNotifyInboundSettings,
-} from "../myrmidon/telegram-notify/topic-inbound-settings.js";
+} from "../myrmidon/channel-connectors/bridge/topic-inbound-settings.js";
 // myrmidon(TG-NOTIFY-D): pure gate/title/body helpers for topic inbound.
 import {
   topicInboundAdmitted,
   topicTaskBody,
   topicTaskTitle,
-} from "../myrmidon/telegram-notify/topic-inbound.js";
+} from "../myrmidon/channel-connectors/bridge/topic-inbound.js";
 // myrmidon(U1): settings for the editable DM status message and inline split
 // (release 1.4, item 3).
 import {
@@ -2113,7 +2139,8 @@ async function editOrPostProviderPublication<T>(
   }
 }
 
-function safeCardForPublication(
+// myrmidon(U2): exported so the owner Telegram text-only provider payload can be asserted.
+export function safeCardForPublication(
   payload: SafeChatPublicationPayload,
   provider: ChatProvider,
 ) {
@@ -3168,6 +3195,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   >();
   const persistence = createChatSdkStatePersistence(db);
+  // myrmidon(HUB): the only connection between the vendor chat service and our
+  // channel connectors. Everything channel-specific lives in
+  // server/src/myrmidon/channel-connectors/.
+  const channelHubLog = channelLogSinkOf(logger);
+  const channelHub = myrmidonChannelConnectorHub(db, { logger: channelHubLog });
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const publicBaseUrl = absoluteBaseUrl(options.publicBaseUrl);
   const webhookPublicBaseUrl =
@@ -28394,6 +28426,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         return new Response("Invalid signature", { status: 401 });
       }
     }
+    // myrmidon(HUB): the inbound flow of this endpoint. When a connector is
+    // registered for the provider it reads the update and answers whether the
+    // turn enters our pipeline; a turn it refuses — including its own
+    // `duplicate` answer — stops here, so one update cannot be delivered twice
+    // and an update it read as no message for us never reaches the queue.
+    if (
+      await readInboundEventThroughConnector(channelHub, { endpoint, request }, { logger: channelHubLog })
+    ) {
+      return new Response("ignored", { status: 200 });
+    }
     const lifecycleInspection = request.clone();
     const slackCallbackInspection =
       provider === "slack" ? request.clone() : null;
@@ -30253,7 +30295,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     action: "mark_delivered" | "retry_anyway" | "cancel",
     userId: string,
     fileTransfer?: {
-      phase: import("@paperclipai/shared").ChatFileTransferPhase;
+      phase: import("@myrmidon/shared").ChatFileTransferPhase;
       version: number;
     },
   ) {

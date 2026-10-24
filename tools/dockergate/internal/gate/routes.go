@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/jsonx"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/policy"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/route"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/upstream"
@@ -444,6 +446,14 @@ func (rs *reqState) requireNextCreated(ctx context.Context, key string) *deny.Er
 
 // a10: stop, only inside a recreate.
 func (rs *reqState) a10(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	return rs.stopMain(ctx, rt, bs, false)
+}
+
+func (rs *reqState) a17(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	return rs.stopMain(ctx, rt, bs, true)
+}
+
+func (rs *reqState) stopMain(ctx context.Context, rt *route.Route, bs *botState, idle bool) *deny.Error {
 	_, stop, _ := rs.timeouts()
 	unlock, derr := rs.g.lockBot(ctx, bs)
 	if derr != nil {
@@ -458,13 +468,36 @@ func (rs *reqState) a10(ctx context.Context, st *runtime, rt *route.Route, bs *b
 	if ct == nil {
 		return rs.notFound()
 	}
-	if derr := rs.requireNextCreated(ctx, rt.BotKey); derr != nil {
-		return derr
+	if idle {
+		if ct.Config.Labels["myrmidon.bot"] != rt.BotKey {
+			return deny.New(deny.ForeignContainer)
+		}
+		if ct.State.Health != nil && ct.State.Health.Status != nil && *ct.State.Health.Status == "starting" {
+			return deny.New(deny.IdleStopDenied).WithDetail("container_starting")
+		}
+		if next, inspectErr := rs.inspectOurs(ctx, rt.BotKey, route.SuffixNext); inspectErr != nil {
+			return inspectErr
+		} else if next != nil {
+			return statePrecondition("recreate_active")
+		}
+		if active, inspectErr := rs.inspectOurs(ctx, rt.BotKey, route.SuffixHelper); inspectErr != nil {
+			return inspectErr
+		} else if active != nil && active.Status() == "running" {
+			return deny.New(deny.IdleStopDenied).WithDetail("active_helper")
+		}
+	} else {
+		if derr := rs.requireNextCreated(ctx, rt.BotKey); derr != nil {
+			return derr
+		}
 	}
 	if derr := rs.g.allow(bs, rateStop); derr != nil {
 		return derr
 	}
-	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, "/stop?t=30")},
+	target := "/stop?t=30"
+	if idle {
+		target += "&myrmidon-idle=true"
+	}
+	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, target)},
 		stop, maxErrBody, deny.ResponseTooLarge)
 	if derr != nil {
 		return derr
@@ -494,6 +527,83 @@ func (rs *reqState) a11(ctx context.Context, st *runtime, rt *route.Route, bs *b
 	}
 	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, "/restart?t=30")},
 		stop, maxErrBody, deny.ResponseTooLarge)
+	if derr != nil {
+		return derr
+	}
+	rs.respond(ans)
+	return nil
+}
+
+// updateKeys are the only keys of the body of A18.
+var updateKeys = [...]string{"Memory", "MemorySwap", "PidsLimit"}
+
+// parseUpdateBody reads the body of A18 with the strict parser: exactly the
+// three keys of updateKeys, each an integer. Memory and PidsLimit must be
+// positive and within the limits of the bot; MemorySwap (memory plus swap)
+// must be at least Memory and at most twice Memory, the swap the controller
+// asks for, so the total never goes beyond twice the limit of the bot.
+func parseUpdateBody(body []byte, bot config.Bot) (memory, swap, pids int64, derr *deny.Error) {
+	v, derr := jsonx.Parse(body)
+	if derr != nil {
+		return 0, 0, 0, derr
+	}
+	if v.Kind != jsonx.KindObject {
+		return 0, 0, 0, deny.FieldOnly(deny.JSONType, "$")
+	}
+	for _, m := range v.Members {
+		known := false
+		for _, k := range updateKeys {
+			if m.Key == k {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return 0, 0, 0, deny.Field(deny.JSONUnknownKey, "$", []byte(m.Key))
+		}
+	}
+	var out [len(updateKeys)]int64
+	for i, k := range updateKeys {
+		n := v.Get(k)
+		if n == nil || n.Kind != jsonx.KindInt {
+			return 0, 0, 0, deny.FieldOnly(deny.JSONType, k)
+		}
+		out[i] = n.N
+	}
+	memory, swap, pids = out[0], out[1], out[2]
+	maxMem := bot.MaxMemoryMB * 1024 * 1024
+	if memory <= 0 || memory > maxMem || swap < memory || swap > 2*memory || pids <= 0 || pids > bot.MaxPids {
+		return 0, 0, 0, deny.New(deny.JSONValue)
+	}
+	return memory, swap, pids, nil
+}
+
+// a18: update mutable resource limits without restarting the container.
+func (rs *reqState) a18(ctx context.Context, st *runtime, rt *route.Route, bs *botState, bot config.Bot) *deny.Error {
+	def, _, _ := rs.timeouts()
+	body, derr := rs.readBody(st.cfg.Limits.MaxJSONBody, "application/json", deny.JSONSyntax)
+	if derr != nil {
+		return derr
+	}
+	memory, swap, pids, derr := parseUpdateBody(body, bot)
+	if derr != nil {
+		return derr
+	}
+	// The daemon gets a body that the gate wrote itself from the three checked
+	// numbers, never the bytes of the caller: no other field of the update
+	// call (CpuShares, RestartPolicy, ...) can pass through this route.
+	body = []byte(fmt.Sprintf(`{"Memory":%d,"MemorySwap":%d,"PidsLimit":%d}`, memory, swap, pids))
+	ct, derr := rs.inspectOurs(ctx, rt.BotKey, route.SuffixMain)
+	if derr != nil {
+		return derr
+	}
+	if ct == nil {
+		return rs.notFound()
+	}
+	if derr := rs.g.allow(bs, rateCreate); derr != nil {
+		return derr
+	}
+	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, "/update"), Body: body, ContentType: jsonType}, def, maxCreateRes, deny.ResponseTooLarge)
 	if derr != nil {
 		return derr
 	}

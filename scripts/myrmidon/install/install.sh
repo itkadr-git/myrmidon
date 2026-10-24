@@ -55,6 +55,18 @@ MYR_REPO="${MYRMIDON_INSTALL_REPO:-itkadr-git/myrmidon}"
 # shared NAT address exhausts quickly.
 MYR_WEB="${MYRMIDON_INSTALL_WEB_URL:-https://github.com}"
 MYR_PROJECT=myrmidon
+# Production installs must bind identity to the host; the cached fallback can
+# differ from module hosts and is therefore unsafe for license issuance.
+MYR_LICENSE_INSTANCE_ID="${MYR_LICENSE_INSTANCE_ID:-}"
+# LICENSING: the one host directory that holds the closed modules' license
+# file. Host module processes read <dir>/license.key directly, module
+# containers bind-mount that file, and the board container mounts the whole
+# directory read-write at the same path: the licensing screen saves the key
+# there and the antigravity adapter (it runs inside the board) reads it there.
+# One file, one switch point (MYR_LICENSE_PATH), no second copy.
+MYRMIDON_LICENSE_DIR="${MYRMIDON_LICENSE_DIR:-/etc/myrmidon-license}"
+# uid:gid of the board process inside the image (the `node` user).
+MYRMIDON_BOARD_UID="${MYRMIDON_BOARD_UID:-1000}"
 
 DIR=""
 PORT=""
@@ -63,6 +75,7 @@ RELEASE_TAG=""
 LANG_CODE=""
 INTERACTIVE=0
 ASSUME_YES=0
+DRY_RUN=0
 MODE="install"
 PURGE=0
 # DATABASE_URL: when set (--database-url or MYRMIDON_INSTALL_DATABASE_URL), the
@@ -114,6 +127,7 @@ Options:
                          Same as MYRMIDON_INSTALL_DATABASE_URL.
   --interactive          ask the questions instead of answering them silently
   --yes, -y              answer yes to everything
+  --dry-run              render and validate the Compose configuration only
   --uninstall            stop and remove the stack (your data is kept)
   --purge                with --uninstall: also delete the database volume
   -h, --help             print this help
@@ -143,6 +157,7 @@ while (($#)); do
     --database-url) value_for "$@" ; DATABASE_URL="$2"; shift 2 ;;
     --interactive) INTERACTIVE=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
     --uninstall) MODE="uninstall"; shift ;;
     --purge) PURGE=1; shift ;;
     -h|--help) usage ;;
@@ -169,6 +184,9 @@ require_root() {
   if [[ "${MYRMIDON_INSTALL_SKIP_ROOT_CHECK:-0}" == "1" ]]; then
     say "MYRMIDON_INSTALL_SKIP_ROOT_CHECK=1: the root check is skipped (tests only)." \
         "MYRMIDON_INSTALL_SKIP_ROOT_CHECK=1: проверка root пропущена (только для тестов)."
+    return 0
+  fi
+  if (( DRY_RUN )) && [[ "$(id -u)" != "0" ]]; then
     return 0
   fi
   if [[ "$(id -u)" != "0" ]]; then
@@ -221,7 +239,21 @@ cpu_supports_x86_64_v2() {
 # -------------------------------------------------------------- preflight -----
 # Every requirement is a fact read from the machine, not an assumption: the
 # script names what is missing instead of failing later inside docker.
+# LICENSE-DIR: the license directory is mounted into the containers of the
+# closed modules, so the license issuing key must not live in it.
+preflight_license_dir() {
+  local dir="$MYRMIDON_LICENSE_DIR" hit=""
+  [[ -d "$dir" ]] || return 0
+  if [[ -e "$dir/issuer" ]]; then
+    hit="$dir/issuer"
+  else
+    hit="$(find "$dir" -maxdepth 3 \( -name '*.pem' -o -name '*ed25519*' \) -print -quit 2>/dev/null || true)"
+  fi
+  [[ -z "$hit" ]] || die "ключ выпуска лежит в каталоге лицензии ($hit) — перенесите: sudo mv $dir/issuer ${dir}-issuer и поправьте монтирование issuer в compose доски (the license issuing key must not be in the license directory)"
+}
+
 preflight() {
+  preflight_license_dir
   local os_id="" os_ver="" arch cpu mem_mb free_mb free_kb
 
   [[ -r /etc/os-release ]] || die "/etc/os-release is missing: unknown operating system"
@@ -298,6 +330,9 @@ preflight() {
 
 # ----------------------------------------------------------------- docker -----
 install_docker() {
+  if [[ "${MYRMIDON_INSTALL_SKIP_DOCKER_INSTALL:-0}" == "1" ]]; then
+    return 0
+  fi
   if have docker && docker compose version >/dev/null 2>&1; then
     say "Docker and the compose plugin are already installed." \
         "Docker и плагин compose уже установлены."
@@ -487,7 +522,7 @@ db_profile() {
   # image under an existing PG17 data volume is a migration the operator runs
   # deliberately — the installer keeps the file untouched instead.
   if [[ -z "$DATABASE_URL" && -z "${MYRMIDON_DB_PROFILE:-}" && -r "$DIR/compose.yml" ]] \
-     && grep -q '^[[:space:]]*image: postgres' "$DIR/compose.yml"; then
+     && grep -Eiq '^[[:space:]]*image:[[:space:]]*[^[:space:]]*postgres[^[:space:]]*([[:space:]]|$)' "$DIR/compose.yml"; then
     DB_PROFILE="keep"
     return 0
   fi
@@ -548,11 +583,39 @@ check_foreign() {
   die "$DIR is not empty and carries no .myrmidon-install stamp: this installer will not touch a directory it did not create"
 }
 
+# The board answers 403 to every Host header it was not told about — including
+# the machine's own IP address ("private-hostname guard"). Name the addresses
+# this host answers on, so the address printed at the end actually opens instead
+# of the operator meeting a refusal on the first click.
+allowed_hosts() {
+  local list="${MYRMIDON_ALLOWED_HOSTS:-}"
+  if [[ -z "$list" ]]; then
+    list="$(hostname -f 2>/dev/null || true),$(hostname 2>/dev/null || true)"
+    list="$list,$(hostname -I 2>/dev/null | tr ' ' ',' || true)"
+    if command -v ip >/dev/null 2>&1; then
+      list="$list,$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | tr '\n' ',' || true)"
+    fi
+  fi
+  printf '%s\n' "$list" | tr ',' '\n' | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); if (length($0) && !seen[$0]++) { printf "%s%s", (n++ ? "," : ""), $0 } }'
+}
+
+# The address an operator opens the board at when none was given: the first IPv4
+# of this host. A bare hostname only resolves for whoever has DNS for it, while
+# the IP works from any machine on the network.
+default_public_url() {
+  local ip
+  ip="$(allowed_hosts | tr ',' '\n' | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' | head -n 1 || true)"
+  [[ -n "$ip" ]] || ip="$(hostname -f 2>/dev/null || hostname)"
+  printf 'http://%s:%s' "$ip" "$PORT"
+}
+
 write_env() {
   [[ -n "${POSTGRES_PASSWORD:-}" ]] || POSTGRES_PASSWORD="$(rand_hex 24)"
   [[ -n "${BETTER_AUTH_SECRET:-}" ]] || BETTER_AUTH_SECRET="$(rand_hex 32)"
   [[ -n "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:-}" ]] || PAPERCLIP_TOOL_ACTION_SIGNING_SECRET="$(rand_hex 32)"
-  [[ -n "$PUBLIC_URL" ]] || PUBLIC_URL="http://$(hostname -f 2>/dev/null || hostname):$PORT"
+  [[ -n "$PUBLIC_URL" ]] || PUBLIC_URL="$(default_public_url)"
+  ALLOWED_HOSTNAMES="${ALLOWED_HOSTNAMES:-$(allowed_hosts)}"
+  [[ -n "$MYR_LICENSE_INSTANCE_ID" ]] || [[ -r /etc/machine-id ]] || die "host /etc/machine-id is required for a stable installation id; repair the host machine-id or explicitly set the same MYR_LICENSE_INSTANCE_ID for the board and every module host"
 
   # SHARED-PG profile parameters, persisted into deploy.env so a re-run (the
   # update path) keeps exactly the shape the first install chose. "keep" marks
@@ -604,6 +667,7 @@ MYRMIDON_RELEASE_TAG=$RELEASE_TAG
 MYRMIDON_INSTALL_DIR=$DIR
 MYRMIDON_PORT=$PORT
 MYRMIDON_PUBLIC_URL=$PUBLIC_URL
+MYRMIDON_ALLOWED_HOSTNAMES=$ALLOWED_HOSTNAMES
 MYRMIDON_BOARD_DIGEST=$BOARD_DIGEST
 MYRMIDON_DOCKERGATE_DIGEST=$DOCKERGATE_DIGEST
 MYRMIDON_BOT_DIGEST=$BOT_DIGEST
@@ -616,6 +680,8 @@ POSTGRES_USER=paperclip
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 BETTER_AUTH_SECRET=$BETTER_AUTH_SECRET
 PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$PAPERCLIP_TOOL_ACTION_SIGNING_SECRET
+MYR_LICENSE_INSTANCE_ID=${MYR_LICENSE_INSTANCE_ID:-}
+MYRMIDON_LICENSE_DIR=$MYRMIDON_LICENSE_DIR
 $db_profile_env
 ENV
   chmod 600 "$DIR/deploy.env"
@@ -707,16 +773,23 @@ services:
       HOST: "0.0.0.0"
       PORT: "3100"
       SERVE_UI: "true"
-      PAPERCLIP_HOME: "/paperclip"
+      PAPERCLIP_HOME: "/myrmidon"
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${MYRMIDON_PUBLIC_URL}"
+      PAPERCLIP_ALLOWED_HOSTNAMES: "${MYRMIDON_ALLOWED_HOSTNAMES:?MYRMIDON_ALLOWED_HOSTNAMES must be set}"
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:?PAPERCLIP_TOOL_ACTION_SIGNING_SECRET must be set}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      MYR_LICENSE_INSTANCE_ID: "${MYR_LICENSE_INSTANCE_ID:-}"
+      MYR_LICENSE_PATH: "/etc/myrmidon-license/license.key"
 %%BOARD_DATABASE_URL%%
       MYRMIDON_BOT_DOCKER_SOCKET: "/run/myrmidon-dockergate/engine.sock"
     volumes:
-      - paperclip-data:/paperclip
+      - myrmidon-data:/myrmidon
+      - /etc/machine-id:/etc/machine-id:ro
+      # Read-write: the licensing screen writes license.key here (in place, so
+      # module containers that mount the single file see the new text).
+      - ${MYRMIDON_LICENSE_DIR:-/etc/myrmidon-license}:/etc/myrmidon-license
       - ./run:/run/myrmidon-dockergate
 
   dockergate:
@@ -756,7 +829,7 @@ services:
 
 volumes:
 %%PGDATA_VOLUME%%
-  paperclip-data:
+  myrmidon-data:
 COMPOSE
 )"
   content="${content//%%DB_SERVICE%%/$db_service}"
@@ -812,6 +885,21 @@ compose_is_up() {
   [[ -n "$(compose ps -q server 2>/dev/null)" ]]
 }
 
+# The license directory must exist before compose starts (a missing bind
+# source would be created root-owned and the board could not save a key) and
+# be writable by the board process. An existing license file is kept and only
+# handed to the board user; the modules on the host read it as root.
+prepare_license_dir() {
+  local lic="$MYRMIDON_LICENSE_DIR"
+  [[ "$lic" == /* ]] || die "MYRMIDON_LICENSE_DIR must be an absolute path"
+  install -d -m 0755 "$lic"
+  chown "$MYRMIDON_BOARD_UID:$MYRMIDON_BOARD_UID" "$lic"
+  if [[ -f "$lic/license.key" ]]; then
+    chown "$MYRMIDON_BOARD_UID:$MYRMIDON_BOARD_UID" "$lic/license.key"
+    chmod 0644 "$lic/license.key"
+  fi
+}
+
 prepare_dirs() {
   mkdir -p "$DIR/dockergate" "$DIR/bots" "$DIR/state" "$DIR/run" "$DIR/dockergate-state"
   # dockergate runs as the image's nonroot user (65532) and creates the socket
@@ -820,6 +908,7 @@ prepare_dirs() {
     chown 65532:65532 "$DIR/run" "$DIR/dockergate-state"
     chmod 0711 "$DIR/run"
     chmod 0755 "$DIR/dockergate-state"
+    prepare_license_dir
   fi
   docker network inspect myrmidon-bots >/dev/null 2>&1 \
     || docker network create myrmidon-bots >/dev/null 2>&1 || true
@@ -891,6 +980,14 @@ do_install() {
   log "generating secrets and the compose project in $DIR"
   write_env
   write_compose
+
+  if (( DRY_RUN )); then
+    log "validating the generated Compose configuration (dry run)"
+    ( cd "$DIR" && compose config >/dev/null ) || die "generated Compose configuration is invalid"
+    say "Dry run complete: generated files are in $DIR; no images were pulled and no services were changed." \
+        "Пробный запуск завершён: файлы созданы в $DIR; образы не загружались и сервисы не изменялись."
+    return 0
+  fi
 
   log "pulling the images (this may take a few minutes)"
   ( cd "$DIR" && compose pull --quiet ) || die "cannot pull the images of $RELEASE_TAG"
@@ -973,7 +1070,7 @@ do_uninstall() {
   ( cd "$DIR" && compose down ) || die "docker compose down failed"
   if (( PURGE )); then
     load_env
-    docker volume rm "${MYR_PROJECT}_pgdata" "${MYR_PROJECT}_paperclip-data" >/dev/null 2>&1 || true
+    docker volume rm "${MYR_PROJECT}_pgdata" "${MYR_PROJECT}_myrmidon-data" "${MYR_PROJECT}_paperclip-data" >/dev/null 2>&1 || true
     rm -rf "$DIR"
     say "The stack, its data volume and $DIR were removed." \
         "Стек, том с данными и каталог $DIR удалены."
@@ -1001,7 +1098,7 @@ interactive_questions() {
       "Интерактивный режим: Enter оставляет значение в скобках."
   DIR="$(ask "$( [[ "$LANG_CODE" == ru ]] && echo 'Каталог установки' || echo 'Install directory' )" "$DIR")"
   PORT="$(ask "$( [[ "$LANG_CODE" == ru ]] && echo 'Порт доски' || echo 'Board port' )" "$PORT")"
-  PUBLIC_URL="$(ask "$( [[ "$LANG_CODE" == ru ]] && echo 'Адрес, по которому открывают доску' || echo 'Address the board is opened at' )" "${PUBLIC_URL:-http://$(hostname -f 2>/dev/null || hostname):$PORT}")"
+  PUBLIC_URL="$(ask "$( [[ "$LANG_CODE" == ru ]] && echo 'Адрес, по которому открывают доску' || echo 'Address the board is opened at' )" "${PUBLIC_URL:-$(default_public_url)}")"
   [[ "$DIR" == /* ]] || die "--dir must be an absolute path"
   [[ "$PORT" =~ ^[0-9]+$ ]] || die "--port must be a number"
 }
@@ -1021,7 +1118,7 @@ main() {
     uninstall) do_uninstall ;;
     install)
       interactive_questions
-      install_docker
+      if (( ! DRY_RUN )); then install_docker; fi
       detect_docker_gid
       do_install ;;
   esac

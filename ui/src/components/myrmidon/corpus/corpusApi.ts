@@ -4,7 +4,7 @@
 // and the corpus routes. The UI is built in parallel against the frozen
 // contract, so everything in this file that describes the wire shape is a LOCAL
 // mirror of it. When the server half merges, drop the mirrored interfaces and
-// import them from `@paperclipai/shared`; the client functions stay.
+// import them from `@myrmidon/shared`; the client functions stay.
 //
 //   GET  /api/myrmidon/companies/:companyId/corpus/settings
 //   PUT  /api/myrmidon/companies/:companyId/corpus/settings   (same body)

@@ -20,7 +20,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import { agents, companySecrets, type Db } from "@paperclipai/db";
+import { agents, companySecrets, type Db } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import { assertActorCompanyPermission, assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { validate } from "../../middleware/validate.js";
@@ -71,6 +71,8 @@ export {
   agentCommitIdentity,
   type GitHubSharedIdentitySettings,
   type GitHubAppEntry,
+  type GitHubPatEntry,
+  githubPatsFor,
 } from "./settings.js";
 export { readGitHubSharedIdentitySettings, preserveGitHubSharedIdentityGeneralKey } from "./store.js";
 export { resolveGitHubAppCredential, type GitHubAppResolution } from "./resolve.js";
@@ -87,7 +89,7 @@ export { normalizeGitHubAppPermissions } from "./settings.js";
 export { vendorGitHubConnectorEnabled, GITHUB_VENDOR_CONNECTOR_ENV } from "./vendor-connector.js";
 
 async function assertReferencesBelongToCompany(db: Db, companyId: string, settings: GitHubSharedIdentitySettings) {
-  const secretIds = [...new Set(settings.apps.map((app) => app.privateKeySecretId))];
+  const secretIds = [...new Set([...settings.apps.map((app) => app.privateKeySecretId), ...settings.pats.map((pat) => pat.tokenSecretId)])];
   if (secretIds.length > 0) {
     const rows = await db
       .select({ id: companySecrets.id })
@@ -104,13 +106,13 @@ async function assertReferencesBelongToCompany(db: Db, companyId: string, settin
     const found = new Set(rows.map((row) => row.id));
     const missing = secretIds.filter((id) => !found.has(id));
     if (missing.length > 0) {
-      throw unprocessable("Every private key must be an active company secret of this company", {
+      throw unprocessable("Every GitHub credential must reference an active company secret of this company", {
         code: "github_app_secret_invalid",
         secretIds: missing,
       });
     }
   }
-  const agentIds = [...new Set(settings.apps.flatMap((app) => app.agentIds))];
+  const agentIds = [...new Set([...settings.apps.flatMap((app) => app.agentIds), ...settings.pats.flatMap((pat) => pat.agentIds)])];
   if (agentIds.length > 0) {
     const rows = await db
       .select({ id: agents.id })

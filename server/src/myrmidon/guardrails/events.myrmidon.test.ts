@@ -7,7 +7,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { activityLog, agents, companies, createDb, guardrailEvents, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, agents, companies, createDb, guardrailEvents, heartbeatRuns } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

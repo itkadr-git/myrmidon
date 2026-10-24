@@ -22,6 +22,9 @@ needs one. It is an independent product maintained as a fork of
   enforcement, prompt-cost advice, run admission limits.
 - [Knowledge and learning](Knowledge-and-learning) — regulations, foraging
   from approved sources, reference-task evals, quality baselines.
+- [POST-TASK-REFLECT design](../myrmidon/design/post-task-reflect.md)
+  ([Russian](../myrmidon/design/post-task-reflect.ru.md)) — the proposal for
+  capturing reusable role lessons after task outcomes.
 - [Autonomy and guardrails](Safety-and-guardrails) — the role × action
   matrix, injection flagging, emergency stop.
 - [Connectors and tools](Connectors-and-tools) — the browser bridge, MCP
@@ -33,6 +36,7 @@ needs one. It is an independent product maintained as a fork of
   architectures, minimum and recommended CPU/RAM/disk, network and ports.
 - [Installation](Installation) — one command brings a clean server to a
   working board.
+- [Migration from Paperclip](Migration-from-Paperclip) — move a Paperclip v2026.916.1 instance into a clean Myrmidon with `myrmidon:migrate`: preflight, DB, files and secrets transfer, rollback.
 - [Upgrading and rollback](Upgrading-and-rollback) — re-run the installer to
   update; RC and final releases; the manual `deploy.sh --release` flow.
 - [Settings in the interface](Settings-in-the-interface) — where run limits,
@@ -43,6 +47,9 @@ needs one. It is an independent product maintained as a fork of
   with a maintenance window, for experienced administrators.
 - [Operations and maintenance](Server-maintenance) — backups, disk,
   monitoring, maintenance windows and automatic rollback.
+- [Remote execution sites](Remote-execution-sites) — running bot
+  containers on dedicated remote hosts behind `fleetd`: the site-agent
+  API, health states and the rollout runbook.
 
 ## Releases
 

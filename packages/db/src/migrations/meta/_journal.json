@@ -2347,6 +2347,125 @@
       "when": 1791711000000,
       "tag": "0397_knowledge_unaccent_qualified",
       "breakpoints": true
+    },
+    {
+      "idx": 398,
+      "version": "7",
+      "when": 1792195200000,
+      "tag": "0398_knowledge_revision_language",
+      "breakpoints": true
+    },
+    {
+      "idx": 399,
+      "version": "7",
+      "when": 1792395442686,
+      "tag": "0399_typed_blocker_metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 400,
+      "version": "7",
+      "when": 1792395500000,
+      "tag": "0400_clear_terminal_issue_monitors",
+      "breakpoints": true
+    },
+    {
+      "idx": 401,
+      "version": "7",
+      "when": 1792395501000,
+      "tag": "0401_wakeup_key_partial_unique_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 402,
+      "version": "7",
+      "when": 1792395502000,
+      "tag": "0402_skill_lifecycle_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 403,
+      "version": "7",
+      "when": 1792395503000,
+      "tag": "0403_fleet_sites_affinity_moves",
+      "breakpoints": true
+    },
+    {
+      "idx": 404,
+      "version": "7",
+      "when": 1792395504000,
+      "tag": "0404_install_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 405,
+      "version": "7",
+      "when": 1792395505000,
+      "tag": "0405_fleet_sites_client_cert",
+      "breakpoints": true
+    },
+    {
+      "idx": 406,
+      "version": "7",
+      "when": 1792395506000,
+      "tag": "0406_swarm_claim_origin",
+      "breakpoints": true
+    },
+    {
+      "idx": 407,
+      "version": "7",
+      "when": 1792395507000,
+      "tag": "0407_secret_proposal_rotation_target",
+      "breakpoints": true
+    },
+    {
+      "idx": 408,
+      "version": "7",
+      "when": 1792395508000,
+      "tag": "0408_knowledge_suggestion_trust",
+      "breakpoints": true
+    },
+    {
+      "idx": 409,
+      "version": "7",
+      "when": 1792395509000,
+      "tag": "0409_corpus_shadow_log",
+      "breakpoints": true
+    },
+    {
+      "idx": 410,
+      "version": "7",
+      "when": 1792395510000,
+      "tag": "0410_model_provider_key_compatibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 411,
+      "version": "7",
+      "when": 1792395511000,
+      "tag": "0411_pool_chat_module_instance",
+      "breakpoints": true
+    },
+    {
+      "idx": 412,
+      "version": "7",
+      "when": 1792395512000,
+      "tag": "0412_users_admin_a",
+      "breakpoints": true
+    },
+    {
+      "idx": 413,
+      "version": "7",
+      "when": 1792395513000,
+      "tag": "0413_knowledge_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 414,
+      "version": "7",
+      "when": 1792395514000,
+      "tag": "0414_fleet_site_health_move_claim",
+      "breakpoints": true
     }
   ]
 }

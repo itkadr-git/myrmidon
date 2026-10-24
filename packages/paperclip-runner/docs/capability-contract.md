@@ -195,8 +195,8 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/references/api-reference.md:approvals-costs-activity-dashboard:1443 | optional_agent_tool | skills/paperclip/references/api-reference.md:1443 |
 | skill:skills/paperclip/references/api-reference.md:secrets:1465 | optional_agent_tool | skills/paperclip/references/api-reference.md:1465 |
 | skill:skills/paperclip/references/api-reference.md:agent-secret-proposals:1478 | optional_agent_tool | skills/paperclip/references/api-reference.md:1478 |
-| skill:skills/paperclip/references/api-reference.md:agent-secret-access:1578 | optional_agent_tool | skills/paperclip/references/api-reference.md:1578 |
-| skill:skills/paperclip/references/api-reference.md:common-mistakes:1618 | optional_agent_tool | skills/paperclip/references/api-reference.md:1618 |
+| skill:skills/paperclip/references/api-reference.md:agent-secret-access:1592 | optional_agent_tool | skills/paperclip/references/api-reference.md:1592 |
+| skill:skills/paperclip/references/api-reference.md:common-mistakes:1632 | optional_agent_tool | skills/paperclip/references/api-reference.md:1632 |
 
 ## Legacy MCP Alias Index
 

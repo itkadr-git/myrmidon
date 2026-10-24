@@ -3,15 +3,13 @@ import { notModifiedOrSetEtag } from "../middleware/version-key-etag.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
-import { toolConnections } from "@paperclipai/db";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, aiConnectionMetadataSchema, isAiConnectionCompatible, type AiConnectionBinding } from "@myrmidon/shared";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
-import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
-import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@paperclipai/adapter-utils";
+import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@myrmidon/adapter-utils";
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): a run response carries one continuation copy.
 import { withoutDuplicateExecutionContinuation } from "../services/run-continuation-snapshot.js";
@@ -19,10 +17,11 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import { activityLog, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
+import { activityLog, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@myrmidon/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { toolConnections } from "@myrmidon/db";
 import { sha256Digest } from "../services/feedback-redaction.js";
 import {
   agentSkillSyncSchema,
@@ -64,7 +63,7 @@ import {
   type AgentAdapterType,
   // myrmidon(PERF-DIET-G): the slim list row returned by GET /companies/:id/agents
   type AgentListItem,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import {
   isForbiddenConfigEnvKey,
@@ -74,8 +73,8 @@ import {
   resolvePaperclipInstanceRootForAdapter,
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
-} from "@paperclipai/adapter-utils/server-utils";
-import { trackAgentCreated } from "@paperclipai/shared/telemetry";
+} from "@myrmidon/adapter-utils/server-utils";
+import { trackAgentCreated } from "@myrmidon/shared/telemetry";
 // myrmidon(1.6.5 BASE-SKILLS): the union helper keeps company base skills in
 // every agent's selection when the board edits that agent's own skills.
 import {
@@ -118,13 +117,13 @@ import { environmentService } from "../services/environments.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
-import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import type { AdapterExecutionTarget } from "@myrmidon/adapter-utils/execution-target";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
-} from "@paperclipai/adapter-utils";
-import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
-import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingClaim } from "@paperclipai/shared";
+} from "@myrmidon/adapter-utils";
+import { evaluateCodexCredentialReadiness } from "@myrmidon/adapter-codex-local/server";
+import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingClaim } from "@myrmidon/shared";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { isFixedClaudeOAuthBinding, secretService } from "../services/secrets.js";
@@ -176,7 +175,7 @@ import {
   isTruthyRuntimeEnvValue,
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
-import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
+import { runClaudeLogin } from "@myrmidon/adapter-claude-local/server";
 import { createInviteRateLimiter } from "../services/invite-rate-limit.js";
 import {
   SetupTokenSessionService,
@@ -211,13 +210,13 @@ import type {
   ClaudeOAuthTokenStatusResponse,
   ClaudeSetupTokenOverwrite,
   SetupTokenTransportAdvisory,
-} from "@paperclipai/shared";
-import { SETUP_TOKEN_TRANSPORT_ADVISORY_CODE } from "@paperclipai/shared";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+} from "@myrmidon/shared";
+import { SETUP_TOKEN_TRANSPORT_ADVISORY_CODE } from "@myrmidon/shared";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
-} from "@paperclipai/adapter-codex-local";
+} from "@myrmidon/adapter-codex-local";
 import {
   checkStagedCredentialReadiness,
   promoteDeviceLoginCredential,
@@ -225,11 +224,11 @@ import {
   resolveManagedCodexHomeDir,
   withAccountHomeSecretMutationLock,
   withCodexAccountHomePromotionLock,
-} from "@paperclipai/adapter-codex-local/server";
+} from "@myrmidon/adapter-codex-local/server";
 import {
   checkStagedGrokCredentialReadiness,
   promoteGrokDeviceLoginCredential,
-} from "@paperclipai/adapter-grok-local/server";
+} from "@myrmidon/adapter-grok-local/server";
 import {
   AdapterAuthSessionConflictError,
   createDeviceLoginService,
@@ -240,12 +239,12 @@ import {
   DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
   type CredentialPromotion,
 } from "../services/device-login-service.js";
-import type { AdapterAuthSessionOwnerResponse } from "@paperclipai/shared";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
-import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
-import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
-import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
+import type { AdapterAuthSessionOwnerResponse } from "@myrmidon/shared";
+import { DEFAULT_CURSOR_LOCAL_MODEL } from "@myrmidon/adapter-cursor-local";
+import { DEFAULT_GEMINI_LOCAL_MODEL } from "@myrmidon/adapter-gemini-local";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "@myrmidon/adapter-kimi-local";
+import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@myrmidon/adapter-opencode-local";
+import { requireOpenCodeModelId } from "@myrmidon/adapter-opencode-local/server";
 import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
@@ -4145,37 +4144,41 @@ function getActorIdentityPart(req: Request): string {
       return;
     }
 
+    const companyDecision = await access.decide({
+      actor: req.actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    });
+    if (!companyDecision.allowed) {
+      res.status(403).json({ error: "Company is outside this actor's authorization boundary" });
+      return;
+    }
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    const actorMemberships = Array.isArray(req.actor.memberships)
-      ? req.actor.memberships.map(({ companyId: membershipCompanyId, membershipRole, status }) => ({
-          companyId: membershipCompanyId,
-          membershipRole,
-          status,
-        }))
-      : [];
-    const actorCompanyScope = req.actor.type === "board"
-      ? req.actor.companyIds ?? []
-      : req.actor.companyId;
-    const actorPart = `${getActorIdentityPart(req)}:configs=${canReadConfigs ? "yes" : "no"}:scope=${JSON.stringify([actorCompanyScope, actorMemberships])}`;
-    const authorizedRows = await filterAgentsForActor(req, await svc.listSummaries(companyId));
-    const result = authorizedRows;
+    const actorMemberships = Array.isArray(req.actor.onBehalfOfMemberships)
+      ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
+      : null;
     // Authorize/filter before considering a conditional response: access grants
-    // can change independently of the agent and membership rows.
-    const vk = await svc.listSummariesVersionKey(
-      companyId,
-      `${actorPart}:visible=${authorizedRows.map((agent) => agent.id).join(",")}`,
-    );
+    // can change independently of the agent and membership rows, so the
+    // authorized result set travels inside the validator key.
+    const result = await filterAgentsForActor(req, await svc.listSummaries(companyId));
+    const actorShape = JSON.stringify([
+      getActorIdentityPart(req),
+      req.actor.type === "board" ? req.actor.companyIds ?? [] : req.actor.companyId,
+      actorMemberships,
+      canReadConfigs,
+      result.map((agent) => agent.id),
+    ]);
+    const vk = await svc.listSummariesVersionKey(companyId, actorShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
+    const responseRows = canReadConfigs
+      ? result
+      : result.map((agent) => redactAgentListItemForRestrictedView(agent));
     // myrmidon(PERF-DIET-G): the list is a slim projection. It carries no
     // adapterConfig (so no per-row env redaction is needed any more) and the
     // model column travels as the SQL-computed `adapterModel`; the full
     // configuration stays behind GET /agents/:id/configuration and
     // GET /companies/:id/agent-configurations.
-    if (canReadConfigs) {
-      res.json(result);
-      return;
-    }
-    res.json(result.map((agent) => redactAgentListItemForRestrictedView(agent)));
+    res.json(responseRows);
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
@@ -5274,7 +5277,7 @@ function getActorIdentityPart(req: Request): string {
 
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
-    
+
     // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict.
     // approval_required denies with 403 autonomy_approval_required until the
     // holding-action follow-up (the board caller bypasses the gate entirely).
@@ -5381,7 +5384,7 @@ function getActorIdentityPart(req: Request): string {
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
     if (req.body.mode === "external") assertInstanceAdmin(req);
-    
+
     // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict.
     // approval_required denies with 403 autonomy_approval_required until the
     // holding-action follow-up (the board caller bypasses the gate entirely).
@@ -5525,7 +5528,7 @@ function getActorIdentityPart(req: Request): string {
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
-    
+
     // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict.
     // approval_required denies with 403 autonomy_approval_required until the
     // holding-action follow-up (the board caller bypasses the gate entirely).
@@ -5796,11 +5799,22 @@ function getActorIdentityPart(req: Request): string {
     if (!existing) {
       return;
     }
-    // myrmidon(1.6.2): an agent acting on another agent is subject to the autonomy matrix
-    if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
-    }
     await assertCanPauseAgent(req, existing);
+    // myrmidon(1.6-AUTONOMY): pause is an action class of its own. An agent
+    // caller whose matrix cell says `approval_required` does not pause anyone:
+    // the action is held behind an approval card and answered 202, and only an
+    // approval replays it (myrmidon/autonomy/action-execution.ts). `forbidden`
+    // throws the 403 below; non-agent callers are not subject to the matrix.
+    const pausedHold = await dbAutonomyGate(db).holdOrAssert(req, "pause_wake_agents", {
+      route: `/agents/${id}/pause`,
+      method: "POST",
+      params: { agentId: id },
+      body: req.body,
+    });
+    if (pausedHold.held) {
+      res.status(202).json({ held: true, approvalId: pausedHold.approvalId });
+      return;
+    }
     const agent = await svc.pause(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -5843,15 +5857,23 @@ function getActorIdentityPart(req: Request): string {
     if (!existing) {
       return;
     }
-    // myrmidon(1.6.2): an agent acting on another agent is subject to the autonomy matrix
-    if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
-    }
     await assertCanResumeAgent(req, existing);
     if (existing.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
         error: existing.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before resuming it",
       });
+      return;
+    }
+    // myrmidon(1.6-AUTONOMY): same hold as pause — an `approval_required` cell
+    // holds the resume behind an approval card instead of waking the agent.
+    const resumedHold = await dbAutonomyGate(db).holdOrAssert(req, "pause_wake_agents", {
+      route: `/agents/${id}/resume`,
+      method: "POST",
+      params: { agentId: id },
+      body: req.body,
+    });
+    if (resumedHold.held) {
+      res.status(202).json({ held: true, approvalId: resumedHold.approvalId });
       return;
     }
     const agent = await svc.resume(id);
@@ -6173,6 +6195,48 @@ function getActorIdentityPart(req: Request): string {
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
       await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
     }
+    if (req.body.externalSession) {
+      assertBoard(req);
+      if (!req.body.issueId || req.body.failedRunId || agent.runtimeConfig?.aiConnection == null || !req.actor.userId) {
+        throw unprocessable("External session requires a task, a user actor and a managed AI agent");
+      }
+      const task = await getAccessibleResource(req, res, issueService(db).getById(req.body.issueId), "Task not found");
+      if (!task || task.companyId !== agent.companyId) return;
+      if (!(await assertAgentReadAllowed(req, res, agent))) return;
+      const commentAccess = await access.decide({
+        actor: req.actor,
+        action: "issue:comment",
+        resource: { type: "issue", companyId: agent.companyId, issueId: task.id, projectId: task.projectId, parentIssueId: task.parentId, assigneeAgentId: task.assigneeAgentId, assigneeUserId: task.assigneeUserId, status: task.status },
+      });
+      if (!commentAccess.allowed) throw forbidden(commentAccess.explanation, authorizationDeniedDetails(commentAccess));
+      if (task.assigneeAgentId !== agent.id) throw conflict("The task must be assigned to this agent");
+      if (task.status !== "todo" && task.status !== "in_progress") throw conflict("The task must be open to start an external session");
+      const configured = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection);
+      if (!configured.success || configured.data.mode === "responsible_user") {
+        throw unprocessable("Agent must have an explicit managed AI connection for external session runs");
+      }
+      const { connectionId, grantId, model } = req.body.externalSession;
+      const selected = await aiConnectionService(db).select({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        userId: req.actor.userId,
+        adapterType: agent.adapterType,
+        model,
+        runnerProvider: parseObject(agent.adapterConfig).provider,
+        acpxAgent: parseObject(agent.adapterConfig).acpxAgent,
+        binding: configured.data,
+        allowUninstalledPersonal: false,
+        allowUninstalledShared: false,
+        allowLegacyValidation: false,
+      });
+      if (selected.connection.id !== connectionId || selected.grant.id !== grantId || selected.attribution.mode !== "shared") {
+        throw forbidden("External sessions may only use the agent's configured shared AI connection");
+      }
+      const selectedMetadata = aiConnectionMetadataSchema.safeParse(selected.connection.config.ai);
+      if (!selectedMetadata.success || !isAiConnectionCompatible(selectedMetadata.data, agent.adapterType, model, parseObject(agent.adapterConfig).provider, parseObject(agent.adapterConfig).acpxAgent)) {
+        throw unprocessable("Selected model is incompatible with the agent adapter");
+      }
+    }
     if (req.body.debug?.providerTrace === "raw") {
       assertInstanceAdmin(req);
     }
@@ -6180,6 +6244,21 @@ function getActorIdentityPart(req: Request): string {
       res.status(409).json({
         error: agent.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before starting runs",
       });
+      return;
+    }
+
+    // myrmidon(1.6-AUTONOMY): waking an agent is the same action class as
+    // pausing it. An agent caller whose cell says `approval_required` gets 202
+    // with an approval card instead of a run; the wake is replayed only after
+    // the approval lands. Board/admin callers are not subject to the matrix.
+    const wakeHold = await dbAutonomyGate(db).holdOrAssert(req, "pause_wake_agents", {
+      route: `/agents/${id}/wakeup`,
+      method: "POST",
+      params: { agentId: id },
+      body: req.body,
+    });
+    if (wakeHold.held) {
+      res.status(202).json({ held: true, approvalId: wakeHold.approvalId });
       return;
     }
 
@@ -6335,6 +6414,7 @@ function getActorIdentityPart(req: Request): string {
       idempotencyKey: req.body.idempotencyKey ?? null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+      externalSession: req.body.externalSession,
       contextSnapshot: {
         triggeredBy: req.actor.type,
         originIdentityContextId: req.actor.identityContextId ?? null,
@@ -7054,18 +7134,61 @@ function getActorIdentityPart(req: Request): string {
       getActorIdentityPart(req),
       req.actor.type === "board" ? req.actor.companyIds ?? [] : req.actor.companyId,
       Array.isArray(req.actor.onBehalfOfMemberships)
-        ? req.actor.onBehalfOfMemberships.map((membership) => ({
-            companyId: membership.companyId,
-            status: membership.status,
-            membershipRole: membership.membershipRole,
-          }))
+        ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
         : null,
     ]);
+    // Compute the validator before fetching and redacting the response body.
     const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
-    res.json(await runRedactions.redactForRuns(companyId, runs));
+    const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
+    res.json(redactedRuns);
+  });
+
+  router.get("/companies/:companyId/external-sessions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
+    const issueId = typeof req.query.issueId === "string" ? req.query.issueId : undefined;
+    const limitParam = Number(req.query.limit ?? 100);
+    const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(200, Math.trunc(limitParam))) : 100;
+    const rows = await db.select({
+      id: heartbeatRuns.id,
+      agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
+      startedAt: heartbeatRuns.startedAt,
+      finishedAt: heartbeatRuns.finishedAt,
+      createdAt: heartbeatRuns.createdAt,
+      logBytes: heartbeatRuns.logBytes,
+      exitCode: heartbeatRuns.exitCode,
+      errorCode: heartbeatRuns.errorCode,
+      externalSession: sql<Record<string, unknown> | null>`coalesce(${heartbeatRuns.contextSnapshot}->'externalSession', '{}'::jsonb)`.as("externalSession"),
+      issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+    }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      sql`${heartbeatRuns.contextSnapshot} ? 'externalSession'`,
+      ...(agentId ? [eq(heartbeatRuns.agentId, agentId)] : []),
+      ...(issueId ? [sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`] : []),
+    )).orderBy(desc(heartbeatRuns.createdAt)).limit(limit);
+    res.set("Cache-Control", "no-cache, no-store");
+    const decoratedRows = await Promise.all(rows.map(async (row) => {
+      const decorated = await heartbeat.decorateActiveRunStatus(row);
+      const { externalSession: _externalSession, ...publicRow } = row;
+      const safeExternalSession = await runRedactions.redactForRun(companyId, row.id, row.externalSession);
+      return {
+        ...publicRow,
+        status: decorated.status,
+        logUrl: `/api/heartbeat-runs/${row.id}/log`,
+        cancelUrl: ["queued", "running"].includes(decorated.status) ? `/api/heartbeat-runs/${row.id}/cancel` : null,
+        _safeExternalSession: safeExternalSession,
+      };
+    }));
+    const redactedRuns = await runRedactions.redactForRuns(companyId, decoratedRows);
+    res.json(redactedRuns.map(({ _safeExternalSession, ...run }) => ({
+      ...run,
+      externalSession: _safeExternalSession,
+    })));
   });
 
   router.get("/companies/:companyId/provider-traces", async (req, res) => {
@@ -7233,6 +7356,7 @@ function getActorIdentityPart(req: Request): string {
     // Recovery reads this to stand down instead of classifying the cancelled
     // run as agent stranding and re-waking the agent the operator just stopped.
     const run = await heartbeat.cancelRun(runId, "Cancelled by a board operator", {
+      cancellationSource: { code: "board_operator", endpoint: "POST /api/heartbeat-runs/:runId/cancel", actor: req.actor.userId ?? "board" },
       resultJson: {
         cancelledByActorType: "user",
         cancelledByUserId: req.actor.userId ?? null,

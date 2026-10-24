@@ -2,11 +2,11 @@ import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
-import { open as openFile } from "node:fs/promises";
+import { open as openFile, statfs, type FileHandle } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type BackupRetentionPolicy = {
   dailyDays: number;
@@ -16,7 +16,7 @@ export type BackupRetentionPolicy = {
   // when true, tiered pruning is skipped and all previous <prefix>-* files are
   // deleted after the new dump passes verification. Kept as a local copy of the
   // shared type (packages/shared/src/types/instance.ts): the db package does not
-  // depend on @paperclipai/shared, so the flag is mirrored here instead.
+  // depend on @myrmidon/shared, so the flag is mirrored here instead.
   keepLastOnly?: boolean;
 };
 
@@ -91,6 +91,7 @@ const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46
 // BACKUP_BREAKPOINT_DETECT_BYTES — the check streams the file and holds only
 // this many bytes of its tail.
 const BACKUP_VERIFY_TAIL_BYTES = 64 * 1024;
+const BACKUP_MIN_FREE_BYTES = 6 * 1024 * 1024 * 1024;
 
 // myrmidon(BACKUP-KEEP-LAST / OPE-4832): each dump engine closes its output
 // with its own completion marker. The JavaScript logical dump ends its
@@ -233,8 +234,7 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
 
 /**
  * myrmidon(BACKUP-KEEP-LAST): first pass of every pruning mode — remove
- * orphaned, never-finished plain `.sql` leftovers from interrupted runs (the
- * file is written plain, then gzipped; a crash leaves the `.sql` behind).
+ * orphaned, never-finished plain `.sql` leftovers from legacy interrupted runs.
  * Only files with an mtime strictly older than the cutoff count — a live
  * run's own in-progress `.sql` stays untouched, and these orphans count into
  * prunedCount in BOTH retention modes (tiered and keep-last).
@@ -712,17 +712,30 @@ async function* readRestoreStatements(backupFile: string): AsyncGenerator<string
   }
 }
 
-export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
-  const filePromise = openFile(filePath, "w");
+export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES, gzip = false) {
+  const filePromise = gzip ? null : openFile(filePath, "w");
   const flushThreshold = Math.max(1, Math.trunc(maxBufferedBytes));
   let bufferedLines: string[] = [];
   let bufferedBytes = 0;
   let firstChunk = true;
   let closed = false;
   let pendingWrite = Promise.resolve();
+  let gzipStream: ReturnType<typeof createGzip> | null = null;
+  let gzipDone: Promise<void> | null = null;
 
   const writeChunk = async (chunk: string | Buffer): Promise<void> => {
-    const file = await filePromise;
+    if (gzipStream) {
+      const stream = gzipStream;
+      if (!stream.write(chunk)) await new Promise<void>((resolve) => stream.once("drain", resolve));
+      return;
+    }
+    if (gzip) {
+      gzipStream = createGzip();
+      gzipDone = pipeline(gzipStream, createWriteStream(filePath));
+      if (!gzipStream.write(chunk)) await new Promise<void>((resolve) => gzipStream?.once("drain", resolve));
+      return;
+    }
+    const file = await filePromise!;
     if (typeof chunk === "string") {
       await file.write(chunk, null, "utf8");
     } else {
@@ -773,7 +786,19 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
       closed = true;
       flushBufferedLines();
       await pendingWrite;
-      const file = await filePromise;
+      if (gzipStream) {
+        gzipStream.end();
+        await gzipDone!;
+        return;
+      }
+      if (gzip) {
+        gzipStream = createGzip();
+        gzipDone = pipeline(gzipStream, createWriteStream(filePath));
+        gzipStream.end();
+        await gzipDone;
+        return;
+      }
+      const file = await filePromise!;
       await file.close();
     },
     async abort() {
@@ -782,7 +807,13 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
       bufferedLines = [];
       bufferedBytes = 0;
       await pendingWrite.catch(() => {});
-      await filePromise.then((file) => file.close()).catch(() => {});
+      if (gzipStream) {
+        gzipStream.destroy();
+        await gzipDone?.catch(() => {});
+        if (existsSync(filePath)) try { unlinkSync(filePath); } catch { /* best effort */ }
+        return;
+      }
+      if (filePromise) await filePromise.then(async (file: FileHandle) => { await file.close(); }).catch(() => {});
       if (existsSync(filePath)) {
         try {
           unlinkSync(filePath);
@@ -815,18 +846,28 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await sql.end();
   };
   mkdirSync(opts.backupDir, { recursive: true });
-  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
-  const backupFile = `${sqlFile}.gz`;
+  const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql.gz`);
   // myrmidon(SHARED-PG-BACKUP): non-fatal diagnostics collected during the
   // run (client major-version fallback); surfaced on the result so the
   // scheduler log and the CLI show why the engine was downgraded.
   const backupWarnings: string[] = [];
-  const warningsOnResult = (): Pick<RunDatabaseBackupResult, "warnings"> =>
+  const warningsOnResult: () => Pick<RunDatabaseBackupResult, "warnings"> = () =>
     backupWarnings.length > 0 ? { warnings: [...backupWarnings] } : {};
-  // myrmidon(OPE-4832): mutable because an engine-auto fallback onto the
-  // JavaScript path reopens a fresh writer after the pg_dump path aborted the
-  // original one (abort closes the handle and deletes the .sql).
-  let writer = createBufferedTextFileWriter(sqlFile);
+  // Check disk space before opening the output writer. The JS fallback is
+  // compressed as it is produced, so it never materializes a plain .sql file.
+  let fsStats: Awaited<ReturnType<typeof statfs>>;
+  try {
+    fsStats = await statfs(opts.backupDir);
+  } catch (error) {
+    await closeSql();
+    throw error;
+  }
+  const freeBytes = fsStats.bavail * fsStats.bsize;
+  if (freeBytes < BACKUP_MIN_FREE_BYTES) {
+    await closeSql();
+    throw new Error(`Skipping database backup: ${freeBytes} bytes free; ${BACKUP_MIN_FREE_BYTES} required`);
+  }
+  let writer = createBufferedTextFileWriter(backupFile, DEFAULT_BACKUP_WRITE_BUFFER_BYTES, true);
 
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
@@ -849,9 +890,8 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           backupFile,
           connectTimeout,
         });
-        await writer.abort();
-        // myrmidon(BACKUP-KEEP-LAST): verify before any deletion — a corrupt
-        // new dump is dropped and older backups are kept, the run fails loudly.
+        // pg_dump already wrote the compressed output directly.
+        // A corrupt new dump is dropped and older backups are kept.
         if (keepLastOnly) {
           const verification = await verifyBackupFile(backupFile);
           if (!verification.ok) {
@@ -902,14 +942,14 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         }
         effectiveBackupEngine = "javascript";
         // myrmidon(OPE-4832): the aborted-on-success pg_dump path may have
-        // already closed and deleted the plain .sql writer above; when the
+        // already closed and deleted the compressed writer above; when the
         // child itself failed, the original writer is still open. `abort()`
         // is idempotent, so run it first and then reopen a fresh writer on
         // the same path — the JavaScript path below emits through `writer`
         // and must never see a closed handle ("Cannot write to closed
         // backup file").
         await writer.abort();
-        writer = createBufferedTextFileWriter(sqlFile);
+        writer = createBufferedTextFileWriter(backupFile, DEFAULT_BACKUP_WRITE_BUFFER_BYTES, true);
         sql = postgres(opts.connectionString, backupClientOptions(connectTimeout));
         sqlClosed = false;
       }
@@ -1359,11 +1399,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     await writer.close();
 
-    // Compress the SQL file with gzip
-    const sqlReadStream = createReadStream(sqlFile);
-    const gzWriteStream = createWriteStream(backupFile);
-    await pipeline(sqlReadStream, createGzip(), gzWriteStream);
-    unlinkSync(sqlFile);
+    // Writer streams SQL through gzip directly to the final backup file.
 
     // myrmidon(BACKUP-KEEP-LAST): verify before any deletion — a corrupt
     // new dump is dropped and older backups are kept, the run fails loudly.
@@ -1395,9 +1431,6 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await writer.abort();
     if (existsSync(backupFile)) {
       try { unlinkSync(backupFile); } catch { /* ignore */ }
-    }
-    if (existsSync(sqlFile)) {
-      try { unlinkSync(sqlFile); } catch { /* ignore */ }
     }
     throw error;
   } finally {

@@ -5,7 +5,7 @@
 // update is older than the retention window are dropped. Maintenance pattern:
 // the whole sweep lives here, server/src/index.ts gets one marked call.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../../middleware/logger.js";
 import { createDbAlertDedupStore } from "./store.js";
 

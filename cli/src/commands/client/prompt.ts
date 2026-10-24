@@ -1,6 +1,6 @@
 import { Command } from "commander";
-import type { Agent, Issue, IssueComment } from "@paperclipai/shared";
-import { addIssueCommentSchema, createIssueSchema } from "@paperclipai/shared";
+import type { Agent, Issue, IssueComment } from "@myrmidon/shared";
+import { addIssueCommentSchema, createIssueSchema } from "@myrmidon/shared";
 import {
   addCommonClientOptions,
   apiPath,

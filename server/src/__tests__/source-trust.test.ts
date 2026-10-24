@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { agents, companies, createDb, heartbeatRuns, issues } from "@myrmidon/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@myrmidon/shared";
 import {
   LOW_TRUST_QUARANTINED_BODY,
   buildPromotedSourceTrust,
@@ -86,6 +86,7 @@ describe("source trust quarantine helpers", () => {
       },
       promotedByActorType: "user",
       promotedByActorId: "board-user",
+      promotionOwnerUserId: null,
       promotedAt: "2026-06-03T12:00:00.000Z",
     });
     expect(isLowTrustQuarantined(promoted)).toBe(false);
@@ -230,6 +231,7 @@ describeEmbeddedPostgres("resolveActorSourceTrustForIssue", () => {
       sourceIssueId: issue!.id,
       sourceRunId: run!.id,
       sourceAgentId: agent.id,
+      promotionOwnerUserId: null,
     });
   });
 

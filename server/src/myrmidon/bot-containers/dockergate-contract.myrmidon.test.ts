@@ -86,7 +86,7 @@ function expand(expression: string): string[] {
   const choices: string[][] = pieces.map((piece) => {
     if (!piece.startsWith("${")) return [piece];
     const expr = piece.slice(2, -1).trim();
-    if (/^nameSegment\((name|containerName|replacement)\)$/.test(expr)) return SUFFIXES.map((s) => `myrmidon-bot-${KEY}${s}`);
+    if (/^nameSegment\((name|containerName|replacement|containerNameFor\(spec\.botKey\))\)$/.test(expr)) return SUFFIXES.map((s) => `myrmidon-bot-${KEY}${s}`);
     if (/^nameSegment\(image\)$/.test(expr)) return [IMAGE];
     if (expr === "encodeURIComponent(name)") return SUFFIXES.map((s) => `myrmidon-bot-${KEY}${s}`);
     if (expr === "encodeURIComponent(mountPath)") return table.routes.flatMap((r) => r.mounts ?? []);
@@ -181,7 +181,7 @@ describe("board driver <-> dockergate route table", () => {
     // A1 image labels, A2 inspect, A3 marker, A13 report, A4 create, A5 upload, A6 start,
     // A7 wait, A8 logs, A9 delete, A10 stop, A11 restart, A12 rename, A16 skills read.
     expect([...used].sort()).toEqual(
-      ["A1", "A10", "A11", "A12", "A13", "A16", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9"].sort(),
+      ["A1", "A10", "A11", "A12", "A13", "A16", "A17", "A18", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9"].sort(),
     );
   });
 
