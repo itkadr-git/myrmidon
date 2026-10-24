@@ -177,7 +177,8 @@ describe("LitellmSyncService", () => {
 
     await service.handleProviderCredentialRotation(COMPANY_ID, "prov-123");
 
-    expect(port.unregisterModel).toHaveBeenCalledTimes(2);
+    // Updating the live configuration must not create an unregister gap.
+    expect(port.unregisterModel).not.toHaveBeenCalled();
     expect(port.registerModel).toHaveBeenCalledTimes(2);
     expect(port.registerModel).toHaveBeenCalledWith({
       litellmModelName: "openai/gpt-4o",
