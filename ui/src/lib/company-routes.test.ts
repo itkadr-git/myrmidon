@@ -18,7 +18,7 @@ describe("company routes", () => {
     );
     const routeRoots = roots(routeBlock!);
     const boardRouteRoots = new Set([...routeRoots].filter((root) => !["runs", "budgets"].includes(root)));
-    for (const root of ["onboarding", "plugins", "tests", "status-cards", "review-queue", "learnings", "dev", "instance", "chat-identity", "ux-lab"]) {
+    for (const root of ["onboarding", "plugins", "tests", "status-cards", "review-queue", "learnings", "dev", "instance", "chat-identity", "ux-lab", "system"]) {
       boardRouteRoots.delete(root);
     }
     const source = readFileSync(fileURLToPath(new URL("./company-routes.ts", import.meta.url)), "utf8");
