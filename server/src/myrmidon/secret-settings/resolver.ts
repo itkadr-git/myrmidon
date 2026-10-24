@@ -151,9 +151,12 @@ export function createInstanceSecretSettingResolver(deps: {
     };
   }
 
-  async function list(): Promise<InstanceSecretSettingStatus[]> {
+  async function list(dynamicNames: readonly string[] = []): Promise<InstanceSecretSettingStatus[]> {
     const rows: InstanceSecretSettingStatus[] = [];
-    for (const descriptor of registry.list()) rows.push(await status(descriptor.name));
+    const names = new Set([...registry.list().map((descriptor) => descriptor.name), ...dynamicNames]);
+    for (const name of [...names].sort((a, b) => a.localeCompare(b))) {
+      if (registry.get(name)) rows.push(await status(name));
+    }
     return rows;
   }
 

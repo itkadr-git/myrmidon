@@ -5,7 +5,7 @@
 
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
-import { companySecretBindings } from "@myrmidon/db";
+import { companySecretBindings, toolApplications, toolConnections } from "@myrmidon/db";
 import { secretService } from "../../services/secrets.js";
 import { registerSecretValues } from "../secret-masking.js";
 import {
@@ -15,6 +15,7 @@ import {
 import {
   defaultInstanceSecretSettingRegistry,
   type InstanceSecretSettingRegistry,
+  toolOauthProviderSecretSettingName,
 } from "./registry.js";
 
 export const INSTANCE_SECRET_SETTING_TARGET_TYPE = "system" as const;
@@ -95,10 +96,40 @@ export function createInstanceSecretSettingService(
   registry: InstanceSecretSettingRegistry = defaultInstanceSecretSettingRegistry,
   env?: NodeJS.ProcessEnv,
 ) {
-  return createInstanceSecretSettingResolver({
+  const resolver = createInstanceSecretSettingResolver({
     registry,
     env,
     store: createDbInstanceSecretSettingStore(db),
     registerForRedaction: (value) => registerSecretValues({ v: value }, ["v"]),
   });
+  return {
+    ...resolver,
+    async list() {
+      const connections = await db
+        .select({
+          config: toolConnections.config,
+          name: toolConnections.name,
+          applicationName: toolApplications.name,
+          applicationKey: toolApplications.applicationKey,
+        })
+        .from(toolConnections)
+        .innerJoin(toolApplications, eq(toolApplications.id, toolConnections.applicationId))
+        .where(and(eq(toolConnections.authKind, "oauth"), eq(toolConnections.connectionPurpose, "tool")));
+      const names = new Set<string>();
+      for (const connection of connections) {
+        const config = connection.config as Record<string, unknown>;
+        const oauth = config.oauth && typeof config.oauth === "object" && !Array.isArray(config.oauth)
+          ? config.oauth as Record<string, unknown>
+          : {};
+        const provider = typeof oauth.provider === "string" && oauth.provider.trim()
+          ? oauth.provider.trim()
+          : typeof config.sourceTemplateKey === "string" && config.sourceTemplateKey.trim()
+            ? config.sourceTemplateKey.trim()
+            : connection.applicationKey || connection.applicationName || connection.name;
+        const name = toolOauthProviderSecretSettingName(provider);
+        if (name) names.add(name);
+      }
+      return resolver.list([...names]);
+    },
+  };
 }
