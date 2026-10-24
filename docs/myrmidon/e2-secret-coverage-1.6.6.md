@@ -55,3 +55,24 @@ Disposition of the exact E1 names of this part (the source lines are those liste
 
 The E1 `secret` classification of the bootstrap rows stays as the registry has it (the matrix does not alter E1); their accepted disposition is "bootstrap, no ref", with the threat model above.
 
+
+## E2.8 sandbox plugins, runner and CLI credentials (OPE-9041)
+
+Contract reused from E2.1 (no second resolver, no new table): registry row in `server/src/myrmidon/secret-settings/sandbox-providers.ts` -> resolver (scope -> emergency env -> ref) -> `company_secret_bindings` via the secrets service. Instance admins set the ref through the E2.1 API / picker; the CLI gained a read-only `secrets settings` (names, ref ids, status; no value field exists in the API and the renderer copies an explicit field list).
+
+Delivery to the plugin worker: `pluginLoader` resolves the value on the host before spawning a trusted first-party provider worker (same install-origin and driver-key gate as before, `sandboxProviderCredentialKeys`) and passes it in the worker's process environment under the variable the plugin already documents (`buildPluginWorkerEnv`, `instanceSecretEnv`). No file, no config echo; the resolver registers the value for log masking. A value changed or revoked in the UI applies when the worker next starts (restart/enable the plugin). A process env value for the same variable is the emergency override and wins.
+
+Tests: `server/src/myrmidon/secret-settings/sandbox-providers.myrmidon.test.ts` (registry rows, missing ref, resolve + masking registration, env priority, change/revoke, denied foreign consumer, inactive secret with code-only warning, untrusted plugin gets nothing, foreign key never injected); `cli/src/__tests__/secrets.test.ts` (settings command, value never printed). Existing `plugin-database.test.ts` keeps the env-passthrough cases unchanged.
+
+| Name | Disposition | Evidence |
+| --- | --- | --- |
+| `DAYTONA_API_KEY` | real secret, E2.8 registry row `sandbox.daytona.api_key`, consumer `plugin-worker:daytona`, override env `DAYTONA_API_KEY` | `daytona/src/plugin.ts:304,964,2052` fallback read; `plugin-loader.ts` passthrough table; tests above. Per-environment `apiKey` stays the plugin-level company `secret-ref` (`manifest.ts:90`), not duplicated. |
+| `E2B_API_KEY` | same, `sandbox.e2b.api_key` | `e2b/src/plugin.ts:50`; `e2b/src/plugin.test.ts:166,221` |
+| `EXE_API_KEY` | same, `sandbox.exe-dev.api_key` | `exe-dev/src/plugin.ts:272`; `exe-dev/src/plugin.test.ts:67,122` |
+| `NOVITA_API_KEY` | same, `sandbox.novita.api_key` | `novita/src/plugin.ts:58,74`; `plugin-loader.ts` passthrough |
+| `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | stale as env: not read, not registered | `modal/src/plugin.ts:95-103` reads only `config.tokenId/tokenSecret` (company secrets); `modal/src/plugin.test.ts:182` asserts host `MODAL_TOKEN_*` are ignored; not in the worker passthrough table. |
+| `MYRMIDON_ACPX_CODEX_AUTH_JSON_SECRET` | per-run, not an instance setting; no registry row | Read only as the `PAPERCLIP_` alias in `acpx/codex-credentials.ts:256` from the sanitized per-run environment; `durable-prp-control-plane.ts:3335-3342` forwards runner credentials only when the caller supplies an explicit per-run environment, never from the server process. The source is the agent/company secret binding of that run (E2 agent-env group), which the runner cannot and must not resolve itself. |
+| `MYRMIDON_NATIVE_MCP_TOKEN` | per-run minted token, not stored | `heartbeat.ts:26037` mints it per run; `drivers/native-mcp.ts:12` reads it; a stored ref would make a short-lived bearer long-lived. |
+| `MYRMIDON_RUNTIME_TOOLS_TOKEN` | per-run minted bearer, not stored | `adapter-utils/src/server-utils.ts:40` mints it for the run; `cli/src/commands/client/connections.ts:18` and `mcp-server/src/tools.ts:63` consume it in that run. |
+| `GH_TOKEN`, `GITHUB_TOKEN` | client-side ambient credential of the operator running `install`; no server ref | `cli/src/commands/install.ts:149` runs on the operator machine before any server exists; it is already passed to curl through a 0600 temp config, never in args (existing behavior, unchanged). Runner side: `runner/src/github-credential-environment.ts` per-run. Bootstrap by nature, env-only. |
+| `SLACK_BOT_TOKEN` | not a direct env consumer; already ref-backed per company | `packages/shared/src/constants.ts:782-799` is the class-3 static-lease allowlist (`env.SLACK_BOT_TOKEN` for agent/routine, `credentials.bot_token` for tool_connection); `server/src/__tests__/agents-service-secret-bindings.test.ts:144,170` exercises the secret binding. No instance-level read exists, so no registry row. |
