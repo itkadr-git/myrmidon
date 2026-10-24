@@ -12,6 +12,7 @@
 import { createInstanceTokenReader } from "./instance-token-reader.js"; // myrmidon(SETTINGS-UI E2.3)
 import {
   BOT_EGRESS_POLICY_CONSUMER,
+  BOT_EGRESS_REFUSALS_CONSUMER,
   BOT_EGRESS_TOKEN_SETTING,
 } from "../secret-settings/bot-fleet-settings.js"; // myrmidon(SETTINGS-UI E2.3)
 import { and, eq } from "drizzle-orm";
