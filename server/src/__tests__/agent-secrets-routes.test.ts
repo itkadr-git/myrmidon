@@ -24,6 +24,7 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { secretRoutes } from "../routes/secrets.js";
 import { secretService } from "../services/secrets.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { heartbeatService } from "../services/heartbeat.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -247,6 +248,24 @@ describeEmbeddedPostgres("agent secret routes", () => {
       paperclipSecretRedactions: [expect.objectContaining({ fingerprintSha256: expect.any(String) })],
     });
     expect((run.contextSnapshot as { paperclipSecretRedactions: unknown[] }).paperclipSecretRedactions).toHaveLength(1);
+  });
+
+  it("changes the heartbeat list ETag when redaction registration updates the run", async () => {
+    const fixture = await seedAgentRun();
+    const service = heartbeatService(db);
+    const [runBeforeRegistration] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.heartbeatRunId));
+    const before = await service.listVersionKey(fixture.companyId, fixture.agentId, 20, false, "actor");
+
+    await createRunSecretRedactionRegistry(db).register(
+      fixture.companyId,
+      fixture.heartbeatRunId,
+      "etag-registration-secret",
+    );
+
+    const after = await service.listVersionKey(fixture.companyId, fixture.agentId, 20, false, "actor");
+    const [runAfterRegistration] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.heartbeatRunId));
+    expect(after).not.toBe(before);
+    expect(runAfterRegistration.updatedAt.getTime()).toBeGreaterThan(runBeforeRegistration.updatedAt.getTime());
   });
 
   it("redacts batched runs from projected registries and enforces company scope", async () => {
