@@ -446,7 +446,7 @@ curl -s --cacert ca.crt --cert client.crt --key client.key \
    docker compose -f docker-compose.yml ps   # hs-pg healthy, hindsight-work running
    ```
 2. **Направьте fleetd на него** объектом `memory` в `fleetd.json`: `{"enabled": true, "url": "http://127.0.0.1:8890", "bank": "<банк площадки>"}`. После этого `POST /v1/memory/recall`, `/v1/memory/retain` и `/v1/memory/export` работают для ботов, зарегистрированных на площадке.
-3. **Включите синхронизацию на доске** (она работает внутри lane здоровья площадок, `MYRMIDON_SITE_HEALTH=1`): `MYRMIDON_FLEET_MEMORY_SYNC=1`, `MYRMIDON_FLEET_MEMORY_HINDSIGHT_URL=<hindsight доски>` и, если нужен, `MYRMIDON_FLEET_MEMORY_HINDSIGHT_TOKEN`. Банк реплики должен существовать (`fleet-work-replica` или банк из `MYRMIDON_FLEET_MEMORY_REPLICA_BANK`).
+3. **Включите синхронизацию на доске, только после импорта П5 из шага 5** (она работает внутри lane здоровья площадок, `MYRMIDON_SITE_HEALTH=1`): `MYRMIDON_FLEET_MEMORY_SYNC=1`, `MYRMIDON_FLEET_MEMORY_HINDSIGHT_URL=<hindsight доски>` и, если нужен, `MYRMIDON_FLEET_MEMORY_HINDSIGHT_TOKEN`. Банк реплики должен существовать (`fleet-work-replica` или банк из `MYRMIDON_FLEET_MEMORY_REPLICA_BANK`).
 4. **Что работает**: lane `myrmidon-memory-sync` раз в ночь (после часа `MYRMIDON_FLEET_MEMORY_SYNC_HOUR_UTC`, по умолчанию 20) копирует банк площадки в реплику слиянием, которое пропускает документы, уже лежащие в реплике; неудачная попытка повторяется каждые 15 минут до первой удачной. Живой переезд бота запускает ещё одну синхронизацию сразу после остановки исходного контейнера. Каждая попытка — строка `myrmidon_fleet_memory_syncs`:
    ```sql
    SELECT site_name, kind, status, documents_imported, documents_skipped, error, started_at
