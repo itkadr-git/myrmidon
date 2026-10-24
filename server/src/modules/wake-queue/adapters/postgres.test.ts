@@ -776,16 +776,29 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const dbB = createDb(tempDb!.connectionString);
     const adapterA = createPostgresWakeQueueAdapter(dbA, stubDeps);
     const adapterB = createPostgresWakeQueueAdapter(dbB, stubDeps);
-    const releaseA = adapterA.withIssueExecutionLock({ companyId, runId: runA, now: new Date() }, async (_locked, _ports) => {
-      await new Promise((resolve) => setTimeout(resolve, 25));
+    // The drain callback of each run must execute exactly once, and the two
+    // drains must never overlap: both runs reference both issues, so the row
+    // locks serialize them across the two connections.
+    const drainCalls: string[] = [];
+    let activeDrains = 0;
+    let maxActiveDrains = 0;
+    const drain = (runId: string) => async (locked: { run: { id: string } }, _ports: unknown) => {
+      drainCalls.push(runId);
+      expect(locked.run.id).toBe(runId);
+      activeDrains += 1;
+      maxActiveDrains = Math.max(maxActiveDrains, activeDrains);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      activeDrains -= 1;
       return { outcome: { kind: "released" as const }, postCommitEffects: [] };
-    });
-    const releaseB = adapterB.withIssueExecutionLock({ companyId, runId: runB, now: new Date() }, async (_locked, _ports) => {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
-    });
+    };
+    const releaseA = adapterA.withIssueExecutionLock({ companyId, runId: runA, now: new Date() }, drain(runA));
+    const releaseB = adapterB.withIssueExecutionLock({ companyId, runId: runB, now: new Date() }, drain(runB));
 
-    await expect(Promise.all([releaseA, releaseB])).resolves.toHaveLength(2);
+    const results = await Promise.all([releaseA, releaseB]);
+    expect(results.map((result) => result.run.id)).toEqual([runA, runB]);
+    expect(results.map((result) => result.outcome.kind)).toEqual(["released", "released"]);
+    expect([...drainCalls].sort()).toEqual([runA, runB].sort());
+    expect(maxActiveDrains).toBe(1);
 
     const rows = await db.select().from(issues).where(eq(issues.companyId, companyId));
     for (const row of rows) {

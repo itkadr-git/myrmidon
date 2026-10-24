@@ -1075,20 +1075,37 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
       const transactionStartedAt = performance.now();
       let lockWaitMs = 0;
       let drainMs = 0;
-      const result = await db.transaction(async (rawTx: unknown) => {
+      // Everything that does not depend on the issue row locks is read BEFORE
+      // the transaction, so the FOR UPDATE below is held only for the drain.
+      const run = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!run) {
+        throw new Error(`wake-queue: run ${input.runId} was not found while releasing issue execution`);
+      }
+      const runSnapshot = toRunSnapshot(run);
+      const contextIssueId = run.nativeIssueId ??
+        readNonEmptyString(parseObject(run.contextSnapshot).issueId) ??
+        readNonEmptyString(parseObject(run.contextSnapshot).taskId);
+      const enableAgentChat = Boolean((await instanceSettingsService(db).getExperimental()).enableAgentChat);
+      const interruptQueueId = run.runtimeMode !== "native"
+        ? readNonEmptyString(run.resultJson?.queuedCommentInterruptQueueId)
+        : null;
+      // Pre-read of the interrupt queue for the context issue; reused under the
+      // lock only when the primary issue turns out to be that same issue.
+      const [preInterruptedQueue] = interruptQueueId && contextIssueId
+        ? await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.id, interruptQueueId),
+            eq(agentWakeupRequests.companyId, run.companyId),
+            eq(agentWakeupRequests.agentId, run.agentId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            sql`${agentWakeupRequests.payload}->>'issueId' = ${contextIssueId}`,
+          )).limit(1)
+        : [];
+      const result: ReleaseTransactionResult & { run: RunSnapshot } = await db.transaction(async (rawTx: unknown): Promise<ReleaseTransactionResult & { run: RunSnapshot }> => {
         const tx = rawTx as unknown as Db;
-        const run = await tx
-          .select()
-          .from(heartbeatRuns)
-          .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
-          .then((rows) => rows[0] ?? null);
-        if (!run) {
-          throw new Error(`wake-queue: run ${input.runId} was not found while releasing issue execution`);
-        }
-        const runSnapshot = toRunSnapshot(run);
-        const contextIssueId = run.nativeIssueId ??
-          readNonEmptyString(parseObject(run.contextSnapshot).issueId) ??
-          readNonEmptyString(parseObject(run.contextSnapshot).taskId);
 
         // Lock the context issue (if any) and every issue that still references this
         // run, in id order, so two concurrent finalizations can never deadlock on
@@ -1154,10 +1171,9 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
 
         // A queue interrupt authorizes only its original pending queue. Replays
         // after dispatch or deleting the final message cannot launch other work.
-        const interruptQueueId = run.runtimeMode !== "native"
-          ? readNonEmptyString(run.resultJson?.queuedCommentInterruptQueueId)
-          : null;
-        const [interruptedQueue] = interruptQueueId && issueRow
+        const [interruptedQueue] = interruptQueueId && issueRow && issueRow.id === contextIssueId
+          ? [preInterruptedQueue]
+          : interruptQueueId && issueRow
           ? await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
               eq(agentWakeupRequests.id, interruptQueueId),
               eq(agentWakeupRequests.companyId, run.companyId),
@@ -1263,7 +1279,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         // Releases still settle while Agent Chat is disabled, but no deferred
         // turn or recovery successor may be created. Check here in the shared
         // transaction so cleanup retries and restart sweeps use the same gate.
-        if (issueRow.conversationAgentId && !(await instanceSettingsService(tx).getExperimental()).enableAgentChat) {
+        if (issueRow.conversationAgentId && !enableAgentChat) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
