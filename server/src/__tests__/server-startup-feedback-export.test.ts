@@ -330,6 +330,9 @@ vi.mock("../myrmidon/browser-bridge/index.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  providerUsageService: vi.fn(() => ({
+    deliverPendingWarnings: vi.fn(async () => ({ delivered: 0, failed: 0 })),
+  })),
   backfillLegacyToolOAuthTokens: vi.fn(async () => ({
     scannedConnections: 0,
     migratedConnections: 0,

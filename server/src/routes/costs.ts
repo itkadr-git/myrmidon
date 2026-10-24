@@ -7,11 +7,16 @@ import {
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
+  createProviderUsageReportedEventSchema,
+  updateProviderUsageWarningThresholdSchema,
+  PROVIDER_USAGE_WARNING_THRESHOLD_SETTING,
+  withProviderUsageWarningThreshold,
+  type ProviderUsageReportedEventV1,
 } from "@myrmidon/shared";
 import { validate } from "../middleware/validate.js";
 import {
-  budgetService,
   costService,
+  budgetService,
   financeService,
   companyService,
   agentService,
@@ -20,7 +25,10 @@ import {
   accessService,
   logActivity,
 } from "../services/index.js";
+import { providerUsageService } from "../services/provider-usage.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { instanceSettings } from "@myrmidon/db";
+import { eq } from "drizzle-orm";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -63,6 +71,7 @@ export function costRoutes(
   const agents = agentService(db);
   const issues = issueService(db);
   const access = accessService(db);
+  const providerUsage = providerUsageService(db);
 
   async function resolveIssueByRef(rawId: string) {
     const identifier = normalizeIssueIdentifier(rawId);
@@ -170,6 +179,66 @@ export function costRoutes(
     res.status(201).json(event);
   });
 
+  router.post("/companies/:companyId/provider-usage-reports", validate(createProviderUsageReportedEventSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "agent") {
+      res.status(403).json({ error: "Provider usage reports must be submitted by an agent adapter" });
+      return;
+    }
+    const event = req.body as ProviderUsageReportedEventV1;
+    // The event may name the owner by identifier (OPE-1) or uuid; snapshots store the uuid.
+    // An unknown or foreign-company owner is ignored: the report is still recorded.
+    const ownerIssue = event.ownerIssueId ? await resolveIssueByRef(event.ownerIssueId).catch(() => null) : null;
+    const ownerIssueId = ownerIssue && ownerIssue.companyId === companyId ? ownerIssue.id : null;
+    // Owner comments are delivered only by the durable outbox (deliverPendingWarnings), never inline,
+    // so one warning produces one comment.
+    const result = await providerUsage.ingest(companyId, event, new Date(), ownerIssueId);
+    if (result.duplicate) {
+      res.status(200).json({ accepted: false, duplicate: true });
+      return;
+    }
+    res.status(202).json({ accepted: result.accepted, aggregate: result.aggregate, warning: result.warning });
+  });
+
+  router.get("/companies/:companyId/provider-usage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!await assertCompanyCostReadAllowed(req, res, companyId)) return;
+    res.json({ thresholdPercent: await providerUsage.thresholdForCompany(companyId), usage: await providerUsage.list(companyId) });
+  });
+
+  router.patch("/companies/:companyId/provider-usage-warning-threshold", validate(updateProviderUsageWarningThresholdSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    const actor = getActorInfo(req);
+    const current = await db.select().from(instanceSettings).limit(1);
+    const currentGeneral = (current[0]?.general as Record<string, unknown> | undefined) ?? {};
+    // Per-company: PATCH on one company must not change the threshold of the others.
+    const general = {
+      ...currentGeneral,
+      [PROVIDER_USAGE_WARNING_THRESHOLD_SETTING]: withProviderUsageWarningThreshold(
+        currentGeneral[PROVIDER_USAGE_WARNING_THRESHOLD_SETTING], companyId, req.body.thresholdPercent),
+    };
+    if (current[0]) {
+      await db.update(instanceSettings).set({ general, updatedAt: new Date() }).where(eq(instanceSettings.id, current[0].id));
+    } else {
+      await db.insert(instanceSettings).values({ general });
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "provider_usage.warning_threshold_updated",
+      entityType: "provider_usage_settings",
+      entityId: companyId,
+      details: { thresholdPercent: req.body.thresholdPercent },
+    });
+    res.json({ thresholdPercent: req.body.thresholdPercent });
+  });
+
   router.get("/companies/:companyId/costs/summary", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -178,7 +247,6 @@ export function costRoutes(
     const summary = await costs.summary(companyId, range);
     res.json(summary);
   });
-
   router.get("/issues/:id/cost-summary", async (req, res) => {
     const rawId = req.params.id as string;
     const issue = await getAccessibleResource(req, res, resolveIssueByRef(rawId), "Issue not found");

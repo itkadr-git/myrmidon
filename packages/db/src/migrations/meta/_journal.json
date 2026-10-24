@@ -2466,6 +2466,20 @@
       "when": 1792395514000,
       "tag": "0414_fleet_site_health_move_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 415,
+      "version": "7",
+      "when": 1792395515000,
+      "tag": "0415_provider_usage_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 416,
+      "version": "7",
+      "when": 1792395516000,
+      "tag": "0416_provider_usage_warning_deliveries",
+      "breakpoints": true
     }
   ]
 }

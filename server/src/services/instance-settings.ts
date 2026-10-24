@@ -96,6 +96,7 @@ import { preserveBudgetLimitsGeneralKey } from "../myrmidon/budget-limits/settin
 import { preserveDatastoreCareGeneralKey } from "../myrmidon/datastore-care/retention/settings.js";
 // myrmidon(DB-PERF-C-P4): keep the tool gateway policy cache TTL across vendor writes of `general`
 import { preserveToolPolicyCacheGeneralKey } from "../myrmidon/tool-policy-cache/settings.js";
+import { preserveProviderUsageThresholdGeneralKey } from "../myrmidon/provider-usage/settings.js"; // myrmidon(OPE-7202)
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -887,6 +888,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               // myrmidon(DB-PERF-C-P4): a patch that carries the key wins over the restored value.
               ...(patch.toolPolicyCache !== undefined ? { toolPolicyCache: nextGeneral.toolPolicyCache } : {}),
               ...preserveBudgetLimitsGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG A)
+              ...preserveProviderUsageThresholdGeneralKey(current.general), // myrmidon(OPE-7202)
               ...preserveDatastoreCareGeneralKey(current.general), // myrmidon(1.6.5-DBC1)
               // The preserve line above restores the stored value: a patch that
               // carries the key must win, the same rule as ownerDelivery.

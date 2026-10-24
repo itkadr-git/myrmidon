@@ -401,6 +401,9 @@ async function sourceIssueId(
     case "secret_off_run_grant_expiring": {
       return { exists: true, issueId: null };
     }
+    case "provider_usage_warning": {
+      return { exists: sourceId.length > 0, issueId: null };
+    }
     // myrmidon(1.6.5-F-18): the empty-catalog card is computed from the
     // process-level signal registry and its subject id is the stable
     // company-scoped key the feed emits (`litellm:${companyId}`), not a
