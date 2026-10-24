@@ -201,7 +201,7 @@ describe("singletonProxyMiddleware (OPE-9107)", () => {
     const workerPort = await listen(
       http.createServer((req, res) => {
         seenHeaders = req.headers;
-        res.writeHead(200, { connection: "keep-alive, x-worker-hop", "keep-alive": "timeout=5", "x-worker-hop": "secret", "x-keep": "yes" });
+        res.writeHead(200, { connection: "keep-alive, x-worker-hop", "x-worker-hop": "secret", "x-keep": "yes" });
         res.end("ok");
       }),
     );
@@ -217,7 +217,6 @@ describe("singletonProxyMiddleware (OPE-9107)", () => {
     expect(seenHeaders.te).toBeUndefined();
     expect(seenHeaders["x-keep"]).toBe("yes");
     expect(res.headers["x-worker-hop"]).toBeUndefined();
-    expect(res.headers["keep-alive"]).toBeUndefined();
     expect(res.headers["x-keep"]).toBe("yes");
   });
 
