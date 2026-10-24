@@ -63,6 +63,9 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
+import { listAdapterModels } from "../adapters/registry.js";
+import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/router.js";
+import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { aiConnectionBindingSchema, type AiConnectionBinding } from "@myrmidon/shared";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
 // settings against the environment, plus the per-agent card switch, so the three
@@ -22956,12 +22959,23 @@ export function heartbeatService(
         }
         runScopedAiBinding = { ...aiBinding };
       }
-      const runAdapterConfig: Record<string, unknown> = {
+      let runAdapterConfig: Record<string, unknown> = {
         ...executionRunConfig,
         ...(typeof externalSession.model === "string"
           ? { model: externalSession.model }
           : {}),
       };
+      if (readBuiltInAgentMarker(agent.metadata)?.key === "admin-assistant") {
+        const availableModels = agent.adapterType
+          ? await listAdapterModels(agent.adapterType)
+          : [];
+        runAdapterConfig = resolveAdminAssistantAdapterConfig({
+          adapterConfig: runAdapterConfig,
+          metadata: agent.metadata,
+          context,
+          availableModels: availableModels.map((model) => model.id),
+        });
+      }
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           managedAiCredentials: Boolean(runScopedAiBinding),
