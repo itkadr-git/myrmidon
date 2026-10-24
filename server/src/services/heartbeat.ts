@@ -12822,6 +12822,41 @@ export function heartbeatService(
     void reportRunFailure(db, updated);
   }
 
+  // myrmidon(1.6.6 OPE-8998): a wake request ends with its run. Terminal
+  // statuses were written by many paths (reaper, lease release, deadline,
+  // adapter failure), and the ones that skipped the request left it `claimed`
+  // behind a failed/interrupted run (prod: 438 such rows), where idle pickup
+  // read it as work in flight. Every run status write goes through
+  // setRunStatus / setRunStatusFromLive, so the request is closed here, right
+  // after the run row, and only while it is still queued or claimed.
+  async function closeWakeupOfTerminalRun(run: typeof heartbeatRuns.$inferSelect) {
+    if (!run.wakeupRequestId || !isHeartbeatRunTerminalStatus(run.status)) return;
+    const wakeStatus =
+      run.status === "succeeded" ? "completed" : run.status === "cancelled" ? "cancelled" : "failed";
+    const now = new Date();
+    try {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: wakeStatus,
+          finishedAt: now,
+          updatedAt: now,
+          ...(wakeStatus === "failed" ? { error: run.error ?? `run ${run.status}` } : {}),
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.id, run.wakeupRequestId),
+            inArray(agentWakeupRequests.status, ["queued", "claimed"]),
+          ),
+        );
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), runId: run.id },
+        "could not close the wake request of a terminal run",
+      );
+    }
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -12884,6 +12919,7 @@ export function heartbeatService(
       });
       publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
+      await closeWakeupOfTerminalRun(updated);
     }
 
     return updated;
@@ -12977,6 +13013,7 @@ export function heartbeatService(
       });
       publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
+      await closeWakeupOfTerminalRun(updated);
       return { run: updated, updated: true as const };
     }
 
@@ -28258,7 +28295,49 @@ export function heartbeatService(
     }
   }
 
+  // myrmidon(1.6.6 OPE-8998): the review-admission record written in the
+  // in_review transaction (insertReviewAdmissionWakeup) is the seed of the
+  // post-commit wake with the same idempotency key. When that wake becomes a
+  // run it reuses the record; when it is deferred (issue lock held), skipped
+  // or coalesced, the outcome is recorded on a separate row and the seed stayed
+  // `queued` without a run forever (prod 24.10: 9 of them, reviewers never
+  // started, idle pickup read each as a wake in flight). The intent lives on in
+  // the outcome row, so the seed is closed here.
+  async function closeUnservedReviewAdmission(agentId: string, idempotencyKey: string) {
+    const now = new Date();
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "coalesced", finishedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+          eq(agentWakeupRequests.status, "queued"),
+          isNull(agentWakeupRequests.runId),
+          sql`not exists (select 1 from ${heartbeatRuns} hr where hr.wakeup_request_id = ${agentWakeupRequests.id})`,
+        ),
+      );
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
+    try {
+      return await enqueueWakeupInner(agentId, opts, executionWaitRequestId);
+    } finally {
+      const key = opts.idempotencyKey;
+      if (typeof key === "string" && key.startsWith("issue-review-admission:")) {
+        try {
+          await closeUnservedReviewAdmission(agentId, key);
+        } catch (err) {
+          logger.warn(
+            { err: err instanceof Error ? err.message : String(err), agentId },
+            "enqueueWakeup: could not close unserved review-admission record",
+          );
+        }
+      }
+    }
+  }
+
+  async function enqueueWakeupInner(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
