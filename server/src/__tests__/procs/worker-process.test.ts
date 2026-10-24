@@ -1,0 +1,170 @@
+// server/src/__tests__/procs/worker-process.test.ts
+//
+// myrmidon(1.6.6 PROCS-1.5 ч.H, design BOARD-PROCESSES §2.1): the e2e of the
+// standalone worker — one api process and one worker process against the one
+// test database. Pins:
+//   * the standalone entry (server/src/worker.ts) boots the board runtime with
+//     role `worker`, registers in board_processes with that role, and answers
+//     `/internal/ready` (ч.F contract, mounted by the board app) with 200
+//     while the api process answers `/api/health`;
+//   * the worker's registry row is readable through the api process — the
+//     row is the cross-process write→read proof (written by the worker,
+//     served by the api);
+//   * SIGTERM drains the worker cleanly (the heartbeat executor quiesces,
+//     the listener closes) and the api process never notices.
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+  type EmbeddedPostgresTestDatabase,
+} from "../helpers/embedded-postgres.js";
+import {
+  requestApi,
+  startApiProcess,
+  stopApiProcess,
+  stopApiProcesses,
+  pickFreePort,
+  WORKER_ENTRY,
+  type ApiProcessHandle,
+} from "./helpers/api-process-harness.js";
+
+type BoardProcessView = {
+  bootId: string;
+  role: string;
+  pid: number;
+  apiPort: number | null;
+  status: "live" | "stale";
+  self: boolean;
+};
+
+type BoardProcessesResponse = {
+  selfBootId: string;
+  processes: BoardProcessView[];
+};
+
+const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
+const embeddedPostgresSupport = externalTestDatabaseUrl
+  ? { supported: true, reason: undefined }
+  : await getEmbeddedPostgresTestSupport();
+const describeProcs = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping the worker-process e2e on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
+  let baseDir = "";
+  let database: EmbeddedPostgresTestDatabase | null = null;
+  let api: ApiProcessHandle | null = null;
+  let worker: ApiProcessHandle | null = null;
+
+  beforeAll(async () => {
+    baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-procs-worker-"));
+    let connectionString = externalTestDatabaseUrl;
+    if (!connectionString) {
+      database = await startEmbeddedPostgresTestDatabase("paperclip-procs-worker-");
+      connectionString = database.connectionString;
+    }
+    // The api child of the split layout: serves HTTP, owns no timers.
+    api = await startApiProcess({
+      baseDir,
+      index: 0,
+      connectionString,
+      role: "api",
+      port: await pickFreePort(),
+    });
+    // The worker child, through the standalone entry: owns the heartbeat
+    // executor and the background sweeps. Its boot runs the full startServer
+    // startup (migrations, recovery, sweep arming) — give it the cold-boot
+    // budget of the api children.
+    worker = await startApiProcess({
+      baseDir,
+      index: 1,
+      connectionString,
+      role: "worker",
+      entry: WORKER_ENTRY,
+      port: await pickFreePort(),
+      readyTimeoutMs: 360_000,
+    });
+  }, 480_000);
+
+  afterAll(async () => {
+    await stopApiProcesses([worker, api].filter((h): h is ApiProcessHandle => h !== null));
+    if (database) await database.cleanup();
+    if (baseDir) fs.rmSync(baseDir, { recursive: true, force: true });
+  }, 120_000);
+
+  it("scenario 1: the worker registers as role worker and answers /internal/ready", async () => {
+    // The listener answers before the boot recovery is over; readiness (ч.F)
+    // turns 200 only once it is finished.
+    let ready = await requestApi(worker!.baseUrl, "/internal/ready");
+    for (let attempt = 0; ready.status !== 200 && attempt < 240; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      ready = await requestApi(worker!.baseUrl, "/internal/ready");
+    }
+    expect(ready.status, `worker readiness: ${ready.text.slice(0, 400)}`).toBe(200);
+    // The ч.F contract body (process-readiness, landed in #1152).
+    const body = ready.json as {
+      status: string;
+      ready: boolean;
+      role: string;
+      checks: Array<{ id: string; status: string }>;
+    };
+    expect(body.status).toBe("ok");
+    expect(body.ready).toBe(true);
+    expect(body.role).toBe("worker");
+    expect(body.checks.every((check) => check.status !== "not_ready")).toBe(true);
+    expect(body.checks.map((check) => check.id).sort()).toEqual(["bus", "database", "migrations"]);
+
+    // The worker's row, read through the api process — the cross-process
+    // write→read proof of the shared database.
+    const registry = await requestApi(api!.baseUrl, "/api/myrmidon/board-processes");
+    expect(registry.status, `registry read: ${registry.text.slice(0, 400)}`).toBe(200);
+    const view = registry.json as BoardProcessesResponse;
+    const workerRow = view.processes.find((row) => row.role === "worker");
+    expect(workerRow, "worker row in board_processes").toBeDefined();
+    expect(workerRow?.status).toBe("live");
+
+    // The api child of the layout is there too, with its own port.
+    const apiRow = view.processes.find((row) => row.role === "api");
+    expect(apiRow, "api row in board_processes").toBeDefined();
+    expect(apiRow?.apiPort).toBe(api!.port);
+  }, 240_000);
+
+  it("scenario 2: the worker serves /healthz for the container runtime", async () => {
+    const healthz = await requestApi(worker!.baseUrl, "/healthz");
+    // 200 or 503 by the supervisor's view of the process; the contract pinned
+    // here is that the worker answers the balancer's path with its own role.
+    expect([200, 503], `worker healthz: ${healthz.text.slice(0, 400)}`).toContain(healthz.status);
+    const body = healthz.json as { role?: string };
+    expect(body.role).toBe("worker");
+  }, 60_000);
+
+  it("scenario 3: SIGTERM drains the worker while the api keeps serving", async () => {
+    const stopPromise = stopApiProcess(worker!, { signal: "SIGTERM", timeoutMs: 60_000 });
+    const duringDrain = await Promise.all(
+      Array.from({ length: 4 }, async () => await requestApi(api!.baseUrl, "/api/health")),
+    );
+    for (const response of duringDrain) {
+      expect(response.status).toBe(200);
+    }
+    const stop = await stopPromise;
+    expect(
+      stop.drained,
+      `worker did not leave within its drain budget:\n${worker!.output()}`,
+    ).toBe(true);
+    expect(stop.code).toBe(0);
+
+    // The worker's port is closed ...
+    await expect(requestApi(worker!.baseUrl, "/internal/ready")).rejects.toThrow();
+    // ... while the api still serves the shared database.
+    const health = await requestApi(api!.baseUrl, "/api/health");
+    expect(health.status).toBe(200);
+  }, 180_000);
+});

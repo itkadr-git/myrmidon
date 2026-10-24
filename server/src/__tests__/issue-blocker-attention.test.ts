@@ -263,6 +263,30 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("does not count a cancelled blocker edge as unresolved (resolved, OPE-8904)", async () => {
+    const { companyId, agentId } = await createCompany("PBR");
+    const parentId = await insertIssue({ companyId, identifier: "PBR-1", title: "Parent", status: "blocked" });
+    const cancelledId = await insertIssue({
+      companyId, identifier: "PBR-2", title: "Cancelled blocker", status: "cancelled", assigneeAgentId: agentId,
+    });
+    const activeId = await insertIssue({
+      companyId, identifier: "PBR-3", title: "Running dependency", status: "todo", assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: cancelledId, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: activeId, blockedIssueId: parentId });
+    await activeRun({ companyId, agentId, issueId: activeId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      attentionBlockerCount: 0,
+    });
+  });
+
   it("ignores cancelled direct children when counting unresolved blocker attention", async () => {
     const { companyId, agentId } = await createCompany("PBD");
     const parentId = await insertIssue({ companyId, identifier: "PBD-1", title: "Parent", status: "blocked" });
@@ -506,11 +530,13 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       status: "in_review",
       assigneeAgentId: agentId,
     });
+    // hard-attention leaf: an assigned backlog issue with no wake (a cancelled
+    // blocker is resolved and no longer counts, OPE-8904)
     const cancelledLeafId = await insertIssue({
       companyId,
       identifier: "PBQ-3",
-      title: "Cancelled blocker",
-      status: "cancelled",
+      title: "Backlog blocker",
+      status: "backlog",
       assigneeAgentId: agentId,
     });
     await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
@@ -528,7 +554,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
-  it("treats open liveness escalation blockers as covered waiting paths", async () => {
+  it("ignores the cancelled leaf and counts only the open escalation blocker (resolved, OPE-8904)", async () => {
     const { companyId, agentId } = await createCompany("PBL");
     const parentId = await insertIssue({ companyId, identifier: "PBL-1", title: "Parent", status: "blocked" });
     const cancelledLeafId = await insertIssue({
@@ -566,11 +592,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     const parent = (await svc.list(companyId, { status: "blocked,todo" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
-      state: "covered",
-      reason: "active_dependency",
-      unresolvedBlockerCount: 2,
-      coveredBlockerCount: 2,
-      attentionBlockerCount: 0,
+      unresolvedBlockerCount: 1,
     });
   });
 
@@ -674,7 +696,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await expect(svc.count(companyId, { attention: "blocked" })).resolves.toBe(1);
   });
 
-  it("surfaces cancelled-blocker attention on an assigned todo source", async () => {
+  it("does not surface cancelled-blocker attention on an assigned todo source (resolved, OPE-8904)", async () => {
     const { companyId, agentId } = await createCompany("BICX");
     const sourceId = await insertIssue({
       companyId,
@@ -695,14 +717,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     const rows = await svc.list(companyId, { attention: "blocked" });
     const source = rows.find((issue) => issue.id === sourceId);
 
-    expect(source?.blockedInboxAttention).toMatchObject({
-      kind: "blocked",
-      state: "needs_attention",
-      reason: "blocked_by_cancelled_issue",
-      owner: { type: "agent", agentId },
-      action: { label: "Replace blocker" },
-      leafIssue: { id: blockerId, identifier: "BICX-2" },
-    });
+    // a cancelled blocker is resolved: the todo source is ready, not stuck
+    expect(source?.blockedInboxAttention?.reason).not.toBe("blocked_by_cancelled_issue");
   });
 
   it("redacts external wait details from blocked inbox payloads and search", async () => {

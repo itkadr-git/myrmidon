@@ -136,6 +136,27 @@ describe("prometheus exposition format", () => {
     expect(text).toContain('myrmidon_board_lane_busy_seconds_total{role="all",lane="heartbeat_tick"} 0');
   });
 
+  // myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy counter renders
+  // every route x outcome, zeros included, with the process role label; without
+  // a read it keeps HELP/TYPE and no samples.
+  it("renders the singleton proxy family with every route and outcome", () => {
+    const text = renderMetricsText(
+      snapshot({
+        role: "api",
+        singletonProxy: [
+          { route: "attention", outcome: "proxied", count: 4 },
+          { route: "attention", outcome: "unavailable", count: 0 },
+        ],
+      }),
+    );
+    expect(text).toContain("# TYPE myrmidon_board_singleton_proxy_total counter");
+    expect(text).toContain('myrmidon_board_singleton_proxy_total{role="api",route="attention",outcome="proxied"} 4');
+    expect(text).toContain('myrmidon_board_singleton_proxy_total{role="api",route="attention",outcome="unavailable"} 0');
+    const bare = renderMetricsText(snapshot());
+    expect(bare).toContain("# HELP myrmidon_board_singleton_proxy_total ");
+    expect(bare).not.toContain("myrmidon_board_singleton_proxy_total{");
+  });
+
   it("renders the lane families without samples when no lanes were read", () => {
     const text = renderMetricsText(snapshot());
 

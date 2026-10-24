@@ -18,6 +18,8 @@ import { siteStatusIsReachable } from "./site-health-flag.js";
 import { fleetReplicaStoreFromEnv } from "./fleet-replica-store.js";
 import { fleetMoveMaintenance } from "./fleet-move-maintenance.js";
 import { createSiteAgentClient } from "./site-agent-client.js";
+import { fleetMemorySyncFromEnv } from "./fleet-memory-sync-wiring.js";
+import { forcedSyncBeforeMove } from "./fleet-memory-sync.js";
 import { parseFleetHosts } from "./fleetd-hosts.js";
 import { fleetdBotContainerDriver } from "./fleetd-driver.js";
 import type { BotContainerDriver, BotContainerSpec } from "./driver.js";
@@ -140,7 +142,18 @@ export function createFleetMoveContext(db: Db): FleetMoveContext {
     return { url: row.url, token: await readSecretValue(companyId, row.tokenSecret, `site "${siteName}"`) };
   }
 
+  // myrmidon(1.6.6 C-MEM): the memory sync right before a live move; null when not configured.
+  const memorySync = fleetMemorySyncFromEnv(db, process.env, async (site, botKey) => {
+    const { url, token } = await resolveSiteHost(site.name, site.companyId);
+    return createSiteAgentClient({ baseUrl: url, token }).memoryExport(botKey);
+  });
+
   const service = new FleetMoveService({
+    async beforeSnapshot({ moveId, companyId, botKey, srcSite }) {
+      if (!memorySync || srcSite === LOCAL_SITE) return;
+      await forcedSyncBeforeMove(memorySync, { companyId, siteName: srcSite, botKey, moveId }, { log: logger });
+    },
+
     getMove: store.getMove,
     getLatestMoveForBot: store.getLatestMoveForBot,
     createMove: store.createMove,

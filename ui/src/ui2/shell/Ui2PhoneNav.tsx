@@ -115,11 +115,18 @@ export function Ui2PhoneHeader() {
   );
 }
 
+export function isUi2PhoneTabActive(tabPath: string, pathname: string): boolean {
+  const normalizedPath = pathname.split("?")[0].replace(/\/$/, "") || "/";
+  const normalizedTabPath = tabPath.replace(/\/$/, "") || "/";
+  if (normalizedTabPath === "/agents/all") return normalizedPath === "/agents/all";
+  if (normalizedTabPath === "/agents") return normalizedPath === "/agents" || normalizedPath.startsWith("/agents/") && !normalizedPath.startsWith("/agents/all");
+  return normalizedPath === normalizedTabPath || normalizedPath.startsWith(`${normalizedTabPath}/`);
+}
+
 export function Ui2PhoneTabBar() {
   const { t } = useTranslation();
   const location = useLocation();
   const attentionCount = useUi2AttentionCount();
-  const activeSegment = location.pathname.split("/").filter(Boolean).slice(1)[0] ?? "dashboard";
 
   return (
     <nav
@@ -134,14 +141,14 @@ export function Ui2PhoneTabBar() {
       aria-label={t("ui2.nav.railLabel", { defaultValue: "Main navigation" })}
     >
       {UI2_PHONE_TABS.map((tab) => {
-        const segment = tab.to.replace(/^\//, "").split("/")[0];
+        const active = isUi2PhoneTabActive(tab.to, location.pathname);
         return (
           <PhoneTab
             key={tab.labelKey}
             to={tab.to}
             icon={tab.icon}
             label={t(tab.labelKey)}
-            active={segment === activeSegment}
+            active={active}
             badge={tab.badge === "attention" ? (attentionCount ?? undefined) : undefined}
           />
         );

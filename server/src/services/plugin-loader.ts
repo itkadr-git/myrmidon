@@ -58,6 +58,8 @@ import { readPluginEntitlementKeys, readPluginEntitlementPublicKey } from "../my
 import { resolvePaperclipInstanceId } from "../home-paths.js";
 import { resolvePluginActivation } from "./plugin-entitlement-enforcement.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
+import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
+import { resolveSandboxProviderSecret } from "../myrmidon/secret-settings/sandbox-providers.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
@@ -156,6 +158,36 @@ const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<
   "@myrmidon/plugin-novita-sandbox": { driverKey: "novita", envVars: ["NOVITA_API_KEY"] },
 };
 
+/** Env vars a trusted first-party sandbox provider worker may receive (trust gate only). */
+export function sandboxProviderCredentialKeys(input: {
+  manifest: Pick<PaperclipPluginManifestV1, "capabilities"> & {
+    environmentDrivers?: ReadonlyArray<{ driverKey: string }>;
+  };
+  packageName?: string;
+  packagePath?: string | null;
+  trustedLocalPluginRoots?: readonly string[];
+  processEnv?: NodeJS.ProcessEnv;
+}): readonly string[] {
+  const processEnv = input.processEnv ?? process.env;
+  const canRegisterEnvironmentDrivers = Array.isArray(input.manifest.capabilities)
+    && input.manifest.capabilities.includes("environment.drivers.register");
+  if (!canRegisterEnvironmentDrivers) return [];
+  const trustedLocalRoots = input.trustedLocalPluginRoots
+    ?? [BUNDLED_LOCAL_PLUGIN_ROOT, resolveBundledCatalogRoot(processEnv)];
+  const installOriginTrusted =
+    input.packagePath == null
+    || trustedLocalRoots.some((root) => isPathWithin(root, path.resolve(input.packagePath as string)));
+  const credentialEntry = installOriginTrusted && input.packageName
+    ? SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH[input.packageName]
+    : undefined;
+  return credentialEntry
+    && (input.manifest.environmentDrivers ?? []).some(
+      (driver) => driver.driverKey === credentialEntry.driverKey,
+    )
+    ? credentialEntry.envVars
+    : [];
+}
+
 export function buildPluginWorkerEnv(input: {
   manifest: Pick<PaperclipPluginManifestV1, "capabilities"> & {
     environmentDrivers?: ReadonlyArray<{ driverKey: string }>;
@@ -167,6 +199,12 @@ export function buildPluginWorkerEnv(input: {
   trustedLocalPluginRoots?: readonly string[];
   instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
   processEnv?: NodeJS.ProcessEnv;
+  /**
+   * myrmidon(E2.8): credentials the host already resolved server-side from instance
+   * secret refs, keyed by env var. Used only for trusted provider keys, and only when
+   * the process env does not carry the (emergency override) value itself.
+   */
+  instanceSecretEnv?: Readonly<Record<string, string>>;
 }): Record<string, string> {
   const processEnv = input.processEnv ?? process.env;
   const env: Record<string, string> = {
@@ -181,25 +219,14 @@ export function buildPluginWorkerEnv(input: {
     && input.manifest.capabilities.includes("environment.drivers.register");
   if (!canRegisterEnvironmentDrivers) return env;
 
-  const trustedLocalRoots = input.trustedLocalPluginRoots
-    ?? [BUNDLED_LOCAL_PLUGIN_ROOT, resolveBundledCatalogRoot(processEnv)];
-  const installOriginTrusted =
-    input.packagePath == null
-    || trustedLocalRoots.some((root) => isPathWithin(root, path.resolve(input.packagePath as string)));
-  const credentialEntry = installOriginTrusted && input.packageName
-    ? SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH[input.packageName]
-    : undefined;
-  const credentialKeys =
-    credentialEntry
-      && (input.manifest.environmentDrivers ?? []).some(
-        (driver) => driver.driverKey === credentialEntry.driverKey,
-      )
-      ? credentialEntry.envVars
-      : [];
+  const credentialKeys = sandboxProviderCredentialKeys({ ...input, processEnv });
   for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH, ...credentialKeys]) {
     const value = processEnv[key];
     if (value && value.trim().length > 0) {
       env[key] = value;
+    } else if (credentialKeys.includes(key)) {
+      const fromRef = input.instanceSecretEnv?.[key];
+      if (fromRef && fromRef.trim().length > 0) env[key] = fromRef;
     }
   }
   return env;
@@ -1166,6 +1193,23 @@ export function pluginLoader(
   const capabilityValidator = pluginCapabilityValidator();
   const log = logger.child({ service: "plugin-loader" });
   const hostVersion = runtimeServices?.instanceInfo.hostVersion;
+
+  // myrmidon(E2.8): instance secret refs for trusted sandbox provider workers.
+  async function resolveSandboxInstanceSecretEnv(input: {
+    manifest: Parameters<typeof sandboxProviderCredentialKeys>[0]["manifest"];
+    packageName?: string;
+    packagePath?: string | null;
+  }): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    const keys = sandboxProviderCredentialKeys(input);
+    if (keys.length === 0) return out;
+    const resolver = createInstanceSecretSettingService(db);
+    for (const key of keys) {
+      const value = await resolveSandboxProviderSecret(resolver, key, log);
+      if (value) out[key] = value;
+    }
+    return out;
+  }
 
   async function assertPageRoutePathsAvailable(manifest: PaperclipPluginManifestV1): Promise<void> {
     const requestedRoutePaths = getDeclaredPageRoutePaths(manifest);
@@ -2371,6 +2415,11 @@ export function pluginLoader(
           packageName: activePlugin.packageName,
           packagePath: activePlugin.packagePath,
           instanceInfo,
+          instanceSecretEnv: await resolveSandboxInstanceSecretEnv({
+            manifest,
+            packageName: activePlugin.packageName,
+            packagePath: activePlugin.packagePath,
+          }),
         }),
         // Authorize the worker to act on each configured company from its
         // proactive loops/timers (LOOA-629). Seeded here so it is in place
