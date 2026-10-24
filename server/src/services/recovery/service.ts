@@ -166,6 +166,12 @@ import {
 import { filterAgentsOutsideMaintenance } from "../../myrmidon/maintenance/gate.js";
 // myrmidon(L4): a successful run without a disposition resolves by policy, not an owner card
 import {
+  buildStrandedDispositionBlockedComment,
+  buildStrandedDispositionBlockedPatch,
+  buildStrandedDispositionWakeIdempotencyKey,
+  findEscalationChainAgentId,
+  STRANDED_DISPOSITION_ACTION,
+  STRANDED_DISPOSITION_WAKE_SOURCE,
   buildStrandedAutoPolicyManagerReviewComment,
   buildStrandedAutoPolicyManagerReviewPatch,
   buildStrandedAutoPolicyManagerReviewWakeContext,
@@ -4091,10 +4097,21 @@ export function recoveryService(
       // really is abandoned) and is unaffected by this flag.
       const assigneePaused =
         assigneeAgent?.companyId === input.issue.companyId && assigneeAgent.status === "paused";
+      // myrmidon(OPE-9072): once the retries are used up the escalation
+      // target comes from the default chain (reports_to -> project lead ->
+      // `adm`), not only from the direct manager; a board card is the last
+      // resort for an empty chain.
+      const retriesLeft = maxAttemptsPerDay > 0 && attemptsInWindow < maxAttemptsPerDay;
+      const escalationAgentId =
+        !assigneePaused && !retriesLeft && !managerAgentId
+          ? await findEscalationChainAgentId(db, input.issue)
+          : null;
       const autoPolicyDecision = decideStrandedAutoPolicy({
         attemptsInWindow,
         maxAttemptsPerDay,
         managerAgentId,
+        escalationAgentId,
+        hasExecutionWorkflow: issueHasExistingExecutionWorkflow(input.issue),
         assigneePaused,
       });
 
@@ -4421,6 +4438,132 @@ export function recoveryService(
         // skipped up front (conversation-bound) — fall through below. A
         // racing caller that found the *same* handoff already committed was
         // already returned above and never reaches here.
+      } else if (autoPolicyDecision.kind === "disposition_blocked") {
+        // myrmidon(OPE-9072): the issue has its own workflow (policy, monitor
+        // or execution state): never take it over and never change the
+        // assignee. Block it with complete metadata owned by a senior agent
+        // and wake that agent once. The wake key ties it to this successful
+        // run, so a repeat pass stands down instead of waking again.
+        const ownerAgentId = autoPolicyDecision.ownerAgentId;
+        const wakeKey = buildStrandedDispositionWakeIdempotencyKey({
+          issueId: input.issue.id,
+          sourceRunId: latestRun.id,
+        });
+        let existingWake: { id: string } | null = null;
+        try {
+          existingWake = await findExistingStrandedAutoPolicyRetryWake({
+            companyId: input.issue.companyId,
+            idempotencyKey: wakeKey,
+          });
+        } catch {
+          existingWake = null;
+        }
+        if (existingWake) return input.issue;
+
+        let blockedIssue: Awaited<ReturnType<typeof issuesSvc.update>> = null;
+        let alreadyBlocked: typeof issues.$inferSelect | null = null;
+        try {
+          const result = await db.transaction(async (tx) => {
+            const [current] = await tx
+              .select()
+              .from(issues)
+              .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)))
+              .for("update")
+              .limit(1);
+            if (!current) return { outcome: "skipped" as const };
+            if (
+              current.status === "blocked" &&
+              current.assigneeAgentId === input.issue.assigneeAgentId &&
+              (current.blockerMetadata?.owner as { agentId?: string } | undefined)?.agentId === ownerAgentId
+            ) {
+              return { outcome: "already_applied" as const, issue: current };
+            }
+            if (current.status !== input.issue.status || current.assigneeAgentId !== input.issue.assigneeAgentId) {
+              return { outcome: "skipped" as const };
+            }
+            const applied = await issuesSvc.update(
+              input.issue.id,
+              buildStrandedDispositionBlockedPatch({ issueId: input.issue.id, ownerAgentId }) as Partial<
+                typeof issues.$inferInsert
+              >,
+              tx,
+            );
+            return applied
+              ? { outcome: "applied" as const, issue: applied }
+              : { outcome: "skipped" as const };
+          });
+          if (result.outcome === "applied") blockedIssue = result.issue;
+          else if (result.outcome === "already_applied") alreadyBlocked = result.issue;
+        } catch {
+          blockedIssue = null;
+        }
+        if (alreadyBlocked) return alreadyBlocked;
+        if (blockedIssue) {
+          const ownerAgent = await getAgent(ownerAgentId);
+          await issuesSvc.addComment(
+            input.issue.id,
+            buildStrandedDispositionBlockedComment({
+              cause: recoveryCause,
+              attemptsInWindow: autoPolicyDecision.attemptsInWindow,
+              maxAttemptsPerDay: autoPolicyDecision.maxAttemptsPerDay,
+            }),
+            {},
+            {
+              authorType: "system",
+              presentation: compactRecoveryPresentation("Escalated to a senior agent"),
+              metadata: recoveryNoticeMetadata({
+                cause: recoveryCause,
+                latestRun,
+                previousStatus: input.previousStatus,
+                recoveryOwner: ownerAgent ? { id: ownerAgent.id, name: ownerAgent.name } : null,
+              }),
+            },
+          );
+          try {
+            await deps.enqueueWakeup(ownerAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_unblock_requested",
+              idempotencyKey: wakeKey,
+              payload: { issueId: input.issue.id, action: STRANDED_DISPOSITION_ACTION },
+              requestedByActorType: "system",
+              requestedByActorId: null,
+              contextSnapshot: {
+                issueId: input.issue.id,
+                taskId: input.issue.id,
+                wakeReason: "issue_unblock_requested",
+                source: STRANDED_DISPOSITION_WAKE_SOURCE,
+              },
+            });
+          } catch (error) {
+            logger.warn(
+              {
+                issueId: input.issue.id,
+                ownerAgentId,
+                error: error instanceof Error ? error.message : String(error),
+              },
+              "myrmidon(OPE-9072): disposition wake failed after the issue was already blocked with an agent owner",
+            );
+          }
+          await logActivity(db, {
+            companyId: input.issue.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: null,
+            runId: latestRun.id,
+            action: "issue.stranded_autopolicy_disposition_blocked",
+            entityType: "issue",
+            entityId: input.issue.id,
+            details: {
+              identifier: input.issue.identifier,
+              recoveryCause,
+              ownerAgentId,
+              attemptsInWindow: autoPolicyDecision.attemptsInWindow,
+              maxAttemptsPerDay: autoPolicyDecision.maxAttemptsPerDay,
+            },
+          });
+          return blockedIssue;
+        }
       }
       // autoPolicyDecision.kind === "vendor_default" falls through as-is.
     }
