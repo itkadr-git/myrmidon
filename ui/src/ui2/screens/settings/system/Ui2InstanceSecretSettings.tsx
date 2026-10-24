@@ -23,7 +23,13 @@ export function Ui2InstanceSecretSettings() {
     <Ui2Section title={t("ui2.settings.system.secretRefs.title")} footer={t("ui2.settings.system.secretRefs.hint")}>
       {data.settings.map((setting) => (
         <div key={setting.name} className="ui2-secret-ref flex flex-col gap-2 rounded-md border border-border p-3" data-testid={`ui2-secret-setting-${setting.name}`}>
-          <span className="text-sm font-medium">{setting.description}</span>
+          <span className="text-sm font-medium">
+            {setting.name.startsWith("tool-oauth.") && setting.name !== "tool-oauth.client-secret"
+              ? t("ui2.settings.system.secretRefs.toolOauthProvider", {
+                  provider: setting.name.slice("tool-oauth.".length, -".client-secret".length).replace(/_/g, " "),
+                })
+              : setting.description}
+          </span>
           <span className="font-mono text-xs text-muted-foreground">{setting.name}</span>
           <span className="text-sm" data-testid={`ui2-secret-setting-source-${setting.name}`}>
             {t(`ui2.settings.system.secretRefs.source.${setting.effectiveSource}`)}

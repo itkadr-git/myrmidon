@@ -103,4 +103,21 @@ describe("Ui2InstanceSecretSettings", () => {
     await flush();
     expect(mockApi.clearRef).toHaveBeenCalledWith(NAME);
   });
+
+  it("shows a provider-specific tool OAuth setting and saves only its secret id", async () => {
+    const providerName = "tool-oauth.acme_cloud.client-secret";
+    mockApi.list.mockResolvedValue({ settings: [{ ...unset, name: providerName }] });
+    mockApi.setRef.mockResolvedValue({ ...unset, name: providerName, ref: { secretId: "s-2", secretName: "second", status: "active" }, effectiveSource: "secret_ref" as const });
+    render();
+    await flush();
+    expect(container.textContent).toContain("acme cloud");
+    const select = container.querySelector<HTMLSelectElement>(`[data-testid="ui2-secret-setting-select-${providerName}"]`)!;
+    flushSync(() => {
+      select.value = "s-2";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    flushSync(() => container.querySelector<HTMLButtonElement>(`[data-testid="ui2-secret-setting-save-${providerName}"]`)!.click());
+    await flush();
+    expect(mockApi.setRef).toHaveBeenCalledWith(providerName, "s-2");
+  });
 });
