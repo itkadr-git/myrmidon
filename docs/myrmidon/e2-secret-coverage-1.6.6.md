@@ -116,3 +116,7 @@ E2.2 tests: ref resolves; emergency `OPENAI_API_KEY` wins over the ref; no ref f
 | `MYRMIDON_BRIDGE_API_KEY` | `hermes/skills/paperclip-task-bridge/paperclip-task.mjs:106` | alias of `PAPERCLIP_BRIDGE_API_KEY`: a scoped (`task_bridge`) agent API key minted by the board for the run and injected into the bot environment; it is a run credential, not an instance setting | `paperclip-task-bridge.test.ts` |
 
 Not done in this slice: the agent-scoped selection UI for these names already exists as the agent env editor; no new UI is claimed. Model discovery for Codex still reads one board-wide key by design; per-agent discovery would need an agent context the model-list endpoint does not have.
+
+## E2.6 application modules (OPE-9039, PR #1737)
+
+Per-name disposition and evidence: `docs/myrmidon/e2-secret-consumers-e2-6.md`. Registered through the E2.1 resolver: `MYRMIDON_STACK_GITHUB_TOKEN`, `MYRMIDON_TRACING_CLICKHOUSE_PASSWORD`, `MYRMIDON_BROWSER_CONSOLE_TOKEN` (tests: `secret-settings/consumers.myrmidon.test.ts`). Selectors that hold a company-secret name (all `*_KEY_SECRET`, `MYRMIDON_EVALS_API_KEY`, `MYRMIDON_METRICS_TOKEN_SECRET`) are already store-backed. Bootstrap, env only: `MYRMIDON_BROWSER_BRIDGE_PEPPER`, `MYRMIDON_DECISION_SIGNING_SECRET`, `MYRMIDON_TOOL_ACTION_SIGNING_SECRET`. Non-secret: `MYRMIDON_EVALS_LANGFUSE_KEY` (public key). Env/file pointers: `MYRMIDON_ALERTS_WEBHOOK_TOKEN_REF`, `MYRMIDON_ZABBIX_TOKEN_REF`.
