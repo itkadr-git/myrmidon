@@ -62,6 +62,7 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
 import { connectionIntentService } from "./connection-intents.js";
+import { ExternalSessionScheduler } from "./external-session-scheduler.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema, type AiConnectionBinding } from "@myrmidon/shared";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
@@ -9527,6 +9528,12 @@ export function heartbeatService(
   };
 
   const runLogStore = getRunLogStore();
+  const externalSessionScheduler = new ExternalSessionScheduler({
+    concurrencyPerCredential: Math.max(
+      1,
+      Number.parseInt(process.env.EXTERNAL_SESSION_CONCURRENCY_PER_CREDENTIAL ?? "1", 10) || 1,
+    ),
+  });
   const traceStore = providerTraceStore(db);
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
@@ -26182,8 +26189,8 @@ export function heartbeatService(
             if (managedMcpConfig) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
             }
-            const guardedDispatch =
-              await dispatchResolvedInteractionContinuationWithAtomicGate(
+            const dispatch = () =>
+              dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {
                   legacyAdapterEntered = true;
                   return adapter.execute({
@@ -26278,6 +26285,16 @@ export function heartbeatService(
                   });
                 },
               );
+            const guardedDispatch = externalSession.connectionId
+              ? await externalSessionScheduler.schedule(
+                  `${run.companyId}:${externalSession.connectionId}:${externalSession.grantId}`,
+                  async () => {
+                    const guarded = await dispatch();
+                    if (guarded.dispatched) await guarded.resultPromise;
+                    return guarded;
+                  },
+                )
+              : await dispatch();
             if (!guardedDispatch.dispatched) return;
             adapterResult = await guardedDispatch.resultPromise;
           }
