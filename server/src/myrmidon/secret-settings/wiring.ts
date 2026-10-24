@@ -58,6 +58,15 @@ export function createDbInstanceSecretSettingStore(db: Db): InstanceSecretSettin
       const row = await secrets.getById(secretId);
       return row ? { name: row.name, status: row.status, companyId: row.companyId } : null;
     },
+    async createSecret(input) {
+      const created = await secrets.create(input.companyId, {
+        name: input.name,
+        provider: "local_encrypted",
+        value: input.value,
+        description: input.description,
+      });
+      return created.id;
+    },
     async setBinding(name, secretId) {
       const [ref] = await secrets.replaceSecretRefsForInstanceTarget(
         {
@@ -84,9 +93,11 @@ export function createDbInstanceSecretSettingStore(db: Db): InstanceSecretSettin
 export function createInstanceSecretSettingService(
   db: Db,
   registry: InstanceSecretSettingRegistry = defaultInstanceSecretSettingRegistry,
+  env?: NodeJS.ProcessEnv,
 ) {
   return createInstanceSecretSettingResolver({
     registry,
+    env,
     store: createDbInstanceSecretSettingStore(db),
     registerForRedaction: (value) => registerSecretValues({ v: value }, ["v"]),
   });
