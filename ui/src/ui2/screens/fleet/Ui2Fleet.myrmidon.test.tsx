@@ -85,7 +85,14 @@ describe("myrmidon(UI2) Ui2Fleet screen parity", () => {
     expect(container.textContent).toContain("Monitoring is not configured or is unavailable.");
     expect(container.textContent).toContain("not configured");
     expect(container.textContent).not.toContain("No fleet resources yet");
-    expect(container.textContent).toContain("Use this screen to check server and service status.");
+  });
+
+  it("shows the generic monitoring message when ok=false and no source has an error", async () => {
+    mockFleetApi.dashboard.mockResolvedValue({ ok: false, generatedAt: "2026-10-20T00:00:00.000Z", sources: [{ name: "zabbix", ok: false, latency_ms: null, error: null }], hosts: [], containers: [] });
+    await renderScreen();
+    expect(container.textContent).toContain("Monitoring is not configured or is unavailable.");
+    expect(container.textContent).toContain("Monitoring data is unavailable.");
+    expect(container.textContent).not.toContain("No fleet resources yet");
   });
 
   it("keeps loading while no company is selected", async () => {

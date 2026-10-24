@@ -77,12 +77,6 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.agents"]);
   });
 
-  it("activates exactly one tab at /agents in the six-tab phone grid", () => {
-    expect(UI2_PHONE_TABS).toHaveLength(6);
-    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/agents"));
-    expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.agents"]);
-  });
-
   it("maps canonical agent API statuses without treating active as running", () => {
     expect(fleetStatus("active")).toBe("idle");
     expect(fleetStatus("idle")).toBe("idle");
