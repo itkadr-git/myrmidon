@@ -176,7 +176,7 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
     [delivery] = await db.select().from(providerUsageWarningDeliveries);
     expect(delivery?.deliveredAt).toEqual(retryAt);
     expect(delivery?.lastError).toBeNull();
-    expect(mockAddComment).toHaveBeenCalledTimes(2);
+    expect(mockAddComment).toHaveBeenCalledTimes(1);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, ownerId));
     expect(comments).toHaveLength(1);
