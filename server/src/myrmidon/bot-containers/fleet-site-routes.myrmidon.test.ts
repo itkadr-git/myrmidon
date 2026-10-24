@@ -70,7 +70,7 @@ function harness(secrets: string[] = ["fleetd-myr-vm1-token", "fleetd-myr-vm1-cl
 function body(overrides: Record<string, unknown> = {}) {
   return {
     name: "myr-vm1",
-    url: "https://10.10.0.110:9100",
+    url: "https://192.0.2.10:9100",
     tokenSecret: "fleetd-myr-vm1-token",
     caCert: pki.caCert,
     clientCertSecretKey: "fleetd-myr-vm1-client",
@@ -93,7 +93,7 @@ describe("fleet site enroll routes", () => {
     expect(input).toMatchObject({
       companyId: COMPANY_A,
       name: "myr-vm1",
-      url: "https://10.10.0.110:9100",
+      url: "https://192.0.2.10:9100",
       tokenSecret: "fleetd-myr-vm1-token",
       clientCertSecretKey: "fleetd-myr-vm1-client",
       status: "active",
@@ -116,7 +116,7 @@ describe("fleet site enroll routes", () => {
 
   it("rejects http, paths and credentials in the url", async () => {
     const { app, deps } = harness();
-    for (const url of ["http://10.10.0.110:9100", "https://10.10.0.110:9100/v1", "https://u:p@10.10.0.110:9100", "not a url"]) {
+    for (const url of ["http://192.0.2.10:9100", "https://192.0.2.10:9100/v1", "https://u:p@192.0.2.10:9100", "not a url"]) {
       await request(app).post(path).send(body({ url })).expect(400);
     }
     expect(deps.createSite).not.toHaveBeenCalled();
