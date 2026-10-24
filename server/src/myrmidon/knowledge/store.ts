@@ -888,6 +888,46 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     return toItemDto(row);
   }
 
+  // ---------------------------------------------------------- seed recovery
+
+  /** Restore only the explicitly allowlisted legacy targets, with audit history. */
+  async function restoreSeedSuperseded(nestId: string, idOrSlug: string, actor: KnowledgeActor): Promise<boolean> {
+    const current = await loadItem(nestId, idOrSlug);
+    const targets = new Set([
+      "decisions/2026-09-28-board-manages-containers",
+      "decisions/2026-10-04-wiki-own",
+      "decisions/2026-09-29-1-1-0-one-release",
+    ]);
+    if (current.status !== "superseded" || !targets.has(current.slug)) return false;
+
+    const row = await db.transaction(async (tx) => {
+      const [revision] = await tx.select().from(knowledgeRevisions)
+        .where(and(eq(knowledgeRevisions.itemId, current.id), eq(knowledgeRevisions.status, "approved")))
+        .orderBy(desc(knowledgeRevisions.revisionNumber)).limit(1);
+      if (!revision) throw new KnowledgeDomainError("revision_not_found", 409, "Cannot restore a seeded item without an approved revision.");
+
+      const [updated] = await tx.update(knowledgeItems)
+        .set({ status: "published", deliveredRevisionId: revision.id, supersededByItemId: null, updatedAt: now() })
+        .where(and(eq(knowledgeItems.nestId, nestId), eq(knowledgeItems.id, current.id), eq(knowledgeItems.status, "superseded")))
+        .returning();
+      if (!updated) return null;
+
+      await appendEvent(tx, {
+        companyId: current.companyId, nestId, itemId: current.id, revisionId: revision.id,
+        event: "knowledge.seed_legacy_restored",
+        payload: { slug: current.slug, priorSupersededByItemId: current.supersededByItemId },
+        actor,
+      });
+      return updated;
+    });
+
+    if (row) {
+      await mirrorActivity({ companyId: row.companyId, itemId: row.id, slug: row.slug, event: "knowledge.seed_legacy_restored", actor, payload: {} });
+      await reindex(row.nestId, row.id);
+    }
+    return row !== null;
+  }
+
   // ------------------------------------------------------------------ read
 
   async function get(nestId: string, idOrSlug: string, language?: KnowledgeRevisionLang): Promise<(KnowledgeItemDto & { deliveredContent: string | null }) | null> {

@@ -53,8 +53,16 @@ export interface SeedKnowledgeResult {
   created: number;
   skipped: number;
   superseded: number;
+  recovered: number;
   errors: Array<{ slug: string; code: string }>;
 }
+
+// Exact targets retired by the legacy curated edges removed in this patch.
+const LEGACY_SUPERSEDE_TARGETS = [
+  "decisions/2026-09-28-board-manages-containers",
+  "decisions/2026-10-04-wiki-own",
+  "decisions/2026-09-29-1-1-0-one-release",
+] as const;
 
 /**
  * Seed the decisions/ and product/ folders of a nest. Idempotent: existing
@@ -69,7 +77,7 @@ export async function seedKnowledgeBase(
   options: SeedKnowledgeOptions = {},
 ): Promise<SeedKnowledgeResult> {
   const store: KnowledgeService = createKnowledgeService(db, options);
-  const result: SeedKnowledgeResult = { created: 0, skipped: 0, superseded: 0, errors: [] };
+  const result: SeedKnowledgeResult = { created: 0, skipped: 0, superseded: 0, recovered: 0, errors: [] };
 
   async function createIfMissing(input: Parameters<KnowledgeService["create"]>[0]): Promise<boolean> {
     try {
@@ -114,6 +122,37 @@ export async function seedKnowledgeBase(
       sources: [{ kind: "issue", ref: "OPE-401", note: `Реестр решений ADM, запись ${d.date}` }],
     });
     created ? result.created++ : result.skipped++;
+  }
+
+  // Only restore the three known legacy supersede targets. This is an
+  // allowlisted recovery, not a general reversal of terminal workflow state.
+  for (const slug of LEGACY_SUPERSEDE_TARGETS) {
+    const item = await store.get(nestId, slug);
+    if (!item || item.status !== "superseded") continue;
+    try {
+      if (await store.restoreSeedSuperseded(nestId, item.id, SEED_ACTOR)) result.recovered++;
+    } catch (err: unknown) {
+      if (err instanceof KnowledgeDomainError) {
+        result.errors.push({ slug, code: err.code });
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  // Only restore the explicit legacy targets retired by the removed curated edges.
+  for (const slug of LEGACY_SUPERSEDE_TARGETS) {
+    const item = await store.get(nestId, slug);
+    if (!item || item.status !== "superseded") continue;
+    try {
+      if (await store.restoreSeedSuperseded(nestId, item.id, SEED_ACTOR)) result.recovered++;
+    } catch (err: unknown) {
+      if (err instanceof KnowledgeDomainError) {
+        result.errors.push({ slug, code: err.code });
+        continue;
+      }
+      throw err;
+    }
   }
 
   // Supersede chains — second pass so both ends exist. Existing chains are
