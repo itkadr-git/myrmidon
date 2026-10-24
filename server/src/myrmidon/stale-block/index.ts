@@ -56,11 +56,13 @@ export function createStaleBlockScheduler(input: {
     db: input.db,
     isEventStillSet: input.isEventStillSet ?? (async () => true),
     isUnderMaintenance: isInstanceUnderMaintenance,
-    logActivity: async (entry) => {
+    logActivity: async (entry, dbOrTx) => {
       // Loaded lazily with the service layer, for the same partial-mock
       // startup-graph reason as the issue service import.
       const { logActivity } = await import("../../services/activity-log.js");
-      await logActivity(input.db, entry);
+      // OPE-9074: inside the unblock transaction the write must use that
+      // transaction, not the root handle (it would wait on our own row lock).
+      await logActivity(dbOrTx ?? input.db, entry);
     },
     env: input.env,
     now: input.now,

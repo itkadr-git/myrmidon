@@ -3,9 +3,10 @@
 // a past due date — all unblocked — and a live blocker, left untouched.
 
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -446,6 +447,48 @@ describeEmbeddedPostgres("stale block sweep", () => {
       entityType: "issue",
       entityId: seeded.issueId,
     });
+  });
+
+  it("OPE-9074: activity rows are written through the unblock transaction, never the root handle", async () => {
+    const seeded = await seed({ blockerStatus: "done", withRelation: true });
+    // The sweep holds the issue row FOR UPDATE; the activity_log trigger
+    // touches that same issue row, so a write through the root handle would
+    // queue behind the sweep's own transaction (idle in transaction, a
+    // self-deadlock). The injected writer inserts through whatever handle it
+    // is given, exactly like the real one.
+    const seenHandles: unknown[] = [];
+    const { sweep } = sweepWith({
+      logActivity: async (entry, dbOrTx) => {
+        seenHandles.push(dbOrTx);
+        const handle = (dbOrTx ?? db) as typeof db;
+        await handle.execute(sql`set local lock_timeout = '3s'`).catch(() => undefined);
+        await handle.insert(activityLog).values({
+          companyId: entry.companyId,
+          actorType: entry.actorType,
+          actorId: entry.actorId,
+          action: entry.action,
+          entityType: entry.entityType,
+          entityId: entry.entityId,
+          details: entry.details,
+        });
+      },
+    });
+
+    const result = await sweep.sweep();
+
+    expect(result).toMatchObject({ unblocked: 1, failed: 0 });
+    expect(seenHandles).toHaveLength(2);
+    for (const handle of seenHandles) {
+      expect(handle).toBeDefined();
+      expect(handle).not.toBe(db);
+    }
+    const rows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, seeded.issueId));
+    expect(rows.map((row) => row.action)).toEqual(
+      expect.arrayContaining(["issue.updated", "myrmidon.stale_block.unblocked"]),
+    );
   });
 
   it("P2: the sweep-written issue.updated row parses as a left_blocked event for BLOCKED-LOOP", async () => {
