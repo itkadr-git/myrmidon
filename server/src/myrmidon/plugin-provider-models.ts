@@ -1,4 +1,4 @@
-import type { PluginRecord, PluginProviderModelDeclaration } from "@paperclipai/shared";
+import type { PluginRecord, PluginProviderModelDeclaration } from "@myrmidon/shared";
 
 export interface DynamicPluginModel {
   modelId: string;
