@@ -2029,9 +2029,9 @@ describe("review round circuit breaker", () => {
     });
   });
 
-  it("escalates the pending stage to the responsible human at the round cap", () => {
+  it("escalates the pending stage to the senior chain agent at the round cap, never to a human", () => {
     const result = applyIssueExecutionPolicyTransition({
-      issue: reviewPendingIssue({}, { changesRequestedCount: 2 }),
+      issue: { ...reviewPendingIssue({}, { changesRequestedCount: 2 }), defaultEscalationAgentIds: [ctoAgentId] },
       policy,
       requestedStatus: "in_progress",
       requestedAssigneePatch: {},
@@ -2043,13 +2043,13 @@ describe("review round circuit breaker", () => {
     // responsible human as participant instead of bouncing to the executor.
     expect(result.decision).toMatchObject({ outcome: "changes_requested" });
     expect(result.patch.status).toBe("in_review");
-    expect(result.patch.assigneeAgentId).toBeNull();
-    expect(result.patch.assigneeUserId).toBe(boardUserId);
+    expect(result.patch.assigneeAgentId).toBe(ctoAgentId);
+    expect(result.patch.assigneeUserId).toBeNull();
     expect(result.patch.executionState).toMatchObject({
       status: "pending",
       currentStageId: reviewStageId,
-      currentParticipant: { type: "user", userId: boardUserId },
-      changesRequestedCount: 3,
+      currentParticipant: { type: "agent", agentId: ctoAgentId },
+      changesRequestedCount: 0,
     });
   });
 
@@ -2211,6 +2211,7 @@ describe("review round circuit breaker", () => {
         assigneeAgentId: qaAgentId,
         assigneeUserId: null,
         responsibleUserId: boardUserId,
+        defaultEscalationAgentIds: [ctoAgentId],
         executionPolicy: strictPolicy,
         executionState: {
           status: "pending",
@@ -2231,11 +2232,11 @@ describe("review round circuit breaker", () => {
       commentBody: "First and only agent round",
     });
 
-    expect(result.patch.assigneeUserId).toBe(boardUserId);
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.assigneeAgentId).toBe(ctoAgentId);
     expect(result.patch.executionState).toMatchObject({
       status: "pending",
-      currentParticipant: { type: "user", userId: boardUserId },
-      changesRequestedCount: 1,
+      currentParticipant: { type: "agent", agentId: ctoAgentId },
     });
   });
 });
