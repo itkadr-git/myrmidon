@@ -87,6 +87,21 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-8) knowledge seed", () 
       expect(full!.deliveredContent).toMatch(/^> /m);
     }
 
+    // The active decisions and their former targets must never be retired by seed.
+    for (const slug of [
+      "decisions/2026-09-29-tools-a2",
+      "decisions/2026-10-08-plugin-as-bridge",
+      "decisions/2026-09-29-1-1-0-no-staging",
+      "decisions/2026-09-28-board-manages-containers",
+      "decisions/2026-10-04-wiki-own",
+      "decisions/2026-09-29-1-1-0-one-release",
+    ]) {
+      const item = await store.get(companyId, slug);
+      expect(item!.status).toBe("published");
+      expect(item!.supersededByItemId).toBeNull();
+      expect(item!.deliveredRevisionId).not.toBeNull();
+    }
+
     // Acceptance: 4 product pages.
     const product = await db
       .select()
