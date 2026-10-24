@@ -100,6 +100,8 @@ import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { instanceSecretSettingsRoutes } from "./myrmidon/secret-settings/routes.js"; // myrmidon(SETTINGS-UI E2.1)
+import { installInstanceSecretResolver } from "./myrmidon/secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.2)
+import { createInstanceSecretSettingService } from "./myrmidon/secret-settings/wiring.js"; // myrmidon(SETTINGS-UI E2.2)
 import { myrmidonMaintenanceRoutes } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
 import { datastoreCareRetentionRoutes } from "./myrmidon/datastore-care/index.js"; // myrmidon(1.6.5-DBC1)
 import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
@@ -1100,6 +1102,7 @@ export async function createApp(
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db, { processBus: opts.processBus ?? undefined }));
   api.use(instanceSecretSettingsRoutes(db)); // myrmidon(SETTINGS-UI E2.1)
+  installInstanceSecretResolver(createInstanceSecretSettingService(db)); // myrmidon(SETTINGS-UI E2.2)
   api.use(myrmidonMaintenanceRoutes(db)); // myrmidon(R3)
   api.use(datastoreCareRetentionRoutes(db)); // myrmidon(1.6.5-DBC1)
   api.use(boardLoadApp(db)); // myrmidon(1.6.6 PROCS-0.3A): lanes, api-load p95, pg_stat_statements, cpu-profile
