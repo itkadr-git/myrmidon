@@ -68,6 +68,15 @@ const en = {
   "ui2.screens.agents": "Agents",
 
   "ui2.decisions.title": "Decisions",
+  "ui2.decisions.waiting.title": "Waiting for you",
+  "ui2.decisions.waiting.approval": "Approval",
+  "ui2.decisions.waiting.decision": "Decision",
+  "ui2.decisions.waiting.interaction": "Interaction",
+  "ui2.decisions.waiting.approve": "Approve",
+  "ui2.decisions.waiting.reject": "Reject",
+  "ui2.decisions.waiting.empty.title": "Nothing is waiting",
+  "ui2.decisions.waiting.empty.body": "Approvals, decisions and questions for you will appear here.",
+
   "ui2.decisions.subtitle": "The queue of decisions that wait for you",
   "ui2.decisions.filter.all": "All",
   "ui2.decisions.filter.policies": "Policies",
@@ -93,8 +102,6 @@ const en = {
   "ui2.decisions.card.targetChanged": "The task changed since this decision was prepared",
   "ui2.decisions.card.recommendation.hidden": "The recommendation will appear when the decision carries one",
   "ui2.decisions.card.evidence.hidden": "Fact-check rows will appear when the decision carries them",
-  "ui2.decisions.empty.title": "No decisions wait for you",
-  "ui2.decisions.empty.body": "When an agent needs a human choice, the decision lands here.",
   "ui2.decisions.empty.filtered.title": "No decisions in this filter",
   "ui2.decisions.empty.filtered.body": "Other filters may still have decisions waiting.",
 
@@ -449,6 +456,15 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.screens.agents": "Агенты",
 
   "ui2.decisions.title": "Решения",
+  "ui2.decisions.waiting.title": "Ждёт меня",
+  "ui2.decisions.waiting.approval": "Согласование",
+  "ui2.decisions.waiting.decision": "Решение",
+  "ui2.decisions.waiting.interaction": "Вопрос",
+  "ui2.decisions.waiting.approve": "Одобрить",
+  "ui2.decisions.waiting.reject": "Отклонить",
+  "ui2.decisions.waiting.empty.title": "Ничего не ждёт",
+  "ui2.decisions.waiting.empty.body": "Здесь появятся согласования, решения и вопросы для вас.",
+
   "ui2.decisions.subtitle": "Очередь решений, которые ждут вас",
   "ui2.decisions.filter.all": "Все",
   "ui2.decisions.filter.policies": "Политики",
@@ -474,8 +490,6 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.decisions.card.targetChanged": "Задача изменилась с момента подготовки решения",
   "ui2.decisions.card.recommendation.hidden": "Рекомендация появится, когда решение её несёт",
   "ui2.decisions.card.evidence.hidden": "Строки проверки фактов появятся, когда решение их несёт",
-  "ui2.decisions.empty.title": "Ни одно решение вас не ждёт",
-  "ui2.decisions.empty.body": "Когда агенту нужен выбор человека, решение попадает сюда.",
   "ui2.decisions.empty.filtered.title": "В этом фильтре решений нет",
   "ui2.decisions.empty.filtered.body": "В других фильтрах решения ещё могут ждать.",
 
