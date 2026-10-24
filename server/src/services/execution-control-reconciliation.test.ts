@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues } from "@myrmidon/db";
+import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issues } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -105,6 +105,31 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
       runStatus: "failed",
       errorCode: "execution_finalization_deadline_exceeded",
     });
+  });
+
+  it("myrmidon(1.6.6 OPE-8998): the claimed wake request of the failed run is closed with it", async () => {
+    const { companyId, agentId, issueId, runId } = await seedAbandonedRunFixture();
+    const [wake] = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        status: "claimed",
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      })
+      .returning();
+    await db.update(heartbeatRuns).set({ wakeupRequestId: wake!.id }).where(eq(heartbeatRuns.id, runId));
+
+    await sweep();
+
+    const [after] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake!.id));
+    expect(after?.status).toBe("failed");
+    expect(after?.finishedAt).toBeTruthy();
   });
 
   it("reports zero events for a repeated sweep over the same already-failed run", async () => {

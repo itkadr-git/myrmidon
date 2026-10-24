@@ -22,6 +22,7 @@ import {
   type AutonomyMatrix,
 } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
+import { assertApprovable } from "./domain.js";
 import { knowledgeRoutes, type KnowledgeRoutesDeps } from "./routes.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
@@ -33,6 +34,7 @@ const boardActor = {
   userId: "user-a",
   isInstanceAdmin: false,
   companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "operator" }],
 };
 const agentActor = {
   type: "agent",
@@ -43,7 +45,7 @@ const agentActor = {
   companyIds: [COMPANY_ID],
 };
 
-type ItemOverrides = Partial<{ id: string; slug: string; kind: string; folderPath: string; status: string }>;
+type ItemOverrides = Partial<{ id: string; slug: string; kind: string; folderPath: string; status: string; roles: string[] }>;
 
 function makeItem(overrides: ItemOverrides = {}) {
   return {
@@ -233,6 +235,104 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       .send({ approverKind: "engineer", revisionId: "rev-2" });
     expect(res.status).toBe(200);
     expect(deps.module.approve).toHaveBeenCalledTimes(1);
+  });
+
+  it("K-3: the approver grade comes from the membership, not the body: an operator posting approverKind owner is 403 on a smm rule", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ kind: "rule", slug: "rules/smm/publications" });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    // the real S4 gate in place of the stub: the rule of a sensitive caste is the owner's
+    (deps.module.approve as ReturnType<typeof vi.fn>).mockImplementation(async (_id: string, approver: { actorType: "user"; actorId: string; kind: string | null }) => {
+      assertApprovable({ kind: "rule", approvalRequired: true, approverKind: "owner" }, approver);
+      return item;
+    });
+    const operatorActor = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "member" }] };
+    const refused = await request(app(deps, operatorActor))
+      .post(`${base}/items/rules/smm/publications/approve`)
+      .send({ approverKind: "owner", revisionId: "rev-2" });
+    expect(refused.status).toBe(403);
+    expect(deps.module.approve).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "operator" }),
+      expect.anything(),
+    );
+    // an admin membership is not the owner either
+    const adminActor = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "admin" }] };
+    expect(
+      (await request(app(deps, adminActor)).post(`${base}/items/rules/smm/publications/approve`).send({ approverKind: "owner" })).status,
+    ).toBe(403);
+    // the owner passes whatever the body says
+    const ownerActor = { ...boardActor, isInstanceAdmin: true };
+    const ok = await request(app(deps, ownerActor)).post(`${base}/items/rules/smm/publications/approve`).send({ approverKind: "operator" });
+    expect(ok.status).toBe(200);
+    expect(deps.module.approve).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "owner" }),
+      expect.anything(),
+    );
+  });
+
+  it("K-3: approve, publish, rollback, archive and supersede of a smm rule: operator 403, owner 200", async () => {
+    const operatorActor = { ...boardActor };
+    const ownerActor = { ...boardActor, isInstanceAdmin: true };
+    const writes = [
+      { op: "approve", url: "approve", body: { revisionId: "rev-2" } },
+      { op: "publish", url: "publish", body: {} },
+      { op: "rollback", url: "rollback", body: { toRevisionId: "rev-1" } },
+      { op: "archive", url: "archive", body: {} },
+      { op: "supersede", url: "supersede", body: { replacementSlug: "rules/smm/next" } },
+    ] as const;
+    for (const write of writes) {
+      const deps = makeDeps({ grants: true });
+      deps.casteSensitivity = async () => ({ sensitive: new Set(["smm"]) });
+      const item = makeItem({ kind: "rule", slug: "rules/smm/publications", folderPath: "rules/smm", roles: ["smm"] });
+      (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+      const url = `${base}/items/rules/smm/publications/${write.url}`;
+      const refused = await request(app(deps, operatorActor)).post(url).send(write.body);
+      expect(refused.status, `${write.op} by operator`).toBe(403);
+      expect((deps.module as Record<string, ReturnType<typeof vi.fn>>)[write.op]).not.toHaveBeenCalled();
+      const allowed = await request(app(deps, ownerActor)).post(url).send(write.body);
+      expect(allowed.status, `${write.op} by owner`).toBe(200);
+      expect((deps.module as Record<string, ReturnType<typeof vi.fn>>)[write.op]).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("K-3: the same writes on a rule of an ordinary caste pass for an operator, and a note is not graded", async () => {
+    for (const op of ["rollback", "archive"] as const) {
+      const deps = makeDeps({ grants: true });
+      deps.casteSensitivity = async () => ({ sensitive: new Set(["smm"]) });
+      (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(makeItem({ kind: "rule", slug: "rules/eng", roles: ["engineer"] }));
+      const body = op === "rollback" ? { toRevisionId: "rev-1" } : {};
+      expect((await request(app(deps, boardActor)).post(`${base}/items/rules/eng/${op}`).send(body)).status).toBe(200);
+    }
+    const viewerActor = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "viewer" }] };
+    const deps = makeDeps({ grants: true });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(makeItem({ kind: "rule", slug: "rules/eng", roles: ["engineer"] }));
+    expect((await request(app(deps, viewerActor)).post(`${base}/items/rules/eng/archive`).send({})).status).toBe(403);
+    expect(deps.module.archive).not.toHaveBeenCalled();
+  });
+
+  it("K-3: a viewer has no approver grade: approve is 403 before the module", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ kind: "rule", slug: "rules/no-secrets" });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    const viewerActor = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "viewer" }] };
+    const res = await request(app(deps, viewerActor)).post(`${base}/items/rules/no-secrets/approve`).send({ approverKind: "owner" });
+    expect(res.status).toBe(403);
+    expect(deps.module.approve).not.toHaveBeenCalled();
+  });
+
+  it("K-3: the import route hands the module the actor's grade, never one from the file", async () => {
+    const deps = makeDeps({ grants: true });
+    const operatorActor = { ...boardActor };
+    await request(app(deps, operatorActor)).post(`${base}/import`).set("Content-Type", "application/gzip").send(Buffer.from("x")).expect(200);
+    expect(deps.module.importTree).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), { approverKind: "operator" });
+    // a viewer is refused before the module
+    const viewerActor = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "viewer" }] };
+    deps.module.importTree.mockClear();
+    const viewerRes = await request(app(deps, viewerActor)).post(`${base}/import`).set("Content-Type", "application/gzip").send(Buffer.from("x"));
+    expect(viewerRes.status).toBe(403);
+    expect(deps.module.importTree).not.toHaveBeenCalled();
   });
 
   it("write gate: a payload flagged by the injection scanner is 422 before the store", async () => {

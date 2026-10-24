@@ -1,6 +1,6 @@
 {
   "id": "2e61388d-fd56-5de0-8786-9c0fe070b978",
-  "prevId": "ea05cb4f-0dac-4965-a002-1446ec814098",
+  "prevId": "0273b313-fa6f-4ade-88ea-2509ca3483f1",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -820,6 +820,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'light'"
+        },
+        "sensitive": {
+          "name": "sensitive",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {
@@ -54997,6 +55004,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "roles": {
+          "name": "roles",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         }
       },
       "indexes": {
@@ -55103,6 +55117,21 @@
           "isUnique": false,
           "concurrently": false,
           "method": "btree",
+          "with": {}
+        },
+        "knowledge_items_roles_idx": {
+          "name": "knowledge_items_roles_idx",
+          "columns": [
+            {
+              "expression": "roles",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
           "with": {}
         }
       },
