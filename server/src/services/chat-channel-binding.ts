@@ -1,11 +1,11 @@
 import { and, desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   chatConversations,
   chatEndpoints,
   chatPublications,
-} from "@paperclipai/db";
-import type { ExternalChannelBindingSummary } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { ExternalChannelBindingSummary } from "@myrmidon/shared";
 import { chatProviderConversationUrl } from "./chat-provider-links.js";
 
 /**

@@ -6,7 +6,7 @@
 
 [![Последний выпуск](https://img.shields.io/github/v/release/itkadr-git/myrmidon?sort=semver&label=%D1%80%D0%B5%D0%BB%D0%B8%D0%B7)](https://github.com/itkadr-git/myrmidon/releases/latest)
 
-[Что это](#что-такое-myrmidon) &middot; [Зачем](#зачем-myrmidon) &middot; [Быстрый старт](#быстрый-старт--развёртывание) &middot; [Архитектура](#архитектура-одним-взглядом) &middot; [Настройка](#настройка) &middot; [Что умеет сегодня](#что-умеет-сегодня) &middot; [Идея](#идея-модель-муравейника) &middot; [Путь к 2.0](#куда-мы-идём-путь-к-20) &middot; [Обновление](#обновление)
+[Что это](#что-такое-myrmidon) &middot; [Адресация агентов в Telegram](docs/myrmidon/guides/telegram-alias-addressing.ru.md) &middot; [Зачем](#зачем-myrmidon) &middot; [Быстрый старт](#быстрый-старт--развёртывание) &middot; [Архитектура](#архитектура-одним-взглядом) &middot; [Настройка](#настройка) &middot; [Что умеет сегодня](#что-умеет-сегодня) &middot; [Идея](#идея-модель-муравейника) &middot; [Путь к 2.0](#куда-мы-идём-путь-к-20) &middot; [Обновление](#обновление)
 
 [English](README.md) &middot; Русский
 
@@ -233,7 +233,7 @@ flowchart LR
   ([alibaba-image-connector](docs/myrmidon/guides/alibaba-image-connector.ru.md)).
 - **Облачные хранилища.** Облака, подключённые владельцем, с выдачей папок
   агентам; токены остаются в хранилище секретов компании
-  ([cloud-files-connector](docs/myrmidon/guides/cloud-files-connector.ru.md)).
+  ([cloud-connector](docs/myrmidon/guides/cloud-connector.ru.md)).
 - **Клиентские коннекторы (браузерный мост).** Расширение браузера на машине
   клиента само подключается к доске; бот управляет этим браузером, а действия,
   помеченные для подтверждения человеком, ждут человека за тем ПК. Подробнее:

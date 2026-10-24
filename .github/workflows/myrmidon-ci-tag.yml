@@ -155,7 +155,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build Runner issue-thread viewer
-        run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
+        run: pnpm --filter @myrmidon/paperclip-runner build:issue-thread
 
       - name: Build
         run: pnpm build
@@ -274,7 +274,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build plugin SDK dependencies
-        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+        run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 
       - name: Run tests of the other packages
         run: node scripts/myrmidon/ci/affected-tests.mjs extra
@@ -331,7 +331,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Verify the runner
-        run: pnpm --filter @paperclipai/paperclip-runner check:all
+        run: pnpm --filter @myrmidon/paperclip-runner check:all
 
   checks:
     # Cheap checks: node:test suites of our scripts, gitleaks, the
@@ -459,18 +459,18 @@ jobs:
       - name: Plugin compatibility — build plugin SDK and shared from the repository
         id: sdk
         if: ${{ !cancelled() }}
-        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+        run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 
       - name: Plugin compatibility — manifest snapshots (offline)
         if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
-        run: pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --fixtures-only
+        run: pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --fixtures-only
 
       - name: Plugin compatibility — installed plugins against the host
         if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
         run: |
           set -euo pipefail
           node scripts/myrmidon/plugin-compat/install.mjs --work "$RUNNER_TEMP/plugin-compat"
-          pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work "$RUNNER_TEMP/plugin-compat"
+          pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work "$RUNNER_TEMP/plugin-compat"
 
   fleetd:
     # tools/fleetd: gofmt, go vet and the unit tests, in the same pinned Go
@@ -571,7 +571,7 @@ jobs:
           set -euo pipefail
           out="$RUNNER_TEMP/dockergate-contract"
           rm -rf "$out" && mkdir -p "$out"
-          pnpm --filter @paperclipai/server exec tsx ../tools/dockergate/contract/emit-fixtures.ts "$out"
+          pnpm --filter @myrmidon/server exec tsx ../tools/dockergate/contract/emit-fixtures.ts "$out"
           # The static fixtures must equal the checked-in ones; traffic.json
           # carries wall-clock mtimes and is only replayed, not compared.
           diff -r -x traffic.json tools/dockergate/contract/testdata "$out"

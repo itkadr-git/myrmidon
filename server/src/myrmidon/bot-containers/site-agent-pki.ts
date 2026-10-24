@@ -9,6 +9,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export interface TestPkiArtifacts {
   dir: string;
@@ -28,20 +29,21 @@ export interface TestPkiArtifacts {
 
 /**
  * Resolves an allowed scratch directory under strict OPE-1524 hygiene rules:
- * Only explicit custom scratch dir, $PAPERCLIP_SCRATCH_DIR, $PAPERCLIP_RUN_SCRATCH_DIR,
+ * Only explicit custom scratch dir, $MYRMIDON_SCRATCH_DIR, $MYRMIDON_RUN_SCRATCH_DIR,
  * or $HOME/.myrmidon-scratch are permitted. Fallback to shared system /tmp or
  * os.tmpdir() is strictly prohibited.
  */
 export function resolveAllowedScratchDir(customScratchDir?: string): string {
+  const processEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
   const candidate =
     customScratchDir ||
-    process.env.PAPERCLIP_SCRATCH_DIR ||
-    process.env.PAPERCLIP_RUN_SCRATCH_DIR ||
-    (process.env.HOME ? path.join(process.env.HOME, ".myrmidon-scratch") : undefined);
+    readProductEnvFrom(processEnv, "SCRATCH_DIR") ||
+    readProductEnvFrom(processEnv, "RUN_SCRATCH_DIR") ||
+    (processEnv.HOME ? path.join(processEnv.HOME, ".myrmidon-scratch") : undefined);
 
   if (!candidate || candidate.trim().length === 0) {
     throw new Error(
-      "Ephemeral test PKI requires an allowed scratch directory ($PAPERCLIP_SCRATCH_DIR, $PAPERCLIP_RUN_SCRATCH_DIR, or $HOME/.myrmidon-scratch). Fallback to system /tmp or os.tmpdir() is prohibited by OPE-1524 hygiene rules.",
+      "Ephemeral test PKI requires an allowed scratch directory ($MYRMIDON_SCRATCH_DIR, $MYRMIDON_RUN_SCRATCH_DIR, or $HOME/.myrmidon-scratch). Fallback to system /tmp or os.tmpdir() is prohibited by OPE-1524 hygiene rules.",
     );
   }
   return candidate;

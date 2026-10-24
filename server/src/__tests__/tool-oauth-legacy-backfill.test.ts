@@ -10,7 +10,7 @@ import {
   secretAccessEvents,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,

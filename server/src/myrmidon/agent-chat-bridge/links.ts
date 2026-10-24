@@ -10,7 +10,8 @@
  */
 
 import { and, eq, inArray, ne } from "drizzle-orm";
-import { agents, chatEndpoints, type Db } from "@paperclipai/db";
+import { agents, chatEndpoints, type Db } from "@myrmidon/db";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import { sanitizeExternalChatUrl } from "../../services/chat-publication-projection.js";
 
 /** Board routes a relative link or bare path may point at (`ui/src/App.tsx`). */
@@ -108,10 +109,10 @@ export function resolveBoardPublicBaseUrl(
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
   const raw =
-    env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ||
+    readProductEnvFrom(env, "AUTH_PUBLIC_BASE_URL") ||
     env.BETTER_AUTH_URL ||
     env.BETTER_AUTH_BASE_URL ||
-    env.PAPERCLIP_PUBLIC_URL ||
+    readProductEnvFrom(env, "PUBLIC_URL") ||
     null;
   const trimmed = raw?.trim();
   return trimmed || null;

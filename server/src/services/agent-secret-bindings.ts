@@ -1,4 +1,4 @@
-import { envBindingSchema, type SecretProjectionClass, type SecretVersionSelector } from "@paperclipai/shared";
+import { envBindingSchema, type SecretProjectionClass, type SecretVersionSelector } from "@myrmidon/shared";
 
 interface AgentSecretBindingSyncService {
   syncSecretRefsForTarget?: (

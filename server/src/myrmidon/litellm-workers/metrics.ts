@@ -16,7 +16,7 @@
 // counter for the load. A gateway that exports none of them still resizes
 // correctly; only the reported numbers fall back to null.
 
-import type { LitellmWorkersMetrics } from "@paperclipai/shared";
+import type { LitellmWorkersMetrics } from "@myrmidon/shared";
 
 /** One sample of the exposition: a family name, its labels and its value. */
 export interface PrometheusSample {

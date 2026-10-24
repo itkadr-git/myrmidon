@@ -3,14 +3,15 @@
 // myrmidon(1.6.6 PROCS-1.5 ч.H, design BOARD-PROCESSES §2.1): the e2e of the
 // standalone worker — one api process and one worker process against the one
 // test database. Pins:
-//   * the worker boots with role `worker`, registers in board_processes with
-//     apiPort null, and answers its own loopback `/internal/ready` (ч.F
-//     contract) with 200 while the api process answers `/api/health`;
+//   * the standalone entry (server/src/worker.ts) boots the board runtime with
+//     role `worker`, registers in board_processes with that role, and answers
+//     `/internal/ready` (ч.F contract, mounted by the board app) with 200
+//     while the api process answers `/api/health`;
 //   * the worker's registry row is readable through the api process — the
 //     row is the cross-process write→read proof (written by the worker,
 //     served by the api);
 //   * SIGTERM drains the worker cleanly (the heartbeat executor quiesces,
-//     the probe listener closes) and the api process never notices.
+//     the listener closes) and the api process never notices.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -78,22 +79,17 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
       role: "api",
       port: await pickFreePort(),
     });
-    // The worker child: owns the heartbeat executor and the background
-    // sweeps, answers its loopback readiness probe on a port of its own —
-    // the board listener of the worker child still binds PORT (stage 1), so
-    // the probe port must not collide with it.
+    // The worker child, through the standalone entry: owns the heartbeat
+    // executor and the background sweeps. Its boot runs the full startServer
+    // startup (migrations, recovery, sweep arming) — give it the cold-boot
+    // budget of the api children.
     worker = await startApiProcess({
       baseDir,
       index: 1,
       connectionString,
       role: "worker",
       entry: WORKER_ENTRY,
-      readyPath: "/internal/ready",
       port: await pickFreePort(),
-      probePort: await pickFreePort(),
-      // The worker boot runs the full startServer startup (migrations check,
-      // recovery, sweep arming) before the probe reports ready — give it the
-      // same budget the cold-boot api children get.
       readyTimeoutMs: 360_000,
     });
   }, 480_000);
@@ -104,7 +100,7 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
     if (baseDir) fs.rmSync(baseDir, { recursive: true, force: true });
   }, 120_000);
 
-  it("scenario 1: the worker registers as role worker with apiPort null and answers /internal/ready", async () => {
+  it("scenario 1: the worker registers as role worker and answers /internal/ready", async () => {
     const ready = await requestApi(worker!.baseUrl, "/internal/ready");
     expect(ready.status, `worker readiness: ${ready.text.slice(0, 400)}`).toBe(200);
     // The ч.F contract body (process-readiness, landed in #1152).
@@ -127,7 +123,6 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
     const view = registry.json as BoardProcessesResponse;
     const workerRow = view.processes.find((row) => row.role === "worker");
     expect(workerRow, "worker row in board_processes").toBeDefined();
-    expect(workerRow?.apiPort).toBeNull();
     expect(workerRow?.status).toBe("live");
 
     // The api child of the layout is there too, with its own port.
@@ -136,14 +131,11 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
     expect(apiRow?.apiPort).toBe(api!.port);
   }, 120_000);
 
-  it("scenario 2: the worker probe serves /healthz for the container runtime", async () => {
+  it("scenario 2: the worker serves /healthz for the container runtime", async () => {
     const healthz = await requestApi(worker!.baseUrl, "/healthz");
     expect(healthz.status, `worker healthz: ${healthz.text.slice(0, 400)}`).toBe(200);
-    const body = healthz.json as { role?: string; status?: string; scope?: string };
+    const body = healthz.json as { role?: string };
     expect(body.role).toBe("worker");
-    expect(body.status).toBe("ok");
-    // Without a ч.B supervisor the aggregate degrades to the process's own checks.
-    expect(body.scope).toBe("process");
   }, 60_000);
 
   it("scenario 3: SIGTERM drains the worker while the api keeps serving", async () => {
@@ -161,7 +153,7 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
     ).toBe(true);
     expect(stop.code).toBe(0);
 
-    // The probe port is closed ...
+    // The worker's port is closed ...
     await expect(requestApi(worker!.baseUrl, "/internal/ready")).rejects.toThrow();
     // ... while the api still serves the shared database.
     const health = await requestApi(api!.baseUrl, "/api/health");

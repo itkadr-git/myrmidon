@@ -9,10 +9,10 @@
 // audit record. Part B never re-assigns an issue by hand — the queue decides.
 
 import { sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import type { SwarmSupervisorReadPort } from "./view.js";
 import { createSwarmSupervisorDbPort } from "./view.js";
-import { clearExpiredAssignee } from "../swarm-claim/store.js";
+import { clearReleasedAssignee } from "../swarm-claim/store.js";
 
 export const SUPERVISOR_RELEASE_REASON = "supervisor_rebalance";
 export const SWARM_CLAIM_SUPERVISOR_RELEASE_ACTION = "issue.swarm_claim_supervisor_release";
@@ -112,7 +112,7 @@ export async function releaseLeaseForRebalance(
   // periodic matcher pass is the safety net.
   let wokenAgentId: string | null = null;
   try {
-    await deps.port.unassignIssue(companyId, claim.issue_id, claim.agent_id, deps.now());
+    await deps.port.unassignIssue(companyId, claim.issue_id, claim.agent_id, claimId, deps.now());
   } catch {
     // The release already happened; an owner left in place is picked up again
     // by the periodic pass, which never wakes anyone for a foreign task.
@@ -201,7 +201,7 @@ async function resolvePartARelease(): Promise<PartAReleaseClaim | null> {
 export interface SwarmSupervisorReleasePort extends SwarmSupervisorReadPort {
   releaseClaim(companyId: string, claimId: string, reason: string, now: Date): Promise<boolean>;
   /** Take the owner off a queue-status task (conditional on the owner still being `agentId`). */
-  unassignIssue(companyId: string, issueId: string, agentId: string, now: Date): Promise<boolean>;
+  unassignIssue(companyId: string, issueId: string, agentId: string, claimId: string, now: Date): Promise<boolean>;
 }
 
 export function createSwarmSupervisorReleasePort(
@@ -229,7 +229,7 @@ export function createSwarmSupervisorReleasePort(
       `);
       return Array.isArray(rows) && rows.length > 0;
     },
-    unassignIssue: (companyId, issueId, agentId, now) =>
-      clearExpiredAssignee(db, { companyId, issueId, agentId, now }),
+    unassignIssue: (companyId, issueId, agentId, claimId, now) =>
+      clearReleasedAssignee(db, { companyId, issueId, agentId, claimId, releaseReason: SUPERVISOR_RELEASE_REASON, now }),
   };
 }

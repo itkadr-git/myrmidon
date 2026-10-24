@@ -20,7 +20,7 @@
 // expiry). Failures are journaled as `myrmidon.github_app.denied`.
 
 import { and, eq, isNull } from "drizzle-orm";
-import { agents, companySecrets, type Db } from "@paperclipai/db";
+import { agents, companySecrets, type Db } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import type { GitCredential } from "../../services/git-credentials.js";
 import { readGitHubSharedIdentitySettings } from "./store.js";
@@ -199,21 +199,22 @@ export async function resolveGitHubAppCredential(
   } catch (error) {
     return fail(error instanceof GitHubAppTokenError ? error.message : "GitHub App token minting failed");
   }
-  await journal(db, {
-    companyId: input.companyId,
-    agentId: agent.id,
-    runId: input.runId,
-    action: "myrmidon.github_app.issued",
-    details: {
-      repository,
-      entryId: entry.id,
-      appId: entry.appId,
-      installationId: minted.installationId,
-      expiresAt: minted.expiresAt,
-      reused: minted.reused,
-      permissions: entry.permissions,
-    },
-  });
+  if (!minted.reused) {
+    await journal(db, {
+      companyId: input.companyId,
+      agentId: agent.id,
+      runId: input.runId,
+      action: "myrmidon.github_app.issued",
+      details: {
+        repository,
+        entryId: entry.id,
+        appId: entry.appId,
+        installationId: minted.installationId,
+        expiresAt: minted.expiresAt,
+        permissions: entry.permissions,
+      },
+    });
+  }
   return {
     kind: "issued",
     repository,

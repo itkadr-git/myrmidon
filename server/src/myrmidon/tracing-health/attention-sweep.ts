@@ -15,12 +15,12 @@
 // every myrmidon sweep. server/src/index.ts gets one marked call.
 
 import { isNotNull } from "drizzle-orm";
-import { companies, type Db } from "@paperclipai/db";
+import { companies, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import { secretService } from "../../services/index.js";
 import { createLitellmGatewayClient } from "../litellm-costs/litellm-costs.js";
-import { readTracingHealthSettings } from "./probes.js";
+import { readTracingHealthSettings, withClickhousePassword } from "./probes.js";
 import type { TracingHealthReport } from "./domain.js";
 import {
   readTracingHealthAttentionSignal,
@@ -207,7 +207,7 @@ function defaultReportSource(db: Db, env: NodeJS.ProcessEnv): (companyId: string
   const settings = () => readTracingHealthSettings(env);
 
   return async () => {
-    const current = settings();
+    const current = await withClickhousePassword(settings(), env);
     const now = new Date();
     const to = now;
     const from = new Date(to.getTime() - current.windowMs);

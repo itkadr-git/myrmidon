@@ -8,7 +8,7 @@
 // back to the built-in AGENT_ROLES/AGENT_ROLE_LABELS pairs, so the UI never
 // loses its role picker while the Part A API is absent or failing.
 import { useQuery } from "@tanstack/react-query";
-import { AGENT_ROLES, AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_ROLE_LABELS } from "@myrmidon/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { castesApi, castesQueryKey, type CasteView } from "@/components/myrmidon/castes/castesApi";
 

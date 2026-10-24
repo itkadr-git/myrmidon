@@ -8,7 +8,7 @@
 // into company activity (S9). Nothing here spells dialect SQL: the module
 // keeps the "0 triggers, 0 `sql\`` with dialect operators" guarantee — full
 // text search is the `SearchIndex` PORT (domain.ts), implemented for pg in
-// `@paperclipai/db` (tsvector + pg_trgm + unaccent) and injected by wiring.
+// `@myrmidon/db` (tsvector + pg_trgm + unaccent) and injected by wiring.
 //
 // The pointer discipline (the acceptance criteria):
 //   - `draft()` writes a revision and NEVER touches `delivered_revision_id`;
@@ -23,7 +23,7 @@
 //     byte-for-byte identical.
 
 import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   knowledgeEvents,
   knowledgeItems,
@@ -31,8 +31,10 @@ import {
   knowledgeRevisions,
   knowledgeSources,
   knowledgeSuggestions,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
+import { resolveCasteSensitivity } from "../caste-sensitivity.js";
+import { ruleApproverKind } from "./rules.js";
 import {
   KnowledgeDomainError,
   assertApprovable,
@@ -41,7 +43,9 @@ import {
   assertRuleFields,
   assertSingleLine,
   assertValidSlug,
+  assertValidRoles,
   assertValidTags,
+  approverKindSatisfies,
   draftPointerFields,
   extractLinkTargets,
   assertTranslationOf,
@@ -57,6 +61,7 @@ import {
   type KnowledgeRevisionStatus,
   type KnowledgeRevisionLang,
   type KnowledgeSourceKind,
+  type KnowledgeSuggestionTrust,
   type KnowledgeTreePage,
   type SearchIndex,
 } from "./domain.js";
@@ -79,6 +84,7 @@ export interface KnowledgeItemDto {
   status: KnowledgeItemStatus;
   folderPath: string;
   tags: string[];
+  roles: string[];
   approvalRequired: boolean;
   approverKind: string | null;
   deliveredRevisionId: string | null;
@@ -137,6 +143,7 @@ export interface CreateKnowledgeInput {
   summary?: string | null;
   folderPath?: string;
   tags?: string[];
+  roles?: string[];
   approvalRequired?: boolean;
   approverKind?: string | null;
   sources?: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
@@ -196,6 +203,7 @@ function toItemDto(row: ItemRow): KnowledgeItemDto {
     status: row.status,
     folderPath: row.folderPath,
     tags: row.tags ?? [],
+    roles: row.roles ?? [],
     approvalRequired: row.approvalRequired,
     approverKind: row.approverKind,
     deliveredRevisionId: row.deliveredRevisionId,
@@ -358,8 +366,21 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     const lang = normalizeKnowledgeRevisionLang(input.lang);
     if (input.translationOf) throw new KnowledgeDomainError("translation_requires_canonical_item", 400, "A translation revision must be created against an existing knowledge item.");
     const kind = input.kind ?? "note";
+    const roles = assertValidRoles(input.roles ?? []);
+    if (kind === "rule" && roles.length === 0) {
+      throw new KnowledgeDomainError("invalid_metadata", 400, "A rule (kind \"rule\") needs at least one role.");
+    }
+    if (kind !== "rule" && roles.length > 0) {
+      throw new KnowledgeDomainError("invalid_metadata", 400, "Roles are only valid on rules (kind \"rule\").");
+    }
     const approvalRequired = kind === "rule" ? true : (input.approvalRequired ?? false);
-    assertRuleFields(kind, approvalRequired, input.approverKind ?? null);
+
+    let approverKind = input.approverKind ?? null;
+    if (kind === "rule") {
+      const sensitivity = await resolveCasteSensitivity(db, input.companyId);
+      approverKind = ruleApproverKind(roles, sensitivity);
+    }
+    assertRuleFields(kind, approvalRequired, approverKind);
 
     const createdAt = now();
     const row = await db.transaction(async (tx) => {
@@ -383,8 +404,9 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           status: "draft",
           folderPath: input.folderPath ?? "",
           tags: input.tags ?? [],
+          roles,
           approvalRequired,
-          approverKind: input.approverKind ?? null,
+          approverKind,
           deliveredRevisionId: null,
           currentRevisionNumber: 1,
           createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -654,10 +676,15 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
    */
   async function approve(nestId: string, idOrSlug: string, actor: KnowledgeActor, input: ApproveKnowledgeInput = {}): Promise<KnowledgeItemDto> {
     const current = await loadItem(nestId, idOrSlug);
+    let approverKind = current.approverKind;
+    if (current.kind === "rule") {
+      const sensitivity = await resolveCasteSensitivity(db, current.companyId);
+      approverKind = ruleApproverKind(current.roles ?? [], sensitivity);
+    }
     const gateItem: KnowledgeApprovalGateItem = {
       kind: current.kind,
       approvalRequired: current.approvalRequired,
-      approverKind: current.approverKind,
+      approverKind,
     };
     const approver: KnowledgeApprover = { actorType: actor.actorType, actorId: actor.actorId, kind: actor.kind ?? null };
     assertApprovable(gateItem, approver);
@@ -1047,6 +1074,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       targetSlug?: string | null;
       sourceKind?: KnowledgeSourceKind;
       sourceRef?: string | null;
+      /** Provenance trust (1.7 L-5): set by the callers that propose foreign url content. */
+      trust?: KnowledgeSuggestionTrust;
     },
   ): Promise<{ id: string; targetItemId: string | null; status: string; createdAt: string }> {
     assertSingleLine(input.body, "Suggestion body");
@@ -1065,6 +1094,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         rationale: input.rationale ?? null,
         sourceKind: input.sourceKind ?? null,
         sourceRef: input.sourceRef ?? null,
+        trust: input.trust ?? null,
         status: "pending",
         createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
         createdByUserId: actor.actorType === "user" ? (actor.actorId ?? null) : null,
@@ -1111,7 +1141,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     return { id: row.id, status: input.decision };
   }
 
-  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending"): Promise<Array<{ id: string; targetItemId: string | null; body: string; status: string; createdAt: string }>> {
+  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending"): Promise<Array<{ id: string; targetItemId: string | null; body: string; status: string; trust: string | null; createdAt: string }>> {
     const conditions = [eq(knowledgeSuggestions.nestId, nestId)];
     if (status !== "all") conditions.push(eq(knowledgeSuggestions.status, status));
     const rows = await db.select().from(knowledgeSuggestions).where(and(...conditions)).orderBy(asc(knowledgeSuggestions.createdAt));
@@ -1120,6 +1150,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       targetItemId: row.targetItemId,
       body: row.body,
       status: row.status,
+      trust: row.trust ?? null,
       createdAt: row.createdAt.toISOString(),
     }));
   }
@@ -1144,6 +1175,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       summary: item.summary,
       folder: item.folderPath,
       tags: item.tags ?? [],
+      roles: item.roles ?? [],
       status: item.status,
       approvalRequired: item.approvalRequired,
       approverKind: item.approverKind,
@@ -1163,19 +1195,87 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     nestId: string,
     buf: Buffer,
     actor: KnowledgeActor,
-    options: { publishOnImport?: boolean } = {},
+    options: {
+      publishOnImport?: boolean;
+      /**
+       * K-3: the approver grade the importing actor presents (from its
+       * membership, never from the file). `null` = no grade at all. Left
+       * undefined only by in-process callers (migration runner, seed), which
+       * act as the instance itself.
+       */
+      approverKind?: string | null;
+    } = {},
   ): Promise<ImportTreeResult> {
     const doc = parseKnowledgeTree(buf);
     if (doc.nestId !== nestId) {
       throw new KnowledgeDomainError("nest_mismatch", 400, `Tree was exported for nest ${doc.nestId}, not ${nestId}.`);
+    }
+    const presented = options.approverKind === undefined ? "owner" : options.approverKind;
+    const sensitivity = await resolveCasteSensitivity(db, companyId);
+
+    /**
+     * K-3: a rule's approver_kind is derived from its roles, never read from
+     * the file. Changing the roles of an existing rule, turning a note into a
+     * rule or a rule into a note needs a grade covering both the old and the
+     * new requirement (403); a new rule arrives published only when the actor
+     * could approve it, otherwise as a draft.
+     */
+    const ruleGate = (page: (typeof doc.pages)[number], existing: ItemRow | null, changed: boolean) => {
+      if (page.kind !== "rule" && existing?.kind !== "rule") return { approverKind: page.approverKind, mayPublish: true };
+      const derived = page.kind === "rule" ? ruleApproverKind(page.roles, sensitivity) : null;
+      const previous = existing?.kind === "rule" ? ruleApproverKind(existing.roles ?? [], sensitivity) : null;
+      const mayPublish = derived === null || approverKindSatisfies(derived, presented);
+      if (existing) {
+        const sameRoles = JSON.stringify([...(existing.roles ?? [])].sort()) === JSON.stringify([...page.roles].sort());
+        if (existing.kind !== page.kind || !sameRoles) {
+          for (const required of [previous, derived]) {
+            if (required && !approverKindSatisfies(required, presented)) {
+              throw new KnowledgeDomainError(
+                "approver_kind_mismatch",
+                403,
+                `Importing "${page.slug}" changes the roles of a rule that needs kind "${required}", the importer presents "${presented ?? "none"}".`,
+              );
+            }
+          }
+        }
+        if (page.kind === "rule" && page.status === "published" && changed && options.publishOnImport !== false && !mayPublish) {
+          throw new KnowledgeDomainError(
+            "approver_kind_mismatch",
+            403,
+            `Importing "${page.slug}" would publish a rule that needs kind "${derived}", the importer presents "${presented ?? "none"}".`,
+          );
+        }
+      }
+      return { approverKind: derived ?? page.approverKind, mayPublish };
+    };
+
+    const deliveredContentOf = async (item: ItemRow): Promise<string> =>
+      item.deliveredRevisionId
+        ? (
+            await db
+              .select({ content: knowledgeRevisions.content })
+              .from(knowledgeRevisions)
+              .where(eq(knowledgeRevisions.id, item.deliveredRevisionId))
+              .limit(1)
+          )[0]?.content ?? ""
+        : "";
+
+    // Refuse before the first write: an import is all-or-nothing on grades.
+    for (const page of doc.pages) {
+      assertValidSlug(page.slug);
+      const present = await loadItem(nestId, page.slug).catch(() => null);
+      ruleGate(page, present, present ? (await deliveredContentOf(present)) !== page.content : true);
     }
     let created = 0;
     let updated = 0;
 
     for (const page of doc.pages) {
       assertValidSlug(page.slug);
-      assertRuleFields(page.kind, page.approvalRequired, page.approverKind);
       const existing = await loadItem(nestId, page.slug).catch(() => null);
+      const currentContent = existing ? await deliveredContentOf(existing) : "";
+      const changed = existing ? currentContent !== page.content : true;
+      const gate = ruleGate(page, existing, changed);
+      assertRuleFields(page.kind, page.approvalRequired, gate.approverKind);
       const timestamp = now();
 
       if (!existing) {
@@ -1189,11 +1289,12 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
               slug: page.slug,
               title: page.title,
               summary: page.summary,
-              status: page.status,
+              status: page.status === "published" && !gate.mayPublish ? "draft" : page.status,
               folderPath: page.folder,
               tags: page.tags,
+              roles: page.roles,
               approvalRequired: page.approvalRequired,
-              approverKind: page.approverKind,
+              approverKind: gate.approverKind,
               deliveredRevisionId: null,
               currentRevisionNumber: 1,
               createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -1209,13 +1310,13 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
               nestId,
               itemId: item!.id,
               revisionNumber: 1,
-              status: page.status === "published" ? "approved" : "draft",
+              status: page.status === "published" && gate.mayPublish ? "approved" : "draft",
               content: page.content,
               changeSummary: "import",
               createdAt: timestamp,
             })
             .returning();
-          if (page.status === "published" && options.publishOnImport !== false) {
+          if (page.status === "published" && gate.mayPublish && options.publishOnImport !== false) {
             await tx
               .update(knowledgeItems)
               .set({ deliveredRevisionId: revision!.id })
@@ -1234,24 +1335,15 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         });
         created += 1;
       } else {
-        const currentContent = existing.deliveredRevisionId
-          ? (
-              await db
-                .select({ content: knowledgeRevisions.content })
-                .from(knowledgeRevisions)
-                .where(eq(knowledgeRevisions.id, existing.deliveredRevisionId))
-                .limit(1)
-            )[0]?.content ?? ""
-          : "";
-        const changed = currentContent !== page.content;
         await db.transaction(async (tx) => {
           const set: Partial<ItemRow> = {
             title: page.title,
             summary: page.summary,
             folderPath: page.folder,
             tags: page.tags,
+            roles: page.roles,
             approvalRequired: page.approvalRequired,
-            approverKind: page.approverKind,
+            approverKind: gate.approverKind,
             kind: page.kind,
             updatedAt: timestamp,
           };
@@ -1272,7 +1364,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
             set.currentRevisionNumber = existing.currentRevisionNumber + 1;
             // S3 holds here too: an import never silently moves the pointer;
             // a published page gets the new revision delivered explicitly.
-            if (page.status === "published" && options.publishOnImport !== false) {
+            if (page.status === "published" && gate.mayPublish && options.publishOnImport !== false) {
               set.deliveredRevisionId = revision!.id;
             }
             await syncLinks(tx, { ...existing, ...set } as ItemRow, page.content);

@@ -6,7 +6,7 @@
 // MYRMIDON_BOT_CANARY_SELECTOR names a canary bot) nothing is created or
 // read, and the routes answer "not enabled".
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import type { BotContainerAgent, ApplyBotContainerOutcome } from "./index.js";

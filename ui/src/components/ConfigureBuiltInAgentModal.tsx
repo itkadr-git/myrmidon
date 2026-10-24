@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Trans } from "react-i18next";
+import { useTranslation } from "@/i18n";
 
 import {
   Dialog,
@@ -60,6 +62,7 @@ export function ConfigureBuiltInAgentModal({
   onOpenChange,
   onConfigured,
 }: ConfigureBuiltInAgentModalProps) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { definition } = state;
 
@@ -111,7 +114,7 @@ export function ConfigureBuiltInAgentModal({
     models.some((candidate) => candidate.id === normalizedModel);
   const modelError = modelKnown
     ? null
-    : `Model “${normalizedModel}” is not available for ${adapterType}. Choose a known model.`;
+    : t("area.agents-2.configure-built-in-agent-modal.modelUnavailable", { model: normalizedModel, adapter: adapterType });
   const budgetMonthlyCents = parseBudgetMonthlyCents(budgetDollars);
   const budgetValid = !budgetDollars.trim() || budgetMonthlyCents !== undefined;
   const canSubmit =
@@ -119,8 +122,8 @@ export function ConfigureBuiltInAgentModal({
     modelKnown &&
     (setupSupportedInModal ? !modelRequired || normalizedModel.length > 0 : true);
   const submitLabel = setupSupportedInModal
-    ? `Configure & enable ${definition.displayName}`
-    : `Provision ${definition.displayName}`;
+    ? t("area.agents-2.configure-built-in-agent-modal.submitConfigure", { name: definition.displayName })
+    : t("area.agents-2.configure-built-in-agent-modal.submitProvision", { name: definition.displayName });
 
   const provision = useMutation({
     mutationFn: async () => {
@@ -143,7 +146,7 @@ export function ConfigureBuiltInAgentModal({
       onOpenChange(false);
     },
     onError: (err) => {
-      setError(err instanceof ApiError ? err.message : "Failed to configure the built-in agent.");
+      setError(err instanceof ApiError ? err.message : t("area.agents-2.configure-built-in-agent-modal.configureError"));
     },
   });
 
@@ -151,18 +154,20 @@ export function ConfigureBuiltInAgentModal({
     <Dialog open={open} onOpenChange={(next) => (provision.isPending ? undefined : onOpenChange(next))}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Set up the {definition.displayName}</DialogTitle>
+          <DialogTitle>{t("area.agents-2.configure-built-in-agent-modal.title", { name: definition.displayName })}</DialogTitle>
           <DialogDescription>{definition.shortPurpose}</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           <InlineBanner tone="info" compact>
-            Creates <strong>{definition.displayName}</strong> in your roster, badged{" "}
-            <strong>Built-in</strong>. Organizations that require hire approval will queue this for the
-            board.
+            <Trans
+              i18nKey="area.agents-2.configure-built-in-agent-modal.banner"
+              values={{ name: definition.displayName }}
+              components={[<strong />, <strong />]}
+            />
           </InlineBanner>
 
-          <Field label="Adapter type">
+          <Field label={t("area.agents-2.configure-built-in-agent-modal.adapterTypeLabel")}>
             <AdapterTypeDropdown
               value={adapterType}
               onChange={(next) => {
@@ -196,12 +201,11 @@ export function ConfigureBuiltInAgentModal({
 
           {!setupSupportedInModal && (
             <InlineBanner tone="warning" compact>
-              This adapter needs command or endpoint fields before it can run. Provision the
-              built-in row now, then finish those fields from the full agent configuration.
+              {t("area.agents-2.configure-built-in-agent-modal.needsFieldsBanner")}
             </InlineBanner>
           )}
 
-          <Field label="Monthly budget (optional)" hint="Leave blank for no cap.">
+          <Field label={t("area.agents-2.configure-built-in-agent-modal.budgetLabel")} hint={t("area.agents-2.configure-built-in-agent-modal.budgetHint")}>
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground">$</span>
               <Input
@@ -214,7 +218,7 @@ export function ConfigureBuiltInAgentModal({
                 onChange={(event) => setBudgetDollars(event.target.value)}
                 className="w-32"
               />
-              <span className="text-sm text-muted-foreground">/ month</span>
+              <span className="text-sm text-muted-foreground">{t("area.agents-2.configure-built-in-agent-modal.perMonth")}</span>
             </div>
           </Field>
 
@@ -231,7 +235,7 @@ export function ConfigureBuiltInAgentModal({
             onClick={() => onOpenChange(false)}
             disabled={provision.isPending}
           >
-            Not now
+            {t("area.agents-2.configure-built-in-agent-modal.notNow")}
           </Button>
           <Button
             onClick={() => {
@@ -240,7 +244,7 @@ export function ConfigureBuiltInAgentModal({
             }}
             disabled={!canSubmit || provision.isPending}
           >
-            {provision.isPending ? "Configuring…" : submitLabel}
+            {provision.isPending ? t("area.agents-2.configure-built-in-agent-modal.configuring") : submitLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

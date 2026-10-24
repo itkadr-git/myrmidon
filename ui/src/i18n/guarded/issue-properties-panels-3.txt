@@ -1,0 +1,9 @@
+components/issue-properties/external-object-rows.tsx
+components/issue-properties/relation-controls.tsx
+components/side-panel/SidePanelFrame.tsx
+components/side-panel/SidePanelLauncher.tsx
+components/task-detail/TaskDetailRelationsPanel.tsx
+components/task-detail/TaskDetailTasksPanel.tsx
+components/task-side-panel/TaskDocumentPanel.tsx
+components/task-side-panel/TaskSidePanel.tsx
+components/task-side-panel/TaskWorkspaceFilePanel.tsx

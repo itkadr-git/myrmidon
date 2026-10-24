@@ -3,11 +3,11 @@ import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it, vi, afterEach } from "vitest";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
 import {
   GITHUB_LAUNCHER_PAYLOAD_VERSION,
   githubLauncherProgramFiles,
-} from "@paperclipai/adapter-utils/github-launcher";
+} from "@myrmidon/adapter-utils/github-launcher";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import {
@@ -24,7 +24,7 @@ import {
 // see the tool.completed preview-caching test below.
 import { parseHermesStdoutLine } from "../../ui/parse-stdout.js";
 // myrmidon(1.6.5 BOT-DISK-H5a): the C6 contract fixture is the oracle for the
-// workspace body field. This package does not depend on @paperclipai/shared
+// workspace body field. This package does not depend on @myrmidon/shared
 // (and tsc's rootDir forbids importing it by path), so the schema's three
 // field formats are restated in runWorkspaceFieldSchema below; the contract
 // test in packages/shared keeps the fixture and the real schema in lockstep.
@@ -1538,6 +1538,44 @@ describe("execute — operator cancellation (G4)", () => {
       state: "acknowledged",
       forced: false,
     });
+  });
+
+  it("logs the cancellation correlation id and sender when it stops the gateway run", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-cancel-trace", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        controller.abort();
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/stop")) {
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      if (init?.method === "GET") {
+        return new Response(JSON.stringify({ status: "cancelled", last_event: "run.cancelled" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 30 });
+    ctx.signal = controller.signal;
+    ctx.paperclipCancellation = {
+      current: {
+        correlationId: "corr-trace-1",
+        source: { code: "board_operator", endpoint: "POST /api/heartbeat-runs/:runId/cancel", actor: "user-42" },
+        reason: "Cancelled by a board operator",
+      },
+    };
+    ctx.onCancellationReady = vi.fn(async () => undefined);
+
+    await execute(ctx);
+
+    const logText = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line)).join("\n");
+    expect(logText).toContain("stop requested for run run-cancel-trace correlationId=corr-trace-1 sender=user-42");
   });
 
   it("does not claim cancellation acknowledged when the post-stop status check cannot verify termination", async () => {

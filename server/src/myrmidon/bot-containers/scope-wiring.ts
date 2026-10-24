@@ -14,7 +14,7 @@ import {
   projectMemberships,
   projects,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   ISOLATED_LAYOUT,
   isScopeInstanceDirName,
@@ -23,7 +23,7 @@ import {
   type IsolationMode,
   type ScopeLayout,
   type SettableScopeKind,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { botScopeRoutes } from "./scope-routes.js";
 import { botScopeService, type BotScopeService, type ScopeStore } from "./scope-service.js";
 import { isUniqueViolation } from "../../db-errors.js";
@@ -79,6 +79,13 @@ export function botScopeStore(db: Db): ScopeStore {
         const joined = await db
           .select({ userId: projectMemberships.userId, projectId: projectMemberships.projectId })
           .from(projectMemberships)
+          .innerJoin(
+            agents,
+            and(
+              eq(projectMemberships.userId, sql`${agents.id}::text`),
+              eq(projectMemberships.companyId, agents.companyId),
+            ),
+          )
           .where(
             and(
               eq(projectMemberships.companyId, companyId),

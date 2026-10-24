@@ -9,7 +9,7 @@ import { resolve } from "node:path";
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { wsDesiredStateSchema } from "@paperclipai/shared";
+import { wsDesiredStateSchema } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { botWorkspacePressureFromPartition } from "./bot-workspaces-pressure.js";
 import { botWorkspacesRoutes } from "./bot-workspaces-routes.js";
@@ -212,6 +212,18 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
     const { app } = harness({ issues: [lost] });
     const res = await request(app(botActor)).get(URL);
     expect(res.body.workspaces[0]).toMatchObject({ key: "ABC-7", state: "closing" });
+  });
+
+  it("keeps a reassigned copy in closing even when the task is older than the terminal lookback", async () => {
+    const lost = issue({
+      identifier: "ABC-8",
+      assigneeAgentId: OTHER_BOT_ID,
+      updatedAt: new Date("2025-01-01T00:00:00Z"),
+    });
+    const { app } = harness({ issues: [lost] });
+    const res = await request(app(botActor)).get(URL);
+    expect(res.body.workspaces).toHaveLength(1);
+    expect(res.body.workspaces[0]).toMatchObject({ key: "ABC-8", state: "closing" });
   });
 
   it("takes the repository from the project, otherwise from the latest PR", async () => {

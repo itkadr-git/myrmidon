@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
   agentWakeupRequests,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   describeEmbeddedPostgres,
   resetCompanyIssueFixtures,
@@ -23,11 +23,19 @@ import { heartbeatService } from "../services/heartbeat.js";
 
 const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
   resetEach: async (db) => {
-    await db.delete(agentWakeupRequests);
-    await db.delete(activityLog);
-    await db.delete(issues);
-    await db.delete(agents);
-    await resetCompanyIssueFixtures(db);
+    await db.transaction(async (tx) => {
+      // Freeze writers to every table whose rows are drained below. The lock
+      // mode conflicts with INSERT on these tables, so no dependent wake/activity
+      // row can appear between cleanup statements and the agent delete.
+      await tx.execute(
+        sql`LOCK TABLE activity_log, agent_wakeup_requests, issues, agents IN SHARE ROW EXCLUSIVE MODE`,
+      );
+      await tx.delete(agentWakeupRequests);
+      await tx.delete(activityLog);
+      await tx.delete(issues);
+      await tx.delete(agents);
+      await resetCompanyIssueFixtures(tx as typeof db);
+    });
   },
 });
 

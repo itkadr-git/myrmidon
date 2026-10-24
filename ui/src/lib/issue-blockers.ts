@@ -1,4 +1,4 @@
-import type { IssueRelationIssueSummary } from "@paperclipai/shared";
+import type { IssueRelationIssueSummary } from "@myrmidon/shared";
 
 export type WaitingBlockerStatus = "done" | "running" | "queued";
 

@@ -4,7 +4,7 @@
 // function on its tick (one import, one call — see CONVENTIONS.md §12). The wake
 // guard in part E imports only `shouldSuppressRunForIssue` from `./guard.js`.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import type { PullRequestMergeDetailsResolver } from "../../services/github-pull-request-merge.js";
 import { createTaskPrSyncSweep } from "./sweep.js";

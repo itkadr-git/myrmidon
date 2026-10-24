@@ -6,6 +6,7 @@ import {
   Download,
   FlaskConical,
   KeyRound,
+  ListChecks,
   MonitorCog,
   Puzzle,
   Shield,
@@ -15,7 +16,7 @@ import {
   UserRoundPen,
   Users,
 } from "lucide-react";
-import type { PluginRecord } from "@paperclipai/shared";
+import type { PluginRecord } from "@myrmidon/shared";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
@@ -94,7 +95,7 @@ export function CompanySettingsSidebar() {
   return (
     <ContextualSidebarFrame
       surface="settings"
-      title="Settings"
+      title={t("area.shell-sidebar-layout-1.company-settings-sidebar.title")}
       showHeader={false}
       className={primarySidebarStyles.surface}
     >
@@ -103,20 +104,20 @@ export function CompanySettingsSidebar() {
         className="flex h-(--sz-60px) shrink-0 items-center px-3"
       >
         <div data-slot="settings-back-group" className={`${primarySidebarStyles.group} w-full`}>
-          <SidebarNavItem to="/dashboard" label="Back to app" icon={ArrowLeft} />
+          <SidebarNavItem to="/dashboard" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.backToApp")} icon={ArrowLeft} />
         </div>
       </div>
       <nav
-        aria-label="Settings"
+        aria-label={t("area.shell-sidebar-layout-1.company-settings-sidebar.title")}
         data-slot="contextual-sidebar-nav"
         className={primarySidebarStyles.nav}
       >
         <div data-slot="contextual-sidebar-group" className={primarySidebarStyles.group}>
-          <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem to="/company/settings" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.general")} icon={SlidersHorizontal} end />
           {showPage("instance.profile") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}
-              label="Profile"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.profile")}
               icon={UserRoundPen}
               end
             />
@@ -124,11 +125,14 @@ export function CompanySettingsSidebar() {
           {showPage("company.members") && (
             <SidebarNavItem
               to="/company/settings/members"
-              label="Members"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.members")}
               icon={Users}
               badge={badges?.joinRequests ?? 0}
               end
             />
+          )}
+          {showPage("instance.access") && (
+            <SidebarNavItem to="/company/settings/users" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.users")} icon={Users} end />
           )}
           {companySettingsPluginSlots
             .filter((slot) => slot.routePath)
@@ -142,12 +146,12 @@ export function CompanySettingsSidebar() {
               />
             ))}
           {showPage("company.secrets") && (
-            <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+            <SidebarNavItem to="/company/settings/secrets" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.secrets")} icon={KeyRound} end />
           )}
           {showPage("company.secrets") && (
             <SidebarNavItem
               to="/company/settings/channel-allowlist"
-              label="Channel allowlist"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.channelAllowlist")}
               icon={Users}
               end
             />
@@ -155,19 +159,19 @@ export function CompanySettingsSidebar() {
           {showPage("company.secrets") && (
             <SidebarNavItem
               to="/company/settings/access-hub"
-              label="Access hub"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.accessHub")}
               icon={ShieldCheck}
               // The screen exists before its server API: while the instance
               // answers 404/501 the entry says so instead of leading to a
               // screen that only shows the not-available notice.
-              textBadge={accessHubAvailability === "unavailable" ? "soon" : undefined}
+              textBadge={accessHubAvailability === "unavailable" ? t("area.shell-sidebar-layout-1.company-settings-sidebar.soon") : undefined}
               end
             />
           )}
           {showPage("instance.environments") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
-              label="Environments"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.environments")}
               icon={MonitorCog}
               end
             />
@@ -175,7 +179,7 @@ export function CompanySettingsSidebar() {
           {showPage("instance.access") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}
-              label="Access"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.access")}
               icon={Shield}
               end
             />
@@ -188,28 +192,34 @@ export function CompanySettingsSidebar() {
           {showPage("instance.access") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/board-api-keys`}
-              label="Board API keys"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.boardApiKeys")}
               icon={KeyRound}
               end
             />
           )}
           {showPage("company.export") && (
-            <SidebarNavItem to="/company/export" label="Export" icon={Download} />
+            <SidebarNavItem to="/company/export" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.export")} icon={Download} />
           )}
           {!isCloud && showPage("company.import") && (
-            <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
+            <SidebarNavItem to="/company/import" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.import")} icon={Upload} end />
           )}
           {showPage("instance.experimental") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`}
-              label="Experimental"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.experimental")}
               icon={FlaskConical}
             />
           )}
+          {/* myrmidon(FEATURES): fork features with live health */}
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/features`}
+            label={t("area.shell-sidebar-layout-1.company-settings-sidebar.features")}
+            icon={ListChecks}
+          />
           {showPlugins && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}
-              label="Plugins"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.plugins")}
               icon={Puzzle}
             />
           )}
@@ -237,7 +247,7 @@ export function CompanySettingsSidebar() {
           {showPage("instance.adapters") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`}
-              label="Adapters"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.adapters")}
               icon={Cpu}
             />
           )}
