@@ -41,6 +41,7 @@ import { ModelServiceSettingsPanel } from "@/components/myrmidon/ModelServiceSet
 import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
+import { InstanceSecretSettingsPanel } from "@/components/myrmidon/InstanceSecretSettingsPanel"; // myrmidon(SETTINGS-UI E2.1)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n";
@@ -184,6 +185,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <ChannelSettingsPanel /> {/* myrmidon(SETTINGS-UI A, 1.7-SETTINGS-TO-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
+      <InstanceSecretSettingsPanel /> {/* myrmidon(SETTINGS-UI E2.1) */}
 
       {showDeploymentStatus && (
       <section>

@@ -2470,8 +2470,22 @@
     {
       "idx": 415,
       "version": "7",
-      "when": 1792399114000,
-      "tag": "0415_heartbeat_runs_provider_quota_idx",
+      "when": 1792395515000,
+      "tag": "0415_activity_log_company_action_created_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 416,
+      "version": "7",
+      "when": 1792395516000,
+      "tag": "0416_fleet_memory_syncs",
+      "breakpoints": true
+    },
+    {
+      "idx": 417,
+      "version": "7",
+      "when": 1792399116000,
+      "tag": "0417_heartbeat_runs_provider_quota_idx",
       "breakpoints": true
     }
   ]
