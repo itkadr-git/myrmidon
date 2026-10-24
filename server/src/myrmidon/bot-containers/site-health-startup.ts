@@ -14,7 +14,7 @@
 import { and, eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
-import { isBotContainersEnabled } from "./agent-config.js";
+import { isSiteHealthEnabled } from "./site-health-flag.js";
 import { laneInterval } from "../monitoring/board-load/lanes.js";
 import { createFleetMoveContext } from "./fleet-move-wiring.js";
 import { FleetMoveError } from "./fleet-move-service.js";
@@ -24,19 +24,16 @@ import { fleetSiteKey } from "./fleetd-hosts.js";
 import { clearFleetSiteGauges } from "./fleet-site-metrics.js";
 import { failoverSite } from "./site-failover-orchestrator.js";
 import { createSiteHealthMonitor, SITE_HEALTH_MONITOR_INTERVAL_MS } from "./site-health-monitor.js";
-import { probeSiteHealth } from "./site-health-probe.js";
+import { listSiteContainers, probeSiteHealth } from "./site-health-probe.js";
+import { reconcileSiteReturn } from "./site-return-reconcile.js";
 import { siteHealthStore, type MonitoredSite } from "./site-health-store.js";
 import { createSiteAgentClient } from "./site-agent-client.js";
 import type { FleetClientManager } from "./site-registry.js";
 
-export const SITE_HEALTH_ENV = "MYRMIDON_SITE_HEALTH";
+export { SITE_HEALTH_ENV, isSiteHealthEnabled } from "./site-health-flag.js";
 
 /** The board's own host: where a lost site's bots go (remote-sites-v2 4.2). */
 export const FAILOVER_RESERVE_SITE = "local";
-
-export function isSiteHealthEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return isBotContainersEnabled(env) && env[SITE_HEALTH_ENV]?.trim() === "1";
-}
 
 export type SiteLostRunFinalizer = (runId: string, siteName: string) => Promise<{ outcome: string; retryRunId: string | null }>;
 
@@ -120,25 +117,21 @@ export function startSiteHealth(db: Db, opts: { env?: NodeJS.ProcessEnv; clientM
       }),
 
     async reconcileReturned(site) {
-      const botKeys = await store.listFailedOverBots(site.companyId, site.name);
-      if (botKeys.length === 0) return;
       const key = keyOf(site);
       const driver = clientManager.getClients().get(key);
       if (!driver) throw new Error(`no driver for returned site "${site.name}"`);
-      const agentClient = createSiteAgentClient(transportOf(site));
-      const problems: string[] = [];
-      for (const botKey of botKeys) {
-        try {
-          // Order of the return pass (remote-sites-v2 4.3): stop the old copy, then set its datadir aside.
-          const status = await driver.status(botKey);
-          if (status.state !== "missing" && status.state !== "stopped") await driver.stop(botKey);
-          await agentClient.quarantine(botKey);
-          logger.warn({ site: site.name, botKey }, "returned site: old copy of a failed-over bot stopped and set aside");
-        } catch (err) {
-          problems.push(`${botKey}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-      if (problems.length > 0) throw new Error(`return pass incomplete: ${problems.join("; ")}`);
+      const transport = transportOf(site);
+      const agentClient = createSiteAgentClient(transport);
+      const result = await reconcileSiteReturn(site.name, {
+        listContainers: () => listSiteContainers(transport),
+        registryBotKeys: async () => new Set((await store.listBotsOnSite(site.companyId, site.name)).map((b) => b.botKey)),
+        failedOverBotKeys: async () => new Set(await store.listFailedOverBots(site.companyId, site.name)),
+        movingBotKeys: async () => new Set(await store.listBotsWithOpenMove(site.companyId)),
+        stop: (botKey) => driver.stop(botKey),
+        quarantine: (botKey) => agentClient.quarantine(botKey),
+        log: logger,
+      });
+      logger.info({ site: site.name, ...result }, "returned site reconciled against the registry");
     },
 
     log: logger,

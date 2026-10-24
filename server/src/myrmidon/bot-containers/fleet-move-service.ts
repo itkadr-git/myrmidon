@@ -252,7 +252,16 @@ export class FleetMoveService {
       });
     } catch (err) {
       if (err instanceof FleetMoveClaimConflict) {
-        throw new FleetMoveError(`Bot "${params.botKey}" already has an unfinished move`, "conflict");
+        // Name the move that holds the slot, so the operator knows what to wait for or resume.
+        const open = await this.deps.getLatestMoveForBot(params.companyId, params.botKey).catch(() => null);
+        const holder =
+          open && open.phase !== "done" && open.phase !== "failed"
+            ? ` (move ${open.id} from "${open.srcSite}" to "${open.dstSite}", phase "${open.phase}")`
+            : "";
+        throw new FleetMoveError(
+          `Bot "${params.botKey}" already has an unfinished move${holder}; wait for it to finish, or repeat the request with the same destination to resume it`,
+          "conflict",
+        );
       }
       throw err;
     }

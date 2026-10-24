@@ -47,6 +47,7 @@ import { readBotCacheLayoutForBot, readSharedBotRuntimePath, startCloneReportCol
 import { reportBotContainerEvent } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { startSiteScheduler } from "./site-scheduler-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
 import { startSiteHealth } from "./site-health-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
+import { isSiteHealthEnabled } from "./site-health-flag.js";
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import {
@@ -251,6 +252,7 @@ function build(
     const localDriver = ports.createDriver(driverConfig, db);
     const clientManager = (ports.createFleetClientManager ?? createFleetClientManager)({
       db,
+      keepDrainingClients: isSiteHealthEnabled(env),
       log: ports.log,
     });
 

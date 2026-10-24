@@ -565,6 +565,7 @@ describe("site-registry — client map and site status", () => {
     ];
     const manager = createFleetClientManager({
       db: { select: () => ({ from: () => Promise.resolve(sites) }) } as any,
+      keepDrainingClients: true,
       readCompanySecret: async (_c, name) => `value-of-${name}`,
       createDriver: (config) => fakeDriver(config.baseUrl),
     });
@@ -584,6 +585,18 @@ describe("site-registry — client map and site status", () => {
     expect(manager.getTransports?.().has(fleetSiteKey("company-1", "drained"))).toBe(false);
     manager.close();
     expect(manager.getTransports?.().size).toBe(0);
+  });
+
+  it("without keepDrainingClients (MYRMIDON_SITE_HEALTH off) a draining site loses its client, as before", async () => {
+    const sites = [site("up", "active", "http://127.0.0.1:9101"), site("drained", "draining", "http://127.0.0.1:9102")];
+    const manager = createFleetClientManager({
+      db: { select: () => ({ from: () => Promise.resolve(sites) }) } as any,
+      readCompanySecret: async (_c, name) => `value-of-${name}`,
+      createDriver: (config) => fakeDriver(config.baseUrl),
+    });
+    await manager.refresh();
+    expect([...manager.getClients().keys()]).toEqual([fleetSiteKey("company-1", "up")]);
+    manager.close();
   });
 });
 

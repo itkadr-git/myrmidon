@@ -14,6 +14,7 @@ import { agents, myrmidonFleetSites, type Db } from "@myrmidon/db";
 import { fleetMoveStore } from "./fleet-move-store.js";
 import { fleetMoveRoutes } from "./fleet-move-routes.js";
 import { FleetMoveService, type SiteAgentClient } from "./fleet-move-service.js";
+import { siteStatusIsReachable } from "./site-health-flag.js";
 import { fleetReplicaStoreFromEnv } from "./fleet-replica-store.js";
 import { fleetMoveMaintenance } from "./fleet-move-maintenance.js";
 import { createSiteAgentClient } from "./site-agent-client.js";
@@ -129,7 +130,8 @@ export function createFleetMoveContext(db: Db): FleetMoveContext {
     }
     // A draining site is still reachable for what happens on it (stopping or snapshotting the
     // bots that are being moved off); that it takes no new bots is the scheduler's rule.
-    if (row.status !== "active" && row.status !== "draining") {
+    // Tied to MYRMIDON_SITE_HEALTH: without it only an active site is reachable, as before T4.
+    if (!siteStatusIsReachable(row.status)) {
       throw new Error(`site "${siteName}" is ${row.status}, not active`);
     }
     if (!row.tokenSecret) {

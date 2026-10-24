@@ -154,6 +154,16 @@ describeEmbeddedPostgres("site failover against a database", () => {
       expect(bots.map((b) => [b.botKey, b.pinned]).sort()).toEqual([[free, false], [pinned, true]].sort());
     });
 
+    it("lists the bots with an unfinished move, and only them", async () => {
+      const companyId = await seedCompany();
+      const moves = fleetMoveStore(db);
+      const open = await moves.createMove({ companyId, botKey: "open-bot", srcSite: "a", dstSite: "b" });
+      const done = await moves.createMove({ companyId, botKey: "done-bot", srcSite: "a", dstSite: "b" });
+      await moves.updateMove(done.id, { phase: "done", completedAt: new Date() });
+      expect(open.phase).toBe("init");
+      expect(await siteHealthStore(db).listBotsWithOpenMove(companyId)).toEqual(["open-bot"]);
+    });
+
     it("lists the bots a replica failover moved off the site, but not one that was moved back", async () => {
       const companyId = await seedCompany();
       const away = await seedBot(companyId, { enabled: true });

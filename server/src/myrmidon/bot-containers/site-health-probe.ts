@@ -110,3 +110,47 @@ export async function probeSiteHealth(transport: FleetSiteTransport, timeoutMs: 
     req.end();
   });
 }
+
+/** The bot containers a site-agent reports (GET /v1/bots lists the bots enrolled on that site). */
+export async function listSiteContainers(transport: FleetSiteTransport, timeoutMs = 15_000): Promise<Array<{ botKey: string; state: string }>> {
+  const url = new URL("/v1/bots", transport.baseUrl);
+  const client = url.protocol === "https:" ? https : http;
+  const text = await new Promise<string>((resolve, reject) => {
+    const req = client.request(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80,
+        path: url.pathname,
+        method: "GET",
+        headers: transport.token ? { Authorization: `Bearer ${transport.token}` } : {},
+        agent: transport.agent,
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        res.on("data", (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > 4 * 1024 * 1024) req.destroy(new Error("bot list too large"));
+          else chunks.push(chunk);
+        });
+        res.on("end", () => {
+          if ((res.statusCode ?? 0) !== 200) reject(new Error(`site-agent bot list answered ${res.statusCode}`));
+          else resolve(Buffer.concat(chunks).toString("utf8"));
+        });
+        res.on("error", reject);
+      },
+    );
+    req.on("timeout", () => req.destroy(new Error("site-agent bot list timed out")));
+    req.on("error", reject);
+    req.end();
+  });
+  const parsed = JSON.parse(text) as unknown;
+  const list = Array.isArray(parsed) ? parsed : (parsed as { bots?: unknown })?.bots;
+  if (!Array.isArray(list)) throw new Error("site-agent bot list is not a list");
+  return list.flatMap((item) => {
+    const row = item as { botKey?: unknown; state?: unknown };
+    return typeof row?.botKey === "string" ? [{ botKey: row.botKey, state: typeof row.state === "string" ? row.state : "unknown" }] : [];
+  });
+}

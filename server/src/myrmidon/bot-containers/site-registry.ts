@@ -309,6 +309,12 @@ export interface FleetClientManagerDeps {
   /** Max age of the client map before ensureFresh re-reads the registry. Default 30 s. */
   refreshTtlMs?: number;
   now?: () => number;
+  /**
+   * myrmidon(1.6.6 REMOTE-SITES-T4): keep the client of a draining site. Off (the default) a
+   * draining site loses its client like any site that is not active, as before T4; the
+   * startup turns it on together with MYRMIDON_SITE_HEALTH.
+   */
+  keepDrainingClients?: boolean;
   readCompanySecret?: (companyId: string, name: string) => Promise<string | null>;
   createDriver?: (config: FleetdDriverConfig) => BotContainerDriver;
   log?: {
@@ -447,7 +453,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
       // A draining site keeps its client: its bots are still managed there until they are moved
       // off, and a site that went draining on a failed probe must be reachable again for the
       // return pass. Placement of new bots is the scheduler's rule, not the client map's.
-      const activeSites = sites.filter((s) => s.status === "active" || s.status === "draining");
+      const activeSites = sites.filter((s) => s.status === "active" || (deps.keepDrainingClients === true && s.status === "draining"));
       const activeKeys = new Set<string>();
 
       for (const site of activeSites) {

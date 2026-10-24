@@ -15,10 +15,11 @@ import {
 } from "./fleet-move-service.js";
 import type { BotContainerDriver, BotContainerStatus } from "./driver.js";
 
-function harness(opts: { replica?: boolean; restoreError?: Error } = {}) {
+function harness(opts: { replica?: boolean; restoreError?: Error; hideOpenMoveOnce?: boolean } = {}) {
   const botKey = "work-qa";
   const moves = new Map<string, FleetMoveRecord>();
   const calls: string[] = [];
+  let hidden = false;
   let card = {
     agentId: "agent-1",
     adapterConfig: { container: { enabled: true, host: "myr-vm1" }, apiBaseUrl: "http://old" } as Record<string, any>,
@@ -53,6 +54,11 @@ function harness(opts: { replica?: boolean; restoreError?: Error } = {}) {
   const service = new FleetMoveService({
     async getMove(id) { return moves.get(id) ?? null; },
     async getLatestMoveForBot(_c, key) {
+      // The race case: the first lookup (before the claim) does not see a move another process is just creating.
+      if (opts.hideOpenMoveOnce && !hidden) {
+        hidden = true;
+        return null;
+      }
       return [...moves.values()].filter((m) => m.botKey === key).at(-1) ?? null;
     },
     async createMove(p) {
@@ -161,5 +167,35 @@ describe("atomic claim of a bot's move", () => {
     expect(h.moves.size).toBe(1);
     expect(h.calls.filter((c) => c === "local:start")).toHaveLength(1);
     expect(h.calls.filter((c) => c.startsWith("local:restore"))).toHaveLength(1);
+  });
+});
+
+describe("a move requested for a bot that already has an unfinished move", () => {
+  const held = {
+    id: "move-held", companyId: "c1", botKey: "work-qa", srcSite: "myr-vm1", dstSite: "site-b", source: "live" as const,
+    phase: "snapshot" as const, phaseLog: [], startedAt: new Date(),
+  };
+
+  it("to another destination: a conflict that names the destination of the move in progress", async () => {
+    const h = harness();
+    h.moves.set(held.id, { ...held });
+    const err = await h.service.startMove({ ...MOVE }).catch((e) => e);
+    expect(err).toBeInstanceOf(FleetMoveError);
+    expect(err.kind).toBe("conflict");
+    expect(err.message).toContain('unfinished move to "site-b"');
+    expect(err.message).toContain("finish it before moving");
+  });
+
+  it("when the claim itself is lost (another process created the move meanwhile): a conflict naming that move and what to do", async () => {
+    const h = harness({ hideOpenMoveOnce: true });
+    h.moves.set(held.id, { ...held });
+    const err = await h.service.startMove({ ...MOVE }).catch((e) => e);
+    expect(err).toBeInstanceOf(FleetMoveError);
+    expect(err.kind).toBe("conflict");
+    expect(err.message).toContain("move-held");
+    expect(err.message).toContain('to "site-b"');
+    expect(err.message).toContain('phase "snapshot"');
+    expect(err.message).toContain("wait for it to finish");
+    expect(h.moves.size).toBe(1);
   });
 });

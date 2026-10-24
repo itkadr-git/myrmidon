@@ -3,7 +3,7 @@ ALTER TABLE "myrmidon_fleet_sites" ADD COLUMN "health" jsonb;
 --> statement-breakpoint
 ALTER TABLE "myrmidon_fleet_moves" ADD COLUMN "source" text DEFAULT 'live' NOT NULL;
 --> statement-breakpoint
-UPDATE "myrmidon_fleet_moves" SET "phase" = 'failed', "error" = coalesce("error", 'superseded by a newer unfinished move (migration 0412)'), "updated_at" = now()
+UPDATE "myrmidon_fleet_moves" SET "phase" = 'failed', "error" = coalesce("error", 'superseded by a newer unfinished move (migration 0414)'), "updated_at" = now()
 WHERE "id" IN (
 	SELECT "id" FROM (
 		SELECT "id", row_number() OVER (PARTITION BY "company_id", "bot_key" ORDER BY "started_at" DESC, "id" DESC) AS rn

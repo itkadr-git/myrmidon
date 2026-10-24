@@ -506,3 +506,31 @@ describe("startBotContainers and the site-monitor lane", () => {
   });
 });
 
+describe("startBotContainers and the client of a draining site", () => {
+  const managerSpy = () => {
+    const seen: Array<boolean | undefined> = [];
+    const manager = {
+      getClients: () => new Map(),
+      refresh: async () => new Map(),
+      getVersion: () => 1,
+      ensureFresh: async () => {},
+      close: () => {},
+    };
+    return { seen, create: (deps: { keepDrainingClients?: boolean }) => (seen.push(deps.keepDrainingClients), manager) };
+  };
+
+  it("keeps draining clients only with MYRMIDON_SITE_HEALTH", () => {
+    for (const [env, expected] of [
+      [ENABLED, false],
+      [{ ...ENABLED, MYRMIDON_SITE_HEALTH: "1" }, true],
+    ] as const) {
+      const h = harness();
+      const spy = managerSpy();
+      const stop = startBotContainers(DB, { env, ports: { ...h.ports, createFleetClientManager: spy.create as never } });
+      expect(spy.seen).toEqual([expected]);
+      stop();
+    }
+    stopBotContainers();
+  });
+});
+

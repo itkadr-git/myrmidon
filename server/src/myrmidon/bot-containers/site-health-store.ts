@@ -36,6 +36,8 @@ export interface SiteHealthStore {
   setStatus(siteId: string, from: readonly string[], to: SiteStatus): Promise<boolean>;
   /** Bots whose card names `site` as their host. */
   listBotsOnSite(companyId: string, site: string): Promise<SiteBot[]>;
+  /** Bots of the company with a move that is not done or failed. */
+  listBotsWithOpenMove(companyId: string): Promise<string[]>;
   /** Bots that a replica failover moved off `site` and whose old copy may start again there. */
   listFailedOverBots(companyId: string, site: string): Promise<string[]>;
 }
@@ -92,6 +94,14 @@ export function siteHealthStore(db: Db): SiteHealthStore {
           ),
         );
       return rows.map((row) => ({ companyId, botKey: row.id, site, pinned: row.pinned === true }));
+    },
+
+    async listBotsWithOpenMove(companyId) {
+      const rows = await db
+        .select({ botKey: myrmidonFleetMoves.botKey })
+        .from(myrmidonFleetMoves)
+        .where(and(eq(myrmidonFleetMoves.companyId, companyId), sql`${myrmidonFleetMoves.phase} NOT IN ('done', 'failed')`));
+      return rows.map((row) => row.botKey);
     },
 
     async listFailedOverBots(companyId, site) {
