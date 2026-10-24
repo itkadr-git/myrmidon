@@ -173,7 +173,7 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
 
   // Merge: VM wins when it has the host, Zabbix-only hosts are appended.
   const hosts = [...vmHosts.values()];
-  const mappedVmHosts = new Set<string>();
+  const mappedZabbixHosts = new Set<HostReading>();
   for (const [instance, zabbixName] of Object.entries(deps.settings.zabbixHostMapping)) {
     const host = zabbixHosts.get(zabbixName);
     // Prometheus instances may carry a scrape port while the configured mapping
@@ -181,7 +181,7 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
     const vmName = vmHosts.has(instance) ? instance : `${instance}:9100`;
     const vmHost = vmHosts.get(vmName);
     if (vmHost) {
-      mappedVmHosts.add(vmName);
+      if (host) mappedZabbixHosts.add(host);
       vmHost.cpuPercent ??= host?.cpuPercent ?? null;
       vmHost.memoryPercent ??= host?.memoryPercent ?? null;
       vmHost.swapPercent ??= host?.swapPercent ?? null;
@@ -189,8 +189,7 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
     }
   }
   for (const host of new Set(zabbixHosts.values())) {
-    const mapping = Object.entries(deps.settings.zabbixHostMapping).find(([, name]) => name === host.name);
-    if (mapping && (mappedVmHosts.has(mapping[0]) || mappedVmHosts.has(`${mapping[0]}:9100`))) continue;
+    if (mappedZabbixHosts.has(host)) continue;
     if (!vmHosts.has(host.name)) hosts.push(host);
   }
   for (const host of hosts) host.runbookKey = defaultRunbookKey(host);
