@@ -1,6 +1,11 @@
 import type { AdapterModel } from "./types.js";
 import { models as codexFallbackModels } from "@myrmidon/adapter-codex-local";
 import { readConfigFile } from "../config-file.js";
+import { resolveInstanceSecretOrNull } from "../myrmidon/secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.2)
+import {
+  CODEX_MODEL_DISCOVERY_CONSUMER,
+  OPENAI_DISCOVERY_SETTING,
+} from "../myrmidon/secret-settings/provider-settings.js";
 
 const OPENAI_MODELS_ENDPOINT = "https://api.openai.com/v1/models";
 const OPENAI_MODELS_TIMEOUT_MS = 5000;
@@ -31,9 +36,17 @@ function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
   ]).sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }));
 }
 
-function resolveOpenAiApiKey(): string | null {
+// Order: the emergency OPENAI_API_KEY, then the instance secret reference
+// (provider.openai.model_discovery_api_key), then the key in the config file.
+async function resolveOpenAiApiKey(): Promise<string | null> {
   const envKey = process.env.OPENAI_API_KEY?.trim();
   if (envKey) return envKey;
+
+  const refKey = await resolveInstanceSecretOrNull(
+    OPENAI_DISCOVERY_SETTING,
+    CODEX_MODEL_DISCOVERY_CONSUMER,
+  );
+  if (refKey) return refKey;
 
   const config = readConfigFile();
   if (config?.llm?.provider !== "openai") return null;
@@ -72,7 +85,7 @@ async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
 
 async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<AdapterModel[]> {
   const forceRefresh = options?.forceRefresh === true;
-  const apiKey = resolveOpenAiApiKey();
+  const apiKey = await resolveOpenAiApiKey();
   const fallback = dedupeModels(codexFallbackModels);
   if (!apiKey) return fallback;
 
