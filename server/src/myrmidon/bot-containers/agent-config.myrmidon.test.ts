@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 import {
   BOT_CONTAINERS_ENV,
   CONTAINER_GROUP_UNSUPPORTED_REASON,
@@ -12,6 +13,19 @@ import {
 } from "./agent-config.js";
 
 describe("isBotContainersEnabled", () => {
+  it("uses a switch saved from the UI only for the production environment", () => {
+    const previous = liveBehaviorSettingsView();
+    applyLiveBehaviorSettings({ settings: { bot_containers: true }, sources: { bot_containers: "ui" } });
+    try {
+      expect(isBotContainersEnabled(process.env)).toBe(true);
+      expect(isBotContainersEnabled({})).toBe(false);
+      expect(isBotContainersEnabled({ [BOT_CONTAINERS_ENV]: "false" })).toBe(false);
+      expect(isBotContainersEnabled({ [BOT_CONTAINERS_ENV]: "true" })).toBe(true);
+    } finally {
+      applyLiveBehaviorSettings(previous);
+    }
+  });
+
   it("is off unless explicitly enabled", () => {
     expect(isBotContainersEnabled({})).toBe(false);
     expect(isBotContainersEnabled({ [BOT_CONTAINERS_ENV]: "false" })).toBe(false);

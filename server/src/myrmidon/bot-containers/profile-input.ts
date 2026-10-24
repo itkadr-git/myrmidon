@@ -460,11 +460,20 @@ export function parseBotAuxFallbackModels(raw: string | null): string[] | null {
   return models.length > 0 ? models : null;
 }
 
-import { liveBehaviorSetting } from "../behavior-settings/live.js";
+import { liveBehaviorSetting, liveSavedSetting } from "../behavior-settings/live.js";
 
 export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): BotProfileSettings {
+  // Lists saved from the UI win over the environment (nothing changes before one is saved).
+  const savedBanks = env === process.env ? liveSavedSetting<string[]>("bot_hindsight_allowed_banks") : undefined;
+  const hindsightAllowedBanksValue = Array.isArray(savedBanks)
+    ? savedBanks.join(",")
+    : readSetting(env, BOT_HINDSIGHT_ALLOWED_BANKS_ENV);
+  const hindsightAllowedBanks = parseBotHindsightAllowedBanks(hindsightAllowedBanksValue);
   const llmApiKeyEnv = readSetting(env, BOT_LLM_API_KEY_ENV_ENV);
-  const mcp = parseBotMcpServers(readSetting(env, BOT_MCP_SERVERS_ENV));
+  const savedServers = env === process.env ? liveSavedSetting<unknown[]>("bot_mcp_servers") : undefined;
+  const mcpValue = Array.isArray(savedServers) ? JSON.stringify(savedServers) : readSetting(env, BOT_MCP_SERVERS_ENV);
+  const mcp = parseBotMcpServers(mcpValue);
+
   // myrmidon(BOT-RUNTIME-TUNING-B): the instance defaults the profile compiler
   // writes into config.yaml — read here so a corrected variable takes effect
   // on the next compile tick, like the rest of this settings object.
@@ -494,7 +503,7 @@ export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): Bo
   return {
     hindsightApiUrl: readSetting(env, BOT_HINDSIGHT_API_URL_ENV),
     hindsightBank: readSetting(env, BOT_HINDSIGHT_BANK_ENV),
-    hindsightAllowedBanks: parseBotHindsightAllowedBanks(readSetting(env, BOT_HINDSIGHT_ALLOWED_BANKS_ENV)),
+    hindsightAllowedBanks,
     llmBaseUrl: readSetting(env, BOT_LLM_BASE_URL_ENV),
     llmApiKeyEnv,
     llmApiKeySecret: readSetting(env, BOT_LLM_API_KEY_SECRET_ENV) ?? llmApiKeyEnv,

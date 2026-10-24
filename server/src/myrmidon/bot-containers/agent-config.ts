@@ -7,6 +7,7 @@
 // of its own: everything testable in it is pushed down into domain.ts/service.ts.
 
 import type { BotContainerSpec, BotExtraMount, BotSharedMount } from "./driver.js";
+import { liveSavedSetting } from "../behavior-settings/live.js";
 import { BOT_KEY_PATTERN, isImageAllowed, parseImageAllowlist } from "./template.js";
 import type { SharedMountSettings } from "@myrmidon/shared";
 import { resolveBotSharedMount } from "./shared-mount.js";
@@ -16,6 +17,9 @@ const BOT_IMAGE_ALLOWLIST_ENV = "MYRMIDON_BOT_IMAGE_ALLOWLIST";
 export const BOT_CONTAINERS_ENV = "MYRMIDON_BOT_CONTAINERS";
 
 export function isBotContainersEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  // A switch saved from the UI wins over the environment.
+  const saved = env === process.env ? liveSavedSetting<boolean>("bot_containers") : undefined;
+  if (saved !== undefined) return saved;
   const raw = env[BOT_CONTAINERS_ENV]?.trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
@@ -103,7 +107,9 @@ export function botContainerImageSaveProblem(image: unknown, env: NodeJS.Process
   if (!IMMUTABLE_IMAGE_DIGEST_PATTERN.test(trimmed)) {
     return `adapterConfig.container.image "${trimmed}" is not pinned by digest: use name@sha256:<64 hex>, a tag such as :latest is refused when the container is created`;
   }
-  const allowlist = parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]);
+  // A list saved from the UI wins over the environment.
+  const savedAllowlist = env === process.env ? liveSavedSetting<string[]>("bot_image_allowlist") : undefined;
+  const allowlist = savedAllowlist ?? parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]);
   if (allowlist.length > 0 && !isImageAllowed(trimmed, allowlist)) {
     return `adapterConfig.container.image "${trimmed}" is not in ${BOT_IMAGE_ALLOWLIST_ENV}`;
   }
