@@ -13,6 +13,9 @@
 // store cannot hold the key that opens it. They stay environment-only; the disposition table
 // is in docs/myrmidon/e2-secret-coverage-1.6.6.md.
 
+import { BOT_FLEET_SECRET_SETTINGS } from "./bot-fleet-settings.js"; // myrmidon(SETTINGS-UI E2.3)
+import { PROVIDER_SECRET_SETTINGS } from "./provider-settings.js"; // myrmidon(SETTINGS-UI E2.2)
+
 export const CLOUD_OAUTH_CONSUMER = "cloud-connector.oauth";
 
 /** Cloud connector providers whose OAuth client secret may be a ref (E2.5, OPE-9038). */
@@ -42,7 +45,6 @@ export function toolOauthProviderSecretSettingName(provider: string): string | n
 function toolOauthProviderEnvName(slug: string): string {
   return `PAPERCLIP_TOOL_OAUTH_${slug.toUpperCase()}_CLIENT_SECRET`;
 }
-import { BOT_FLEET_SECRET_SETTINGS } from "./bot-fleet-settings.js"; // myrmidon(SETTINGS-UI E2.3)
 
 export type InstanceSecretSettingDescriptor = {
   readonly name: string;
@@ -134,6 +136,7 @@ export const INSTANCE_SECRET_SETTINGS: readonly InstanceSecretSettingDescriptor[
     consumers: [CLOUD_OAUTH_CONSUMER],
   })),
   ...BOT_FLEET_SECRET_SETTINGS, // myrmidon(SETTINGS-UI E2.3)
+  ...PROVIDER_SECRET_SETTINGS, // myrmidon(SETTINGS-UI E2.2)
   // E2.4 (OPE-9037): instance-wide fallback OAuth client secret for tool connections.
   {
     name: TOOL_OAUTH_CLIENT_SECRET_SETTING,
