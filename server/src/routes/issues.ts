@@ -1459,15 +1459,8 @@ function buildIssueBlockerDiagnosis(input: {
     )} to finish workspace finalization.`;
   }
 
-  const cancelled = input.blockers.find(
-    (blocker) => blocker.status === "cancelled",
-  );
-  if (cancelled) {
-    return `${blockerDiagnosticLabel(input.issue)} is blocked by ${blockerDiagnosticLabel(
-      cancelled,
-    )}, which is cancelled; cancelled blockers do not resolve until the blocker relation is removed or replaced.`;
-  }
-
+  // A cancelled blocker counts as resolved (OPE-8904): it is reported as the
+  // `cancelled_blocker_in_set` flag only and never as the reason for waiting.
   const unresolved = input.blockers.find((blocker) => blocker.isUnresolved);
   if (unresolved) {
     return `${blockerDiagnosticLabel(input.issue)} is blocked by ${blockerDiagnosticLabel(
@@ -1791,15 +1784,6 @@ function buildIssueWakeDiagnosis(input: {
     return `No wake row exists for ${blockerDiagnosticLabel(input.issue)} in the bounded window. ${blockerDiagnosticLabel(
       input.issue,
     )} is waiting for ${blockerDiagnosticLabel(pendingFinalize)} to finish workspace finalization, so issue_blockers_resolved has not fired.`;
-  }
-
-  const cancelled = blockerDiagnostics.blockers.find(
-    (blocker) => blocker.status === "cancelled",
-  );
-  if (cancelled) {
-    return `No wake row exists for ${blockerDiagnosticLabel(input.issue)} in the bounded window. ${blockerDiagnosticLabel(
-      input.issue,
-    )} is blocked by ${blockerDiagnosticLabel(cancelled)}, which is cancelled; cancelled blockers do not fire issue_blockers_resolved.`;
   }
 
   const unresolved = blockerDiagnostics.blockers.find(
