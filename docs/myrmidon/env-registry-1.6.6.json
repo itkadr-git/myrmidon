@@ -41,10 +41,10 @@
     "Динамически собираемые имена не перечисляются поимённо, а описаны шаблонами в dynamic_patterns (префикс, допустимый набор значений, класс, источник); скрипт проверки находит в коде все динамические сборки имён и требует шаблон на каждую. Фактический набор имён в рантайме (по ботам/провайдерам экземпляра) определяется данными экземпляра и этим реестром не фиксируется."
   ],
   "counts": {
-    "unique_names": 891,
+    "unique_names": 893,
     "secret": 108,
-    "infra": 372,
-    "product": 411
+    "infra": 373,
+    "product": 412
   },
   "entries": [
     {
@@ -6223,6 +6223,21 @@
       "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости"
     },
     {
+      "name": "MYRMIDON_FLEET_REPLICA_DIR",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/myrmidon/bot-containers/fleet-replica-store.ts:21",
+      "classification": "infra",
+      "class_basis": "name-rule",
+      "scope": "host",
+      "ui_or_store": "UI нет; каталог на диске хоста доски, задаётся при установке экземпляра",
+      "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
+      "ticket_or_pr": "OPE-7651",
+      "decision": "оставить в env установки: путь хранилища реплик datadir площадок (REMOTE-SITES-T4)"
+    },
+    {
       "name": "MYRMIDON_FORAGING_AGENT_BUDGET_CENTS",
       "aliases": [],
       "in_main_code": true,
@@ -11093,6 +11108,21 @@
       "ticket_or_pr": "зонтик OPE-6249; отдельного тикета нет",
       "decision": "проверить UI/хранилище по полю и при отсутствии завести тикет (не оценивалось аудитом 08.10)",
       "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
+    },
+    {
+      "name": "MYRMIDON_SITE_HEALTH",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/myrmidon/bot-containers/site-health-startup.ts:32",
+      "classification": "product",
+      "class_basis": "name-rule",
+      "scope": "instance",
+      "ui_or_store": "UI нет; включатель lane site-monitor (REMOTE-SITES-T4), читается при запуске сервера",
+      "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)",
+      "ticket_or_pr": "OPE-7651",
+      "decision": "включатель опасного действия (автоотвод и failover площадок): оставить в env до решения владельца о настройке в UI"
     },
     {
       "name": "MYRMIDON_SITE_SCHEDULER",

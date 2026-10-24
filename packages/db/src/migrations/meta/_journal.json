@@ -2459,6 +2459,13 @@
       "when": 1792395513000,
       "tag": "0413_knowledge_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 414,
+      "version": "7",
+      "when": 1792395514000,
+      "tag": "0414_fleet_site_health_move_claim",
+      "breakpoints": true
     }
   ]
 }

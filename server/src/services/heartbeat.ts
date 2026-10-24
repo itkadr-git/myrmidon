@@ -32,6 +32,7 @@ import { PRODUCT_NAME, productPossessive, productSaid } from "../myrmidon/produc
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
+import { claimRunForSiteLost } from "../myrmidon/site-lost-claim.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
@@ -32460,6 +32461,70 @@ export function heartbeatService(
       void execution.finally(() => {
         activeRunExecutionPromises.delete(execution);
       });
+    },
+
+    // myrmidon(1.6.6 REMOTE-SITES-T4): finalize one run of a lost execution site as
+    // failed(site_lost) and queue its bounded retry, see myrmidon/site-lost-claim.ts. Only a run
+    // whose lease is expired and that no reattach execution holds is taken (an atomic claim on the
+    // row); the retry rides the same bounded-retry path as a lost process, keyed by this run's id,
+    // so a second call for the same run is a no-op and no wake is duplicated.
+    finalizeSiteLostRun: async (runId: string, siteName: string) => {
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      if (!run || run.status !== "running" || run.runtimeMode === "native") {
+        return { outcome: "not_running" as const, retryRunId: null };
+      }
+      const agent = await getAgent(run.agentId);
+      if (!agent || agent.companyId !== run.companyId) {
+        return { outcome: "not_running" as const, retryRunId: null };
+      }
+      const now = new Date();
+      if (!(await claimRunForSiteLost(db, run, siteName, now))) {
+        return { outcome: "not_claimed" as const, retryRunId: null };
+      }
+      const message = `Execution site "${siteName}" was lost; the run is requeued`;
+      const conversationContinuationEligible = await runUsedConversationAdapter(db, run);
+      const failureWrite = await setRunStatusFromLive(run.id, "failed", ["running"], {
+        error: message,
+        errorCode: "site_lost",
+        finishedAt: now,
+        resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
+          conversationContinuationEligible,
+          resultJson: parseObject(run.resultJson),
+          errorCode: "site_lost",
+          errorMessage: message,
+        }),
+      });
+      if (!failureWrite.updated || !failureWrite.run) {
+        return { outcome: "not_claimed" as const, retryRunId: null };
+      }
+      let finalizedRun: typeof heartbeatRuns.$inferSelect = failureWrite.run;
+      await setWakeupStatus(run.wakeupRequestId, "failed", { finishedAt: now, error: message });
+      finalizedRun =
+        (await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson))) ?? finalizedRun;
+      await releaseEnvironmentLeasesForRun({
+        runId: finalizedRun.id,
+        companyId: finalizedRun.companyId,
+        agentId: finalizedRun.agentId,
+        status: finalizedRun.status,
+        failureReason: finalizedRun.error ?? undefined,
+      });
+      const scheduled = await scheduleBoundedRetryForRun(finalizedRun, agent, { now });
+      const retried = scheduled.outcome === "scheduled" ? scheduled.run : null;
+      if (!retried) await releaseIssueExecutionAndPromote(finalizedRun);
+      await appendRunEvent(finalizedRun, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "error",
+        message: retried ? `${message}; queued retry ${retried.id}` : message,
+        payload: { site: siteName, ...(retried ? { retryRunId: retried.id } : {}) },
+      });
+      await finalizeAgentStatus(run.agentId, "failed", message, {
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+        errorCode: finalizedRun.errorCode,
+        keepIdleOnFailure: true,
+      });
+      await runStartDispatcher.dispatchRunStart(run.agentId);
+      return { outcome: "finalized" as const, retryRunId: retried?.id ?? null };
     },
 
     /**

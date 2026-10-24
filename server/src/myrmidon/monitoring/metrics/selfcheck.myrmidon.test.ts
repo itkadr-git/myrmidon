@@ -41,14 +41,16 @@ describe("metrics self-check probe", () => {
     // ninth and tenth: in-process counters with no database behind them.
     // The four run scratch families (1.6.6 TMP-HYGIENE) are in-process state
     // too, so they survive a broken database as well.
-    expect(result.families_ok).toBe(1 + 8 + 2 + 4);
+    // The four remote-site families (1.6.6 REMOTE-SITES-T4) are in-process state as well.
+    expect(result.families_ok).toBe(1 + 8 + 2 + 4 + 4);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&
         !family.startsWith("myrmidon_board_") &&
         family !== "myrmidon_adapter_fallback_total" &&
         family !== "myrmidon_chat_ingress_total" &&
-        !family.startsWith("myrmidon_run_scratch_"),
+        !family.startsWith("myrmidon_run_scratch_") &&
+        !family.startsWith("myrmidon_fleet_"),
     ).sort();
     expect(result.families_failed.sort()).toEqual(expectedFailed);
     expect(result.checked_at).toBe(NOW.toISOString());

@@ -14,6 +14,8 @@ import { agents, myrmidonFleetSites, type Db } from "@myrmidon/db";
 import { fleetMoveStore } from "./fleet-move-store.js";
 import { fleetMoveRoutes } from "./fleet-move-routes.js";
 import { FleetMoveService, type SiteAgentClient } from "./fleet-move-service.js";
+import { siteStatusIsReachable } from "./site-health-flag.js";
+import { fleetReplicaStoreFromEnv } from "./fleet-replica-store.js";
 import { fleetMoveMaintenance } from "./fleet-move-maintenance.js";
 import { createSiteAgentClient } from "./site-agent-client.js";
 import { parseFleetHosts } from "./fleetd-hosts.js";
@@ -126,7 +128,10 @@ export function createFleetMoveContext(db: Db): FleetMoveContext {
     if (!row) {
       throw new Error(`site "${siteName}" is unknown: it is neither in MYRMIDON_FLEET_HOSTS nor in the site registry`);
     }
-    if (row.status !== "active") {
+    // A draining site is still reachable for what happens on it (stopping or snapshotting the
+    // bots that are being moved off); that it takes no new bots is the scheduler's rule.
+    // Tied to MYRMIDON_SITE_HEALTH: without it only an active site is reachable, as before T4.
+    if (!siteStatusIsReachable(row.status)) {
       throw new Error(`site "${siteName}" is ${row.status}, not active`);
     }
     if (!row.tokenSecret) {
@@ -156,6 +161,12 @@ export function createFleetMoveContext(db: Db): FleetMoveContext {
     async getSiteUrl(siteName: string, companyId: string): Promise<string> {
       const { url } = await resolveSiteHost(siteName, companyId);
       return url;
+    },
+
+    // myrmidon(1.6.6 REMOTE-SITES-T4): the replicas the board keeps of remote datadirs, when
+    // MYRMIDON_FLEET_REPLICA_DIR names the store. Without it a replica move has nothing to open.
+    async openReplica(site: string, botKey: string) {
+      return (await fleetReplicaStoreFromEnv()?.open(site, botKey)) ?? null;
     },
 
     getAgentCard,
