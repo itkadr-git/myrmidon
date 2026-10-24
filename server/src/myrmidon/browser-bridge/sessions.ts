@@ -7,7 +7,7 @@
 // record and any open connection is closed in the same step, so an already
 // authenticated socket cannot keep acting on a revoked token).
 
-import type { BrowserBridgeCapability } from "@paperclipai/shared";
+import type { BrowserBridgeCapability } from "@myrmidon/shared";
 
 export interface BridgeSession {
   readonly deviceId: string;

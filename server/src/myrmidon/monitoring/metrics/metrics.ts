@@ -27,7 +27,7 @@ import {
   issues,
   litellmCostEvents,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { readTracingHealthAttentionSignal } from "../../tracing-health/attention.js";
 import { readStaleBlockSignals } from "../../stale-block/attention.js";
 import {
@@ -49,6 +49,7 @@ import {
   type ChannelBridgeFallbackSample,
   type ChannelBridgeFallbackSource,
 } from "../../channel-connectors/bridge/fallback-counters.js";
+import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-containers/fleet-site-metrics.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
 
 // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors —
@@ -57,6 +58,13 @@ import {
   channelIngressCounters,
   type ChannelIngressCounters,
 } from "../../channel-connectors/ingress.js";
+
+// myrmidon(1.6.6 TMP-HYGIENE): volume of the heartbeat run scratch janitor
+// (in-process state of the sweeper, no DB).
+import {
+  heartbeatRunScratchMetrics,
+  type HeartbeatRunScratchMetrics,
+} from "../../../services/run-scratch.js";
 
 /** Content type of the Prometheus text exposition format, version 0.0.4. */
 export const METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
@@ -116,6 +124,20 @@ export const METRIC_FAMILIES = [
   // by path — the adapter and the vendor path that still reads in parallel
   // (design section 4, the inbound flow).
   "myrmidon_chat_ingress_total",
+
+  // myrmidon(1.6.6 TMP-HYGIENE): the run scratch janitor — what it removed and
+  // what stays in the temp directory.
+  "myrmidon_run_scratch_removed_dirs_total",
+  "myrmidon_run_scratch_removed_bytes_total",
+  "myrmidon_run_scratch_remaining_dirs",
+  "myrmidon_run_scratch_remaining_bytes",
+
+  // myrmidon(1.6.6 REMOTE-SITES-T4): the remote sites — probe result and age per site, the runs
+  // requeued after a site was lost, and the failover moves by result (design remote-sites-v2 7.1).
+  "myrmidon_fleet_site_reachable",
+  "myrmidon_fleet_site_last_seen_seconds",
+  "myrmidon_fleet_exec_retries_total",
+  "myrmidon_fleet_moves_total",
 
   // myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of both shadow legs (part
   // A) read from corpus_shadow_log inside the latency window. With the
@@ -181,6 +203,19 @@ export interface MetricsSnapshotFields {
    * connector yet" is readable off the graph.
    */
   chatIngress?: ChannelIngressCounters | null;
+
+  /**
+   * myrmidon(1.6.6 TMP-HYGIENE): the run scratch janitor volume of this
+   * process. null renders HELP/TYPE with no samples.
+   */
+  runScratch?: HeartbeatRunScratchMetrics | null;
+
+  /**
+   * myrmidon(1.6.6 REMOTE-SITES-T4): the remote-site gauges and counters of this
+   * process (in-process, no DB). null renders HELP/TYPE with no samples.
+   */
+  fleetSites?: FleetSiteMetricsSample | null;
+
   /**
    * myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of the two shadow legs in
    * seconds, read from corpus_shadow_log inside the latency window. Absent
@@ -255,6 +290,12 @@ export interface MetricsCollectorDeps {
    * so no test depends on another test's reads.
    */
   chatIngress?: (() => ChannelIngressCounters) | null;
+
+  /** myrmidon(1.6.6 TMP-HYGIENE): where the run scratch volume comes from; tests inject a fake. */
+  runScratch?: (() => HeartbeatRunScratchMetrics) | null;
+
+  /** myrmidon(1.6.6 REMOTE-SITES-T4): where the remote-site metrics come from; tests inject a fake. */
+  fleetSites?: (() => FleetSiteMetricsSample) | null;
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
@@ -549,6 +590,20 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     null as ChannelIngressCounters | null,
   );
 
+  // myrmidon(1.6.6 TMP-HYGIENE): the run scratch volume rides the same guarded scrape.
+  const runScratch = await guarded(
+    "myrmidon_run_scratch_removed_dirs_total|myrmidon_run_scratch_removed_bytes_total|myrmidon_run_scratch_remaining_dirs|myrmidon_run_scratch_remaining_bytes",
+    () => Promise.resolve().then(() => (deps.runScratch ?? heartbeatRunScratchMetrics)()),
+    null as HeartbeatRunScratchMetrics | null,
+  );
+
+  // myrmidon(1.6.6 REMOTE-SITES-T4): the remote-site state rides the same guarded scrape.
+  const fleetSites = await guarded(
+    "myrmidon_fleet_site_reachable|myrmidon_fleet_site_last_seen_seconds|myrmidon_fleet_exec_retries_total|myrmidon_fleet_moves_total",
+    () => Promise.resolve().then(() => (deps.fleetSites ?? readFleetSiteMetrics)()),
+    null as FleetSiteMetricsSample | null,
+  );
+
   return {
     fields: {
       runsActive: runCounters.active,
@@ -572,6 +627,10 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       adapterFallbacks: fallbackSample,
 
       chatIngress,
+
+      runScratch,
+
+      fleetSites,
     },
     errors,
     now,
@@ -961,6 +1020,76 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
             `myrmidon_chat_ingress_total{path="direct"} ${formatSampleValue(ingress.direct)}`,
           ]
         : [],
+    ),
+  );
+
+  // myrmidon(1.6.6 TMP-HYGIENE): the volume of the run scratch janitor. Rendered
+  // as samples whenever the state was read, zero included.
+  const scratch = snapshot.runScratch ?? null;
+  const scratchFamily = (
+    name: string,
+    help: string,
+    type: "gauge" | "counter",
+    value: number | null,
+  ) => blocks.push(familyBlock(name, help, type, value === null ? [] : [`${name} ${formatSampleValue(value)}`]));
+  scratchFamily(
+    "myrmidon_run_scratch_removed_dirs_total",
+    "Orphaned heartbeat run scratch directories removed by the janitor, cumulative since boot of this process.",
+    "counter",
+    scratch ? scratch.removedDirsTotal : null,
+  );
+  scratchFamily(
+    "myrmidon_run_scratch_removed_bytes_total",
+    "Bytes freed by removing orphaned heartbeat run scratch directories, cumulative since boot of this process.",
+    "counter",
+    scratch ? scratch.removedBytesTotal : null,
+  );
+  scratchFamily(
+    "myrmidon_run_scratch_remaining_dirs",
+    "Marked heartbeat run scratch directories left after the last janitor sweep (not yet past TTL).",
+    "gauge",
+    scratch ? scratch.remainingDirs : null,
+  );
+  scratchFamily(
+    "myrmidon_run_scratch_remaining_bytes",
+    "Bytes held by marked heartbeat run scratch directories after the last janitor sweep.",
+    "gauge",
+    scratch ? scratch.remainingBytes : null,
+  );
+
+  // myrmidon(1.6.6 REMOTE-SITES-T4): the remote sites. A site renders from its first probe on;
+  // every move result renders at zero too.
+  const fleet = snapshot.fleetSites ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_fleet_site_reachable",
+      "1 when the last health probe of the remote site answered, 0 when it did not.",
+      "gauge",
+      fleet ? fleet.sites.map((row) => `myrmidon_fleet_site_reachable{site="${escapeLabelValue(row.site)}"} ${row.reachable}`) : [],
+    ),
+    familyBlock(
+      "myrmidon_fleet_site_last_seen_seconds",
+      "Seconds since the remote site last answered a health probe (absent while it has never answered).",
+      "gauge",
+      fleet
+        ? fleet.sites.flatMap((row) =>
+            row.lastSeenSeconds === null
+              ? []
+              : [`myrmidon_fleet_site_last_seen_seconds{site="${escapeLabelValue(row.site)}"} ${formatSampleValue(row.lastSeenSeconds)}`],
+          )
+        : [],
+    ),
+    familyBlock(
+      "myrmidon_fleet_exec_retries_total",
+      "Runs of a lost remote site finalized as site_lost and requeued, per site, cumulative since boot.",
+      "counter",
+      fleet ? fleet.retriesTotal.map((row) => `myrmidon_fleet_exec_retries_total{site="${escapeLabelValue(row.site)}"} ${formatSampleValue(row.count)}`) : [],
+    ),
+    familyBlock(
+      "myrmidon_fleet_moves_total",
+      "Failover moves of bots off a lost remote site by result, cumulative since boot.",
+      "counter",
+      fleet ? fleet.movesTotal.map((row) => `myrmidon_fleet_moves_total{result="${escapeLabelValue(row.result)}"} ${formatSampleValue(row.count)}`) : [],
     ),
   );
 

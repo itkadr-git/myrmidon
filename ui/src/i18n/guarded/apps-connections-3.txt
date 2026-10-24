@@ -1,0 +1,12 @@
+# OPE-8950: area apps-connections-3
+features/connections/ConnectionSetupFlow.tsx
+pages/apps/AppDetail.tsx
+pages/apps/AppNotConnected.tsx
+pages/apps/AppsReview.tsx
+pages/apps/Browse.tsx
+pages/apps/ComposioProvenanceChip.tsx
+pages/apps/Connections.tsx
+pages/apps/PaperclipCloudOAuthHandoff.tsx
+pages/apps/ReviewQueueCard.tsx
+pages/apps/UnverifiedServerBadge.tsx
+pages/apps/connection-owner.tsx

@@ -2880,6 +2880,7 @@ export * from "./myrmidon-telegram-notify.js";
 export * from "./myrmidon-agent-tool-permissions.js";
 // myrmidon(ADMIN-AGENT): the board administrator flag on an agent.
 export * from "./myrmidon-agent-board-admin.js";
+export * from "./myrmidon-idle-stop.js"; // myrmidon(OPE-7898)
 // myrmidon(M2-B): per-agent gateway key names and fallback-chain cycle checks.
 export * from "./myrmidon-litellm-sync.js";
 // myrmidon(1.6-SWARM): per-role task queues with leased claims — the shared

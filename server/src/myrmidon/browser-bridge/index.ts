@@ -16,7 +16,7 @@
 
 import { randomBytes } from "node:crypto";
 import type { Server as HttpServer } from "node:http";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";

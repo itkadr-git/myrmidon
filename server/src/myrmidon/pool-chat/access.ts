@@ -1,5 +1,5 @@
-import type { Db } from "@paperclipai/db";
-import { poolChatModuleInstances } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { poolChatModuleInstances } from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
 import { authorizationService, type AuthorizationDecision } from "../../services/authorization.js";
 

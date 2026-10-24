@@ -9,7 +9,7 @@
 // (see the `myrmidon(1.6-AUTONOMY)` hook in `services/tool-action-review.ts`).
 
 import { and, eq } from "drizzle-orm";
-import { toolActionRequests, toolInvocations, type Db } from "@paperclipai/db";
+import { toolActionRequests, toolInvocations, type Db } from "@myrmidon/db";
 import { commitToolActionReview } from "../../services/tool-action-review.js";
 import { isAutonomyToolName } from "./action-execution.js";
 

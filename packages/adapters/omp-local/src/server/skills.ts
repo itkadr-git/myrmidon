@@ -5,15 +5,15 @@ import { fileURLToPath } from "node:url";
 import type {
   AdapterSkillContext,
   AdapterSkillSnapshot,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 import {
   buildPersistentSkillSnapshot,
   ensurePaperclipSkillSymlink,
   readPaperclipRuntimeSkillEntries,
   readInstalledSkillTargets,
   resolveLegacyPaperclipDesiredSkillNames,
-} from "@paperclipai/adapter-utils/server-utils";
-import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils/server-utils";
+import { PRODUCT_NAME } from "@myrmidon/adapter-utils";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 

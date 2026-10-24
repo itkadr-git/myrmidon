@@ -13,7 +13,7 @@ import {
   projects,
   routineRuns,
   routineTriggers,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

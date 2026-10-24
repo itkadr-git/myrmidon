@@ -1,0 +1,11 @@
+# OPE-8950: approvals-decisions-notices-1
+components/ApprovalCard.tsx
+components/ApprovalPayload.tsx
+components/AttentionQueueRow.tsx
+components/DecisionCard.tsx
+components/DecisionDateChips.tsx
+components/DecisionQueueRail.tsx
+components/DecisionResolver.tsx
+components/DecisionTriageStrip.tsx
+components/DecisionsToolbar.tsx
+components/ExecutionBlockerNotice.tsx

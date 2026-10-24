@@ -3,16 +3,16 @@ import { describe, it } from "node:test";
 import { applyReleaseFast, classifyChanges, importSpecifiers, selectTests, MAX_FAST_FILES_PER_PACKAGE } from "./select.mjs";
 
 const packages = [
-  { name: "@paperclipai/server", dir: "server" },
-  { name: "@paperclipai/ui", dir: "ui" },
+  { name: "@myrmidon/server", dir: "server" },
+  { name: "@myrmidon/ui", dir: "ui" },
   { name: "myrmidon", dir: "cli" },
-  { name: "@paperclipai/adapter-a-local", dir: "packages/adapters/a-local" },
-  { name: "@paperclipai/adapter-b-local", dir: "packages/adapters/b-local" },
+  { name: "@myrmidon/adapter-a-local", dir: "packages/adapters/a-local" },
+  { name: "@myrmidon/adapter-b-local", dir: "packages/adapters/b-local" },
 ];
 
 const testFiles = [
-  { file: "server/src/__tests__/a-adapter.test.ts", source: 'import { x } from "@paperclipai/adapter-a-local/server";' },
-  { file: "server/src/__tests__/b-adapter.test.ts", source: 'vi.mock("@paperclipai/adapter-b-local");' },
+  { file: "server/src/__tests__/a-adapter.test.ts", source: 'import { x } from "@myrmidon/adapter-a-local/server";' },
+  { file: "server/src/__tests__/b-adapter.test.ts", source: 'vi.mock("@myrmidon/adapter-b-local");' },
   { file: "server/src/__tests__/heartbeat.test.ts", source: 'import { heartbeat } from "../services/heartbeat.js";' },
   { file: "server/src/services/heartbeat.local.test.ts", source: 'const m = await import("./heartbeat.js");' },
   { file: "server/src/__tests__/unrelated.test.ts", source: 'import { y } from "../services/other.js";' },
@@ -68,14 +68,14 @@ describe("classifyChanges", () => {
     ]) {
       const result = selectTests(
         [changedFile],
-        [{ name: "@paperclipai/server", dir: "server", vitestProject: true }],
+        [{ name: "@myrmidon/server", dir: "server", vitestProject: true }],
         [
           { file: "server/src/__tests__/app-private-hostname-gate.test.ts", source: "" },
           { file: "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts", source: "" },
         ],
       );
       assert.deepEqual(result.files, [{
-        package: "@paperclipai/server",
+        package: "@myrmidon/server",
         files: [
           "server/src/__tests__/app-private-hostname-gate.test.ts",
           "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts",
@@ -106,8 +106,8 @@ describe("importSpecifiers", () => {
 describe("selectTests", () => {
   it("tests a changed adapter whole plus direct importers elsewhere", () => {
     const result = selectTests(["packages/adapters/a-local/src/server/execute.ts"], packages, testFiles);
-    assert.deepEqual(result.wholePackages, ["@paperclipai/adapter-a-local"]);
-    assert.deepEqual(result.files, [{ package: "@paperclipai/server", files: ["server/src/__tests__/a-adapter.test.ts"] }]);
+    assert.deepEqual(result.wholePackages, ["@myrmidon/adapter-a-local"]);
+    assert.deepEqual(result.files, [{ package: "@myrmidon/server", files: ["server/src/__tests__/a-adapter.test.ts"] }]);
   });
 
   it("never tests the server whole: only tests importing the changed module", () => {
@@ -115,7 +115,7 @@ describe("selectTests", () => {
     assert.deepEqual(result.wholePackages, []);
     assert.deepEqual(result.files, [
       {
-        package: "@paperclipai/server",
+        package: "@myrmidon/server",
         files: ["server/src/__tests__/heartbeat.test.ts", "server/src/services/heartbeat.local.test.ts"],
       },
     ]);
@@ -123,12 +123,12 @@ describe("selectTests", () => {
 
   it("selects a changed test file itself", () => {
     const result = selectTests(["ui/src/components/Card.test.tsx"], packages, testFiles);
-    assert.deepEqual(result.files, [{ package: "@paperclipai/ui", files: ["ui/src/components/Card.test.tsx"] }]);
+    assert.deepEqual(result.files, [{ package: "@myrmidon/ui", files: ["ui/src/components/Card.test.tsx"] }]);
   });
 
   it("follows mocks of a changed package", () => {
     const result = selectTests(["packages/adapters/b-local/src/index.ts"], packages, testFiles);
-    assert.deepEqual(result.files, [{ package: "@paperclipai/server", files: ["server/src/__tests__/b-adapter.test.ts"] }]);
+    assert.deepEqual(result.files, [{ package: "@myrmidon/server", files: ["server/src/__tests__/b-adapter.test.ts"] }]);
   });
 
   it("selects nothing for a change nobody imports", () => {
@@ -139,9 +139,9 @@ describe("selectTests", () => {
 
 describe("applyReleaseFast", () => {
   const fullPlan = { tier: "full", reasons: ["CI test selection: scripts/myrmidon/ci/select.mjs"], changed: ["scripts/myrmidon/ci/select.mjs"] };
-  const smallSelection = { wholePackages: [], files: [{ package: "@paperclipai/server", files: ["server/src/__tests__/a.test.ts"] }] };
+  const smallSelection = { wholePackages: [], files: [{ package: "@myrmidon/server", files: ["server/src/__tests__/a.test.ts"] }] };
   const bigFiles = Array.from({ length: MAX_FAST_FILES_PER_PACKAGE + 1 }, (_, i) => `server/src/__tests__/bulk-${i}.test.ts`);
-  const bigSelection = { wholePackages: [], files: [{ package: "@paperclipai/server", files: bigFiles }] };
+  const bigSelection = { wholePackages: [], files: [{ package: "@myrmidon/server", files: bigFiles }] };
 
   it("keeps a small release PR fast", () => {
     const result = applyReleaseFast(fullPlan, smallSelection, { releaseFast: true });
@@ -154,7 +154,7 @@ describe("applyReleaseFast", () => {
     const result = applyReleaseFast(fullPlan, bigSelection, { releaseFast: true });
     assert.equal(result.tier, "full");
     assert.equal(result.selection, undefined);
-    assert.match(result.reasons[0], new RegExp(`${MAX_FAST_FILES_PER_PACKAGE + 1} @paperclipai/server test files`));
+    assert.match(result.reasons[0], new RegExp(`${MAX_FAST_FILES_PER_PACKAGE + 1} @myrmidon/server test files`));
   });
 
   it("escalates a non-release fast plan past the limit to full (unchanged behaviour)", () => {

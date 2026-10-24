@@ -12,7 +12,7 @@
 //   - `runs` (heartbeatRunsDays): heartbeat_runs rows older than the cutoff
 //     that are FINISHED — a run with `finished_at` set is always finished,
 //     otherwise the status decides (`queued`/`scheduled_retry`/`running` are
-//     the live statuses, from HEARTBEAT_RUN_STATUSES in @paperclipai/shared)
+//     the live statuses, from HEARTBEAT_RUN_STATUSES in @myrmidon/shared)
 //     — and not referenced by open work: not the execution/checkout run of a
 //     non-terminal issue, not the retry parent of a live run, and not the
 //     source of an unresolved failed_run attention item (the feed derives
@@ -93,14 +93,14 @@
 // not counted; the real table size settles after autovacuum).
 
 import { sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   HEARTBEAT_RUN_STATUSES,
   emptyDataRetentionLastRun,
   type DataRetentionLastRun,
   type DataRetentionSettings,
   type DataRetentionTableStatus,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /**
  * Rows per delete batch. 5000 runs per transaction (events + a dozen FK

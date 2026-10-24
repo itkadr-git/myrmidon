@@ -18,8 +18,8 @@ import {
   instanceSettings,
   toolActionRequests,
   toolInvocations,
-} from "@paperclipai/db";
-import { defaultAutonomyMatrix } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { defaultAutonomyMatrix } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
