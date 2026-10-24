@@ -919,6 +919,21 @@ describe("reconcileBot", () => {
       expect(details).not.toHaveProperty("appliedMaxConcurrentRuns");
       expect(details).toMatchObject({ appliedFilesHash: "files-1", trigger: "missing:new" });
     });
+
+    it("does not rewrite unchanged profile files when the applied marker reports the concurrency limit", async () => {
+      const applied = profile({ maxConcurrentRuns: 3 });
+      const driver = fakeDriver({
+        botKey: "agent-a",
+        state: "running",
+        ...hashesOf(applied),
+        maxConcurrentRuns: 3,
+      });
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        compile: async () => profile({ maxConcurrentRuns: 3 }),
+      });
+      expect(outcome).toEqual({ kind: "not_applicable", reason: "bot container already matches the compiled profile" });
+      expect(driver.calls).not.toContain("writeProfile");
+    });
   });
 
   it("does not call exit when enter itself throws", async () => {
