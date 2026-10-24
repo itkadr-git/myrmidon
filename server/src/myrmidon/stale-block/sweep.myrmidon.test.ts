@@ -42,6 +42,7 @@ describeEmbeddedPostgres("stale block sweep", () => {
 
   afterEach(async () => {
     resetStaleBlockSignals();
+    await db.delete(activityLog);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issues);
