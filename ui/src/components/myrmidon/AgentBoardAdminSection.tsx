@@ -4,6 +4,7 @@
 // change goes through the same PATCH /agents/:id/permissions call as the other
 // permission flags, echoing the base flags unchanged alongside `boardAdmin`.
 import { ApiError } from "@/api/client";
+import { i18n, useTranslation } from "@/i18n";
 import type { AgentPermissionUpdate } from "@/api/agents";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 
@@ -12,13 +13,13 @@ export const BOARD_ADMIN_TOGGLE_TESTID = "board-admin-toggle";
 export function boardAdminDeniedExplanation(error: unknown): string {
   if (error instanceof ApiError && error.status === 403) {
     if (/self/i.test(error.message)) return selfToggleExplanation();
-    return error.message || "You do not have permission to manage board administrators.";
+    return error.message || i18n.t("area.settings-agent-card.agent-board-admin-section.deniedFallback");
   }
-  return error instanceof Error ? error.message : "Failed to update board administrator state.";
+  return error instanceof Error ? error.message : i18n.t("area.settings-agent-card.agent-board-admin-section.updateFailed");
 }
 
 function selfToggleExplanation(): string {
-  return "An agent cannot change its own board administrator state. Ask another board administrator to change it.";
+  return i18n.t("area.settings-agent-card.agent-board-admin-section.selfToggle");
 }
 
 /**
@@ -62,15 +63,15 @@ export function AgentBoardAdminSection({
   base: Pick<AgentPermissionUpdate, "canCreateAgents" | "canCreateSkills" | "canAssignTasks">;
   onSave: (update: AgentPermissionUpdate) => void;
 }) {
+  const { t } = useTranslation();
   if (!canManage) return null;
   return (
     <div className="space-y-1 text-sm" data-testid="board-admin-section">
       <div className="flex items-center justify-between gap-4">
         <div className="space-y-1">
-          <div>Board administrator</div>
+          <div>{t("area.settings-agent-card.agent-board-admin-section.title")}</div>
           <p className="text-xs text-muted-foreground">
-            Lets this agent administer the board: members, permissions and company settings.
-            An agent cannot change this state for itself.
+            {t("area.settings-agent-card.agent-board-admin-section.description")}
           </p>
         </div>
         <ToggleSwitch

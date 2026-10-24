@@ -12,10 +12,10 @@ import type {
   IssueDocument,
   IssueQueuedCommentQueue,
   IssueThreadInteraction,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
-import type { HeartbeatRunEvent } from "@paperclipai/shared";
+import type { HeartbeatRunEvent } from "@myrmidon/shared";
 
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),

@@ -51,7 +51,7 @@
 // second attempt sees the run no longer `queued`.
 
 import { and, asc, eq, gte, sql } from "drizzle-orm";
-import { companies, heartbeatRuns, type Db } from "@paperclipai/db";
+import { companies, heartbeatRuns, type Db } from "@myrmidon/db";
 import {
   DEFAULT_QUEUED_RESWEEP_SEC,
   loadRunDispatchSettings,

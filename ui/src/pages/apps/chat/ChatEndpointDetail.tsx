@@ -42,13 +42,22 @@ import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link, Navigate, useNavigate, useParams } from "@/lib/router";
 import { ApiError } from "@/api/client";
+import { Trans } from "react-i18next";
+import { i18n, useTranslation } from "@/i18n";
 
 const tabs = ["settings", "access", "conversations", "activity"] as const;
 type ChatTab = (typeof tabs)[number];
-const tabItems = tabs.map((value) => ({
-  value,
-  label: value[0].toUpperCase() + value.slice(1),
-}));
+// Built on demand so the labels follow the active language.
+const tabItems = () =>
+  tabs.map((value) => ({
+    value,
+    label: {
+      settings: i18n.t("area.apps-chat-email.chat-endpoint-detail.tabs.settings"),
+      access: i18n.t("area.apps-chat-email.chat-endpoint-detail.tabs.access"),
+      conversations: i18n.t("area.apps-chat-email.chat-endpoint-detail.tabs.conversations"),
+      activity: i18n.t("area.apps-chat-email.chat-endpoint-detail.tabs.activity"),
+    }[value],
+  }));
 const providerNames: Record<ChatProvider, string> = {
   agentmail: "AgentMail",
   slack: "Slack",
@@ -59,54 +68,54 @@ const providerNames: Record<ChatProvider, string> = {
   "imessage-photon": "iMessage Photon",
 };
 
-const providerLifecycleGuidance: Record<
-  ChatProvider,
-  { reconnect: string; remove: string }
-> = {
-  agentmail: { reconnect: "Reconnect the same email inbox.", remove: "Disconnect email and retain task history." },
-  slack: {
-    reconnect:
-      "Reconnect verifies or replaces credentials for this same Slack app. It does not reinstall the app or change its workspace or channel membership.",
-    remove:
-      "Myrmidon archives the endpoint, stops new ingress, and retires its saved Slack credentials. It does not uninstall the Slack app: the app remains installed, and its bot remains in channels, until you remove them in Slack.",
-  },
-  github: {
-    reconnect:
-      "Reconnect verifies this same App and installation, then updates its webhook URL, secret, and secure delivery settings. It does not reinstall the App or change repository access.",
-    remove:
-      "Myrmidon archives the endpoint, stops new ingress, and retires its saved App key and webhook secret. It does not uninstall the GitHub App: the App, its installations, and its webhook settings remain until you remove or update them on GitHub.",
-  },
-  discord: {
-    reconnect:
-      "Reconnect verifies this same Discord application and server installation. It does not add or remove the bot from the server.",
-    remove:
-      "Myrmidon archives the endpoint, stops its Myrmidon Gateway connection, and retires its saved bot token. It does not uninstall the bot: the bot remains in the Discord server, and the application remains in the Developer Portal, until you remove them there.",
-  },
-  "microsoft-teams": {
-    reconnect:
-      "Reconnect verifies this same Microsoft app, tenant, and bot identity. It does not upload or reinstall the Teams app.",
-    remove:
-      "Myrmidon archives the endpoint, stops new ingress, and retires its saved client secret. It does not uninstall the Teams app: the Entra app registration, Azure Bot, custom Teams app, and Teams installations remain until you remove them in Microsoft.",
-  },
-  "imessage-photon": {
-    reconnect: "Reconnect verifies the same Photon project and line allocation, then recovers eligible missed messages.",
-    remove: "Disconnect archives this channel and removes its saved secret. Your Photon project, number, subscription, and Messages history remain in Photon.",
-  },
-  telegram: {
-    reconnect:
-      "Reconnect verifies this same BotFather bot and automatically refreshes its Myrmidon webhook and command menu.",
-    remove:
-      "Myrmidon archives the endpoint and queues durable removal of its Telegram webhook and command menu. After Telegram confirms that cleanup, Myrmidon retires the saved token. The BotFather bot and its chat memberships remain until you remove them in Telegram.",
-  },
-};
+// Built on demand so the text follows the active language.
+function providerLifecycleGuidance(provider: ChatProvider): {
+  reconnect: string;
+  remove: string;
+} {
+  const table: Record<ChatProvider, { reconnect: string; remove: string }> = {
+    agentmail: {
+      reconnect: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.agentmail.reconnect"),
+      remove: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.agentmail.remove"),
+    },
+    slack: {
+      reconnect: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.slack.reconnect"),
+      remove: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.slack.remove"),
+    },
+    github: {
+      reconnect: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.github.reconnect"),
+      remove: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.github.remove"),
+    },
+    discord: {
+      reconnect: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.discord.reconnect"),
+      remove: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.discord.remove"),
+    },
+    "microsoft-teams": {
+      reconnect: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.teams.reconnect"),
+      remove: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.teams.remove"),
+    },
+    "imessage-photon": {
+      reconnect: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.photon.reconnect"),
+      remove: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.photon.remove"),
+    },
+    telegram: {
+      reconnect: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.telegram.reconnect"),
+      remove: i18n.t("area.apps-chat-email.chat-endpoint-detail.lifecycle.telegram.remove"),
+    },
+  };
+  return table[provider];
+}
 
-const activityKindLabels: Record<ChatActivityItem["kind"], string> = {
-  delivery: "Inbound delivery",
-  publication: "Outbound publication",
-  action: "Provider action",
-  health: "Connection health",
-  repair: "Connection repair",
-};
+function activityKindLabel(kind: ChatActivityItem["kind"]): string {
+  const table: Record<ChatActivityItem["kind"], string> = {
+    delivery: i18n.t("area.apps-chat-email.chat-endpoint-detail.activityKind.delivery"),
+    publication: i18n.t("area.apps-chat-email.chat-endpoint-detail.activityKind.publication"),
+    action: i18n.t("area.apps-chat-email.chat-endpoint-detail.activityKind.action"),
+    health: i18n.t("area.apps-chat-email.chat-endpoint-detail.activityKind.health"),
+    repair: i18n.t("area.apps-chat-email.chat-endpoint-detail.activityKind.repair"),
+  };
+  return table[kind];
+}
 
 const replayableFailureStates = new Set(["failed"]);
 // Provider callbacks do not necessarily emit a Board activity event. Refresh
@@ -156,13 +165,10 @@ export function activityResolutionActions(item: ChatActivityItem) {
 
 export function activityResolutionDescription(item: ChatActivityItem): string {
   const phase = item.fileTransfer?.phase;
-  if (phase === "file_info_unknown")
-    return "The file upload was confirmed, but its Teams notification was not. Check Teams first. Retrying sends only that notification, not the file bytes, and may create a duplicate card.";
-  if (phase === "consent_unknown")
-    return "The consent card may have reached Teams. File delivery is not confirmed. Cancelling here does not remove any card already sent.";
-  if (phase)
-    return "The file may already exist in OneDrive. Cancelling stops this Myrmidon transfer; it does not delete remote bytes. Uploads cannot be marked delivered or retried from this uncertain state.";
-  return "Myrmidon lost confirmation after sending. Check the provider conversation first. Retrying can create a duplicate message.";
+  if (phase === "file_info_unknown") return i18n.t("area.apps-chat-email.chat-endpoint-detail.resolution.fileInfoUnknown");
+  if (phase === "consent_unknown") return i18n.t("area.apps-chat-email.chat-endpoint-detail.resolution.consentUnknown");
+  if (phase) return i18n.t("area.apps-chat-email.chat-endpoint-detail.resolution.uploadUnknown");
+  return i18n.t("area.apps-chat-email.chat-endpoint-detail.resolution.default");
 }
 
 export function isResolutionEligible(item: ChatActivityItem): boolean {
@@ -184,7 +190,9 @@ export function isIndividuallyToggleableResource(
 }
 
 function activityDetailLabel(item: ChatActivityItem): string {
-  return replayableFailureStates.has(item.status) ? "Reason" : "Details";
+  return replayableFailureStates.has(item.status)
+    ? i18n.t("area.apps-chat-email.chat-endpoint-detail.reason")
+    : i18n.t("area.apps-chat-email.chat-endpoint-detail.details");
 }
 
 export function connectionHealthPresentation(
@@ -192,12 +200,12 @@ export function connectionHealthPresentation(
 ) {
   // Health events outlive pause/removal. They are history, not lifecycle state.
   const lifecycleMessages = {
-    draft: "Connection setup is incomplete.",
-    verifying: "Connection verification is in progress.",
-    paused: "Connection is paused. Resume it to receive new messages.",
-    attention: "Connection needs attention.",
-    revoked: "Connection access is revoked. Reconnect to verify access.",
-    archived: "Connection has been removed from Myrmidon.",
+    draft: i18n.t("area.apps-chat-email.chat-endpoint-detail.health.draft"),
+    verifying: i18n.t("area.apps-chat-email.chat-endpoint-detail.health.verifying"),
+    paused: i18n.t("area.apps-chat-email.chat-endpoint-detail.health.paused"),
+    attention: i18n.t("area.apps-chat-email.chat-endpoint-detail.health.attention"),
+    revoked: i18n.t("area.apps-chat-email.chat-endpoint-detail.health.revoked"),
+    archived: i18n.t("area.apps-chat-email.chat-endpoint-detail.health.archived"),
   };
   const lifecycleMessage =
     endpoint.status === "active" ? null : lifecycleMessages[endpoint.status];
@@ -206,12 +214,13 @@ export function connectionHealthPresentation(
     previousHealth: lifecycleMessage ? (endpoint.healthMessage ?? null) : null,
     error: endpoint.lastError ?? null,
     errorLabel: ["active", "attention", "revoked"].includes(endpoint.status)
-      ? "Reason"
-      : "Last reported error",
+      ? i18n.t("area.apps-chat-email.chat-endpoint-detail.reason")
+      : i18n.t("area.apps-chat-email.chat-endpoint-detail.lastReportedError"),
   };
 }
 
 export function ChatEndpointDetail() {
+  const { t } = useTranslation();
   const { endpointId = "", tab = "settings" } = useParams<{
     endpointId: string;
     tab?: string;
@@ -248,12 +257,14 @@ export function ChatEndpointDetail() {
           "chat_test_round_trip_incomplete" ||
           error.message.includes("round trip"));
       pushToast({
-        title: roundTripIncomplete ? "Setup not finished" : "Finish setup failed",
+        title: roundTripIncomplete
+          ? i18n.t("area.apps-chat-email.chat-endpoint-detail.finishSetupToast.incompleteTitle")
+          : i18n.t("area.apps-chat-email.chat-endpoint-detail.finishSetupToast.failedTitle"),
         body: roundTripIncomplete
-          ? "Wait for the agent to reply to the test conversation, then try again."
+          ? i18n.t("area.apps-chat-email.chat-endpoint-detail.finishSetupToast.incompleteBody")
           : error instanceof Error
             ? error.message
-            : "Try again.",
+            : i18n.t("area.apps-chat-email.chat-endpoint-detail.tryAgainSentence"),
         tone: roundTripIncomplete ? "warn" : "error",
       });
     },
@@ -262,15 +273,15 @@ export function ChatEndpointDetail() {
   useEffect(() => {
     if (!endpoint || !activeTab) return;
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: i18n.t("area.apps-chat-email.chat-endpoint-detail.breadcrumbConnectors"), href: "/apps" },
       {
         label: `${endpoint.assignedAgentName} · ${providerNames[endpoint.provider]}`,
         href: `/apps/chat/${endpoint.id}/settings`,
       },
       {
         label:
-          tabItems.find((item) => item.value === activeTab)?.label ??
-          "Settings",
+          tabItems().find((item) => item.value === activeTab)?.label ??
+          i18n.t("area.apps-chat-email.chat-endpoint-detail.tabs.settings"),
       },
     ]);
     return () => setBreadcrumbs([]);
@@ -282,17 +293,17 @@ export function ChatEndpointDetail() {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
-        Loading connection…
+        {t("area.apps-chat-email.chat-endpoint-detail.loading")}
       </div>
     );
   if (endpointQuery.isError || !endpoint)
     return (
       <div className="space-y-3">
         <p className="text-sm text-destructive">
-          This chat connection could not be loaded.
+          {t("area.apps-chat-email.chat-endpoint-detail.loadFailed")}
         </p>
         <Button variant="outline" onClick={() => endpointQuery.refetch()}>
-          Try again
+          {t("area.apps-chat-email.chat-endpoint-detail.tryAgainButton")}
         </Button>
       </div>
     );
@@ -312,24 +323,27 @@ export function ChatEndpointDetail() {
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold">
-            {endpoint.assignedAgentName} in {providerNames[endpoint.provider]}
+            {t("area.apps-chat-email.chat-endpoint-detail.inProvider", {
+              agent: endpoint.assignedAgentName,
+              provider: providerNames[endpoint.provider],
+            })}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {endpoint.providerAccountLabel ?? "Chat connection"}
+            {endpoint.providerAccountLabel ?? t("area.apps-chat-email.chat-endpoint-detail.chatConnectionFallback")}
           </p>
           {endpoint.verifyingStale && (
             <p className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-amber-500/25 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-900 dark:text-amber-100">
               <AlertTriangle className="h-3.5 w-3.5" />
-              Verifying over 24 hours with live traffic
+              {t("area.apps-chat-email.chat-endpoint-detail.verifyingStale")}
             </p>
           )}
           {endpoint.provider === "imessage-photon" && endpoint.botExternalId && endpoint.photonAllocation !== "shared" && (
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
               <span>{endpoint.botExternalId}</span>
-              <Button variant="ghost" size="sm" aria-label="Copy dedicated number" onClick={async () => {
-                try { await copyTextToClipboard(endpoint.botExternalId!); setCopyStatus("Number copied"); }
-                catch { setCopyStatus("Could not copy the number. Select and copy it manually."); }
-              }}><Copy className="size-4" />Copy number</Button>
+              <Button variant="ghost" size="sm" aria-label={t("area.apps-chat-email.chat-endpoint-detail.copyNumberAriaLabel")} onClick={async () => {
+                try { await copyTextToClipboard(endpoint.botExternalId!); setCopyStatus(t("area.apps-chat-email.chat-endpoint-detail.numberCopied")); }
+                catch { setCopyStatus(t("area.apps-chat-email.chat-endpoint-detail.numberCopyFailed")); }
+              }}><Copy className="size-4" />{t("area.apps-chat-email.chat-endpoint-detail.copyNumber")}</Button>
               <span role="status" className="text-muted-foreground">{copyStatus}</span>
             </div>
           )}
@@ -346,7 +360,7 @@ export function ChatEndpointDetail() {
               ) : (
                 <Check />
               )}
-              Finish setup
+              {t("area.apps-chat-email.chat-endpoint-detail.finishSetup")}
             </Button>
           ) : null}
           {setupIncomplete ? (
@@ -358,7 +372,7 @@ export function ChatEndpointDetail() {
                 )
               }
             >
-              Continue setup
+              {t("area.apps-chat-email.chat-endpoint-detail.continueSetup")}
             </Button>
           ) : null}
           <StatusBadge status={endpoint.status} />
@@ -369,7 +383,7 @@ export function ChatEndpointDetail() {
         onValueChange={(next) => navigate(`/apps/chat/${endpoint.id}/${next}`)}
       >
         <PageTabBar
-          items={tabItems}
+          items={tabItems()}
           value={activeTab}
           onValueChange={(next) =>
             navigate(`/apps/chat/${endpoint.id}/${next}`)
@@ -403,6 +417,7 @@ function Settings({
   endpointId: string;
   endpoint: Awaited<ReturnType<typeof chatEndpointsApi.get>>;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const resourcesQuery = useQuery({
@@ -419,8 +434,8 @@ function Settings({
       ),
     onError: (error) =>
       pushToast({
-        title: "Couldn't update destination",
-        body: error instanceof Error ? error.message : "Try again.",
+        title: i18n.t("area.apps-chat-email.chat-endpoint-detail.settings.destinationUpdateFailed"),
+        body: error instanceof Error ? error.message : i18n.t("area.apps-chat-email.chat-endpoint-detail.tryAgainSentence"),
         tone: "error",
       }),
   });
@@ -433,8 +448,8 @@ function Settings({
       ),
     onError: (error) =>
       pushToast({
-        title: "Couldn't update settings",
-        body: error instanceof Error ? error.message : "Try again.",
+        title: i18n.t("area.apps-chat-email.chat-endpoint-detail.settings.updateFailed"),
+        body: error instanceof Error ? error.message : i18n.t("area.apps-chat-email.chat-endpoint-detail.tryAgainSentence"),
         tone: "error",
       }),
   });
@@ -447,26 +462,29 @@ function Settings({
     saveResources.mutate({ id: resource.id, enabled });
   return (
     <section className="max-w-3xl space-y-7">
-      {endpoint.provider === "imessage-photon" && <p className="text-sm text-muted-foreground">{endpoint.photonAllocation === "shared" ? "Shared Photon project · direct messages only. Enroll senders in Photon and link their Messages identities in Access. Groups cannot be enabled." : "Enable each group individually. Agent replies are visible to everyone in that group; only authorized senders can start work."}</p>}
+      {endpoint.provider === "imessage-photon" && <p className="text-sm text-muted-foreground">{endpoint.photonAllocation === "shared" ? t("area.apps-chat-email.chat-endpoint-detail.settings.photonShared") : t("area.apps-chat-email.chat-endpoint-detail.settings.photonDedicated")}</p>}
       {endpoint.provider === "slack" && endpoint.setup?.command && (
         <div className="space-y-2">
-          <h2 className="text-lg font-semibold">Slack command</h2>
+          <h2 className="text-lg font-semibold">
+            {t("area.apps-chat-email.chat-endpoint-detail.settings.slackCommandTitle")}
+          </h2>
           <div className="rounded-lg border border-border p-3 text-sm">
             <code>{endpoint.setup.command}</code>
             <p className="mt-2 text-muted-foreground">
-              Start work with{" "}
-              <code>{endpoint.setup.command} investigate this</code>. In a
-              direct message, use <code>{endpoint.setup.command} status</code>,{" "}
-              <code>{endpoint.setup.command} new</code>, or{" "}
-              <code>{endpoint.setup.command} close</code>. Slack&apos;s bare{" "}
-              <code>/status</code> command is not a Myrmidon control.
+              <Trans
+                i18nKey="area.apps-chat-email.chat-endpoint-detail.settings.slackCommandHelp"
+                values={{ command: endpoint.setup.command }}
+                components={[<code key="code" />]}
+              />
             </p>
           </div>
         </div>
       )}
       {endpoint.provider === "telegram" && (
         <div className="space-y-2">
-          <h2 className="text-lg font-semibold">Telegram group command</h2>
+          <h2 className="text-lg font-semibold">
+            {t("area.apps-chat-email.chat-endpoint-detail.settings.telegramCommandTitle")}
+          </h2>
           <div className="rounded-lg border border-border p-3 text-sm">
             <code>
               /task@
@@ -474,27 +492,30 @@ function Settings({
               &lt;request&gt;
             </code>
             <p className="mt-2 text-muted-foreground">
-              Telegram&apos;s default privacy mode does not deliver ordinary
-              mentions to bots. Use this command to start or continue group
-              work, or reply directly to a message from the bot.
+              {t("area.apps-chat-email.chat-endpoint-detail.settings.telegramCommandHelp")}
             </p>
           </div>
         </div>
       )}
       <div>
-        <h2 className="text-lg font-semibold">Where this agent can work</h2>
+        <h2 className="text-lg font-semibold">
+          {t("area.apps-chat-email.chat-endpoint-detail.settings.whereTitle")}
+        </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Provider membership makes a destination available. Myrmidon responds
-          only where you enable it.
+          {t("area.apps-chat-email.chat-endpoint-detail.settings.whereHelp")}
         </p>
       </div>
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold">Destinations</h3>
+        <h3 className="text-sm font-semibold">
+          {t("area.apps-chat-email.chat-endpoint-detail.settings.destinations")}
+        </h3>
         {resourcesQuery.isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading destinations…</p>
+          <p className="text-sm text-muted-foreground">
+            {t("area.apps-chat-email.chat-endpoint-detail.settings.destinationsLoading")}
+          </p>
         ) : destinationResources.length === 0 ? (
           <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-            No provider destinations have been discovered yet.
+            {t("area.apps-chat-email.chat-endpoint-detail.settings.destinationsEmpty")}
           </p>
         ) : (
           <div className="divide-y divide-border border-y border-border">
@@ -507,12 +528,12 @@ function Settings({
                   <p className="text-xs text-muted-foreground">
                     {resource.availability === "available"
                       ? (resource.detail ?? resource.type)
-                      : "Unavailable at the provider"}
+                      : t("area.apps-chat-email.chat-endpoint-detail.settings.unavailableAtProvider")}
                   </p>
-                  {resource.participants?.length ? <p className="mt-1 break-words text-xs text-muted-foreground">Participants: {resource.participants.join(", ")}</p> : null}
+                  {resource.participants?.length ? <p className="mt-1 break-words text-xs text-muted-foreground">{t("area.apps-chat-email.chat-endpoint-detail.settings.participants", { list: resource.participants.join(", ") })}</p> : null}
                 </div>
                 <ToggleSwitch
-                  aria-label={`Enable ${resource.label}`}
+                  aria-label={t("area.apps-chat-email.chat-endpoint-detail.settings.enableResource", { label: resource.label })}
                   checked={resource.enabled}
                   disabled={
                     endpoint.photonAllocation === "shared" ||
@@ -530,13 +551,15 @@ function Settings({
       </div>
       {endpoint.provider !== "github" && (
         <div className="space-y-3">
-          <h3 className="text-sm font-semibold">Private conversations</h3>
+          <h3 className="text-sm font-semibold">
+            {t("area.apps-chat-email.chat-endpoint-detail.settings.privateConversations")}
+          </h3>
           <SettingToggle
-            label="Allow direct messages"
+            label={t("area.apps-chat-email.chat-endpoint-detail.settings.allowDirectMessages")}
             detail={
               endpoint.provider === "discord"
-                ? "People must also enable Direct Messages in their shared Discord server’s Privacy Settings."
-                : "People can start or continue a task in a direct conversation."
+                ? t("area.apps-chat-email.chat-endpoint-detail.settings.directMessagesDiscord")
+                : t("area.apps-chat-email.chat-endpoint-detail.settings.directMessagesDefault")
             }
             checked={endpoint.allowDirectMessages ?? false}
             pending={updateEndpoint.isPending}
@@ -546,8 +569,8 @@ function Settings({
           />
           {endpoint.provider === "microsoft-teams" && (
             <SettingToggle
-              label="Allow group chats"
-              detail="The bot may participate in group chats where it is installed."
+              label={t("area.apps-chat-email.chat-endpoint-detail.settings.allowGroupChats")}
+              detail={t("area.apps-chat-email.chat-endpoint-detail.settings.groupChatsDetail")}
               checked={endpoint.allowGroupChats ?? false}
               pending={updateEndpoint.isPending}
               onChange={(allowGroupChats) =>
@@ -597,6 +620,7 @@ function Access({
   endpointId: string;
   allowUnlinked: boolean;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [confirmationUrl, setConfirmationUrl] = useState<string | null>(null);
@@ -621,15 +645,15 @@ function Access({
         new URL(confirmationUrl, window.location.origin).toString(),
       );
       pushToast({
-        title: "Private identity-link URL created",
-        body: "Send it only to the person whose provider identity is shown.",
+        title: i18n.t("area.apps-chat-email.chat-endpoint-detail.access.linkCreatedTitle"),
+        body: i18n.t("area.apps-chat-email.chat-endpoint-detail.access.linkCreatedBody"),
         tone: "success",
       });
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't create identity link",
-        body: error instanceof Error ? error.message : "Try again.",
+        title: i18n.t("area.apps-chat-email.chat-endpoint-detail.access.linkCreateFailed"),
+        body: error instanceof Error ? error.message : i18n.t("area.apps-chat-email.chat-endpoint-detail.tryAgainSentence"),
         tone: "error",
       }),
   });
@@ -645,22 +669,23 @@ function Access({
   return (
     <section className="max-w-3xl space-y-7">
       <div>
-        <h2 className="text-lg font-semibold">External identity access</h2>
+        <h2 className="text-lg font-semibold">
+          {t("area.apps-chat-email.chat-endpoint-detail.access.title")}
+        </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Linked identities act as their current Myrmidon user. Unlinked
-          people, when allowed, receive a fixed restricted profile.
+          {t("area.apps-chat-email.chat-endpoint-detail.access.description")}
         </p>
       </div>
       <SettingToggle
-        label="Allow unlinked people"
-        detail="They are restricted guests. Their tasks run only with an isolated workspace and sandbox environment; otherwise Myrmidon safely refuses the request. They cannot approve, hire, spend, manage access, or reassign agents."
+        label={t("area.apps-chat-email.chat-endpoint-detail.access.allowUnlinked")}
+        detail={t("area.apps-chat-email.chat-endpoint-detail.access.unlinkedDetail")}
         checked={allowUnlinked}
         pending={updatePolicy.isPending}
         onChange={(value) => updatePolicy.mutate(value)}
       />
       {confirmationUrl && (
         <div className="space-y-2 border-y border-border py-3">
-          <p className="text-sm font-medium">Private confirmation link</p>
+          <p className="text-sm font-medium">{t("area.apps-chat-email.chat-endpoint-detail.access.confirmationLink")}</p>
           <p className="break-all text-xs text-muted-foreground">
             {confirmationUrl}
           </p>
@@ -671,28 +696,30 @@ function Access({
               void copyTextToClipboard(confirmationUrl).then(
                 () =>
                   pushToast({
-                    title: "Confirmation link copied",
+                    title: i18n.t("area.apps-chat-email.chat-endpoint-detail.access.linkCopied"),
                     tone: "success",
                   }),
                 () =>
                   pushToast({
-                    title: "Couldn't copy the link",
-                    body: "Select and copy it manually.",
+                    title: i18n.t("area.apps-chat-email.chat-endpoint-detail.access.linkCopyFailedTitle"),
+                    body: i18n.t("area.apps-chat-email.chat-endpoint-detail.access.linkCopyFailedBody"),
                     tone: "error",
                   }),
               );
             }}
           >
             <Copy />
-            Copy link
+            {t("area.apps-chat-email.chat-endpoint-detail.access.copyLink")}
           </Button>
         </div>
       )}
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold">Identity links</h3>
+        <h3 className="text-sm font-semibold">
+          {t("area.apps-chat-email.chat-endpoint-detail.access.identityLinks")}
+        </h3>
         {links.length === 0 ? (
           <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-            External people appear here after they message the agent.
+            {t("area.apps-chat-email.chat-endpoint-detail.access.empty")}
           </p>
         ) : (
           <div className="divide-y divide-border border-y border-border">
@@ -705,8 +732,10 @@ function Access({
                   <p className="text-sm font-medium">{link.externalLabel}</p>
                   <p className="text-xs text-muted-foreground">
                     {link.paperclipUserLabel
-                      ? `Linked to ${link.paperclipUserLabel}`
-                      : (link.externalDetail ?? "Not linked")}
+                      ? t("area.apps-chat-email.chat-endpoint-detail.access.linkedTo", {
+                          user: link.paperclipUserLabel,
+                        })
+                      : (link.externalDetail ?? t("area.apps-chat-email.chat-endpoint-detail.access.notLinked"))}
                   </p>
                 </div>
                 {link.status === "linked" ? (
@@ -717,7 +746,7 @@ function Access({
                     onClick={() => revoke.mutate(link.principalId)}
                   >
                     <Unlink />
-                    Revoke
+                    {t("area.apps-chat-email.chat-endpoint-detail.access.revoke")}
                   </Button>
                 ) : (
                   <Button
@@ -726,7 +755,7 @@ function Access({
                     disabled={createIntent.isPending}
                     onClick={() => createIntent.mutate(link.principalId)}
                   >
-                    Create private link
+                    {t("area.apps-chat-email.chat-endpoint-detail.access.createPrivateLink")}
                   </Button>
                 )}
               </div>
@@ -745,6 +774,7 @@ function Conversations({
   endpointId: string;
   provider: ChatProvider;
 }) {
+  const { t } = useTranslation();
   const query = useQuery({
     queryKey: queryKeys.chatEndpoints.conversations(endpointId),
     queryFn: () => chatEndpointsApi.listConversations(endpointId),
@@ -754,12 +784,13 @@ function Conversations({
   return (
     <section className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">Conversations</h2>
+        <h2 className="text-lg font-semibold">
+          {t("area.apps-chat-email.chat-endpoint-detail.conversations.title")}
+        </h2>
       </div>
       {rows.length === 0 ? (
         <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-          No conversations yet. Address the agent in an enabled destination to
-          start one.
+          {t("area.apps-chat-email.chat-endpoint-detail.conversations.empty")}
         </p>
       ) : (
         <div className="divide-y divide-border border-y border-border">
@@ -776,7 +807,7 @@ function Conversations({
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">
                   {row.issueIdentifier ? `${row.issueIdentifier} · ` : ""}
-                  {row.issueTitle ?? "Waiting for task"}
+                  {row.issueTitle ?? t("area.apps-chat-email.chat-endpoint-detail.conversations.waitingForTask")}
                 </p>
                 <StatusBadge status={row.state} />
               </div>
@@ -784,13 +815,18 @@ function Conversations({
                 {row.externalUrl && (
                   <Button asChild size="sm" variant="outline">
                     <a href={row.externalUrl} target="_blank" rel="noreferrer">
-                      Open {providerNames[provider]} <ExternalLink />
+                      {t("area.apps-chat-email.chat-endpoint-detail.conversations.openProvider", {
+                        provider: providerNames[provider],
+                      })}{" "}
+                      <ExternalLink />
                     </a>
                   </Button>
                 )}
                 {row.issueId && (
                   <Button asChild size="sm" variant="outline">
-                    <Link to={`/issues/${row.issueId}`}>Open task</Link>
+                    <Link to={`/issues/${row.issueId}`}>
+                      {t("area.apps-chat-email.chat-endpoint-detail.conversations.openTask")}
+                    </Link>
                   </Button>
                 )}
               </div>
@@ -809,6 +845,7 @@ function Activity({
   endpointId: string;
   endpoint: Awaited<ReturnType<typeof chatEndpointsApi.get>>;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { pushToast } = useToast();
@@ -831,14 +868,17 @@ function Activity({
         queryKey: queryKeys.chatEndpoints.activity(endpointId),
       });
       pushToast({
-        title: `${item.kind === "publication" ? "Publication" : "Delivery"} queued for replay`,
+        title:
+          item.kind === "publication"
+            ? i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.replayQueuedPublication")
+            : i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.replayQueuedDelivery"),
         tone: "success",
       });
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't replay activity",
-        body: error instanceof Error ? error.message : "Try again.",
+        title: i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.replayFailed"),
+        body: error instanceof Error ? error.message : i18n.t("area.apps-chat-email.chat-endpoint-detail.tryAgainSentence"),
         tone: "error",
       }),
   });
@@ -875,29 +915,29 @@ function Activity({
         title:
           input.item.actionType === "slash_task_start" &&
           input.action === "retry_anyway"
-            ? "Task start retried"
+            ? i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.resolved.taskStartRetried")
             : input.item.actionType === "slash_task_start"
-              ? "Task start cancelled"
+              ? i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.resolved.taskStartCancelled")
               : input.item.actionType === "provider_effect" &&
                   input.action === "mark_delivered"
-                ? "Provider reply marked delivered"
+                ? i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.resolved.replyDelivered")
                 : input.item.actionType === "provider_effect" &&
                     input.action === "retry_anyway"
-                  ? "Provider reply retried"
+                  ? i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.resolved.replyRetried")
                   : input.item.actionType === "provider_effect"
-                    ? "Provider reply cancelled"
+                    ? i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.resolved.replyCancelled")
                     : input.action === "mark_delivered"
-                      ? "Publication marked delivered"
+                      ? i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.resolved.publicationDelivered")
                       : input.action === "retry_anyway"
-                        ? "Publication queued for retry"
-                        : "Publication cancelled",
+                        ? i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.resolved.publicationRetried")
+                        : i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.resolved.publicationCancelled"),
         tone: "success",
       });
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't resolve activity",
-        body: error instanceof Error ? error.message : "Try again.",
+        title: i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.resolveFailed"),
+        body: error instanceof Error ? error.message : i18n.t("area.apps-chat-email.chat-endpoint-detail.tryAgainSentence"),
         tone: "error",
       }),
   });
@@ -917,14 +957,17 @@ function Activity({
         next,
       );
       pushToast({
-        title: action === "pause" ? "Connection paused" : "Connection resumed",
+        title:
+          action === "pause"
+            ? i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.paused")
+            : i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.resumed"),
         tone: "success",
       });
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't update connection",
-        body: error instanceof Error ? error.message : "Try again.",
+        title: i18n.t("area.apps-chat-email.chat-endpoint-detail.activity.connectionUpdateFailed"),
+        body: error instanceof Error ? error.message : i18n.t("area.apps-chat-email.chat-endpoint-detail.tryAgainSentence"),
         tone: "error",
       }),
   });
@@ -934,14 +977,16 @@ function Activity({
   const lifecycleAction = lifecycle.variables;
   const callbackSurfaceRows = endpoint.setup?.callbackSurfaces
     ? ([
-        ["Events API", endpoint.setup.callbackSurfaces.events],
-        ["Interactivity", endpoint.setup.callbackSurfaces.interactivity],
-        ["Slash command", endpoint.setup.callbackSurfaces.slashCommands],
+        [t("area.apps-chat-email.chat-endpoint-detail.activity.callbackEvents"), endpoint.setup.callbackSurfaces.events],
+        [t("area.apps-chat-email.chat-endpoint-detail.activity.callbackInteractivity"), endpoint.setup.callbackSurfaces.interactivity],
+        [t("area.apps-chat-email.chat-endpoint-detail.activity.callbackSlashCommand"), endpoint.setup.callbackSurfaces.slashCommands],
       ] as const)
     : [];
   return (
     <section className="space-y-5">
-      <h2 className="text-lg font-semibold">Connection activity</h2>
+      <h2 className="text-lg font-semibold">
+        {t("area.apps-chat-email.chat-endpoint-detail.activity.title")}
+      </h2>
       {(health.message || health.error) && (
         <div
           className={`flex items-start gap-2 rounded-lg border p-3 text-sm ${status === "attention" || status === "revoked" ? "border-destructive/40 bg-destructive/5 text-destructive" : "border-border bg-muted/30 text-foreground"}`}
@@ -953,7 +998,9 @@ function Activity({
             {health.message && <p>{health.message}</p>}
             {health.previousHealth && (
               <p className="mt-1 text-xs opacity-80">
-                <span className="font-medium">Last reported health:</span>{" "}
+                <span className="font-medium">
+                  {t("area.apps-chat-email.chat-endpoint-detail.activity.lastReportedHealth")}:
+                </span>{" "}
                 {health.previousHealth}
               </p>
             )}
@@ -970,11 +1017,11 @@ function Activity({
         <div
           className={`rounded-lg border p-3 text-sm ${endpoint.setup?.callbacksNeedUpdate ? "border-destructive/40 bg-destructive/5" : "border-border bg-muted/30"}`}
         >
-          <p className="font-medium">Slack callback health</p>
+          <p className="font-medium">{t("area.apps-chat-email.chat-endpoint-detail.activity.callbackHealth")}</p>
           <p className="mt-1 text-xs text-muted-foreground">
             {endpoint.setup?.callbacksNeedUpdate
-              ? "Slack callback URLs need an update. Save the current App Manifest, then exercise Events, Interactivity, and the registered command again."
-              : "Myrmidon records each callback surface independently after Slack successfully calls it."}
+              ? t("area.apps-chat-email.chat-endpoint-detail.activity.callbacksNeedUpdate")
+              : t("area.apps-chat-email.chat-endpoint-detail.activity.callbacksNote")}
           </p>
           <div className="mt-3 grid gap-2 sm:grid-cols-3">
             {callbackSurfaceRows.map(([label, surface]) => (
@@ -982,14 +1029,14 @@ function Activity({
                 <p className="text-xs font-medium">{label}</p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {surface.status === "current"
-                    ? "Current"
+                    ? t("area.apps-chat-email.chat-endpoint-detail.activity.surfaceCurrent")
                     : surface.status === "stale"
-                      ? "Stale URL"
-                      : "Not observed"}
+                      ? t("area.apps-chat-email.chat-endpoint-detail.activity.surfaceStale")
+                      : t("area.apps-chat-email.chat-endpoint-detail.activity.surfaceNotObserved")}
                 </p>
                 {surface.observedAt && (
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Last observed{" "}
+                    {t("area.apps-chat-email.chat-endpoint-detail.activity.lastObserved")}{" "}
                     <time
                       dateTime={surface.observedAt}
                       title={surface.observedAt}
@@ -1020,7 +1067,7 @@ function Activity({
                 ) : (
                   <Pause />
                 )}
-                Pause
+                {t("area.apps-chat-email.chat-endpoint-detail.activity.pause")}
               </Button>
             )}
             {status === "paused" && (
@@ -1034,7 +1081,7 @@ function Activity({
                 ) : (
                   <Play />
                 )}
-                Resume
+                {t("area.apps-chat-email.chat-endpoint-detail.activity.resume")}
               </Button>
             )}
             {[
@@ -1056,8 +1103,8 @@ function Activity({
               >
                 <RefreshCw />
                 {status === "draft" || status === "verifying"
-                  ? "Finish setup"
-                  : "Reconnect"}
+                  ? t("area.apps-chat-email.chat-endpoint-detail.finishSetup")
+                  : t("area.apps-chat-email.chat-endpoint-detail.activity.reconnect")}
               </Button>
             )}
             <Button
@@ -1067,38 +1114,38 @@ function Activity({
               onClick={() => setRemoveOpen(true)}
             >
               <Trash2 />
-              Remove connection
+              {t("area.apps-chat-email.chat-endpoint-detail.activity.removeConnection")}
             </Button>
           </div>
           {status !== "draft" && status !== "verifying" && (
             <p className="text-xs text-muted-foreground">
-              {providerLifecycleGuidance[endpoint.provider].reconnect}
+              {providerLifecycleGuidance(endpoint.provider).reconnect}
             </p>
           )}
         </div>
       )}
       <div className="space-y-2">
         <h3 className="text-sm font-semibold">
-          Delivery and publication history
+          {t("area.apps-chat-email.chat-endpoint-detail.activity.historyTitle")}
         </h3>
         <div className="divide-y divide-border border-y border-border">
           {query.isLoading && (
             <div className="flex items-center gap-2 py-5 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Loading activity…
+              {t("area.apps-chat-email.chat-endpoint-detail.activity.loading")}
             </div>
           )}
           {query.isError && (
             <div className="flex flex-wrap items-center justify-between gap-3 py-4">
               <p className="text-sm text-destructive" role="alert">
-                Connection activity could not be loaded.
+                {t("area.apps-chat-email.chat-endpoint-detail.activity.loadFailed")}
               </p>
               <Button
                 size="sm"
                 variant="outline"
                 onClick={() => query.refetch()}
               >
-                Try again
+                {t("area.apps-chat-email.chat-endpoint-detail.tryAgainButton")}
               </Button>
             </div>
           )}
@@ -1112,7 +1159,7 @@ function Activity({
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs font-medium text-muted-foreground">
-                      {activityKindLabels[item.kind]}
+                      {activityKindLabel(item.kind)}
                     </span>
                     <StatusBadge status={item.status} />
                     <time
@@ -1143,7 +1190,9 @@ function Activity({
                   <Button
                     size="sm"
                     variant="outline"
-                    aria-label={`Replay failed ${item.kind}`}
+                    aria-label={t("area.apps-chat-email.chat-endpoint-detail.activity.replayAriaLabel", {
+                      kind: activityKindLabel(item.kind),
+                    })}
                     disabled={replay.isPending}
                     onClick={() => replay.mutate(item)}
                   >
@@ -1152,7 +1201,7 @@ function Activity({
                     ) : (
                       <RefreshCw />
                     )}
-                    Replay
+                    {t("area.apps-chat-email.chat-endpoint-detail.activity.replay")}
                   </Button>
                 )}
                 {isResolutionEligible(item) && (
@@ -1161,14 +1210,14 @@ function Activity({
                     variant="outline"
                     onClick={() => setResolutionItem(item)}
                   >
-                    Resolve
+                    {t("area.apps-chat-email.chat-endpoint-detail.activity.resolve")}
                   </Button>
                 )}
               </div>
             ))}
           {!query.isLoading && !query.isError && rows.length === 0 && (
             <p className="py-5 text-sm text-muted-foreground">
-              No connection activity yet.
+              {t("area.apps-chat-email.chat-endpoint-detail.activity.empty")}
             </p>
           )}
         </div>
@@ -1181,16 +1230,16 @@ function Activity({
           <AlertDialogHeader>
             <AlertDialogTitle>
               {resolutionItem?.actionType === "slash_task_start"
-                ? "Resolve unconfirmed task start"
+                ? t("area.apps-chat-email.chat-endpoint-detail.activity.resolveDialog.titleTaskStart")
                 : resolutionItem?.actionType === "provider_effect"
-                  ? "Resolve unconfirmed provider reply"
-                  : "Resolve unconfirmed delivery"}
+                  ? t("area.apps-chat-email.chat-endpoint-detail.activity.resolveDialog.titleReply")
+                  : t("area.apps-chat-email.chat-endpoint-detail.activity.resolveDialog.titleDelivery")}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {resolutionItem?.actionType === "slash_task_start"
-                ? "Myrmidon lost confirmation after asking Slack to start the task. Check Slack first. Retrying can create a duplicate starter message and task."
+                ? t("area.apps-chat-email.chat-endpoint-detail.activity.resolveDialog.bodyTaskStart")
                 : resolutionItem?.actionType === "provider_effect"
-                  ? "Myrmidon lost confirmation after sending this provider reply. Check the provider first. Marking it delivered applies any pending Myrmidon state change; retrying can create a duplicate message."
+                  ? t("area.apps-chat-email.chat-endpoint-detail.activity.resolveDialog.bodyReply")
                   : resolutionItem
                     ? activityResolutionDescription(resolutionItem)
                     : ""}
@@ -1198,7 +1247,7 @@ function Activity({
           </AlertDialogHeader>
           <AlertDialogFooter className="sm:flex-wrap">
             <AlertDialogCancel disabled={resolveActivity.isPending}>
-              Keep unresolved
+              {t("area.apps-chat-email.chat-endpoint-detail.activity.resolveDialog.keep")}
             </AlertDialogCancel>
             {resolutionItem &&
               activityResolutionActions(resolutionItem).includes("cancel") && (
@@ -1214,12 +1263,12 @@ function Activity({
                   }
                 >
                   {resolutionItem.actionType === "slash_task_start"
-                    ? "Cancel task start"
+                    ? t("area.apps-chat-email.chat-endpoint-detail.activity.resolveDialog.cancelTaskStart")
                     : resolutionItem.actionType === "provider_effect"
-                      ? "Cancel provider reply"
+                      ? t("area.apps-chat-email.chat-endpoint-detail.activity.resolveDialog.cancelReply")
                       : resolutionItem.fileTransfer
-                        ? "Cancel file transfer"
-                        : "Cancel publication"}
+                        ? t("area.apps-chat-email.chat-endpoint-detail.activity.resolveDialog.cancelFileTransfer")
+                        : t("area.apps-chat-email.chat-endpoint-detail.activity.resolveDialog.cancelPublication")}
                 </Button>
               )}
             {resolutionItem &&
@@ -1238,8 +1287,8 @@ function Activity({
                   }
                 >
                   {resolutionItem.fileTransfer
-                    ? "Retry file notification"
-                    : "Retry anyway"}
+                    ? t("area.apps-chat-email.chat-endpoint-detail.activity.resolveDialog.retryFileNotification")
+                    : t("area.apps-chat-email.chat-endpoint-detail.activity.resolveDialog.retryAnyway")}
                 </Button>
               )}
             {resolutionItem &&
@@ -1258,7 +1307,7 @@ function Activity({
                     }
                   }}
                 >
-                  Mark delivered
+                  {t("area.apps-chat-email.chat-endpoint-detail.activity.resolveDialog.markDelivered")}
                 </AlertDialogAction>
               )}
           </AlertDialogFooter>
@@ -1267,16 +1316,19 @@ function Activity({
       <AlertDialog open={removeOpen} onOpenChange={setRemoveOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove this connection?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {t("area.apps-chat-email.chat-endpoint-detail.activity.removeDialog.title")}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              {endpoint.assignedAgentName} will stop receiving new work from
-              {` ${providerNames[endpoint.provider]}`}. Existing Myrmidon tasks
-              remain available.{" "}
-              {providerLifecycleGuidance[endpoint.provider].remove}
+              {t("area.apps-chat-email.chat-endpoint-detail.activity.removeDialog.body", {
+                agent: endpoint.assignedAgentName,
+                provider: providerNames[endpoint.provider],
+              })}{" "}
+              {providerLifecycleGuidance(endpoint.provider).remove}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={lifecycle.isPending}
@@ -1285,7 +1337,7 @@ function Activity({
               {lifecycle.isPending && (
                 <Loader2 className="h-4 w-4 animate-spin" />
               )}
-              Remove connection
+              {t("area.apps-chat-email.chat-endpoint-detail.activity.removeConnection")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

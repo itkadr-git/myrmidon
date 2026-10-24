@@ -11,7 +11,7 @@
 //
 // Switch-over recipe (the one edit that follows part A's merge): delete
 // everything up to the "wire-in" marker below and re-export the package types
-// instead — `export * from "@paperclipai/corpus/ports";` — then let `tsc` point
+// instead — `export * from "@myrmidon/corpus/ports";` — then let `tsc` point
 // at every place where the package names a field differently; the mapping lives
 // in `service.ts` and `worker.ts` only, so the API contract in
 // `packages/shared/src/myrmidon-corpus.ts` does not move.
@@ -27,7 +27,7 @@ import type {
   CorpusSearchMode,
   CorpusSettings,
   CorpusStats,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 // Re-exported so that a consumer of these ports needs one import, not two; part
 // A's package does the same from its own module.

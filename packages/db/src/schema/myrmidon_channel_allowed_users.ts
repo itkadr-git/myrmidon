@@ -35,7 +35,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { chatEndpoints } from "./chat_channels.js";
-import type { ChatProvider } from "@paperclipai/shared";
+import type { ChatProvider } from "@myrmidon/shared";
 
 export const myrmidonChannelAllowedUsers = pgTable(
   "myrmidon_channel_allowed_users",

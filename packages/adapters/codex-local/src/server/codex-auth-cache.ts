@@ -1,9 +1,9 @@
 import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
-import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
-import { toAccountHandle } from "@paperclipai/shared";
+import { resolvePaperclipInstanceRootForAdapter } from "@myrmidon/adapter-utils/server-utils";
+import { withDirectoryMergeLock } from "@myrmidon/adapter-utils/workspace-restore-merge";
+import { toAccountHandle } from "@myrmidon/shared";
 import { USE_SOURCE_EXIT, decideCodexAuthMerge } from "./codex-auth-merge-decision.js";
 import { writeCredentialSeedOrNewer } from "./codex-auth-seed-write.js";
 

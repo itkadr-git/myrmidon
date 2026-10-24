@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { heartbeatRuns, type Db } from "@myrmidon/db";
 
 // myrmidon(PROCS-2/T2.1): admission counters kept in Postgres. The gate runs
 // inside the claim transaction under an advisory lock, so two worker processes

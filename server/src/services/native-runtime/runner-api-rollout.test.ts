@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import { runnerApiToolsEnabled } from "./runner-api-rollout.js";
 
 describe("runner API rollout", () => {

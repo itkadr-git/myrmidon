@@ -26,13 +26,13 @@ import {
   heartbeatRuns,
   issueClaims,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
   SWARM_CLAIM_WAKE_REASON,
   SWARM_MATCHED_WAKE_REASON,
   resolveSwarmClaimSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -48,6 +48,7 @@ import {
   type SwarmMatcherDeps,
 } from "../myrmidon/swarm-claim/matcher.js";
 import { readSwarmQueueCounters } from "../myrmidon/swarm-claim/matcher.js";
+import { clearExpiredAssignee, releaseClaim } from "../myrmidon/swarm-claim/store.js";
 import type { HostCpuGate, HostMemoryGate } from "../myrmidon/run-admission.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -199,6 +200,7 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
       agentId,
       role: "engineer",
       runId: null,
+      origin: "auto_match",
       claimedAt: NOW,
       heartbeatAt: NOW,
       expiresAt: new Date(NOW.getTime() + 900_000),
@@ -213,7 +215,7 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
    */
   function sweeper(
     wakeCalls: WakeCall[],
-    settings: { maxActiveTasks?: number } = {},
+    settings: { maxActiveTasks?: number; failWake?: boolean } = {},
   ) {
     const deps = {
       db,
@@ -239,6 +241,7 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
         opts: { reason?: string; contextSnapshot?: Record<string, unknown> },
       ) => {
         const issueId = String(opts.contextSnapshot?.issueId ?? "");
+        if (settings.failWake) throw new Error("simulated wake admission refusal");
         const [row] = await db
           .select({ assigneeAgentId: issues.assigneeAgentId })
           .from(issues)
@@ -287,6 +290,47 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
     expect(wakeCalls[0]?.issueId).toBe(issueId);
     expect(wakeCalls[0]?.reason).toBe(SWARM_MATCHED_WAKE_REASON);
     expect(wakeCalls[0]?.assigneeAtWake).toBe(agentId);
+  });
+
+  it("returns an engineer task to the queue when wake admission fails, then auto-claims it without a lead", async () => {
+    const companyId = await seedCompany();
+    const engineerId = await seedAgent(companyId, { name: "free-engineer" });
+    const issueId = await seedTask(companyId, { identifier: "TASK-RETURN" });
+    const failedWakeCalls: WakeCall[] = [];
+
+    const firstPass = await sweeper(failedWakeCalls, { failWake: true }).sweep(NOW);
+
+    expect(firstPass.idleClaimed).toBe(0);
+    expect(firstPass.idleWoken).toBe(0);
+    const [returned] = await db
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(returned).toEqual({ status: "todo", assigneeAgentId: null });
+    const released = await db
+      .select({ releasedAt: issueClaims.releasedAt, releaseReason: issueClaims.releaseReason })
+      .from(issueClaims)
+      .where(eq(issueClaims.issueId, issueId));
+    expect(released).toHaveLength(1);
+    expect(released[0]?.releasedAt).not.toBeNull();
+    expect(released[0]?.releaseReason).toBe("swarm_matched_wake_failed");
+
+    const secondPass: WakeCall[] = [];
+    const retry = await sweeper(secondPass).sweep(new Date(NOW.getTime() + 1_000));
+
+    expect(retry.idleClaimed).toBe(1);
+    expect(retry.idleWoken).toBe(1);
+    expect(secondPass).toEqual([{
+      agentId: engineerId,
+      issueId,
+      reason: SWARM_MATCHED_WAKE_REASON,
+      assigneeAtWake: engineerId,
+    }]);
+    const [claimed] = await db
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(claimed).toEqual({ status: "todo", assigneeAgentId: engineerId });
   });
 
   it("wakes nobody when the role has no free agent", async () => {
@@ -354,9 +398,9 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
     expect([first, second].every((id) => assigned.some((row) => row.assigneeAgentId === id))).toBe(true);
   });
 
-  it("takes the task off an owner whose lease expired with no run, then re-matches it", async () => {
+  it("preserves an explicit assignee when an expired claim has unknown provenance", async () => {
     const companyId = await seedCompany();
-    const agentId = await seedAgent(companyId, { name: "agent-a" });
+    const agentId = await seedAgent(companyId, { name: "manual-owner" });
     const issueId = await seedTask(companyId);
     await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
     await db.insert(issueClaims).values({
@@ -365,6 +409,35 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
       agentId,
       role: "engineer",
       runId: null,
+      origin: null,
+      claimedAt: new Date(NOW.getTime() - 3_600_000),
+      heartbeatAt: new Date(NOW.getTime() - 3_600_000),
+      expiresAt: new Date(NOW.getTime() - 60_000),
+    });
+
+    const wakeCalls: WakeCall[] = [];
+    const result = await sweeper(wakeCalls).sweep(NOW);
+
+    expect(result.expiredReleased).toBe(1);
+    const [task] = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues).where(eq(issues.id, issueId));
+    expect(task?.assigneeAgentId).toBe(agentId);
+    expect(wakeCalls).toHaveLength(0);
+  });
+
+  it("takes the task off an owner whose lease expired with no run, then re-matches it", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, { name: "agent-a" });
+    const issueId = await seedTask(companyId);
+    await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
+    const claimId = randomUUID();
+    await db.insert(issueClaims).values({
+      id: claimId,
+      companyId,
+      issueId,
+      agentId,
+      role: "engineer",
+      runId: null,
+      origin: "auto_match",
       claimedAt: new Date(NOW.getTime() - 3_600_000),
       heartbeatAt: new Date(NOW.getTime() - 3_600_000),
       // Expired, and no run of the agent is live: the task is nobody's again.
@@ -382,6 +455,121 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
     expect(wakeCalls).toHaveLength(1);
     expect(wakeCalls[0]?.agentId).toBe(agentId);
     expect(wakeCalls[0]?.assigneeAtWake).toBe(agentId);
+  });
+
+  /** An expired lease on a task owned by `ownerId`; returns the claim id. */
+  async function seedExpiredLease(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    origin: "auto_match" | "checkout" | null,
+  ) {
+    const id = randomUUID();
+    await db.insert(issueClaims).values({
+      id,
+      companyId,
+      issueId,
+      agentId,
+      role: "engineer",
+      runId: null,
+      origin,
+      claimedAt: new Date(NOW.getTime() - 3_600_000),
+      heartbeatAt: new Date(NOW.getTime() - 3_600_000),
+      expiresAt: new Date(NOW.getTime() - 60_000),
+    });
+    return id;
+  }
+
+  async function assigneeOf(issueId: string) {
+    const [task] = await db.select({ a: issues.assigneeAgentId }).from(issues).where(eq(issues.id, issueId));
+    return task?.a ?? null;
+  }
+
+  it("keeps an assignee whose expired lease came from a checkout", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, { name: "checkout-owner" });
+    const issueId = await seedTask(companyId);
+    await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
+    await seedExpiredLease(companyId, issueId, agentId, "checkout");
+
+    const wakeCalls: WakeCall[] = [];
+    const result = await sweeper(wakeCalls).sweep(NOW);
+
+    expect(result.expiredReleased).toBe(1);
+    expect(await assigneeOf(issueId)).toBe(agentId);
+    expect(wakeCalls).toHaveLength(0);
+  });
+
+  it("does not let an old auto-match lease undo a manual reassignment", async () => {
+    const companyId = await seedCompany();
+    const autoAgent = await seedAgent(companyId, { name: "auto-holder" });
+    const manualAgent = await seedAgent(companyId, { name: "manual-owner" });
+    const issueId = await seedTask(companyId);
+    await seedExpiredLease(companyId, issueId, autoAgent, "auto_match");
+    await db.update(issues).set({ assigneeAgentId: manualAgent }).where(eq(issues.id, issueId));
+
+    const wakeCalls: WakeCall[] = [];
+    await sweeper(wakeCalls).sweep(NOW);
+
+    expect(await assigneeOf(issueId)).toBe(manualAgent);
+    expect(wakeCalls).toHaveLength(0);
+  });
+
+  it("keeps the owner of a task that an active run holds", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, { name: "running-owner" });
+    const issueId = await seedTask(companyId);
+    await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await seedExpiredLease(companyId, issueId, agentId, "auto_match");
+
+    const wakeCalls: WakeCall[] = [];
+    await sweeper(wakeCalls).sweep(NOW);
+
+    expect(await assigneeOf(issueId)).toBe(agentId);
+    expect(wakeCalls).toHaveLength(0);
+  });
+
+  it("compare-and-update: a newer open lease or a foreign claim id blocks clearing", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, { name: "agent-a" });
+    const otherAgent = await seedAgent(companyId, { name: "agent-b" });
+    const issueId = await seedTask(companyId);
+    await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
+    const oldClaim = await seedExpiredLease(companyId, issueId, agentId, "auto_match");
+    expect(await releaseClaim(db, { claimId: oldClaim, reason: "lease_expired", now: NOW })).toBe(true);
+    // A new lease opened by a concurrent pass after the old one was released.
+    const newClaim = randomUUID();
+    await db.insert(issueClaims).values({
+      id: newClaim,
+      companyId,
+      issueId,
+      agentId: otherAgent,
+      role: "engineer",
+      origin: "auto_match",
+      claimedAt: NOW,
+      heartbeatAt: NOW,
+      expiresAt: new Date(NOW.getTime() + 900_000),
+    });
+    const input = { companyId, issueId, agentId, claimId: oldClaim, now: NOW };
+    expect(await clearExpiredAssignee(db, input)).toBe(false);
+    expect(await assigneeOf(issueId)).toBe(agentId);
+
+    // Once the new lease is gone the exact old claim clears, a different id does not.
+    await db.delete(issueClaims).where(eq(issueClaims.id, newClaim));
+    expect(await clearExpiredAssignee(db, { ...input, claimId: randomUUID() })).toBe(false);
+    expect(await clearExpiredAssignee(db, input)).toBe(true);
+    expect(await assigneeOf(issueId)).toBeNull();
+    // Second attempt is a no-op: the owner is already gone.
+    expect(await clearExpiredAssignee(db, input)).toBe(false);
   });
 
   // Part D: the numbers the panel shows. They are read straight off the live

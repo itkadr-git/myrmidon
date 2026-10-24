@@ -15,8 +15,8 @@
 // separate score line, not as rubric points.
 
 import { randomUUID } from "node:crypto";
-import type { Db } from "@paperclipai/db";
-import { evalReferenceTasks, evalRuns } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { evalReferenceTasks, evalRuns } from "@myrmidon/db";
 import { and, desc, eq } from "drizzle-orm";
 import {
   aggregateEvalScores,

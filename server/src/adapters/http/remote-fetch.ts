@@ -3,7 +3,7 @@ import {
   type GuardedRemoteHttpFetchOptions,
 } from "../../services/remote-http-fetch.js";
 import { parseRemoteHttpEndpoint } from "../../services/remote-http-endpoint-guard.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const PRIVATE_ENDPOINT_ALLOWLIST_ENV = "HTTP_ADAPTER_PRIVATE_ENDPOINT_ALLOWLIST";
 

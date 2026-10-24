@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/hermes-paperclip-adapter",
+  "name": "@myrmidon/hermes-paperclip-adapter",
   "version": "0.3.1",
   "description": "Paperclip adapters for Hermes Agent local CLI and Hermes Gateway HTTP/SSE runs",
   "type": "module",
@@ -99,8 +99,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@paperclipai/shared": "workspace:*",
-    "@paperclipai/adapter-utils": "workspace:*",
+    "@myrmidon/shared": "workspace:*",
+    "@myrmidon/adapter-utils": "workspace:*",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {

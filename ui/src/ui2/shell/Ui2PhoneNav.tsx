@@ -1,5 +1,5 @@
 // myrmidon(UI-0a): UI-2.0 phone frame — 56px header (logo + status) and the
-// 5-tab bottom bar (Center / Decisions / Fleet / Commander / More) at 390px.
+// bottom tab bar (Center / Decisions / Agents / Servers / Commander / More) at 390px.
 // Touch targets: tab items 60px high (screen-map §3.3: >= 44px, bar items 60).
 // Desktop rail is hidden on phone; pages render in the column between the
 // two bars.
@@ -127,7 +127,7 @@ export function Ui2PhoneTabBar() {
       style={{
         height: "var(--myr-phone-tabbar-height)",
         display: "grid",
-        gridTemplateColumns: "repeat(5, 1fr)",
+        gridTemplateColumns: `repeat(${UI2_PHONE_TABS.length}, 1fr)`,
         background: "var(--myr-surface-raised)",
         borderTop: "1px solid var(--myr-hairline)",
       }}

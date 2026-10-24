@@ -1,0 +1,11 @@
+# OPE-8950: area inbox-status-cards-2
+pages/Inbox.tsx
+pages/LegacyInbox.tsx
+pages/StatusCards/ArchivedStatusCardRow.tsx
+pages/StatusCards/CreateStatusCardDialog.tsx
+pages/StatusCards/StatusCardDetailDrawer.tsx
+pages/StatusCards/StatusCardSettingsForm.tsx
+pages/StatusCards/StatusCardTile.tsx
+pages/StatusCards/SummarizerAgentSelect.tsx
+pages/StatusCards/index.tsx
+pages/WhatNeedsMe.tsx

@@ -10,8 +10,8 @@ import type {
   FeedbackVoteValue,
   Issue,
   IssueDocument,
-} from "@paperclipai/shared";
-import { isSystemIssueDocumentKey } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { isSystemIssueDocumentKey } from "@myrmidon/shared";
 import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
@@ -41,6 +41,7 @@ import { DocumentDiffModal } from "./DocumentDiffModal";
 import { DocumentFrameHeader, type DocumentFrameHeaderRevisionActor } from "./DocumentFrameHeader";
 import { SourceTrustBadge } from "./SourceTrustBadge";
 import { Badge } from "@/components/ui/badge";
+import { i18n, useTranslation } from "@/i18n";
 
 type DraftState = {
   key: string;
@@ -166,11 +167,11 @@ function getRevisionActor(
     const profile = maps.userProfileMap?.get(revision.createdByUserId);
     return {
       kind: "user",
-      name: profile?.label ?? (revision.createdByUserId === "local-board" ? "Board" : revision.createdByUserId.slice(0, 8)),
+      name: profile?.label ?? (revision.createdByUserId === "local-board" ? i18n.t("common.board") : revision.createdByUserId.slice(0, 8)),
       imageUrl: profile?.image ?? null,
     };
   }
-  return { kind: "system", name: "System" };
+  return { kind: "system", name: i18n.t("area.issue-properties-panels-1.issue-documents-section.actorSystem") };
 }
 
 function documentHasUnsavedChanges(doc: IssueDocument, draft: DraftState | null) {
@@ -289,6 +290,7 @@ export function IssueDocumentsSection({
   forceEditDocumentKey?: string | null;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const location = useLocation();
   const documentSubject = useMemo(() => {
@@ -388,14 +390,14 @@ export function IssueDocumentsSection({
   const deleteDocument = useMutation({
     mutationFn: (key: string) => documentSubject.deleteDocument
       ? documentSubject.deleteDocument(key)
-      : Promise.reject(new Error("Document deletion is not available")),
+      : Promise.reject(new Error(t("area.issue-properties-panels-1.issue-documents-section.deleteUnavailable"))),
     onSuccess: () => {
       setError(null);
       setConfirmDeleteKey(null);
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to delete document");
+      setError(err instanceof Error ? err.message : t("area.issue-properties-panels-1.issue-documents-section.deleteFailed"));
     },
   });
 
@@ -403,7 +405,7 @@ export function IssueDocumentsSection({
     mutationFn: ({ key, revisionId }: { key: string; revisionId: string }) =>
       documentSubject.restoreDocumentRevision
         ? documentSubject.restoreDocumentRevision(key, revisionId)
-        : Promise.reject(new Error("Document revision restore is not available")),
+        : Promise.reject(new Error(t("area.issue-properties-panels-1.issue-documents-section.restoreUnavailable"))),
     onSuccess: (document, variables) => {
       syncDocumentCaches(document);
       setSelectedRevisionIds((current) => ({ ...current, [variables.key]: null }));
@@ -414,7 +416,7 @@ export function IssueDocumentsSection({
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to restore document revision");
+      setError(err instanceof Error ? err.message : t("area.issue-properties-panels-1.issue-documents-section.restoreFailed"));
     },
   });
 
@@ -422,7 +424,7 @@ export function IssueDocumentsSection({
     mutationFn: ({ key, locked }: { key: string; locked: boolean }) =>
       documentSubject.setDocumentLock
         ? documentSubject.setDocumentLock(key, locked)
-        : Promise.reject(new Error("Document locking is not available")),
+        : Promise.reject(new Error(t("area.issue-properties-panels-1.issue-documents-section.lockUnavailable"))),
     onSuccess: (document) => {
       syncDocumentCaches(document);
       setDraft((current) => current?.key === document.key ? null : current);
@@ -432,7 +434,7 @@ export function IssueDocumentsSection({
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to update document lock");
+      setError(err instanceof Error ? err.message : t("area.issue-properties-panels-1.issue-documents-section.lockFailed"));
     },
   });
 
@@ -457,7 +459,7 @@ export function IssueDocumentsSection({
   const isEmpty = sortedDocuments.length === 0 && !documentSubject.legacyPlanDocument;
   const newDocumentKeyError =
     draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
-      ? "Use lowercase letters, numbers, -, or _, and start with a letter or number."
+      ? t("area.issue-properties-panels-1.issue-documents-section.keyHint")
       : null;
 
   const resetAutosaveState = useCallback(() => {
@@ -540,9 +542,9 @@ export function IssueDocumentsSection({
 
     if (!normalizedKey || !normalizedBody) {
       if (currentDraft.isNew) {
-        setError("Document key and body are required");
+        setError(t("area.issue-properties-panels-1.issue-documents-section.keyAndBodyRequired"));
       } else if (!normalizedBody) {
-        setError("Document body cannot be empty");
+        setError(t("area.issue-properties-panels-1.issue-documents-section.bodyEmpty"));
       }
       if (options?.trackAutosave) {
         resetAutosaveState();
@@ -551,7 +553,7 @@ export function IssueDocumentsSection({
     }
 
     if (!DOCUMENT_KEY_PATTERN.test(normalizedKey)) {
-      setError("Document key must start with a letter or number and use only lowercase letters, numbers, -, or _.");
+      setError(t("area.issue-properties-panels-1.issue-documents-section.keyInvalid"));
       if (options?.trackAutosave) {
         resetAutosaveState();
       }
@@ -611,7 +613,7 @@ export function IssueDocumentsSection({
       return true;
     } catch (err) {
       if (isLockedDocumentError(err)) {
-        setError("Document is locked. Unlock it before editing.");
+        setError(t("area.issue-properties-panels-1.issue-documents-section.lockedError"));
         resetAutosaveState();
         invalidateIssueDocuments();
         return false;
@@ -636,14 +638,14 @@ export function IssueDocumentsSection({
           resetAutosaveState();
           return false;
         } catch {
-          setError("Document changed remotely and the latest version could not be loaded");
+          setError(t("area.issue-properties-panels-1.issue-documents-section.remoteLoadFailed"));
           return false;
         }
       }
-      setError(err instanceof Error ? err.message : "Failed to save document");
+      setError(err instanceof Error ? err.message : t("area.issue-properties-panels-1.issue-documents-section.saveFailed"));
       return false;
     }
-  }, [documentConflict, documentSubject, invalidateIssueDocuments, resetAutosaveState, runSave, sortedDocuments, syncDocumentCaches, upsertDocument]);
+  }, [documentConflict, documentSubject, invalidateIssueDocuments, resetAutosaveState, runSave, sortedDocuments, syncDocumentCaches, upsertDocument, t]);
 
   const reloadDocumentFromServer = useCallback((key: string) => {
     if (documentConflict?.key !== key) return;
@@ -701,9 +703,9 @@ export function IssueDocumentsSection({
         setCopiedDocumentKey((current) => current === key ? null : current);
       }, 1400);
     } catch {
-      setError("Could not copy document");
+      setError(t("area.issue-properties-panels-1.issue-documents-section.copyFailed"));
     }
-  }, []);
+  }, [t]);
 
   const getDocumentRevisions = useCallback((key: string) => {
     const cached = queryClient.getQueryData<DocumentRevision[]>(documentSubject.documentRevisionsQueryKey(key));
@@ -726,7 +728,7 @@ export function IssueDocumentsSection({
       return;
     }
     if (documentConflict?.key === doc.key || documentHasUnsavedChanges(doc, draft)) {
-      setError("Save or cancel your local changes before viewing an older revision.");
+      setError(t("area.issue-properties-panels-1.issue-documents-section.saveBeforeRevision"));
       return;
     }
     resetAutosaveState();
@@ -735,16 +737,16 @@ export function IssueDocumentsSection({
     setFoldedDocumentKeys((current) => current.filter((entry) => entry !== doc.key));
     setSelectedRevisionIds((current) => ({ ...current, [doc.key]: selectedRevision.id }));
     setError(null);
-  }, [documentConflict, draft, getDocumentRevisions, resetAutosaveState, returnToLatestRevision]);
+  }, [documentConflict, draft, getDocumentRevisions, resetAutosaveState, returnToLatestRevision, t]);
 
   const toggleDocumentLock = useCallback((doc: IssueDocument, locked: boolean) => {
     if (!canManageDocumentLocks || setDocumentLock.isPending) return;
     if (locked && (documentConflict?.key === doc.key || documentHasUnsavedChanges(doc, draft))) {
-      setError("Save or cancel local changes before changing the document lock.");
+      setError(t("area.issue-properties-panels-1.issue-documents-section.saveBeforeLock"));
       return;
     }
     setDocumentLock.mutate({ key: doc.key, locked });
-  }, [canManageDocumentLocks, documentConflict, draft, setDocumentLock]);
+  }, [canManageDocumentLocks, documentConflict, draft, setDocumentLock, t]);
 
   const handleDraftBlur = async (event: React.FocusEvent<HTMLDivElement>) => {
     if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
@@ -896,19 +898,19 @@ export function IssueDocumentsSection({
           {extraActions}
           <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            <span className="hidden sm:inline">New document</span>
-            <span className="sm:hidden">New</span>
+            <span className="hidden sm:inline">{t("area.issue-properties-panels-1.issue-documents-section.newDocument")}</span>
+            <span className="sm:hidden">{t("area.issue-properties-panels-1.issue-documents-section.newShort")}</span>
           </Button>
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2 min-w-0">
-          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">Documents</h3>
+          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">{t("area.issue-properties-panels-1.issue-documents-section.documentsTitle")}</h3>
           <div className="flex flex-wrap items-center gap-2 min-w-0 sm:ml-auto">
             {extraActions}
             <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
-              <span className="hidden sm:inline">New document</span>
-              <span className="sm:hidden">New</span>
+              <span className="hidden sm:inline">{t("area.issue-properties-panels-1.issue-documents-section.newDocument")}</span>
+              <span className="sm:hidden">{t("area.issue-properties-panels-1.issue-documents-section.newShort")}</span>
             </Button>
           </div>
         </div>
@@ -928,7 +930,7 @@ export function IssueDocumentsSection({
             onChange={(event) =>
               setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
             }
-            placeholder="Document key"
+            placeholder={t("area.issue-properties-panels-1.issue-documents-section.documentKeyPlaceholder")}
           />
           {newDocumentKeyError && (
             <p className="text-xs text-destructive">{newDocumentKeyError}</p>
@@ -939,7 +941,7 @@ export function IssueDocumentsSection({
               onChange={(event) =>
                 setDraft((current) => current ? { ...current, title: event.target.value } : current)
               }
-              placeholder="Optional title"
+              placeholder={t("area.issue-properties-panels-1.issue-documents-section.optionalTitlePlaceholder")}
             />
           )}
           <MarkdownEditor
@@ -947,7 +949,7 @@ export function IssueDocumentsSection({
             onChange={(body) =>
               setDraft((current) => current ? { ...current, body } : current)
             }
-            placeholder="Markdown body"
+            placeholder={t("area.issue-properties-panels-1.issue-documents-section.markdownBodyPlaceholder")}
             bordered={false}
             className="bg-transparent"
             contentClassName="min-h-(--sz-220px) text-sm leading-7"
@@ -958,14 +960,14 @@ export function IssueDocumentsSection({
           <div className="flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={cancelDraft}>
               <X className="mr-1.5 h-3.5 w-3.5" />
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button
               size="sm"
               onClick={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}
               disabled={upsertDocument.isPending}
             >
-              {upsertDocument.isPending ? "Saving..." : "Create document"}
+              {upsertDocument.isPending ? t("area.issue-properties-panels-1.issue-documents-section.saving") : t("area.issue-properties-panels-1.issue-documents-section.createDocument")}
             </Button>
           </div>
         </div>
@@ -982,7 +984,7 @@ export function IssueDocumentsSection({
           <div className="mb-2 flex items-center gap-2">
             <FileText className="h-4 w-4 text-amber-600" />
             <Badge variant="outline" className="border-amber-500/30 font-mono text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-700 dark:text-amber-300">
-              PLAN
+              {t("area.issue-properties-panels-1.issue-documents-section.planBadge")}
             </Badge>
           </div>
           <div className={documentBodyPaddingClassName}>
@@ -1068,15 +1070,15 @@ export function IssueDocumentsSection({
                         "text-muted-foreground transition-colors",
                         isLocked && "text-amber-700 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200",
                       )}
-                      title={isLocked ? "Unlock document" : "Lock document"}
-                      aria-label={isLocked ? `Unlock ${doc.key} document` : `Lock ${doc.key} document`}
+                      title={isLocked ? t("area.issue-properties-panels-1.issue-documents-section.unlockDocument") : t("area.issue-properties-panels-1.issue-documents-section.lockDocument")}
+                      aria-label={isLocked ? t("area.issue-properties-panels-1.issue-documents-section.unlockAria", { key: doc.key }) : t("area.issue-properties-panels-1.issue-documents-section.lockAria", { key: doc.key })}
                       onClick={() => toggleDocumentLock(doc, !isLocked)}
                       disabled={lockActionPending}
                     >
                       {isLocked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
                     </Button>
                     ) : isLocked ? (
-                      <span title="Locked document" aria-label="Locked document" className="inline-flex h-6 w-6 items-center justify-center text-amber-700 dark:text-amber-300">
+                      <span title={t("area.issue-properties-panels-1.issue-documents-section.lockedDocument")} aria-label={t("area.issue-properties-panels-1.issue-documents-section.lockedDocument")} className="inline-flex h-6 w-6 items-center justify-center text-amber-700 dark:text-amber-300">
                         <Lock className="h-3.5 w-3.5" />
                       </span>
                     ) : null}
@@ -1087,7 +1089,7 @@ export function IssueDocumentsSection({
                         "text-muted-foreground transition-colors",
                         copiedDocumentKey === doc.key && "text-foreground",
                       )}
-                      title={copiedDocumentKey === doc.key ? "Copied" : "Copy document"}
+                      title={copiedDocumentKey === doc.key ? t("area.issue-properties-panels-1.issue-documents-section.copied") : t("area.issue-properties-panels-1.issue-documents-section.copyDocument")}
                       onClick={() => void copyDocumentBody(doc.key, displayedBody)}
                     >
                       {copiedDocumentKey === doc.key ? (
@@ -1102,7 +1104,7 @@ export function IssueDocumentsSection({
                           variant="ghost"
                           size="icon-xs"
                           className="text-muted-foreground"
-                          title="Document actions"
+                          title={t("area.issue-properties-panels-1.issue-documents-section.documentActions")}
                         >
                           <MoreHorizontal className="h-3.5 w-3.5" />
                         </Button>
@@ -1111,7 +1113,7 @@ export function IssueDocumentsSection({
                         {!isHistoricalPreview && !isLocked ? (
                           <DropdownMenuItem onClick={() => beginEdit(doc.key)}>
                             <FilePenLine className="h-3.5 w-3.5" />
-                            Edit document
+                            {t("area.issue-properties-panels-1.issue-documents-section.editDocument")}
                           </DropdownMenuItem>
                         ) : null}
                         {!isHistoricalPreview && !isLocked ? <DropdownMenuSeparator /> : null}
@@ -1119,12 +1121,12 @@ export function IssueDocumentsSection({
                           onClick={() => downloadDocumentFile(doc.key, displayedBody)}
                         >
                           <Download className="h-3.5 w-3.5" />
-                          Download document
+                          {t("area.issue-properties-panels-1.issue-documents-section.downloadDocument")}
                         </DropdownMenuItem>
                         {doc.latestRevisionNumber > 1 ? (
                           <DropdownMenuItem onClick={() => setDiffViewKey(doc.key)}>
                             <Diff className="h-3.5 w-3.5" />
-                            View diff
+                            {t("area.issue-properties-panels-1.issue-documents-section.viewDiff")}
                           </DropdownMenuItem>
                         ) : null}
                         {canDeleteDocuments && !isLocked ? <DropdownMenuSeparator /> : null}
@@ -1134,7 +1136,7 @@ export function IssueDocumentsSection({
                             onClick={() => setConfirmDeleteKey(doc.key)}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
-                            Delete document
+                            {t("area.issue-properties-panels-1.issue-documents-section.deleteDocument")}
                           </DropdownMenuItem>
                         ) : null}
                       </DropdownMenuContent>
@@ -1166,10 +1168,10 @@ export function IssueDocumentsSection({
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
                           <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
-                            Viewing revision {selectedHistoricalRevision.revisionNumber}
+                            {t("area.issue-properties-panels-1.issue-documents-section.viewingRevision", { number: selectedHistoricalRevision.revisionNumber })}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            This is a historical preview. Restoring it creates a new latest revision and keeps history append-only.
+                            {t("area.issue-properties-panels-1.issue-documents-section.historicalPreviewNote")}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -1178,7 +1180,7 @@ export function IssueDocumentsSection({
                             size="sm"
                             onClick={() => returnToLatestRevision(doc.key)}
                           >
-                            Return to latest
+                            {t("area.issue-properties-panels-1.issue-documents-section.returnToLatest")}
                           </Button>
                           {!isLocked ? (
                             <Button
@@ -1190,8 +1192,8 @@ export function IssueDocumentsSection({
                               disabled={restoreDocumentRevision.isPending}
                             >
                               {restoreDocumentRevision.isPending && restoreDocumentRevision.variables?.key === doc.key
-                                ? "Restoring..."
-                                : "Restore this revision"}
+                                ? t("area.issue-properties-panels-1.issue-documents-section.restoring")
+                                : t("area.issue-properties-panels-1.issue-documents-section.restoreRevision")}
                             </Button>
                           ) : null}
                         </div>
@@ -1202,9 +1204,9 @@ export function IssueDocumentsSection({
                     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
-                          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Out of date</p>
+                          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">{t("area.issue-properties-panels-1.issue-documents-section.outOfDate")}</p>
                           <p className="text-xs text-muted-foreground">
-                            This document changed while you were editing. Your local draft is preserved and autosave is paused.
+                            {t("area.issue-properties-panels-1.issue-documents-section.conflictNote")}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -1219,37 +1221,37 @@ export function IssueDocumentsSection({
                               )
                             }
                           >
-                            {activeConflict.showRemote ? "Hide remote" : "Review remote"}
+                            {activeConflict.showRemote ? t("area.issue-properties-panels-1.issue-documents-section.hideRemote") : t("area.issue-properties-panels-1.issue-documents-section.reviewRemote")}
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => keepConflictedDraft(doc.key)}
                           >
-                            Keep my draft
+                            {t("area.issue-properties-panels-1.issue-documents-section.keepMyDraft")}
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => reloadDocumentFromServer(doc.key)}
                           >
-                            Reload remote
+                            {t("area.issue-properties-panels-1.issue-documents-section.reloadRemote")}
                           </Button>
                           <Button
                             size="sm"
                             onClick={() => void overwriteDocumentFromDraft(doc.key)}
                             disabled={upsertDocument.isPending}
                           >
-                            {upsertDocument.isPending ? "Saving..." : "Overwrite remote"}
+                            {upsertDocument.isPending ? t("area.issue-properties-panels-1.issue-documents-section.saving") : t("area.issue-properties-panels-1.issue-documents-section.overwriteRemote")}
                           </Button>
                         </div>
                       </div>
                       {activeConflict.showRemote && (
                         <div className="mt-3 rounded-md border border-border/70 bg-background/60 p-3">
                           <div className="mb-2 flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
-                            <span>Remote revision {activeConflict.serverDocument.latestRevisionNumber}</span>
+                            <span>{t("area.issue-properties-panels-1.issue-documents-section.remoteRevision", { number: activeConflict.serverDocument.latestRevisionNumber })}</span>
                             <span>•</span>
-                            <span>updated {relativeTime(activeConflict.serverDocument.updatedAt)}</span>
+                            <span>{t("area.issue-properties-panels-1.issue-documents-section.updatedAgo", { when: relativeTime(activeConflict.serverDocument.updatedAt) })}</span>
                           </div>
                           {!isPlanKey(doc.key) && activeConflict.serverDocument.title ? (
                             <p className="mb-2 text-sm font-medium">{activeConflict.serverDocument.title}</p>
@@ -1266,7 +1268,7 @@ export function IssueDocumentsSection({
                         markDocumentDirty(doc.key);
                         setDraft((current) => current ? { ...current, title: event.target.value } : current);
                       }}
-                      placeholder="Optional title"
+                      placeholder={t("area.issue-properties-panels-1.issue-documents-section.optionalTitlePlaceholder")}
                     />
                   )}
                   <div
@@ -1289,7 +1291,7 @@ export function IssueDocumentsSection({
                               return current;
                             });
                           }}
-                          placeholder="Markdown body"
+                          placeholder={t("area.issue-properties-panels-1.issue-documents-section.markdownBodyPlaceholder")}
                           bordered={false}
                           className="bg-transparent"
                           contentClassName={documentBodyContentClassName}
@@ -1338,17 +1340,17 @@ export function IssueDocumentsSection({
                       } ${activeDraft || isHistoricalPreview ? "opacity-100" : "opacity-0"}`}
                     >
                       {isHistoricalPreview
-                        ? "Viewing historical revision"
+                        ? t("area.issue-properties-panels-1.issue-documents-section.viewingHistorical")
                         : activeDraft
                           ? activeConflict
-                          ? "Out of date"
+                          ? t("area.issue-properties-panels-1.issue-documents-section.outOfDate")
                           : autosaveDocumentKey === doc.key
                             ? autosaveState === "saving"
-                              ? "Autosaving..."
+                              ? t("area.issue-properties-panels-1.issue-documents-section.autosaving")
                               : autosaveState === "saved"
-                                ? "Saved"
+                                ? t("area.issue-properties-panels-1.issue-documents-section.saved")
                                 : autosaveState === "error"
-                                  ? "Could not save"
+                                  ? t("area.issue-properties-panels-1.issue-documents-section.couldNotSave")
                                   : ""
                             : ""
                           : ""}
@@ -1370,7 +1372,7 @@ export function IssueDocumentsSection({
               {confirmDeleteKey === doc.key && (
                 <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3">
                   <p className="text-sm text-destructive font-medium">
-                    Delete this document? This cannot be undone.
+                    {t("area.issue-properties-panels-1.issue-documents-section.deleteConfirm")}
                   </p>
                   <div className="flex items-center gap-2 shrink-0">
                     <Button
@@ -1379,7 +1381,7 @@ export function IssueDocumentsSection({
                       onClick={() => setConfirmDeleteKey(null)}
                       disabled={deleteDocument.isPending}
                     >
-                      Cancel
+                      {t("common.cancel")}
                     </Button>
                     <Button
                       variant="destructive"
@@ -1387,7 +1389,7 @@ export function IssueDocumentsSection({
                       onClick={() => deleteDocument.mutate(doc.key)}
                       disabled={deleteDocument.isPending}
                     >
-                      {deleteDocument.isPending ? "Deleting..." : "Delete"}
+                      {deleteDocument.isPending ? t("area.issue-properties-panels-1.issue-documents-section.deleting") : t("area.issue-properties-panels-1.issue-documents-section.delete")}
                     </Button>
                   </div>
                 </div>

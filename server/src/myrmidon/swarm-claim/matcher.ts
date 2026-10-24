@@ -48,7 +48,7 @@ import {
   issueClaims,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_WAKE_REASON,
@@ -62,7 +62,7 @@ import {
   swarmMatchedIdempotencyKey,
   type SwarmClaimSettings,
   type SwarmSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { IssuePostCommitAction } from "../../services/issues.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../../services/issue-assignment-wakeup.js";
 import { logActivity as logActivityInTx, publishActivity, type ActivityPublication } from "../../services/activity-log.js";
@@ -479,6 +479,7 @@ async function claimTaskForAgent(
     agentId: target.agentId,
     role: target.role,
     runId: null,
+    origin: "auto_match",
     now: deps.now,
     settings: { leaseTtlSec: deps.settings.leaseTtlSec },
   });
@@ -500,7 +501,7 @@ async function claimTaskForAgent(
       ) {
         throw new MatcherClaimLost();
       }
-      const claim = await insertClaim(txDb, { companyId, ...plan });
+      const claim = await insertClaim(txDb, { companyId, ...plan, origin: plan.origin ?? "auto_match" });
       if (!claim) throw new MatcherClaimLost();
 
       const { issueService } = await import("../../services/issues.js");

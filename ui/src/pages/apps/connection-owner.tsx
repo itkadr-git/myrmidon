@@ -1,7 +1,8 @@
-import type { ToolConnection } from "@paperclipai/shared";
-import { humanizeConnectionDisplayName } from "@paperclipai/shared";
+import type { ToolConnection } from "@myrmidon/shared";
+import { humanizeConnectionDisplayName } from "@myrmidon/shared";
 import { Identity } from "@/components/Identity";
 import type { CompanyUserProfile } from "@/lib/company-members";
+import { i18n, useTranslation } from "@/i18n";
 
 export type ConnectionOwnerProfile = CompanyUserProfile;
 
@@ -11,20 +12,16 @@ export function connectionOwnerProfile(
 ): ConnectionOwnerProfile | null {
   if (!connection.createdByUserId) return null;
   return profiles.get(connection.createdByUserId) ?? {
-    label: connection.createdByUserId === "local-board" ? "Board" : "Board member",
+    label: connection.createdByUserId === "local-board" ? i18n.t("common.board") : i18n.t("area.apps-connections-3.connection-owner.boardMember"),
     image: null,
   };
 }
 
 function ownerGivenName(label: string): string {
   const trimmed = label.trim();
-  if (!trimmed) return "Board";
+  if (!trimmed) return i18n.t("common.board");
   const first = trimmed.split(/\s+/)[0] ?? trimmed;
-  return first.includes("@") ? first.split("@")[0] || "Board" : first;
-}
-
-function possessive(label: string): string {
-  return label.toLowerCase().endsWith("s") ? `${label}’` : `${label}’s`;
+  return first.includes("@") ? first.split("@")[0] || i18n.t("common.board") : first;
 }
 
 /**
@@ -49,11 +46,18 @@ export function connectionDisplayNameForOwner(
   if (connectionName.trim().toLocaleLowerCase() !== applicationName.trim().toLocaleLowerCase()) {
     return connectionName;
   }
-  return `${possessive(ownerGivenName(owner.label))} ${applicationName}`;
+  const givenName = ownerGivenName(owner.label);
+  // English keeps the possessive form ("Sam’s Gmail"); other languages use a
+  // neutral "App (Owner)" pattern from the catalog.
+  const params = { owner: givenName, app: applicationName };
+  return givenName.toLowerCase().endsWith("s")
+    ? i18n.t("area.apps-connections-3.connection-owner.ownedAccountEndsWithS", params)
+    : i18n.t("area.apps-connections-3.connection-owner.ownedAccount", params);
 }
 
 export function ConnectionOwnerIdentity({ owner }: { owner: ConnectionOwnerProfile | null }) {
-  if (!owner) return <span className="text-xs text-muted-foreground">Unknown</span>;
+  const { t } = useTranslation();
+  if (!owner) return <span className="text-xs text-muted-foreground">{t("area.apps-connections-3.connection-owner.unknownOwner")}</span>;
   return (
     <Identity
       name={owner.label}

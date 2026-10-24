@@ -12,7 +12,7 @@
 //
 // The service knows nothing about the database: the store is injected, so the
 // tests run the real logic against an in-memory store and the routes stay free
-// of `@paperclipai/db`.
+// of `@myrmidon/db`.
 
 import { randomUUID } from "node:crypto";
 import { badRequest, notFound, unprocessable } from "../../errors.js";
@@ -258,6 +258,9 @@ export function createWikiRegulationService(store: RegulationStore, options: Reg
           content: revision.content,
           version: revision.revisionNumber,
           roles: revision.roles,
+          // The legacy carrier never recorded provenance; K-3's data migration
+          // writes one source per moved page (the knowledge side has them).
+          sources: [],
         });
       }
       out.sort((left, right) => (left.slug < right.slug ? -1 : left.slug > right.slug ? 1 : 0));

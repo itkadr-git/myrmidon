@@ -12,6 +12,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { Activity } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import {
   evidenceLines,
   formatWindowLabel,
@@ -21,6 +22,9 @@ import {
   type TracingHealthReport,
 } from "./tracingHealthApi";
 
+// myrmidon(OPE-8950): visible strings live in area.settings-bots-host-2.tracing-health-card.*
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
 export interface TracingHealthCardViewProps {
   report: TracingHealthReport | null;
   loading: boolean;
@@ -28,6 +32,7 @@ export interface TracingHealthCardViewProps {
 }
 
 export function TracingHealthCardView({ report, loading, error }: TracingHealthCardViewProps) {
+  const { t, i18n: i18nInstance } = useTranslation() as { t: Translate; i18n: { language: string } };
   const view = report ? stateView(report.state, report.enabled) : null;
   const dotClass =
     view?.dot === "green" ? "bg-emerald-500" : view?.dot === "red" ? "bg-destructive" : "bg-muted-foreground/40";
@@ -36,7 +41,7 @@ export function TracingHealthCardView({ report, loading, error }: TracingHealthC
       <div className="flex items-center justify-between gap-3 px-5 pt-5 pb-2">
         <div className="flex items-center gap-2">
           <Activity className="h-4 w-4 text-muted-foreground" />
-          <span className="text-base font-medium">LLM tracing</span>
+          <span className="text-base font-medium">{t("area.settings-bots-host-2.tracing-health-card.title")}</span>
         </div>
         <div className="flex items-center gap-2" data-testid="myrmidon-tracing-health-status">
           <span aria-hidden="true" className={`h-2 w-2 rounded-full ${dotClass}`} />
@@ -46,7 +51,7 @@ export function TracingHealthCardView({ report, loading, error }: TracingHealthC
       <div className="px-5 pb-5 pt-1 space-y-1.5">
         {loading ? (
           <p className="text-sm text-muted-foreground" data-testid="myrmidon-tracing-health-loading">
-            Loading tracing health...
+            {t("area.settings-bots-host-2.tracing-health-card.loading")}
           </p>
         ) : error ? (
           <p className="text-sm text-destructive" data-testid="myrmidon-tracing-health-error">
@@ -62,7 +67,7 @@ export function TracingHealthCardView({ report, loading, error }: TracingHealthC
               }
               data-testid="myrmidon-tracing-health-reason"
             >
-              {report.reason ?? "no reason given"}
+              {report.reason ?? t("area.settings-bots-host-2.tracing-health-card.noReason")}
             </p>
             {report.enabled && (
               <ul className="text-xs text-muted-foreground space-y-0.5" data-testid="myrmidon-tracing-health-evidence">
@@ -72,8 +77,10 @@ export function TracingHealthCardView({ report, loading, error }: TracingHealthC
               </ul>
             )}
             <p className="text-xs text-muted-foreground/70">
-              window {formatWindowLabel(report)} · checked{" "}
-              {new Date(report.checkedAt).toLocaleTimeString()}
+              {t("area.settings-bots-host-2.tracing-health-card.windowChecked", {
+                window: formatWindowLabel(report),
+                time: new Date(report.checkedAt).toLocaleTimeString(i18nInstance.language),
+              })}
             </p>
           </>
         ) : null}

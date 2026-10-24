@@ -1,6 +1,6 @@
-import type { Db } from "@paperclipai/db";
-import { companies, instanceSettings } from "@paperclipai/db";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+import type { Db } from "@myrmidon/db";
+import { companies, instanceSettings } from "@myrmidon/db";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 
 /**
  * A `Db` or an open transaction handle — the subset of query builders the
@@ -27,12 +27,12 @@ import {
   type InstanceSettings,
   type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   INSTANCE_FEATURE_CATALOG,
   applyOperatorGeneralDefaults,
   stripOperatorGeneralEchoes,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { eq } from "drizzle-orm";
 // myrmidon(R3): keep maintenance mode state across vendor writes of `general`
 import { preserveMaintenanceGeneralKey, preserveBrowserConsoleGeneralKey } from "../myrmidon/maintenance/store.js";
@@ -58,8 +58,9 @@ import {
 // myrmidon(1.6.6 K-7): preserve the skill lifecycle pilot list across vendor writes.
 import { preserveSkillPilotAgentsGeneralKey } from "../myrmidon/skill-lifecycle/pilot-agents-store.js";
 // myrmidon(1.6-TG-PROACTIVITY-E, 1.6.1-TG-NOTIFY-B): keep the telegram-notify state across vendor writes of `general`
-import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
-import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the notify preservation keys are reached through the bridge seam.
+import { preserveTelegramNotifyGeneralKey } from "../myrmidon/channel-connectors/bridge/notify-policy.js";
+import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/channel-connectors/bridge/notify-settings-store.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
 // myrmidon(1.6.6 PROCS-J): keep the board's process counts across vendor writes of `general`
@@ -299,6 +300,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.modelMenu ? { modelMenu: parsed.data.modelMenu } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
+      // myrmidon(OPE-7898): the stored IDLE-STOP policy survives every general read and write.
+      // Without this line the normalizer drops the key: the board setting never roundtrips.
+      ...(parsed.data.idleStop ? { idleStop: parsed.data.idleStop } : {}),
       // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
       ...(parsed.data.botDiskQuota ? { botDiskQuota: parsed.data.botDiskQuota } : {}),
       // myrmidon(BOT-ROLLOUT): the stored release bot-image rollout settings survive every general write

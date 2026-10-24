@@ -11,8 +11,8 @@
 // apply without a restart — and rolled back if that apply fails.
 
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agentTaskSessions, issues } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { agentTaskSessions, issues } from "@myrmidon/db";
 import {
   persistActivity,
   publishActivity,

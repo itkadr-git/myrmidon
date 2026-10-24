@@ -23,7 +23,7 @@
 // than one interval — and the manual `POST …/foraging/sweep` trigger applies it
 // immediately.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { resolveForagingEffectiveSettings } from "./settings.js";

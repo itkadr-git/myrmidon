@@ -1,9 +1,9 @@
 import { and, eq, gte, sql } from "drizzle-orm";
-import { activityLog, agents, companies, type Db } from "@paperclipai/db";
+import { activityLog, agents, companies, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this sweep obeys, so the switch can be changed without a restart.
-import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
+import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 
 /**
  * AUTO-RESUME (Myrmidon 1.4).
