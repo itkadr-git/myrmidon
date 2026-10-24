@@ -915,6 +915,8 @@ describeEmbeddedPostgres(
         const payload = publications[0]!.payload as SafeChatPublicationPayload;
         expect(payload.actions).toEqual([]);
         expect(payload.text).toContain("Proceed with the deploy?");
+        expect(payload.text).not.toContain("callback_data");
+        expect(payload.text).not.toContain("reply_markup");
 
         await instanceSettingsService(db).updateGeneral({
           [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
