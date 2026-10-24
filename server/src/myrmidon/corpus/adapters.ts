@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { and, count, eq, sql as drizzleSql } from "drizzle-orm";
-import { companySecrets, corpusChunks, corpusDatasets, corpusDocuments, corpusParseJobs, type Db } from "@paperclipai/db";
-import { createHttpDocumentParser, createPostgresSearchIndex, LocalBlobStore, PostgresCorpusStore, PostgresWorkQueue } from "@paperclipai/corpus";
-import type { SqlExecutor } from "@paperclipai/corpus";
-import type { CorpusSettings } from "@paperclipai/shared";
+import { companySecrets, corpusChunks, corpusDatasets, corpusDocuments, corpusParseJobs, type Db } from "@myrmidon/db";
+import { createHttpDocumentParser, createPostgresSearchIndex, LocalBlobStore, PostgresCorpusStore, PostgresWorkQueue } from "@myrmidon/corpus";
+import type { SqlExecutor } from "@myrmidon/corpus";
+import type { CorpusSettings } from "@myrmidon/shared";
 import type { CorpusPortContext } from "./ports.js";
 import type { CorpusMcpPortProvider } from "./contract.js";
 import type { CorpusDocumentRecord, CorpusPorts, CorpusJobRecord, CorpusDatasetRecord } from "./ports.js";

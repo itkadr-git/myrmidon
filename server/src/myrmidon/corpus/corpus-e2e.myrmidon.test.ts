@@ -31,8 +31,8 @@ import {
   startEmbeddedPostgresTestDatabase,
   type Db,
   type EmbeddedPostgresTestDatabase,
-} from "@paperclipai/db";
-import { installPgvectorIntoEmbeddedCluster } from "@paperclipai/corpus";
+} from "@myrmidon/db";
+import { installPgvectorIntoEmbeddedCluster } from "@myrmidon/corpus";
 import { errorHandler } from "../../middleware/index.js";
 import type { Config } from "../../config.js";
 import {

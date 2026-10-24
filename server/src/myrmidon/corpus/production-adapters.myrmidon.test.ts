@@ -10,8 +10,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestDatabase,
-} from "@paperclipai/db";
-import { installPgvectorIntoEmbeddedCluster } from "@paperclipai/corpus";
+} from "@myrmidon/db";
+import { installPgvectorIntoEmbeddedCluster } from "@myrmidon/corpus";
 import { configureCorpusAdapters, resolveCorpusPorts, createCorpusParseWorker } from "./index.js";
 import { createCorpusPorts } from "./adapters.js";
 import type { CorpusPortContext } from "./ports.js";
