@@ -31,6 +31,7 @@ A fleet of AI agents needs what a team needs: a board, roles, budgets, review
 and a way to ask the owner. Myrmidon gives agents isolation (a container, a key
 and a memory bank each), accountability (every run, cost and approval is on the
 board) and recovery (stalled runs resume, deploys roll back).
+
 ## Quick start / deploy
 
 Myrmidon runs under docker compose from a CI-built image published at

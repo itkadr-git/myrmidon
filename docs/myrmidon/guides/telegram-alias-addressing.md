@@ -6,8 +6,7 @@ A bridged Telegram chat (a bot DM connected with
 `MYRMIDON_TELEGRAM_DM_CONVERSATIONS`, or a group topic where the bot was
 mentioned) can address another company agent with a matching `@`-mention in
 an ordinary message. The message routes to that agent's own standing
-conversation, and the reply returns in the same Telegram chat. An alias
-mentioned later in the message is ordinary text. `/to` stores the chat's
+conversation, and the reply returns in the same Telegram chat. The first resolvable alias mention anywhere in the message determines the addressee. `/to` stores the chat's
 selected addressee shown by `/who` and `/agents`; it is not an inbound routing
 fallback, so ordinary messages still need a matching `@`-mention to address
 another agent.
@@ -21,9 +20,9 @@ unset, the vendor path is unchanged and nothing in this guide applies.
 
 ## Where the message goes
 
-- A leading `@`-token that resolves to an agent of the company routes into
+- The first resolvable `@`-mention anywhere in the message routes into
   **that agent's own** standing Agent Chat conversation with the same Telegram
-  identity. A token later in the message is ordinary text and does not route.
+  identity.
   `conversation_agent_id` is the addressed agent, while
   `conversation_user_id` stays `telegram:<board user id>`. The switch is
   per agent: a DM (or topic) that addressed one agent later addresses
@@ -36,9 +35,9 @@ unset, the vendor path is unchanged and nothing in this guide applies.
   Telegram chat, so the agent joins the conversation with context. The
   quote depth is governed by the cross-channel settings
   (`MYRMIDON_CHAT_CROSS_CHANNEL_MESSAGES` and siblings).
-- The leading `@<alias>` token is removed from the turn's body — it has
-  already routed the message. Mentions later in the message remain ordinary
-  text and do not route.
+- Only a matching `@`-mention at the beginning of the message is removed
+  from the turn's body. A matching mention later in the message still routes,
+  and remains in the body.
 - A message with no resolvable `@`-token goes to the endpoint's assigned
   agent exactly as before the change, even when `/to` has stored a choice.
   To address another agent, include a matching `@`-mention.
