@@ -16,7 +16,7 @@ settings-section: Track 5 — operations
   it into the replica bank (`transfer/import`, `mode=merge`, `document_conflict=skip`, so a
   repeated or resumed sync never duplicates a document). A failed attempt is retried on every
   tick (every 15 minutes) until one succeeds.
-- Every attempt is a row of the new table `myrmidon_fleet_memory_syncs` (migration 0415): site,
+- Every attempt is a row of the new table `myrmidon_fleet_memory_syncs` (migration 0416): site,
   kind (`nightly`, `forced`, `manual`), status, archive size, imported/skipped documents, error.
 - A live bot move runs a forced sync right after the source container is stopped. It is bounded
   (5 minutes) and best effort: a failure is journaled and the move goes on.
