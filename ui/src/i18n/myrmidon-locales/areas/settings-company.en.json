@@ -799,6 +799,7 @@
         "bindingsUpdated": "Bindings updated",
         "browseSkillsFromEveryAvailable": "Browse skills from every available source.",
         "deliveryCheckFailedToStart": "Delivery check failed to start",
+        "deliveryCheckPrompt": "Delivery check: confirm that this skill is available to you and reply briefly with its name.",
         "deliveryCheckStarted": "Delivery check started",
         "discoveringSkills": "Discovering skills",
         "errorCreatingSecret": "Error creating secret.",
