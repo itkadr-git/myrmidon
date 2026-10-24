@@ -49,6 +49,11 @@ import {
   type ChannelBridgeFallbackSample,
   type ChannelBridgeFallbackSource,
 } from "../../channel-connectors/bridge/fallback-counters.js";
+import {
+  resolveSingletonProxySource,
+  type SingletonProxySample,
+  type SingletonProxySource,
+} from "../../singleton-proxy/counters.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-containers/fleet-site-metrics.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
 
@@ -114,6 +119,9 @@ export const METRIC_FAMILIES = [
   // spends the CPU and issues the DB statements (design OPE-5394 §1 П2).
   "myrmidon_board_db_queries_total",
   "myrmidon_board_lane_busy_seconds_total",
+  // myrmidon(1.6.6 PROCS-1.5 / OPE-5412): single routes forwarded by an api
+  // process to the worker, per route group and outcome.
+  "myrmidon_board_singleton_proxy_total",
 
   // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback chain of the bridge seam — how
   // often the channel adapter did not answer and the direct path took the call
@@ -194,6 +202,12 @@ export interface MetricsSnapshotFields {
    * included, so a missing series can only mean an unwired counter.
    */
   adapterFallbacks?: ChannelBridgeFallbackSample[] | null;
+  /**
+   * myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy counters of
+   * this process (in-process, no DB). null renders HELP/TYPE with no samples; a
+   * present sample renders every route x outcome, zeros included.
+   */
+  singletonProxy?: SingletonProxySample[] | null;
 
   /**
    * myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of this process by path,
@@ -283,6 +297,8 @@ export interface MetricsCollectorDeps {
    * fake, so no test depends on another test's fallbacks.
    */
   adapterFallbacks?: ChannelBridgeFallbackSource | null;
+  /** myrmidon(1.6.6 PROCS-1.5 / OPE-5412): where the proxy counters come from; tests inject a fake. */
+  singletonProxy?: SingletonProxySource | null;
 
   /**
    * myrmidon(1.6.6 CONNECTOR-IN): where the ingress half comes from. Production
@@ -575,6 +591,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback counters of the bridge seam
   // ride the same guarded scrape. The registry cannot throw; the guard is here
   // for the seam, the way it is for the lanes.
+  const singletonProxySample = await guarded(
+    "myrmidon_board_singleton_proxy_total",
+    () => Promise.resolve().then(resolveSingletonProxySource(deps.singletonProxy)),
+    null as SingletonProxySample[] | null,
+  );
   const fallbackSample = await guarded(
     "myrmidon_adapter_fallback_total",
     () => Promise.resolve().then(resolveChannelBridgeFallbackSource(deps.adapterFallbacks)),
@@ -625,6 +646,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       lanes: laneSample,
 
       adapterFallbacks: fallbackSample,
+      singletonProxy: singletonProxySample,
 
       chatIngress,
 
@@ -979,6 +1001,24 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
         ? lanes.map(
             (row) =>
               `myrmidon_board_lane_busy_seconds_total{${R},lane="${escapeLabelValue(row.lane)}"} ${formatSampleValue(row.busyMs / 1000)}`,
+          )
+        : [],
+    ),
+  );
+
+  // myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy. Every route
+  // group x outcome renders even at zero — on a single-process board the whole
+  // family is zero, and a missing series would hide an unwired counter.
+  const proxyRows = snapshot.singletonProxy ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_singleton_proxy_total",
+      "Single-process routes an api process forwarded to the worker, per route group and outcome (proxied or unavailable), cumulative since boot.",
+      "counter",
+      proxyRows
+        ? proxyRows.map(
+            (row) =>
+              `myrmidon_board_singleton_proxy_total{${R},route="${escapeLabelValue(row.route)}",outcome="${escapeLabelValue(row.outcome)}"} ${formatSampleValue(row.count)}`,
           )
         : [],
     ),
