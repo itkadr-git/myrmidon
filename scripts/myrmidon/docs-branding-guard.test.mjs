@@ -82,7 +82,7 @@ check("non-allowlisted mentions fail", () => {
   assert(lineIsClean(samples[2]) === true, "Paperclip-managed is allowlisted");
 });
 
-// 3. The real docs/ tree is clean right now.
+// 3. The real docs/ tree passes the guard against the required vendor copy.
 check("real docs/ tree passes the guard", () => {
   const out = execFileSync("node", [guardPath], { encoding: "utf8" });
   assert(/clean/.test(out), `expected clean run, got: ${out}`);

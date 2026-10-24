@@ -1046,6 +1046,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await db.update(chatConversations).set({ state: "completed" })
           .where(and(inArray(chatConversations.companyId, [...fixtureCompanies]), inArray(chatConversations.state, ["active", "waiting"])));
       }
+      if (fixtureCompanies.size > 0) {
+        // A fixture service that died while holding a credential-mutation or
+        // conversation lease would make the next case's receipt-reaction sweep
+        // wait the full 10s acquire window and fail with a 409. Lease rows are
+        // company-scoped, so retire them with the rest of the fixture cleanup.
+        await db
+          .delete(chatEndpointLeases)
+          .where(inArray(chatEndpointLeases.companyId, [...fixtureCompanies]));
+      }
       fixtureServices.clear();
       fixtureCompanies.clear();
     }
@@ -21564,6 +21573,219 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
+  it("completes a durable wakeup exactly once when the deferred drain meets endpoint-lock contention", async () => {
+    const fixture = await seedCompany();
+    const deferred: Array<() => void | Promise<void>> = [];
+    const { callbacks, endpoint, runtime, service, wakeup } =
+      await configuredSlackEndpoint(fixture, {
+        deferWebhookProcessing: true,
+        scheduleDeferredWork: (task) => deferred.push(task),
+      });
+    const slackThread = makeThread({
+      channelId: "C-DURABLE-RETRY",
+      id: "slack:C-DURABLE-RETRY:1000.1",
+      name: "durable-retry",
+    });
+    const subscribedMessage = makeMessage({
+      id: "1000.1",
+      text: "@maya retry this durable wakeup",
+      mentioned: true,
+    });
+    const reply = makeMessage({
+      id: "1000.2",
+      threadId: "1000.1",
+      text: "retry this durable wakeup",
+    });
+    let releaseLock!: () => void;
+    let lockEntered!: () => void;
+    const holdLock = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      lockEntered = resolve;
+    });
+    const holdEndpointLock = () =>
+      db.transaction(async (tx) => {
+        await tx
+          .select({ id: chatEndpoints.id })
+          .from(chatEndpoints)
+          .where(eq(chatEndpoints.id, endpoint.id))
+          // NO KEY UPDATE conflicts with the drain's own NO KEY UPDATE NOWAIT
+          // claim, but not with the foreign-key KEY SHARE check of the
+          // conversation lease insert. FOR UPDATE would also block that lease
+          // insert, so the drain would wait behind the lock instead of
+          // meeting the NOWAIT contention this case is about.
+          .for("no key update");
+        lockEntered();
+        await holdLock;
+      });
+    const replyDelivery = async () =>
+      (
+        await db
+          .select()
+          .from(chatDeliveries)
+          .where(eq(chatDeliveries.endpointId, endpoint.id))
+      ).find((candidate) =>
+        JSON.stringify(candidate.normalizedEvent).includes(reply.id),
+      );
+    let wakeupsBefore = 0;
+    let reactionsBefore = 0;
+    let lockTransaction: Promise<unknown> | undefined;
+    // Safety net: once taken, the row lock can never outlive the case.
+    let lockSafety: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread: slackThread.thread,
+        message: subscribedMessage,
+        trigger: "mention",
+      });
+      expect(deferred).toHaveLength(1);
+      // The scheduled task only STARTS the conversation drain loop (it is not
+      // awaited by the scheduler), and that loop keeps picking up every
+      // received delivery of the thread until it finds none. Wait for the loop
+      // to finish the first message before the reply arrives, or it would
+      // process the reply before the case holds the lock.
+      await deferred.shift()?.();
+      const firstDelivery = async () =>
+        (
+          await db
+            .select()
+            .from(chatDeliveries)
+            .where(eq(chatDeliveries.endpointId, endpoint.id))
+        ).find((candidate) =>
+          JSON.stringify(candidate.normalizedEvent).includes(subscribedMessage.id),
+        );
+      await vi.waitFor(
+        async () => {
+          expect(await firstDelivery()).toMatchObject({ state: "processed" });
+          const conversation = await db
+            .select()
+            .from(chatConversations)
+            .where(eq(chatConversations.endpointId, endpoint.id))
+            .then((rows) => rows[0]);
+          expect(conversation?.issueId).toBeTruthy();
+        },
+        { timeout: 10_000 },
+      );
+      // Let the finished loop release its per-thread schedule slot.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const replyThread = makeThread({
+        channelId: slackThread.thread.channelId,
+        id: slackThread.thread.id,
+        name: slackThread.thread.channel.name,
+      });
+      // Ingest the reply BEFORE the endpoint row is locked: ingest takes the
+      // same row lock, so awaiting it while the case holds the lock would make
+      // the case wait on itself and leak the lock to every following case.
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread: replyThread.thread,
+        message: reply,
+        trigger: "subscribed_message",
+      });
+      await vi.waitFor(async () => {
+        const deliveries = await db
+          .select()
+          .from(chatDeliveries)
+          .where(eq(chatDeliveries.endpointId, endpoint.id));
+        const delivery = deliveries.find((candidate) =>
+          JSON.stringify(candidate.normalizedEvent).includes(reply.id),
+        );
+        expect(delivery).toMatchObject({ state: "received" });
+        expect(deferred.length).toBeGreaterThan(0);
+      });
+      // The opening message's receipt reaction is posted after its delivery is
+      // marked processed; let it land so it is not counted as the reply's.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      wakeupsBefore = wakeup.mock.calls.length;
+      reactionsBefore = runtime.endpoints.get(endpoint.id)?.reactions.length ?? 0;
+      lockTransaction = holdEndpointLock();
+      await entered;
+      lockSafety = setTimeout(() => releaseLock(), 4_000);
+      const drainTask = deferred.shift();
+      expect(drainTask).toBeDefined();
+      const drain = drainTask!();
+      // The drain waits out the ingress reorder window and then runs into the
+      // held row. Nothing may complete behind the lock: the delivery stays
+      // unprocessed and no wakeup is issued while the endpoint is held.
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      expect(await replyDelivery()).not.toMatchObject({ state: "processed" });
+      expect(wakeup.mock.calls.length).toBe(wakeupsBefore);
+      releaseLock();
+      await lockTransaction;
+      await drain;
+    } catch (error) {
+      releaseLock();
+      await lockTransaction;
+      throw error;
+    } finally {
+      if (lockSafety) clearTimeout(lockSafety);
+    }
+
+    // The main code retries a refused wakeup admission in process
+    // (retryChatControlAdmission: up to 50 x 100 ms) instead of failing the
+    // delivery into a durable backoff, so once the lock is gone the same
+    // attempt completes: exactly one wakeup action for the reply delivery, one
+    // wakeup and one receipt reaction - nothing lost, nothing duplicated.
+    //
+    // Not covered here: the durable branch (the contention outlasts the
+    // in-process retry, the delivery goes to `retry` and a second attempt
+    // succeeds). While the row is held, the drain already blocks before the
+    // delivery claim (attempts stays 0 in CI), so a row lock cannot reach the
+    // wakeup-admission window without a product hook, and a lock held longer
+    // than the retry budget would only stall the claim. That branch is covered
+    // by "retries an accepted inbound wake outbox in FIFO order without
+    // blocking other conversations", where the wakeup action settles as
+    // `inbound_wakeup_retry` and is re-run after its retryAt.
+    await vi.waitFor(
+      async () => {
+        expect(await replyDelivery()).toMatchObject({ state: "processed" });
+        expect(wakeup.mock.calls.length).toBe(wakeupsBefore + 1);
+        expect(runtime.endpoints.get(endpoint.id)?.reactions.length ?? 0).toBe(
+          reactionsBefore + 1,
+        );
+      },
+      { timeout: 8_000 },
+    );
+    const replyDeliveryId = (await replyDelivery())!.id;
+    const replyActions = async () =>
+      db
+        .select()
+        .from(chatActions)
+        .where(
+          and(
+            eq(chatActions.endpointId, endpoint.id),
+            eq(chatActions.kind, "inbound_wakeup"),
+            eq(chatActions.deliveryId, replyDeliveryId),
+          ),
+        );
+    expect(await replyActions()).toHaveLength(1);
+    expect((await replyActions())[0]).toMatchObject({ status: "processed" });
+    // A further drain pass must change nothing: a lost effect would show above,
+    // a repeated one shows here.
+    await service.processPendingDeliveries();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await service.processPendingDeliveries();
+    expect(await replyActions()).toHaveLength(1);
+    expect(wakeup.mock.calls.length).toBe(wakeupsBefore + 1);
+    expect(runtime.endpoints.get(endpoint.id)?.reactions.length ?? 0).toBe(
+      reactionsBefore + 1,
+    );
+    const replyDeliveries = (
+      await db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpoint.id))
+    ).filter((candidate) =>
+      JSON.stringify(candidate.normalizedEvent).includes(reply.id),
+    );
+    expect(replyDeliveries).toHaveLength(1);
+    await service.shutdown();
+  });
+
   it("deduplicates inbound events, keeps one task per thread, and requires enablement for newly discovered channels", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service, wakeup } =
@@ -21584,6 +21806,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       text: "@maya investigate the deploy",
       mentioned: true,
     });
+    const deliveryCountBeforeDuplicates = await db
+      .select({ id: chatDeliveries.id })
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id))
+      .then((rows) => rows.length);
 
     const duplicateResults = await Promise.allSettled(
       Array.from({ length: 12 }, () =>
@@ -21605,20 +21832,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(result.reason).toMatchObject({ cause: { code: "55P03" } });
       }
     }
-    await deliverMessage({
-      callbacks,
-      endpointId: endpoint.id,
-      thread: first.thread,
-      message: firstMessage,
-      trigger: "mention",
-    });
+    const pendingDeliveries = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(pendingDeliveries).toHaveLength(deliveryCountBeforeDuplicates + 1);
+    await service.processPendingDeliveries();
     await vi.waitFor(
-      async () => {
-        await service.processPendingDeliveries();
-        expect(wakeup).toHaveBeenCalledTimes(1);
-      },
+      () => expect(wakeup.mock.calls.length).toBeGreaterThan(0),
       { timeout: 10_000 },
     );
+    expect(wakeup).toHaveBeenCalledTimes(1);
 
     let conversations = await db
       .select()
@@ -21642,7 +21866,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(deliveries).toHaveLength(1);
     expect(deliveries[0].normalizedEvent).toMatchObject({
       deduplication: {
-        duplicateCount: 12,
+        duplicateCount: 11,
         lastDuplicateAt: expect.any(String),
       },
     });
