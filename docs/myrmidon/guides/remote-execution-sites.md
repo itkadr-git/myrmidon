@@ -481,3 +481,4 @@ The work-memory of a site is **primary on the site**: its bots recall and retain
    SELECT site_name, kind, status, documents_imported, documents_skipped, error, started_at
    FROM myrmidon_fleet_memory_syncs ORDER BY started_at DESC LIMIT 20;
    ```
+5. **Production import of `fleet-work` / `work` (P5) is a separate manual ADM step**, done in the owner's window, and is **not** run automatically at startup, by the compose, or by the sync lane. Order: (a) bring up the compose (step 1) and check `hs-pg` healthy and `hindsight-work` answering; (b) run the P5 import (export of the banks `fleet-work` and `work` on the board's hindsight, `POST .../transfer/export`, then `POST .../transfer/import?mode=restore` into the site's `hindsight-work`); (c) only then set `MYRMIDON_FLEET_MEMORY_SYNC=1`, so that the first nightly sync does not meet an empty site memory.
