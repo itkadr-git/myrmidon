@@ -1382,7 +1382,9 @@ function buildIssueBlockerDiagnosticsResponse(input: {
         ...blocker,
         isUnresolved,
         isPendingFinalize,
-        isDependencyReady: blocker.status === "done" && !isPendingFinalize,
+        isDependencyReady:
+          (blocker.status === "done" || blocker.status === "cancelled") &&
+          !isPendingFinalize,
         flags,
       };
     },

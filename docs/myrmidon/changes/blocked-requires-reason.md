@@ -16,6 +16,8 @@ divergence-section: Трек 1 — платформа
 - When the last open blocker closes (`done`) and nothing else holds the dependent (no
   `blockReason`, no descriptor, an executor exists), it returns to `todo` in the same
   transaction; the existing dependency wake-up runs after commit.
+- A `cancelled` blocker now counts as resolved everywhere (dependency readiness, the idle pickup, the
+  blocker diagnostics), the same as `done`; the workspace sync-back barrier still applies to `done` blockers only.
 - `scripts/myrmidon/unblock-reasonless.mjs` returns the existing reasonless blocked tasks to
   `todo` for their executor (dry-run by default, `--apply`, snapshot first, batches of 10, no wake-ups).
 
@@ -32,6 +34,8 @@ divergence-section: Трек 1 — платформа
 - Когда закрывается последний открытый блокер (`done`) и больше ничто не держит зависимую
   задачу (нет `blockReason`, нет дескриптора, есть исполнитель), она в той же транзакции
   возвращается в `todo`; штатная побудка по зависимости срабатывает после коммита.
+- Блокер в статусе `cancelled` теперь считается решённым везде (готовность зависимостей, idle pickup,
+  диагностика блокеров), как `done`; барьер sync-back рабочего пространства по-прежнему действует только для `done`.
 - `scripts/myrmidon/unblock-reasonless.mjs` возвращает уже существующие заблокированные задачи
   без причины в `todo` исполнителю (по умолчанию dry-run, `--apply`, сначала снимок, батчи по 10,
   без побудок).

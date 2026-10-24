@@ -396,7 +396,7 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status <> 'done'
+            and blocker.status not in ('done', 'cancelled')
         )`,
         // Not a container: an issue with an open child is a plan container,
         // and the children are the real work, not the parent.

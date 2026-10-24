@@ -227,6 +227,11 @@ describePg("issueService blocked-reason guard", () => {
     await svc.update(blocker, { status: "cancelled" });
     const [row] = await db.select().from(issues).where(eq(issues.id, dependent));
     expect(row!.status).toBe("todo");
+    // a cancelled blocker is resolved everywhere: the dependent is ready
+    await expect(svc.getDependencyReadiness(dependent)).resolves.toMatchObject({
+      isDependencyReady: true,
+      unresolvedBlockerIssueIds: [],
+    });
   });
 
   it("create in blocked needs a reason too", async () => {

@@ -23,7 +23,7 @@ import { workspaceFileResourceService } from "../workspace-file-resources.js";
 import { badRequest, forbidden } from "../../errors.js";
 import { searchRunnerApi } from "./runner-api-catalog.js";
 import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiFile } from "./runner-api-client.js";
-import { and, desc, eq, inArray, isNull, ne, notInArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   agents,
@@ -700,7 +700,7 @@ export class PaperclipRunnerToolAuthority {
         ? await tx.select({ id: issues.id }).from(issues).where(and(
             eq(issues.companyId, this.binding.companyId),
             inArray(issues.id, blockedByIssueIds),
-            ne(issues.status, "done"),
+            notInArray(issues.status, ["done", "cancelled"]),
           ))
         : [];
       const createInput = {

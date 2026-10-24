@@ -2624,9 +2624,10 @@ async function listIssueDependencyReadinessMap(
       readinessMap.get(row.issueId) ??
       createIssueDependencyReadiness(row.issueId);
     current.blockerIssueIds.push(row.blockerIssueId);
-    // Only done blockers resolve dependents; cancelled blockers stay unresolved
-    // until an operator removes or replaces the blocker relationship explicitly.
-    if (row.blockerStatus !== "done") {
+    // Done and cancelled blockers both resolve dependents (ADM decision
+    // 24.10, OPE-8904): a cancelled blocker can never finish. The workspace
+    // sync-back barrier below applies to done blockers only.
+    if (row.blockerStatus !== "done" && row.blockerStatus !== "cancelled") {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
       current.allBlockersDone = false;
@@ -2783,8 +2784,8 @@ async function listUnresolvedBlockerIssueIds(
       and(
         eq(issues.companyId, companyId),
         inArray(issues.id, uniqueBlockerIssueIds),
-        // Cancelled blockers intentionally remain unresolved until the relation changes.
-        ne(issues.status, "done"),
+        // Done and cancelled blockers are both resolved (OPE-8904).
+        notInArray(issues.status, ["done", "cancelled"]),
       ),
     )
     .then((rows) => rows.map((row) => row.id));
