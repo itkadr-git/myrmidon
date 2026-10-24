@@ -20,7 +20,7 @@ import {
   issues,
   litellmCostEvents,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

@@ -189,6 +189,31 @@ describe("prometheus exposition format", () => {
     expect(idle).toContain('myrmidon_chat_ingress_total{path="direct"} 0');
   });
 
+  // myrmidon(1.6.6 TMP-HYGIENE): the run scratch janitor volume.
+  it("renders the run scratch volume, zero included, and no samples when unread", () => {
+    const read = renderMetricsText(
+      snapshot({
+        runScratch: {
+          removedDirsTotal: 2,
+          removedBytesTotal: 2048,
+          remainingDirs: 0,
+          remainingBytes: 0,
+          lastSweepAt: "2026-10-03T12:00:00.000Z",
+        },
+      }),
+    );
+    expect(read).toContain("# TYPE myrmidon_run_scratch_removed_bytes_total counter");
+    expect(read).toContain("\nmyrmidon_run_scratch_removed_dirs_total 2\n");
+    expect(read).toContain("\nmyrmidon_run_scratch_removed_bytes_total 2048\n");
+    expect(read).toContain("# TYPE myrmidon_run_scratch_remaining_bytes gauge");
+    expect(read).toContain("\nmyrmidon_run_scratch_remaining_dirs 0\n");
+    expect(read).toContain("\nmyrmidon_run_scratch_remaining_bytes 0\n");
+
+    const unread = renderMetricsText(snapshot());
+    expect(unread).toContain("# HELP myrmidon_run_scratch_remaining_bytes ");
+    expect(unread).not.toContain("\nmyrmidon_run_scratch_remaining_bytes ");
+  });
+
   it("renders the ingress family without samples when the counter was not read", () => {
     const text = renderMetricsText(snapshot());
 
@@ -297,5 +322,35 @@ describe("prometheus exposition format", () => {
   it("escapeLabelValue round-trips the metacharacters", () => {
     expect(escapeLabelValue('a"b\\c\nd')).toBe('a\\"b\\\\c\\nd');
     expect(escapeLabelValue("plain")).toBe("plain");
+  });
+});
+
+// myrmidon(1.6.6 REMOTE-SITES-T4): the remote-site families.
+describe("remote site families", () => {
+  it("render reachable, last_seen, retries and moves with escaped labels", () => {
+    const text = renderMetricsText(
+      snapshot({
+        fleetSites: {
+          sites: [{ site: 'myr"vm1', reachable: 1, lastSeenSeconds: 5 }, { site: "never", reachable: 0, lastSeenSeconds: null }],
+          retriesTotal: [{ site: "myr-vm1", count: 3 }],
+          movesTotal: [{ result: "done", count: 1 }, { result: "failed", count: 0 }, { result: "unavailable", count: 2 }],
+        },
+      }),
+    );
+    expect(text).toContain("# TYPE myrmidon_fleet_site_reachable gauge");
+    expect(text).toContain('myrmidon_fleet_site_reachable{site="myr\\"vm1"} 1');
+    expect(text).toContain('myrmidon_fleet_site_reachable{site="never"} 0');
+    expect(text).toContain('myrmidon_fleet_site_last_seen_seconds{site="myr\\"vm1"} 5');
+    // A site that never answered has no last-seen sample.
+    expect(text).not.toContain('myrmidon_fleet_site_last_seen_seconds{site="never"}');
+    expect(text).toContain("# TYPE myrmidon_fleet_exec_retries_total counter");
+    expect(text).toContain('myrmidon_fleet_exec_retries_total{site="myr-vm1"} 3');
+    expect(text).toContain('myrmidon_fleet_moves_total{result="unavailable"} 2');
+  });
+
+  it("render HELP and TYPE with no samples when the source is absent", () => {
+    const text = renderMetricsText(snapshot({ fleetSites: null }));
+    expect(text).toContain("# HELP myrmidon_fleet_moves_total ");
+    expect(text).not.toContain("myrmidon_fleet_moves_total{");
   });
 });

@@ -100,16 +100,34 @@ def main() -> None:
         assert opened["exit_code"] == code
         assert f"refusal {code}" in opened["error"]
 
-    # Non-refusal failure (timeout family): a hard RuntimeError, not a silent
-    # fallback — a broken CLI or call shape is operator-visible breakage.
+    # OPE-8946: ANY other open failure (usage exit 2, unknown code, exit 0 without
+    # a path, timeout) also falls back to /scratch with a warning, never raises:
+    # a raise fails the run and drives the agent towards status error.
+    for code in (1, 2, 6, 7):
+        os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
+            tmpdir, code=code,
+            payload={"ok": False, "error": f"broken {code}", "exitCode": code},
+            record=record)
+        opened = open_task_workspace({"key": "OPE-4", "repo": "acme/widgets"})
+        assert opened["fallback"] is True and opened["path"] == "/scratch", (code, opened)
+        assert opened["exit_code"] == code and f"broken {code}" in opened["error"]
     os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
-        tmpdir, code=2, payload={"ok": False, "error": "usage", "exitCode": 2},
-        record=record)
+        tmpdir, code=0, payload={"ok": True}, record=record)
+    opened = open_task_workspace({"key": "OPE-4", "repo": "acme/widgets"})
+    assert opened["fallback"] is True and "without a JSON path" in opened["error"], opened
+    import tools.run_workspace as _rw
+    _orig = _rw.MYR_WS_OPEN_TIMEOUT_SEC
+    _rw.MYR_WS_OPEN_TIMEOUT_SEC = 1
+    slow = os.path.join(tmpdir, "myr-ws-slow")
+    with open(slow, "w") as fh:
+        fh.write("#!/bin/sh\nsleep 5\n")
+    os.chmod(slow, 0o755)
+    os.environ["MYRMIDON_WS_BIN"] = slow
     try:
-        open_task_workspace({"key": "OPE-4", "repo": "acme/widgets"})
-        raise AssertionError("exit 2 must raise, not fall back")
-    except RuntimeError as exc:
-        assert "exit 2" in str(exc)
+        opened = open_task_workspace({"key": "OPE-4", "repo": "acme/widgets"})
+    finally:
+        _rw.MYR_WS_OPEN_TIMEOUT_SEC = _orig
+    assert opened["fallback"] is True and "timed out" in opened["error"], opened
 
     # Missing binary: the contract refusal family covers a host without the CLI
     # too — fall back with a warning rather than fail every run there.

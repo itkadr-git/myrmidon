@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import { redactEventPayload, redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
 
 export class ToolContentValidationError extends Error {

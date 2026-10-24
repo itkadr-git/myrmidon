@@ -16,7 +16,7 @@
  * Resolution is read-only: one select over `agents`, no vendor file changes.
  */
 import { and, asc, eq } from "drizzle-orm";
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidon/db";
 import {
   isHiddenAgentCard,
   isRetiredAgentName,

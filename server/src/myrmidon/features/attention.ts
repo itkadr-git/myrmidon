@@ -17,7 +17,7 @@ import {
   FEATURE_ATTENTION_AFTER_MS,
   isFeatureBroken,
   type FeatureHealthStatus,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export const FEATURE_ATTENTION_DEDUP_PREFIX = "feature_health:";
 

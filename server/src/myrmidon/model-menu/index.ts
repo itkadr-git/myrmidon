@@ -1,4 +1,4 @@
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { listAdapterModels, listEnabledServerAdapters } from "../../adapters/registry.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { modelMenuRoutes } from "./routes.js";

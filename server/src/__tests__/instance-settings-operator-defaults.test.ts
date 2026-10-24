@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { getOperatorSettingDefaults } from "../services/setting-defaults.js";
 

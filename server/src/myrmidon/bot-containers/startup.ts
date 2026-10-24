@@ -22,8 +22,8 @@
 // not configured. That is deliberate: a bot-container settings mistake must not
 // stop the whole board.
 
-import type { Db } from "@paperclipai/db";
-import { agents } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { agents } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
@@ -31,6 +31,7 @@ import { instanceSettingsService } from "../../services/instance-settings.js"; /
 import { listBotContainerAgents } from "./agents-query.js";
 import { isBotContainersEnabled } from "./agent-config.js";
 import type { BotContainerDriver } from "./driver.js";
+import { fleetSiteKey } from "./fleetd-hosts.js";
 import { dockerBotContainerDriver, readDockerDriverConfig, type DockerDriverConfig } from "./docker-driver.js";
 import {
   DEFAULT_RECONCILE_INTERVAL_MS,
@@ -45,6 +46,8 @@ import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime
 import { readBotCacheLayoutForBot, readSharedBotRuntimePath, startCloneReportCollection } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H11, 1.6.5-DOCKERGATE-A2A3-STORM)
 import { reportBotContainerEvent } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { startSiteScheduler } from "./site-scheduler-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
+import { startSiteHealth } from "./site-health-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
+import { isSiteHealthEnabled } from "./site-health-flag.js";
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import {
@@ -125,6 +128,11 @@ export interface BotContainersStartupPorts {
    * real one. Its stop is folded into the stop of this run.
    */
   startCloneReportCollection?: typeof startCloneReportCollection;
+  /**
+   * myrmidon(1.6.6 T3): the remote-site clients (registry sites by company and name)
+   * and the one-time import of MYRMIDON_FLEET_HOSTS into the registry. Optional so
+   * a test without a registry builds the runtime without a database round trip.
+   */
   createFleetClientManager?: (deps: FleetClientManagerDeps) => FleetClientManager;
   bootstrapFleetSitesFromEnv?: typeof bootstrapFleetSitesFromEnv;
   /**
@@ -133,6 +141,12 @@ export interface BotContainersStartupPorts {
    * Its stop is folded into the stop of this run.
    */
   startSiteScheduler?: typeof startSiteScheduler;
+  /**
+   * myrmidon(1.6.6 REMOTE-SITES-T4): the site-monitor lane (30 s) and the replica lane (15 min).
+   * Opt-in (MYRMIDON_SITE_HEALTH=1), and only in a process that has a heartbeat service. Its
+   * stop is folded into the stop of this run.
+   */
+  startSiteHealth?: typeof startSiteHealth;
   log: BotContainersLog;
 }
 
@@ -164,6 +178,7 @@ const defaultPorts: BotContainersStartupPorts = {
   createFleetClientManager,
   bootstrapFleetSitesFromEnv,
   startSiteScheduler,
+  startSiteHealth,
   log: logger,
 };
 
@@ -193,9 +208,16 @@ export function startBotContainers(
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the collector needs a registered
   // runtime (it reads the reports through its driver), so it starts after the
   // registration and stops with this run.
-  const stopCollector = ports.startCloneReportCollection?.(db, { env }) ?? null;
+  let stopCollector: (() => void) | undefined;
+  try {
+    stopCollector = ports.startCloneReportCollection?.(db, { env });
+  } catch (err) {
+    ports.log.error({ err }, "failed to start clone hygiene report collection");
+  }
   // myrmidon(1.6.6 REMOTE-SITES-T5): after the runtime is registered, because a move uses it.
   const stopSiteScheduler = ports.startSiteScheduler?.(db, { env }) ?? null;
+  // myrmidon(1.6.6 REMOTE-SITES-T4): next to the scheduler; it reads the client manager's transports.
+  const stopSiteHealth = ports.startSiteHealth?.(db, { env, clientManager }) ?? null;
 
   let stopped = false;
   const stop = () => {
@@ -205,6 +227,7 @@ export function startBotContainers(
     stopCollector?.();
     clientManager.close();
     stopSiteScheduler?.();
+    stopSiteHealth?.();
     // Only clear the registry entry this run put there.
     if (ports.currentRuntime() === runtime) ports.registerRuntime(null);
     if (stopRunning === stop) stopRunning = null;
@@ -229,6 +252,7 @@ function build(
     const localDriver = ports.createDriver(driverConfig, db);
     const clientManager = (ports.createFleetClientManager ?? createFleetClientManager)({
       db,
+      keepDrainingClients: isSiteHealthEnabled(env),
       log: ports.log,
     });
 
@@ -246,7 +270,16 @@ function build(
     const routingDriver = fleetRoutingDriver(
       {
         local: localDriver,
-        fleet: () => clientManager.getClients(),
+        fleet: (companyId) => {
+          const all = clientManager.getClients();
+          if (!companyId) return all; // list: every client; routed calls are refused without a company
+          const prefix = fleetSiteKey(companyId, "");
+          const scoped = new Map<string, BotContainerDriver>();
+          for (const [key, client] of all) {
+            if (key.startsWith(prefix)) scoped.set(key.slice(prefix.length), client);
+          }
+          return scoped;
+        },
         ready: () => clientManager.ensureFresh(),
       },
       async (botKey: string) => {

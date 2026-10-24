@@ -24,7 +24,7 @@
 // routes the refreshed head through review and merge on its own fresh
 // verdicts.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
 import { ghFetch, gitHubApiBase } from "../../services/github-fetch.js";
 import { secretService } from "../../services/secrets.js";

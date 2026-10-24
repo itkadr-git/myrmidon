@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { issues, issueWorkProducts, type Db } from "@paperclipai/db";
+import { issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { conflict } from "../../errors.js";
 import {
   createPullRequestMergeDetailsResolver,

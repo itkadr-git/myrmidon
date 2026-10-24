@@ -24,7 +24,7 @@ const docsRoot = path.join(repoRoot, "docs");
 // name, a license/attribution string, or a historical record of a pre-rename
 // state.
 const ALLOWLIST = [
-  "paperclipai", // @paperclipai/* packages, the paperclipai CLI, vendor repo URLs
+  "paperclipai", // @myrmidon/* packages, the paperclipai CLI, vendor repo URLs
   "Paperclip AI", // vendor company name (license/provenance sections)
   "PAPERCLIP_", // env vars
   "X-Paperclip-", // HTTP headers

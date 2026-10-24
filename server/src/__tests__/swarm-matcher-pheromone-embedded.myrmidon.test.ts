@@ -32,13 +32,13 @@ import {
   issueClaims,
   issues,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
 import {
   DEFAULT_PHEROMONE_DYNAMICS,
   orderSwarmQueueCandidates,
   resolveSwarmClaimSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

@@ -220,6 +220,14 @@ describe("myr-ws restore — usage", () => {
     assert.match(r.stderr, /invalid issue key/);
   });
 
+  it("a malformed repository argument -> exit 2; owner/repo is accepted (OPE-8946)", async () => {
+    const bad = await run([KEY, "nonsense"]);
+    assert.equal(bad.exitCode, 2);
+    assert.match(bad.stderr, /owner\/name/);
+    assert.deepEqual(ws.resolveRestoreRequest({ positional: [KEY, "acme/vault"] }), { key: KEY, repo: "acme/vault" });
+    assert.deepEqual(ws.resolveRestoreRequest({ positional: [KEY] }), { key: KEY });
+  });
+
   it("unknown option -> exit 2", async () => {
     const r = await run([KEY, "--nope"]);
     assert.equal(r.exitCode, 2);

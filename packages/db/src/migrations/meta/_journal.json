@@ -2431,6 +2431,41 @@
       "when": 1792395509000,
       "tag": "0409_corpus_shadow_log",
       "breakpoints": true
+    },
+    {
+      "idx": 410,
+      "version": "7",
+      "when": 1792395510000,
+      "tag": "0410_model_provider_key_compatibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 411,
+      "version": "7",
+      "when": 1792395511000,
+      "tag": "0411_pool_chat_module_instance",
+      "breakpoints": true
+    },
+    {
+      "idx": 412,
+      "version": "7",
+      "when": 1792395512000,
+      "tag": "0412_users_admin_a",
+      "breakpoints": true
+    },
+    {
+      "idx": 413,
+      "version": "7",
+      "when": 1792395513000,
+      "tag": "0413_knowledge_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 414,
+      "version": "7",
+      "when": 1792395514000,
+      "tag": "0414_fleet_site_health_move_claim",
+      "breakpoints": true
     }
   ]
 }

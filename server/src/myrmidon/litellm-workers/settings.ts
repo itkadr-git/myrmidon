@@ -19,12 +19,12 @@
 // "not set" instead of as a number the gateway would be told to obey.
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 import {
   LITELLM_WORKERS_COMPANIES_KEY,
   normalizeLitellmWorkersSettings,
   type LitellmWorkersStoredSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** The single row of `instance_settings`. */
 export const LITELLM_WORKERS_SINGLETON_KEY = "default";

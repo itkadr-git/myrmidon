@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   listKimiSkills,
   syncKimiSkills,
-} from "@paperclipai/adapter-kimi-local/server";
+} from "@myrmidon/adapter-kimi-local/server";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));

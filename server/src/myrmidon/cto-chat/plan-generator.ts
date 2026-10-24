@@ -29,7 +29,7 @@ import {
   toSuggestTasksPayload,
   type CtoChatPlan,
   type CtoChatSuggestTasksPayload,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 import type { CtoChatSettings } from "./settings.js";
 
