@@ -15,6 +15,9 @@
 
 import { SANDBOX_PROVIDER_REGISTRY_ENTRIES } from "./sandbox-providers.js";
 import { RUNNER_ACPX_CODEX_AUTH_REGISTRY_ENTRY } from "./runner-environment.js";
+import { BOT_FLEET_SECRET_SETTINGS } from "./bot-fleet-settings.js"; // myrmidon(SETTINGS-UI E2.3)
+import { PROVIDER_SECRET_SETTINGS } from "./provider-settings.js"; // myrmidon(SETTINGS-UI E2.2)
+
 export const TOOL_OAUTH_CONSUMER = "tool-access.oauth";
 export const TOOL_OAUTH_CLIENT_SECRET_SETTING = "tool-oauth.client-secret";
 
@@ -31,7 +34,6 @@ export function toolOauthProviderSecretSettingName(provider: string): string | n
 function toolOauthProviderEnvName(slug: string): string {
   return `PAPERCLIP_TOOL_OAUTH_${slug.toUpperCase()}_CLIENT_SECRET`;
 }
-import { BOT_FLEET_SECRET_SETTINGS } from "./bot-fleet-settings.js"; // myrmidon(SETTINGS-UI E2.3)
 
 export type InstanceSecretSettingDescriptor = {
   readonly name: string;
@@ -118,6 +120,7 @@ export const INSTANCE_SECRET_SETTINGS: readonly InstanceSecretSettingDescriptor[
   ...SANDBOX_PROVIDER_REGISTRY_ENTRIES, // E2.8 (OPE-9041)
   RUNNER_ACPX_CODEX_AUTH_REGISTRY_ENTRY, // E2.8 (OPE-9041)
   ...BOT_FLEET_SECRET_SETTINGS, // myrmidon(SETTINGS-UI E2.3)
+  ...PROVIDER_SECRET_SETTINGS, // myrmidon(SETTINGS-UI E2.2)
   // E2.4 (OPE-9037): instance-wide fallback OAuth client secret for tool connections.
   {
     name: TOOL_OAUTH_CLIENT_SECRET_SETTING,
