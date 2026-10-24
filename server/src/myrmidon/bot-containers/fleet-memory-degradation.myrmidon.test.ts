@@ -68,7 +68,7 @@ function site(): MonitoredSite {
     id: "site-1",
     companyId: COMPANY,
     name: "myr-vm1",
-    url: "https://10.10.0.110:9100",
+    url: "https://192.0.2.10:9100",
     status: "active",
     labels: {},
     health: { snapshot: { missCount: 0 }, autoDrained: false, state: "healthy", recoveryPasses: 0, reconciled: true, updatedAt: "2026-10-24T00:00:00Z" },
@@ -90,7 +90,7 @@ describe("site memory under a broken link", () => {
       store: journal,
       now: () => state.now,
       exportArchive: async () => {
-        if (!state.linkUp) throw new Error("connect ETIMEDOUT 10.10.0.110:9100");
+        if (!state.linkUp) throw new Error("connect ETIMEDOUT 192.0.2.10:9100");
         return local.exportArchive();
       },
       importArchive: board.importArchive,
@@ -135,7 +135,7 @@ describe("site memory under a broken link", () => {
       store: t.journal,
       now: () => t.state.now,
       exportArchive: async () => {
-        throw new Error("connect ETIMEDOUT 10.10.0.110:9100");
+        throw new Error("connect ETIMEDOUT 192.0.2.10:9100");
       },
       importArchive: t.board.importArchive,
     }).syncSite({ companyId: COMPANY, siteName: "myr-vm1", botKey: "work-qa", kind: "manual" });
