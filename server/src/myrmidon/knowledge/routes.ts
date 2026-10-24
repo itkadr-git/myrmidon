@@ -174,10 +174,10 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     const membership = actor.memberships?.find((entry) => entry.companyId === companyId && entry.status === "active");
     const authorized = approverKind === "owner"
       ? actor.source === "local_implicit" || membership?.membershipRole === "owner"
-      : approverKind === "adm"
+      : approverKind === "adm" || approverKind === "admin"
         ? actor.isInstanceAdmin === true || membership?.membershipRole === "admin"
-        : approverKind === "admin"
-          ? actor.isInstanceAdmin === true || membership?.membershipRole === "admin"
+        : approverKind === "operator"
+          ? membership?.membershipRole === "operator" || membership?.membershipRole === "member"
           : false;
     if (!authorized) {
       throw forbidden(`This user is not authorized to approve as ${approverKind}.`, { code: "approver_authority_required" });
