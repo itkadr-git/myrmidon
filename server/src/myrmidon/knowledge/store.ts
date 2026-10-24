@@ -22,7 +22,7 @@
 //   - `exportTree()/importTree()` are canonical: export → import → export is
 //     byte-for-byte identical.
 
-import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   knowledgeEvents,
@@ -861,6 +861,41 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     return toItemDto(row);
   }
 
+  // ---------------------------------------------------------- seed recovery
+
+  /** Restore a known legacy supersede row; caller validates the exact target. */
+  async function restoreSeedSuperseded(nestId: string, itemId: string, actor: KnowledgeActor): Promise<boolean> {
+    const current = await loadItem(nestId, itemId);
+    if (current.status !== "superseded") return false;
+
+    const row = await db.transaction(async (tx) => {
+      const [revision] = await tx.select().from(knowledgeRevisions)
+        .where(and(eq(knowledgeRevisions.itemId, current.id), eq(knowledgeRevisions.status, "approved")))
+        .orderBy(desc(knowledgeRevisions.revisionNumber)).limit(1);
+      if (!revision) throw new KnowledgeDomainError("revision_not_found", 409, "Cannot restore a seeded item without an approved revision.");
+
+      const [updated] = await tx.update(knowledgeItems)
+        .set({ status: "published", deliveredRevisionId: revision.id, supersededByItemId: null, updatedAt: now() })
+        .where(and(eq(knowledgeItems.nestId, nestId), eq(knowledgeItems.id, current.id), eq(knowledgeItems.status, "superseded")))
+        .returning();
+      if (!updated) return null;
+
+      await appendEvent(tx, {
+        companyId: current.companyId, nestId, itemId: current.id, revisionId: revision.id,
+        event: "knowledge.seed_legacy_restored",
+        payload: { slug: current.slug, priorSupersededByItemId: current.supersededByItemId },
+        actor,
+      });
+      return updated;
+    });
+
+    if (row) {
+      await mirrorActivity({ companyId: row.companyId, itemId: row.id, slug: row.slug, event: "knowledge.seed_legacy_restored", actor, payload: {} });
+      await reindex(row.nestId, row.id);
+    }
+    return row !== null;
+  }
+
   // ------------------------------------------------------------------ read
 
   async function get(nestId: string, idOrSlug: string, language?: KnowledgeRevisionLang): Promise<(KnowledgeItemDto & { deliveredContent: string | null }) | null> {
@@ -1348,6 +1383,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     rollback,
     archive,
     supersede,
+    restoreSeedSuperseded,
     get,
     getRevision,
     listRevisions,

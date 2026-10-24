@@ -16,6 +16,7 @@ import {
   companies,
   createDb,
   knowledgeItems,
+  knowledgeEvents,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -133,6 +134,51 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-8) knowledge seed", () 
     const replacement = await store.get(companyId, "decisions/2026-10-03-foraging-enable-now");
     expect(replacement!.status).toBe("published");
     expect(superseded!.supersededByItemId).toBe(replacement!.id);
+  });
+
+  it("restores only legacy superseded targets on reseed and is idempotent", async () => {
+    const companyId = await makeCompany();
+    await seedKnowledgeBase(db, companyId, companyId);
+    const targets = [
+      ["decisions/2026-09-28-board-manages-containers", "decisions/2026-09-29-tools-a2"],
+      ["decisions/2026-10-04-wiki-own", "decisions/2026-10-08-plugin-as-bridge"],
+      ["decisions/2026-09-29-1-1-0-one-release", "decisions/2026-09-29-1-1-0-no-staging"],
+    ] as const;
+    for (const [oldSlug, replacementSlug] of targets) {
+      const oldItem = await db.select().from(knowledgeItems).where(and(
+        eq(knowledgeItems.nestId, companyId), eq(knowledgeItems.slug, oldSlug),
+      ));
+      const replacement = await db.select().from(knowledgeItems).where(and(
+        eq(knowledgeItems.nestId, companyId), eq(knowledgeItems.slug, replacementSlug),
+      ));
+      await db.update(knowledgeItems).set({
+        status: "superseded", supersededByItemId: replacement[0]!.id, deliveredRevisionId: null,
+      }).where(eq(knowledgeItems.id, oldItem[0]!.id));
+    }
+
+    const repaired = await seedKnowledgeBase(db, companyId, companyId);
+    expect(repaired.recovered).toBe(3);
+    expect(repaired.errors).toEqual([]);
+    const store = createKnowledgeService(db);
+    for (const [slug] of targets) {
+      const item = await store.get(companyId, slug);
+      expect(item!.status).toBe("published");
+      expect(item!.deliveredRevisionId).not.toBeNull();
+      expect(item!.supersededByItemId).toBeNull();
+    }
+    const foraging = await store.get(companyId, "decisions/2026-10-03-foraging-variant-2");
+    const foragingReplacement = await store.get(companyId, "decisions/2026-10-03-foraging-enable-now");
+    expect(foraging!.status).toBe("superseded");
+    expect(foraging!.supersededByItemId).toBe(foragingReplacement!.id);
+
+    const second = await seedKnowledgeBase(db, companyId, companyId);
+    expect(second.recovered).toBe(0);
+    expect(second.superseded).toBe(0);
+    expect(second.errors).toEqual([]);
+    const events = await db.select().from(knowledgeEvents).where(and(
+      eq(knowledgeEvents.nestId, companyId), eq(knowledgeEvents.event, "knowledge.seed_legacy_restored"),
+    ));
+    expect(events).toHaveLength(3);
   });
 
   it("is idempotent: a second run skips existing slugs and preserves supersede chains", async () => {
