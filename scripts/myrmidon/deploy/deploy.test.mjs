@@ -61,9 +61,21 @@ case "$1" in
       *myrmidon-dockergate*|*myrmidon-fleetd*)
         if [ -e "$SANDBOX/components-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
         for a in "$@"; do case "$a" in *Manifest.Digest*) cat "$SANDBOX/component-digests.json" | jq -r --arg r "$4" '.[\$r]'; exit 0 ;; esac; done
+        case "$*" in
+          *'json .Manifest}}'*)
+            if [ -e "$SANDBOX/index-manifest" ]; then echo '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"digest":"sha256:amd64","platform":{"os":"linux","architecture":"amd64"}},{"digest":"sha256:attestation","platform":{"os":"unknown","architecture":"unknown"}}]}'; exit 0; fi
+            echo '{"Layers":[{"size":1048576}]}' ; exit 0 ;;
+          *'@sha256:amd64'*) echo '{"Config":{"size":524288},"Layers":[{"size":1048576}]}' ; exit 0 ;;
+        esac
         cat "$SANDBOX/component-image.json" ;;
       *)
         if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
+        case "$*" in
+          *'json .Manifest}}'*)
+            if [ -e "$SANDBOX/index-manifest" ]; then echo '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"digest":"sha256:amd64","platform":{"os":"linux","architecture":"amd64"}},{"digest":"sha256:attestation","platform":{"os":"unknown","architecture":"unknown"}}]}'; exit 0; fi
+            echo '{"Layers":[{"size":1048576}]}' ; exit 0 ;;
+          *'@sha256:amd64'*) echo '{"Config":{"size":524288},"Layers":[{"size":1048576}]}' ; exit 0 ;;
+        esac
         cat "$SANDBOX/imagetools.json" ;;
     esac ;;
   run) echo "1.4.0+0123456789ab" ;;
@@ -111,6 +123,13 @@ case "$1" in
 esac
 `;
 
+// DEPLOY-HYGIENE: the disk precheck reads the free space of /var/lib/docker
+// with df; the sandbox always has plenty (the precheck has its own tests).
+const FAKE_DF = `#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
+printf '/dev/root 209715200 1024 209714176 1%% /\\n'
+`;
+
 const FAKE_CURL = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
@@ -148,6 +167,7 @@ function sandbox({
   // What the registry reports for the image (imagetools inspect): the labels, or null for none.
   registryLabels,
   registryMissing = false,
+  indexManifest = false,
   origin = ORIGIN,
   notAClone = false,
   fetchFails = false,
@@ -179,6 +199,7 @@ function sandbox({
   fs.writeFileSync(path.join(composeDir, "docker-compose.yml"), "services: {}\n");
   fs.writeFileSync(path.join(bin, "docker"), FAKE_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "df"), FAKE_DF, { mode: 0o755 });
   if (!noGit) fs.writeFileSync(path.join(bin, "git"), FAKE_GIT, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   const labels =
@@ -194,6 +215,7 @@ function sandbox({
     JSON.stringify({ architecture: "amd64", os: "linux", config: { Env: ["A=1"], Labels: labels } }),
   );
   if (registryMissing) fs.writeFileSync(path.join(dir, "registry-missing"), "");
+  if (indexManifest) fs.writeFileSync(path.join(dir, "index-manifest"), "");
   if (composeConfigFails) fs.writeFileSync(path.join(dir, "compose-config-fails"), "");
   // RELEASE-GATE: component registry answers for the same commit.
   fs.writeFileSync(
@@ -344,7 +366,7 @@ const maintenance = (sb) => read(path.join(sb.dir, "maintenance.log"));
 
 describe("deploy.sh", () => {
   it("deploys by digest: dump, maintenance, image switch, health, exit", () => {
-    const sb = sandbox();
+    const sb = sandbox({ indexManifest: true });
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
     assert.equal(code, 0, out);
     assert.match(read(sb.override), new RegExp(`image: ghcr.io/itkadr-git/myrmidon@${NEW}`));
