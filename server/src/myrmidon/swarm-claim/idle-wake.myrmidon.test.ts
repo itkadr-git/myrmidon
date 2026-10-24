@@ -261,6 +261,8 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       delete: () => ({
         where: () => Promise.resolve([]),
       }),
+      // The capacity check takes a transaction advisory lock through raw SQL.
+      execute: async () => [],
       transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
     };
     const settings: SwarmClaimSettings = {
