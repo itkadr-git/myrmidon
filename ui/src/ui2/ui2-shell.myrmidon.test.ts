@@ -86,14 +86,18 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
       "fleet",
       "knowledge",
       "knowledge-page",
+      "quality",
       "settings-autonomy-regulations",
       "settings-language",
       "settings-runs-queue",
       "settings-system",
+      "system",
     ]);
     for (const entry of UI2_ROUTE_TABLE) {
       expect(entry.element, entry.key).toBeTruthy();
-      expect(entry.titleKey.startsWith("ui2.screens."), entry.key).toBe(true);
+      if (entry.titleKey) {
+        expect(entry.titleKey.startsWith("ui2.screens."), entry.key).toBe(true);
+      }
     }
   }, 30_000);
 

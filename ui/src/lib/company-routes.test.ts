@@ -21,6 +21,8 @@ describe("company routes", () => {
     for (const root of ["onboarding", "plugins", "tests", "status-cards", "review-queue", "learnings", "dev", "instance", "chat-identity", "ux-lab"]) {
       boardRouteRoots.delete(root);
     }
+    // UI2 company routes are registered in the shell rather than boardRoutes().
+    boardRouteRoots.add("system");
     const source = readFileSync(fileURLToPath(new URL("./company-routes.ts", import.meta.url)), "utf8");
     const rootsBlock = source.match(/const BOARD_ROUTE_ROOTS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
     expect(rootsBlock).toBeDefined();
