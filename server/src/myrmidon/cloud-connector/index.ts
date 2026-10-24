@@ -10,6 +10,7 @@
 // values live in the deploy repository); with none set, the connector still
 // serves the folder/grant/journal surface but refuses to start a connect.
 
+import { resolveOptionalInstanceSecret } from "../secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.7)
 import type { Db } from "@myrmidon/db";
 import { Router } from "express";
 import type { CloudRoot } from "@myrmidon/shared/myrmidon-cloud-connector";
@@ -50,6 +51,18 @@ export function createCloudConnector(options: { db: Db } & CloudConnectorWiringO
   const documentStore = options.store ?? dbCloudConnectorStore(options.db);
   const tokenStore = options.tokenStore ?? secretCloudTokenStore(options.db);
   const clients = readOAuthClients(env, env.MYRMIDON_CLOUD_CONNECTOR_REDIRECT_BASE ?? null);
+  // myrmidon(SETTINGS-UI E2.7): without an env client secret, resolve a bound secret ref per use.
+  const clientSecretSettings: Record<string, string> = {
+    onedrive: "cloud.onedrive.client_secret",
+    "google-drive": "cloud.google_drive.client_secret",
+    "yandex-disk": "cloud.yandex_disk.client_secret",
+  };
+  for (const [providerId, client] of Object.entries(clients)) {
+    const settingName = clientSecretSettings[providerId];
+    if (client && settingName && !client.clientSecret) {
+      client.resolveClientSecret = () => resolveOptionalInstanceSecret(settingName, "cloud-connector", env);
+    }
+  }
   const resolveAccountToken: CloudAccessTokenResolver = createCloudAccessTokenResolver({
     store: tokenStore,
     clients,

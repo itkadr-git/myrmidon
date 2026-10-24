@@ -1,6 +1,7 @@
 import { gzipSync } from "node:zlib";
 import type { FeedbackTraceBundle } from "@myrmidon/shared";
 import type { Config } from "../config.js";
+import { resolveOptionalInstanceSecret } from "../myrmidon/secret-settings/runtime.js";
 
 function buildFeedbackShareObjectKey(bundle: FeedbackTraceBundle, exportedAt: Date) {
   const year = String(exportedAt.getUTCFullYear());
@@ -19,11 +20,14 @@ export function createFeedbackTraceShareClientFromConfig(
   // myrmidon(TEL): no vendor backend by default; without a URL sharing reports "not configured"
   const baseUrl = config.feedbackExportBackendUrl?.trim();
   if (!baseUrl) return undefined;
-  const token = config.feedbackExportBackendToken?.trim();
+  const configToken = config.feedbackExportBackendToken?.trim();
   const endpoint = new URL("/feedback-traces", baseUrl).toString();
 
   return {
     async uploadTraceBundle(bundle) {
+      // myrmidon(SETTINGS-UI E2.7): the env token (feedback, else telemetry) wins; otherwise a
+      // bound secret ref is resolved server-side per upload.
+      const token = configToken || (await resolveOptionalInstanceSecret("feedback_export.backend_token", "feedback-export"));
       const exportedAt = new Date();
       const objectKey = buildFeedbackShareObjectKey(bundle, exportedAt);
       const requestBody = JSON.stringify({

@@ -119,6 +119,54 @@ export const INSTANCE_SECRET_SETTINGS: readonly InstanceSecretSettingDescriptor[
     description: "Fallback OAuth client secret for tool providers without their own",
     consumers: [TOOL_OAUTH_CONSUMER],
   },
+  // myrmidon(SETTINGS-UI E2.6): application module credentials that carry a VALUE in env.
+  // (The *_KEY_SECRET names carry a company-secret NAME, not a value; see
+  // docs/myrmidon/e2-secret-consumers-e2-6.md.)
+  {
+    name: "stack.github_token",
+    envOverride: "MYRMIDON_STACK_GITHUB_TOKEN",
+    description: "Optional read-only GitHub token for the stack release check",
+    consumers: ["stack-registry"],
+  },
+  {
+    name: "tracing.clickhouse_password",
+    envOverride: "MYRMIDON_TRACING_CLICKHOUSE_PASSWORD",
+    description: "ClickHouse password for the tracing health probe",
+    consumers: ["tracing-health"],
+  },
+  {
+    name: "browser_console.node_token",
+    envOverride: "MYRMIDON_BROWSER_CONSOLE_TOKEN",
+    description: "Bearer token the board presents to the browser screen-console node",
+    consumers: ["browser-console"],
+  },
+  // myrmidon(SETTINGS-UI E2.7): telemetry and cloud connector credentials. Auth, handoff and
+  // signing secrets are deliberately absent (bootstrap, env only): see
+  // docs/myrmidon/e2-secret-coverage-1.6.6.md.
+  {
+    name: "feedback_export.backend_token",
+    envOverride: "MYRMIDON_FEEDBACK_EXPORT_BACKEND_TOKEN",
+    description: "Bearer token for the feedback/telemetry export backend (one token for both URLs)",
+    consumers: ["feedback-export"],
+  },
+  {
+    name: "cloud.onedrive.client_secret",
+    envOverride: "MYRMIDON_CLOUD_ONEDRIVE_CLIENT_SECRET",
+    description: "OAuth client secret of the OneDrive app",
+    consumers: ["cloud-connector"],
+  },
+  {
+    name: "cloud.google_drive.client_secret",
+    envOverride: "MYRMIDON_CLOUD_GOOGLE_DRIVE_CLIENT_SECRET",
+    description: "OAuth client secret of the Google Drive app",
+    consumers: ["cloud-connector"],
+  },
+  {
+    name: "cloud.yandex_disk.client_secret",
+    envOverride: "MYRMIDON_CLOUD_YANDEX_DISK_CLIENT_SECRET",
+    description: "OAuth client secret of the Yandex Disk app",
+    consumers: ["cloud-connector"],
+  },
 ];
 
 /** Consumer parts append their dynamic families here. */
