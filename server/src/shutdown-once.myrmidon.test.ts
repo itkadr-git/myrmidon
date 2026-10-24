@@ -9,12 +9,14 @@ describe("createIdempotentShutdown", () => {
     const gate = new Promise<void>((r) => { release = r; });
     const run = vi.fn(async () => { await gate; });
     const exit = vi.fn();
-    const shutdown = createIdempotentShutdown(run, exit);
+    const joined = vi.fn();
+    const shutdown = createIdempotentShutdown(run, exit, joined);
     const a = shutdown("SIGTERM", true);
     const b = shutdown("SIGTERM", true);
     release();
     await Promise.all([a, b]);
     expect(run).toHaveBeenCalledTimes(1);
+    expect(joined).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledTimes(2);
     expect(exit).toHaveBeenCalledWith(true);
   });

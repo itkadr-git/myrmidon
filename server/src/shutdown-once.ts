@@ -7,11 +7,14 @@
 export function createIdempotentShutdown<S>(
   run: (signal: S, exitProcess: boolean) => Promise<void>,
   exit: (exitProcess: boolean) => void,
+  onJoin?: (signal: S) => void,
 ): (signal: S, exitProcess: boolean) => Promise<void> {
   let started: Promise<void> | null = null;
   return (signal, exitProcess) => {
     if (!started) {
       started = run(signal, false);
+    } else {
+      onJoin?.(signal);
     }
     return started.then(() => exit(exitProcess));
   };

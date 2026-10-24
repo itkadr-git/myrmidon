@@ -3092,14 +3092,20 @@ async function startServerWithDatabaseTeardown(
 
   // myrmidon(OPE-9107): one shutdown per process — a second signal, or an
   // entry point (worker.ts) calling `shutdown()` as well, joins the first run.
-  const shutdown = createIdempotentShutdown(runShutdown, (exitProcess) => {
-    if (exitProcess) process.exit(0);
-  });
+  const shutdown = createIdempotentShutdown(
+    runShutdown,
+    (exitProcess) => {
+      if (exitProcess) process.exit(0);
+    },
+    (signal) => logger.info({ signal }, "shutdown already in progress; joining it"),
+  );
 
-  process.once("SIGINT", () => {
+  // `on`, not `once`: a repeated signal must join the running shutdown, not
+  // fall back to the default disposition and kill the process mid-drain.
+  process.on("SIGINT", () => {
     void shutdown("SIGINT", true);
   });
-  process.once("SIGTERM", () => {
+  process.on("SIGTERM", () => {
     void shutdown("SIGTERM", true);
   });
 
