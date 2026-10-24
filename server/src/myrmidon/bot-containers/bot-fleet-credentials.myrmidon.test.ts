@@ -66,6 +66,9 @@ function makeResolver(env: NodeJS.ProcessEnv, restrictConsumersTo?: string[]) {
     async clearBinding(name) {
       return bindings.delete(name);
     },
+    async createSecret() {
+      throw new Error("not used in this suite");
+    },
   };
   const redacted: string[] = [];
   const resolver = createInstanceSecretSettingResolver({
