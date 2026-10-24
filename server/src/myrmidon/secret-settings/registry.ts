@@ -13,6 +13,9 @@
 // store cannot hold the key that opens it. They stay environment-only; the disposition table
 // is in docs/myrmidon/e2-secret-coverage-1.6.6.md.
 
+import { BOT_FLEET_SECRET_SETTINGS } from "./bot-fleet-settings.js"; // myrmidon(SETTINGS-UI E2.3)
+import { PROVIDER_SECRET_SETTINGS } from "./provider-settings.js"; // myrmidon(SETTINGS-UI E2.2)
+
 export const TOOL_OAUTH_CONSUMER = "tool-access.oauth";
 export const TOOL_OAUTH_CLIENT_SECRET_SETTING = "tool-oauth.client-secret";
 
@@ -29,8 +32,6 @@ export function toolOauthProviderSecretSettingName(provider: string): string | n
 function toolOauthProviderEnvName(slug: string): string {
   return `PAPERCLIP_TOOL_OAUTH_${slug.toUpperCase()}_CLIENT_SECRET`;
 }
-import { BOT_FLEET_SECRET_SETTINGS } from "./bot-fleet-settings.js"; // myrmidon(SETTINGS-UI E2.3)
-import { PROVIDER_SECRET_SETTINGS } from "./provider-settings.js"; // myrmidon(SETTINGS-UI E2.2)
 
 export type InstanceSecretSettingDescriptor = {
   readonly name: string;
