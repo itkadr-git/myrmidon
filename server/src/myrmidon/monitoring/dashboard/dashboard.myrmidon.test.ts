@@ -157,6 +157,26 @@ describe("monitoring dashboard service (myrmidon 1.6.6 MONITORING C)", () => {
     });
   });
 
+  it("merges Zabbix readings when the mapping uses a bare host and VM reports host:9100", async () => {
+    const vm = fakeVm({ node_cpu_seconds_total: [{ metric: { instance: "node-exporter:9100" }, value: 20, timestampSec: 0 }] });
+    const zabbix = fakeZabbix([
+      { host: "vm-core", name: "vm-core", items: { "vm.memory.util": "70", "vfs.fs.dependent.size[/,pused]": "81" } },
+    ]);
+    const view = await buildDashboardView({
+      settings: { ...SETTINGS, zabbixHostMapping: { "node-exporter": "vm-core" } },
+      vm,
+      zabbix,
+      now: () => NOW,
+    });
+    expect(view.hosts).toHaveLength(1);
+    expect(view.hosts[0]).toMatchObject({
+      name: "node-exporter:9100",
+      cpuPercent: 20,
+      memoryPercent: 70,
+      diskPercent: 81,
+    });
+  });
+
   it("maps Zabbix host names against the VM instance label", async () => {
     const vm = fakeVm({ node_cpu_seconds_total: [{ metric: { instance: "node-exporter:9100" }, value: 20, timestampSec: 0 }] });
     const zabbix = fakeZabbix([
