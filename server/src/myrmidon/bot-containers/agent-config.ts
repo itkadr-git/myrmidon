@@ -7,6 +7,7 @@
 // of its own: everything testable in it is pushed down into domain.ts/service.ts.
 
 import type { BotContainerSpec, BotExtraMount, BotSharedMount } from "./driver.js";
+import { liveSavedSetting } from "../behavior-settings/live.js";
 import { BOT_KEY_PATTERN } from "./template.js";
 import type { SharedMountSettings } from "@myrmidon/shared";
 import { resolveBotSharedMount } from "./shared-mount.js";
@@ -15,6 +16,9 @@ import { FLEET_HOST_NAME_PATTERN } from "./fleetd-hosts.js";
 export const BOT_CONTAINERS_ENV = "MYRMIDON_BOT_CONTAINERS";
 
 export function isBotContainersEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  // A switch saved from the UI wins over the environment.
+  const saved = env === process.env ? liveSavedSetting<boolean>("bot_containers") : undefined;
+  if (saved !== undefined) return saved;
   const raw = env[BOT_CONTAINERS_ENV]?.trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }

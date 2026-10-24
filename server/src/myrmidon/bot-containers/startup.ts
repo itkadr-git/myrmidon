@@ -57,6 +57,7 @@ import {
   type FleetClientManagerDeps,
 } from "./site-registry.js";
 import { fleetRoutingDriver } from "./fleetd-routing.js";
+import { liveSavedSetting } from "../behavior-settings/live.js";
 
 export const BOT_RECONCILE_INTERVAL_ENV = "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC";
 const MIN_RECONCILE_INTERVAL_SEC = 5;
@@ -65,7 +66,8 @@ const MAX_RECONCILE_INTERVAL_SEC = 3600;
 /** The sweep period. An unset, non-integer or out-of-range value falls back to the
  *  default (the same rule as the maintenance settings, R3). */
 export function readBotReconcileIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[BOT_RECONCILE_INTERVAL_ENV]?.trim();
+  const saved = env === process.env ? liveSavedSetting<number>("bot_reconcile_interval_sec") : undefined;
+  const raw = saved !== undefined ? String(saved) : env[BOT_RECONCILE_INTERVAL_ENV]?.trim();
   if (!raw) return DEFAULT_RECONCILE_INTERVAL_MS;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < MIN_RECONCILE_INTERVAL_SEC || value > MAX_RECONCILE_INTERVAL_SEC) {

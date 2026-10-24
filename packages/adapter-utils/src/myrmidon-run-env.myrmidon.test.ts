@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MYRMIDON_RUN_ENV_PROVIDER_ALLOW,
+  applyMyrmidonRunEnvAllow,
   buildMyrmidonRunEnv,
   filterMyrmidonInheritedEnv,
   parseRunEnvAllowList,
@@ -46,9 +47,11 @@ const SERVER_ENV: NodeJS.ProcessEnv = {
 describe("myrmidon(S2) run environment", () => {
   beforeEach(() => {
     resetReportedDroppedRunEnvNames();
+    applyMyrmidonRunEnvAllow([]);
     vi.spyOn(console, "debug").mockImplementation(() => undefined);
   });
   afterEach(() => {
+    applyMyrmidonRunEnvAllow([]);
     vi.restoreAllMocks();
     delete process.env.MYRMIDON_RUN_ENV_ALLOW;
   });
@@ -101,6 +104,14 @@ describe("myrmidon(S2) run environment", () => {
       runEnv: { PAPERCLIP_RUN_ID: "run-a" },
     });
     expect(env.PAPERCLIP_RUN_ID).toBe("run-a");
+  });
+
+  it("applies the live UI allow list to inherited environment", () => {
+    applyMyrmidonRunEnvAllow(["SOME_UNRELATED_SERVER_VAR"]);
+    const env = buildMyrmidonRunEnv({ processEnv: SERVER_ENV });
+    expect(env.SOME_UNRELATED_SERVER_VAR).toBe("value");
+    applyMyrmidonRunEnvAllow([]);
+    expect(buildMyrmidonRunEnv({ processEnv: SERVER_ENV })).not.toHaveProperty("SOME_UNRELATED_SERVER_VAR");
   });
 
   it("MYRMIDON_RUN_ENV_ALLOW adds names", () => {

@@ -71,7 +71,7 @@ export interface BehaviorSettingsServiceDeps {
   /** Put the settings in force on the live system. */
   apply(settings: Record<string, unknown>): void;
   /** Ask for any necessary resweeps after settings change. */
-  scheduleResweep(): void;
+  scheduleResweep(changedKeys: readonly string[]): void;
   env?: Record<string, string | undefined>;
 }
 
@@ -174,7 +174,7 @@ export function behaviorSettingsService(
         // Only after the row and the audit records are committed: the settings in
         // force must never run ahead of what the log says they are.
         deps.apply(next);
-        deps.scheduleResweep();
+        deps.scheduleResweep(changedKeys);
         logger.info(
           { settings: next, changedKeys, actorType: actor.actorType },
           "behavior settings updated without a restart",
@@ -209,7 +209,7 @@ export function behaviorSettingsService(
         // Only after the row and the audit records are committed: the settings in
         // force must never run ahead of what the log says they are.
         deps.apply(next);
-        deps.scheduleResweep();
+        deps.scheduleResweep(changedKeys);
         logger.info(
           { settings: next, changedKeys, actorType: actor.actorType, companyId },
           "company behavior settings updated without a restart",
