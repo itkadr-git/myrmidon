@@ -1972,7 +1972,7 @@ describe("review round circuit breaker", () => {
     const issue = {
       ...reviewPendingIssue(
         { assigneeAgentId: ctoAgentId },
-        { changesRequestedCount: 2, currentParticipant: { type: "agent", agentId: ctoAgentId }, escalationToParticipant: { type: "agent", agentId: ctoAgentId } },
+        { changesRequestedCount: 2, reviewCycleId: "cycle-1", currentParticipant: { type: "agent", agentId: ctoAgentId }, escalationToParticipant: { type: "agent", agentId: ctoAgentId } },
       ),
       defaultEscalationAgentIds: [coderAgentId, ctoAgentId, leadAgentId],
     };
