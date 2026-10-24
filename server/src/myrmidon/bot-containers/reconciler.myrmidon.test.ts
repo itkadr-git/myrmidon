@@ -946,6 +946,31 @@ describe("reconcileBot", () => {
       expect(details).not.toHaveProperty("appliedMaxConcurrentRuns");
       expect(details).toMatchObject({ appliedFilesHash: "files-1", trigger: "missing:new" });
     });
+
+    it("does not rewrite unchanged profile files across three passes when the marker reports the concurrency limit", async () => {
+      const applied = profile({ maxConcurrentRuns: 3 });
+      const driver = fakeDriver({
+        botKey: "agent-a",
+        state: "running",
+        ...hashesOf(applied),
+        maxConcurrentRuns: 3,
+      });
+      for (let pass = 0; pass < 3; pass += 1) {
+        const outcome = await run(driver, fakeMaintenance([0]), {
+          compile: async () => profile({ maxConcurrentRuns: 3 }),
+        });
+        expect(outcome).toEqual({ kind: "not_applicable", reason: "bot container already matches the compiled profile" });
+      }
+      expect(driver.calls).not.toContain("writeProfile");
+    });
+
+    it("heals a marker without a concurrency limit once, then does not rewrite again", async () => {
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", restartHash: "restart-1", filesHash: "files-1" });
+      const compile = async () => profile({ maxConcurrentRuns: 3 });
+      expect(await run(driver, fakeMaintenance([0]), { compile })).toEqual({ kind: "applied_files" });
+      expect(await run(driver, fakeMaintenance([0]), { compile })).toEqual({ kind: "not_applicable", reason: "bot container already matches the compiled profile" });
+      expect(driver.calls.filter((call) => call === "writeProfile")).toHaveLength(1);
+    });
   });
 
   it("does not call exit when enter itself throws", async () => {
