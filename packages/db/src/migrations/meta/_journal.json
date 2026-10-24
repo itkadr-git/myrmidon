@@ -2480,6 +2480,13 @@
       "when": 1792395516000,
       "tag": "0416_fleet_memory_syncs",
       "breakpoints": true
+    },
+    {
+      "idx": 417,
+      "version": "7",
+      "when": 1792399116000,
+      "tag": "0417_heartbeat_runs_provider_quota_idx",
+      "breakpoints": true
     }
   ]
 }
