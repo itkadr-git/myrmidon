@@ -230,7 +230,7 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
     const res = await request(app(deps, agentActor))
       .post(`${base}/items/rules/no-secrets/approve`)
-      .send({ approverKind: "engineer", revisionId: "rev-2" });
+      .send({ approverKind: "adm", revisionId: "rev-2" });
     expect(res.status).toBe(403);
     expect(res.body.code).toBe(KNOWLEDGE_RULE_APPROVE_FORBIDDEN_CODE);
     expect(deps.module.approve).not.toHaveBeenCalled();
