@@ -25,6 +25,13 @@ export type InstanceSecretSettingStore = {
   describeSecret(
     secretId: string,
   ): Promise<{ name: string; status: string; companyId: string } | null>;
+  /** Create a managed secret holding `value`; returns its id. The value is never echoed. */
+  createSecret(input: {
+    companyId: string;
+    name: string;
+    value: string;
+    description: string;
+  }): Promise<string>;
   setBinding(name: string, secretId: string): Promise<InstanceSecretBinding>;
   clearBinding(name: string): Promise<boolean>;
 };
@@ -50,6 +57,14 @@ export type InstanceSecretMigrationPlanRow = {
   envPresent: boolean;
   refBound: boolean;
   action: "none" | "create_secret_and_bind" | "unset_env_when_ready";
+};
+
+export type InstanceSecretMigrationResultRow = {
+  name: string;
+  envOverride: string;
+  outcome: "planned" | "bound" | "skipped";
+  /** Only for `bound`: the id of the secret now referenced. Never a value. */
+  secretId?: string;
 };
 
 function requireDescriptor(
@@ -181,7 +196,57 @@ export function createInstanceSecretSettingResolver(deps: {
     return rows;
   }
 
-  return { resolve, status, list, setRef, clearRef, migrationPlan };
+  /**
+   * Move env-held values into secrets and bind them. Dry-run unless `apply` is
+   * exactly true. Only settings that have a value in env and no ref are touched;
+   * the env variable itself is left in place (the operator unsets it afterwards).
+   * The value is read here, handed to the store and dropped: it is not returned,
+   * logged or put into an error.
+   */
+  async function migrate(options: {
+    apply?: boolean;
+    companyId?: string | null;
+  }): Promise<{ dryRun: boolean; rows: InstanceSecretMigrationResultRow[] }> {
+    const apply = options.apply === true;
+    if (apply && !options.companyId) {
+      throw unprocessable("companyId is required to apply the migration", { code: "migration_company_required" });
+    }
+    const rows: InstanceSecretMigrationResultRow[] = [];
+    for (const descriptor of registry.list()) {
+      const value = readEnv(getEnv(), descriptor.envOverride);
+      const bound = (await store.getBinding(descriptor.name)) !== null;
+      const row: InstanceSecretMigrationResultRow = {
+        name: descriptor.name,
+        envOverride: descriptor.envOverride,
+        outcome: value !== null && !bound ? "planned" : "skipped",
+      };
+      if (apply && value !== null && !bound) {
+        let secretId: string;
+        try {
+          secretId = await store.createSecret({
+            companyId: options.companyId as string,
+            name: `instance-setting.${descriptor.name}`,
+            value,
+            description: `Migrated from ${descriptor.envOverride}`,
+          });
+          await store.setBinding(descriptor.name, secretId);
+        } catch {
+          // The cause may carry the value; report the setting only.
+          throw unprocessable("Could not migrate the setting", {
+            code: "migration_failed",
+            settingName: descriptor.name,
+          });
+        }
+        deps.registerForRedaction?.(value);
+        row.outcome = "bound";
+        row.secretId = secretId;
+      }
+      rows.push(row);
+    }
+    return { dryRun: !apply, rows };
+  }
+
+  return { resolve, status, list, setRef, clearRef, migrationPlan, migrate };
 }
 
 export type InstanceSecretSettingResolver = ReturnType<typeof createInstanceSecretSettingResolver>;
