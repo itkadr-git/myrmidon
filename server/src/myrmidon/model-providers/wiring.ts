@@ -172,6 +172,16 @@ export function createPluginProviderModelSync(
       }
 
       const modelNames = provider.models.map((model: PluginProviderModelDeclaration["models"][number]) => `${provider.provider}/${model.id}`);
+      // /key/update replaces its list: include all ready plugin declarations,
+      // while updateAgentAllowlistsForCompany merges the provider-table models.
+      const readyPlugins: Array<{ manifestJson: unknown }> = await db.select({ manifestJson: plugins.manifestJson })
+        .from(plugins)
+        .innerJoin(pluginConfig, eq(pluginConfig.pluginId, plugins.id))
+        .where(and(eq(pluginConfig.companyId, companyId), eq(plugins.status, "ready")));
+      const companyPluginModelNames = [...new Set(readyPlugins.flatMap((row) => {
+        const readyDeclaration = (row.manifestJson as { providerModels?: PluginProviderModelDeclaration } | null)?.providerModels;
+        return readyDeclaration?.models.map((model) => `${readyDeclaration.provider}/${model.id}`) ?? [];
+      }))];
       for (const modelName of modelNames) {
         const modelId = modelName.slice(provider.provider.length + 1);
         await gateway.registerPluginModel({
@@ -182,9 +192,9 @@ export function createPluginProviderModelSync(
           additionalConfig: { model: `${litellmProvider(provider.provider)}/${modelId}` },
         });
       }
-      // Lifecycle models are separate from provider-table models; add only these
-      // names while retaining all other models in each company key allowlist.
-      await updateAgentAllowlistsForCompany(db, defaultAgentGatewayKeyDeps(db, env), companyId, modelNames);
+      // Lifecycle models are separate from provider-table models; keep every
+      // ready plugin's names and let the handler merge them with provider rows.
+      await updateAgentAllowlistsForCompany(db, defaultAgentGatewayKeyDeps(db, env), companyId, companyPluginModelNames);
     },
     async remove(companyId, plugin) {
       const provider = declaration(plugin);
