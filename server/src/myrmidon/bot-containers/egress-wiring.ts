@@ -9,6 +9,11 @@
 // (the proxy's address as the board reaches it) with the same shared token the
 // proxy presents when it fetches the policy.
 
+import { createInstanceTokenReader } from "./instance-token-reader.js"; // myrmidon(SETTINGS-UI E2.3)
+import {
+  BOT_EGRESS_POLICY_CONSUMER,
+  BOT_EGRESS_TOKEN_SETTING,
+} from "../secret-settings/bot-fleet-settings.js"; // myrmidon(SETTINGS-UI E2.3)
 import { and, eq } from "drizzle-orm";
 import { myrmidonEgressPolicies, projects, type Db } from "@myrmidon/db";
 import {
@@ -118,11 +123,14 @@ export function botEgressStore(db: Db): BotEgressStore {
 }
 
 /** The refusal feed of the proxy, as the board reaches it. Throws when unreachable. */
-export function egressRefusalFeed(env: NodeJS.ProcessEnv = process.env): () => Promise<unknown[]> {
+export function egressRefusalFeed(
+  env: NodeJS.ProcessEnv = process.env,
+  readToken?: () => Promise<string | null>,
+): () => Promise<unknown[]> {
   return async () => {
     const base = env[BOT_EGRESS_REFUSALS_URL_ENV]?.trim();
     if (!base) throw new Error(`${BOT_EGRESS_REFUSALS_URL_ENV} is not set`);
-    const token = env[BOT_EGRESS_TOKEN_ENV]?.trim();
+    const token = readToken ? await readToken() : env[BOT_EGRESS_TOKEN_ENV]?.trim();
     const url = base.endsWith("/") ? `${base}refusals` : `${base}/refusals`;
     const response = await fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -137,9 +145,13 @@ export function egressRefusalFeed(env: NodeJS.ProcessEnv = process.env): () => P
 /** Router for app.ts: the egress lists and the document the proxy fetches. */
 export function myrmidonBotEgressRoutes(db: Db, opts: { env?: NodeJS.ProcessEnv } = {}) {
   const env = opts.env ?? process.env;
+  // myrmidon(SETTINGS-UI E2.3): the token is an instance secret-ref setting; the env variable stays the emergency override.
+  const readPolicyToken = createInstanceTokenReader(db, BOT_EGRESS_TOKEN_SETTING, BOT_EGRESS_POLICY_CONSUMER, env);
+  const readRefusalsToken = createInstanceTokenReader(db, BOT_EGRESS_TOKEN_SETTING, BOT_EGRESS_REFUSALS_CONSUMER, env);
   return botEgressRoutes({
     store: botEgressStore(db),
-    readRefusals: egressRefusalFeed(env),
+    readRefusals: egressRefusalFeed(env, readRefusalsToken),
     env,
+    readToken: readPolicyToken,
   });
 }

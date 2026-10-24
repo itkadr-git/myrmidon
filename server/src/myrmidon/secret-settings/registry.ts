@@ -13,6 +13,8 @@
 // store cannot hold the key that opens it. They stay environment-only; the disposition table
 // is in docs/myrmidon/e2-secret-coverage-1.6.6.md.
 
+import { BOT_FLEET_SECRET_SETTINGS } from "./bot-fleet-settings.js"; // myrmidon(SETTINGS-UI E2.3)
+
 export type InstanceSecretSettingDescriptor = {
   readonly name: string;
   readonly envOverride: string;
@@ -54,7 +56,9 @@ export class InstanceSecretSettingRegistry {
 }
 
 /** Consumer parts append their entries here. Empty until the first consumer lands. */
-export const INSTANCE_SECRET_SETTINGS: readonly InstanceSecretSettingDescriptor[] = [];
+export const INSTANCE_SECRET_SETTINGS: readonly InstanceSecretSettingDescriptor[] = [
+  ...BOT_FLEET_SECRET_SETTINGS, // myrmidon(SETTINGS-UI E2.3)
+];
 
 export const defaultInstanceSecretSettingRegistry = new InstanceSecretSettingRegistry(
   INSTANCE_SECRET_SETTINGS,
