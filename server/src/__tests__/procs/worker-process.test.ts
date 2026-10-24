@@ -177,7 +177,7 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
       );
       const onData = (chunk: Buffer) => {
         seen = `${seen}${chunk.toString("utf8")}`.slice(-2_000);
-        const match = /shutdown started[^{]*\{[^}]*"pid":(\d+)/.exec(seen);
+        const match = /shutdown started \(runtime pid (\d+)\)/.exec(seen);
         if (!match) return;
         clearTimeout(timer);
         worker!.child.stdout?.off("data", onData);
@@ -208,7 +208,7 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
     expect(worker!.child.exitCode, worker!.output()).toBe(0);
     const joined = worker!.output().split("shutdown already in progress; joining it").length - 1;
     expect(joined, worker!.output()).toBe(1);
-    const started = worker!.output().split("myrmidon(OPE-9107): shutdown started").length - 1;
+    const started = worker!.output().split("myrmidon(OPE-9107): shutdown started (runtime pid").length - 1;
     expect(started, worker!.output()).toBe(1);
     expect(worker!.output()).not.toMatch(/shutdown failed/);
 
