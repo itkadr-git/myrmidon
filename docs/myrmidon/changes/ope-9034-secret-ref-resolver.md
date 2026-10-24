@@ -15,6 +15,9 @@ divergence-section: Трек 1 — платформа
 - The E2 secret coverage matrix records the disposition of the secret-provider names: credentials
   that open the store (AWS keys, master key) stay environment-only; region, endpoint, prefix and
   similar names are not secrets.
+- Settings, General (and Settings, System in the new UI) lists these settings with a secret picker
+  and a remove button, plus a dry-run migration check. The migration endpoint applies nothing
+  unless the request says `apply: true`; it never returns a value.
 
 ## changelog-ru
 
@@ -29,3 +32,6 @@ divergence-section: Трек 1 — платформа
 - Матрица покрытия секретов E2 фиксирует решение по именам провайдера секретов: ключи, которыми
   открывается само хранилище (ключи AWS, мастер-ключ), остаются только в окружении; регион,
   endpoint, префикс и подобное секретами не являются.
+- В Настройки, Общие (и Настройки, Система в новом интерфейсе) эти настройки выводятся с выбором
+  секрета и кнопкой снятия, плюс пробная проверка миграции. Эндпоинт миграции ничего не применяет,
+  пока в запросе нет `apply: true`, и никогда не возвращает значение.
