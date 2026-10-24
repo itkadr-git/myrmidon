@@ -600,3 +600,57 @@ describe("site-registry — client map and site status", () => {
   });
 });
 
+
+describe("site-registry — CA pin and create", () => {
+  it("fingerprints a certificate and rejects garbage", async () => {
+    const { caCertFingerprint } = await import("./site-registry.js");
+    const { generateEphemeralTestPki, cleanupTestPki } = await import("./site-agent-pki.js");
+    const pki = generateEphemeralTestPki();
+    try {
+      expect(caCertFingerprint(pki.caCert)).toMatch(/^[0-9a-f]{64}$/);
+      expect(caCertFingerprint("nope")).toBeNull();
+    } finally {
+      cleanupTestPki(pki);
+    }
+  });
+
+  it("createFleetSite moves the registry version so a running board picks the site up", async () => {
+    const { createFleetSite } = await import("./site-registry.js");
+    const row = { id: "s1", companyId: "c", name: "x", url: "https://h:9100" };
+    const db = { insert: () => ({ values: () => ({ returning: async () => [row] }) }) } as never;
+    const before = getFleetRegistryVersion();
+    await createFleetSite(db, { companyId: "c", name: "x", url: "https://h:9100" });
+    expect(getFleetRegistryVersion()).toBeGreaterThan(before);
+  });
+
+  it("builds no client when the stored CA no longer matches its enrolled fingerprint", async () => {
+    const { generateEphemeralTestPki, cleanupTestPki } = await import("./site-agent-pki.js");
+    const { caCertFingerprint } = await import("./site-registry.js");
+    const pki = generateEphemeralTestPki();
+    try {
+      const mk = (fingerprint: string) =>
+        ({
+          id: "s1", companyId: "c", name: "x", url: "https://h:9100", status: "active", tokenSecret: "t",
+          caCert: pki.caCert, caCertFingerprint: fingerprint, capacity: {}, profile: {},
+          enrolledAt: new Date(), createdAt: new Date(), updatedAt: new Date(),
+        }) as unknown as FleetSite;
+      for (const [fp, expected] of [[caCertFingerprint(pki.caCert)!, 1], ["0".repeat(64), 0]] as const) {
+        const created: FleetdDriverConfig[] = [];
+        const manager = createFleetClientManager({
+          db: { select: () => ({ from: () => Promise.resolve([mk(fp)]) }) } as any,
+          readCompanySecret: async () => "tok",
+          createDriver: (c) => {
+            created.push(c);
+            return fakeDriver(c.baseUrl);
+          },
+          log: { warn: () => {}, info: () => {} } as any,
+        });
+        await manager.refresh();
+        expect(created).toHaveLength(expected);
+        manager.close();
+      }
+    } finally {
+      cleanupTestPki(pki);
+    }
+  });
+});

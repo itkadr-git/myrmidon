@@ -32,3 +32,26 @@ The hindsight plugin has `hindsightApiKeyRef?: string` in `packages/plugins/hind
 ## Required acceptance inventory for implementation
 
 For every row/group above, demonstrate: standard store + input/select UI; server-only reference resolution after scope/RBAC checks; safe migration with no value in output; masked API, logs, and errors; replace/revoke flow; documented emergency env override with an explicit priority test. Cover missing refs and denied access. Never rotate actual credentials in this work. Update this versioned matrix with concrete PR/test evidence as slices land; do not weaken E1 to make counts pass.
+
+## E2.1 shared resolver and disposition of the 23 secret-provider names (OPE-9034)
+
+Contract (code: `server/src/myrmidon/secret-settings/`, tests: `resolver.myrmidon.test.ts`):
+
+- Store: a ref is a row of `company_secret_bindings` (target `system`, id `instance-setting:<name>`, path `ref`) written through `replaceSecretRefsForInstanceTarget`; value resolution goes through the existing secrets service (`resolveSecretValue` with the binding context), so provider, version, status and secret access events are reused. No new table, no plaintext column, no migration of the schema.
+- Registry: a setting exists only if a consumer registers it in `registry.ts` with `name`, `envOverride` and the `consumers` allowed to resolve it. Other E2 parts append their rows there.
+- Resolution order: consumer in scope (else 403 `setting_consumer_denied`), then the emergency env override (set and non-empty wins, documented and tested), then the bound ref (else 422 `setting_ref_missing`; inactive or deleted secret fails typed). Values are registered for log masking and never appear in API bodies, plans or errors.
+- API (instance admin only): `GET /api/instance/secret-settings`, `PUT|DELETE /api/instance/secret-settings/:name/ref` (body is a secret id), `GET /api/instance/secret-settings/migration-plan` (dry run: booleans per name, no values). Mutations write `instance.secret_setting.*` activity.
+- Not in this slice: the board UI picker and the consumers of the other E2 groups; they build on this contract.
+
+Disposition of the exact E1 names of this part (the source lines are those listed in the ticket):
+
+| Names | Disposition | Reason / evidence |
+| --- | --- | --- |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | bootstrap, env-only | Credentials the AWS provider uses to open the store; `aws-secrets-manager-provider.ts:361` only detects that both are present (the SDK reads them). A store cannot hold the key that opens it. Guarded by the registry test. |
+| `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_ROLE_ARN`, `AWS_PROFILE`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, `AWS_CONTAINER_CREDENTIALS_FULL_URI` | bootstrap, env-only (paths / identifiers of the SDK credential chain, not values) | Lines 360-373 only record which credential source is configured. Same circularity; same guard. |
+| `MYRMIDON_SECRETS_MASTER_KEY`, `MYRMIDON_SECRETS_MASTER_KEY_FILE` | bootstrap, env or file only | Master key of the local encrypted provider cannot be encrypted by itself. Already masked in logs (`secret-masking.ts:31`); the file form is the preferred one. |
+| `MYRMIDON_SECRETS_PROVIDER`, `MYRMIDON_SECRETS_STRICT_MODE` | non-secret selector | Choose provider and strictness (`config.ts:143`, `config.ts:185`). |
+| `AWS_REGION`, `AWS_DEFAULT_REGION`, `MYRMIDON_SECRETS_AWS_REGION`, `MYRMIDON_SECRETS_AWS_ENDPOINT`, `MYRMIDON_SECRETS_AWS_PREFIX`, `MYRMIDON_SECRETS_AWS_ENVIRONMENT`, `MYRMIDON_SECRETS_AWS_PROVIDER_OWNER`, `MYRMIDON_SECRETS_AWS_DEPLOYMENT_ID`, `MYRMIDON_SECRETS_AWS_KMS_KEY_ID`, `MYRMIDON_SECRETS_AWS_DELETE_RECOVERY_DAYS` | non-secret configuration | Region, endpoint, naming prefix, tags, key identifier and a day count (`aws-secrets-manager-provider.ts:299-430`). Identifiers and limits, not credentials; per-company values already live in provider configs. Not classified as secret automatically and not moved. |
+
+The E1 `secret` classification of the bootstrap rows stays as the registry has it (the matrix does not alter E1); their accepted disposition is "bootstrap, no ref", with the threat model above.
+
