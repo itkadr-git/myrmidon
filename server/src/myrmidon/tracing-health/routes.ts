@@ -19,8 +19,8 @@
 //    the same env row as litellm-costs and never leaves the process.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { companies } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { companies } from "@myrmidon/db";
 import { isNotNull } from "drizzle-orm";
 import { secretService } from "../../services/index.js";
 import { logger } from "../../middleware/logger.js";

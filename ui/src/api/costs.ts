@@ -12,7 +12,7 @@ import type {
   FinanceEvent,
   ProviderQuotaResult,
   ProviderUsageAggregate,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { api } from "./client";
 
 function dateParams(from?: string, to?: string): string {

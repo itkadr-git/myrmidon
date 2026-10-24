@@ -1,6 +1,6 @@
 import { and, eq, gt, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { instanceSettings, providerUsageEventReceipts, providerUsageSnapshots, providerUsageWarningDeliveries, issueComments } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { instanceSettings, providerUsageEventReceipts, providerUsageSnapshots, providerUsageWarningDeliveries, issueComments } from "@myrmidon/db";
 import { invalidateAttentionFeedCache } from "./attention.js";
 import { issueService } from "./issues.js";
 import {
@@ -12,7 +12,7 @@ import {
   type ProviderUsageAggregate,
   type ProviderUsageReportedEventV1,
   type ProviderUsageWarning,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export interface ProviderUsageIngestResult {
   accepted: boolean;

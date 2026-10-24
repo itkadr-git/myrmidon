@@ -9,8 +9,8 @@ import {
   providerUsageEventReceipts,
   providerUsageSnapshots,
   providerUsageWarningDeliveries,
-} from "@paperclipai/db";
-import type { ProviderUsageReportedEventV1 } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { ProviderUsageReportedEventV1 } from "@myrmidon/shared";
 import { providerUsageService } from "../../services/provider-usage.js";
 import { issueService } from "../../services/issues.js";
 import {

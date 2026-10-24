@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Ui2Fleet } from "./Ui2Fleet";
 import { Ui2I18nProvider } from "../../i18n/Ui2I18n";
 
-const mockFleetApi = vi.hoisted(() => ({ dashboard: vi.fn() }));
+const mockFleetApi = vi.hoisted(() => ({ dashboard: vi.fn(), sites: vi.fn() }));
 vi.mock("@/api/fleet", () => ({ fleetApi: mockFleetApi }));
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1", selectedCompany: { id: "company-1" } }),
@@ -45,6 +45,7 @@ describe("myrmidon(UI2) Ui2Fleet screen parity", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockFleetApi.sites.mockResolvedValue({ sites: [] });
     mockFleetApi.dashboard.mockResolvedValue({
       ok: true,
       generatedAt: "2026-10-20T00:00:00.000Z",
@@ -83,5 +84,38 @@ describe("myrmidon(UI2) Ui2Fleet screen parity", () => {
     expect(container.textContent).toContain("Could not load this data. Try again.");
     expect(container.textContent).toContain("Retry");
     expect(container.textContent).toContain("dashboard unavailable");
+  });
+
+  it("shows a badge per remote site: reachable, automatically drained and quarantined", async () => {
+    mockFleetApi.sites.mockResolvedValue({
+      sites: [
+        { name: "myr-vm1", state: "healthy", status: "active", autoDrained: false, lastSeenAt: "2026-10-23T08:00:00.000Z" },
+        { name: "site-b", state: "unreachable", status: "draining", autoDrained: true, lastSeenAt: null },
+        { name: "site-c", state: "quarantined", status: "quarantined", autoDrained: false, lastSeenAt: "2026-10-23T07:00:00.000Z" },
+      ],
+    });
+    await renderScreen();
+    expect(mockFleetApi.sites).toHaveBeenCalledWith("company-1");
+    expect(container.textContent).toContain("Execution sites");
+    expect(container.querySelector('[data-testid="site-badge-myr-vm1"]')?.textContent).toBe("Reachable");
+    expect(container.querySelector('[data-testid="site-badge-site-b"]')?.textContent).toBe("Unreachable · drained automatically");
+    expect(container.querySelector('[data-testid="site-badge-site-c"]')?.textContent).toBe("Quarantined");
+    expect(container.textContent).toContain("Has not answered yet");
+  });
+
+  it("renders the site badges in Russian", async () => {
+    mockFleetApi.sites.mockResolvedValue({
+      sites: [{ name: "site-b", state: "draining", status: "draining", autoDrained: false, lastSeenAt: null }],
+    });
+    await renderScreen("ru");
+    expect(container.textContent).toContain("Площадки исполнения");
+    expect(container.querySelector('[data-testid="site-badge-site-b"]')?.textContent).toBe("Отвод");
+  });
+
+  it("keeps the rest of the screen when the site list fails", async () => {
+    mockFleetApi.sites.mockRejectedValue(new Error("sites unavailable"));
+    await renderScreen();
+    expect(container.textContent).toContain("node-a");
+    expect(container.textContent).not.toContain("Execution sites");
   });
 });

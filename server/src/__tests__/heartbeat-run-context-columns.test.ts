@@ -11,7 +11,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   runContextPersistenceFields,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

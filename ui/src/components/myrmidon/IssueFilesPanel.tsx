@@ -1,7 +1,8 @@
 import { useMemo } from "react";
-import type { IssueAttachment, IssueWorkProduct } from "@paperclipai/shared";
+import type { IssueAttachment, IssueWorkProduct } from "@myrmidon/shared";
 import { Download, ExternalLink, FileText, Link2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
+import { useTranslation } from "@/i18n";
 import { OutputVideoPlayer } from "@/components/issue-output/OutputVideoPlayer";
 import { formatBytes } from "@/lib/issue-output";
 import {
@@ -125,10 +126,11 @@ export function buildIssueFileEntries(
 }
 
 function FileViewer({ file }: { file: IssueFileEntry }) {
+  const { t } = useTranslation();
   switch (file.viewer) {
     case "image":
       return (
-        <a href={file.openPath} target="_blank" rel="noreferrer" aria-label={`Open ${file.name} full size`}>
+        <a href={file.openPath} target="_blank" rel="noreferrer" aria-label={t("area.settings-integrations.issue-files-panel.openFullSize", { name: file.name })}>
           <img src={file.contentPath} alt={file.name} loading="lazy" className="max-h-48 rounded-md object-contain" />
         </a>
       );
@@ -136,18 +138,18 @@ function FileViewer({ file }: { file: IssueFileEntry }) {
       return <OutputVideoPlayer src={file.contentPath} title={file.name} />;
     case "audio":
       return (
-        <audio src={file.contentPath} controls preload="metadata" aria-label={`Audio: ${file.name}`} className="w-full" />
+        <audio src={file.contentPath} controls preload="metadata" aria-label={t("area.settings-integrations.issue-files-panel.audio", { name: file.name })} className="w-full" />
       );
     case "pdf":
       return (
         <a href={file.openPath} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm underline">
-          <ExternalLink className="h-3.5 w-3.5" /> Open PDF
+          <ExternalLink className="h-3.5 w-3.5" /> {t("area.settings-integrations.issue-files-panel.openPdf")}
         </a>
       );
     default:
       return (
         <a href={file.downloadPath} download={file.name} className="inline-flex items-center gap-1 text-sm underline">
-          <Download className="h-3.5 w-3.5" /> Download
+          <Download className="h-3.5 w-3.5" /> {t("area.settings-integrations.issue-files-panel.download")}
         </a>
       );
   }
@@ -166,6 +168,7 @@ interface IssueFilesPanelProps {
 }
 
 export function IssueFilesPanel({ attachments, workProducts, resolveAuthor, onFileCommentClick }: IssueFilesPanelProps) {
+  const { t } = useTranslation();
   const { files, links } = useMemo(
     () => buildIssueFileEntries(attachments, workProducts),
     [attachments, workProducts],
@@ -173,7 +176,7 @@ export function IssueFilesPanel({ attachments, workProducts, resolveAuthor, onFi
   if (files.length === 0 && links.length === 0) return null;
   return (
     <Card className="gap-3 p-4" data-testid="issue-files-panel">
-      <h3 className="text-sm font-medium">Files</h3>
+      <h3 className="text-sm font-medium">{t("area.settings-integrations.issue-files-panel.title")}</h3>
       <ul className="flex flex-col gap-4">
         {files.map((file) => {
           const author = resolveAuthor?.(file) ?? null;
@@ -195,7 +198,7 @@ export function IssueFilesPanel({ attachments, workProducts, resolveAuthor, onFi
                     className="text-muted-foreground underline"
                     onClick={onFileCommentClick}
                   >
-                    comment
+                    {t("area.settings-integrations.issue-files-panel.comment")}
                   </a>
                 )}
               </div>

@@ -7,7 +7,7 @@
 // cloud so no network or key is needed.
 
 import { describe, expect, it } from "vitest";
-import type { CloudProviderId } from "@paperclipai/shared/myrmidon-cloud-connector";
+import type { CloudProviderId } from "@myrmidon/shared/myrmidon-cloud-connector";
 import { cloudConnectorService, CLOUD_READ_LIMIT_BYTES } from "./service.js";
 import { CloudProviderRegistry, type CloudLocation, type CloudProvider, type CloudSearchHit } from "./providers/provider.js";
 import { memoryCloudConnectorStore } from "./store.js";

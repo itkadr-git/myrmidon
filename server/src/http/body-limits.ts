@@ -1,4 +1,4 @@
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export const DEFAULT_JSON_BODY_LIMIT = "10mb";
 export const CHAT_WEBHOOK_BODY_LIMIT = "1mb";

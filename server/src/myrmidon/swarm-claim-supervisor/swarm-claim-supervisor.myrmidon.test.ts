@@ -5,7 +5,7 @@
 // database, no part A import. Neutral ids only.
 
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_PHEROMONE_DYNAMICS, type PheromoneDynamicsSettings } from "@paperclipai/shared";
+import { DEFAULT_PHEROMONE_DYNAMICS, type PheromoneDynamicsSettings } from "@myrmidon/shared";
 import {
   orderQueueCandidates,
   queueRowEff,

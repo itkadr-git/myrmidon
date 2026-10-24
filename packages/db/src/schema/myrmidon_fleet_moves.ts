@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, index, jsonb } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, uuid, text, timestamp, index, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
 export interface FleetMovePhaseLogEntry {
@@ -30,11 +31,19 @@ export const myrmidonFleetMoves = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     leaseExpires: timestamp("lease_expires", { withTimezone: true }),
     error: text("error"),
+    // myrmidon(1.6.6 REMOTE-SITES-T4): "live" reads the source datadir; "replica" restores the
+    // last replica because the source site is lost.
+    source: text("source").notNull().default("live"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     companyBotIdx: index("myrmidon_fleet_moves_company_bot_idx").on(table.companyId, table.botKey),
     phaseIdx: index("myrmidon_fleet_moves_phase_idx").on(table.phase),
+    // myrmidon(1.6.6 REMOTE-SITES-T4): a bot has at most one unfinished move. The claim is this
+    // index, not a read-then-insert, so two board processes cannot both start a move of one bot.
+    activeBotUq: uniqueIndex("myrmidon_fleet_moves_active_bot_uq")
+      .on(table.companyId, table.botKey)
+      .where(sql`${table.phase} NOT IN ('done', 'failed')`),
   }),
 );

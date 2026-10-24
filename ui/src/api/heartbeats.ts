@@ -1,11 +1,11 @@
-import type { IssueRecoveryAction } from "@paperclipai/shared";
+import type { IssueRecoveryAction } from "@myrmidon/shared";
 import type {
   HeartbeatRun,
   HeartbeatRunEvent,
   WorkspaceOperation,
   ProviderTraceFrame,
   ProviderTraceMetadata,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 import { api, type RequestOptions } from "./client";
 
@@ -99,7 +99,7 @@ export type RuntimeRequestResolution =
   | { action: "accept" | "accept_for_session" | "decline" | "cancel" }
   | { action: "submit"; answers: Record<string, { answers: string[] }> }
   | { action: "submit"; content: Record<string, unknown> }
-  | { action: "submit"; response: import("@paperclipai/adapter-utils").PaperclipQuestionResponse };
+  | { action: "submit"; response: import("@myrmidon/adapter-utils").PaperclipQuestionResponse };
 
 export interface HeartbeatRunListOptions {
   summary?: boolean;

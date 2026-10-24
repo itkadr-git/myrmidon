@@ -23,8 +23,8 @@
 // count towards the new session. Turn it off with MYRMIDON_INPUT_LIMIT_PRECHECK=0.
 
 import { and, desc, eq, notInArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { heartbeatRunEvents, heartbeatRuns, litellmModels } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { heartbeatRunEvents, heartbeatRuns, litellmModels } from "@myrmidon/db";
 import {
   DEFAULT_CHARS_PER_TOKEN,
   DEFAULT_INPUT_LIMIT_SAFETY,
@@ -32,7 +32,7 @@ import {
   inputBudgetTokens,
   readInputLimitHint,
   type InputLimitHint,
-} from "@paperclipai/adapter-utils/input-limit";
+} from "@myrmidon/adapter-utils/input-limit";
 
 export const INPUT_LIMIT_PRECHECK_ENV = "MYRMIDON_INPUT_LIMIT_PRECHECK";
 export const INPUT_LIMIT_CHARS_PER_TOKEN_ENV = "MYRMIDON_INPUT_LIMIT_CHARS_PER_TOKEN";

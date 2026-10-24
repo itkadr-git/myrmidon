@@ -18,7 +18,7 @@ import {
   UserRoundPen,
   Users,
 } from "lucide-react";
-import type { PluginRecord } from "@paperclipai/shared";
+import type { PluginRecord } from "@myrmidon/shared";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
@@ -105,17 +105,17 @@ export function CompanySettingsSidebar() {
           className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
         >
           <ChevronLeft className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{selectedCompany?.name ?? "Company"}</span>
+          <span className="truncate">{selectedCompany?.name ?? t("area.shell-sidebar-layout-1.company-settings-sidebar.company")}</span>
         </Link>
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem to="/company/settings" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.general")} icon={SlidersHorizontal} end />
           {showPage("instance.profile") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}
-              label="Profile"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.profile")}
               icon={UserRoundPen}
               end
             />
@@ -123,7 +123,7 @@ export function CompanySettingsSidebar() {
           {showPage("company.members") && (
             <SidebarNavItem
               to="/company/settings/members"
-              label="Members"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.members")}
               icon={Users}
               badge={badges?.joinRequests ?? 0}
               end
@@ -141,27 +141,27 @@ export function CompanySettingsSidebar() {
               />
             ))}
           {showPage("company.invites") && (
-            <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
+            <SidebarNavItem to="/company/settings/invites" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.invites")} icon={MailPlus} end />
           )}
           {showPage("company.secrets") && (
-            <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+            <SidebarNavItem to="/company/settings/secrets" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.secrets")} icon={KeyRound} end />
           )}
           {showPage("company.secrets") && (
             <SidebarNavItem
               to="/company/settings/access-hub"
-              label="Access hub"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.accessHub")}
               icon={ShieldCheck}
               // The screen exists before its server API: while the instance
               // answers 404/501 the entry says so instead of leading to a
               // screen that only shows the not-available notice.
-              textBadge={accessHubAvailability === "unavailable" ? "soon" : undefined}
+              textBadge={accessHubAvailability === "unavailable" ? t("area.shell-sidebar-layout-1.company-settings-sidebar.soon") : undefined}
               end
             />
           )}
           {showPage("instance.environments") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
-              label="Environments"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.environments")}
               icon={MonitorCog}
               end
             />
@@ -169,7 +169,7 @@ export function CompanySettingsSidebar() {
           {showPage("instance.access") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}
-              label="Access"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.access")}
               icon={Shield}
               end
             />
@@ -182,7 +182,7 @@ export function CompanySettingsSidebar() {
           {showPage("instance.access") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/board-api-keys`}
-              label="Board API keys"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.boardApiKeys")}
               icon={KeyRound}
               end
             />
@@ -190,34 +190,34 @@ export function CompanySettingsSidebar() {
           {showPage("instance.heartbeats") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats`}
-              label="Heartbeats"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.heartbeats")}
               icon={Clock3}
               end
             />
           )}
           {showPage("company.export") && (
-            <SidebarNavItem to="/company/export" label="Export" icon={Download} />
+            <SidebarNavItem to="/company/export" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.export")} icon={Download} />
           )}
           {!isCloud && showPage("company.import") && (
-            <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
+            <SidebarNavItem to="/company/import" label={t("area.shell-sidebar-layout-1.company-settings-sidebar.import")} icon={Upload} end />
           )}
           {showPage("instance.experimental") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`}
-              label="Experimental"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.experimental")}
               icon={FlaskConical}
             />
           )}
           {/* myrmidon(FEATURES): fork features with live health */}
           <SidebarNavItem
             to={`${INSTANCE_SETTINGS_PATH_PREFIX}/features`}
-            label="Features"
+            label={t("area.shell-sidebar-layout-1.company-settings-sidebar.features")}
             icon={ListChecks}
           />
           {showPlugins && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}
-              label="Plugins"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.plugins")}
               icon={Puzzle}
             />
           )}
@@ -245,7 +245,7 @@ export function CompanySettingsSidebar() {
           {showPage("instance.adapters") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`}
-              label="Adapters"
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.adapters")}
               icon={Cpu}
             />
           )}

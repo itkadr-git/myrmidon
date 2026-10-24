@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PROVIDER_USAGE_WARNING_THRESHOLD_SETTING } from "@paperclipai/shared";
+import { PROVIDER_USAGE_WARNING_THRESHOLD_SETTING } from "@myrmidon/shared";
 import { preserveProviderUsageThresholdGeneralKey } from "./settings.js";
 
 describe("preserveProviderUsageThresholdGeneralKey", () => {

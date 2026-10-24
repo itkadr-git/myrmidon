@@ -4,7 +4,7 @@
 // A data root that cannot be measured is the failure that matters: the signal
 // would then never fire, whatever the disk does.
 
-import { HOST_DISK_ENV_KEYS, resolveHostDiskSettings } from "@paperclipai/shared";
+import { HOST_DISK_ENV_KEYS, resolveHostDiskSettings } from "@myrmidon/shared";
 import { entry, envIsSet, healthUnknown, iso, makeHealth } from "../health.js";
 import type { FeatureDefinition } from "../types.js";
 

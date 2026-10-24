@@ -1,5 +1,5 @@
 {
-  "id": "64a82ec3-72c9-45f2-b78d-0706bf33e9b8",
+  "id": "da1c8ff1-869d-509d-895b-8cac0c3a5e19",
   "prevId": "6bd5ca28-4ae8-4492-854e-d1da771fde73",
   "version": "7",
   "dialect": "postgresql",
@@ -56626,8 +56626,8 @@
       "policies": {},
       "isRLSEnabled": false
     },
-    "public.provider_usage_snapshots": {
-      "name": "provider_usage_snapshots",
+    "public.pool_chat_module_instances": {
+      "name": "pool_chat_module_instances",
       "schema": "",
       "columns": {
         "id": {
@@ -56643,59 +56643,43 @@
           "primaryKey": false,
           "notNull": true
         },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "module_key": {
+          "name": "module_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "provider": {
           "name": "provider",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "credential_ref": {
-          "name": "credential_ref",
+        "status": {
+          "name": "status",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "default": "'active'"
         },
-        "window_kind": {
-          "name": "window_kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "window_started_at": {
-          "name": "window_started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "resets_at": {
-          "name": "resets_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "observed_at": {
-          "name": "observed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "used": {
-          "name": "used",
+        "config": {
+          "name": "config",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "default": "'{}'::jsonb"
         },
-        "limits": {
-          "name": "limits",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_event_id": {
-          "name": "source_event_id",
+        "credential_secret_name": {
+          "name": "credential_secret_name",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -56710,17 +56694,11 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "owner_issue_id": {
-          "name": "owner_issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
-        "provider_usage_snapshots_window_uq": {
-          "name": "provider_usage_snapshots_window_uq",
+        "pool_chat_module_instances_company_module_uq": {
+          "name": "pool_chat_module_instances_company_module_uq",
           "columns": [
             {
               "expression": "company_id",
@@ -56729,25 +56707,7 @@
               "nulls": "last"
             },
             {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "credential_ref",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "window_kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "window_started_at",
+              "expression": "module_key",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -56758,17 +56718,26 @@
           "method": "btree",
           "with": {}
         },
-        "provider_usage_snapshots_company_observed_idx": {
-          "name": "provider_usage_snapshots_company_observed_idx",
+        "pool_chat_module_instances_company_idx": {
+          "name": "pool_chat_module_instances_company_idx",
           "columns": [
             {
               "expression": "company_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
-            },
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "pool_chat_module_instances_project_idx": {
+          "name": "pool_chat_module_instances_project_idx",
+          "columns": [
             {
-              "expression": "observed_at",
+              "expression": "project_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -56781,11 +56750,10 @@
         }
       },
       "foreignKeys": {
-        "provider_usage_snapshots_company_id_companies_id_fk": {
-          "name": "provider_usage_snapshots_company_id_companies_id_fk",
-          "tableFrom": "provider_usage_snapshots",
+        "pool_chat_module_instances_company_id_companies_id_fk": {
+          "name": "pool_chat_module_instances_company_id_companies_id_fk",
+          "tableFrom": "pool_chat_module_instances",
           "tableTo": "companies",
-          "schemaTo": "",
           "columnsFrom": [
             "company_id"
           ],
@@ -56795,13 +56763,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "provider_usage_snapshots_owner_issue_id_issues_id_fk": {
-          "name": "provider_usage_snapshots_owner_issue_id_issues_id_fk",
-          "tableFrom": "provider_usage_snapshots",
-          "tableTo": "issues",
-          "schemaTo": "",
+        "pool_chat_module_instances_project_id_projects_id_fk": {
+          "name": "pool_chat_module_instances_project_id_projects_id_fk",
+          "tableFrom": "pool_chat_module_instances",
+          "tableTo": "projects",
           "columnsFrom": [
-            "owner_issue_id"
+            "project_id"
           ],
           "columnsTo": [
             "id"
@@ -56816,8 +56783,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.provider_usage_event_receipts": {
-      "name": "provider_usage_event_receipts",
+    "public.pool_chat_quota_reservations": {
+      "name": "pool_chat_quota_reservations",
       "schema": "",
       "columns": {
         "id": {
@@ -56833,14 +56800,40 @@
           "primaryKey": false,
           "notNull": true
         },
-        "event_id": {
-          "name": "event_id",
-          "type": "text",
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "received_at": {
-          "name": "received_at",
+        "units": {
+          "name": "units",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'reserved'"
+        },
+        "settled_units": {
+          "name": "settled_units",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
@@ -56848,17 +56841,11 @@
         }
       },
       "indexes": {
-        "provider_usage_event_receipts_company_event_uq": {
-          "name": "provider_usage_event_receipts_company_event_uq",
+        "pool_chat_quota_reservations_request_uq": {
+          "name": "pool_chat_quota_reservations_request_uq",
           "columns": [
             {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "event_id",
+              "expression": "request_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -56868,16 +56855,501 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "pool_chat_quota_reservations_company_state_idx": {
+          "name": "pool_chat_quota_reservations_company_state_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
-        "provider_usage_event_receipts_company_id_companies_id_fk": {
-          "name": "provider_usage_event_receipts_company_id_companies_id_fk",
-          "tableFrom": "provider_usage_event_receipts",
+        "pool_chat_quota_reservations_company_id_companies_id_fk": {
+          "name": "pool_chat_quota_reservations_company_id_companies_id_fk",
+          "tableFrom": "pool_chat_quota_reservations",
           "tableTo": "companies",
-          "schemaTo": "",
           "columnsFrom": [
             "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pool_chat_quota_reservations_request_id_pool_chat_requests_id_fk": {
+          "name": "pool_chat_quota_reservations_request_id_pool_chat_requests_id_fk",
+          "tableFrom": "pool_chat_quota_reservations",
+          "tableTo": "pool_chat_requests",
+          "columnsFrom": [
+            "request_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.pool_chat_request_attempts": {
+      "name": "pool_chat_request_attempts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt_no": {
+          "name": "attempt_no",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'dispatching'"
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account_ref": {
+          "name": "account_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reserved_units": {
+          "name": "reserved_units",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "settled_units": {
+          "name": "settled_units",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_detail": {
+          "name": "failure_detail",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_request_ref": {
+          "name": "provider_request_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pool_chat_request_attempts_request_no_uq": {
+          "name": "pool_chat_request_attempts_request_no_uq",
+          "columns": [
+            {
+              "expression": "request_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "attempt_no",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "pool_chat_request_attempts_provider_ref_uq": {
+          "name": "pool_chat_request_attempts_provider_ref_uq",
+          "columns": [
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_request_ref",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "pool_chat_request_attempts_request_idx": {
+          "name": "pool_chat_request_attempts_request_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "request_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pool_chat_request_attempts_company_id_companies_id_fk": {
+          "name": "pool_chat_request_attempts_company_id_companies_id_fk",
+          "tableFrom": "pool_chat_request_attempts",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pool_chat_request_attempts_request_id_pool_chat_requests_id_fk": {
+          "name": "pool_chat_request_attempts_request_id_pool_chat_requests_id_fk",
+          "tableFrom": "pool_chat_request_attempts",
+          "tableTo": "pool_chat_requests",
+          "columnsFrom": [
+            "request_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.pool_chat_requests": {
+      "name": "pool_chat_requests",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "module_id": {
+          "name": "module_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "channel": {
+          "name": "channel",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_id": {
+          "name": "subject_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "client_message_id": {
+          "name": "client_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_hash": {
+          "name": "request_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "result": {
+          "name": "result",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "usage": {
+          "name": "usage",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "charged": {
+          "name": "charged",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reservation_units": {
+          "name": "reservation_units",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pool_chat_requests_identity_key_uq": {
+          "name": "pool_chat_requests_identity_key_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "module_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "channel",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "pool_chat_requests_event_identity_uq": {
+          "name": "pool_chat_requests_event_identity_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "module_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "channel",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "client_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "pool_chat_requests_module_status_idx": {
+          "name": "pool_chat_requests_module_status_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "module_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pool_chat_requests_company_id_companies_id_fk": {
+          "name": "pool_chat_requests_company_id_companies_id_fk",
+          "tableFrom": "pool_chat_requests",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pool_chat_requests_module_id_pool_chat_module_instances_id_fk": {
+          "name": "pool_chat_requests_module_id_pool_chat_module_instances_id_fk",
+          "tableFrom": "pool_chat_requests",
+          "tableTo": "pool_chat_module_instances",
+          "columnsFrom": [
+            "module_id"
           ],
           "columnsTo": [
             "id"

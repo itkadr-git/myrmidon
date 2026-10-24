@@ -1,6 +1,6 @@
 // Maintenance mode (R3) entry point. Design: docs/myrmidon/design/maintenance-mode.md
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 // Same entry point as the vendor server/src/index.ts, so startup tests that mock it keep working.
 import { heartbeatService } from "../../services/index.js";

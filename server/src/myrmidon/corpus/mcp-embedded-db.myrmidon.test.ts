@@ -23,7 +23,7 @@ import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDb, instanceSettings, type Db } from "@paperclipai/db";
+import { createDb, instanceSettings, type Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "../../__tests__/helpers/embedded-postgres.js";
 import { type CorpusMcpDeps } from "./contract.js";

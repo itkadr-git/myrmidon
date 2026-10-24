@@ -6,7 +6,7 @@
 // every settings write applies itself (see service.ts).
 
 import { asc, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { heartbeatRuns, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../../services/index.js";
 import {

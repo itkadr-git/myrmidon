@@ -5,7 +5,7 @@
 // so this module reads and writes the raw row itself. No migrations.
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 
 export const BROWSER_SESSIONS_GENERAL_KEY = "myrmidonBrowserConsole";
 

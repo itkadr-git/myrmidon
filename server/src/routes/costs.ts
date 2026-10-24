@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   createCostEventSchema,
   createFinanceEventSchema,
@@ -12,7 +12,7 @@ import {
   PROVIDER_USAGE_WARNING_THRESHOLD_SETTING,
   withProviderUsageWarningThreshold,
   type ProviderUsageReportedEventV1,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../middleware/validate.js";
 import {
   costService,
@@ -27,7 +27,7 @@ import {
 } from "../services/index.js";
 import { providerUsageService } from "../services/provider-usage.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { instanceSettings } from "@paperclipai/db";
+import { instanceSettings } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";

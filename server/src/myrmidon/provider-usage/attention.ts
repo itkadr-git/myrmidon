@@ -1,4 +1,4 @@
-import { describeProviderUsageWarning } from "@paperclipai/shared";
+import { describeProviderUsageWarning } from "@myrmidon/shared";
 
 export interface ProviderUsageAttentionCard {
   dedupKey: string;

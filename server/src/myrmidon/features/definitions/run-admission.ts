@@ -6,7 +6,7 @@
 // but cannot read the host memory is the quiet failure this page exists for:
 // the guard passes everything and nobody notices.
 
-import { RUN_LIMITS_ENV_KEYS, resolveRunLimits } from "@paperclipai/shared";
+import { RUN_LIMITS_ENV_KEYS, resolveRunLimits } from "@myrmidon/shared";
 import { HOST_MEMINFO_PATH_ENV } from "../../run-admission.js";
 import { entry, healthOff, iso, makeHealth } from "../health.js";
 import type { FeatureDefinition } from "../types.js";

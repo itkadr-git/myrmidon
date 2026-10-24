@@ -10,6 +10,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ApiError } from "@/api/client";
+import { i18n, useTranslation } from "@/i18n";
 import {
   browsersApi,
   browsersJournalQueryKey,
@@ -18,16 +19,17 @@ import {
   formatDuration,
 } from "./browsersApi";
 import { bridgeApi, bridgeSettingsQueryKey, type BridgeSettings, type BridgeSigningSettings } from "../connectorPanelApi";
-import type { BrowserConsoleStatus } from "@paperclipai/shared/myrmidon-browser-console";
+import type { BrowserConsoleStatus } from "@myrmidon/shared/myrmidon-browser-console";
 import { BrowserScreenPanel } from "./BrowserScreenPanel";
 
 function readable(error: unknown): string {
-  if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
+  if (error instanceof ApiError) return error.message || i18n.t("area.settings-integrations.browsers-settings-page.requestFailed", { status: error.status });
   if (error instanceof Error) return error.message;
-  return "Unexpected error";
+  return i18n.t("area.settings-integrations.browsers-settings-page.unexpectedError");
 }
 
 function ClearSiteDataForm({ browser, companyId }: { browser: BrowserConsoleStatus; companyId: string }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [domain, setDomain] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -50,10 +52,10 @@ function ClearSiteDataForm({ browser, companyId }: { browser: BrowserConsoleStat
     <div className="space-y-2" data-testid={`myrmidon-browser-clear-${browser.id}`}>
       <div className="flex gap-2">
         <Input
-          placeholder="example.com"
+          placeholder={t("area.settings-integrations.browsers-settings-page.domainPlaceholder")}
           value={domain}
           onChange={(event) => setDomain(event.target.value)}
-          aria-label="Domain to clear"
+          aria-label={t("area.settings-integrations.browsers-settings-page.domainAria")}
           data-testid={`myrmidon-browser-clear-domain-${browser.id}`}
           className="max-w-xs"
         />
@@ -64,10 +66,10 @@ function ClearSiteDataForm({ browser, companyId }: { browser: BrowserConsoleStat
           onClick={() => clearMutation.mutate()}
           data-testid={`myrmidon-browser-clear-button-${browser.id}`}
         >
-          Clear site data
+          {t("area.settings-integrations.browsers-settings-page.clearSiteData")}
         </Button>
       </div>
-      {cleared && <p className="text-xs text-muted-foreground">Cleared cookies and storage of {cleared}.</p>}
+      {cleared && <p className="text-xs text-muted-foreground">{t("area.settings-integrations.browsers-settings-page.cleared", { domain: cleared })}</p>}
       {error && <p className="text-xs text-destructive" data-testid={`myrmidon-browser-clear-error-${browser.id}`}>{error}</p>}
     </div>
   );
@@ -86,6 +88,7 @@ function SigningStatusSection({
   loading: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -109,10 +112,10 @@ function SigningStatusSection({
 
   return (
     <section className="space-y-2 rounded-md border border-border px-3 py-3" data-testid="myrmidon-signing">
-      <h2 className="text-sm font-semibold">Document signing</h2>
+      <h2 className="text-sm font-semibold">{t("area.settings-integrations.browsers-settings-page.signingTitle")}</h2>
       {loading ? (
         <p className="text-xs text-muted-foreground" data-testid="myrmidon-signing-loading">
-          Loading signing settings...
+          {t("area.settings-integrations.browsers-settings-page.signingLoading")}
         </p>
       ) : null}
       {error ? (
@@ -123,21 +126,21 @@ function SigningStatusSection({
       {signing ? (
         <p className="text-xs text-muted-foreground" data-testid="myrmidon-signing-state">
           {signing.enabled
-            ? "Signing is on. The bridge signs documents under the policy of the connector panel."
-            : "Signing is off after an emergency stop: every sign action is refused until it is turned back on here."}
+            ? t("area.settings-integrations.browsers-settings-page.signingOn")
+            : t("area.settings-integrations.browsers-settings-page.signingOff")}
         </p>
       ) : null}
       {signing && !signing.enabled ? (
         confirming ? (
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground">Turn signing back on with the stored policy?</span>
+            <span className="text-xs text-muted-foreground">{t("area.settings-integrations.browsers-settings-page.reenableQuestion")}</span>
             <Button
               size="sm"
               disabled={reenableMutation.isPending}
               onClick={() => reenableMutation.mutate(signing)}
               data-testid="myrmidon-signing-reenable-confirm"
             >
-              {reenableMutation.isPending ? "Re-enabling..." : "Re-enable signing"}
+              {reenableMutation.isPending ? t("area.settings-integrations.browsers-settings-page.reenabling") : t("area.settings-integrations.browsers-settings-page.reenable")}
             </Button>
             <Button
               size="sm"
@@ -146,7 +149,7 @@ function SigningStatusSection({
               onClick={() => setConfirming(false)}
               data-testid="myrmidon-signing-reenable-cancel"
             >
-              Cancel
+              {t("common.cancel")}
             </Button>
           </div>
         ) : (
@@ -158,7 +161,7 @@ function SigningStatusSection({
             }}
             data-testid="myrmidon-signing-reenable"
           >
-            Re-enable signing
+            {t("area.settings-integrations.browsers-settings-page.reenable")}
           </Button>
         )
       ) : null}
@@ -172,19 +175,20 @@ function SigningStatusSection({
 }
 
 function BrowserCard({ browser, companyId }: { browser: BrowserConsoleStatus; companyId: string }) {
+  const { t } = useTranslation();
   return (
     <li className="space-y-3 rounded-md border border-border px-3 py-3" data-testid={`myrmidon-browser-${browser.id}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="font-medium">{browser.displayName}</div>
           <div className="text-xs text-muted-foreground">
-            {browser.id} · egress {egressSummary(browser.egress)}
+            {t("area.settings-integrations.browsers-settings-page.egress", { id: browser.id, summary: egressSummary(browser.egress) })}
           </div>
         </div>
         <div className="flex items-center gap-2">
           {browser.sessionActive ? (
             <span className="text-xs text-muted-foreground" data-testid={`myrmidon-browser-in-use-${browser.id}`}>
-              In use by {browser.usedBy}
+              {t("area.settings-integrations.browsers-settings-page.inUseBy", { user: browser.usedBy })}
             </span>
           ) : null}
           <OpenScreenButton browser={browser} companyId={companyId} />
@@ -197,6 +201,7 @@ function BrowserCard({ browser, companyId }: { browser: BrowserConsoleStatus; co
 }
 
 function OpenScreenButton({ browser, companyId }: { browser: BrowserConsoleStatus; companyId: string }) {
+  const { t } = useTranslation();
   const [error, setError] = useState<string | null>(null);
   const openMutation = useMutation({
     mutationFn: () => browsersApi.openScreen(browser.id, companyId),
@@ -212,7 +217,7 @@ function OpenScreenButton({ browser, companyId }: { browser: BrowserConsoleStatu
         onClick={() => openMutation.mutate()}
         data-testid={`myrmidon-browser-open-${browser.id}`}
       >
-        Open screen
+        {t("area.settings-integrations.browsers-settings-page.openScreen")}
       </Button>
       {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
@@ -238,12 +243,13 @@ export function BrowsersSettingsPageView({
   signingLoading?: boolean;
   signingError?: string | null;
 }) {
+  const { t } = useTranslation();
   const signingSection = <SigningStatusSection settings={signing} loading={signingLoading} error={signingError} />;
   if (loading) {
     return (
       <div className="space-y-6">
         {signingSection}
-        <p className="text-sm text-muted-foreground">Loading browsers...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-integrations.browsers-settings-page.loadingBrowsers")}</p>
       </div>
     );
   }
@@ -260,7 +266,7 @@ export function BrowsersSettingsPageView({
       <div className="space-y-6">
         {signingSection}
         <p className="text-sm text-muted-foreground" data-testid="myrmidon-browsers-empty">
-          No browsers are configured on this instance.
+          {t("area.settings-integrations.browsers-settings-page.noBrowsers")}
         </p>
       </div>
     );
@@ -274,17 +280,22 @@ export function BrowsersSettingsPageView({
         ))}
       </ul>
       <section className="space-y-2">
-        <h2 className="text-sm font-semibold">Session journal</h2>
+        <h2 className="text-sm font-semibold">{t("area.settings-integrations.browsers-settings-page.journalTitle")}</h2>
         {journal.length === 0 ? (
           <p className="text-xs text-muted-foreground" data-testid="myrmidon-browsers-journal-empty">
-            No screen sessions yet.
+            {t("area.settings-integrations.browsers-settings-page.journalEmpty")}
           </p>
         ) : (
           <ul className="space-y-1 text-xs text-muted-foreground" data-testid="myrmidon-browsers-journal">
             {journal.map((entry) => (
               <li key={`${entry.browserId}-${entry.startedAt}`} data-testid="myrmidon-browsers-journal-entry">
-                {entry.browserId} · {entry.userId} · {new Date(entry.startedAt).toLocaleString()} ·{" "}
-                {entry.durationMs !== null ? formatDuration(entry.durationMs) : "open"} · closed by {entry.closedBy ?? "—"}
+                {t("area.settings-integrations.browsers-settings-page.journalEntry", {
+                  browser: entry.browserId,
+                  user: entry.userId,
+                  started: new Date(entry.startedAt).toLocaleString(),
+                  duration: entry.durationMs !== null ? formatDuration(entry.durationMs) : t("area.settings-integrations.browsers-settings-page.journalOpen"),
+                  closedBy: entry.closedBy ?? "—",
+                })}
               </li>
             ))}
           </ul>
@@ -295,13 +306,17 @@ export function BrowsersSettingsPageView({
 }
 
 export function BrowsersSettingsPage() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Settings", href: "/company/settings" }, { label: "Browsers" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([
+      { label: t("area.settings-integrations.browsers-settings-page.breadcrumbSettings"), href: "/company/settings" },
+      { label: t("area.settings-integrations.browsers-settings-page.breadcrumbBrowsers") },
+    ]);
+  }, [setBreadcrumbs, t]);
 
   const browsersQuery = useQuery({
     queryKey: browsersQueryKey,
@@ -332,11 +347,10 @@ export function BrowsersSettingsPage() {
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Monitor className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Browsers</h1>
+          <h1 className="text-lg font-semibold">{t("area.settings-integrations.browsers-settings-page.title")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Live browser screens for sign-ins. While a screen is open, bots do not drive the browser; sessions close on
-          their own after idle or at the hard limit.
+          {t("area.settings-integrations.browsers-settings-page.description")}
         </p>
       </div>
       <BrowsersSettingsPageView

@@ -1,4 +1,5 @@
 import { configFieldsForSection } from "../config-sections";
+import { useTranslation } from "@/i18n";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -13,8 +14,6 @@ import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
-const instructionsFileHint =
-  "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.";
 
 export function ClaudeLocalConfigFields({
   section,
@@ -29,10 +28,11 @@ export function ClaudeLocalConfigFields({
   models,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   return configFieldsForSection(section, (
     <>
       {!hideInstructionsFile && (
-        <Field label="Agent instructions file" hint={instructionsFileHint}>
+        <Field label={t("area.adapters-plugins-1.claude-local.fields.instructionsFileLabel")} hint={t("area.adapters-plugins-1.claude-local.fields.instructionsFileHint")}>
           <div className="flex items-center gap-2">
             <DraftInput
               value={
@@ -51,7 +51,7 @@ export function ClaudeLocalConfigFields({
               }
               immediate
               className={inputClass}
-              placeholder="/absolute/path/to/AGENTS.md"
+              placeholder={t("area.adapters-plugins-1.claude-local.fields.instructionsFilePlaceholder")}
             />
             <ChoosePathButton />
           </div>
@@ -82,6 +82,7 @@ export function ClaudeLocalAdvancedFields({
   mark,
   managedSandboxOnly,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   const rawEngine = isCreate
     ? values!.claudeEngine ?? "auto"
     : eff("adapterConfig", "engine", String(config.engine ?? "auto"));
@@ -96,7 +97,7 @@ export function ClaudeLocalAdvancedFields({
         environment owns both, so the managed-sandbox-only policy hides them,
         the same way `runnerManaged` hides them for the Myrmidon Runner.
       */}
-      {!managedSandboxOnly && <Field label="Execution engine" hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.">
+      {!managedSandboxOnly && <Field label={t("area.adapters-plugins-1.claude-local.advanced.engineLabel")} hint={t("area.adapters-plugins-1.claude-local.advanced.engineHint")}>
         <select
           className={inputClass}
           value={engine}
@@ -107,17 +108,17 @@ export function ClaudeLocalAdvancedFields({
               : mark("adapterConfig", "engine", value === "auto" ? undefined : value);
           }}
         >
-          <option value="auto">Default (ACP)</option>
-          <option value="cli">Claude CLI</option>
-          <option value="acp">ACP</option>
+          <option value="auto">{t("area.adapters-plugins-1.claude-local.advanced.engineOptionDefault")}</option>
+          <option value="cli">{t("area.adapters-plugins-1.claude-local.advanced.engineOptionCli")}</option>
+          <option value="acp">{t("area.adapters-plugins-1.claude-local.advanced.engineOptionAcp")}</option>
         </select>
       </Field>}
       {acpSelected && (
         <>
           {!managedSandboxOnly && (
             <Field configSection="advanced"
-              label="ACP server command"
-              hint="Optional override for the Claude ACP server command. Defaults to the package-local claude-agent-acp binary."
+              label={t("area.adapters-plugins-1.claude-local.advanced.acpCommandLabel")}
+              hint={t("area.adapters-plugins-1.claude-local.advanced.acpCommandHint")}
             >
               <DraftInput
                 value={
@@ -132,11 +133,11 @@ export function ClaudeLocalAdvancedFields({
                 }
                 immediate
                 className={inputClass}
-                placeholder="claude-agent-acp"
+                placeholder={t("area.adapters-plugins-1.claude-local.advanced.acpCommandPlaceholder")}
               />
             </Field>
           )}
-          <Field configSection="runPolicy" label="ACP session mode" hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run.">
+          <Field configSection="runPolicy" label={t("area.adapters-plugins-1.claude-local.advanced.acpModeLabel")} hint={t("area.adapters-plugins-1.claude-local.advanced.acpModeHint")}>
             <select
               className={inputClass}
               value={
@@ -151,13 +152,13 @@ export function ClaudeLocalAdvancedFields({
                   : mark("adapterConfig", "mode", value);
               }}
             >
-              <option value="persistent">Persistent</option>
-              <option value="oneshot">One-shot</option>
+              <option value="persistent">{t("area.adapters-plugins-1.claude-local.advanced.acpModePersistent")}</option>
+              <option value="oneshot">{t("area.adapters-plugins-1.claude-local.advanced.acpModeOneShot")}</option>
             </select>
           </Field>
           <Field
-            label="ACP non-interactive permissions"
-            hint="Fallback if the ACP agent asks for input outside an interactive session."
+            label={t("area.adapters-plugins-1.claude-local.advanced.acpPermissionsLabel")}
+            hint={t("area.adapters-plugins-1.claude-local.advanced.acpPermissionsHint")}
           >
             <select
               className={inputClass}
@@ -173,14 +174,14 @@ export function ClaudeLocalAdvancedFields({
                   : mark("adapterConfig", "nonInteractivePermissions", value);
               }}
             >
-              <option value="deny">Deny</option>
-              <option value="fail">Fail</option>
+              <option value="deny">{t("area.adapters-plugins-1.claude-local.advanced.acpPermissionsDeny")}</option>
+              <option value="fail">{t("area.adapters-plugins-1.claude-local.advanced.acpPermissionsFail")}</option>
             </select>
           </Field>
           {!managedSandboxOnly && (
             <Field
-              label="ACP state directory"
-              hint="Optional ACP session state directory. Defaults to Myrmidon-managed organization/agent scoped storage."
+              label={t("area.adapters-plugins-1.claude-local.advanced.acpStateDirLabel")}
+              hint={t("area.adapters-plugins-1.claude-local.advanced.acpStateDirHint")}
             >
               <div className="flex items-center gap-2">
                 <DraftInput
@@ -196,15 +197,15 @@ export function ClaudeLocalAdvancedFields({
                   }
                   immediate
                   className={inputClass}
-                  placeholder="/path/to/acp-state"
+                  placeholder={t("area.adapters-plugins-1.claude-local.advanced.acpStateDirPlaceholder")}
                 />
                 <ChoosePathButton />
               </div>
             </Field>
           )}
           <Field configSection="runPolicy"
-            label="ACP warm process idle ms"
-            hint="Defaults to 0, which closes the ACP process after each run while retaining persistent session state."
+            label={t("area.adapters-plugins-1.claude-local.advanced.acpWarmIdleLabel")}
+            hint={t("area.adapters-plugins-1.claude-local.advanced.acpWarmIdleHint")}
           >
             {isCreate ? (
               <input
@@ -229,7 +230,7 @@ export function ClaudeLocalAdvancedFields({
         </>
       )}
       <ToggleField
-        label="Enable Chrome"
+        label={t("area.adapters-plugins-1.claude-local.advanced.enableChromeLabel")}
         hint={help.chrome}
         checked={
           isCreate
@@ -243,7 +244,7 @@ export function ClaudeLocalAdvancedFields({
         }
       />
       <ToggleField
-        label="Skip permissions"
+        label={t("area.adapters-plugins-1.claude-local.advanced.skipPermissionsLabel")}
         hint={help.dangerouslySkipPermissions}
         checked={
           isCreate
@@ -260,7 +261,7 @@ export function ClaudeLocalAdvancedFields({
             : mark("adapterConfig", "dangerouslySkipPermissions", v)
         }
       />
-      <Field label="Max turns per run" hint={help.maxTurnsPerRun}>
+      <Field label={t("area.adapters-plugins-1.claude-local.advanced.maxTurnsLabel")} hint={help.maxTurnsPerRun}>
         {isCreate ? (
           <input
             type="number"

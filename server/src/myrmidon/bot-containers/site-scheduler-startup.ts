@@ -10,7 +10,7 @@
 // myrmidon_fleet_affinity (which agents, projects or companies prefer which site), and the bot cards.
 
 import { and, eq, ne, sql } from "drizzle-orm";
-import { agents, myrmidonFleetAffinity, myrmidonFleetSites, type Db } from "@paperclipai/db";
+import { agents, myrmidonFleetAffinity, myrmidonFleetSites, type Db } from "@myrmidon/db";
 import { agentService } from "../../services/index.js";
 import { logger } from "../../middleware/logger.js";
 import { isBotContainersEnabled } from "./agent-config.js";
