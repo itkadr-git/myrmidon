@@ -263,9 +263,13 @@ d("activity_log company/action/created index migration (embedded postgres)", () 
     expect(noDetailText).toMatch(new RegExp(INDEX_NAME));
     expect(noDetailText).not.toMatch(/Seq Scan on activity_log/);
 
-    // 4) Drop the index: the same statement falls back to the sequential
-    // scan — the production failure mode, and the proof that assertion 3 has
-    // teeth. No other index carries action, so no index path survives.
+    // 4) Drop the index: the same statement loses its action-aware path. No
+    // index carries "action", so whatever plan the planner picks — sequential
+    // scan, bitmap, or a backward walk over (company_id, created_at) — must
+    // evaluate the action/details filter per row across the company's whole
+    // fresh heap (the CI run showed the backward walk rejecting all 40 000
+    // noise rows). That per-row rejection is the production failure mode and
+    // the proof that assertion 3 has teeth.
     await sql`DROP INDEX IF EXISTS ${sql(INDEX_NAME)}`;
     await sql`ANALYZE activity_log`;
     const withoutIndex = await sql.unsafe(`EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) ${LATEST_LEG}`, [
@@ -276,8 +280,11 @@ d("activity_log company/action/created index migration (embedded postgres)", () 
       "chat_owner_message",
     ]);
     const withoutIndexText = planText(withoutIndex);
-    expect(withoutIndexText).toMatch(/Seq Scan on activity_log/);
-    expect(rowsRemovedByFilter(withoutIndexText)).toBeGreaterThan(1_000);
+    expect(withoutIndexText).not.toMatch(new RegExp(INDEX_NAME));
+    // Every one of the company's COMPANY_NOISE_ROWS fresh rows fails the
+    // action filter and is rejected per row; the indexed plan above rejects
+    // none of them.
+    expect(rowsRemovedByFilter(withoutIndexText)).toBeGreaterThanOrEqual(COMPANY_NOISE_ROWS);
 
     // 5) Re-apply the migration statement twice on one database: IF NOT
     // EXISTS makes the second pass a no-op and the index is not duplicated.
