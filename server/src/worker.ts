@@ -10,11 +10,13 @@
 import { logger } from "./middleware/logger.js";
 import { startWorkerProcess } from "./myrmidon/worker-process/index.js";
 
-const worker = await startWorkerProcess();
+// Signal handlers first: a SIGTERM during the (long) boot recovery must drain
+// the runtime once it is up, not kill the process with the default disposition.
+const starting = startWorkerProcess();
 
 const shutdown = (signal: "SIGINT" | "SIGTERM") => {
-  void worker
-    .close()
+  void starting
+    .then((worker) => worker.close())
     .then(() => {
       logger.info({ signal }, "worker-process: shutdown complete");
       process.exit(0);
@@ -26,3 +28,5 @@ const shutdown = (signal: "SIGINT" | "SIGTERM") => {
 };
 process.once("SIGINT", () => shutdown("SIGINT"));
 process.once("SIGTERM", () => shutdown("SIGTERM"));
+
+await starting;
