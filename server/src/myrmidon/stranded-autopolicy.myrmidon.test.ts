@@ -658,6 +658,15 @@ describe("OPE-9072: escalation chain target and workflow-safe blocked dispositio
     ).toEqual({ kind: "disposition_blocked", ownerAgentId: "adm-1", ...exhausted });
   });
 
+  it("adm is never made a reviewer: chain of one adm or manager = adm, no workflow -> blocked owned by adm", () => {
+    expect(
+      decideStrandedAutoPolicy({ ...exhausted, managerAgentId: null, escalationAgentId: "adm-1", targetIsAdm: true }),
+    ).toEqual({ kind: "disposition_blocked", ownerAgentId: "adm-1", ...exhausted });
+    expect(
+      decideStrandedAutoPolicy({ ...exhausted, managerAgentId: "adm-1", targetIsAdm: true, hasExecutionWorkflow: false }),
+    ).toEqual({ kind: "disposition_blocked", ownerAgentId: "adm-1", ...exhausted });
+  });
+
   it("only an empty chain reaches the vendor board escalation", () => {
     expect(
       decideStrandedAutoPolicy({ ...exhausted, managerAgentId: null, escalationAgentId: null, hasExecutionWorkflow: true }),

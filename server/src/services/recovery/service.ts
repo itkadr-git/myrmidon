@@ -4106,11 +4106,18 @@ export function recoveryService(
         !assigneePaused && !retriesLeft && !managerAgentId
           ? await findEscalationChainAgentId(db, input.issue)
           : null;
+      // myrmidon(OPE-9072): `adm` cannot decide a review stage (403 on
+      // approve), so it is never a reviewer; it gets the blocked variant.
+      const escalationTargetId = managerAgentId ?? escalationAgentId;
+      const escalationTarget =
+        !assigneePaused && !retriesLeft && escalationTargetId ? await getAgent(escalationTargetId) : null;
+      const targetIsAdm = escalationTarget?.name.trim().toLowerCase() === "adm";
       const autoPolicyDecision = decideStrandedAutoPolicy({
         attemptsInWindow,
         maxAttemptsPerDay,
         managerAgentId,
         escalationAgentId,
+        targetIsAdm,
         hasExecutionWorkflow: issueHasExistingExecutionWorkflow(input.issue),
         assigneePaused,
       });

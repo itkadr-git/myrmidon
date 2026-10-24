@@ -1065,6 +1065,54 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id))).toHaveLength(0);
     });
 
+    it("OPE-9072: chain of one adm and no workflow -> blocked owned by adm, never in_review", async () => {
+      const { companyId, coderId, sourceIssue } = await seedCompany();
+      await db.update(agents).set({ reportsTo: null }).where(eq(agents.id, coderId));
+      const admId = randomUUID();
+      await db.insert(agents).values({
+        id: admId, companyId, name: "adm", role: "ceo", status: "idle", adapterType: "codex_local",
+        adapterConfig: {}, runtimeConfig: {}, permissions: {},
+      });
+      await seedStrandedAutoPolicyRetryRun({ companyId, agentId: coderId, issueId: sourceIssue.id, createdAt: new Date() });
+      await seedStrandedAutoPolicyRetryRun({ companyId, agentId: coderId, issueId: sourceIssue.id, createdAt: new Date() });
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+      await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: await succeededRun({ companyId, agentId: coderId }),
+        recoveryCause: "stranded_assigned_issue",
+      });
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      expect(persisted?.status).toBe("blocked");
+      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.executionPolicy).toBeNull();
+      expect(persisted?.blockerMetadata).toMatchObject({ owner: { agentId: admId } });
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(enqueueWakeup.mock.calls[0]?.[0]).toBe(admId);
+    });
+
+    it("OPE-9072: direct manager is adm and no workflow -> blocked owned by adm, never in_review", async () => {
+      const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
+      await db.update(agents).set({ name: "adm" }).where(eq(agents.id, managerId));
+      await seedStrandedAutoPolicyRetryRun({ companyId, agentId: coderId, issueId: sourceIssue.id, createdAt: new Date() });
+      await seedStrandedAutoPolicyRetryRun({ companyId, agentId: coderId, issueId: sourceIssue.id, createdAt: new Date() });
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+      await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: await succeededRun({ companyId, agentId: coderId }),
+        recoveryCause: "stranded_assigned_issue",
+      });
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      expect(persisted?.status).toBe("blocked");
+      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.blockerMetadata).toMatchObject({ owner: { agentId: managerId } });
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(enqueueWakeup.mock.calls[0]?.[0]).toBe(managerId);
+    });
+
     it("OPE-9072: a monitor issue with an empty reportsTo is blocked with metadata owned by adm, assignee kept, one wake, repeat is idempotent", async () => {
       const { companyId, coderId, sourceIssue } = await seedCompany();
       await db.update(agents).set({ reportsTo: null }).where(eq(agents.id, coderId));
