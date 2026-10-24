@@ -22,6 +22,7 @@ import {
   singletonRouteGroup,
   resolveSingletonProxyTarget,
 } from "./index.js";
+import { stripHopByHop } from "./proxy.js";
 
 describe("singletonRouteGroup", () => {
   it("forwards the four groups", () => {
@@ -151,6 +152,125 @@ describe("singletonProxyMiddleware", () => {
     expect((await res.json()).error).toBe("worker_unavailable");
     expect(count("attention", "unavailable")).toBe(1);
     expect(count("attention", "proxied")).toBe(0);
+  });
+});
+
+describe("singletonProxyMiddleware (OPE-9107)", () => {
+  const servers: http.Server[] = [];
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((s) => new Promise<void>((r) => { s.closeAllConnections?.(); s.close(() => r()); })));
+  });
+
+  async function listen(server: http.Server): Promise<number> {
+    servers.push(server);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    return (server.address() as AddressInfo).port;
+  }
+
+  function api(
+    workerPort: number,
+    opts: { enabled?: () => boolean | Promise<boolean>; timeoutMs?: number; trustProxy?: number } = {},
+  ) {
+    const app = express();
+    if (opts.trustProxy) app.set("trust proxy", opts.trustProxy);
+    app.use(
+      singletonProxyMiddleware({
+        target: { host: "127.0.0.1", port: workerPort },
+        enabled: opts.enabled ?? (() => true),
+        timeoutMs: opts.timeoutMs,
+      }),
+    );
+    app.all("/api/*splat", (_req, res) => res.json({ from: "api" }));
+    return listen(http.createServer(app));
+  }
+
+  function rawGet(port: number, path: string, headers: http.OutgoingHttpHeaders) {
+    return new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>((resolve, reject) => {
+      const req = http.request({ host: "127.0.0.1", port, path, headers, agent: false }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks).toString() }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  }
+
+  it("strips hop-by-hop headers and the ones named in Connection, both ways", async () => {
+    let seenHeaders: http.IncomingHttpHeaders = {};
+    const workerPort = await listen(
+      http.createServer((req, res) => {
+        seenHeaders = req.headers;
+        res.writeHead(200, { connection: "keep-alive, x-worker-hop", "keep-alive": "timeout=5", "x-worker-hop": "secret", "x-keep": "yes" });
+        res.end("ok");
+      }),
+    );
+    const port = await api(workerPort);
+    const res = await rawGet(port, "/api/plugins", {
+      connection: "keep-alive, X-Caller-Hop",
+      "x-caller-hop": "secret",
+      te: "trailers",
+      "x-keep": "yes",
+    });
+    expect(res.status).toBe(200);
+    expect(seenHeaders["x-caller-hop"]).toBeUndefined();
+    expect(seenHeaders.te).toBeUndefined();
+    expect(seenHeaders["x-keep"]).toBe("yes");
+    expect(res.headers["x-worker-hop"]).toBeUndefined();
+    expect(res.headers["keep-alive"]).toBeUndefined();
+    expect(res.headers["x-keep"]).toBe("yes");
+  });
+
+  it("stripHopByHop handles repeated and mixed-case Connection tokens", () => {
+    expect(
+      stripHopByHop({ connection: " Close ,X-A", "x-a": "1", "x-b": "2", upgrade: "websocket" }),
+    ).toEqual({ "x-b": "2" });
+    expect(stripHopByHop({ connection: ["x-a", "x-b"] as unknown as string, "x-a": "1", "x-b": "2", "x-c": "3" })).toEqual({ "x-c": "3" });
+  });
+
+  it("answers 503 with Retry-After when the worker is silent past the idle timeout", async () => {
+    const workerPort = await listen(http.createServer(() => { /* never answers */ }));
+    const port = await api(workerPort, { timeoutMs: 150 });
+    const started = Date.now();
+    const res = await rawGet(port, "/api/companies/c1/attention", {});
+    expect(res.status).toBe(503);
+    expect(res.headers["retry-after"]).toBe("2");
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("fails closed when the setting cannot be read: forwards to the worker, never serves locally", async () => {
+    let hit = 0;
+    const workerPort = await listen(http.createServer((_q, r) => { hit += 1; r.end("from-worker"); }));
+    const port = await api(workerPort, { enabled: async () => { throw new Error("db down"); } });
+    const res = await rawGet(port, "/api/companies/c1/attention", {});
+    expect(res.body).toBe("from-worker");
+    expect(hit).toBe(1);
+  });
+
+  it("fails closed with 503 when the setting is unknown and the worker is down", async () => {
+    const dead = http.createServer();
+    const deadPort = await listen(dead);
+    await new Promise<void>((r) => dead.close(() => r()));
+    const port = await api(deadPort, { enabled: async () => { throw new Error("db down"); } });
+    const res = await rawGet(port, "/api/companies/c1/attention", {});
+    expect(res.status).toBe(503);
+    expect(res.body).not.toContain('"from":"api"');
+  });
+
+  it("sends the worker the client address resolved by the api's trust proxy, not an extended chain", async () => {
+    let xff: string | string[] | undefined;
+    const workerPort = await listen(http.createServer((req, res) => { xff = req.headers["x-forwarded-for"]; res.end("ok"); }));
+    // behind one nginx: the peer is nginx (127.0.0.1), the client is in XFF
+    const trusted = await api(workerPort, { trustProxy: 1 });
+    await rawGet(trusted, "/api/plugins", { "x-forwarded-for": "203.0.113.7" });
+    expect(xff).toBe("203.0.113.7");
+    // a spoofed prefix from the client does not reach the worker as the client
+    await rawGet(trusted, "/api/plugins", { "x-forwarded-for": "6.6.6.6, 203.0.113.7" });
+    expect(xff).toBe("203.0.113.7");
+    // without trust proxy the header is ignored: the worker sees the peer
+    const untrusted = await api(workerPort);
+    await rawGet(untrusted, "/api/plugins", { "x-forwarded-for": "6.6.6.6" });
+    expect(String(xff)).not.toContain("6.6.6.6");
   });
 });
 

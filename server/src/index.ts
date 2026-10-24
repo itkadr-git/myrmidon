@@ -139,6 +139,7 @@ import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrm
 import { startProcessesSettings, createProcessSupervisor, reportReadyToSupervisor, wireSupervisorDrainHandler, type SupervisorListenerHandle } from "./myrmidon/processes/index.js"; // myrmidon(PROCS-1.1/1.2)
 import type { ProcessSupervisor } from "./myrmidon/processes/supervisor.js";
 import { resolveProcessesSettings } from "@myrmidon/shared";
+import { createIdempotentShutdown } from "./shutdown-once.js"; // myrmidon(OPE-9107)
 import { singletonProxyOptionsFor } from "./myrmidon/singleton-proxy/index.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 // myrmidon(PAUSE-GUARD): resumes operator pauses left older than a threshold
@@ -2946,7 +2947,7 @@ async function startServerWithDatabaseTeardown(
     );
   }
   
-  const shutdown = async (
+  const runShutdown = async (
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
   ) => {
@@ -3088,6 +3089,12 @@ async function startServerWithDatabaseTeardown(
 
     if (exitProcess) process.exit(0);
   };
+
+  // myrmidon(OPE-9107): one shutdown per process — a second signal, or an
+  // entry point (worker.ts) calling `shutdown()` as well, joins the first run.
+  const shutdown = createIdempotentShutdown(runShutdown, (exitProcess) => {
+    if (exitProcess) process.exit(0);
+  });
 
   process.once("SIGINT", () => {
     void shutdown("SIGINT", true);

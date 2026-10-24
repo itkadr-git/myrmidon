@@ -10,6 +10,14 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Process split follow-ups (OPE-9107)
+
+- One shutdown for the worker entry (idempotent, a double SIGTERM closes resources once); the single-route proxy fails closed when the `singletonProxy` setting is unreadable, removes headers named in `Connection:` in both directions, and sends the worker the client address resolved by `TRUST_PROXY`. Worker deployment notes: [multi-instance.md](multi-instance.md).
+
+### Process split follow-ups (OPE-9107)
+
+- One shutdown for the worker entry (idempotent, a double SIGTERM closes resources once); the single-route proxy fails closed when the `singletonProxy` setting is unreadable, removes headers named in `Connection:` in both directions, and sends the worker the client address resolved by `TRUST_PROXY`. Worker deployment notes: [multi-instance.md](multi-instance.md).
+
 ## 1.6.6
 
 ### The company agent list ships without adapter_config; the config stays one request away (PERF-DIET G2)
