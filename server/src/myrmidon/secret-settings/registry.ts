@@ -13,6 +13,8 @@
 // store cannot hold the key that opens it. They stay environment-only; the disposition table
 // is in docs/myrmidon/e2-secret-coverage-1.6.6.md.
 
+import { SANDBOX_PROVIDER_REGISTRY_ENTRIES } from "./sandbox-providers.js";
+import { RUNNER_ACPX_CODEX_AUTH_REGISTRY_ENTRY } from "./runner-environment.js";
 import { BOT_FLEET_SECRET_SETTINGS } from "./bot-fleet-settings.js"; // myrmidon(SETTINGS-UI E2.3)
 import { PROVIDER_SECRET_SETTINGS } from "./provider-settings.js"; // myrmidon(SETTINGS-UI E2.2)
 
@@ -115,6 +117,8 @@ export class InstanceSecretSettingRegistry {
 
 /** Consumer parts append their entries here. Empty until the first consumer lands. */
 export const INSTANCE_SECRET_SETTINGS: readonly InstanceSecretSettingDescriptor[] = [
+  ...SANDBOX_PROVIDER_REGISTRY_ENTRIES, // E2.8 (OPE-9041)
+  RUNNER_ACPX_CODEX_AUTH_REGISTRY_ENTRY, // E2.8 (OPE-9041)
   ...BOT_FLEET_SECRET_SETTINGS, // myrmidon(SETTINGS-UI E2.3)
   ...PROVIDER_SECRET_SETTINGS, // myrmidon(SETTINGS-UI E2.2)
   // E2.4 (OPE-9037): instance-wide fallback OAuth client secret for tool connections.
