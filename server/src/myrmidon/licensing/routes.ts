@@ -36,6 +36,7 @@ import {
   writeLicenseFile,
   type HostShareOptions,
 } from "./client-license.js";
+import { createDenyListReader } from "./denylist.js";
 import { TRUSTED_ISSUER_KEYS } from "./trusted-keys.js";
 
 // `value`, not `license`: the request logger redacts `value` in 4xx lines, so
@@ -77,6 +78,11 @@ export function licensingRoutes(options: LicensingRoutesOptions): Router {
   const now = () => (options.now ? options.now() : new Date());
   const install = () => options.installId();
   const trustedKeys = options.trustedKeys ?? TRUSTED_ISSUER_KEYS;
+  const denyList = createDenyListReader({
+    env: () => env(),
+    trustedKeys,
+    warn: (message) => logger.warn(message),
+  });
   const installed = async () => {
     if (!options.installedModules) return [] as string[];
     try {
@@ -105,6 +111,7 @@ export function licensingRoutes(options: LicensingRoutesOptions): Router {
       nowSeconds,
       trustedKeys,
       installed: installedModules,
+      denyList,
     });
     const file = licenseFilePath(env());
     return {
