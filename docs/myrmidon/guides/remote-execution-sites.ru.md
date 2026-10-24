@@ -293,7 +293,7 @@
    # серверный сертификат fleetd: SAN должен совпадать с хостом или IP в `url` при enroll
    openssl ecparam -name prime256v1 -genkey -noout -out server.key
    openssl req -new -key server.key -subj "/CN=fleetd-myr-vm1" -out server.csr
-   printf "subjectAltName=IP:10.10.0.110\nextendedKeyUsage=serverAuth\n" > server.ext
+   printf "subjectAltName=IP:192.0.2.10\nextendedKeyUsage=serverAuth\n" > server.ext
    openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -sha256 -extfile server.ext -out server.crt
    # клиентский сертификат доски
    openssl ecparam -name prime256v1 -genkey -noout -out client.key
@@ -317,7 +317,7 @@
 {
   "siteId": "myr-vm1",
   "epoch": 1,
-  "listen": "10.10.0.110:9100",
+  "listen": "192.0.2.10:9100",
   "token": "<содержимое файла token>",
   "upstream": "/var/run/docker.sock",
   "siteCA": "/etc/myrmidon/pki/ca.crt",
@@ -326,9 +326,9 @@
   "volumeRoot": "/srv/myrmidon-bots",
   "network": "myrmidon-bots",
   "images": ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
-  "boardAddress": "10.10.100.1:3100",
-  "boardExtraHost": "paperclip-server-1:10.10.100.1",
-  "gatewayBindIp": "10.10.0.110",
+  "boardAddress": "192.0.2.1:3100",
+  "boardExtraHost": "paperclip-server-1:192.0.2.1",
+  "gatewayBindIp": "192.0.2.10",
   "gatewayPortStart": 18700,
   "gatewayPortEnd": 18799,
   "bots": [
@@ -372,7 +372,7 @@ systemctl enable --now myrmidon-fleetd
 Проверка здоровья с клиентским сертификатом (без него TLS-рукопожатие отклоняется, с сертификатом, но без токена ответ `401`):
 ```bash
 curl -s --cacert ca.crt --cert client.crt --key client.key \
-  -H "Authorization: Bearer $(cat token)" https://10.10.0.110:9100/v1/health | jq .
+  -H "Authorization: Bearer $(cat token)" https://192.0.2.10:9100/v1/health | jq .
 ```
 
 ---
@@ -392,7 +392,7 @@ curl -s --cacert ca.crt --cert client.crt --key client.key \
    ```bash
    jq -n --rawfile ca ca.crt '{
      name: "myr-vm1",
-     url: "https://10.10.0.110:9100",
+     url: "https://192.0.2.10:9100",
      tokenSecret: "fleetd-myr-vm1-token",
      clientCertSecretKey: "fleetd-myr-vm1-client",
      caCert: $ca,

@@ -52,7 +52,7 @@ const enrollBodySchema = z
     boardExtraHost: z.string().trim().min(1).optional(),
     volumeRoot: z.string().trim().min(1).optional(),
     network: z.string().trim().min(1).optional(),
-    labels: z.record(z.string()).optional(),
+    labels: z.record(z.string(), z.string()).optional(),
   })
   .strict();
 
