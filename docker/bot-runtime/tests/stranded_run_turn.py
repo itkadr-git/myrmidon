@@ -37,7 +37,9 @@ def main(argv):
     from agent.session_persistence import replace_stranded_run_turn
     from hermes_state import SessionDB
 
-    db = SessionDB(Path(os.environ["HERMES_HOME"]) / "state.db")
+    import asyncio
+
+    db = asyncio.run(asyncio.to_thread(SessionDB, Path(os.environ["HERMES_HOME"]) / "state.db"))
     failures = []
 
     def check(name, cond):

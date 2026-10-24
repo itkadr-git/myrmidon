@@ -298,6 +298,37 @@
         "path": "model_tools.py",
         "upstreamMarker": "disabled_tools\\b"
       }
+    },
+    {
+      "id": "18-async-state-db-writer-acquire",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/18-async-writer-acquire.patch",
+      "files": [
+        "hermes_state_dbfile.py",
+        "hermes_state_errors.py",
+        "hermes_state.py",
+        "hermes_state_registry.py",
+        "gateway/session_db_recovery.py",
+        "gateway/session.py",
+        "gateway/session_persistence.py",
+        "gateway/session_recovery.py",
+        "gateway/session_lifecycle.py",
+        "gateway/session_transcript.py",
+        "gateway/run.py",
+        "gateway/run_startup.py",
+        "gateway/run_shutdown.py",
+        "tests/hermes_state/test_deleted_wal_generation_guard.py",
+        "tests/gateway/test_async_writer_acquire_contract.py"
+      ],
+      "reason": "worker-owned async writer acquire: one awaited scan, connect and registry/cache ownership transaction. Includes full OPE-7854 lifecycle A-G implementation.",
+      "dropCondition": "Upstream implements the complete OPE-7854 A-G contract: strict complete scanner verdict before every writer connect, one shared sync/async registry, cancellation-safe ownership and cache drain, async lazy profile/routing/recovery opens, and awaited gateway startup/shutdown lifecycle.",
+      "offer": null,
+      "offerNote": "Not offered yet: publisher-scan wrapper is not available.",
+      "probe": {
+        "source": "hermes",
+        "path": "hermes_state_dbfile.py",
+        "upstreamMarker": "SidecarScanIncompleteError"
+      }
     }
   ]
 }
