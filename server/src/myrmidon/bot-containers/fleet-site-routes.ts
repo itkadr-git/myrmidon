@@ -16,8 +16,8 @@ import { X509Certificate, createHash } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { badRequest, conflict, notFound } from "../../errors.js";
-import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
-import type { FleetSite, FleetSiteInsert } from "./site-registry.js";
+import { assertBoard, assertCompanyAccess, assertCompanyAdmin } from "../../routes/authz.js";
+import { parseTlsCredentials, type FleetSite, type FleetSiteInsert } from "./site-registry.js";
 
 const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,62}$/;
 /** "local" is the board's own docker driver; a registered site must not shadow it. */
@@ -31,6 +31,8 @@ const enrollBodySchema = z
     url: z.string().trim().min(1),
     tokenSecret: z.string().trim().min(1),
     caCert: z.string().trim().min(1),
+    /** Optional pin: sha256 of the CA certificate (hex, colons allowed), checked against caCert. */
+    caFingerprint: z.string().trim().min(1).optional(),
     /**
      * Secret holding the board's client certificate and key. Either one secret with both PEM
      * blocks (or {"cert","key"} JSON), or a pair named "<ref>-cert" and "<ref>-key".
@@ -61,6 +63,10 @@ export interface FleetSiteRoutesDeps {
   getSite(companyId: string, name: string): Promise<FleetSite | null>;
   createSite(input: FleetSiteInsert): Promise<FleetSite>;
   deleteSite(companyId: string, name: string): Promise<boolean>;
+  /** Number of bots whose card names this site as container.host. */
+  countBotsOnSite(companyId: string, name: string): Promise<number>;
+  /** The CA PEM of a company secret (or null): used to cross-check the enrolled CA. */
+  readSecret(companyId: string, name: string): Promise<string | null>;
   /** True when a company secret with this exact name exists. */
   secretExists(companyId: string, name: string): Promise<boolean>;
 }
@@ -92,6 +98,40 @@ export function inspectCaCert(pem: string): { fingerprint: string } {
     throw new Error("caCert: not a PEM certificate");
   }
   return { fingerprint: createHash("sha256").update(cert.raw).digest("hex") };
+}
+
+function normalizeFingerprint(raw: string): string {
+  return raw.replace(/[:\s]/g, "").toLowerCase();
+}
+
+/**
+ * Reads the client certificate the board will present (same lookup order as the client manager)
+ * and checks that the site CA signed it. Returns an error message, or null when it is fine or
+ * when the secret cannot be read as a certificate here (the manager then reports it).
+ */
+async function clientCertSignedByCa(
+  deps: FleetSiteRoutesDeps,
+  companyId: string,
+  ref: string,
+  caPem: string,
+): Promise<string | null> {
+  let cert: string | undefined;
+  for (const name of [ref, `${ref}-cert`, `${ref}_cert`]) {
+    const raw = await deps.readSecret(companyId, name);
+    if (!raw) continue;
+    cert = parseTlsCredentials(raw).cert;
+    if (cert) break;
+  }
+  if (!cert) return null;
+  try {
+    const leaf = new X509Certificate(cert);
+    if (!leaf.verify(new X509Certificate(caPem).publicKey)) {
+      return "clientCertSecretKey: the client certificate is not signed by caCert";
+    }
+  } catch {
+    return "clientCertSecretKey: the client certificate is not a valid PEM certificate";
+  }
+  return null;
 }
 
 /**
@@ -129,11 +169,12 @@ function publicSite(site: FleetSite) {
 export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
   const router = Router();
 
-  function companyOf(req: Request): string {
+  function companyOf(req: Request, admin = false): string {
     assertBoard(req);
     const companyId = typeof req.params.companyId === "string" ? req.params.companyId : "";
     if (!companyId) throw badRequest("companyId required");
-    assertCompanyAccess(req, companyId);
+    if (admin) assertCompanyAdmin(req, companyId);
+    else assertCompanyAccess(req, companyId);
     return companyId;
   }
 
@@ -144,7 +185,7 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
   }
 
   async function handleEnroll(req: Request, res: Response): Promise<void> {
-    const companyId = companyOf(req);
+    const companyId = companyOf(req, true);
     const parsed = enrollBodySchema.safeParse(req.body ?? {});
     if (!parsed.success) {
       throw badRequest(`Invalid site enrollment: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
@@ -169,6 +210,10 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
       throw badRequest(err instanceof Error ? err.message : "invalid site enrollment");
     }
 
+    if (body.caFingerprint && normalizeFingerprint(body.caFingerprint) !== fingerprint) {
+      throw badRequest("caFingerprint: does not match the sha256 of caCert");
+    }
+
     if (!(await deps.secretExists(companyId, body.tokenSecret))) {
       throw badRequest(`tokenSecret: company secret "${body.tokenSecret}" not found`);
     }
@@ -177,6 +222,9 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
         `clientCertSecretKey: no company secret "${body.clientCertSecretKey}" (or "-cert" + "-key" pair) found`,
       );
     }
+
+    const certError = await clientCertSignedByCa(deps, companyId, body.clientCertSecretKey, body.caCert);
+    if (certError) throw badRequest(certError);
 
     if (await deps.getSite(companyId, body.name)) throw conflict(`Site "${body.name}" is already enrolled`);
 
@@ -208,11 +256,15 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
   }
 
   async function handleDelete(req: Request, res: Response): Promise<void> {
-    const companyId = companyOf(req);
+    const companyId = companyOf(req, true);
     const name = typeof req.params.name === "string" ? req.params.name : "";
     if (!name) throw badRequest("name required");
+    const bots = await deps.countBotsOnSite(companyId, name);
+    if (bots > 0) {
+      throw conflict(`Site "${name}" still hosts ${bots} bot(s): move them off (container.host) before removing it`);
+    }
     if (!(await deps.deleteSite(companyId, name))) throw notFound(`Site "${name}" not found`);
-    res.json({ ok: true });
+    res.status(204).end();
   }
 
   router.get("/companies/:companyId/fleet/sites", (req, res, next) => {

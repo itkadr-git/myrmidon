@@ -3,7 +3,7 @@
 // myrmidon(1.6.6 T1): Remote sites registry, CRUD, env bootstrap, and
 // dynamic FleetClientManager for mTLS and hot-reload.
 
-import { createHash } from "node:crypto";
+import { X509Certificate, createHash } from "node:crypto";
 import https from "node:https";
 import type { Db } from "@myrmidon/db";
 import {
@@ -349,6 +349,15 @@ export interface FleetClientManager {
   close(): void;
 }
 
+/** sha256 (lowercase hex) of the DER of the first certificate in `pem`; null when it is not a certificate. */
+export function caCertFingerprint(pem: string): string | null {
+  try {
+    return createHash("sha256").update(new X509Certificate(pem).raw).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
 export function parseTlsCredentials(raw: string): { cert?: string; key?: string } {
   const trimmed = raw.trim();
   if (!trimmed) return {};
@@ -459,6 +468,15 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
       for (const site of activeSites) {
         const key = fleetSiteKey(site.companyId, site.name);
         activeKeys.add(key);
+
+        // myrmidon(OPE-8999): the CA pinned at enroll must still be the CA we are about to trust.
+        if (site.caCert && site.caCertFingerprint && caCertFingerprint(site.caCert) !== site.caCertFingerprint) {
+          logWarn(
+            { companyId: site.companyId, site: site.name },
+            "fleet site CA does not match its enrolled fingerprint; client not (re)built",
+          );
+          continue;
+        }
 
         let token: string | undefined;
         if (site.tokenSecret) {
