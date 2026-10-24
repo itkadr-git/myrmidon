@@ -41,7 +41,9 @@ Contract (code: `server/src/myrmidon/secret-settings/`, tests: `resolver.myrmido
 - Registry: a setting exists only if a consumer registers it in `registry.ts` with `name`, `envOverride` and the `consumers` allowed to resolve it. Other E2 parts append their rows there.
 - Resolution order: consumer in scope (else 403 `setting_consumer_denied`), then the emergency env override (set and non-empty wins, documented and tested), then the bound ref (else 422 `setting_ref_missing`; inactive or deleted secret fails typed). Values are registered for log masking and never appear in API bodies, plans or errors.
 - API (instance admin only): `GET /api/instance/secret-settings`, `PUT|DELETE /api/instance/secret-settings/:name/ref` (body is a secret id), `GET /api/instance/secret-settings/migration-plan` (dry run: booleans per name, no values). Mutations write `instance.secret_setting.*` activity.
-- Not in this slice: the board UI picker and the consumers of the other E2 groups; they build on this contract.
+- UI (slice 2): `InstanceSecretSettingsPanel` in the current UI (Settings, General) and `Ui2InstanceSecretSettings` in UI2 (Settings, System) choose and remove a ref through one hook; both render nothing while the registry is empty. `POST /api/instance/secret-settings/migrate` is a dry run unless the body says `"apply": true` (then it needs `companyId`, creates a managed secret per env-held setting, binds it, leaves the env variable in place, returns ids only).
+- Resolution goes through the secrets service with the binding context because `ctx.secrets.resolve` is the plugin-worker context (plugin-host-services, capability `secrets.resolve`); the core server has no such ctx on this path.
+- Not in this slice: the consumers of the other E2 groups; they build on this contract.
 
 Disposition of the exact E1 names of this part (the source lines are those listed in the ticket):
 

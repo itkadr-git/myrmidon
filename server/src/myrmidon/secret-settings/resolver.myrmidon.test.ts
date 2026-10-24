@@ -33,6 +33,7 @@ function makeStore() {
     [SECRET_B, { name: "old", status: "disabled", companyId: COMPANY, value: "x" }],
   ]);
   const resolved: Array<{ settingName: string; consumerId: string }> = [];
+  const created: Array<{ name: string; companyId: string }> = [];
   const store: InstanceSecretSettingStore = {
     async getBinding(name) {
       return bindings.get(name) ?? null;
@@ -50,6 +51,13 @@ function makeStore() {
       const secret = secrets.get(secretId);
       return secret ? { name: secret.name, status: secret.status, companyId: secret.companyId } : null;
     },
+    async createSecret(input) {
+      if (input.value === "boom") throw new Error(`provider failed for ${input.value}`);
+      const id = `66666666-6666-4666-8666-${String(secrets.size).padStart(12, "0")}`;
+      secrets.set(id, { name: input.name, status: "active", companyId: input.companyId, value: input.value });
+      created.push({ name: input.name, companyId: input.companyId });
+      return id;
+    },
     async setBinding(name, secretId) {
       const binding = { companyId: COMPANY, secretId };
       bindings.set(name, binding);
@@ -59,7 +67,7 @@ function makeStore() {
       return bindings.delete(name);
     },
   };
-  return { store, bindings, secrets, resolved };
+  return { store, bindings, secrets, resolved, created };
 }
 
 function make(env: NodeJS.ProcessEnv = {}) {
@@ -202,6 +210,52 @@ describe("instance secret setting resolver", () => {
     await t.resolver.setRef(NAME, SECRET_A);
     expect((await t.resolver.migrationPlan())[0]).toMatchObject({ refBound: true, action: "unset_env_when_ready" });
     expect(t.resolved).toHaveLength(0);
+  });
+});
+
+describe("migration", () => {
+  const ENV = { TEST_CLOUD_GDRIVE_CLIENT_SECRET: ENV_VALUE };
+
+  it("is a dry run by default: nothing is created or bound, no value is shown", async () => {
+    const t = make(ENV);
+    const out = await t.resolver.migrate({});
+    expect(out.dryRun).toBe(true);
+    expect(out.rows).toEqual([
+      { name: NAME, envOverride: "TEST_CLOUD_GDRIVE_CLIENT_SECRET", outcome: "planned" },
+    ]);
+    expect(t.created).toHaveLength(0);
+    expect(t.bindings.size).toBe(0);
+    expect(JSON.stringify(out)).not.toContain(ENV_VALUE);
+  });
+
+  it("only exactly apply:true writes, and it needs a company", async () => {
+    const t = make(ENV);
+    expect((await t.resolver.migrate({ apply: undefined, companyId: COMPANY })).dryRun).toBe(true);
+    expect(await codeOf(t.resolver.migrate({ apply: true }))).toMatchObject({ code: "migration_company_required" });
+    expect(t.created).toHaveLength(0);
+  });
+
+  it("apply creates the secret, binds it, leaves env alone and never echoes the value", async () => {
+    const t = make(ENV);
+    const out = await t.resolver.migrate({ apply: true, companyId: COMPANY });
+    expect(out.dryRun).toBe(false);
+    expect(out.rows[0]).toMatchObject({ name: NAME, outcome: "bound" });
+    expect(t.created).toEqual([{ name: `instance-setting.${NAME}`, companyId: COMPANY }]);
+    expect(t.bindings.get(NAME)?.secretId).toBe(out.rows[0]!.secretId);
+    expect(JSON.stringify(out)).not.toContain(ENV_VALUE);
+    expect(ENV.TEST_CLOUD_GDRIVE_CLIENT_SECRET).toBe(ENV_VALUE);
+    // Second apply is idempotent: the ref exists, nothing more is created.
+    const again = await t.resolver.migrate({ apply: true, companyId: COMPANY });
+    expect(again.rows[0]!.outcome).toBe("skipped");
+    expect(t.created).toHaveLength(1);
+  });
+
+  it("a failing provider is reported without the value", async () => {
+    const t = make({ TEST_CLOUD_GDRIVE_CLIENT_SECRET: "boom" });
+    const failure = await codeOf(t.resolver.migrate({ apply: true, companyId: COMPANY }));
+    expect(failure).toMatchObject({ status: 422, code: "migration_failed" });
+    expect(JSON.stringify(failure)).not.toContain("boom");
+    expect(t.bindings.size).toBe(0);
   });
 });
 
