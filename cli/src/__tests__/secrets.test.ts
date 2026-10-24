@@ -317,6 +317,35 @@ describe("secrets API parity commands", () => {
   });
 });
 
+describe("secrets settings (instance secret refs)", () => {
+  it("reads the instance settings endpoint and renders no value field", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(jsonResponse({
+        settings: [{
+          name: "sandbox.daytona.api_key",
+          envOverride: "DAYTONA_API_KEY",
+          envOverrideActive: false,
+          effectiveSource: "secret_ref",
+          value: "must-not-print",
+          ref: { secretId: "s-1", secretName: "daytona", status: "active", value: "must-not-print" },
+        }],
+      })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const out: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void out.push(a.join(" ")));
+    await runSecretCommand(["secrets", "settings", "--json"]);
+    spy.mockRestore();
+    expect(fetchMock.mock.calls.map((c) => [c[1]?.method ?? "GET", c[0]])).toEqual([
+      ["GET", "http://localhost:3100/api/instance/secret-settings"],
+    ]);
+    const printed = out.join("\n");
+    expect(printed).toContain("sandbox.daytona.api_key");
+    expect(printed).toContain("s-1");
+    expect(printed).not.toContain("must-not-print");
+  });
+});
+
 async function runSecretCommand(args: string[]): Promise<void> {
   const program = new Command();
   program.exitOverride();

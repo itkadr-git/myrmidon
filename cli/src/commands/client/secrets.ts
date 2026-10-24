@@ -224,6 +224,29 @@ function renderDeclaration(input: CompanyPortabilityEnvInput): Record<string, un
   };
 }
 
+// myrmidon(E2.8): read-only view of instance secret-ref settings (instance admin). The API
+// carries names, ref ids and booleans only; this renderer copies an explicit field list so a
+// value could never be printed even if a server added one.
+export interface InstanceSecretSettingRow {
+  name: string;
+  envOverride: string;
+  envOverrideActive: boolean;
+  effectiveSource: string;
+  ref: { secretId: string; secretName: string | null; status: string | null } | null;
+}
+
+export function renderInstanceSecretSetting(row: InstanceSecretSettingRow): Record<string, unknown> {
+  return {
+    name: row.name,
+    effectiveSource: row.effectiveSource,
+    envOverride: row.envOverride,
+    envOverrideActive: row.envOverrideActive ? "yes" : "no",
+    refSecretId: row.ref?.secretId ?? "-",
+    refSecretName: row.ref?.secretName ?? "-",
+    refStatus: row.ref?.status ?? "-",
+  };
+}
+
 function renderSecret(secret: CompanySecret): Record<string, unknown> {
   return {
     id: secret.id,
@@ -383,6 +406,22 @@ export function registerSecretCommands(program: Command): void {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const rows = (await ctx.api.get<CompanySecret[]>(apiPath`/api/companies/${ctx.companyId}/secrets`)) ?? [];
           printOutput(ctx.json ? rows : rows.map(renderSecret), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    secrets
+      .command("settings")
+      .description("Show instance secret-ref settings and their bound refs (instance admin; never prints values)")
+      .action(async (opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const res = await ctx.api.get<{ settings: InstanceSecretSettingRow[] }>("/api/instance/secret-settings");
+          const rows = res?.settings ?? [];
+          printOutput(rows.map(renderInstanceSecretSetting), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
