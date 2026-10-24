@@ -618,6 +618,67 @@ describe("agent routes adapter validation", () => {
     }
   });
 
+  it("keeps the pinned container image on edit of an existing hermes_gateway agent and refuses a tag-only image (OPE-8916)", async () => {
+    const { registerServerAdapter, unregisterServerAdapter, getServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("hermes_gateway");
+    unregisterServerAdapter("hermes_gateway");
+    registerServerAdapter({ ...externalAdapter, type: "hermes_gateway" });
+    try {
+      const pinned = `example/hermes@sha256:${"b".repeat(64)}`;
+      const container = { enabled: true, image: pinned, memoryMb: 2048, cpus: 1, pidsLimit: 512 };
+      const existing = await mockAgentService.getById();
+      mockAgentService.getById.mockResolvedValue({
+        ...existing,
+        adapterType: "hermes_gateway",
+        adapterConfig: { container, note: "old" },
+      });
+      const app = await createApp();
+      const agentPath = "/api/agents/11111111-1111-4111-8111-111111111111";
+
+      // The UI patch-builder sends the whole merged config back with replaceAdapterConfig.
+      const edit = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(agentPath)
+          .send({
+            adapterConfig: { container: { ...container, memoryMb: 3072 }, note: "new" },
+            replaceAdapterConfig: true,
+          }),
+      );
+      expect(edit.status, JSON.stringify(edit.body)).toBe(200);
+      const saved = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      const savedContainer = (saved.adapterConfig as Record<string, unknown>).container as Record<string, unknown>;
+      expect(savedContainer.image).toBe(pinned);
+      expect(JSON.stringify(saved)).not.toContain(":latest");
+
+      // A non-container edit without replace keeps the stored container block untouched.
+      mockAgentService.update.mockClear();
+      const plain = await requestApp(app, (baseUrl) =>
+        request(baseUrl).patch(agentPath).send({ adapterConfig: { note: "again" } }),
+      );
+      expect(plain.status, JSON.stringify(plain.body)).toBe(200);
+      const plainSaved = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      const plainContainer = (plainSaved.adapterConfig as Record<string, unknown>).container as Record<string, unknown>;
+      expect(plainContainer.image).toBe(pinned);
+
+      // A tag-only image is refused with a clear 422 and nothing is written.
+      mockAgentService.update.mockClear();
+      const bad = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(agentPath)
+          .send({
+            adapterConfig: { container: { ...container, image: "myrmidon-hermes:latest" } },
+            replaceAdapterConfig: true,
+          }),
+      );
+      expect(bad.status, JSON.stringify(bad.body)).toBe(422);
+      expect(String(bad.body.error ?? bad.body.message ?? "")).toContain("not pinned by digest");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    } finally {
+      unregisterServerAdapter("hermes_gateway");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>

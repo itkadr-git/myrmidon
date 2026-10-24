@@ -41,7 +41,9 @@ Contract (code: `server/src/myrmidon/secret-settings/`, tests: `resolver.myrmido
 - Registry: a setting exists only if a consumer registers it in `registry.ts` with `name`, `envOverride` and the `consumers` allowed to resolve it. Other E2 parts append their rows there.
 - Resolution order: consumer in scope (else 403 `setting_consumer_denied`), then the emergency env override (set and non-empty wins, documented and tested), then the bound ref (else 422 `setting_ref_missing`; inactive or deleted secret fails typed). Values are registered for log masking and never appear in API bodies, plans or errors.
 - API (instance admin only): `GET /api/instance/secret-settings`, `PUT|DELETE /api/instance/secret-settings/:name/ref` (body is a secret id), `GET /api/instance/secret-settings/migration-plan` (dry run: booleans per name, no values). Mutations write `instance.secret_setting.*` activity.
-- Not in this slice: the board UI picker and the consumers of the other E2 groups; they build on this contract.
+- UI (slice 2): `InstanceSecretSettingsPanel` in the current UI (Settings, General) and `Ui2InstanceSecretSettings` in UI2 (Settings, System) choose and remove a ref through one hook; both render nothing while the registry is empty. `POST /api/instance/secret-settings/migrate` is a dry run unless the body says `"apply": true` (then it needs `companyId`, creates a managed secret per env-held setting, binds it, leaves the env variable in place, returns ids only).
+- Resolution goes through the secrets service with the binding context because `ctx.secrets.resolve` is the plugin-worker context (plugin-host-services, capability `secrets.resolve`); the core server has no such ctx on this path.
+- Not in this slice: the consumers of the other E2 groups; they build on this contract.
 
 Disposition of the exact E1 names of this part (the source lines are those listed in the ticket):
 
@@ -55,6 +57,21 @@ Disposition of the exact E1 names of this part (the source lines are those liste
 
 The E1 `secret` classification of the bootstrap rows stays as the registry has it (the matrix does not alter E1); their accepted disposition is "bootstrap, no ref", with the threat model above.
 
+
+## E2.4 tool OAuth / gateway credential refs (OPE-9037)
+
+Code: `server/src/myrmidon/secret-settings/registry.ts` (entry `tool-oauth.client-secret`, family `tool-oauth.<provider>.client-secret`), `tool-oauth.ts` (lookup), consumer `oauthClientConfig` in `server/src/services/tool-access.ts`. Tests: `tool-oauth.myrmidon.test.ts`.
+
+Resolution for a preconfigured OAuth client (a client id exists), first hit wins: `PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_SECRET` (emergency env) -> `MYRMIDON_TOOL_OAUTH_CLIENT_SECRET` / `PAPERCLIP_` alias (emergency env) -> ref bound to `tool-oauth.<provider>.client-secret` -> ref bound to `tool-oauth.client-secret`. The resolver runs only on the server, only for consumer `tool-access.oauth`, and registers the value for log masking. A missing ref yields no secret (public client); a bound but disabled/deleted secret fails typed and does not degrade silently. Provider members of the family are set through the existing API (`PUT /api/instance/secret-settings/tool-oauth.<provider>.client-secret/ref`); members are not enumerated in the list because providers are discovered at runtime.
+
+| Names | Disposition | Reason / evidence |
+| --- | --- | --- |
+| `MYRMIDON_TOOL_OAUTH_CLIENT_SECRET` (`tool-access.ts` `oauthClientConfig`) | secret, ref-backed: setting `tool-oauth.client-secret`, env is the emergency override | Priority, missing, replace/revoke, denied scope, masking and non-disclosure: `tool-oauth.myrmidon.test.ts`. |
+| `PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_SECRET` (dynamic) | secret, ref-backed: family `tool-oauth.<provider>.client-secret`, env is the emergency override | Same tests; the env name is derived exactly as `oauthEnvName` does (test "derives the provider setting name and env name like the legacy generator"). |
+| `MYRMIDON_MCP_GATEWAY_TOKEN_REQUEST_LIMIT`, `MYRMIDON_MCP_GATEWAY_TOKEN_REQUEST_WINDOW_MS` | not secret, operator configuration | `tool-gateway.ts` reads them as positive integers for the token-request rate limit (`positiveInt(readProductEnv(...), default)`). A request count and a window in milliseconds are not credentials; a ref would add no protection. Guarded by "does not register the non-secret gateway limits or allowed hosts". The E1 `secret` classification is a misclassification; E1 file is not altered. |
+| `MYRMIDON_TOKEN_BROKER_ALLOWED_HOSTS` | not secret, operator policy | `tool-access.ts` `tokenBrokerAllowedPrivateHosts` parses a list of allowlisted host names for private-network token brokers. Host names are routing policy, not credentials. Same guard. |
+
+UI: the ref picker is the one from the E2 settings UI (#1736) over `/api/instance/secret-settings`; this part adds the registry rows it lists and no UI of its own.
 
 ## E2.5 cloud OAuth / connector identity refs (OPE-9038)
 
