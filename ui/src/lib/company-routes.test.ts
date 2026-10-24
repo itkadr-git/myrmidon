@@ -23,6 +23,7 @@ describe("company routes", () => {
     }
     // UI2 company routes are registered in the shell rather than boardRoutes().
     boardRouteRoots.add("system");
+    boardRouteRoots.add("quality");
     const source = readFileSync(fileURLToPath(new URL("./company-routes.ts", import.meta.url)), "utf8");
     const rootsBlock = source.match(/const BOARD_ROUTE_ROOTS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
     expect(rootsBlock).toBeDefined();
@@ -32,7 +33,7 @@ describe("company routes", () => {
     expect([...boardRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
   });
 
-  it.each(["swarm-claim", "foraging", "quality", "status", "cases", "pipelines", "stack"])(
+  it.each(["swarm-claim", "foraging", "quality", "status", "system", "cases", "pipelines", "stack"])(
     "scopes the Myrmidon %s menu route to the current company",
     (root) => {
       const pathname = `/${root}`;

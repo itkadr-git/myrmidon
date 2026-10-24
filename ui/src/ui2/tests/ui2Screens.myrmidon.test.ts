@@ -42,6 +42,19 @@ describe("myrmidon(UI2) route table integration", () => {
     ]);
   });
 
+  it("keeps the system and quality routes and navigation singular", () => {
+    const byKey = new Map(UI2_ROUTE_TABLE.map((entry) => [entry.key, entry]));
+    expect(byKey.get("system")?.path).toBe("system");
+    expect(byKey.get("quality")?.path).toBe("quality");
+    for (const [path, key] of [["/system", "system"], ["/quality", "quality"]] as const) {
+      const route = byKey.get(key)!;
+      expect(route.path).toBe(path.slice(1));
+      expect(route.element).toBeTruthy();
+      expect(UI2_NAV_GROUPS.flatMap((group) => group.items).filter((item) => item.to === path)).toHaveLength(1);
+      expect(UI2_PHONE_TABS.filter((item) => item.to === path)).toHaveLength(1);
+    }
+  });
+
   it("marks the knowledge and regulations nav items as gated on the knowledge API", () => {
     const items = UI2_NAV_GROUPS.flatMap((group) => group.items);
     for (const to of ["/knowledge", "/company/settings/autonomy/regulations"]) {
