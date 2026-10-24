@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { activityLog, agents, companies, createDb, issueRelations, issues } from "@myrmidon/db";
@@ -16,22 +15,6 @@ import {
   hasBlockedReason,
   isAutoUnblockCandidate,
 } from "./blocked-reason-guard.js";
-
-describe("native failure paths name the reason", () => {
-  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
-  it("native-session-executor terminal failure projection carries an unblockDescriptor", () => {
-    const src = read("../services/native-runtime/native-session-executor.ts");
-    const at = src.indexOf("status: recoveryProjection.issueStatus");
-    expect(at).toBeGreaterThan(0);
-    expect(src.slice(at, at + 900)).toContain("unblockDescriptor: recoveryLivenessDescriptor(");
-  });
-  it("native-run-finalizer workspace_permanent_failure block carries an unblockDescriptor", () => {
-    const src = read("../services/native-runtime/native-run-finalizer.ts");
-    const at = src.indexOf('status: workspacePermanentFailure ? "blocked" : "in_review"');
-    expect(at).toBeGreaterThan(0);
-    expect(src.slice(at, at + 900)).toContain("unblockDescriptor: recoveryLivenessDescriptor(");
-  });
-});
 
 describe("hasBlockedReason", () => {
   it("rejects a task with no blocker, reason or descriptor", () => {

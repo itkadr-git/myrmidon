@@ -1,5 +1,5 @@
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
-import { recoveryLivenessDescriptor } from "../../myrmidon/stale-block/event-keys.js";
+import { buildNativeFailureBlockedPatch } from "../../myrmidon/native-failure-block.js";
 import { conversationNativeDecision, isConversation } from "../agent-conversations.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
@@ -439,21 +439,19 @@ async function recordRetryableFailure(input: {
     } else if (exhausted) {
       const workspacePermanentFailure =
         input.permanent && input.failureScope === "workspace";
+      // myrmidon(BLOCKED-REASON): workspace_permanent_failure needs a named
+      // reason and a senior agent as the unblock owner, or the guard refuses
+      // the block and rolls the failure back.
       await issueService(tx as unknown as Db).update(
         input.coordinator.issueId,
-        {
-          status: workspacePermanentFailure ? "blocked" : "in_review",
-          // myrmidon(BLOCKED-REASON): workspace_permanent_failure needs a named
-          // reason or the guard refuses the block and rolls the failure back.
-          ...(workspacePermanentFailure
-            ? {
-                unblockDescriptor: recoveryLivenessDescriptor(
-                  input.coordinator.issueId,
-                  "The workspace failed permanently: repair or replace the workspace, then move the task out of blocked.",
-                ),
-              }
-            : {}),
-        },
+        workspacePermanentFailure
+          ? await buildNativeFailureBlockedPatch(tx as unknown as Db, {
+              issueId: input.coordinator.issueId,
+              companyId: input.run.companyId,
+              action:
+                "The workspace failed permanently: repair or replace the workspace, then move the task out of blocked.",
+            })
+          : { status: "in_review" },
         tx,
       );
     }
