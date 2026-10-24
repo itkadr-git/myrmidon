@@ -618,6 +618,112 @@ describe("agent routes adapter validation", () => {
     }
   });
 
+  // myrmidon(1.6.6, OPE-8916): the original incident was an EDIT of an existing
+  // hermes_gateway agent — a UI save replaced the pinned image with a
+  // `myrmidon-hermes:latest` tag. These route regressions replay that edit path:
+  // a successful save of an existing pinned agent must keep the stored image
+  // exactly, and a tag-only image must be refused with a clear 422 before any
+  // value is persisted.
+  describe("hermes_gateway container image on PATCH (OPE-8916)", () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    const pinnedImage = `ghcr.io/itkadr-git/myrmidon-hermes@sha256:${"b".repeat(64)}`;
+    const pinnedContainer = { enabled: true, image: pinnedImage, memoryMb: 2048, cpus: 2, pidsLimit: 512 };
+
+    function mockExistingHermesAgent() {
+      mockAgentService.getById.mockResolvedValue({
+        id: agentId,
+        companyId: "company-1",
+        name: "Hermes Bot",
+        urlKey: "hermes",
+        role: "engineer",
+        title: null,
+        icon: null,
+        status: "idle",
+        reportsTo: null,
+        capabilities: null,
+        adapterType: "hermes_gateway",
+        adapterConfig: { promptTemplate: "Work the issue.", container: { ...pinnedContainer } },
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        spentMonthlyCents: 0,
+        pauseReason: null,
+        pausedAt: null,
+        permissions: { canCreateAgents: false },
+        lastHeartbeatAt: null,
+        metadata: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
+
+    it("saving a non-image field of an existing pinned agent keeps the stored image unchanged", async () => {
+      mockExistingHermesAgent();
+      const app = await createApp();
+      // The UI patch-builder sends the FULL effective config (existing merged
+      // with the edited keys) plus replaceAdapterConfig: true.
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(`/api/agents/${agentId}`)
+          .send({
+            adapterConfig: {
+              promptTemplate: "Work the issue harder.",
+              container: { ...pinnedContainer },
+            },
+            replaceAdapterConfig: true,
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      const container = (patch.adapterConfig as Record<string, unknown>).container as Record<string, unknown>;
+      expect(container.image).toBe(pinnedImage);
+      expect(JSON.stringify(patch)).not.toContain("myrmidon-hermes:latest");
+    });
+
+    it("saving a container limit change of an existing pinned agent keeps the stored image unchanged", async () => {
+      mockExistingHermesAgent();
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(`/api/agents/${agentId}`)
+          .send({
+            adapterConfig: {
+              promptTemplate: "Work the issue.",
+              container: { ...pinnedContainer, memoryMb: 4096 },
+            },
+            replaceAdapterConfig: true,
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      const container = (patch.adapterConfig as Record<string, unknown>).container as Record<string, unknown>;
+      expect(container.image).toBe(pinnedImage);
+      expect(container.memoryMb).toBe(4096);
+      expect(JSON.stringify(patch)).not.toContain("myrmidon-hermes:latest");
+    });
+
+    it("refuses a PATCH that would store a tag-only image with a clear 422 and persists nothing", async () => {
+      mockExistingHermesAgent();
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(`/api/agents/${agentId}`)
+          .send({
+            adapterConfig: {
+              promptTemplate: "Work the issue.",
+              container: { ...pinnedContainer, image: "myrmidon-hermes:latest" },
+            },
+            replaceAdapterConfig: true,
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error ?? res.body.message ?? "")).toContain("not pinned by digest");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+  });
+
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>

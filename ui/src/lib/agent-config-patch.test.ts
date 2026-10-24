@@ -150,6 +150,49 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("keeps the pinned bot container image when saving an unrelated field (OPE-8916)", () => {
+    // The 1.6.6 defect: a UI save of an existing hermes_gateway agent replaced
+    // the stored `name@sha256:<64 hex>` image with `myrmidon-hermes:latest`.
+    // The patch-builder merges the overlay over the existing adapter config,
+    // so a save that does not touch `container` must carry the stored pinned
+    // image through untouched — and must never synthesize a tag default.
+    const agent = makeAgent();
+    agent.adapterType = "hermes_gateway";
+    agent.adapterConfig = {
+      promptTemplate: "Work the issue.",
+      container: {
+        enabled: true,
+        image: `ghcr.io/itkadr-git/myrmidon-hermes@sha256:${"b".repeat(64)}`,
+        memoryMb: 2048,
+        cpus: 2,
+        pidsLimit: 512,
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        adapterConfig: {
+          promptTemplate: "Work the issue harder.",
+        },
+      }),
+    );
+
+    expect(patch).toEqual({
+      adapterConfig: {
+        promptTemplate: "Work the issue harder.",
+        container: {
+          enabled: true,
+          image: `ghcr.io/itkadr-git/myrmidon-hermes@sha256:${"b".repeat(64)}`,
+          memoryMb: 2048,
+          cpus: 2,
+          pidsLimit: 512,
+        },
+      },
+      replaceAdapterConfig: true,
+    });
+  });
+
   it("preserves paperclip skill-sync selections when changing adapter types", () => {
     // Desired skills are adapter-agnostic (company-level selections) but are
     // persisted inside the per-adapter config under `paperclipSkillSync`. A

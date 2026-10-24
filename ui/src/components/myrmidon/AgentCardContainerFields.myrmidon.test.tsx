@@ -257,6 +257,24 @@ describe("myrmidon(W2b) container card section", () => {
     expect(cleared.memoryMb).toBe(1024);
   });
 
+  it("keeps a digest-pinned image untouched when a limit is edited (OPE-8916)", () => {
+    // myrmidon(1.6.6, OPE-8916): a UI save must never replace the stored
+    // `name@sha256:<64 hex>` bot image with a tag such as
+    // `myrmidon-hermes:latest`. Editing a limit emits a full card with the
+    // stored image carried over verbatim.
+    const pinned = `ghcr.io/itkadr-git/myrmidon-hermes@sha256:${"b".repeat(64)}`;
+    const pinnedCard = { ...CARD, image: pinned };
+    const { onChange } = renderView({ value: pinnedCard });
+
+    expect((byId("image") as HTMLInputElement).value).toBe(pinned);
+
+    setText(byId("memoryMb")!, "4096");
+    const next = onChange.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(next).toEqual({ ...pinnedCard, memoryMb: 4096 });
+    expect(next.image).toBe(pinned);
+    expect(JSON.stringify(next)).not.toContain("myrmidon-hermes:latest");
+  });
+
   it("validates the numbers: a valid entry is stored, an invalid one is flagged and not stored", () => {
     const { onChange } = renderView();
 
