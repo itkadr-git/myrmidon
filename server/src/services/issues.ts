@@ -1,5 +1,6 @@
 import { documentService } from "./documents.js";
 // myrmidon(P5): lock owner lifecycle in checkout 409s
+import { blockerOpenCondition, isBlockerOpen, isBlockerResolved } from "../myrmidon/blocker-resolved.js";
 import { checkoutRunStatusForIssue } from "../myrmidon/issue-checkout-guard.js";
 
 // myrmidon(1.6.5 OPE-6608): the board matcher's issue events
@@ -2627,7 +2628,7 @@ async function listIssueDependencyReadinessMap(
     // Done and cancelled blockers both resolve dependents (ADM decision
     // 24.10, OPE-8904): a cancelled blocker can never finish. The workspace
     // sync-back barrier below applies to done blockers only.
-    if (row.blockerStatus !== "done" && row.blockerStatus !== "cancelled") {
+    if (isBlockerOpen(row.blockerStatus)) {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
       current.allBlockersDone = false;
@@ -2727,7 +2728,7 @@ async function returnReasonlessDependentsToTodo(
         eq(issueRelations.companyId, doneBlocker.companyId),
         eq(issueRelations.type, "blocks"),
         inArray(issueRelations.relatedIssueId, eligible.map((row) => row.id)),
-        notInArray(issues.status, ["done", "cancelled"]),
+        blockerOpenCondition(issues.status),
       ),
     );
   const stillHeld = new Set(openRows.map((row) => row.dependentId));
@@ -2785,7 +2786,7 @@ async function listUnresolvedBlockerIssueIds(
         eq(issues.companyId, companyId),
         inArray(issues.id, uniqueBlockerIssueIds),
         // Done and cancelled blockers are both resolved (OPE-8904).
-        notInArray(issues.status, ["done", "cancelled"]),
+        blockerOpenCondition(issues.status),
       ),
     )
     .then((rows) => rows.map((row) => row.id));
@@ -3649,7 +3650,7 @@ async function terminalExplicitBlockersByRoot(
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
-            ne(issues.status, "done"),
+            blockerOpenCondition(issues.status),
           ),
         );
 
@@ -3804,7 +3805,7 @@ async function listIssueBlockerAttentionMap(
 
       const unresolvedExplicitBlockerRows = explicitBlockerRows.filter(
         (row) =>
-          row.status !== "done" ||
+          isBlockerOpen(row.status) ||
           pendingFinalizeBlockerIssueIds.has(row.blockerIssueId),
       );
       appendBlockerAttentionEdges(edgesByIssueId, [
@@ -3916,7 +3917,7 @@ async function listIssueBlockerAttentionMap(
   }
 
   const explicitWaitCandidateIds = [...nodesById.values()]
-    .filter((node) => node.status !== "done")
+    .filter((node) => isBlockerOpen(node.status))
     .map((node) => node.id);
   const explicitWaitingIssueIds = new Set<string>();
   if (explicitWaitCandidateIds.length > 0) {
@@ -4193,7 +4194,7 @@ async function listIssueBlockerAttentionMap(
     const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => {
       const blocker = nodesById.get(edge.blockerIssueId);
       return (
-        blocker?.status !== "done" ||
+        isBlockerOpen(blocker?.status) ||
         pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId)
       );
     });
@@ -4284,7 +4285,7 @@ async function listIssueBlockerAttentionMap(
     return (edgesByIssueId.get(node.id) ?? []).some((edge) => {
       const blocker = nodesById.get(edge.blockerIssueId);
       if (
-        blocker?.status === "done" &&
+        isBlockerResolved(blocker?.status) &&
         !pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId)
       )
         return false;
@@ -4304,7 +4305,7 @@ async function listIssueBlockerAttentionMap(
     const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
       const blocker = nodesById.get(edge.blockerIssueId);
       return (
-        blocker?.status !== "done" ||
+        isBlockerOpen(blocker?.status) ||
         pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId)
       );
     });

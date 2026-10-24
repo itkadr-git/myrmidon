@@ -1,4 +1,5 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
+import { blockerOpenSql } from "../myrmidon/blocker-resolved.js";
 import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
 // myrmidon(1.6.6 RUN-RETRY-POLICY): classification/backoff/attempt limit of a
 // failed run's retry; the schedule this file queues records itself with
@@ -13554,7 +13555,7 @@ export function heartbeatService(
                 from issues blocker
                 where blocker.id = ${issueRelations.issueId}
                   and blocker.company_id = ${issue.companyId}
-                  and blocker.status not in ('done', 'cancelled')
+                  and ${blockerOpenSql('blocker.status')}
                   and blocker.hidden_at is null
               )`,
               ),

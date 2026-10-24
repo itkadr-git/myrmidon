@@ -39,6 +39,7 @@
 //   * T10 — `pickAgentForTask`: the scent pick; absent, every score is equal and
 //     the tie goes to the smallest `agents.id`.
 
+import { blockerOpenSql } from "../blocker-resolved.js";
 import { and, asc, count, eq, gte, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import {
   agentWakeupRequests,
@@ -1164,7 +1165,7 @@ function readyQueueConditions(db: Db, companyId: string): SQL[] {
       where ir.company_id = ${issues.companyId}
         and ir.related_issue_id = ${issues.id}
         and ir.type = 'blocks'
-        and blocker.status <> 'done'
+        and ${blockerOpenSql('blocker.status')}
     )`,
     sql`not exists (
       select 1

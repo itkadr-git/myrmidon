@@ -1,4 +1,5 @@
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { blockerOpenSql } from "./blocker-resolved.js";
 import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
@@ -396,7 +397,7 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status not in ('done', 'cancelled')
+            and ${blockerOpenSql('blocker.status')}
         )`,
         // Not a container: an issue with an open child is a plan container,
         // and the children are the real work, not the parent.

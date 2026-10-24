@@ -1,4 +1,5 @@
 // myrmidon(UPSTREAM-13539): resolved interaction cards project into the comment queue (wait/steer/interrupt).
+import { isBlockerResolved } from "../myrmidon/blocker-resolved.js";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
@@ -1383,7 +1384,7 @@ function buildIssueBlockerDiagnosticsResponse(input: {
         isUnresolved,
         isPendingFinalize,
         isDependencyReady:
-          (blocker.status === "done" || blocker.status === "cancelled") &&
+          isBlockerResolved(blocker.status) &&
           !isPendingFinalize,
         flags,
       };

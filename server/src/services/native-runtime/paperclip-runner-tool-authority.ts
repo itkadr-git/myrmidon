@@ -1,4 +1,5 @@
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { blockerOpenCondition } from "../../myrmidon/blocker-resolved.js";
 import { PRODUCT_NAME as PN } from "../../myrmidon/product.js";
 import { callProjectTool } from "../project-tools.js";
 import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from "../connector-runtime.js";
@@ -700,7 +701,7 @@ export class PaperclipRunnerToolAuthority {
         ? await tx.select({ id: issues.id }).from(issues).where(and(
             eq(issues.companyId, this.binding.companyId),
             inArray(issues.id, blockedByIssueIds),
-            notInArray(issues.status, ["done", "cancelled"]),
+            blockerOpenCondition(issues.status),
           ))
         : [];
       const createInput = {
