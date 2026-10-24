@@ -28244,7 +28244,47 @@ export function heartbeatService(
     }
   }
 
+  // myrmidon(1.6.6 OPE-8998): the review-admission record written in the
+  // in_review transaction (insertReviewAdmissionWakeup) is the seed of the
+  // post-commit wake with the same idempotency key. When that wake becomes a
+  // run it reuses the record; when it is deferred (issue lock held), skipped
+  // or coalesced, the outcome is recorded on a separate row and the seed stayed
+  // `queued` without a run forever (prod 24.10: 9 of them, reviewers never
+  // started, idle pickup read each as a wake in flight). The intent lives on in
+  // the outcome row, so the seed is closed here.
+  async function closeUnservedReviewAdmission(agentId: string, idempotencyKey: string) {
+    const now = new Date();
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "coalesced", finishedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+          eq(agentWakeupRequests.status, "queued"),
+          isNull(agentWakeupRequests.runId),
+          sql`not exists (select 1 from ${heartbeatRuns} hr where hr.wakeup_request_id = ${agentWakeupRequests.id})`,
+        ),
+      );
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
+    const result = await enqueueWakeupInner(agentId, opts, executionWaitRequestId);
+    const key = opts.idempotencyKey;
+    if (typeof key === "string" && key.startsWith("issue-review-admission:")) {
+      try {
+        await closeUnservedReviewAdmission(agentId, key);
+      } catch (err) {
+        logger.warn(
+          { err: err instanceof Error ? err.message : String(err), agentId },
+          "enqueueWakeup: could not close unserved review-admission record",
+        );
+      }
+    }
+    return result;
+  }
+
+  async function enqueueWakeupInner(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {

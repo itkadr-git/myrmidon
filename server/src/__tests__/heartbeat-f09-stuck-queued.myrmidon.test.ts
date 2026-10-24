@@ -518,6 +518,68 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     expect(await statusOf(unrelated.id)).toBe("queued");
   }, 30_000);
 
+  it("myrmidon(1.6.6 OPE-8998): a review-admission wake that makes no run closes its seed record; one that makes a run keeps it", async () => {
+    pinAdmission({ maxConcurrentRuns: 0 });
+    applyRunPrioritySettings(readRunPriorityFromEnv({}));
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Reviewer", role: "engineer" });
+    const closedIssueId = await seedIssue(companyId, {
+      title: "Already closed",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "done",
+    });
+    const liveIssueId = await seedIssue(companyId, {
+      title: "Review me",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+    const seed = (issue: string) =>
+      db
+        .insert(agentWakeupRequests)
+        .values({
+          companyId,
+          agentId,
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "execution_review_requested",
+          payload: { issueId: issue },
+          status: "queued",
+          requestedByActorType: "user",
+          requestedByActorId: null,
+          idempotencyKey: `issue-review-admission:${issue}:${agentId}`,
+        })
+        .returning()
+        .then((rows) => rows[0]!);
+    const closedSeed = await seed(closedIssueId);
+    const liveSeed = await seed(liveIssueId);
+    const wake = (issue: string) =>
+      heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "execution_review_requested",
+        payload: { issueId: issue },
+        idempotencyKey: `issue-review-admission:${issue}:${agentId}`,
+        contextSnapshot: { issueId: issue, wakeReason: "execution_review_requested" },
+      });
+    expect(await wake(closedIssueId)).toBeNull();
+    const liveRun = await wake(liveIssueId);
+    expect(liveRun).not.toBeNull();
+
+    const load = (id: string) =>
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, id))
+        .then((rows) => rows[0]!);
+    const closed = await load(closedSeed.id);
+    expect(closed.status).toBe("coalesced");
+    expect(closed.finishedAt).not.toBeNull();
+    const live = await load(liveSeed.id);
+    expect(live.status).toBe("queued");
+    expect(live.runId).toBe(liveRun!.id);
+  }, 30_000);
+
   it("keeps a queued run on a hidden todo startable (Summarizer pattern)", async () => {
     // Hidden todos are the supported summary-slot / status-card pattern: the
     // Summarizer is woken through the regular queue on a hidden todo, so the
