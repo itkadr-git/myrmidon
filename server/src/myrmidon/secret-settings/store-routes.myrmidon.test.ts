@@ -10,7 +10,8 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb, type Db } from "@myrmidon/db";
+import { and, eq, like } from "drizzle-orm";
+import { companies, companySecrets, companySecretBindings, activityLog, createDb, type Db } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -156,7 +157,73 @@ describeEmbeddedPostgres("instance secret settings: routes and store on the real
     }
   });
 
-  it("migration is a dry run by default and returns no value; apply binds a real secret", async () => {
+  it("migrate reports a failed second row but keeps earlier successful audit and leaves no orphan", async () => {
+    const first = registry.get(NAME)!;
+    const second = { ...first, name: "test.cloud.second", envOverride: "TEST_CLOUD_SECOND_SECRET" };
+    const third = { ...first, name: "test.cloud.third", envOverride: "TEST_CLOUD_THIRD_SECRET" };
+    const localRegistry = new InstanceSecretSettingRegistry([first, second, third]);
+    const previousEnv = new Map([ENV_NAME, second.envOverride, third.envOverride].map((key) => [key, process.env[key]]));
+    env[ENV_NAME] = ENV_VALUE;
+    env[second.envOverride] = "second-value";
+    env[third.envOverride] = "third-value";
+    const svc = createInstanceSecretSettingService(db, localRegistry, env);
+    const audited: string[] = [];
+    try {
+      const rows = await svc.migrate({
+        apply: true,
+        companyId,
+        onBound: async (name) => {
+          audited.push(name);
+          if (name === second.name) throw new Error("audit failure");
+        },
+      });
+      expect(JSON.stringify(rows)).not.toContain("second-value");
+      expect([...audited].sort()).toEqual([first.name, second.name, third.name].sort());
+      expect(rows.rows.map((row) => [row.name, row.outcome]).sort()).toEqual(
+        [[first.name, "bound"], [second.name, "error"], [third.name, "bound"]].sort(),
+      );
+      expect(rows.rows.find((row) => row.name === second.name)).toMatchObject({ errorCode: "migration_failed" });
+      expect((await svc.status(second.name)).ref).toBeNull();
+            expect((await svc.status(first.name)).ref).not.toBeNull();
+      expect((await svc.status(third.name)).ref).not.toBeNull();
+      const names = await db.select({ name: companySecrets.name }).from(companySecrets);
+      expect(names.map((row) => row.name)).not.toContain("instance-setting.test.cloud.second");
+    } finally {
+      await svc.clearRef(first.name);
+      await svc.clearRef(third.name);
+      await db.delete(companySecrets).where(like(companySecrets.name, "instance-setting.%"));
+      for (const key of [ENV_NAME, second.envOverride, third.envOverride]) {
+        const value = previousEnv.get(key);
+        if (value === undefined) delete env[key];
+        else env[key] = value;
+      }
+    }
+  });
+
+  it("a foreign secret holding the migration name is a row error and is left untouched", async () => {
+    const foreignId = (
+      await secretService(db).create(companyId, {
+        name: `instance-setting.${NAME}`,
+        provider: "local_encrypted",
+        value: "foreign-value-77",
+        description: "someone else's",
+      })
+    ).id;
+    env[ENV_NAME] = ENV_VALUE;
+    try {
+      const out = await resolver().migrate({ apply: true, companyId });
+      expect(out.rows[0]).toMatchObject({ outcome: "error", errorCode: "migration_secret_name_conflict" });
+      expect(JSON.stringify(out)).not.toContain("foreign-value-77");
+      expect((await resolver().status(NAME)).ref).toBeNull();
+      const still = await db.select({ id: companySecrets.id }).from(companySecrets).where(eq(companySecrets.id, foreignId));
+      expect(still).toHaveLength(1);
+    } finally {
+      delete env[ENV_NAME];
+      await db.delete(companySecrets).where(eq(companySecrets.id, foreignId));
+    }
+  });
+
+  it("apply creates the secret, binds it, audits each successful row and leaves env alone", async () => {
     const app = admin();
     env[ENV_NAME] = ENV_VALUE;
     try {
@@ -183,6 +250,16 @@ describeEmbeddedPostgres("instance secret settings: routes and store on the real
       // With env removed, the migrated ref resolves to the original value.
       delete env[ENV_NAME];
       expect((await resolver().resolve(NAME, { consumerId: CONSUMER })).value).toBe(ENV_VALUE);
+
+      const migratedSecretId = applied.body.rows[0].secretId as string;
+      await request(app).delete(`/api/instance/secret-settings/${NAME}/ref`);
+      env[ENV_NAME] = ENV_VALUE;
+      const reapplied = await request(app).post("/api/instance/secret-settings/migrate").send({ apply: true, companyId });
+      expect(reapplied.status).toBe(200);
+      expect(reapplied.body.rows[0]).toMatchObject({ outcome: "bound", secretId: migratedSecretId });
+      expect(JSON.stringify(reapplied.body)).not.toContain(ENV_VALUE);
+      const duplicateNames = await db.select({ id: companySecrets.id }).from(companySecrets).where(eq(companySecrets.name, `instance-setting.${NAME}`));
+      expect(duplicateNames).toHaveLength(1);
     } finally {
       delete env[ENV_NAME];
     }

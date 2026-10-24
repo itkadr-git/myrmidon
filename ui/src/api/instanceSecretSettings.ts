@@ -15,7 +15,7 @@ export interface InstanceSecretSettingStatus {
 export interface InstanceSecretMigrationRow {
   name: string;
   envOverride: string;
-  outcome: "planned" | "bound" | "skipped";
+  outcome: "planned" | "bound" | "skipped" | "error";
   secretId?: string;
 }
 
