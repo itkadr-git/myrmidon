@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, mayNeedDefaultEscalationChain, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@myrmidon/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
 const qaAgentId = "22222222-2222-4222-8222-222222222222";
 const ctoAgentId = "33333333-3333-4333-8333-333333333333";
+const leadAgentId = "66666666-6666-4666-8666-666666666666";
 const ctoUserId = "cto-user";
 const boardUserId = "board-user";
 
@@ -1943,28 +1944,88 @@ describe("review round circuit breaker", () => {
     });
   });
 
-  it("escalates the pending stage to the responsible human at the round cap", () => {
+  it("escalates the pending stage to the first agent of the senior chain at the round cap, never to a human", () => {
+    const result = applyIssueExecutionPolicyTransition({
+      issue: { ...reviewPendingIssue({}, { changesRequestedCount: 2 }), defaultEscalationAgentIds: [ctoAgentId, leadAgentId] },
+      policy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Round three feedback - still not converging",
+    });
+
+    expect(result.decision).toMatchObject({ outcome: "changes_requested" });
+    expect(result.patch.status).toBe("in_review");
+    expect(result.patch.assigneeAgentId).toBe(ctoAgentId);
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.executionState).toMatchObject({
+      status: "pending",
+      currentStageId: reviewStageId,
+      currentParticipant: { type: "agent", agentId: ctoAgentId },
+      escalationToParticipant: { type: "agent", agentId: ctoAgentId },
+      changesRequestedCount: 0,
+    });
+    expect(result.recoveryInteraction).toBeUndefined();
+  });
+
+  it("continues the chain after an escalated holder and skips the return assignee and the reviewer", () => {
+    const issue = {
+      ...reviewPendingIssue(
+        { assigneeAgentId: ctoAgentId },
+        { changesRequestedCount: 2, currentParticipant: { type: "agent", agentId: ctoAgentId }, escalationToParticipant: { type: "agent", agentId: ctoAgentId } },
+      ),
+      defaultEscalationAgentIds: [coderAgentId, ctoAgentId, leadAgentId],
+    };
+    const result = applyIssueExecutionPolicyTransition({
+      issue,
+      policy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: ctoAgentId },
+      commentBody: "Still not converging",
+    });
+    // coder is the executor (returnAssignee), cto is the holder: next is lead.
+    expect(result.patch.assigneeAgentId).toBe(leadAgentId);
+    expect(result.patch.assigneeUserId).toBeNull();
+  });
+
+  it("raises a recovery card, not a human hand-off, when the senior chain is empty", () => {
+    const result = applyIssueExecutionPolicyTransition({
+      issue: { ...reviewPendingIssue({}, { changesRequestedCount: 2 }), id: "issue-empty-chain", defaultEscalationAgentIds: [] },
+      policy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Round three feedback",
+    });
+    expect(result.patch.status).toBe("in_review");
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.assigneeAgentId).toBe(qaAgentId);
+    expect(result.patch.executionState).toMatchObject({
+      currentParticipant: { type: "agent", agentId: qaAgentId },
+      escalationToParticipant: null,
+      escalationPolicyRevision: "default-senior-chain",
+    });
+    expect(result.recoveryInteraction).toMatchObject({ queue: "adm-review-recovery" });
+  });
+
+  it("never hands the stage to the responsible human when the chain was not computed", () => {
     const result = applyIssueExecutionPolicyTransition({
       issue: reviewPendingIssue({}, { changesRequestedCount: 2 }),
       policy,
       requestedStatus: "in_progress",
       requestedAssigneePatch: {},
       actor: { agentId: qaAgentId },
-      commentBody: "Round three feedback — still not converging",
+      commentBody: "Round three feedback",
     });
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+  });
 
-    // The decision is still recorded, but the stage stays pending with the
-    // responsible human as participant instead of bouncing to the executor.
-    expect(result.decision).toMatchObject({ outcome: "changes_requested" });
-    expect(result.patch.status).toBe("in_review");
-    expect(result.patch.assigneeAgentId).toBeNull();
-    expect(result.patch.assigneeUserId).toBe(boardUserId);
-    expect(result.patch.executionState).toMatchObject({
-      status: "pending",
-      currentStageId: reviewStageId,
-      currentParticipant: { type: "user", userId: boardUserId },
-      changesRequestedCount: 3,
-    });
+  it("mayNeedDefaultEscalationChain is true only at the cap without a configured policy", () => {
+    expect(mayNeedDefaultEscalationChain(reviewPendingIssue({}, { changesRequestedCount: 2 }), policy)).toBe(true);
+    expect(mayNeedDefaultEscalationChain(reviewPendingIssue({}, { changesRequestedCount: 0 }), policy)).toBe(false);
+    expect(mayNeedDefaultEscalationChain(reviewPendingIssue({}, { changesRequestedCount: 2 }), null)).toBe(false);
   });
 
   it("keeps an escalated agent hold sticky across unrelated transitions", () => {
@@ -2575,6 +2636,7 @@ describe("review round circuit breaker", () => {
         assigneeAgentId: qaAgentId,
         assigneeUserId: null,
         responsibleUserId: boardUserId,
+        defaultEscalationAgentIds: [ctoAgentId],
         executionPolicy: strictPolicy,
         executionState: {
           status: "pending",
@@ -2595,11 +2657,11 @@ describe("review round circuit breaker", () => {
       commentBody: "First and only agent round",
     });
 
-    expect(result.patch.assigneeUserId).toBe(boardUserId);
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.assigneeAgentId).toBe(ctoAgentId);
     expect(result.patch.executionState).toMatchObject({
       status: "pending",
-      currentParticipant: { type: "user", userId: boardUserId },
-      changesRequestedCount: 1,
+      currentParticipant: { type: "agent", agentId: ctoAgentId },
     });
   });
 });
