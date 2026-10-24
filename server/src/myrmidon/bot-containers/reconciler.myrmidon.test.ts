@@ -45,7 +45,7 @@ function fakeDriver(
   opts: {
     drift?: boolean;
     driftFields?: TemplateDriftField[];
-    fail?: Partial<Record<"create" | "recreate" | "writeProfile" | "start" | "restart", string>>;
+    fail?: Partial<Record<"create" | "recreate" | "writeProfile" | "start" | "restart" | "updateResources", string>>;
   } = {},
 ): FakeDriver {
   const calls: string[] = [];
@@ -84,10 +84,14 @@ function fakeDriver(
       maybeFail("recreate");
       current = { ...current, state: "stopped" };
     },
+    async updateResources() {
+      calls.push("updateResources");
+      maybeFail("updateResources");
+    },
     async writeProfile(_botKey, compiled) {
       calls.push("writeProfile");
       maybeFail("writeProfile");
-      current = { ...current, restartHash: compiled.restartHash, filesHash: compiled.filesHash };
+      current = { ...current, restartHash: compiled.restartHash, filesHash: compiled.filesHash, maxConcurrentRuns: compiled.maxConcurrentRuns };
     },
     async start() {
       calls.push("start");
@@ -102,6 +106,10 @@ function fakeDriver(
     async stop() {
       calls.push("stop");
       current = { ...current, state: "stopped" };
+    },
+    async stopIdle() {
+      calls.push("stopIdle");
+      current = { ...current, state: "stopped", idleStopped: true };
     },
   };
 }
@@ -387,6 +395,119 @@ describe("reconcileBot", () => {
     });
   });
 
+  describe("bot skill back-import (1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401)", () => {
+    const botSkill = {
+      name: "deploy",
+      files: [{ path: "SKILL.md", content: "---\nname: deploy\n---\n\nBody.\n" }],
+    };
+    function backimportPorts() {
+      const created: string[] = [];
+      const delivered: string[] = [];
+      return {
+        created,
+        delivered,
+        ports: {
+          readSkillByKey: async () => null,
+          createSkill: async (_companyId: string, _agentId: string, input: { slug: string }) => {
+            created.push(input.slug);
+            return { id: `skill-${input.slug}`, versionId: "v-1" };
+          },
+          updateSkill: async () => ({ versionId: "v-2", changed: true }),
+          deliverSkillToAgent: async (_companyId: string, _agentId: string, key: string) => {
+            delivered.push(key);
+            return { added: true };
+          },
+        },
+      };
+    }
+
+    it("flag off (default): the driver's skill read is never called — the pass is exactly the previous behavior", async () => {
+      const applied = profile();
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied) });
+      const backimport = backimportPorts();
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        backimport: { companyId: "co-1", agentId: "agent-a", ports: backimport.ports },
+        env: {},
+      });
+      expect(outcome).toEqual({ kind: "unchanged" });
+      expect(driver.calls).toEqual(["status", "templateDrift"]);
+      expect(backimport.created).toEqual([]);
+    });
+
+    it("flag on, unchanged pass: the bot's own skills land in the company catalog", async () => {
+      const applied = profile();
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied) });
+      driver.readBotSkills = async () => [botSkill];
+      const backimport = backimportPorts();
+      const activity = fakeActivity();
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        activity,
+        backimport: { companyId: "co-1", agentId: "agent-a", ports: backimport.ports },
+        env: { MYRMIDON_BOT_SKILL_BACKIMPORT: "1" },
+      });
+      expect(outcome).toEqual({ kind: "unchanged" });
+      expect(backimport.created).toEqual(["deploy"]);
+      const details = detailsOf(activity, "bot skills back-imported into the company catalog");
+      expect(details.created).toBe(1);
+    });
+
+    it("flag on but no catalog ports wired: nothing happens", async () => {
+      const applied = profile();
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied) });
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        env: { MYRMIDON_BOT_SKILL_BACKIMPORT: "1" },
+      });
+      expect(outcome).toEqual({ kind: "unchanged" });
+      expect(driver.calls).toEqual(["status", "templateDrift"]);
+    });
+
+    it("a failed import is recorded but does not fail the pass", async () => {
+      const applied = profile();
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied) });
+      driver.readBotSkills = async () => [botSkill];
+      const activity = fakeActivity();
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        activity,
+        backimport: {
+          companyId: "co-1",
+          agentId: "agent-a",
+          ports: {
+            readSkillByKey: async () => null,
+            createSkill: async () => {
+              throw new Error("catalog write exploded");
+            },
+            updateSkill: async () => ({ versionId: null, changed: false }),
+            deliverSkillToAgent: async () => ({ added: false }),
+          },
+        },
+        env: { MYRMIDON_BOT_SKILL_BACKIMPORT: "1" },
+      });
+      expect(outcome).toEqual({ kind: "unchanged" });
+      expect(
+        activity.entries.some((entry) => entry.message === "bot skills back-imported into the company catalog"),
+      ).toBe(true);
+    });
+
+    it("back-import runs after the container restart of an apply pass, not instead of it", async () => {
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", restartHash: "restart-old", filesHash: "files-1" });
+      const order: string[] = [];
+      driver.readBotSkills = async () => {
+        order.push("readBotSkills");
+        return [botSkill];
+      };
+      const backimport = backimportPorts();
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        compile: async () => profile({ restartHash: "restart-new" }),
+        backimport: { companyId: "co-1", agentId: "agent-a", ports: backimport.ports },
+        env: { MYRMIDON_BOT_SKILL_BACKIMPORT: "1" },
+      });
+      expect(outcome).toEqual({ kind: "applied_restart" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "writeProfile", "restart"]);
+      expect(order).toEqual(["readBotSkills"]);
+      expect(backimport.created).toEqual(["deploy"]);
+    });
+  });
+
   describe("unhealthy (Docker's own health check gave up)", () => {
     it("is restarted only inside a drained maintenance window, never directly", async () => {
       const applied = profile();
@@ -449,6 +570,39 @@ describe("reconcileBot", () => {
       });
     });
 
+    it("applies resource drift without recreating the running container", async () => {
+      const applied = profile();
+      const driver = fakeDriver(
+        { botKey: "agent-a", state: "running", ...hashesOf(applied) },
+        { drift: true, driftFields: [{ field: "HostConfig.Memory", expected: 1024, actual: 2048 }] },
+      );
+      const outcome = await run(driver, fakeMaintenance([0]));
+      expect(outcome).toEqual({ kind: "applied_files" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "updateResources"]);
+      expect(driver.current().state).toBe("running");
+    });
+    it("resource drift plus a restart-class profile change: updates limits, then restarts in the window", async () => {
+      const driver = fakeDriver(
+        { botKey: "agent-a", state: "running", restartHash: "restart-old", filesHash: "files-1" },
+        { drift: true, driftFields: [{ field: "HostConfig.Memory", expected: 1024, actual: 2048 }] },
+      );
+      const maintenance = fakeMaintenance([0]);
+      const outcome = await run(driver, maintenance, { compile: async () => profile({ restartHash: "restart-new" }) });
+      expect(outcome).toEqual({ kind: "applied_restart" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "updateResources", "writeProfile", "restart"]);
+      expect(driver.current().restartHash).toBe("restart-new");
+      expect(maintenance.exitCalls).toHaveLength(1);
+    });
+    it("resource drift on an unhealthy container: updates limits, then restarts it", async () => {
+      const applied = profile();
+      const driver = fakeDriver(
+        { botKey: "agent-a", state: "unhealthy", ...hashesOf(applied) },
+        { drift: true, driftFields: [{ field: "HostConfig.PidsLimit", expected: 512, actual: 256 }] },
+      );
+      const outcome = await run(driver, fakeMaintenance([0]));
+      expect(outcome).toEqual({ kind: "applied_restart" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "updateResources", "restart"]);
+    });
     it("logs which field drifted, with both values, before it recreates anything", async () => {
       const applied = profile();
       const driver = fakeDriver(
@@ -628,13 +782,42 @@ describe("reconcileBot", () => {
       expect(outcome).toEqual({ kind: "applied_restart" });
       expect(detailsOf(activity, "stopped bot container brought up")).toMatchObject({
         drifted: true,
-        // See the drift-recreate case below: a limit-bearing profile against a
-        // marker that reports no limit classifies as the files class.
-        changeClass: "files",
-        trigger: "stopped:drift:files",
+        // The marker reports the same limit as the profile: nothing to write.
+        changeClass: "none",
+        trigger: "stopped:drift:none",
         appliedFilesHash: "files-1",
         appliedMaxConcurrentRuns: 3,
       });
+    });
+
+    // OPE-9057: the pass used to hand classifyProfileChange only the two hashes,
+    // so a marker that DID report the limit still looked like "not reported" and
+    // every bot was rewritten ("profile files applied without restart") each pass.
+    it("running, hashes and limit all match the marker: nothing is written, however many passes run", async () => {
+      const applied = profile({ maxConcurrentRuns: 3 });
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied), maxConcurrentRuns: 3 });
+      const activity = fakeActivity();
+      for (let pass = 0; pass < 3; pass += 1) {
+        const outcome = await run(driver, fakeMaintenance([0]), {
+          activity,
+          compile: async () => profile({ maxConcurrentRuns: 3 }),
+        });
+        expect(outcome).toEqual({ kind: "unchanged" });
+      }
+      expect(driver.calls).not.toContain("writeProfile");
+      expect(driver.calls).not.toContain("restart");
+      expect(activity.entries.map((entry) => entry.message)).not.toContain("bot container profile files applied without restart");
+    });
+
+    it("running, marker predates the limit: healed once as a files-class write, without restart", async () => {
+      const applied = profile({ maxConcurrentRuns: 3 });
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied) });
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        compile: async () => profile({ maxConcurrentRuns: 3 }),
+      });
+      expect(outcome).toEqual({ kind: "applied_files" });
+      expect(driver.calls).toContain("writeProfile");
+      expect(driver.calls).not.toContain("restart");
     });
 
     it("files without restart: the write names the new files hash and running:nodrift:files", async () => {
@@ -700,10 +883,10 @@ describe("reconcileBot", () => {
       });
       expect(outcome).toEqual({ kind: "applied_restart" });
       expect(detailsOf(activity, "unhealthy bot container restarted")).toMatchObject({
-        changeClass: "files",
+        changeClass: "none",
         previousState: "unhealthy",
         maintenanceReason: "bot container health recovery (agent-a)",
-        trigger: "unhealthy:nodrift:files",
+        trigger: "unhealthy:nodrift:none",
         appliedFilesHash: "files-1",
         appliedMaxConcurrentRuns: 3,
       });
@@ -725,13 +908,11 @@ describe("reconcileBot", () => {
         detailsOf(activity, "bot container recreated for a template change (image, resource limits or network)"),
       ).toMatchObject({
         drifted: true,
-        // The pass hands classifyProfileChange only the two hashes it read, so a
-        // marker that reports no limit classifies as "files" — the heal
-        // described in types.ts. The trigger reports the class actually computed.
-        changeClass: "files",
+        // Hashes and limit all match the marker: the class is "none".
+        changeClass: "none",
         previousState: "running",
         maintenanceReason: "bot container template update (agent-a)",
-        trigger: "running:drift:files",
+        trigger: "running:drift:none",
         appliedFilesHash: "files-1",
         appliedMaxConcurrentRuns: 3,
       });
@@ -764,6 +945,31 @@ describe("reconcileBot", () => {
       const details = detailsOf(activity, "bot container created and profile applied");
       expect(details).not.toHaveProperty("appliedMaxConcurrentRuns");
       expect(details).toMatchObject({ appliedFilesHash: "files-1", trigger: "missing:new" });
+    });
+
+    it("does not rewrite unchanged profile files across three passes when the marker reports the concurrency limit", async () => {
+      const applied = profile({ maxConcurrentRuns: 3 });
+      const driver = fakeDriver({
+        botKey: "agent-a",
+        state: "running",
+        ...hashesOf(applied),
+        maxConcurrentRuns: 3,
+      });
+      for (let pass = 0; pass < 3; pass += 1) {
+        const outcome = await run(driver, fakeMaintenance([0]), {
+          compile: async () => profile({ maxConcurrentRuns: 3 }),
+        });
+        expect(outcome).toEqual({ kind: "unchanged" });
+      }
+      expect(driver.calls).not.toContain("writeProfile");
+    });
+
+    it("heals a marker without a concurrency limit once, then does not rewrite again", async () => {
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", restartHash: "restart-1", filesHash: "files-1" });
+      const compile = async () => profile({ maxConcurrentRuns: 3 });
+      expect(await run(driver, fakeMaintenance([0]), { compile })).toEqual({ kind: "applied_files" });
+      expect(await run(driver, fakeMaintenance([0]), { compile })).toEqual({ kind: "unchanged" });
+      expect(driver.calls.filter((call) => call === "writeProfile")).toHaveLength(1);
     });
   });
 

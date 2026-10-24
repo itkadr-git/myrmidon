@@ -1,19 +1,20 @@
 import { Router, urlencoded, type Request } from "express";
-import type { Db } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import type { DeploymentExposure, DeploymentMode } from "@myrmidon/shared";
 import {
   createSmokeRunSchema,
   recordSmokeRunStepSchema,
   updateSmokeRunSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { logActivity, smokeLabService } from "../services/index.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function configuredPublicBaseUrl() {
   const raw = (
-    process.env.PAPERCLIP_PUBLIC_URL?.trim()
-    || process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim()
+    readProductEnv("PUBLIC_URL")?.trim()
+    || readProductEnv("AUTH_PUBLIC_BASE_URL")?.trim()
     || process.env.BETTER_AUTH_URL?.trim()
     || process.env.BETTER_AUTH_BASE_URL?.trim()
   );

@@ -4,8 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
-import type { agents } from "@paperclipai/db";
-import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
+import type { agents } from "@myrmidon/db";
+import { sessionCodec as codexSessionCodec } from "@myrmidon/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
@@ -1946,6 +1946,19 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_changes_requested" })).toBe(false);
   });
 
+  it("resets session context on automatic transient retries (upstream #15487)", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "transient_failure_retry" })).toBe(true);
+  });
+
+  it("keeps the codex same-session first retry step", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "transient_failure_retry",
+        codexTransientFallbackMode: "same_session",
+      }),
+    ).toBe(false);
+  });
+
   it("preserves session context on timer heartbeats", () => {
     expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
   });
@@ -2990,7 +3003,7 @@ describe("formatRuntimeWorkspaceWarningLog", () => {
   it("emits informational workspace warnings on stdout", () => {
     expect(formatRuntimeWorkspaceWarningLog("Using fallback workspace")).toEqual({
       stream: "stdout",
-      chunk: "[paperclip] Using fallback workspace\n",
+      chunk: "[myrmidon] Using fallback workspace\n",
     });
   });
 });

@@ -299,6 +299,7 @@ export type {
 export {
   MAX_TRANSCRIPT_BLOCK_CHARS,
   composeVoiceCommentBody,
+  diarizationMarker,
   renderVoiceTranscript,
 } from "./transcript.js";
-export type { VoiceTranscript } from "./transcript.js";
+export type { VoiceTranscript, VoiceDiarizationReport } from "./transcript.js";

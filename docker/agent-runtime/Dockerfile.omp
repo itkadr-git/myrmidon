@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1.6
+FROM oven/bun:1.4.3-alpine
+
+ARG OMP_VERSION=18.9.2
+ENV HOME=/home/paperclip \
+    XDG_CONFIG_HOME=/home/paperclip/.config \
+    XDG_DATA_HOME=/home/paperclip/.local/share \
+    XDG_CACHE_HOME=/home/paperclip/.cache \
+    OMP_SESSION_DIR=/home/paperclip/.local/share/omp/sessions
+
+RUN mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$OMP_SESSION_DIR" /workspace \
+    && chown -R 1000:1000 /home/paperclip /workspace \
+    && bun add --global "@oh-my-pi/pi-coding-agent@${OMP_VERSION}" \
+    && ln -sf "$(bun pm bin -g)/omp" /usr/local/bin/omp
+
+USER 1000:1000
+WORKDIR /workspace
+
+RUN test "$(bun --version)" = "1.4.3" \
+    && test "$(omp --version)" = "18.9.2" \
+    && command -v omp \
+    && omp --help >/dev/null \
+    && omp models ls >/dev/null
+
+CMD ["omp"]

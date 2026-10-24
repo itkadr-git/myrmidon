@@ -13,7 +13,7 @@
 
 import { createHash } from "node:crypto";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 // myrmidon(B1c): product name in the tool-profile descriptions; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import {
@@ -22,7 +22,7 @@ import {
   toolConnections,
   toolMcpGateways,
   toolProfiles,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(P9): run MCP selection ignores connection health
 import { isRunSelectableConnection, isRunUnavailableConnection } from "../myrmidon/tool-gateway-run-selection.js";
@@ -30,12 +30,13 @@ import { filterResolvedGitHubConnectionsForRun } from "./git-credentials.js";
 import type { AdapterRuntimeMcpServer } from "../adapters/index.js";
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function configuredPaperclipApiBaseUrl(): string | null {
+  const apiUrlEnv = readProductEnv("API_URL");
   const configured =
-    typeof process.env.PAPERCLIP_API_URL === "string" &&
-    process.env.PAPERCLIP_API_URL.trim().length > 0
-      ? process.env.PAPERCLIP_API_URL
+    typeof apiUrlEnv === "string" && apiUrlEnv.trim().length > 0
+      ? apiUrlEnv
       : null;
   return configured
     ? configured.replace(/\/+$/, "").replace(/\/api$/, "")

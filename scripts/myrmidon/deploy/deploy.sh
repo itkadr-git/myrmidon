@@ -142,6 +142,9 @@ set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
+# myrmidon(F-05): the journal opens with the exact version of these scripts.
+log_script_version
+
 config="" digest="" expect_version="" expect_commit="" force=0 release_tag=""
 DRY_RUN=0
 while (($#)); do
@@ -475,9 +478,38 @@ preflight_bot_config() {
   fi
 }
 
+# LICENSE-DIR: the license directory (dirname of MYR_LICENSE_PATH) is mounted
+# into the containers of the closed modules, so the license issuing key must
+# not live in it. A stop, also in a dry run, with nothing changed.
+preflight_license_dir() {
+  local lic_path="${MYR_LICENSE_PATH:-/etc/myrmidon-license/license.key}"
+  local dir hit="" src tgt
+  dir="$(dirname "$lic_path")"
+  dir="$(realpath -m "$dir" 2>/dev/null || printf '%s' "$dir")"
+  if [[ -d "$dir" ]]; then
+    if [[ -e "$dir/issuer" ]]; then
+      hit="$dir/issuer"
+    else
+      hit="$(find "$dir" -maxdepth 3 \( -name '*.pem' -o -name '*ed25519*' \) -print -quit 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -z "$hit" ]]; then
+    # an issuer mount of the board (in the compose project) that points inside the license directory
+    while IFS=$'\t' read -r src tgt; do
+      [[ -n "$src" ]] || continue
+      if [[ "$src" == "$dir"/* && ( "$src" == *issuer* || "$tgt" == *issuer* ) ]]; then hit="$src (mount -> $tgt)"; break; fi
+    done < <(compose config --format json 2>/dev/null | jq -r '.services[]?.volumes[]? | select(type == "object" and .type == "bind") | "\(.source)\t\(.target)"' 2>/dev/null || true)
+  fi
+  if [[ -n "$hit" ]]; then
+    log "license issuing key found in the license directory: $hit"
+    die "ключ выпуска лежит в каталоге лицензии — перенесите: sudo mv $dir/issuer ${dir}-issuer и поправьте монтирование issuer в compose доски (the license issuing key must not be in the license directory, which is mounted into the module containers); nothing was changed"
+  fi
+}
+
 preflight_all() {
   ((need_window)) || return 0
   preflight_board_compose
+  preflight_license_dir
   preflight_components
   preflight_bot_config
   log "preflight ok: compose project, components, dockergate config"

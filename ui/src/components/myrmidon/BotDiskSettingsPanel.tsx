@@ -16,6 +16,14 @@
 // (dockergate, contract C5) and, per bot, quota/used, copies E/G/X, archives,
 // the age of the botd report and the image generation, with the copies
 // themselves (contract C4 reports).
+//
+// 1.6.6-SETTINGS-UI-B: the lifecycle fields themselves became editable — the
+// draft-directory sweep (enabled + idle TTL), the five workspace-lifecycle
+// numbers (closing grace, scratch TTL, the three partition thresholds) and the
+// two layout knobs the panel did not expose yet (mirror refresh interval,
+// shared-cache roles). Together with the fields part A/B/C/H11 already edited
+// this is the full 14-field screen of the audit: 9 stored botDisk keys + the
+// 5 workspace-lifecycle keys of the same `general.botDisk` object.
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Package } from "lucide-react";
@@ -24,7 +32,22 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useTranslation } from "@/i18n";
-import { botDiskApi, botDiskQueryKey } from "./botDiskApi";
+import type { BotDiskSettingsPatch } from "@myrmidon/shared";
+import {
+  BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS,
+  BOT_DISK_DEFAULT_IDLE_TTL_MS,
+  BOT_DISK_DEFAULT_SHARED_CACHE_ROLES,
+  BOT_DISK_DEFAULT_UV_CACHE_DIR,
+  BOT_DISK_DEFAULT_UV_LINK_MODE,
+  BOT_DISK_UV_LINK_MODES,
+  botDiskUvCacheDirProblem,
+  BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS,
+  BOT_DISK_MAX_IDLE_TTL_MS,
+  BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS,
+  BOT_DISK_MIN_IDLE_TTL_MS,
+  WS_BOT_DISK_SETTING_DEFAULTS,
+} from "@myrmidon/shared";
+import { botDiskApi, botDiskQueryKey, type BotDiskView } from "./botDiskApi";
 import {
   BOT_DISK_REPORT_STALE_MS,
   botDiskLifecycleApi,
@@ -180,6 +203,7 @@ function BotDiskLifecycleSection({ now, taskStatuses }: { now?: number; taskStat
  * the tasks supplies it, and an unknown key shows a dash.
  */
 export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; taskStatuses?: Record<string, string> } = {}) {
+  const { t } = useTranslation() as { t: Translate };
   const queryClient = useQueryClient();
   const { data: view } = useQuery({ queryKey: botDiskQueryKey, queryFn: botDiskApi.get });
   const [draft, setDraft] = useState<string | null>(null);
@@ -207,7 +231,7 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
       setReposDraft((saved.settings.gitMirrorRepos ?? []).join("\n"));
       queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
-    onError: (err) => setReposError(err instanceof Error ? err.message : "Could not save the repositories. Try again."),
+    onError: (err) => setReposError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errReposSave")),
   });
 
   const parseRepos = (text: string) =>
@@ -220,7 +244,7 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
     const repos = parseRepos(reposDraft ?? "");
     const bad = repos.find((name) => !/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(name) || name.toLowerCase().endsWith(".git"));
     if (bad) {
-      setReposError(`"${bad}" is not an owner/repo name`);
+      setReposError(t("area.settings-bots-host-1.bot-disk-settings-panel.errRepos", { name: bad }));
       return;
     }
     saveRepos.mutate(repos);
@@ -239,17 +263,46 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
       setStoreDraft(saved.settings.pnpmStoreDir ?? "");
       queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
-    onError: (err) => setStoreError(err instanceof Error ? err.message : "Could not save the pnpm settings. Try again."),
+    onError: (err) => setStoreError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errPnpmSave")),
   });
   const submitStore = () => {
     const dir = (storeDraft ?? "").trim();
     if (dir !== "" && !["/workspace/", "/data/", "/scratch/", "/bot/"].some((root) => dir.startsWith(root))) {
-      setStoreError("The store must be inside the bot's single mount: under /workspace, /data, /scratch or /bot");
+      setStoreError(t("area.settings-bots-host-1.bot-disk-settings-panel.errStore"));
       return;
     }
     savePnpm.mutate({ pnpmStoreDir: dir === "" ? null : dir });
   };
   const storeUnchanged = view !== undefined && (storeDraft ?? "").trim() === (view.settings.pnpmStoreDir ?? "");
+
+  const [uvCacheDirDraft, setUvCacheDirDraft] = useState<string | null>(null);
+  const [uvError, setUvError] = useState<string | null>(null);
+  useEffect(() => {
+    if (view && uvCacheDirDraft === null) setUvCacheDirDraft(view.settings.uvCacheDir ?? "");
+  }, [view, uvCacheDirDraft]);
+  const saveUv = useMutation({
+    mutationFn: botDiskApi.setUv,
+    onSuccess: (saved) => {
+      setUvError(null);
+      setUvCacheDirDraft(saved.settings.uvCacheDir ?? "");
+      queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
+    },
+    onError: (err) => setUvError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errUvSave")),
+  });
+  const submitUvCacheDir = () => {
+    const dir = (uvCacheDirDraft ?? "").trim();
+    if (dir !== "" && dir !== BOT_DISK_DEFAULT_UV_CACHE_DIR && dir.startsWith(`${BOT_DISK_DEFAULT_UV_CACHE_DIR}/`)) {
+      setUvError(t("area.settings-bots-host-1.bot-disk-settings-panel.errUvDir", { dir: BOT_DISK_DEFAULT_UV_CACHE_DIR }));
+      return;
+    }
+    const problem = botDiskUvCacheDirProblem(dir);
+    if (dir !== "" && problem !== null) {
+      setUvError(problem);
+      return;
+    }
+    saveUv.mutate({ uvCacheDir: dir === "" ? null : dir });
+  };
+  const uvCacheUnchanged = view !== undefined && (uvCacheDirDraft ?? "").trim() === (view.settings.uvCacheDir ?? "");
 
   const reposUnchanged =
     view !== undefined && parseRepos(reposDraft ?? "").join("\n") === (view.settings.gitMirrorRepos ?? []).join("\n");
@@ -263,12 +316,12 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
       setRuntimeDraft(saved.settings.sharedBotRuntimePath ?? "");
       queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
-    onError: (err) => setRuntimeError(err instanceof Error ? err.message : "Could not save the runtime path. Try again."),
+    onError: (err) => setRuntimeError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errRuntimeSave")),
   });
   const submitRuntime = () => {
     const path = (runtimeDraft ?? "").trim();
     if (path !== "" && (!path.startsWith("/") || path.endsWith("/") || path.includes("//") || path.split("/").includes(".."))) {
-      setRuntimeError("Enter an absolute directory without a trailing slash or \"..\", or leave it empty");
+      setRuntimeError(t("area.settings-bots-host-1.bot-disk-settings-panel.errAbsDir"));
       return;
     }
     saveRuntime.mutate(path);
@@ -282,13 +335,13 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
       setDraft(saved.settings.sharedPackageCachePath ?? "");
       queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Could not save the cache path. Try again."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errCacheSave")),
   });
 
   const submit = () => {
     const path = (draft ?? "").trim();
     if (path !== "" && (!path.startsWith("/") || path.endsWith("/") || path.split("/").includes(".."))) {
-      setError("Enter an absolute directory without a trailing slash or \"..\", or leave it empty");
+      setError(t("area.settings-bots-host-1.bot-disk-settings-panel.errAbsDir"));
       return;
     }
     save.mutate(path);
@@ -300,14 +353,14 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
     <section className="space-y-4 rounded-lg border p-4" data-testid="bot-disk-panel">
       <div className="flex items-center gap-2">
         <Package className="size-4 text-muted-foreground" />
-        <h3 className="text-sm font-medium">Shared package cache for bots</h3>
+        <h3 className="text-sm font-medium">{t("area.settings-bots-host-1.bot-disk-settings-panel.cacheTitle")}</h3>
       </div>
       <div className="space-y-2">
-        <Label htmlFor="bot-disk-cache-path">Host directory</Label>
+        <Label htmlFor="bot-disk-cache-path">{t("area.settings-bots-host-1.bot-disk-settings-panel.hostDir")}</Label>
         <div className="flex items-center gap-2">
           <Input
             id="bot-disk-cache-path"
-            placeholder="Empty: every bot keeps its own cache"
+            placeholder={t("area.settings-bots-host-1.bot-disk-settings-panel.cachePlaceholder")}
             value={draft ?? ""}
             onChange={(event) => {
               setDraft(event.target.value);
@@ -316,26 +369,21 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
             data-testid="bot-disk-cache-path-input"
           />
           <Button size="sm" onClick={submit} disabled={save.isPending || draft === null || unchanged}>
-            {save.isPending ? "Saving…" : "Save"}
+            {save.isPending ? t("area.settings-bots-host-1.bot-disk-settings-panel.saving") : t("common.save")}
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Bots on this server mount its pnpm, go-mod, go-build and gradle
-          subdirectories and share the downloads. The same path must be set as
-          packageCacheRoot in the dockergate configuration, and the
-          subdirectories must exist and belong to the bot user. Applies on the
-          next reconcile pass: bots are recreated with the new mounts. Bots on
-          a fleet host are not affected.
+          {t("area.settings-bots-host-1.bot-disk-settings-panel.cacheHelp")}
         </p>
         {error && <p className="text-xs text-red-600">{error}</p>}
-        {save.isSuccess && !error && <p className="text-xs text-green-600">Saved</p>}
+        {save.isSuccess && !error && <p className="text-xs text-green-600">{t("area.settings-bots-host-1.bot-disk-settings-panel.saved")}</p>}
       </div>
       <div className="space-y-2">
-        <Label htmlFor="bot-disk-git-mirrors">Mirrored GitHub repositories</Label>
+        <Label htmlFor="bot-disk-git-mirrors">{t("area.settings-bots-host-1.bot-disk-settings-panel.mirrorsLabel")}</Label>
         <Textarea
           id="bot-disk-git-mirrors"
           rows={3}
-          placeholder="owner/repo, one per line. Empty: bots clone with a full object store each"
+          placeholder={t("area.settings-bots-host-1.bot-disk-settings-panel.mirrorsPlaceholder")}
           value={reposDraft ?? ""}
           onChange={(event) => {
             setReposDraft(event.target.value);
@@ -346,25 +394,21 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
         />
         <div className="flex items-center gap-2">
           <Button size="sm" onClick={submitRepos} disabled={saveRepos.isPending || reposDraft === null || reposUnchanged}>
-            {saveRepos.isPending ? "Saving…" : "Save"}
+            {saveRepos.isPending ? t("area.settings-bots-host-1.bot-disk-settings-panel.saving") : t("common.save")}
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Needs the shared cache above. The board keeps one bare mirror of each
-          repository under its git subdirectory and refreshes it by fetch; bots
-          mount it read-only and a clone of that repository borrows its
-          objects. The subdirectory must exist and belong to the server user.
-          Applies on the next reconcile pass.
+          {t("area.settings-bots-host-1.bot-disk-settings-panel.mirrorsHelp")}
         </p>
         {reposError && <p className="text-xs text-red-600">{reposError}</p>}
-        {saveRepos.isSuccess && !reposError && <p className="text-xs text-green-600">Saved</p>}
+        {saveRepos.isSuccess && !reposError && <p className="text-xs text-green-600">{t("area.settings-bots-host-1.bot-disk-settings-panel.saved")}</p>}
       </div>
       <div className="space-y-2">
-        <Label htmlFor="bot-disk-runtime-path">Shared bot runtime directory</Label>
+        <Label htmlFor="bot-disk-runtime-path">{t("area.settings-bots-host-1.bot-disk-settings-panel.runtimeLabel")}</Label>
         <div className="flex items-center gap-2">
           <Input
             id="bot-disk-runtime-path"
-            placeholder="Empty: every bot keeps its own bin, lazy-packages and lsp"
+            placeholder={t("area.settings-bots-host-1.bot-disk-settings-panel.runtimePlaceholder")}
             value={runtimeDraft ?? ""}
             onChange={(event) => {
               setRuntimeDraft(event.target.value);
@@ -373,27 +417,21 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
             data-testid="bot-disk-runtime-path-input"
           />
           <Button size="sm" onClick={submitRuntime} disabled={saveRuntime.isPending || runtimeDraft === null || runtimeUnchanged}>
-            {saveRuntime.isPending ? "Saving…" : "Save"}
+            {saveRuntime.isPending ? t("area.settings-bots-host-1.bot-disk-settings-panel.saving") : t("common.save")}
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Bots on this server mount its bin, lazy-packages and lsp
-          subdirectories read-only over their own runtime paths, so the runtime
-          lives on the host once instead of once per bot. The same path must be
-          set as botRuntimeRoot in the dockergate configuration, and the
-          subdirectories must exist and belong to the bot user. Applies on the
-          next reconcile pass: bots are recreated with the new mounts. Bots on
-          a fleet host are not affected.
+          {t("area.settings-bots-host-1.bot-disk-settings-panel.runtimeHelp")}
         </p>
         {runtimeError && <p className="text-xs text-red-600">{runtimeError}</p>}
-        {saveRuntime.isSuccess && !runtimeError && <p className="text-xs text-green-600">Saved</p>}
+        {saveRuntime.isSuccess && !runtimeError && <p className="text-xs text-green-600">{t("area.settings-bots-host-1.bot-disk-settings-panel.saved")}</p>}
       </div>
       <div className="space-y-2">
-        <Label htmlFor="bot-disk-pnpm-store">pnpm store directory</Label>
+        <Label htmlFor="bot-disk-pnpm-store">{t("area.settings-bots-host-1.bot-disk-settings-panel.pnpmStoreLabel")}</Label>
         <div className="flex items-center gap-2">
           <Input
             id="bot-disk-pnpm-store"
-            placeholder="Empty: /workspace/.pnpm-store"
+            placeholder={t("area.settings-bots-host-1.bot-disk-settings-panel.pnpmStorePlaceholder")}
             value={storeDraft ?? ""}
             onChange={(event) => {
               setStoreDraft(event.target.value);
@@ -402,10 +440,10 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
             data-testid="bot-disk-pnpm-store-input"
           />
           <Button size="sm" onClick={submitStore} disabled={savePnpm.isPending || storeDraft === null || storeUnchanged}>
-            {savePnpm.isPending ? "Saving…" : "Save"}
+            {savePnpm.isPending ? t("area.settings-bots-host-1.bot-disk-settings-panel.saving") : t("common.save")}
           </Button>
         </div>
-        <Label htmlFor="bot-disk-pnpm-import">pnpm import method</Label>
+        <Label htmlFor="bot-disk-pnpm-import">{t("area.settings-bots-host-1.bot-disk-settings-panel.pnpmImportLabel")}</Label>
         <select
           id="bot-disk-pnpm-import"
           className="h-8 rounded-md border bg-background px-2 text-sm"
@@ -418,21 +456,275 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
           disabled={savePnpm.isPending || !view}
           data-testid="bot-disk-pnpm-import-select"
         >
-          <option value="hardlink">hardlink (default)</option>
-          <option value="clone-or-copy">clone-or-copy</option>
-          <option value="copy">copy (every clone holds a full copy)</option>
+          <option value="hardlink">{t("area.settings-bots-host-1.bot-disk-settings-panel.pnpmHardlink")}</option>
+          <option value="clone-or-copy">{t("area.settings-bots-host-1.bot-disk-settings-panel.pnpmCloneOrCopy")}</option>
+          <option value="copy">{t("area.settings-bots-host-1.bot-disk-settings-panel.pnpmCopy")}</option>
         </select>
         <p className="text-xs text-muted-foreground">
-          A bot container has ONE mount for its whole tree, so a hard link works
-          between its store and any clone. The store must be inside that mount;
-          /cache/pnpm stays a download cache. Applies on the next reconcile
-          pass without restarting the server. Each bot checks hard links into
-          /data/hermes, /workspace and /scratch at start and reports a failure
-          here as an attention card.
+          {t("area.settings-bots-host-1.bot-disk-settings-panel.pnpmHelp")}
         </p>
         {storeError && <p className="text-xs text-red-600">{storeError}</p>}
       </div>
+      <div className="space-y-2">
+        <Label htmlFor="bot-disk-uv-cache">{t("area.settings-bots-host-1.bot-disk-settings-panel.uvCacheLabel")}</Label>
+        <div className="flex items-center gap-2">
+          <Input id="bot-disk-uv-cache" value={uvCacheDirDraft ?? ""} placeholder={BOT_DISK_DEFAULT_UV_CACHE_DIR}
+            onChange={(event) => { setUvCacheDirDraft(event.target.value); setUvError(null); }}
+            data-testid="bot-disk-uv-cache-input" />
+          <Button size="sm" onClick={submitUvCacheDir} disabled={saveUv.isPending || uvCacheDirDraft === null || uvCacheUnchanged}>
+            {saveUv.isPending ? t("area.settings-bots-host-1.bot-disk-settings-panel.saving") : t("common.save")}
+          </Button>
+        </div>
+        <Label htmlFor="bot-disk-uv-link-mode">{t("area.settings-bots-host-1.bot-disk-settings-panel.uvLinkModeLabel")}</Label>
+        <select id="bot-disk-uv-link-mode" className="h-8 rounded-md border bg-background px-2 text-sm"
+          value={view?.settings.uvLinkMode ?? BOT_DISK_DEFAULT_UV_LINK_MODE}
+          onChange={(event) => saveUv.mutate({ uvLinkMode: event.target.value as (typeof BOT_DISK_UV_LINK_MODES)[number] })}
+          disabled={saveUv.isPending || !view} data-testid="bot-disk-uv-link-mode-select">
+          {BOT_DISK_UV_LINK_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
+        </select>
+        <p className="text-xs text-muted-foreground">{t("area.settings-bots-host-1.bot-disk-settings-panel.uvHelp")}</p>
+        {uvError && <p className="text-xs text-red-600">{uvError}</p>}
+      </div>
+      <BotDiskLifecycleEditSection view={view} queryClient={queryClient} />
       <BotDiskLifecycleSection now={now} taskStatuses={taskStatuses} />
     </section>
+  );
+}
+
+/** Minutes <-> ms for the number inputs of the lifecycle section. */
+const toMinutes = (ms: number) => Math.round(ms / 60000);
+const toHours = (ms: number) => Math.round(ms / 3600000);
+
+/**
+ * myrmidon(1.6.6-SETTINGS-UI-B): the editable half of the lifecycle screen —
+ * the nine `general.botDisk` keys the panels above did not expose: the sweep
+ * switch, its idle TTL, the mirror refresh interval, the shared-cache roles
+ * and the five workspace-lifecycle numbers. One Save button patches every
+ * changed key in a single PATCH; a blank number returns its key to the
+ * stored default (null), the same semantics the patch schema defines.
+ */
+function BotDiskLifecycleEditSection({
+  view,
+  queryClient,
+}: {
+  view: BotDiskView | undefined;
+  queryClient: ReturnType<typeof useQueryClient>;
+}) {
+  const { t } = useTranslation() as { t: Translate };
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [idleTtlMinutes, setIdleTtlMinutes] = useState<string | null>(null);
+  const [refreshMinutes, setRefreshMinutes] = useState<string | null>(null);
+  const [rolesDraft, setRolesDraft] = useState<string | null>(null);
+  const [grace, setGrace] = useState<string | null>(null);
+  const [scratch, setScratch] = useState<string | null>(null);
+  const [threshold, setThreshold] = useState<string | null>(null);
+  const [refuseOpen, setRefuseOpen] = useState<string | null>(null);
+  const [critical, setCritical] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!view || enabled !== null) return;
+    setEnabled(view.settings.enabled);
+    setIdleTtlMinutes(String(toMinutes(view.settings.idleTtlMs)));
+    setRefreshMinutes(String(toMinutes(view.settings.gitMirrorRefreshMs ?? BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS)));
+    setRolesDraft((view.settings.sharedCacheRoles ?? BOT_DISK_DEFAULT_SHARED_CACHE_ROLES).join(", "));
+    setGrace(view.settings.graceClosingMinutes === undefined ? "" : String(view.settings.graceClosingMinutes));
+    setScratch(view.settings.scratchTtlHours === undefined ? "" : String(view.settings.scratchTtlHours));
+    setThreshold(view.settings.partitionThresholdPercent === undefined ? "" : String(view.settings.partitionThresholdPercent));
+    setRefuseOpen(view.settings.partitionRefuseOpenPercent === undefined ? "" : String(view.settings.partitionRefuseOpenPercent));
+    setCritical(view.settings.partitionCriticalPercent === undefined ? "" : String(view.settings.partitionCriticalPercent));
+  }, [view, enabled]);
+
+  const save = useMutation({
+    mutationFn: botDiskApi.setFields,
+    onSuccess: () => {
+      setError(null);
+      queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errLifecycleSave")),
+  });
+
+  if (!view) return null;
+
+  const submit = () => {
+    setError(null);
+    const patch: BotDiskSettingsPatch = {};
+    if (enabled !== view.settings.enabled) patch.enabled = enabled ?? view.settings.enabled;
+    const idleMinutes = Number((idleTtlMinutes ?? "").trim() || toMinutes(BOT_DISK_DEFAULT_IDLE_TTL_MS));
+    if (!Number.isInteger(idleMinutes) || idleMinutes * 60_000 < BOT_DISK_MIN_IDLE_TTL_MS || idleMinutes * 60_000 > BOT_DISK_MAX_IDLE_TTL_MS) {
+      setError(t("area.settings-bots-host-1.bot-disk-settings-panel.errIdleTtl", { min: toMinutes(BOT_DISK_MIN_IDLE_TTL_MS), max: toHours(BOT_DISK_MAX_IDLE_TTL_MS) }));
+      return;
+    }
+    if (idleMinutes * 60_000 !== view.settings.idleTtlMs) patch.idleTtlMs = idleMinutes * 60_000;
+    const refresh = Number((refreshMinutes ?? "").trim() || toMinutes(BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS));
+    if (!Number.isInteger(refresh) || refresh * 60_000 < BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS || refresh * 60_000 > BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS) {
+      setError(t("area.settings-bots-host-1.bot-disk-settings-panel.errMirrorRefresh", { min: toMinutes(BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS), max: toHours(BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS) }));
+      return;
+    }
+    if (refresh * 60_000 !== (view.settings.gitMirrorRefreshMs ?? BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS)) patch.gitMirrorRefreshMs = refresh * 60_000;
+    const roles = (rolesDraft ?? "")
+      .split(/[,\n]/)
+      .map((role) => role.trim().toLowerCase())
+      .filter(Boolean);
+    if (roles.some((role) => !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(role))) {
+      setError(t("area.settings-bots-host-1.bot-disk-settings-panel.errRoles"));
+      return;
+    }
+    const currentRoles = view.settings.sharedCacheRoles ?? BOT_DISK_DEFAULT_SHARED_CACHE_ROLES;
+    if (roles.join(",") !== currentRoles.join(",")) patch.sharedCacheRoles = roles;
+    const numbers = [
+      ["graceClosingMinutes", grace, WS_BOT_DISK_SETTING_DEFAULTS.graceClosingMinutes, 5, 24 * 60],
+      ["scratchTtlHours", scratch, WS_BOT_DISK_SETTING_DEFAULTS.scratchTtlHours, 1, 24 * 30],
+      ["partitionThresholdPercent", threshold, WS_BOT_DISK_SETTING_DEFAULTS.partitionThresholdPercent, 50, 100],
+      ["partitionRefuseOpenPercent", refuseOpen, WS_BOT_DISK_SETTING_DEFAULTS.partitionRefuseOpenPercent, 50, 100],
+      ["partitionCriticalPercent", critical, WS_BOT_DISK_SETTING_DEFAULTS.partitionCriticalPercent, 50, 100],
+    ] as const;
+    for (const [key, raw, fallback, min, max] of numbers) {
+      const trimmed = (raw ?? "").trim();
+      if (trimmed === "") {
+        if (view.settings[key] !== undefined) patch[key] = null;
+        continue;
+      }
+      const value = Number(trimmed);
+      if (!Number.isInteger(value) || value < min || value > max) {
+        setError(t("area.settings-bots-host-1.bot-disk-settings-panel.errNumber", { key, min, max, fallback }));
+        return;
+      }
+      if (view.settings[key] !== value) patch[key] = value;
+    }
+    if (Object.keys(patch).length === 0) return;
+    save.mutate(patch);
+  };
+
+  const changed =
+    enabled !== view.settings.enabled ||
+    (idleTtlMinutes ?? "") !== String(toMinutes(view.settings.idleTtlMs)) ||
+    (refreshMinutes ?? "") !== String(toMinutes(view.settings.gitMirrorRefreshMs ?? BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS)) ||
+    (rolesDraft ?? "") !== (view.settings.sharedCacheRoles ?? BOT_DISK_DEFAULT_SHARED_CACHE_ROLES).join(", ") ||
+    (grace ?? "") !== (view.settings.graceClosingMinutes === undefined ? "" : String(view.settings.graceClosingMinutes)) ||
+    (scratch ?? "") !== (view.settings.scratchTtlHours === undefined ? "" : String(view.settings.scratchTtlHours)) ||
+    (threshold ?? "") !== (view.settings.partitionThresholdPercent === undefined ? "" : String(view.settings.partitionThresholdPercent)) ||
+    (refuseOpen ?? "") !== (view.settings.partitionRefuseOpenPercent === undefined ? "" : String(view.settings.partitionRefuseOpenPercent)) ||
+    (critical ?? "") !== (view.settings.partitionCriticalPercent === undefined ? "" : String(view.settings.partitionCriticalPercent));
+
+  const numberField = (
+    id: string,
+    label: string,
+    value: string,
+    setValue: (v: string) => void,
+    placeholder: string,
+    hint: string,
+  ) => (
+    <div className="space-y-1">
+      <Label htmlFor={id}>{label}</Label>
+      <Input
+        id={id}
+        type="number"
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => setValue(event.target.value)}
+        data-testid={`bot-disk-lifecycle-${id}`}
+      />
+      <p className="text-xs text-muted-foreground">{hint}</p>
+    </div>
+  );
+
+  return (
+    <div className="space-y-3 rounded-lg border p-4" data-testid="bot-disk-lifecycle-edit">
+      <h3 className="text-sm font-medium">{t("area.settings-bots-host-1.bot-disk-settings-panel.lifecycleTitle")}</h3>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={enabled ?? view.settings.enabled}
+          onChange={(event) => setEnabled(event.target.checked)}
+          data-testid="bot-disk-lifecycle-enabled"
+        />
+        {t("area.settings-bots-host-1.bot-disk-settings-panel.sweepEnabled")}
+      </label>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {numberField(
+          "bot-disk-idle-ttl",
+          t("area.settings-bots-host-1.bot-disk-settings-panel.idleTtlLabel"),
+          idleTtlMinutes ?? "",
+          setIdleTtlMinutes,
+          String(toMinutes(BOT_DISK_DEFAULT_IDLE_TTL_MS)),
+          t("area.settings-bots-host-1.bot-disk-settings-panel.idleTtlHint"),
+        )}
+        {numberField(
+          "bot-disk-mirror-refresh",
+          t("area.settings-bots-host-1.bot-disk-settings-panel.mirrorRefreshLabel"),
+          refreshMinutes ?? "",
+          setRefreshMinutes,
+          String(toMinutes(BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS)),
+          t("area.settings-bots-host-1.bot-disk-settings-panel.mirrorRefreshHint"),
+        )}
+        {numberField(
+          "graceClosingMinutes",
+          t("area.settings-bots-host-1.bot-disk-settings-panel.graceLabel"),
+          grace ?? "",
+          setGrace,
+          t("area.settings-bots-host-1.bot-disk-settings-panel.placeholderDefault", { value: WS_BOT_DISK_SETTING_DEFAULTS.graceClosingMinutes }),
+          t("area.settings-bots-host-1.bot-disk-settings-panel.graceHint"),
+        )}
+        {numberField(
+          "scratchTtlHours",
+          t("area.settings-bots-host-1.bot-disk-settings-panel.scratchLabel"),
+          scratch ?? "",
+          setScratch,
+          t("area.settings-bots-host-1.bot-disk-settings-panel.placeholderDefault", { value: WS_BOT_DISK_SETTING_DEFAULTS.scratchTtlHours }),
+          t("area.settings-bots-host-1.bot-disk-settings-panel.scratchHint"),
+        )}
+        {numberField(
+          "partitionThresholdPercent",
+          t("area.settings-bots-host-1.bot-disk-settings-panel.thresholdLabel"),
+          threshold ?? "",
+          setThreshold,
+          t("area.settings-bots-host-1.bot-disk-settings-panel.placeholderDefault", { value: WS_BOT_DISK_SETTING_DEFAULTS.partitionThresholdPercent }),
+          t("area.settings-bots-host-1.bot-disk-settings-panel.thresholdHint"),
+        )}
+        {numberField(
+          "partitionRefuseOpenPercent",
+          t("area.settings-bots-host-1.bot-disk-settings-panel.refuseLabel"),
+          refuseOpen ?? "",
+          setRefuseOpen,
+          t("area.settings-bots-host-1.bot-disk-settings-panel.placeholderDefault", { value: WS_BOT_DISK_SETTING_DEFAULTS.partitionRefuseOpenPercent }),
+          t("area.settings-bots-host-1.bot-disk-settings-panel.refuseHint"),
+        )}
+        {numberField(
+          "partitionCriticalPercent",
+          t("area.settings-bots-host-1.bot-disk-settings-panel.criticalLabel"),
+          critical ?? "",
+          setCritical,
+          t("area.settings-bots-host-1.bot-disk-settings-panel.placeholderDefault", { value: WS_BOT_DISK_SETTING_DEFAULTS.partitionCriticalPercent }),
+          t("area.settings-bots-host-1.bot-disk-settings-panel.criticalHint"),
+        )}
+        <div className="space-y-1">
+          <Label htmlFor="bot-disk-shared-cache-roles">{t("area.settings-bots-host-1.bot-disk-settings-panel.rolesLabel")}</Label>
+          <Input
+            id="bot-disk-shared-cache-roles"
+            value={rolesDraft ?? ""}
+            placeholder={BOT_DISK_DEFAULT_SHARED_CACHE_ROLES.join(", ")}
+            onChange={(event) => setRolesDraft(event.target.value)}
+            data-testid="bot-disk-lifecycle-roles"
+          />
+          <p className="text-xs text-muted-foreground">
+            {t("area.settings-bots-host-1.bot-disk-settings-panel.rolesHint")}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button size="sm" onClick={submit} disabled={save.isPending || !changed}>
+          {save.isPending ? t("area.settings-bots-host-1.bot-disk-settings-panel.saving") : t("area.settings-bots-host-1.bot-disk-settings-panel.saveLifecycle")}
+        </Button>
+        {save.isSuccess && !error && <span className="text-xs text-green-600">{t("area.settings-bots-host-1.bot-disk-settings-panel.saved")}</span>}
+      </div>
+      {error && <p className="text-xs text-red-600" data-testid="bot-disk-lifecycle-error">{error}</p>}
+      <p className="text-xs text-muted-foreground">
+        {t("area.settings-bots-host-1.bot-disk-settings-panel.sources", {
+          enabled: view.sources.enabled === "settings" ? t("area.settings-bots-host-1.bot-disk-settings-panel.sourceStored") : view.sources.enabled,
+          ttl: view.sources.idleTtlMs === "settings" ? t("area.settings-bots-host-1.bot-disk-settings-panel.sourceStored") : view.sources.idleTtlMs,
+        })}
+      </p>
+    </div>
   );
 }

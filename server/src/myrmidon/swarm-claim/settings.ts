@@ -1,12 +1,13 @@
 // server/src/myrmidon/swarm-claim/settings.ts
 //
-// myrmidon(1.6-SWARM): read and write `instance_settings.general.swarmClaim`.
+// myrmidon(1.6-SWARM): read and write `instance_settings.general.swarmClaim`
+// (`general.swarm` is the F-26 wake guard's block and is never touched here).
 //
 // The precedence (stored settings, then environment, then the built-in default)
-// is decided in `@paperclipai/shared`; this module is only the database half:
+// is decided in `@myrmidon/shared`; this module is only the database half:
 // it reads the raw row, hands it to the resolver, writes the canonical object
 // back on a patch and logs the change. The same shape the RUNTIME-LIMITS and
-// WORKSPACE-HYGIENE settings use, so an operator changes the pilot from the
+// WORKSPACE-HYGIENE settings use, so an operator changes the swarm from the
 // settings page or the API without a restart.
 //
 // 1.6.1 (SWARM-SETTINGS-UI): the change journal. Every update appends a
@@ -16,17 +17,18 @@
 // log row stays the audit trail; the journal is the UI-facing view of it that
 // works without a company scope (instance settings are instance-wide).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   SWARM_CLAIM_SETTINGS_KEY,
+  readStoredSwarmSettings,
   mergeSwarmClaimSettings,
   resolveSwarmClaimSettings,
   type ResolvedSwarmClaimSettings,
   type SwarmClaimSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
-/** Activity action written for every pilot settings change. */
+/** Activity action written for every swarm settings change. */
 export const SWARM_CLAIM_SETTINGS_UPDATED_ACTION = "instance.swarm_claim.updated";
 
 /** Stored-settings key of the change journal inside `general`. */
@@ -119,7 +121,7 @@ export function swarmClaimSettingsService(
 
   async function read(): Promise<ResolvedSwarmClaimSettings> {
     const general = await readGeneral();
-    return resolveSwarmClaimSettings({ stored: general[SWARM_CLAIM_SETTINGS_KEY], env });
+    return resolveSwarmClaimSettings({ stored: readStoredSwarmSettings(general), env });
   }
 
   return {
@@ -131,7 +133,7 @@ export function swarmClaimSettingsService(
     async update(patch, actor) {
       const general = await readGeneral();
       const current = resolveSwarmClaimSettings({
-        stored: general[SWARM_CLAIM_SETTINGS_KEY],
+        stored: readStoredSwarmSettings(general),
         env,
       });
       const next = mergeSwarmClaimSettings(current.settings, patch);

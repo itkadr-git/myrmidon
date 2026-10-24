@@ -8,9 +8,11 @@ import {
   shouldSilenceHttpSuccessLog,
 } from "./http-log-policy.js";
 import {
+  maskPasswordSetToken,
   redactSensitive,
   stripSecretBearingUrlParts,
 } from "./redact-sensitive.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -21,12 +23,12 @@ const sharedOpts = {
 const isProduction = process.env.NODE_ENV === "production";
 export const logger = isProduction
   ? pino({
-      level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "info",
+      level: readProductEnv("LOG_LEVEL")?.trim() || "info",
       redact: [...HTTP_LOG_REDACT_PATHS],
     })
   : pino(
       {
-        level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "debug",
+        level: readProductEnv("LOG_LEVEL")?.trim() || "debug",
         redact: [...HTTP_LOG_REDACT_PATHS],
       },
       pino.transport({
@@ -98,6 +100,11 @@ export function createHttpLogger(baseLogger: Logger) {
             typeof req.url === "string"
               ? stripSecretBearingUrlParts(req.url)
               : req.url,
+          // myrmidon(OPE-8985): route params of /password-set/:token hold the token.
+          params:
+            typeof req.url === "string" && maskPasswordSetToken(req.url) !== req.url
+              ? undefined
+              : req.params,
           // The URL policy intentionally drops all query parameters. The default
           // serializer also exposes the parsed query separately, so omit that
           // duplicate path instead of letting credentials bypass the URL scrub.

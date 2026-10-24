@@ -75,23 +75,37 @@ export interface BaselineMetricsReport {
   byRole: BaselineMetricRow[];
 }
 
+export interface BaselineDifference {
+  absolute: number;
+  /** null when the baseline value is 0: a change from 0 is real, not "0%". */
+  percentage: number | null;
+}
+
+/** Per-group deltas. timeInReviewHours has no p90 in the BASELINE contract,
+ *  so there is no reviewTimeP90 here at all. */
+export interface BaselineGroupDifferences {
+  tasksCompleted: BaselineDifference;
+  cycleTimeMean: BaselineDifference;
+  cycleTimeMedian: BaselineDifference;
+  cycleTimeP90: BaselineDifference;
+  reviewTimeMean: BaselineDifference;
+  reviewTimeMedian: BaselineDifference;
+  returnRate: BaselineDifference;
+  blockedTotal: BaselineDifference;
+  blockedMean: BaselineDifference;
+  runsPerTask: BaselineDifference;
+  costPerTask: BaselineDifference;
+}
+
 export interface BaselineComparisonResult {
   current: BaselineMetricsReport;
   baseline: BaselineMetricsReport | null;
+  /** Per-key deltas for groups present on both sides; a null project key is
+   *  the "" record key. null when no baseline snapshot exists. */
   differences: {
-    cycleTimeMean: { absolute: number; percentage: number } | null;
-    cycleTimeMedian: { absolute: number; percentage: number } | null;
-    cycleTimeP90: { absolute: number; percentage: number } | null;
-    reviewTimeMean: { absolute: number; percentage: number } | null;
-    reviewTimeMedian: { absolute: number; percentage: number } | null;
-    reviewTimeP90: { absolute: number; percentage: number } | null;
-    returnRate: { absolute: number; percentage: number } | null;
-    blockedTotal: { absolute: number; percentage: number } | null;
-    blockedMean: { absolute: number; percentage: number } | null;
-    runsPerTask: { absolute: number; percentage: number } | null;
-    costPerTask: { absolute: number; percentage: number } | null;
-    tasksCompleted: { absolute: number; percentage: number } | null;
-  };
+    byProject: Record<string, BaselineGroupDifferences>;
+    byRole: Record<string, BaselineGroupDifferences>;
+  } | null;
 }
 
 const base = (companyId: string) =>

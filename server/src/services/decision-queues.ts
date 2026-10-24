@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   approvals,
@@ -16,7 +16,7 @@ import {
   issueWorkProducts,
   issues,
   joinRequests,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   AttentionItem,
   AttentionSourceKind,
@@ -24,7 +24,7 @@ import type {
   DecisionQueueItem,
   DecisionQueueSeedRule,
   DecisionTriage,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { notFound, unprocessable } from "../errors.js";
 // myrmidon(SUB): the stack registry keeps its components in instance settings, not a table
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
@@ -294,9 +294,30 @@ async function sourceIssueId(
     case "host_disk_alert": {
       return { exists: true, issueId: null };
     }
+    // myrmidon(1.6.5-PAUSE-GUARD): the leftover-pauses signal subject is the
+    // company itself (one card per company), so existence is always true while
+    // the board runs — the sweep computes the signal, nothing is stored.
+    case "pause_guard": {
+      return { exists: true, issueId: null };
+    }
+    // myrmidon(1.6.5-F21-B): the owner-cards signal is computed live from
+    // issue_thread_interactions (one company-level card), so existence is
+    // always true while the board runs — there is nothing stored to check.
+    case "owner_pending_card": {
+      return { exists: true, issueId: null };
+    }
     // myrmidon(BOT-RUNTIME-TUNING D): the fallback alert's source id is the
     // agent id — the card's subject — so existence is the agent row.
     case "model_fallback_alert": {
+      const row = await db.select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.id, sourceId)))
+        .then((rows) => rows[0] ?? null);
+      return { exists: Boolean(row), issueId: null, agentId: row?.id ?? null };
+    }
+    // myrmidon(1.6.5-F11-A): the «media not connected» signal's source id is
+    // the agent id — the card's subject — so existence is the agent row.
+    case "bot_media_mcp": {
       const row = await db.select({ id: agents.id })
         .from(agents)
         .where(and(eq(agents.companyId, companyId), eq(agents.id, sourceId)))
@@ -307,6 +328,13 @@ async function sourceIssueId(
     // registry; the source id is the task the sweep unblocked.
     // myrmidon(REVIEW-ROUTING): the review routing signal is also about one task.
     case "review_routing":
+    // myrmidon(OPE-7932): the overdue monitor card is attached to its issue.
+    case "issue_monitor_overdue":
+    // myrmidon(1.6.5 BOT-DISK-H4c): the archive card sits on the task.
+    case "bot_disk_archive":
+    // myrmidon(OPE-6011): the held-task card's subject is the held task.
+    case "replay_blocked":
+    case "execution_hold":
     case "stale_block": {
       const row = await db
         .select({ id: issues.id })
@@ -314,6 +342,16 @@ async function sourceIssueId(
         .where(and(eq(issues.companyId, companyId), eq(issues.id, sourceId), isNull(issues.hiddenAt)))
         .then((rows) => rows[0] ?? null);
       return { exists: Boolean(row), issueId: row?.id ?? null };
+    }
+    // myrmidon(1.6.5 F-09): the signal subject is a queued run; existence is
+    // the live run row (still queued, still without a waitReason).
+    case "queue_stall": {
+      const row = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, sourceId)))
+        .then((rows) => rows[0] ?? null);
+      return { exists: Boolean(row), issueId: null, agentId: null };
     }
     // myrmidon(1.6.1-WIP-LIMIT-A): the signal subject is an agent of the
     // company; existence is the live agent row (the status feed is computed,
@@ -338,6 +376,8 @@ async function sourceIssueId(
     // the company; existence is the live agent row (the signal is computed by
     // the sweep, not stored, so there is nothing else to check).
     case "bot_disk_quota":
+    // myrmidon(1.6.5 BOT-DISK-H4c): the stale-image card sits on the bot's agent row.
+    case "bot_image_stale":
     // myrmidon(1.6.5 PROMPT-BUDGET B): the signal subject is an agent of the
     // company; existence is the live agent row (the status feed is computed,
     // not stored, so there is nothing else to check).
@@ -355,6 +395,24 @@ async function sourceIssueId(
     // same company's card.
     case "foraging_limit": {
       return { exists: sourceId === `foraging:${companyId}`, issueId: null };
+    }
+    // myrmidon(1.6.5-F-23): advisory signals only — no backing issue.
+    case "secret_off_run_reads":
+    case "secret_off_run_grant_expiring": {
+      return { exists: true, issueId: null };
+    }
+    // myrmidon(1.6.5-F-18): the empty-catalog card is computed from the
+    // process-level signal registry and its subject id is the stable
+    // company-scoped key the feed emits (`litellm:${companyId}`), not a
+    // stored row — same shape as foraging_limit above.
+    case "empty_model_catalog": {
+      return { exists: sourceId === `litellm:${companyId}`, issueId: null };
+    }
+    // myrmidon(1.6.6 OPE-7198): the codex-pool alert card is computed from the
+    // process-level signal registry and its subject id is the stable dedupKey
+    // (`codex_pool:...`), not a stored row — same shape as foraging_limit / empty_model_catalog above.
+    case "codex_pool_alert": {
+      return { exists: sourceId.startsWith("codex_pool:"), issueId: null };
     }
   }
 }
@@ -375,6 +433,15 @@ export async function canReadDecisionSource(
     return (await authz.decide({ actor, action: "issue:read", resource })).allowed;
   }
 
+  // myrmidon(1.6.6 OPE-7198): codex-pool alerts are visible to any actor with company scope read.
+  if (sourceKind === "codex_pool_alert") {
+    return (await authz.decide({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    })).allowed;
+  }
+
   if (sourceKind === "agent_error_alert" && source.agentId) {
     return (await authz.decide({
       actor,
@@ -385,6 +452,15 @@ export async function canReadDecisionSource(
   // myrmidon(BOT-RUNTIME-TUNING D): the fallback alert names one agent; the
   // same agent-read authority the error alert uses.
   if (sourceKind === "model_fallback_alert" && source.agentId) {
+    return (await authz.decide({
+      actor,
+      action: "agent:read",
+      resource: { type: "agent", companyId, agentId: source.agentId },
+    })).allowed;
+  }
+  // myrmidon(1.6.5-F11-A): the «media not connected» card names one agent; the
+  // same agent-read authority the fallback alert uses.
+  if (sourceKind === "bot_media_mcp" && source.agentId) {
     return (await authz.decide({
       actor,
       action: "agent:read",

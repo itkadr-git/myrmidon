@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
-import { SESSION_GENERATIONS_SETTINGS_KEY, instanceGeneralSettingsSchema } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { SESSION_GENERATIONS_SETTINGS_KEY, instanceGeneralSettingsSchema } from "@myrmidon/shared";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 
 // myrmidon(PERF-DIET-K): the service half of the session-generations settings. The
@@ -9,6 +9,19 @@ import { instanceSettingsService } from "../../services/instance-settings.js";
 // every key it does not list. These tests run the real service over a stubbed row.
 
 const STORED = { enabled: false, maxMessages: 100, maxDays: 7 };
+
+// updateGeneral reads the row through select().from().where().limit(1).for("update")
+// inside db.transaction (myrmidon PROCS-Q5); one Promise with chainable no-ops covers
+// both the plain and the locking read.
+function stubRows<T>(values: T[]) {
+  const p = Promise.resolve(values) as Promise<T[]> & {
+    limit(_n?: number): Promise<T[]>;
+    for(_mode?: string): Promise<T[]>;
+  };
+  p.limit = () => p;
+  p.for = () => p;
+  return p;
+}
 
 function stubDb(general: Record<string, unknown>) {
   const row = {
@@ -21,7 +34,9 @@ function stubDb(general: Record<string, unknown>) {
     updatedAt: new Date("2026-10-06T00:00:00.000Z"),
   };
   const db = {
-    select: () => ({ from: () => ({ where: () => Promise.resolve([row]) }) }),
+    // No isolation in this stub: the transaction callback gets the same object back.
+    transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+    select: () => ({ from: () => ({ where: () => stubRows([row]) }) }),
     insert: () => {
       throw new Error("unexpected insert in test");
     },

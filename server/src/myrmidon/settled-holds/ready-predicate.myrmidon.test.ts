@@ -9,6 +9,7 @@
 // wake as "covering" the task, and nothing ever woke it again — not even after
 // the hold was gone.
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests,
@@ -18,7 +19,7 @@ import {
   heartbeatRuns,
   issueRecoveryActions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -40,8 +41,12 @@ vi.mock("../../middleware/logger.js", () => ({
 }));
 
 import { findTopReadyIssueForAgent, idlePickupForAgent } from "../idle-pickup.js";
+import {
+  legacyExecutionNeedsReconciliation,
+  terminalizeLegacyExecution,
+} from "../../services/legacy-execution-recovery.js";
 import { listRoleQueue, listUnassignedQueue } from "../swarm-claim/queue.js";
-import { listIdleRolePairs } from "../swarm-claim/idle-queue.js";
+import { listIdleRolePairs } from "../swarm-claim/matcher.js";
 import { issueHasLiveClaimOrWake } from "../swarm-claim/sweep.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -182,6 +187,78 @@ describeEmbeddedPostgres("HOLD-READY: ready means not held, and a parked wake is
       expect(result.woken).toBe(0);
       expect(enqueueWakeup).not.toHaveBeenCalled();
       expect(await findTopReadyIssueForAgent(db, { id: agentId, companyId })).toBeNull();
+    });
+
+    it("keeps a review-wait cancellation eligible for idle-pickup without a hold", async () => {
+      const { companyId, agentId, issueId } = await seed();
+      const [run] = await db
+        .insert(heartbeatRuns)
+        .values({
+          companyId,
+          agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "cancelled",
+          errorCode: "issue_continuation_waiting_on_review",
+          contextSnapshot: { issueId, taskId: issueId },
+          resultJson: {},
+          finishedAt: new Date(),
+        })
+        .returning();
+      // Production only terminalizes (and so opens a reconciliation action)
+      // when the predicate asks for it; a review-wait cancellation must not.
+      if (legacyExecutionNeedsReconciliation(run!)) {
+        await terminalizeLegacyExecution({ db, run: run!, status: "cancelled" });
+      }
+
+      const enqueueWakeup = enqueueSpy();
+      const result = await pickup(enqueueWakeup, { id: agentId, companyId });
+
+      expect(
+        await db
+          .select()
+          .from(issueRecoveryActions)
+          .where(eq(issueRecoveryActions.sourceIssueId, issueId)),
+      ).toHaveLength(0);
+      expect(result.woken).toBe(1);
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    });
+
+    it("myrmidon(1.6.6 OPE-8988): revisiting an already-settled terminal run opens no new recovery action", async () => {
+      const { companyId, agentId, issueId } = await seed();
+      const [run] = await db
+        .insert(heartbeatRuns)
+        .values({
+          companyId,
+          agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "running",
+          contextSnapshot: { issueId, taskId: issueId },
+          resultJson: {},
+        })
+        .returning();
+      const first = await terminalizeLegacyExecution({ db, run: run!, status: "cancelled" });
+      const actions = () =>
+        db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      const opened = await actions();
+      expect(opened).toHaveLength(1);
+      // the automatic settlement closes it the way production does
+      await db
+        .update(issueRecoveryActions)
+        .set({
+          status: "resolved",
+          evidence: {
+            ...(opened[0]!.evidence as Record<string, unknown>),
+            automaticRecovery: { policy: "preserve_without_replay_v1", runId: run!.id, replay: "blocked" },
+          },
+        })
+        .where(eq(issueRecoveryActions.id, opened[0]!.id));
+      // the periodic stranded-work check revisits the same terminal run, again and again
+      for (let pass = 0; pass < 3; pass += 1) {
+        await terminalizeLegacyExecution({ db, run: first!, status: "cancelled", fromStatuses: ["cancelled"] });
+      }
+      expect(await actions()).toHaveLength(1);
     });
 
     it("an active reconciliation action holds the task too", async () => {

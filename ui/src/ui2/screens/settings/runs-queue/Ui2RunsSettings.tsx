@@ -11,7 +11,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { RunLimitKey, RunLimits, RunLimitsPatch, RunLimitsSource } from "@paperclipai/shared";
+import type { RunLimitKey, RunLimits, RunLimitsPatch, RunLimitsSource } from "@myrmidon/shared";
 import {
   runtimeLimitsApi,
   runtimeLimitsQueryKey,
@@ -188,6 +188,35 @@ export function Ui2RunsSettings() {
     return `${now}${above} ${verdict}.`;
   })();
 
+  // myrmidon(1.6.5 C0-ui): the memory snapshot — the host's memory and the
+  // server container's cgroup usage, read by the same admission that gates on
+  // them. `null` when the server sent no snapshot (an older server, an early
+  // request, or no cgroup limit to read), so the screen shows nothing rather
+  // than a number it made up.
+  const memoryLine = ((): string | null => {
+    const memory = view.memory;
+    if (!memory || (!memory.host && !memory.container)) return null;
+    const parts: string[] = [];
+    if (memory.host) {
+      parts.push(
+        t("ui2.settings.runs.memory.host", {
+          available: memory.host.availableMb,
+          total: memory.host.totalMb,
+        }),
+      );
+    }
+    if (memory.container) {
+      parts.push(
+        t("ui2.settings.runs.memory.container", {
+          used: memory.container.usedMb,
+          limit: memory.container.limitMb,
+          free: memory.container.freeMb,
+        }),
+      );
+    }
+    return parts.join(" ");
+  })();
+
   // myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot — admitted runs against
   // the ceiling, the queue length, and the head of the queue. `null` when the
   // server sent no snapshot (an older server, an early request), so the
@@ -245,7 +274,8 @@ export function Ui2RunsSettings() {
       reason === "host_memory" ||
       reason === "host_cpu" ||
       reason === "agent_fair_share" ||
-      reason === "agent_concurrency"
+      reason === "agent_concurrency" ||
+      reason === "higher_priority_ready"
     );
   }
 
@@ -254,6 +284,41 @@ export function Ui2RunsSettings() {
       ? t(oldestWaitReasonKey as never)
       : oldestWaitReasonKey
     : null;
+
+  // myrmidon(1.6.5 F-09): the admission denial counter — how many reservations
+  // the gates refused since the server started (the sweep that could not start
+  // a queued run), broken down by the gate that refused, plus the most recent
+  // refusal. A server that does not serve the field yet sends no counter, so
+  // the block stays hidden rather than showing a made-up zero.
+  const admissionTotal = ((): number | null => {
+    const total = view.admissionDenials?.total;
+    return typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null;
+  })();
+
+  const admissionDenialRows = ((): Array<{ reason: string; label: string; count: number }> => {
+    const byReason = view.admissionDenials?.byReason;
+    if (!byReason || typeof byReason !== "object") return [];
+    return Object.entries(byReason)
+      .filter((entry): entry is [string, number] => typeof entry[1] === "number" && entry[1] > 0)
+      .map(([reason, count]) => ({
+        reason,
+        // An unknown reason (a server ahead of this UI) renders as the raw
+        // value, not as an untranslated key — same rule as the queue line.
+        label: isKnownWaitReason(reason) ? t(`ui2.settings.runs.waitReason.${reason}` as never) : reason,
+        count,
+      }))
+      .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason));
+  })();
+
+  const admissionLastLine = ((): string | null => {
+    const reason = view.admissionDenials?.lastReason;
+    if (typeof reason !== "string" || reason === "") return null;
+    const label = isKnownWaitReason(reason) ? t(`ui2.settings.runs.waitReason.${reason}` as never) : reason;
+    const lastAt = view.admissionDenials?.lastAt;
+    return typeof lastAt === "string" && lastAt !== ""
+      ? t("ui2.settings.runs.denials.lastAt", { reason: label, at: formatQueueSince(lastAt) })
+      : t("ui2.settings.runs.denials.last", { reason: label });
+  })();
 
   return (
     <Ui2Page title={t("ui2.settings.runs.title")} subtitle={t("ui2.settings.runs.subtitle")}>
@@ -283,6 +348,14 @@ export function Ui2RunsSettings() {
                   {field.key === "maxHostLoadPercentPerCore" ? (
                     <span className="ui2-run-limit-hint max-w-md text-xs text-muted-foreground">
                       {t("ui2.settings.runs.maxHostLoadPercentPerCore.hint")}
+                    </span>
+                  ) : null}
+                  {field.key === "minFreeMemoryMb" || field.key === "minFreeHostMemoryMb" ? (
+                    <span
+                      data-testid={`ui2-run-limit-hint-${field.key}`}
+                      className="ui2-run-limit-hint max-w-md text-xs text-muted-foreground"
+                    >
+                      {t(`ui2.settings.runs.${field.key}.hint` as never)}
                     </span>
                   ) : null}
                   {field.key === FAIR_SHARE_KEY ? (
@@ -355,6 +428,43 @@ export function Ui2RunsSettings() {
             </p>
           ) : null}
         </div>
+      ) : null}
+
+      {/* myrmidon(1.6.5 F-09): the admission denial counter — how many times the
+          sweep refused to start a queued run since the server started, by gate
+          and with the most recent refusal. Hidden when the server serves no
+          counter (an older server, or no admission yet). */}
+      {admissionTotal !== null ? (
+        <div className="ui2-run-admission-denials">
+          <p data-testid="ui2-run-admission-denials" className="text-xs text-muted-foreground">
+            {t("ui2.settings.runs.denials.total", { total: admissionTotal })}
+          </p>
+          {admissionDenialRows.length > 0 ? (
+            <ul
+              data-testid="ui2-run-admission-denials-by-reason"
+              className="ui2-run-admission-denials-reasons flex flex-col"
+            >
+              {admissionDenialRows.map((row) => (
+                <li key={row.reason} className="text-xs text-muted-foreground">
+                  {t("ui2.settings.runs.denials.byReason", { reason: row.label, count: row.count })}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {admissionLastLine ? (
+            <p data-testid="ui2-run-admission-denials-last" className="text-xs text-muted-foreground">
+              {admissionLastLine}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* myrmidon(1.6.5 C0-ui): the memory snapshot — the host's memory and the
+          server container's cgroup usage, next to the queue line. */}
+      {memoryLine ? (
+        <p data-testid="ui2-run-memory" className="text-xs text-muted-foreground">
+          {memoryLine}
+        </p>
       ) : null}
 
       {saveError ? <Ui2ErrorState message={t("ui2.settings.runs.saveError", { reason: saveError })} withCache /> : null}

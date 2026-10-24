@@ -10,7 +10,7 @@ import {
   heartbeatRuns,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -93,13 +93,13 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
     return { companyId, assigneeId, reviewerId, issueId, interactionId };
   }
 
-  async function seedRun(input: { companyId: string; agentId: string; contextSnapshot: Record<string, unknown> }) {
+  async function seedRun(input: { companyId: string; agentId: string; contextSnapshot: Record<string, unknown>; invocationSource?: "automation" | "on_demand" }) {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId: input.companyId,
       agentId: input.agentId,
-      invocationSource: "automation",
+      invocationSource: input.invocationSource ?? "automation",
       status: "queued",
       contextSnapshot: input.contextSnapshot,
     });
@@ -142,6 +142,54 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
 
     expect(outcome.outcome).toBe("not_stale");
     expect(await runStatus(runId)).toEqual({ status: "queued", errorCode: null });
+  });
+
+  it("keeps a productive continuation recovery queued after the issue is reassigned", async () => {
+    const { companyId, assigneeId, reviewerId, issueId } = await seed();
+    await db.update(issues).set({ assigneeAgentId: reviewerId }).where(eq(issues.id, issueId));
+    const runId = await seedRun({
+      companyId,
+      agentId: assigneeId,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.productive_terminal_continuation_recovery",
+      },
+    });
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run.invocationSource).toBe("automation");
+    const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+      runId,
+      companyId,
+      expectedStatus: "queued",
+      now: new Date(),
+    });
+
+    expect(outcome.outcome).toBe("not_stale");
+    expect(await runStatus(runId)).toEqual({ status: "queued", errorCode: null });
+  });
+
+  it("does not let a non-automation invocation use productive recovery ownership", async () => {
+    const { companyId, reviewerId, issueId } = await seed();
+    const runId = await seedRun({
+      companyId,
+      agentId: reviewerId,
+      invocationSource: "on_demand",
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.productive_terminal_continuation_recovery",
+      },
+    });
+
+    const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+      runId, companyId, expectedStatus: "queued", now: new Date(),
+    });
+
+    expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
   });
 
   it("still cancels an ordinary wake of a non-assignee as issue_assignee_changed", async () => {

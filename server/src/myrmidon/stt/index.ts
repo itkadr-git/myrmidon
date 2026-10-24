@@ -20,7 +20,7 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import { secretService } from "../../services/secrets.js";
 import { assertCompanyAccess, assertBoard, getActorInfo } from "../../routes/authz.js";
@@ -38,8 +38,11 @@ import { SttError, type SttAudioMime, type SttResult } from "./types.js";
 
 export { sttSettings } from "./settings.js";
 export { transcribeAudio } from "./service.js";
+// myrmidon(1.6.5 VOICE-STT B): the diarization report and its marker helper —
+// the intake renders the marker, the meeting flow reads the report.
+export { summarizeDiarization, diarizationMissing } from "./diarization.js";
 export type { SttSettings } from "./settings.js";
-export type { SttResult, SttSegment, SttAudioMime, SttErrorCode } from "./types.js";
+export type { SttResult, SttSegment, SttAudioMime, SttErrorCode, SttDiarizationReport, SttDiarizationReason } from "./types.js";
 export { SttError } from "./types.js";
 
 export interface SttRuntimeOptions {

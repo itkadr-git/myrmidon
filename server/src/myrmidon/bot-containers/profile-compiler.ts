@@ -43,7 +43,7 @@
 //     in input.env under that name.
 import { createHash } from "node:crypto";
 
-import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@paperclipai/shared";
+import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@myrmidon/shared";
 import { effortForModel } from "../effort-policy/effort-policy.js";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
 import { writeYamlDocument, type YamlMapping, type YamlNode } from "./deterministic-yaml.js";
@@ -106,6 +106,12 @@ export interface HermesProfileAdapterConfig {
   parallelHelpers?: ParallelHelpersCard;
   /** adapterConfig.toolsets — comma-separated Hermes toolset names. */
   toolsets?: string;
+  /**
+   * myrmidon(TOOL-DIET): the card's own list of single tools to hide from the model, written to
+   * `agent.disabled_tools`. Present (even empty) it replaces the instance list entirely, so `[]`
+   * means "this bot keeps every tool"; absent, the instance list applies.
+   */
+  disabledTools?: string[];
 }
 
 /** A text file placed under /workspace (the sibling files of an instructions bundle). */
@@ -337,6 +343,13 @@ export interface HermesProfileInstanceDefaults {
   auxiliary?: HermesProfileAuxiliaryDefaults;
   /** myrmidon(BOT-LSP): instance-wide LSP settings to control language server behavior. */
   lsp?: HermesProfileLspSettings;
+  /**
+   * myrmidon(TOOL-DIET): instance-wide list of single tools no bot sends to the model
+   * (MYRMIDON_BOT_DISABLED_TOOLS) — each tool's schema is paid on every model call.
+   * The card's `adapterConfig.disabledTools` replaces it; `vision_analyze` is kept for a
+   * card that names a vision model of its own. Undefined or empty writes no key at all.
+   */
+  disabledTools?: readonly string[];
 }
 
 export interface HermesProfileInput {
@@ -425,9 +438,6 @@ const HINDSIGHT_DEFAULT_MODE: HermesProfileHindsightMode = "local_external";
  * compiler can only warn against the floor — see the warning text below.
  */
 const AGENTS_MD_WARN_CHARS = 20_000;
-
-/** In-container mount point of the skills-board volume subtree (containers-plan-senior §2.1). */
-const SKILLS_BOARD_CONTAINER_DIR = "/data/hermes/skills-board";
 
 /** env variable names the image itself sets; a card can never override them. */
 const RESERVED_ENV_NAMES = new Set(["HOME", "PATH", "HERMES_HOME"]);
@@ -767,6 +777,42 @@ function buildDisabledToolsets(helpers: ResolvedParallelHelpers | undefined): st
   return ["delegation"];
 }
 
+/** Tools whose names the compiler accepts under `agent.disabled_tools` (Hermes tool names, plus MCP-style dots). */
+const DISABLED_TOOL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+
+/**
+ * myrmidon(TOOL-DIET): `agent.disabled_tools` for the bot — the single tools Hermes drops from
+ * the schema after the toolset selection (patch 17-disabled-tools-by-name). The card's own list
+ * wins and is taken as written; the instance list gives way for `vision_analyze` when the card
+ * chose a vision model, because that card means to look at pictures. Names that are not tool
+ * names are dropped with a warning. Undefined (no key written) when nothing is left, so a compile
+ * without any list is exactly the previous config.yaml.
+ */
+function buildDisabledTools(
+  adapterConfig: HermesProfileAdapterConfig,
+  instanceTools: readonly string[] | undefined,
+  warnings: string[],
+): string[] | undefined {
+  const fromCard = adapterConfig.disabledTools !== undefined;
+  let names = [...(fromCard ? adapterConfig.disabledTools! : (instanceTools ?? []))];
+  if (!fromCard && nonEmpty(adapterConfig.models?.vision)) {
+    names = names.filter((name) => name !== "vision_analyze");
+  }
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const raw of names) {
+    const name = raw.trim();
+    if (!name || seen.has(name)) continue;
+    if (!DISABLED_TOOL_NAME_RE.test(name)) {
+      warnings.push(`agent.disabled_tools: "${name}" from ${fromCard ? "the card" : "the instance default"} is not a tool name; dropped`);
+      continue;
+    }
+    seen.add(name);
+    kept.push(name);
+  }
+  return kept.length > 0 ? kept : undefined;
+}
+
 /** stt/tts: the card carries only a model name, never a provider — see module docstring. */
 function warnUnplacedVoiceModels(
   models: HermesProfileAdapterConfig["models"],
@@ -946,6 +992,8 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
       // agent's tool surface. Omitted entirely when helpers are on (or the card
       // predates the field), so no unrelated toolset is ever disabled.
       disabled_toolsets: buildDisabledToolsets(input.parallelHelpers),
+      // myrmidon(TOOL-DIET): single tools that stay out of the model's schema (see buildDisabledTools).
+      disabled_tools: buildDisabledTools(adapterConfig, input.instanceDefaults.disabledTools, warnings),
     },
     approvals: { mode: "off" },
     // myrmidon(BOT-RUNTIME-TUNING-B): title/compression auxiliary models — the
@@ -1002,7 +1050,9 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     },
     platform_toolsets: { api_server: buildToolsets(adapterConfig.toolsets) },
     platforms: { api_server: { enabled: true } },
-    skills: { external_dirs: [SKILLS_BOARD_CONTAINER_DIR] },
+    // Company skills are delivered per run into Hermes' local skills root.
+    // Keep the legacy profile mount empty so Hermes cannot index each skill twice.
+    skills: { external_dirs: [] },
     sessions: { retention_days: input.instanceDefaults.sessionsRetentionDays },
     terminal: { cwd: "/workspace" },
   };

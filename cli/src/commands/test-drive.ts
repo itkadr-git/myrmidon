@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { Option, type Command } from "commander";
-import type { Agent, Company, InstanceExperimentalSettings } from "@paperclipai/shared";
+import type { Agent, Company, InstanceExperimentalSettings } from "@myrmidon/shared";
 import { PaperclipApiClient } from "../client/http.js";
 import { openUrl } from "../client/board-auth.js";
 import {
@@ -17,6 +17,7 @@ import { readConfig } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { runCommand, type StartedServer } from "./run.js";
 import { isLinkedGitWorktree } from "./git-workspace.js";
+import { readProductEnv, writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export const TEST_DRIVE_HARNESSES = ["claude", "codex", "opencode"] as const;
 export type TestDriveHarness = (typeof TEST_DRIVE_HARNESSES)[number];
@@ -170,7 +171,7 @@ export async function prepareTestDriveEnvironment(
   const preservedCredential = sourceEnvName ? process.env[sourceEnvName] : undefined;
 
   for (const key of Object.keys(process.env)) {
-    if (key.startsWith("PAPERCLIP_")) {
+    if (key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_")) { // myrmidon(REBRAND-C)
       delete process.env[key];
     }
   }
@@ -183,16 +184,16 @@ export async function prepareTestDriveEnvironment(
 
   const dataDir = resolveTestDriveDataDir(options.dataDir);
   const linkedWorktree = isLinkedGitWorktree(cwd);
-  process.env.PAPERCLIP_HOME = dataDir;
-  process.env.PAPERCLIP_INSTANCE_ID = "default";
-  process.env.PAPERCLIP_CONFIG = resolveDefaultConfigPath("default");
-  process.env.PAPERCLIP_CONTEXT = resolveDefaultContextPath();
-  process.env.PAPERCLIP_IN_WORKTREE = linkedWorktree ? "true" : "false";
-  process.env.PAPERCLIP_OPEN_ON_LISTEN = "false";
-  process.env.PAPERCLIP_DISABLE_CWD_ENV_FILE = "true";
-  process.env.PAPERCLIP_DEPLOYMENT_MODE = "local_trusted";
-  process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
-  process.env.PAPERCLIP_BIND = "loopback";
+  writeProductEnv(process.env, "HOME", dataDir); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "INSTANCE_ID", "default"); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "CONFIG", resolveDefaultConfigPath("default")); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "CONTEXT", resolveDefaultContextPath()); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "IN_WORKTREE", linkedWorktree ? "true" : "false"); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "OPEN_ON_LISTEN", "false"); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "DISABLE_CWD_ENV_FILE", "true"); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "DEPLOYMENT_MODE", "local_trusted"); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "DEPLOYMENT_EXPOSURE", "private"); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "BIND", "loopback"); // myrmidon(REBRAND-C)
   process.env.HOST = "127.0.0.1";
   process.env.PORT = String(await resolveTestDriveServerPort());
 
@@ -310,7 +311,7 @@ export async function reconcileTestDriveWorktreeExecution(
   );
   if (!worktreeExecutionArmed(verified, instanceId)) {
     throw new Error(
-      `Could not arm “Run tasks in this worktree” for Paperclip instance ${instanceId}. ` +
+      `Could not arm “Run tasks in this worktree” for Myrmidon instance ${instanceId}. ` +
         "Check that PAPERCLIP_IN_WORKTREE=true and retry the command.",
     );
   }
@@ -410,9 +411,9 @@ export async function testDriveCommand(
   // Commander has already copied the value into options. Remove it from the
   // JavaScript argv view before logging, telemetry, diagnostics, or startup.
   redactTestDriveArgv(options.apiKey);
-  const dataDir = path.resolve(process.env.PAPERCLIP_HOME ?? resolveTestDriveDataDir(options.dataDir));
-  const linkedWorktree = process.env.PAPERCLIP_IN_WORKTREE === "true";
-  const instanceId = process.env.PAPERCLIP_INSTANCE_ID ?? "default";
+  const dataDir = path.resolve(readProductEnv("HOME") ?? resolveTestDriveDataDir(options.dataDir));
+  const linkedWorktree = readProductEnv("IN_WORKTREE") === "true";
+  const instanceId = readProductEnv("INSTANCE_ID") ?? "default";
   // Resolve environment-backed credentials against the CLI environment as it
   // exists before server startup. In-process server initialization must not
   // change which credential the post-listen bootstrap observes.
@@ -438,7 +439,7 @@ export async function testDriveCommand(
       // Auto-created directories are private to this process. Explicitly reused
       // directories retain the normal guard against an already-managed instance.
       skipServiceManagerCheck: !options.dataDir?.trim(),
-      introLabel: "paperclipai test-drive",
+      introLabel: "myrmidon test-drive",
       afterStart: async (server) => {
         const api = dependencies.createApi(server.apiUrl);
         const result = await bootstrapTestDrive({
@@ -482,8 +483,8 @@ export async function testDriveCommand(
 export function registerTestDriveCommand(program: Command): void {
   program
     .command("test-drive")
-    .description("Start an isolated, initialized Paperclip instance for manual testing")
-    .option("-d, --data-dir <path>", "Paperclip data directory to create or reuse")
+    .description("Start an isolated, initialized Myrmidon instance for manual testing")
+    .option("-d, --data-dir <path>", "Myrmidon data directory to create or reuse")
     .option("--company-name <name>", "Initial company name", "Test Company")
     .option("--agent-name <name>", "Initial CEO agent name", "CEO")
     .addOption(

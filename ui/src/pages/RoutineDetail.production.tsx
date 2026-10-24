@@ -1,7 +1,9 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Repeat, Sparkles } from "lucide-react";
+import { i18n, useTranslation } from "@/i18n";
 import { ApiError } from "../api/client";
 import {
   routinesApi,
@@ -66,9 +68,9 @@ import type {
   RoutineDetail as RoutineDetailType,
   RoutineEnvConfig,
   RoutineVariable,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
-const LAST_SECTION_STORAGE_KEY = "paperclip.routineLastSection";
+const LAST_SECTION_STORAGE_KEY = "myrmidon.routineLastSection";
 
 export function buildRoutineProjectOptions(
   projects: ReadonlyArray<{ id: string; name: string; description?: string | null; archivedAt?: Date | string | null }>,
@@ -82,17 +84,16 @@ export function buildRoutineProjectOptions(
     }));
 }
 
-const SECTION_TITLES: Record<RoutineSectionKey, string> = {
-  overview: "Overview",
-  triggers: "Triggers",
-  variables: "Variables",
-  secrets: "Secrets",
-  delivery: "Delivery",
-  runs: "Runs",
-  activity: "Activity",
-  history: "History",
-};
-
+const sectionTitles = (): Record<RoutineSectionKey, string> => ({
+  overview: i18n.t("area.routines-2.routine-detail.sectionOverview"),
+  triggers: i18n.t("area.routines-2.routine-detail.sectionTriggers"),
+  variables: i18n.t("area.routines-2.routine-detail.sectionVariables"),
+  secrets: i18n.t("area.routines-2.routine-detail.sectionSecrets"),
+  delivery: i18n.t("area.routines-2.routine-detail.sectionDelivery"),
+  runs: i18n.t("area.routines-2.routine-detail.sectionRuns"),
+  activity: i18n.t("area.routines-2.routine-detail.sectionActivity"),
+  history: i18n.t("area.routines-2.routine-detail.sectionHistory"),
+});
 function isRoutineSection(value: string | undefined | null): value is RoutineSectionKey {
   return value != null && ROUTINE_SECTION_KEYS.includes(value as RoutineSectionKey);
 }
@@ -160,6 +161,7 @@ export function RoutineDetail() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { pushToast } = useToastActions();
+  const { t } = useTranslation();
   const hydratedRoutineIdRef = useRef<string | null>(null);
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
@@ -251,7 +253,7 @@ export function RoutineDetail() {
   });
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
+      if (!selectedCompanyId) throw new Error(i18n.t("area.routines-2.routine-detail.selectCompanySecrets"));
       return secretsApi.create(selectedCompanyId, input);
     },
     onSuccess: () => {
@@ -347,14 +349,14 @@ export function RoutineDetail() {
 
   useEffect(() => {
     if (!routine) return;
-    setBreadcrumbs([{ label: "Routines", href: "/routines" }, { label: routine.title }]);
+    setBreadcrumbs([{ label: t("area.routines-2.routine-detail.breadcrumbRoutines"), href: "/routines" }, { label: routine.title }]);
     if (!routineDefaults) return;
     const changedRoutine = hydratedRoutineIdRef.current !== routine.id;
     if (changedRoutine || !isEditDirty) {
       setEditDraft(routineDefaults);
       hydratedRoutineIdRef.current = routine.id;
     }
-  }, [routine, routineDefaults, isEditDirty, setBreadcrumbs]);
+  }, [routine, routineDefaults, isEditDirty, setBreadcrumbs, t]);
 
   useEffect(() => {
     autoResizeTextarea(titleInputRef.current);
@@ -371,16 +373,16 @@ export function RoutineDetail() {
     async (label: string, value: string) => {
       try {
         await copyTextToClipboard(value);
-        pushToast({ title: `${label} copied`, tone: "success" });
+        pushToast({ title: t("area.routines-2.routine-detail.copied", { label }), tone: "success" });
       } catch (copyError) {
         pushToast({
-          title: `Failed to copy ${label.toLowerCase()}`,
-          body: copyError instanceof Error ? copyError.message : "Clipboard access was denied.",
+          title: t("area.routines-2.routine-detail.copyFailed", { label: label.toLowerCase() }),
+          body: copyError instanceof Error ? copyError.message : t("area.routines-2.routine-detail.clipboardDenied"),
           tone: "error",
         });
       }
     },
-    [pushToast],
+    [pushToast, t],
   );
 
   const saveRoutine = useMutation({
@@ -405,15 +407,15 @@ export function RoutineDetail() {
       if (mutationError instanceof ApiError && mutationError.status === 409) {
         setSaveConflict(true);
         pushToast({
-          title: "Routine changed",
-          body: "Someone else updated this routine. Reload to see the latest revision.",
+          title: t("area.routines-2.routine-detail.routineChanged"),
+          body: t("area.routines-2.routine-detail.routineChangedBody"),
           tone: "warn",
         });
         return;
       }
       pushToast({
-        title: "Failed to save routine",
-        body: mutationError instanceof Error ? mutationError.message : "Myrmidon could not save the routine.",
+        title: t("area.routines-2.routine-detail.saveFailed"),
+        body: mutationError instanceof Error ? mutationError.message : t("area.routines-2.routine-detail.saveFailedBody"),
         tone: "error",
       });
     },
@@ -434,7 +436,7 @@ export function RoutineDetail() {
           : {}),
       }),
     onSuccess: async () => {
-      pushToast({ title: "Routine run started", tone: "success" });
+      pushToast({ title: t("area.routines-2.routine-detail.runStarted"), tone: "success" });
       setRunVariablesOpen(false);
       navigateToSection("runs");
       await Promise.all([
@@ -446,8 +448,8 @@ export function RoutineDetail() {
     },
     onError: (runError) => {
       pushToast({
-        title: "Routine run failed",
-        body: runError instanceof Error ? runError.message : "Myrmidon could not start the routine run.",
+        title: t("area.routines-2.routine-detail.runFailed"),
+        body: runError instanceof Error ? runError.message : t("area.routines-2.routine-detail.runFailedBody"),
         tone: "error",
       });
     },
@@ -457,8 +459,8 @@ export function RoutineDetail() {
     mutationFn: (status: string) => routinesApi.update(routineId!, { status }),
     onSuccess: async (_data, status) => {
       pushToast({
-        title: "Routine saved",
-        body: status === "paused" ? "Automation paused." : "Automation enabled.",
+        title: t("area.routines-2.routine-detail.routineSaved"),
+        body: status === "paused" ? t("area.routines-2.routine-detail.automationPaused") : t("area.routines-2.routine-detail.automationEnabledToast"),
         tone: "success",
       });
       await Promise.all([
@@ -468,8 +470,8 @@ export function RoutineDetail() {
     },
     onError: (statusError) => {
       pushToast({
-        title: "Failed to update routine",
-        body: statusError instanceof Error ? statusError.message : "Myrmidon could not update the routine.",
+        title: t("area.routines-2.routine-detail.updateFailed"),
+        body: statusError instanceof Error ? statusError.message : t("area.routines-2.routine-detail.updateFailedBody"),
         tone: "error",
       });
     },
@@ -477,7 +479,7 @@ export function RoutineDetail() {
 
   const createTrigger = useMutation({
     mutationFn: async (): Promise<RoutineTriggerResponse> => {
-      const existingOfKind = (routine?.triggers ?? []).filter((t) => t.kind === newTrigger.kind).length;
+      const existingOfKind = (routine?.triggers ?? []).filter((trigger) => trigger.kind === newTrigger.kind).length;
       const autoLabel = existingOfKind > 0 ? `${newTrigger.kind}-${existingOfKind + 1}` : newTrigger.kind;
       return routinesApi.createTrigger(routineId!, {
         kind: newTrigger.kind,
@@ -493,11 +495,11 @@ export function RoutineDetail() {
     onSuccess: async (result) => {
       if (result.secretMaterial) {
         setSecretMessage({
-          title: "Webhook trigger created",
+          title: t("area.routines-2.routine-detail.webhookCreated"),
           entries: [{ webhookUrl: result.secretMaterial.webhookUrl, webhookSecret: result.secretMaterial.webhookSecret }],
         });
       } else {
-        pushToast({ title: "Trigger added", body: "The routine schedule was saved.", tone: "success" });
+        pushToast({ title: t("area.routines-2.routine-detail.triggerAdded"), body: t("area.routines-2.routine-detail.triggerAddedBody"), tone: "success" });
       }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
@@ -507,8 +509,8 @@ export function RoutineDetail() {
     },
     onError: (triggerError) => {
       pushToast({
-        title: "Failed to add trigger",
-        body: triggerError instanceof Error ? triggerError.message : "Myrmidon could not create the trigger.",
+        title: t("area.routines-2.routine-detail.addTriggerFailed"),
+        body: triggerError instanceof Error ? triggerError.message : t("area.routines-2.routine-detail.addTriggerFailedBody"),
         tone: "error",
       });
     },
@@ -517,7 +519,7 @@ export function RoutineDetail() {
   const updateTrigger = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: Record<string, unknown> }) => routinesApi.updateTrigger(id, patch),
     onSuccess: async () => {
-      pushToast({ title: "Trigger saved", body: "The routine cadence update was saved.", tone: "success" });
+      pushToast({ title: t("area.routines-2.routine-detail.triggerSaved"), body: t("area.routines-2.routine-detail.triggerSavedBody"), tone: "success" });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
@@ -526,8 +528,8 @@ export function RoutineDetail() {
     },
     onError: (triggerError) => {
       pushToast({
-        title: "Failed to update trigger",
-        body: triggerError instanceof Error ? triggerError.message : "Myrmidon could not update the trigger.",
+        title: t("area.routines-2.routine-detail.updateTriggerFailed"),
+        body: triggerError instanceof Error ? triggerError.message : t("area.routines-2.routine-detail.updateTriggerFailedBody"),
         tone: "error",
       });
     },
@@ -536,7 +538,7 @@ export function RoutineDetail() {
   const deleteTrigger = useMutation({
     mutationFn: (id: string) => routinesApi.deleteTrigger(id),
     onSuccess: async () => {
-      pushToast({ title: "Trigger deleted", tone: "success" });
+      pushToast({ title: t("area.routines-2.routine-detail.triggerDeleted"), tone: "success" });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
@@ -545,8 +547,8 @@ export function RoutineDetail() {
     },
     onError: (triggerError) => {
       pushToast({
-        title: "Failed to delete trigger",
-        body: triggerError instanceof Error ? triggerError.message : "Myrmidon could not delete the trigger.",
+        title: t("area.routines-2.routine-detail.deleteTriggerFailed"),
+        body: triggerError instanceof Error ? triggerError.message : t("area.routines-2.routine-detail.deleteTriggerFailedBody"),
         tone: "error",
       });
     },
@@ -556,7 +558,7 @@ export function RoutineDetail() {
     mutationFn: (id: string): Promise<RotateRoutineTriggerResponse> => routinesApi.rotateTriggerSecret(id),
     onSuccess: async (result) => {
       setSecretMessage({
-        title: "Webhook secret rotated",
+        title: t("area.routines-2.routine-detail.secretRotated"),
         entries: [{ webhookUrl: result.secretMaterial.webhookUrl, webhookSecret: result.secretMaterial.webhookSecret }],
       });
       await Promise.all([
@@ -566,8 +568,8 @@ export function RoutineDetail() {
     },
     onError: (triggerError) => {
       pushToast({
-        title: "Failed to rotate webhook secret",
-        body: triggerError instanceof Error ? triggerError.message : "Myrmidon could not rotate the webhook secret.",
+        title: t("area.routines-2.routine-detail.rotateFailed"),
+        body: triggerError instanceof Error ? triggerError.message : t("area.routines-2.routine-detail.rotateFailedBody"),
         tone: "error",
       });
     },
@@ -630,15 +632,15 @@ export function RoutineDetail() {
       setSecretMessage({
         title:
           response.secretMaterials.length === 1
-            ? "Webhook trigger restored"
-            : `${response.secretMaterials.length} webhook triggers restored`,
+            ? t("area.routines-2.routine-detail.webhookRestored")
+            : t("area.routines-2.routine-detail.webhooksRestored", { count: response.secretMaterials.length }),
         entries: response.secretMaterials.map((recreated) => ({
           webhookUrl: recreated.webhookUrl,
           webhookSecret: recreated.webhookSecret,
         })),
       });
     }
-  }, []);
+  }, [t]);
 
   const onHistoryRestored = useCallback(
     (response: RestoreRoutineRevisionResponse) => {
@@ -674,7 +676,7 @@ export function RoutineDetail() {
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select a company to view routines." />;
+    return <EmptyState icon={Repeat} message={t("area.routines-2.routine-detail.selectCompanyView")} />;
   }
 
   // Back-compat redirect: `?tab=x` → `/routines/:id/x`.
@@ -701,7 +703,7 @@ export function RoutineDetail() {
     return (
       <EmptyState
         icon={AlertCircle}
-        message={error instanceof Error ? error.message : "We couldn't load this routine."}
+        message={error instanceof Error ? error.message : t("area.routines-2.routine-detail.loadFailed")}
       />
     );
   }
@@ -710,12 +712,12 @@ export function RoutineDetail() {
   const automationToggleDisabled = updateRoutineStatus.isPending || routine.status === "archived";
   const automationLabel =
     routine.status === "archived"
-      ? "Archived"
+      ? t("area.routines-2.routine-detail.statusArchived")
       : !routine.assigneeAgentId
-        ? "Draft"
+        ? t("area.routines-2.routine-detail.statusDraft")
         : automationEnabled
-          ? "Active"
-          : "Paused";
+          ? t("area.routines-2.routine-detail.statusActive")
+          : t("area.routines-2.routine-detail.statusPaused");
   const automationLabelClassName =
     routine.status === "archived"
       ? "text-muted-foreground"
@@ -745,8 +747,8 @@ export function RoutineDetail() {
     onToggleAutomation: () => {
       if (!automationEnabled && !routine.assigneeAgentId) {
         pushToast({
-          title: "Default agent required",
-          body: "Set a default agent before enabling routine automation.",
+          title: t("area.routines-2.routine-detail.agentRequired"),
+          body: t("area.routines-2.routine-detail.agentRequiredBody"),
           tone: "warn",
         });
         return;
@@ -798,7 +800,7 @@ export function RoutineDetail() {
         href="#routine-section"
         className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-20 focus:rounded focus:bg-background focus:px-3 focus:py-1.5 focus:text-sm"
       >
-        Skip to section
+        {t("area.routines-2.routine-detail.skipToSection")}
       </a>
 
       {/* Bounded to the main scroll area's height so the header + sub-nav stay
@@ -812,7 +814,7 @@ export function RoutineDetail() {
               ref={titleInputRef}
               data-autosize-title
               className="min-w-0 flex-1 resize-none overflow-hidden bg-transparent text-base font-semibold leading-7 outline-none placeholder:text-muted-foreground/50"
-              placeholder="Routine title"
+              placeholder={t("area.routines-2.routine-detail.titlePlaceholder")}
               rows={1}
               value={editDraft.title}
               onChange={(event) => {
@@ -846,7 +848,7 @@ export function RoutineDetail() {
                 checked={automationEnabled}
                 onCheckedChange={contextValue.onToggleAutomation}
                 disabled={automationToggleDisabled}
-                aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
+                aria-label={automationEnabled ? t("area.routines-2.routine-detail.pauseAria") : t("area.routines-2.routine-detail.enableAria")}
               />
               <span className={`text-sm font-medium ${automationLabelClassName}`}>{automationLabel}</span>
             </div>
@@ -879,7 +881,7 @@ export function RoutineDetail() {
               className={isEditableSection ? "mx-auto w-full max-w-3xl" : "w-full"}
             >
               <h2 id="routine-section-title" className="mb-4 text-lg font-semibold">
-                {SECTION_TITLES[section]}
+                {sectionTitles()[section]}
               </h2>
 
               {section === "overview" && <OverviewSection />}

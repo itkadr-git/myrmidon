@@ -16,7 +16,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Ui2TelegramNotifySettings } from "./Ui2TelegramNotifySettings";
 import { Ui2I18nProvider } from "../../../i18n/Ui2I18n";
-import type { TelegramNotifySettings } from "@paperclipai/shared";
+import type { TelegramNotifySettings } from "@myrmidon/shared";
 
 const mockTelegramNotifyApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -129,6 +129,18 @@ describe("myrmidon(UI2) Ui2TelegramNotifySettings panel", () => {
     expect(proactivityState?.getAttribute("data-tn-state")).toBe("off");
 
     expect(container.querySelector<HTMLInputElement>("#ui2-tn-digest-enabled")?.checked).toBe(false);
+  });
+
+  it("bounds the rarely ceiling input to the single 1–50 contract range", async () => {
+    await renderPanel();
+
+    // The input bounds follow the merged proactivity contract (1–50), not the
+    // pre-merge part-A draft (0–1000).
+    const rarelyInput = container.querySelectorAll<HTMLInputElement>(".ui2-tn-number-input")[2];
+    expect(rarelyInput?.min).toBe("1");
+    expect(rarelyInput?.max).toBe("50");
+    // The field stays disabled unless the mode is "rarely".
+    expect(rarelyInput?.disabled).toBe(true);
   });
 
   it("sends a PATCH with the changed field and reflects the answer", async () => {

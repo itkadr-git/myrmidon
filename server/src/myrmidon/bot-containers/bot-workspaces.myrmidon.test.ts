@@ -9,16 +9,19 @@ import { resolve } from "node:path";
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { wsDesiredStateSchema } from "@paperclipai/shared";
+import { wsDesiredStateSchema } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
+import { botWorkspacePressureFromPartition } from "./bot-workspaces-pressure.js";
 import { botWorkspacesRoutes } from "./bot-workspaces-routes.js";
 import {
+  WS_DESIRED_STATE_TTL_MS,
   botWorkspacesService,
   repoNameFromUrl,
   type BotWorkspacesStore,
   type WorkspaceIssueRow,
   type WorkspacePrProductRow,
 } from "./bot-workspaces-service.js";
+import { invalidateDesiredStateForIssueChange } from "./bot-workspaces-invalidation.js";
 import { prStateOf, workspaceStateOf } from "./workspace-state.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
@@ -60,8 +63,11 @@ function harness(data: {
   issues?: WorkspaceIssueRow[];
   products?: WorkspacePrProductRow[];
   repos?: Record<string, string>;
+  closedKeys?: string[];
   settings?: unknown;
   pressure?: Parameters<typeof botWorkspacesService>[0]["readPressure"];
+  now?: () => Date;
+  desiredStateTtlMs?: number;
 }) {
   const calls = { listIssues: 0, listPrProducts: 0, listProjectRepoUrls: 0 };
   const store: BotWorkspacesStore = {
@@ -71,8 +77,14 @@ function harness(data: {
     ),
     listProjectRepoUrls: async () => (calls.listProjectRepoUrls++, new Map(Object.entries(data.repos ?? {}))),
     readBotDiskSettings: async () => data.settings ?? {},
+    ...(data.closedKeys ? { listClosedKeys: async () => data.closedKeys! } : {}),
   };
-  const service = botWorkspacesService({ store, now: () => NOW, readPressure: data.pressure });
+  const service = botWorkspacesService({
+    store,
+    now: data.now ?? (() => NOW),
+    readPressure: data.pressure,
+    ...(data.desiredStateTtlMs !== undefined ? { desiredStateTtlMs: data.desiredStateTtlMs } : {}),
+  });
   const app = (actor: unknown) => {
     const a = express();
     a.use((req, _res, next) => {
@@ -83,7 +95,7 @@ function harness(data: {
     a.use(errorHandler);
     return a;
   };
-  return { app, calls };
+  return { app, calls, store };
 }
 
 const fixture = (name: string) =>
@@ -202,6 +214,18 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
     expect(res.body.workspaces[0]).toMatchObject({ key: "ABC-7", state: "closing" });
   });
 
+  it("keeps a reassigned copy in closing even when the task is older than the terminal lookback", async () => {
+    const lost = issue({
+      identifier: "ABC-8",
+      assigneeAgentId: OTHER_BOT_ID,
+      updatedAt: new Date("2025-01-01T00:00:00Z"),
+    });
+    const { app } = harness({ issues: [lost] });
+    const res = await request(app(botActor)).get(URL);
+    expect(res.body.workspaces).toHaveLength(1);
+    expect(res.body.workspaces[0]).toMatchObject({ key: "ABC-8", state: "closing" });
+  });
+
   it("takes the repository from the project, otherwise from the latest PR", async () => {
     const withProject = issue({ identifier: "ABC-1", projectId: "p1" });
     const viaPr = issue({ identifier: "ABC-2" });
@@ -225,6 +249,76 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
       "ABC-3": "acme/gizmos",
       "ABC-4": undefined,
     });
+  });
+
+  it("falls back to general.botDisk.defaultRepo after the project and the PR; none set keeps it absent", async () => {
+    const withProject = issue({ identifier: "ABC-1", projectId: "p1" });
+    const viaPr = issue({ identifier: "ABC-2" });
+    const nowhere = issue({ identifier: "ABC-4" });
+    const data = {
+      issues: [withProject, viaPr, nowhere],
+      repos: { p1: "https://github.com/acme/widgets.git" },
+      products: [pr(viaPr.id, { metadata: { repo: "acme/gadgets", number: 9 } })],
+    };
+    const repoMap = (body: { workspaces: Array<{ key: string; repo?: string }> }) =>
+      Object.fromEntries(body.workspaces.map((w) => [w.key, w.repo]));
+
+    const withDefault = harness({ ...data, settings: { defaultRepo: "itkadr-git/myrmidon" } });
+    const res = await request(withDefault.app(botActor)).get(URL);
+    expect(repoMap(res.body)).toEqual({
+      "ABC-1": "acme/widgets",
+      "ABC-2": "acme/gadgets",
+      "ABC-4": "itkadr-git/myrmidon",
+    });
+
+    // an invalid stored value reads as absent
+    const invalid = harness({ ...data, settings: { defaultRepo: "not a repo" } });
+    const res2 = await request(invalid.app(botActor)).get(URL);
+    expect(repoMap(res2.body)["ABC-4"]).toBeUndefined();
+  });
+
+  it("protectKeys lists every open task of the bot, with or without a repository", async () => {
+    const withRepo = issue({ identifier: "ABC-1", projectId: "p1" });
+    const noRepo = issue({ identifier: "ABC-2" });
+    const done = issue({ identifier: "ABC-3", status: "done", completedAt: new Date("2026-10-06T15:00:00Z") });
+    const cancelled = issue({ identifier: "ABC-4", status: "cancelled" });
+    const lost = issue({ identifier: "ABC-5", assigneeAgentId: OTHER_BOT_ID });
+    const { app } = harness({
+      issues: [withRepo, noRepo, done, cancelled, lost],
+      repos: { p1: "https://github.com/acme/widgets.git" },
+    });
+    const res = await request(app(botActor)).get(URL);
+    expect([...res.body.protectKeys].sort()).toEqual(["ABC-1", "ABC-2"]);
+  });
+
+  it("closedKeys: done/cancelled tasks (lookback rows and the unbounded query), never an open or reassigned-open one", async () => {
+    const done = issue({ identifier: "ABC-3", status: "done", completedAt: new Date("2026-10-06T15:00:00Z") });
+    const cancelled = issue({ identifier: "ABC-4", status: "cancelled" });
+    const open = issue({ identifier: "ABC-1" });
+    const inReviewElsewhere = issue({ identifier: "ABC-5", status: "in_review", assigneeAgentId: OTHER_BOT_ID });
+    const { app } = harness({
+      issues: [done, cancelled, open, inReviewElsewhere],
+      closedKeys: ["ABC-9", "not a key"],
+    });
+    const res = await request(app(botActor)).get(URL);
+    expect(res.body.closedKeys).toEqual(["ABC-3", "ABC-4", "ABC-9"]);
+    expect(res.body.closedKeys).not.toContain("ABC-5");
+    expect(res.body.closedKeys).not.toContain("ABC-1");
+  });
+
+  it("enabled=false switches the mechanism off: 503, so botd deletes nothing", async () => {
+    const off = harness({ issues: [issue({ identifier: "ABC-1" })], settings: { enabled: false } });
+    const res = await request(off.app(botActor)).get(URL);
+    expect(res.status).toBe(503);
+    const on = harness({ issues: [issue({ identifier: "ABC-1" })], settings: { enabled: true } });
+    expect((await request(on.app(botActor)).get(URL)).status).toBe(200);
+  });
+
+  it("legacyPressureIdleDays from the settings rides in grace; absent otherwise", async () => {
+    const set = harness({ issues: [], settings: { legacyPressureIdleDays: 3 } });
+    expect((await request(set.app(botActor)).get(URL)).body.grace.legacyPressureIdleDays).toBe(3);
+    const unset = harness({ issues: [] });
+    expect((await request(unset.app(botActor)).get(URL)).body.grace.legacyPressureIdleDays).toBeUndefined();
   });
 
   it("skips tasks without a valid issue key", async () => {
@@ -278,6 +372,183 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
   });
 });
 
+describe("desired-state cache (1.6.5-BOT-DISK-H LOAD)", () => {
+  // A mutable clock: the cache expiry follows `now`, so tests advance it past the TTL.
+  const clock = () => {
+    const state = { ms: NOW.getTime() };
+    return { now: () => new Date(state.ms), advance: (deltaMs: number) => (state.ms += deltaMs), state };
+  };
+
+  it("the second request of one bot inside the TTL answers from the cache without touching the store", async () => {
+    const c = clock();
+    const h = harness({
+      issues: [issue({ identifier: "ABC-1" })],
+      now: c.now,
+    });
+    const app = h.app(botActor);
+    const first = await request(app).get(URL);
+    expect(first.status).toBe(200);
+    c.advance(60_000); // well inside the 300 s window
+    const second = await request(app).get(URL);
+    expect(second.status).toBe(200);
+    expect(h.calls.listIssues).toBe(1);
+    expect(h.calls.listPrProducts).toBe(1);
+    // The cached answer is byte-identical, generatedAt included, and still passes the contract schema.
+    expect(second.body).toEqual(first.body);
+    expect(wsDesiredStateSchema.safeParse(second.body).success).toBe(true);
+  });
+
+  it("after the TTL the store is asked again", async () => {
+    const c = clock();
+    const h = harness({ issues: [issue({ identifier: "ABC-1" })], now: c.now });
+    const app = h.app(botActor);
+    await request(app).get(URL);
+    expect(h.calls.listIssues).toBe(1);
+    c.advance(301_000); // just past WS_DESIRED_STATE_TTL_MS
+    const res = await request(app).get(URL);
+    expect(res.status).toBe(200);
+    expect(h.calls.listIssues).toBe(2);
+    // The rebuilt document carries the advanced clock as generatedAt — proof it is a fresh build, not the cached one.
+    expect(Date.parse(res.body.generatedAt)).toBe(c.state.ms);
+  });
+
+  it("different bots do not share the cache entry", async () => {
+    const h = harness({ issues: [issue({ identifier: "ABC-1", assigneeAgentId: BOT_ID })] });
+    const asBot = h.app(botActor);
+    const asOther = h.app({ ...botActor, agentId: OTHER_BOT_ID });
+    const a = await request(asBot).get(URL);
+    const b = await request(asOther).get(URL);
+    // ABC-1 belongs to BOT_ID: active for it, closing (reassigned) for the other bot.
+    expect(a.body.workspaces[0]).toMatchObject({ key: "ABC-1", state: "active" });
+    expect(b.body.workspaces[0]).toMatchObject({ key: "ABC-1", state: "closing" });
+    expect(h.calls.listIssues).toBe(2);
+    // Each bot is then served from its own entry.
+    await request(asBot).get(URL);
+    await request(asOther).get(URL);
+    expect(h.calls.listIssues).toBe(2);
+  });
+
+  it("concurrent requests of one bot collapse into a single store pass", async () => {
+    const h = harness({ issues: [issue({ identifier: "ABC-1" })] });
+    const app = h.app(botActor);
+    const [a, b] = await Promise.all([request(app).get(URL), request(app).get(URL)]);
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    expect(h.calls.listIssues).toBe(1);
+  });
+
+  it("a failed build is not cached: the next request retries the store", async () => {
+    const c = clock();
+    let fail = true;
+    const calls = { listIssues: 0 };
+    const store: BotWorkspacesStore = {
+      listIssues: async () => {
+        calls.listIssues++;
+        if (fail) throw new Error("db down");
+        return [issue({ identifier: "ABC-1" })];
+      },
+      listPrProducts: async () => [],
+      listProjectRepoUrls: async () => new Map(),
+      readBotDiskSettings: async () => ({}),
+    };
+    const service = botWorkspacesService({ store, now: c.now });
+    await expect(service.desiredState({ companyId: COMPANY_ID, agentId: BOT_ID })).rejects.toThrow("db down");
+    fail = false;
+    const state = await service.desiredState({ companyId: COMPANY_ID, agentId: BOT_ID });
+    expect(state.workspaces.map((w) => w.key)).toEqual(["ABC-1"]);
+    expect(calls.listIssues).toBe(2);
+    // Inside the TTL the retry result is now cached.
+    await service.desiredState({ companyId: COMPANY_ID, agentId: BOT_ID });
+    expect(calls.listIssues).toBe(2);
+  });
+
+  it("the isEnabled gate is not cached: turning the mechanism off acts immediately", async () => {
+    let enabled = true;
+    const store: BotWorkspacesStore = {
+      ...harness({ issues: [] }).store,
+      readBotDiskSettings: async () => ({ enabled }),
+    };
+    const service = botWorkspacesService({ store });
+    expect(await service.isEnabled()).toBe(true);
+    enabled = false;
+    expect(await service.isEnabled()).toBe(false);
+  });
+
+  it("the default TTL is 300 s (nextReportSec)", () => {
+    expect(WS_DESIRED_STATE_TTL_MS).toBe(300_000);
+  });
+});
+
+describe("desired-state cache invalidation (1.6.5-BOT-DISK-H4a-INVALIDATE)", () => {
+  // A mutable clock: the cache expiry follows `now`, so tests advance it inside the window.
+  const clock = () => {
+    const state = { ms: NOW.getTime() };
+    return { now: () => new Date(state.ms), advance: (deltaMs: number) => (state.ms += deltaMs) };
+  };
+
+  it("a status change drops both bots' entries: a reopened task is back in protectKeys at once", async () => {
+    const c = clock();
+    // The task was closed: the bot's cached answer holds it in closedKeys.
+    const closed = issue({ identifier: "ABC-1", status: "done", completedAt: new Date("2026-10-06T13:00:00Z") });
+    const data = { issues: [closed] };
+    const h = harness({ issues: data.issues, closedKeys: ["ABC-1"], now: c.now });
+    const app = h.app(botActor);
+
+    const before = await request(app).get(URL);
+    expect(before.body.closedKeys).toContain("ABC-1");
+    expect(before.body.protectKeys).not.toContain("ABC-1");
+    expect(h.calls.listIssues).toBe(1);
+
+    // Inside the cache window the task is reopened and the route publishes the event.
+    c.advance(60_000);
+    data.issues[0] = { ...closed, status: "in_progress", completedAt: null };
+    invalidateDesiredStateForIssueChange({
+      companyId: COMPANY_ID,
+      previousAssigneeAgentId: BOT_ID,
+      nextAssigneeAgentId: BOT_ID,
+    });
+
+    const after = await request(app).get(URL);
+    expect(after.status).toBe(200);
+    expect(h.calls.listIssues).toBe(2); // store was asked again, the cached answer was not served
+    expect(after.body.protectKeys).toContain("ABC-1");
+    expect(after.body.closedKeys).not.toContain("ABC-1");
+    expect(after.body.workspaces[0]).toMatchObject({ key: "ABC-1", state: "active" });
+  });
+
+  it("an assignee change drops the old and the new bot's entries inside the window", async () => {
+    const c = clock();
+    const task = issue({ identifier: "ABC-2", assigneeAgentId: BOT_ID });
+    const data = { issues: [task] };
+    const h = harness({ issues: data.issues, now: c.now });
+    const asOld = h.app(botActor);
+    const asNew = h.app({ ...botActor, agentId: OTHER_BOT_ID });
+
+    // Both bots hold a cached answer inside the window.
+    const oldFirst = await request(asOld).get(URL);
+    expect(oldFirst.body.protectKeys).toContain("ABC-2");
+    const newFirst = await request(asNew).get(URL);
+    expect(newFirst.body.protectKeys).not.toContain("ABC-2");
+    expect(h.calls.listIssues).toBe(2);
+
+    // The task moves from the old bot to the new one; the route publishes the event.
+    c.advance(60_000);
+    data.issues[0] = { ...task, assigneeAgentId: OTHER_BOT_ID };
+    invalidateDesiredStateForIssueChange({
+      companyId: COMPANY_ID,
+      previousAssigneeAgentId: BOT_ID,
+      nextAssigneeAgentId: OTHER_BOT_ID,
+    });
+
+    // The new bot protects the task at once; the old bot sees it closing.
+    const newAfter = await request(asNew).get(URL);
+    expect(newAfter.body.protectKeys).toContain("ABC-2");
+    const oldAfter = await request(asOld).get(URL);
+    expect(oldAfter.body.workspaces[0]).toMatchObject({ key: "ABC-2", state: "closing" });
+    expect(h.calls.listIssues).toBe(4); // both bots rebuilt from the store
+  });
+});
+
 describe("repoNameFromUrl", () => {
   it.each([
     ["https://github.com/acme/widgets", "acme/widgets"],
@@ -289,5 +560,38 @@ describe("repoNameFromUrl", () => {
     [null, undefined],
   ])("%s -> %s", (url, expected) => {
     expect(repoNameFromUrl(url as string | null)).toBe(expected);
+  });
+});
+
+describe("botWorkspacePressureFromPartition (BOT-DISK-H Д5)", () => {
+  const settings = { partitionThresholdPercent: 85, partitionRefuseOpenPercent: 90, partitionCriticalPercent: 95 };
+  const state = (usedPercent: number) => ({
+    partition: { mount: "/", usedBytes: 0, totalBytes: 0, freeBytes: 0, usedPercent, at: "2026-10-07T08:00:00.000Z" },
+    settings,
+  });
+
+  it.each([
+    [84, "none"],
+    [85, "soft"],
+    [89, "soft"],
+    [90, "hard"],
+    [97, "hard"],
+  ] as const)("at %i%% the level is %s, with no quota percent", (percent, level) => {
+    expect(botWorkspacePressureFromPartition(state(percent))).toEqual({
+      quotaPercent: null,
+      partitionPercent: percent,
+      level,
+    });
+  });
+
+  it("an unmeasured partition is no data", () => {
+    expect(botWorkspacePressureFromPartition({ partition: null, settings: null })).toBeNull();
+  });
+
+  it("89% reaches the desired state as soft", async () => {
+    const res = await request(
+      harness({ pressure: async () => botWorkspacePressureFromPartition(state(89)) }).app(botActor),
+    ).get(URL);
+    expect(res.body.pressure).toEqual({ quotaPercent: null, partitionPercent: 89, level: "soft" });
   });
 });

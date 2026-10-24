@@ -4,9 +4,9 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
-import type { ResolvedForagingSettings } from "@paperclipai/shared";
+import type { ResolvedForagingSettings } from "@myrmidon/shared";
 import { foragingRoutes } from "./routes.js";
 import type { ForagingService } from "./service.js";
 import type { ForagingFindingRow, ForagingSourceRow, ForagingStore } from "./store.js";
@@ -91,6 +91,10 @@ const service: ForagingService = {
 // assertCompanyAccess requires a session board actor to list the company in
 // `companyIds` (only `source: "local_implicit"` bypasses it); same shape as
 // the access-hub routes test fixture.
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): the board actor carries companyIds the
+// way the real auth layer does (authz requires it for `source: "session"`,
+// see server/src/routes/authz.ts assertCompanyAccess) — the previous session
+// actor without companyIds was rejected with 403.
 const boardActor = { type: "board", userId: "user-1", source: "session", companyIds: ["company-a"] };
 const agentActor = { type: "agent", agentId: "agent-a", companyId: "company-a", source: "agent_key" };
 

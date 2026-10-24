@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 // @vitest-environment jsdom
 
 import type { ComponentProps, ReactNode } from "react";
@@ -1457,7 +1458,7 @@ describe("NewIssueDialog", () => {
       enableIsolatedWorkspaces: false,
     });
     localStorage.setItem(
-      "paperclip:issue-draft",
+      "myrmidon:issue-draft",
       JSON.stringify({
         title: "Watched task",
         description: "",

@@ -29,10 +29,11 @@
 import { Router, type Request } from "express";
 import {
   createModelProviderSchema,
+  listAvailableModelProviderTypes,
   patchModelProviderSchema,
   setModelProviderModelsSchema,
-} from "@paperclipai/shared";
-import type { ZodType } from "zod";
+} from "@myrmidon/shared";
+import { z, type ZodType } from "zod";
 import { badRequest, HttpError } from "../../errors.js";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import type {
@@ -40,8 +41,39 @@ import type {
   ModelProviderModelView,
   ModelProviderService,
 } from "./service.js";
+import { reportPoolAccountStatus } from "./signals.js";
 import type { LitellmSyncService } from "../litellm-sync/service.js";
 import { withCompanySyncGuard } from "../litellm-sync/lock.js";
+
+const reportAccountStatusSchema = z.object({
+  accountNumber: z.number().int().positive(),
+  label: z.string().optional(),
+  state: z.string().min(1),
+  plan: z.string().optional().nullable(),
+  windows: z
+    .object({
+      primary: z
+        .object({
+          usedPct: z.number().nullable().optional(),
+          windowMin: z.number().nullable().optional(),
+          resetsAt: z.number().nullable().optional(),
+        })
+        .optional()
+        .nullable(),
+      secondary: z
+        .object({
+          usedPct: z.number().nullable().optional(),
+          windowMin: z.number().nullable().optional(),
+          resetsAt: z.number().nullable().optional(),
+        })
+        .optional()
+        .nullable(),
+    })
+    .optional(),
+  limitedUntil: z.number().nullable().optional(),
+  isBanned: z.boolean().optional(),
+  isExhausted: z.boolean().optional(),
+});
 
 export interface ModelProviderRoutesWithSyncDeps {
   service: ModelProviderService;
@@ -130,7 +162,10 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
   router.get("/myrmidon/companies/:companyId/model-providers", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json({ providers: await deps.service.listProviders(companyId) });
+    res.json({
+      providers: await deps.service.listProviders(companyId),
+      availableTypes: deps.service.listAvailableTypes ? deps.service.listAvailableTypes() : listAvailableModelProviderTypes(),
+    });
   });
 
   router.patch("/myrmidon/companies/:companyId/model-providers/:id", async (req, res) => {
@@ -227,6 +262,61 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
     }
 
     res.json({ models });
+  });
+
+  router.get("/myrmidon/companies/:companyId/model-providers/:id/channels", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const providerId = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    const result = await deps.service.listChannels(companyId, providerId);
+    res.json(result);
+  });
+
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/account-status", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const providerId = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const body = parse(reportAccountStatusSchema, bodyOf(req));
+    const signal = reportPoolAccountStatus({
+      companyId,
+      providerId,
+      account: {
+        n: body.accountNumber,
+        label: body.label || `Account #${body.accountNumber}`,
+        state: body.state,
+        plan: body.plan ?? null,
+        windows: {
+          primary: body.windows?.primary
+            ? {
+                usedPct: body.windows.primary.usedPct ?? null,
+                windowMin: body.windows.primary.windowMin ?? null,
+                resetsAt: body.windows.primary.resetsAt ?? null,
+              }
+            : null,
+          secondary: body.windows?.secondary
+            ? {
+                usedPct: body.windows.secondary.usedPct ?? null,
+                windowMin: body.windows.secondary.windowMin ?? null,
+                resetsAt: body.windows.secondary.resetsAt ?? null,
+              }
+            : null,
+        },
+        limitedUntil: body.limitedUntil ?? null,
+        lastOk: null,
+        isBanned: body.isBanned ?? (body.state === "banned" || body.state === "token_expired"),
+        isExhausted:
+          body.isExhausted ??
+          (body.state === "rate_limited" ||
+            (body.windows?.primary?.usedPct !== undefined &&
+              body.windows.primary.usedPct !== null &&
+              body.windows.primary.usedPct >= 100) ||
+            (body.windows?.secondary?.usedPct !== undefined &&
+              body.windows.secondary.usedPct !== null &&
+              body.windows.secondary.usedPct >= 100)),
+      },
+    });
+    res.json({ ok: true, signal });
   });
 
   return router;

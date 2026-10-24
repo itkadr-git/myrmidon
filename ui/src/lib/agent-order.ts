@@ -1,12 +1,13 @@
-import type { Agent } from "@paperclipai/shared";
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
+import type { Agent } from "@myrmidon/shared";
 
 export const AGENT_ORDER_UPDATED_EVENT = "paperclip:agent-order-updated";
 export const AGENT_SORT_MODE_UPDATED_EVENT = "paperclip:agent-sort-mode-updated";
-const AGENT_ORDER_STORAGE_PREFIX = "paperclip.agentOrder";
-const AGENT_SORT_MODE_STORAGE_PREFIX = "paperclip.agentSortMode";
+const AGENT_ORDER_STORAGE_PREFIX = "myrmidon.agentOrder";
+const AGENT_SORT_MODE_STORAGE_PREFIX = "myrmidon.agentSortMode";
 const ANONYMOUS_USER_ID = "anonymous";
 
-export type AgentSidebarSortMode = "top" | "alphabetical" | "recent";
+export type AgentSidebarSortMode = "top" | "alphabetical" | "recent" | "tree";
 
 type AgentOrderUpdatedDetail = {
   storageKey: string;
@@ -24,7 +25,9 @@ function normalizeIdList(value: unknown): string[] {
 }
 
 function normalizeSortMode(value: unknown): AgentSidebarSortMode {
-  return value === "alphabetical" || value === "recent" || value === "top" ? value : "top";
+  return (
+    value === "alphabetical" || value === "recent" || value === "tree" || value === "top" ? value : "top"
+  );
 }
 
 function resolveUserId(userId: string | null | undefined): string {

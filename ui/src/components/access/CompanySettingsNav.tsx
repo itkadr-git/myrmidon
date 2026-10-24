@@ -18,6 +18,8 @@ const items = [
   // myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management
   { value: "instance-board-api-keys", label: "Board API keys", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/board-api-keys` },
   { value: "instance-experimental", label: "Experimental", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental` },
+  // myrmidon(FEATURES): fork features with live health
+  { value: "instance-features", label: "Features", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/features` },
   { value: "instance-plugins", label: "Plugins", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins` },
   { value: "instance-adapters", label: "Adapters", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters` },
   { value: "browsers", label: "Browsers", href: "/company/settings/browsers" },
@@ -28,12 +30,20 @@ const items = [
   { value: "wip-limit", label: "WIP limit", href: "/company/settings/wip-limit" },
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   { value: "review-routing", label: "Review routing", href: "/company/settings/review-routing" },
-  // myrmidon(1.6.1 MODEL-PROVIDERS C): the ui2 "Castes and models" section
-  { value: "castes", label: "Castes & models", href: "/company/settings/castes" },
-  // myrmidon(1.6.1 CUSTOM-CASTES C): the company caste directory
-  { value: "caste-directory", label: "Agent castes", href: "/company/settings/caste-directory" },
+  // myrmidon(1.7 BUDGET-CONFIG D): per-level spend limits screen
+  { value: "budgets", label: "Budgets", href: "/company/settings/budgets" },
+  // myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): IA v2 — the settings list splits
+  // into a "Castes" screen (the directory) and a "Models" screen (providers,
+  // which used to live on /company/settings/castes).
+  { value: "castes", label: "Agent castes", href: "/company/settings/castes" },
+  { value: "models", label: "Models & providers", href: "/company/settings/models" },
   // myrmidon(1.6.5-OWNER-DM-FILTER): owner Telegram delivery mode screen
   { value: "owner-delivery", label: "Owner Telegram delivery", href: "/company/settings/owner-delivery" },
+  // myrmidon(1.6.6 CORPUS E): the knowledge corpus module screen
+  { value: "corpus", label: "Knowledge corpus", href: "/company/settings/corpus" },
+  // myrmidon(1.6.1 VOICE-STT C): the STT settings section
+  { value: "voice-stt", label: "Speech", href: "/company/settings/voice-stt" },
+  { value: "agent-exchange", label: "Agent exchanges", href: "/company/settings/agent-exchange" },
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
@@ -74,6 +84,11 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
 
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`)) {
     return "instance-experimental";
+  }
+
+  // myrmidon(FEATURES): the Features page
+  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/features`)) {
+    return "instance-features";
   }
 
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`)) {
@@ -127,11 +142,11 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "autonomy";
   }
 
-  // myrmidon(1.6.1 CUSTOM-CASTES C): the caste directory settings section.
-  // Must run before the /company/settings/castes prefix check below — that
-  // prefix would otherwise swallow the longer /caste-directory path.
+  // myrmidon(1.6.5 F-26 T3): /caste-directory is the pre-IA-v2 address of the
+  // caste directory. The route redirects to /castes, and a stale link or
+  // bookmark still highlights the right tab.
   if (pathname.includes("/company/settings/caste-directory")) {
-    return "caste-directory";
+    return "castes";
   }
 
   // myrmidon(1.6.1 WIP-LIMIT B): the WIP limit settings section
@@ -149,9 +164,32 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "review-routing";
   }
 
-  // myrmidon(1.6.1 MODEL-PROVIDERS C): the Castes and models settings section
+  // myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): IA v2 — /castes is the caste
+  // directory now, /models holds the providers that used to sit on /castes.
   if (pathname.includes("/company/settings/castes")) {
     return "castes";
+  }
+
+  if (pathname.includes("/company/settings/models")) {
+    return "models";
+  }
+
+  // myrmidon(1.7 BUDGET-CONFIG D): the Budgets settings section
+  if (pathname.includes("/company/settings/budgets")) {
+    return "budgets";
+  }
+
+  // myrmidon(1.6.6 CORPUS E): the knowledge corpus settings section
+  if (pathname.includes("/company/settings/corpus")) {
+    return "corpus";
+  }
+
+  // myrmidon(1.6.1 VOICE-STT C): the speech recognition settings section
+  if (pathname.includes("/company/settings/voice-stt")) {
+    return "voice-stt";
+  }
+  if (pathname.includes("/company/settings/agent-exchange")) {
+    return "agent-exchange";
   }
 
   return "general";
@@ -172,14 +210,20 @@ const SETTINGS_TAB_LABEL_KEYS: Partial<Record<string, string>> = {
   "instance-access": "settingsNav.access",
   "instance-board-api-keys": "settingsNav.boardApiKeys",
   "instance-experimental": "settingsNav.experimental",
+  "instance-features": "settingsNav.features",
   "instance-plugins": "settingsNav.plugins",
   "instance-adapters": "settingsNav.adapters",
   browsers: "settingsNav.browsers",
   clouds: "settingsNav.clouds",
   autonomy: "settingsNav.autonomy",
   castes: "settingsNav.castes",
+  models: "settingsNav.models",
   "wip-limit": "settingsNav.wipLimit",
   "review-routing": "settingsNav.reviewRouting",
+  // myrmidon(1.6.6 CORPUS E): the knowledge corpus settings tab
+  corpus: "settingsNav.corpus",
+  "agent-exchange": "settingsNav.agentExchange",
+  budgets: "settingsNav.budgets",
 };
 
 export function CompanySettingsNav() {

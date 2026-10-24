@@ -150,6 +150,10 @@ export const myrWsOpenResultSchema = z.object({
   base: z.string().min(1).optional(),
   /** True when the copy already existed (`open` is idempotent). */
   reused: z.boolean(),
+  /** Original full clone retained here after safe legacy conversion. */
+  recoveryPath: z.string().min(1).optional(),
+  /** Original HEAD retained in this ref in the class-D base. */
+  recoveryRef: z.string().min(1).optional(),
 });
 export type MyrWsOpenResult = z.infer<typeof myrWsOpenResultSchema>;
 
@@ -240,6 +244,8 @@ export const wsDesiredStateSchema = z.object({
     closingMinutes: z.number().int().positive(),
     scratchTtlHours: z.number().int().positive(),
     orphanHours: z.number().int().positive(),
+    /** myrmidon(1.6.5-BOT-DISK-H, rc.9): idle days before a named directory is archived under hard pressure. Optional: an older board omits it (botd uses 7). */
+    legacyPressureIdleDays: z.number().int().min(1).max(90).optional(),
   }),
   pressure: z.object({
     quotaPercent: z.number().min(0).max(100).nullable(),
@@ -247,6 +253,20 @@ export const wsDesiredStateSchema = z.object({
     level: wsDiskPressureLevelSchema,
   }),
   workspaces: z.array(wsDesiredWorkspaceSchema),
+  /**
+   * myrmidon(1.6.5-BOT-DISK-H): keys of ALL open tasks (status not done/cancelled)
+   * assigned to this bot, whether or not they have a repository; botd never
+   * removes the directory of such a task. Optional: an older board omits it.
+   */
+  protectKeys: z.array(myrWsIssueKeySchema).optional(),
+  /**
+   * myrmidon(1.6.5-BOT-DISK-H, rc.9): keys of tasks the board confirms done or
+   * cancelled that this bot held (assigned now, or reassigned away from it), with
+   * no lookback limit. botd removes a directory named exactly like a task key only
+   * when the key is listed here; otherwise it only reports it. Optional: an older
+   * board omits it, and then such directories are never removed.
+   */
+  closedKeys: z.array(myrWsIssueKeySchema).optional(),
 });
 export type WsDesiredState = z.infer<typeof wsDesiredStateSchema>;
 
@@ -310,6 +330,12 @@ export const wsReportActionSchema = z.object({
 });
 export type WsReportAction = z.infer<typeof wsReportActionSchema>;
 
+/** Stable bot-disk gauges emitted with each report. */
+export const wsDiskReportMetricsSchema = z.object({
+  copies_without_assignee: z.number().int().nonnegative(),
+});
+export type WsDiskReportMetrics = z.infer<typeof wsDiskReportMetricsSchema>;
+
 /** Why a copy does not match the registry/desired state. */
 export const wsForeignSignSchema = z.enum([
   "promisor",
@@ -325,6 +351,12 @@ export const wsReportForeignSchema = z.object({
   sign: wsForeignSignSchema,
 });
 export type WsReportForeign = z.infer<typeof wsReportForeignSchema>;
+
+export const wsReportForeignUidSchema = z.object({
+  path: z.string().min(1).max(500),
+  reason: z.string().min(1).max(500),
+});
+export type WsReportForeignUid = z.infer<typeof wsReportForeignUidSchema>;
 
 /**
  * Body of `POST /api/myrmidon/bots/me/disk-report`. The body is capped at 1 MiB
@@ -342,6 +374,8 @@ export const wsDiskReportSchema = z.object({
   archives: z.array(wsReportArchiveSchema),
   actions: z.array(wsReportActionSchema),
   foreign: z.array(wsReportForeignSchema),
+  foreignUid: wsReportForeignUidSchema.nullable().optional(),
+  metrics: wsDiskReportMetricsSchema.optional(),
 });
 export type WsDiskReport = z.infer<typeof wsDiskReportSchema>;
 
@@ -439,8 +473,8 @@ export type RunWorkspaceField = z.infer<typeof runWorkspaceFieldSchema>;
  * What the gateway does with the field before starting the model:
  * `myr-ws open <key> <repo> [--base <baseRef>] --json`, then the run starts
  * with `MYRMIDON_TASK_WORKSPACE=/workspace/<key>` and that directory as cwd.
- * Exit codes 3/4/5 never fail the run silently: it starts in `/scratch` with a
- * warning event instead.
+ * Any open failure (exit codes 3/4/5, any other code, timeout, bad output) never fails
+ * the run: it starts in `/scratch` with a warning event instead (OPE-8946).
  */
 export const RUN_WORKSPACE_FALLBACK_DIR = "/scratch";
 
@@ -457,20 +491,66 @@ export const WS_BOT_DISK_SETTING_DEFAULTS = {
   partitionCriticalPercent: 95,
 } as const;
 
+// myrmidon(1.6.6-SETTINGS-UI-B): the five workspace-lifecycle fields exported
+// individually, so `myrmidon-bot-disk.ts` validates the same stored object with
+// the same ranges instead of duplicating them (one source of truth).
+export const wsGraceClosingMinutesSchema = z.number().int().min(5).max(24 * 60);
+export const wsScratchTtlHoursSchema = z.number().int().min(1).max(24 * 30);
+export const wsPartitionPercentSchema = z.number().int().min(50).max(100);
+
 export const wsBotDiskSettingsSchema = z
   .object({
-    graceClosingMinutes: z.number().int().min(5).max(24 * 60).optional(),
-    scratchTtlHours: z.number().int().min(1).max(24 * 30).optional(),
-    partitionThresholdPercent: z.number().int().min(50).max(100).optional(),
-    partitionRefuseOpenPercent: z.number().int().min(50).max(100).optional(),
-    partitionCriticalPercent: z.number().int().min(50).max(100).optional(),
+    graceClosingMinutes: wsGraceClosingMinutesSchema.optional(),
+    scratchTtlHours: wsScratchTtlHoursSchema.optional(),
+    legacyPressureIdleDays: z.number().int().min(1).max(90).optional(),
+    partitionThresholdPercent: wsPartitionPercentSchema.optional(),
+    partitionRefuseOpenPercent: wsPartitionPercentSchema.optional(),
+    partitionCriticalPercent: wsPartitionPercentSchema.optional(),
     /** Where pnpm keeps its store; must sit on the bot partition (C1/H8). */
     pnpmStoreDir: z.string().min(1).optional(),
     /** How pnpm imports a package into a clone; `clone` = reflink-only. */
     pnpmImportMethod: z.enum(["hardlink", "clone", "clone-or-copy", "copy"]).optional(),
+    /** myrmidon(1.6.5-BOT-DISK-H5c): seconds between two passes of the in-container
+     *  disk daemon (botd). Compiled into the bot profile; absent = the in-image default. */
+    botdIntervalSec: z.number().int().min(30).max(24 * 60 * 60).optional(),
   })
   .passthrough();
 export type WsBotDiskSettings = z.infer<typeof wsBotDiskSettingsSchema>;
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H5c): the environment variables the profile compiler
+ * writes into the bot's hermes/.env for the BOT-DISK-H mechanics. The values
+ * come from `general.botDisk.*` (C7) with `WS_BOT_DISK_SETTING_DEFAULTS` for a
+ * key the operator never set, so every bot of the instance runs the same
+ * policy and a settings change reaches the bots on the next reconcile pass.
+ *
+ * - `MYRMIDON_WS_*` — the partition-pressure thresholds `myr-ws open` (H2) and
+ *   botd (H3) apply to `disk-state.json` (C1): REFUSE_OPEN is the level above
+ *   which `open` fails with exit 3 (C2), CRITICAL the level at which botd
+ *   reaps without waiting for grace.
+ * - `MYRMIDON_BOTD_*` — botd's own cadence and grace: INTERVAL_SEC between
+ *   passes, GRACE_CLOSING_MINUTES before a `closing` copy is removed,
+ *   SCRATCH_TTL_HOURS the lifetime of a class-G scratch copy.
+ * - `MYRMIDON_BOTD_BOARD_URL`/`MYRMIDON_BOTD_BOARD_KEY_ENV` — where botd reads
+ *   its desired state (C3) and posts its disk report (C4): the same board the
+ *   gateway already points the bot at, and the NAME of the .env variable that
+ *   holds the bot's board key (PAPERCLIP_API_KEY), never the key itself.
+ */
+export const WS_PROFILE_ENV = {
+  partitionThresholdPercent: "MYRMIDON_WS_PARTITION_THRESHOLD_PERCENT",
+  partitionRefuseOpenPercent: "MYRMIDON_WS_PARTITION_REFUSE_OPEN_PERCENT",
+  partitionCriticalPercent: "MYRMIDON_WS_PARTITION_CRITICAL_PERCENT",
+  botdIntervalSec: "MYRMIDON_BOTD_INTERVAL_SEC",
+  graceClosingMinutes: "MYRMIDON_BOTD_GRACE_CLOSING_MINUTES",
+  scratchTtlHours: "MYRMIDON_BOTD_SCRATCH_TTL_HOURS",
+  boardUrl: "MYRMIDON_BOTD_BOARD_URL",
+  boardKeyEnv: "MYRMIDON_BOTD_BOARD_KEY_ENV",
+} as const;
+
+/** The value {@link WS_PROFILE_ENV.boardKeyEnv} always carries: the board key
+ *  the bot already holds for the gateway, so botd authenticates to C3/C4 with
+ *  the same identity. */
+export const WS_BOTD_BOARD_KEY_ENV_VALUE = "PAPERCLIP_API_KEY";
 
 /**
  * Card keys (dedup) of `bot_disk_lifecycle/*` plus the standalone cards this

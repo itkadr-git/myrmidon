@@ -6,7 +6,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, createDb } from "@paperclipai/db";
+import { activityLog, agents, companies, createDb } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 vi.mock("../middleware/logger.js", () => ({
@@ -87,7 +87,7 @@ describeEmbeddedPostgres("model fallback attention feed card (BOT-RUNTIME-TUNING
         new Date().toISOString(),
       ),
     ]);
-    const feed = await attentionService(db).list(companyId);
+    const feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
     const cards = feed.items.filter((item) => item.dedupKey === fallbackDedupKey(agentId));
     expect(cards).toHaveLength(1);
     const card = cards[0]!;
@@ -103,7 +103,7 @@ describeEmbeddedPostgres("model fallback attention feed card (BOT-RUNTIME-TUNING
   it("an empty sweep raises no card", async () => {
     await seedCompany();
     recordModelFallbackSignals(companyId, []);
-    const feed = await attentionService(db).list(companyId);
+    const feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
     expect(feed.items.filter((item) => item.sourceKind === "model_fallback_alert")).toHaveLength(0);
   });
 
@@ -116,11 +116,11 @@ describeEmbeddedPostgres("model fallback attention feed card (BOT-RUNTIME-TUNING
         new Date().toISOString(),
       ),
     ]);
-    const before = await attentionService(db).list(companyId);
+    const before = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
     expect(before.items.filter((item) => item.sourceKind === "model_fallback_alert")).toHaveLength(1);
 
     recordModelFallbackSignals(companyId, []);
-    const after = await attentionService(db).list(companyId);
+    const after = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
     expect(after.items.filter((item) => item.sourceKind === "model_fallback_alert")).toHaveLength(0);
   });
 });

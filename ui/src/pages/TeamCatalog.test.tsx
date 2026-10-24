@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   CatalogTeam,
   CatalogTeamImportPreviewResult,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   TeamCatalog,
@@ -110,7 +110,7 @@ describe("TeamCatalog routes", () => {
     });
   });
 
-  it("fails closed for Paperclip Runner until adapter availability is loaded and enabled", () => {
+  it("fails closed for Myrmidon Runner until adapter availability is loaded and enabled", () => {
     expect(listTeamInstallAdapterTypes(new Set(), false)).not.toContain("paperclip_runner");
     expect(listTeamInstallAdapterTypes(new Set(), false)).not.toContain("process");
     expect(listTeamInstallAdapterTypes(new Set(), false)).not.toContain("http");

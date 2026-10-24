@@ -91,7 +91,19 @@ export const ru: Ui2Catalog = {
     saveFailed: "Не удалось сохранить выбор языка. Он останется только для этого браузера.",
     serverHint: "Выбор сохраняется в профиле пользователя и следует за вами на других устройствах.",
     telegramBridgeUser: "Бот Telegram тоже отвечает вам на этом языке.",
-    telegramBridgeEnv: "Сейчас бот Telegram не следует этому выбору: переменная окружения сервера принудительно ставит {language} во всех чатах.",
+    telegramBridgeEnv: "Сейчас бот Telegram не следует этому выбору: переменная окружения сервера принудительно ставит {{language}} во всех чатах.",
+    // myrmidon(1.6.5-TG-LOCALE-C): оставшиеся источники называем честно.
+    telegramBridgeInstance:
+      "Бот Telegram отвечает на {{language}} — это язык инстанса, потому что здесь вы язык не выбирали.",
+    telegramBridgeDefault:
+      "Бот Telegram отвечает на {{language}} — это язык по умолчанию, потому что здесь вы язык не выбирали.",
+    instanceLanguageTitle: "Язык бота Telegram на инстансе",
+    instanceLanguageDescription:
+      "Действует для всех членов доски, которые не выбрали язык выше. Менять может только администратор инстанса; применяется со следующего ответа, без перезапуска.",
+    instanceLanguageSave: "Сохранить",
+    instanceLanguageSaved: "Язык бота Telegram на инстансе: {{language}}.",
+    instanceLanguageFailed: "Не удалось сохранить язык инстанса.",
+    instanceLanguageAdminOnly: "Менять язык инстанса может только администратор инстанса.",
   },
   status: {
     open: "Открыта",
@@ -347,6 +359,19 @@ export const ru: Ui2Catalog = {
         placeholderTitle: "Этот экран появится в 2.0",
         placeholderBody: "Макет 2.0 для этой зоны ещё не подключён; рабочий экран ниже сохраняет поток.",
         placeholderLegacyLink: "Вернуться к текущему макету",
+        fleet: {
+          title: "Серверы",
+          subtitle: "Состояние инфраструктуры по настроенным источникам мониторинга.",
+          monitoringError: "Мониторинг не настроен или недоступен.",
+          monitoringUnavailable: "Данные мониторинга недоступны.",
+          hosts: "Узлы",
+          services: "Сервисы",
+          empty: "Нет данных флота",
+          emptyBody: "Для этой компании не возвращены узлы или сервисы.",
+          error: "Данные флота недоступны.",
+          metrics: "ЦП {{cpu}}% · память {{memory}}% · диск {{disk}}%",
+          states: { running: "Работает", stopped: "Остановлен", unknown: "Неизвестно" },
+        },
       },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning

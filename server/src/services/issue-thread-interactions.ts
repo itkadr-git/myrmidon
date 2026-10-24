@@ -1,5 +1,5 @@
 import { currentContinuationOrigins } from "./execution-continuation.js";
-import { connectionIntentDeliveries } from "@paperclipai/db";
+import { connectionIntentDeliveries } from "@myrmidon/db";
 import { isDeepStrictEqual } from "node:util";
 import {
   and,
@@ -13,7 +13,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   agentWakeupRequests,
@@ -29,7 +29,7 @@ import {
   issues,
   toolActionRequests,
   toolOauthStates,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 // myrmidon(N2): a pending card's addressee wake receipt is a row keyed
 // `interaction-pending:<interactionId>` in the same table.
 import {
@@ -39,7 +39,7 @@ import {
 import {
   trackInteractionCreated,
   trackInteractionResolved,
-} from "@paperclipai/shared/telemetry";
+} from "@myrmidon/shared/telemetry";
 import type {
   AcceptIssueThreadInteraction,
   AskUserQuestionsAnswer,
@@ -68,7 +68,7 @@ import type {
   SuggestTasksResultCreatedTask,
   SubmitIssueThreadInteractionVerdicts,
   WithdrawIssueThreadInteraction,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsPayloadSchema,
@@ -91,7 +91,7 @@ import {
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
   withdrawIssueThreadInteractionSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -144,6 +144,15 @@ type InteractionActor = {
     | IssueThreadInteractionResolverRestriction
     | null;
   suggestedTaskEffectsAuthorized?: boolean;
+  /**
+   * myrmidon(1.6.3-CTO-CHAT-B): explicit opt-in, set only by trusted server
+   * code (the owner-checked Telegram /accept). When the card hangs on a
+   * conversation issue, `createChild` refuses to parent work on it; with this
+   * flag the ROOT task of the card is created as a parentless task instead
+   * (the vendor message: "create a task in a project instead"). Without it
+   * (portal accept, agents) the vendor refusal stays exactly as on main.
+   */
+  conversationRootTasksAllowed?: boolean;
   resolutionDetails?: Record<string, unknown>;
 };
 
@@ -615,7 +624,7 @@ function parseStoredInteractionResult<S extends z.ZodTypeAny>(
   const parsed = schema.safeParse(raw);
   if (parsed.success) return parsed.data;
   console.warn(
-    `[paperclip] Dropping unparseable ${row.kind} interaction result for interaction ${row.id}`,
+    `[myrmidon] Dropping unparseable ${row.kind} interaction result for interaction ${row.id}`,
     parsed.error.issues,
   );
   return null;
@@ -1382,7 +1391,7 @@ async function emitInteractionResolvedTelemetry(
         roleByAgentId = await fetchCreatorAgentRoleById(db, [interaction]);
       } catch (error) {
         console.error(
-          "[paperclip] Failed to load interaction.resolved creator role",
+          "[myrmidon] Failed to load interaction.resolved creator role",
           error,
         );
       }
@@ -1409,7 +1418,7 @@ async function emitInteractionResolvedTelemetry(
     });
   } catch (error) {
     console.error(
-      "[paperclip] Failed to emit interaction.resolved telemetry",
+      "[myrmidon] Failed to emit interaction.resolved telemetry",
       error,
     );
   }
@@ -1432,7 +1441,7 @@ function emitInteractionCreatedTelemetry(args: {
     });
   } catch (error) {
     console.error(
-      "[paperclip] Failed to emit interaction.created telemetry",
+      "[myrmidon] Failed to emit interaction.created telemetry",
       error,
     );
   }
@@ -1448,7 +1457,7 @@ async function emitResolvedInteractionsTelemetry(
     roleByAgentId = await fetchCreatorAgentRoleById(db, interactions);
   } catch (error) {
     console.error(
-      "[paperclip] Failed to load interaction.resolved creator roles",
+      "[myrmidon] Failed to load interaction.resolved creator roles",
       error,
     );
   }
@@ -2615,7 +2624,7 @@ export function issueThreadInteractionService(
         const [sourceRun] = await tx.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
           .where(and(eq(heartbeatRuns.id, input.sourceRunId), eq(heartbeatRuns.companyId, issue.companyId)));
         if (!sourceRun) throw unprocessable("Interaction source run is unavailable");
-        const originCommentIds = await currentContinuationOrigins(tx as unknown as Db, issue.companyId, issue.id, sourceRun.context);
+        const originCommentIds = await currentContinuationOrigins(tx as unknown as Db, issue.companyId, issue.id, sourceRun.context, input.sourceRunId);
         const [row] = await tx
           .insert(issueThreadInteractions)
           .values({
@@ -3465,7 +3474,7 @@ export function issueThreadInteractionService(
         if (!sourceRun || sourceRun.companyId !== issue.companyId) {
           throw unprocessable("sourceRunId must belong to the same company");
         }
-        originCommentIds = [...new Set([...originCommentIds, ...await currentContinuationOrigins(db, issue.companyId, issue.id, sourceRun.contextSnapshot)])];
+        originCommentIds = [...new Set([...originCommentIds, ...await currentContinuationOrigins(db, issue.companyId, issue.id, sourceRun.contextSnapshot, data.sourceRunId)])];
         sourceIdentityContextId = actor.identityContextId ?? sourceRun.activeIdentityContextId;
         if (sourceIdentityContextId) {
           const [origin] = await db.select({id: runIdentityContexts.id}).from(runIdentityContexts).where(and(
@@ -3749,6 +3758,17 @@ export function issueThreadInteractionService(
       actor: InteractionActor,
     ) => {
       assertIssueOpenForInteractionResolution(issue);
+      // myrmidon(1.6.3-CTO-CHAT-B): is the card's host a conversation issue?
+      // Only consulted for the opt-in below; one row, before the transaction.
+      const hostConversationAgentId =
+        actor.conversationRootTasksAllowed === true
+          ? ((
+              await db
+                .select({ conversationAgentId: issues.conversationAgentId })
+                .from(issues)
+                .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+            )[0]?.conversationAgentId ?? null)
+          : null;
       const current = await db
         .select()
         .from(issueThreadInteractions)
@@ -3865,9 +3885,7 @@ export function issueThreadInteractionService(
             );
           }
 
-          const { issue: createdIssue } = await issueService(
-            tx as unknown as Db,
-          ).createChild(parentIssueId, {
+          const taskInput = {
             title: task.title,
             description: task.description ?? null,
             status: "todo",
@@ -3884,7 +3902,16 @@ export function issueThreadInteractionService(
             originRunId: interaction.sourceRunId ?? null,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.userId ?? null,
-          } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
+          } as Parameters<ReturnType<typeof issueService>["createChild"]>[1];
+          const taskIssueService = issueService(tx as unknown as Db);
+          // myrmidon(1.6.3-CTO-CHAT-B): see InteractionActor.conversationRootTasksAllowed.
+          // Only the card's root under a conversation host takes this path and
+          // only for an opted-in caller; project/goal come from the host the
+          // caller passed in, as for any child.
+          const { issue: createdIssue } =
+            hostConversationAgentId != null && parentIssueId === issue.id
+              ? { issue: await taskIssueService.create(issue.companyId, taskInput) }
+              : await taskIssueService.createChild(parentIssueId, taskInput);
 
           const parentIdentifier =
             createdByClientKey.get(task.parentClientKey ?? "")?.identifier ??

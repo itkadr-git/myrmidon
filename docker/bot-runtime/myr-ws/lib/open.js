@@ -251,6 +251,15 @@ function resolveBaseRef(git, basePath, wanted) {
   throw usage("the repository has no branches to base a copy on");
 }
 
+function isGitCopy(dir) {
+  try {
+    const st = fs.lstatSync(path.join(dir, ".git"));
+    return st.isDirectory() || st.isFile();
+  } catch {
+    return false;
+  }
+}
+
 function isWorktreeOf(dir) {
   try {
     return fs.statSync(path.join(dir, ".git")).isFile();
@@ -259,7 +268,51 @@ function isWorktreeOf(dir) {
   }
 }
 
+function repoFromOrigin(git, dir) {
+  const raw = git(dir, ["remote", "get-url", "origin"], { allowFail: true }).stdout.trim();
+  let pathname;
+  try {
+    if (/^https?:\/\//i.test(raw) || /^ssh:\/\//i.test(raw)) {
+      const parsed = new URL(raw);
+      if (parsed.hostname.toLowerCase() !== "github.com") return null;
+      pathname = parsed.pathname;
+    } else {
+      const scp = raw.match(/^(?:[^@/:]+@)?([^:]+):(.+)$/);
+      if (!scp || scp[1].toLowerCase() !== "github.com") return null;
+      pathname = `/${scp[2]}`;
+    }
+  } catch {
+    return null;
+  }
+  const match = pathname.match(/^\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/);
+  return match ? match[1] : null;
+}
+
 // --- open ------------------------------------------------------------------
+
+/** Short directory suffix of a repository: `owner/name(.git)` -> `name`. */
+function repoShortName(repo) {
+  return repo.split("/")[1].replace(/\.git$/, "");
+}
+
+/**
+ * Where the copy of (key, repo) lives and the registry entry that already
+ * describes it. A scratch copy and a task's first copy sit at <root>/<key>; a
+ * task copy of another repository, while a copy of a different repository of the
+ * same key is present, goes to <root>/<key>.<name>.
+ */
+function resolveCopyDir(ctx, reg, { key, repo, scratch, klass }) {
+  const primary = path.join(scratch ? ctx.scratchRoot : ctx.workspaceRoot, key);
+  const sameKey = reg.entries.filter((e) => e.path === primary || (e.key === key && e.class === klass));
+  if (scratch || !repo) return { dir: primary, known: sameKey.find((e) => e.path === primary) || sameKey[0] };
+  const match =
+    sameKey.find((e) => e.repo === repo) || sameKey.find((e) => !e.repo && fs.existsSync(e.path));
+  if (match) return { dir: match.path, known: match };
+  const otherLive = sameKey.some((e) => e.repo && e.repo !== repo && fs.existsSync(e.path));
+  if (!otherLive) return { dir: primary, known: sameKey.find((e) => e.path === primary) };
+  const secondary = `${primary}.${repoShortName(repo)}`;
+  return { dir: secondary, known: reg.entries.find((e) => e.path === secondary) };
+}
 
 function makeCtx(deps = {}) {
   const env = deps.env || process.env;
@@ -286,18 +339,20 @@ async function loadBase(ctx, repo) {
 /** Create or reuse a copy. Returns the myrWsOpenResult object; throws MyrWsError. */
 async function open(request, deps = {}) {
   const ctx = makeCtx(deps);
-  const { key, repo, scratch } = request;
-  const dir = path.join(scratch ? ctx.scratchRoot : ctx.workspaceRoot, key);
+  const { key, scratch } = request;
+  let repo = request.repo;
   const klass = scratch ? "G" : "E";
   const branch = scratch ? undefined : `${TASK_BRANCH_PREFIX}${key}`;
   const git = makeGit(ctx);
 
   // 1. Idempotence: a copy that is registered and present is returned as is.
+  //    One task may hold copies of several repositories (OPE-8946): the first sits at
+  //    /workspace/<KEY>, each further one next to it at /workspace/<KEY>.<name>.
   const reg = readRegistry(ctx);
-  const known = reg.entries.find((e) => e.path === dir || (e.key === key && e.class === klass));
+  const { dir, known } = resolveCopyDir(ctx, reg, { key, repo, scratch, klass });
   if (known && fs.existsSync(known.path)) {
     if (repo && known.repo && repo !== known.repo) {
-      throw usage(`${key} is already open for ${known.repo} at ${known.path}; close it before opening ${repo}`);
+      throw usage(`${dir} is already open for ${known.repo}; cannot open ${repo} there`);
     }
     return stripUndefined({
       ok: true,
@@ -311,11 +366,10 @@ async function open(request, deps = {}) {
     });
   }
 
-  // 2. A worktree that exists on disk but is missing from the registry (the
-  //    registry was lost or a previous open died before writing it) is adopted.
+  // 2a. A worktree that exists on disk but is missing from the registry (the
+  //     registry was lost or a previous open died before writing it) is adopted.
   if (!scratch && fs.existsSync(dir) && isWorktreeOf(dir)) {
-    const url = git(dir, ["remote", "get-url", "origin"], { allowFail: true }).stdout;
-    const adoptedRepo = repo || (url.match(/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/) || [])[1];
+    const adoptedRepo = repo || repoFromOrigin(git, dir) || undefined;
     const entry = stripUndefined({ key, repo: adoptedRepo, path: dir, class: klass, branch, openedAt: isoNow(ctx) });
     withRegistryLock(ctx, () => {
       const r = readRegistry(ctx);
@@ -324,6 +378,63 @@ async function open(request, deps = {}) {
       writeRegistry(ctx, r);
     });
     return stripUndefined({ ok: true, key, path: dir, class: klass, repo: adoptedRepo, branch, reused: true });
+  }
+
+  // 2b. Full legacy clones are converted only after validating their identity.
+  if (!scratch && fs.existsSync(dir) && isGitCopy(dir)) {
+    const top = git(dir, ["rev-parse", "--show-toplevel"], { allowFail: true });
+    const gitDir = git(dir, ["rev-parse", "--absolute-git-dir"], { allowFail: true });
+    const realDir = fs.realpathSync(dir);
+    if (top.status !== 0 || path.resolve(top.stdout) !== realDir || gitDir.status !== 0 || path.resolve(gitDir.stdout) !== path.join(realDir, ".git")) {
+      throw usage(`${dir} is not a standalone git copy; refusing to adopt it`);
+    }
+    const detectedRepo = repoFromOrigin(git, dir);
+    if (!detectedRepo) throw usage(`${dir} has no recognizable GitHub origin; refusing to adopt it`);
+    if (repo && repo !== detectedRepo) throw usage(`${dir} belongs to ${detectedRepo}, not ${repo}; refusing to adopt it`);
+    repo = detectedRepo;
+    const status = git(dir, ["status", "--porcelain", "--untracked-files=all"]);
+    const head = git(dir, ["rev-parse", "--verify", "HEAD"], { allowFail: true });
+    if (status.stdout || head.status !== 0) {
+      const recoveryRef = `refs/myr-ws/recovery/${key}`;
+      if (head.status === 0 && git(dir, ["show-ref", "--verify", "--quiet", recoveryRef], { allowFail: true }).status !== 0) {
+        git(dir, ["update-ref", recoveryRef, head.stdout]);
+      }
+      const stash = git(dir, ["stash", "push", "--include-untracked", "--message", `myr-ws recovery ${key}`], { allowFail: true });
+      if (stash.status !== 0) throw new MyrWsError(1, `${key}: could not preserve legacy working tree; original copy left untouched`);
+      if (status.stdout && !git(dir, ["stash", "list", "--format=%gd %s"], { allowFail: true }).stdout.includes(`myr-ws recovery ${key}`)) {
+        throw new MyrWsError(1, `${key}: working tree recovery could not be verified; original copy left untouched`);
+      }
+    }
+    const oldDir = `${dir}.legacy-${key}`;
+    if (fs.existsSync(oldDir)) throw usage(`${oldDir} already exists; refusing to move legacy copy`);
+    const sourceHead = head.status === 0 ? head.stdout : null;
+    fs.renameSync(dir, oldDir);
+    let baseRef;
+    try {
+      const basePath = await loadBase(ctx, detectedRepo);
+      baseRef = resolveBaseRef(git, basePath, request.base);
+      const target = `refs/remotes/origin/${baseRef}`;
+      const existingBranch = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFail: true }).status === 0;
+      if (existingBranch) git(basePath, ["worktree", "add", dir, branch]);
+      else git(basePath, ["worktree", "add", "--no-track", "-b", branch, dir, target]);
+      if (sourceHead && sourceHead !== git(dir, ["rev-parse", "HEAD"])) {
+        const recoveryBranch = `myr-ws/recovery/${key}`;
+        const recoveryExists = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${recoveryBranch}`], { allowFail: true }).status === 0;
+        if (!recoveryExists) git(basePath, ["fetch", "--no-tags", oldDir, `HEAD:refs/heads/${recoveryBranch}`]);
+      }
+      const entry = stripUndefined({ key, repo: detectedRepo, path: dir, class: klass, branch, openedAt: isoNow(ctx) });
+      withRegistryLock(ctx, () => {
+        const r = readRegistry(ctx);
+        r.entries = r.entries.filter((e) => e.path !== dir);
+        r.entries.push(entry);
+        writeRegistry(ctx, r);
+      });
+      return stripUndefined({ ok: true, key, path: dir, class: klass, repo: detectedRepo, branch, base: `origin/${baseRef}`, reused: false, recoveryPath: oldDir, recoveryRef: sourceHead ? `refs/heads/myr-ws/recovery/${key}` : undefined });
+    } catch (error) {
+      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+      fs.renameSync(oldDir, dir);
+      throw error;
+    }
   }
   if (fs.existsSync(dir)) {
     const empty = fs.statSync(dir).isDirectory() && fs.readdirSync(dir).length === 0;
@@ -409,6 +520,8 @@ async function runOpen(argv, deps = {}) {
 
 module.exports = {
   EXIT,
+  resolveCopyDir,
+  repoShortName,
   QUOTA_PREFIX,
   MyrWsError,
   parseOpenArgs,

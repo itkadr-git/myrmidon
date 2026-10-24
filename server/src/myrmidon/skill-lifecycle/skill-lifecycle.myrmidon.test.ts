@@ -98,6 +98,19 @@ function fakeStore(seed: {
     async getApproval(approvalId) {
       return approvals.get(approvalId) ?? null;
     },
+    async consumeApproval(approvalId, companyId, skillId) {
+      const record = records.get(skillId);
+      if (companyId !== COMPANY || !record || (record.state !== "candidate" && record.state !== "deprecated")) {
+        return null;
+      }
+      const approval = approvals.get(approvalId);
+      if (
+        !approval || approval.type !== "skill_promotion" ||
+        approval.status !== "approved" || approval.payload.skillId !== skillId
+      ) return null;
+      approvals.set(approvalId, { ...approval, status: "used" });
+      return { ...approval };
+    },
     async setSkillCurrentVersion(companyId, skillId, versionId) {
       if (companyId !== COMPANY) return;
       const skill = skills.get(skillId);
@@ -203,6 +216,31 @@ describe("myrmidon(1.6-SKILL-LIFE): promotion needs an approved approval", () =>
     });
     expect(harness.records.get(SKILL)).toBeUndefined();
   });
+
+  it("consumes an approval so it cannot authorize a second promotion", async () => {
+    const harness = fakeStore({
+      skills: [{ ...SKILL_REF }],
+      versions: { [V1]: version(V1, 1, "first") },
+      records: [{
+        skillId: SKILL,
+        companyId: COMPANY,
+        state: "candidate",
+        verifiedVersionId: V1,
+        previousVerifiedVersionId: null,
+        approvedBy: null,
+        approvedAt: null,
+        reason: null,
+        updatedAt: "2026-10-01T00:00:00.000Z",
+      }],
+      approvals: [approved()],
+    });
+    const service = serviceWith(harness.store);
+    await service.promote(COMPANY, SKILL, { approvalId: APPROVAL, actor });
+    await expect(service.promote(COMPANY, SKILL, { approvalId: APPROVAL, actor })).rejects.toMatchObject({
+      code: "promotion_requires_approved_status",
+    });
+    expect(harness.events).toHaveLength(1);
+  });
 });
 
 describe("myrmidon(1.6-SKILL-LIFE): delivery by state", () => {
@@ -241,6 +279,49 @@ describe("myrmidon(1.6-SKILL-LIFE): delivery by state", () => {
     const pilot = await service.resolveDelivery(COMPANY, AGENT_PILOT);
     expect(pilot.blockedKeys.size).toBe(0);
     expect(pilot.pinnedVersions.get("example-skill")).toBe(V1);
+  });
+
+  it("delivers a candidate to its author (back-import origin) outside the pilot set, and only to it", async () => {
+    // myrmidon(1.6.5-BOT-SKILL-BACKIMPORT): a bot-written candidate must come
+    // back to the bot that wrote it after a volume recreation, though the bot
+    // is not in MYRMIDON_SKILL_PILOT_AGENTS. Anyone else still waits for the pilot.
+    const harness = fakeStore({
+      skills: [{ ...SKILL_REF, originAgentId: AGENT_OTHER }],
+      versions: { [V1]: version(V1, 1, "bot-written content") },
+      records: [
+        {
+          skillId: SKILL,
+          companyId: COMPANY,
+          state: "candidate",
+          verifiedVersionId: V1,
+          previousVerifiedVersionId: null,
+          approvedBy: null,
+          approvedAt: null,
+          reason: null,
+          updatedAt: "2026-10-01T00:00:00.000Z",
+        },
+      ],
+    });
+    const service = serviceWith(harness.store, { [SKILL_PILOT_AGENTS_ENV]: AGENT_PILOT });
+
+    const author = await service.resolveDelivery(COMPANY, AGENT_OTHER);
+    expect(author.blockedKeys.size).toBe(0);
+    expect(author.pinnedVersions.get("example-skill")).toBe(V1);
+
+    const stranger = await service.resolveDelivery(COMPANY, "10000000-0000-4000-8000-0000000000b9");
+    expect(stranger.blockedKeys.has("example-skill")).toBe(true);
+    const pilot = await service.resolveDelivery(COMPANY, AGENT_PILOT);
+    expect(pilot.blockedKeys.size).toBe(0);
+  });
+
+  it("does not deliver a deprecated skill to its author", () => {
+    const decision = decideSkillDelivery({
+      skillKey: "k",
+      agentId: AGENT_OTHER,
+      lifecycle: { state: "deprecated", verifiedVersionId: V1, authorAgentId: AGENT_OTHER },
+      pilotAgentIds: new Set(),
+    });
+    expect(decision.blocked).toBe(true);
   });
 
   it("withholds a deprecated skill from everyone", async () => {

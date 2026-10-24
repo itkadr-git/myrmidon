@@ -46,6 +46,16 @@ import type {
 
 export type { IssueWorkMode };
 
+export interface IssueBlockerMetadata {
+  blockReason: "external_wait" | "dependency" | "recovery" | "human_decision" | "resource";
+  owner: { agentId: string } | { userId: string };
+  blockedByIssueIds?: string[];
+  externalRef?: string;
+  nextCheckAt: string;
+  timeoutAt: string;
+  escalationPolicy: string;
+}
+
 export interface IssueAncestorProject {
   id: string;
   name: string;
@@ -155,6 +165,13 @@ export interface AcceptedPlanDecompositionChild {
   workMode: IssueWorkMode;
   harnessKind?: IssueHarnessKind | null;
   priority: IssuePriority;
+  pheromoneStrength?: number | null;
+  /**
+   * 1.6.5 (F-27 rework 09.10): the task's caste key (a key of the company's
+   * caste directory, design §2.1). NULL means the project default, then the
+   * company default. The server validates it against the directory.
+   */
+  casteKey?: string | null;
   reviewPolicy?: IssueReviewPolicy | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
@@ -592,6 +609,13 @@ export interface SuccessfulRunHandoffState {
 
 export type IssueScheduledRetryStatus = "scheduled_retry" | "queued" | "running" | "cancelled";
 
+/**
+ * myrmidon(1.6.6 RUN-RETRY-POLICY): how the retry policy classified the failure
+ * that queued this run — a transient failure is worth another attempt, a
+ * permanent one is not.
+ */
+export type IssueScheduledRetryClassification = "transient" | "permanent" | "unknown";
+
 export interface IssueScheduledRetry {
   runId: string;
   status: IssueScheduledRetryStatus;
@@ -601,6 +625,14 @@ export interface IssueScheduledRetry {
   scheduledRetryAt: Date | string | null;
   scheduledRetryAttempt: number;
   scheduledRetryReason: string | null;
+  /**
+   * myrmidon(1.6.6 RUN-RETRY-POLICY): the attempt ceiling the scheduler
+   * enforced for this retry, and the class of the failure that caused it. Null
+   * for retries queued before the policy existed; the UI then renders the bare
+   * attempt number.
+   */
+  scheduledRetryMaxAttempts?: number | null;
+  scheduledRetryClassification?: IssueScheduledRetryClassification | null;
   retryExhaustedReason?: string | null;
   error?: string | null;
   errorCode?: string | null;
@@ -683,10 +715,24 @@ export interface IssueExecutionPolicy {
   authorizationPolicy?: TrustAuthorizationPolicy;
   /**
    * Maximum consecutive agent-initiated changes-requested rounds before the
-   * pending stage escalates to the responsible human. Null uses the server
-   * default. Human decisions reset the round counter.
+   * pending stage advances to a technical escalation reviewer. Null uses the
+   * server default. Human decisions reset the round counter.
    */
   maxReviewRounds?: number | null;
+  reviewEscalationPolicy?: {
+    maxReviewRounds?: number;
+    participantRoles: Array<"lead" | "architect" | "secondary_reviewer">;
+    fallbackQueue: string;
+    timeoutAt: string | null;
+    policyRevision: string;
+    participants?: Partial<Record<"lead" | "architect" | "secondary_reviewer", {
+      type: "agent" | "user";
+      agentId?: string | null;
+      userId?: string | null;
+      projectId?: string | null;
+      casteKey?: string | null;
+    } | null>>;
+  } | null;
 }
 
 export interface IssueExecutionMonitorState {
@@ -704,6 +750,8 @@ export interface IssueExecutionMonitorState {
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
   clearedAt: string | null;
   clearReason: IssueExecutionMonitorClearReason | null;
+  // myrmidon(MON-RESTORE): preserve the scheduled time after a recovery clear.
+  nextScheduledAt?: string | null;
 }
 
 export interface IssueReviewRequest {
@@ -724,6 +772,11 @@ export interface IssueExecutionState {
   monitor?: IssueExecutionMonitorState | null;
   /** Consecutive agent-initiated changes-requested rounds on the current stage. */
   changesRequestedCount?: number;
+  reviewCycleId?: string | null;
+  escalationPolicyRevision?: string | null;
+  escalationReason?: "review_round_limit" | null;
+  escalationFromParticipant?: IssueExecutionStagePrincipal | null;
+  escalationToParticipant?: IssueExecutionStagePrincipal | null;
 }
 
 export interface IssueExecutionDecision {
@@ -799,6 +852,16 @@ export interface Issue {
   status: IssueStatus;
   workMode: IssueWorkMode;
   priority: IssuePriority;
+  /** 1.6.5 (F-27 PHEROMONE): numeric swarm-queue strength; ≥ 0, default 0.
+   * Optional on the wire shape so callers constructing an Issue fixture do not
+   * have to name it; the DB column is NOT NULL DEFAULT 0, so API payloads
+   * always carry it. */
+  pheromoneStrength?: number;
+  /**
+   * 1.6.5 (F-27 rework 09.10): the task's caste key, or null (project/company
+   * default, design §2.1).
+   */
+  casteKey?: string | null;
   reviewPolicy: IssueReviewPolicy | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -835,6 +898,7 @@ export interface Issue {
   cancelledAt: Date | null;
   hiddenAt: Date | null;
   sourceTrust?: SourceTrustMetadata | null;
+  blockerMetadata?: IssueBlockerMetadata | null;
   labelIds?: string[];
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
@@ -888,6 +952,8 @@ export type CompactIssue = Pick<
   | "status"
   | "workMode"
   | "priority"
+  | "pheromoneStrength"
+  | "casteKey"
   | "reviewPolicy"
   | "assigneeAgentId"
   | "assigneeUserId"
@@ -1108,6 +1174,9 @@ export interface SuggestedTaskDraft {
   title: string;
   description?: string | null;
   priority?: IssuePriority | null;
+  pheromoneStrength?: number | null;
+  /** 1.6.5 (F-27 rework 09.10): the caste key the suggested task takes. */
+  casteKey?: string | null;
   workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;

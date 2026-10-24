@@ -3,22 +3,26 @@ name: Myrmidon CI
 # Myrmidon's own CI (the vendor's pr.yml calls unpinned upstream code and is
 # disabled). Two tiers, chosen by the `plan` job:
 #   docs - only Myrmidon docs/scripts changed: script checks only;
-#   fast - pull requests: typecheck (no Rust), build (no Rust release binary)
+#   fast - ordinary pull requests: typecheck (no Rust), build (no Rust release binary)
 #          and only the tests that the change touches directly;
-#   full - push to main, manual runs, PRs labelled `full-ci` (from the next
-#          push on), and PRs touching
+#   full - push to main, manual runs, merge queue (always full), PRs labelled
+#          `full-ci` or `review-approved` (the label itself starts a full run:
+#          the owner account has no merge queue, so the approval label is the
+#          "ready to land" gate), and PRs touching
 #          shared foundations (lockfile, db, shared, runner, CI...): every lane.
 # A red full run on main opens (or updates) an issue labelled `main-red`.
 # Everything runs on GitHub-hosted runners without secrets. See docs/myrmidon/ci.md.
 #
 # Merge queue: the `merge_group` event re-runs the same checks on a candidate
 # commit built on top of the fresh main, so two PRs that are green separately
-# cannot land a broken combination. The plan compares the candidate with its
-# base, so the tier matches the tier of the PR inside the group.
+# cannot land a broken combination. The candidate always gets the full tier.
 # See docs/myrmidon/merge-queue.md.
 
 on:
   pull_request:
+    # `labeled` makes the `review-approved` (and `full-ci`) label start a run
+    # on the same head, which the plan then escalates to the full tier.
+    types: [opened, synchronize, reopened, labeled]
   merge_group:
     types: [checks_requested]
   push:
@@ -33,8 +37,12 @@ concurrency:
   # reports no `CI result`, so it can never look green. A cancelled
   # merge_group run evicts the group from the queue, so queue runs are never
   # cancelled.
-  group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+  #
+  # `labeled` only matters for `full-ci` and `review-approved`. A run started
+  # by any other label (review-in-progress, needs-rebase, ...) goes to its own
+  # group, so it cannot cancel the real run, and every job in it is skipped.
+  group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') && '' || '-label-noop' }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -44,6 +52,7 @@ env:
 jobs:
   plan:
     name: plan
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 10
     outputs:
@@ -84,7 +93,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
           HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
-          FULL_LABEL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          FULL_LABEL: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'review-approved'))) }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           args=(plan --out "$RUNNER_TEMP/plan.json")
@@ -99,6 +109,7 @@ jobs:
               echo "::warning::base commit $BASE not found; forcing the full tier"
             fi
             if [ "$FULL_LABEL" = "true" ]; then args+=(--force-full); fi
+            case "$BASE_REF" in rel/*) args+=(--release-fast) ;; esac
           fi
           node scripts/myrmidon/ci/affected-tests.mjs "${args[@]}"
 
@@ -110,11 +121,15 @@ jobs:
           retention-days: 3
 
   typecheck:
-    name: typecheck
+    name: typecheck + build
+    # typecheck and build share one checkout, install and Rust cache; the build
+    # steps run even when the typecheck failed, so one run shows both failures.
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -162,7 +177,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: packages/paperclip-runner/runner -> target
-          shared-key: myr-check
+          shared-key: myr-check-build
           cache-workspace-crates: false
           cache-bin: false
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -179,93 +194,31 @@ jobs:
         run: |
           set -euo pipefail
           pnpm run preflight:workspace-links
-          pnpm -r --filter '!@paperclipai/paperclip-runner' typecheck
-          pnpm --filter @paperclipai/paperclip-runner typecheck:typescript
-
-  build:
-    name: build
-    needs: plan
-    if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_BUILD || vars.MYR_RUNNER || '"ubuntu-latest"') }}
-    timeout-minutes: 40
-    env:
-      NODE_OPTIONS: --max-old-space-size=4096
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 24
-          package-manager-cache: false
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          version: 9.15.4
-          run_install: false
-
-      - name: Locate pnpm store
-        id: pnpm_store
-        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-
-      - name: Restore pnpm store (read only)
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: ${{ steps.pnpm_store.outputs.path }}
-          key: myr-pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: myr-pnpm-${{ runner.os }}-
-
-      - name: Select pinned Rust toolchain
-        if: ${{ needs.plan.outputs.tier == 'full' }}
-        working-directory: packages/paperclip-runner
-        run: |
-          set -euo pipefail
-          if ! command -v rustup >/dev/null 2>&1; then
-            echo '::notice title=Rust toolchain::rustup is missing on this runner; bootstrapping via rustup.rs'
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-            export PATH="$HOME/.cargo/bin:$PATH"
-          fi
-          rustup show active-toolchain || rustup toolchain install
-
-      - name: Cache Rust dependencies
-        if: ${{ needs.plan.outputs.tier == 'full' }}
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: packages/paperclip-runner/runner -> target
-          shared-key: myr-build
-          cache-workspace-crates: false
-          cache-bin: false
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          pnpm -r --filter '!@myrmidon/paperclip-runner' typecheck
+          pnpm --filter @myrmidon/paperclip-runner typecheck:typescript
 
       - name: Build Runner issue-thread viewer
-        run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
+        if: ${{ !cancelled() }}
+        run: pnpm --filter @myrmidon/paperclip-runner build:issue-thread
 
       - name: Build
-        if: ${{ needs.plan.outputs.tier == 'full' }}
+        if: ${{ !cancelled() && needs.plan.outputs.tier == 'full' }}
         run: pnpm build
 
       - name: Build (runner TypeScript only, no Rust release binary)
-        if: ${{ needs.plan.outputs.tier == 'fast' }}
+        if: ${{ !cancelled() && needs.plan.outputs.tier == 'fast' }}
         run: |
           set -euo pipefail
           pnpm run preflight:workspace-links
-          pnpm --filter @paperclipai/paperclip-runner build:typescript
-          pnpm -r --filter '!@paperclipai/paperclip-runner' build
+          pnpm --filter @myrmidon/paperclip-runner build:typescript
+          pnpm -r --filter '!@myrmidon/paperclip-runner' build
 
   tests-affected:
     name: tests (affected)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' }}
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -305,7 +258,7 @@ jobs:
           path: ${{ runner.temp }}
 
       - name: Build plugin SDK dependencies
-        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+        run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 
       - name: Run affected tests
         run: node scripts/myrmidon/ci/affected-tests.mjs run --plan "$RUNNER_TEMP/plan.json"
@@ -315,26 +268,20 @@ jobs:
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         # Same split as the vendor's trusted PR CI: `pnpm test:run` equals the
         # union of the general groups and the serialized server suites.
         include:
-          - { label: "server 1/5", mode: general, group: general-server, shard_index: 0, shard_count: 5 }
-          - { label: "server 2/5", mode: general, group: general-server, shard_index: 1, shard_count: 5 }
-          - { label: "server 3/5", mode: general, group: general-server, shard_index: 2, shard_count: 5 }
-          - { label: "server 4/5", mode: general, group: general-server, shard_index: 3, shard_count: 5 }
-          - { label: "server 5/5", mode: general, group: general-server, shard_index: 4, shard_count: 5 }
-          - { label: "workspaces-a 1/2", mode: general, group: general-workspaces-a, shard_index: 0, shard_count: 2 }
-          - { label: "workspaces-a 2/2", mode: general, group: general-workspaces-a, shard_index: 1, shard_count: 2 }
+          - { label: "server 1/3", mode: general, group: general-server, shard_index: 0, shard_count: 3 }
+          - { label: "server 2/3", mode: general, group: general-server, shard_index: 1, shard_count: 3 }
+          - { label: "server 3/3", mode: general, group: general-server, shard_index: 2, shard_count: 3 }
+          - { label: "workspaces-a", mode: general, group: general-workspaces-a }
           - { label: "workspaces-b", mode: general, group: general-workspaces-b }
-          - { label: "serialized 1/5", mode: serialized, shard_index: 0, shard_count: 5 }
-          - { label: "serialized 2/5", mode: serialized, shard_index: 1, shard_count: 5 }
-          - { label: "serialized 3/5", mode: serialized, shard_index: 2, shard_count: 5 }
-          - { label: "serialized 4/5", mode: serialized, shard_index: 3, shard_count: 5 }
-          - { label: "serialized 5/5", mode: serialized, shard_index: 4, shard_count: 5 }
+          - { label: "serialized 1/2", mode: serialized, shard_index: 0, shard_count: 2 }
+          - { label: "serialized 2/2", mode: serialized, shard_index: 1, shard_count: 2 }
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -385,59 +332,14 @@ jobs:
           pnpm "test:run:$MODE" -- "${args[@]}"
 
   tests-other:
+    # Merged with the runner lane to share one checkout and install.
     # Packages whose tests `pnpm test:run` does not run (hermes adapter, MCP
     # servers, several adapters...): scripts/myrmidon/ci/extra-test-lanes.json.
-    name: tests (other packages)
+    name: tests (other + runner)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_OTHER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
-    timeout-minutes: 20
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 24
-          package-manager-cache: false
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          version: 9.15.4
-          run_install: false
-
-      - name: Locate pnpm store
-        id: pnpm_store
-        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-
-      - name: Restore pnpm store (read only)
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: ${{ steps.pnpm_store.outputs.path }}
-          key: myr-pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: myr-pnpm-${{ runner.os }}-
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build plugin SDK dependencies
-        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
-
-      - name: Run tests of the other packages
-        run: node scripts/myrmidon/ci/affected-tests.mjs extra
-
-  tests-runner:
-    # The vendor verifies the runner in its own lane (check:all: TypeScript,
-    # protocol, Rust and API authority checks).
-    name: tests (runner)
-    needs: plan
-    if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_RUNNER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -493,14 +395,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Verify the runner
-        run: pnpm --filter @paperclipai/paperclip-runner check:all
+      - name: Build plugin SDK dependencies
+        run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 
+      - name: Run tests of the other packages
+        run: node scripts/myrmidon/ci/affected-tests.mjs extra
+
+      - name: Verify the runner (vendor's check:all lane)
+        if: ${{ !cancelled() }}
+        run: pnpm --filter @myrmidon/paperclip-runner check:all
   checks:
     # Cheap checks that run on every tier: node:test suites of our scripts,
     # gitleaks, the internal-address scan, dependency licenses and plugin
     # compatibility. Every step runs even if an earlier one failed.
     name: checks
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
@@ -580,6 +489,10 @@ jobs:
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
+      - name: SQL template lint (myrmidon)
+        if: ${{ !cancelled() }}
+        run: node scripts/myrmidon/ci/sql-template-lint.mjs --root server/src
+
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}
         env:
@@ -594,6 +507,13 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose \
             --config .gitleaks.toml --log-opts="$BASE..$HEAD" .
+
+      - name: AI signatures (commit messages, author, committer)
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          BASE: ${{ steps.range.outputs.base }}
+          HEAD: ${{ steps.range.outputs.head }}
+        run: node scripts/myrmidon/ai-signature-scan.mjs --commits "$BASE..$HEAD"
 
       - name: Internal addresses (private networks)
         if: ${{ !cancelled() }}
@@ -625,53 +545,18 @@ jobs:
       - name: Plugin compatibility — build plugin SDK and shared from the repository
         id: sdk
         if: ${{ !cancelled() }}
-        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+        run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 
       - name: Plugin compatibility — manifest snapshots (offline)
         if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
-        run: pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --fixtures-only
+        run: pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --fixtures-only
 
       - name: Plugin compatibility — installed plugins against the host
         if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
         run: |
           set -euo pipefail
           node scripts/myrmidon/plugin-compat/install.mjs --work "$RUNNER_TEMP/plugin-compat"
-          pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work "$RUNNER_TEMP/plugin-compat"
-
-  fleetd:
-    # tools/fleetd (the fleet service for a second machine's bot containers,
-    # FLEETD-VMEXEC): gofmt, go vet and the unit tests, in the same pinned Go
-    # image the fleetd image workflow builds from. The image itself is built
-    # by myrmidon-fleetd.yml. See docs/myrmidon/fleetd-vmexec.md.
-    name: fleetd
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
-    timeout-minutes: 20
-    env:
-      GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: go.mod has no requirements (stdlib only)
-        run: |
-          set -euo pipefail
-          if grep -qE '^\s*(require|tool)\s' tools/fleetd/go.mod; then
-            echo "tools/fleetd/go.mod must stay stdlib-only"
-            exit 1
-          fi
-
-      - name: gofmt, go vet, go test
-        run: |
-          set -euo pipefail
-          docker run --rm --network none -v "$PWD/tools/fleetd:/src" -w /src \
-            -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache "$GO_IMAGE" sh -euc '
-              out="$(gofmt -l .)"
-              if [ -n "$out" ]; then echo "gofmt: $out"; exit 1; fi
-              go vet ./...
-              go test -count=1 ./...
-            '
+          pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work "$RUNNER_TEMP/plugin-compat"
 
   dockergate:
     # tools/dockergate (the allowlisting Docker proxy for the bot-container
@@ -680,9 +565,12 @@ jobs:
     # and the Go tests run against them). Every tier: it takes about two
     # minutes and a red dockergate must not merge. The image itself is built by
     # myrmidon-dockergate.yml. See docs/myrmidon/dockergate.md.
-    name: dockergate
+    name: go tools (dockergate + fleetd)
+    # fleetd is folded in (one checkout, one runner): tools/fleetd, see
+    # docs/myrmidon/fleetd-vmexec.md. Every step runs even if an earlier one failed.
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
     steps:
@@ -691,7 +579,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: go.mod has no requirements (stdlib only)
+      - name: dockergate - go.mod has no requirements (stdlib only)
         run: |
           set -euo pipefail
           if grep -Eq '^\s*require\b' tools/dockergate/go.mod || [ -e tools/dockergate/go.sum ]; then
@@ -700,6 +588,7 @@ jobs:
           fi
 
       - name: gofmt, go vet, go test (checked-in fixtures)
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           docker run --rm --network none -v "$PWD/tools/dockergate:/src" -w /src \
@@ -711,22 +600,26 @@ jobs:
             '
 
       - name: Setup Node.js
+        if: ${{ !cancelled() }}
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           package-manager-cache: false
 
       - name: Setup pnpm
+        if: ${{ !cancelled() }}
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 9.15.4
           run_install: false
 
       - name: Locate pnpm store
+        if: ${{ !cancelled() }}
         id: pnpm_store
         run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
       - name: Restore pnpm store (read only)
+        if: ${{ !cancelled() }}
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ steps.pnpm_store.outputs.path }}
@@ -734,14 +627,16 @@ jobs:
           restore-keys: myr-pnpm-${{ runner.os }}-
 
       - name: Install dependencies
+        if: ${{ !cancelled() }}
         run: pnpm install --frozen-lockfile
 
       - name: Contract with the driver (fixtures emitted from this commit)
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/dockergate-contract"
           rm -rf "$out" && mkdir -p "$out"
-          pnpm --filter @paperclipai/server exec tsx ../tools/dockergate/contract/emit-fixtures.ts "$out"
+          pnpm --filter @myrmidon/server exec tsx ../tools/dockergate/contract/emit-fixtures.ts "$out"
           # The static fixtures must equal the checked-in ones; traffic.json
           # carries wall-clock mtimes and is only replayed, not compared.
           diff -r -x traffic.json tools/dockergate/contract/testdata "$out"
@@ -749,12 +644,32 @@ jobs:
             -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache \
             -e DOCKERGATE_CONTRACT_DIR=/contract "$GO_IMAGE" go test -count=1 ./...
 
+      - name: fleetd - go.mod has no requirements (stdlib only)
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          if grep -qE '^\s*(require|tool)\s' tools/fleetd/go.mod; then
+            echo "tools/fleetd/go.mod must stay stdlib-only"
+            exit 1
+          fi
+
+      - name: fleetd - gofmt, go vet, go test
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -v "$PWD/tools/fleetd:/src" -w /src \
+            -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache "$GO_IMAGE" sh -euc '
+              out="$(gofmt -l .)"
+              if [ -n "$out" ]; then echo "gofmt: $out"; exit 1; fi
+              go vet ./...
+              go test -count=1 ./...
+            '
   ci-result:
     # Single stable name for the ruleset. Lanes the plan did not need are
     # skipped; any failure, or a skip without a successful plan, fails it.
     name: CI result
-    if: ${{ !cancelled() }}
-    needs: [plan, typecheck, build, tests-affected, tests, tests-other, tests-runner, checks, dockergate, fleetd]
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
+    needs: [plan, typecheck, tests-affected, tests, tests-other, checks, dockergate]
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:

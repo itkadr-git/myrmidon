@@ -11,6 +11,7 @@ import {
 } from "../services/service-manager.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
 import type { CheckResult } from "./index.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type HealthResult = { ok: boolean; version: string | null; error?: string };
 type ServiceCheckDependencies = {
@@ -44,7 +45,7 @@ export async function serviceHealthChecks(
   config: PaperclipConfig,
   dependencies: Partial<ServiceCheckDependencies> = {},
 ): Promise<CheckResult[]> {
-  if (process.env.PAPERCLIP_SERVICE_MANAGED === "1") return [];
+  if (readProductEnv("SERVICE_MANAGED") === "1") return [];
 
   const deps: ServiceCheckDependencies = {
     detect: (instanceId) => detectServiceManager({ instanceId }),
@@ -84,7 +85,7 @@ export async function serviceHealthChecks(
           name: "Service definition",
           status: "fail",
           message: `Missing or drifted definition at ${manager.definitionPath}`,
-          repairHint: "Run `paperclipai service install` to regenerate the service definition",
+          repairHint: "Run `myrmidon service install` to regenerate the service definition",
         },
   );
 
@@ -103,21 +104,21 @@ export async function serviceHealthChecks(
             message: `${status.serviceName} cannot start: no executable exists at ${serviceExecutable}`,
             repairHint:
               path.resolve(serviceExecutable) === path.resolve(resolveInstallStorePaths().shimPath)
-                ? "Run `paperclipai install` to restore the managed payload and shim, then `paperclipai service start`"
-                : `Restore the executable at ${serviceExecutable}, or unset PAPERCLIP_SHIM_PATH and run \`paperclipai install\` followed by \`paperclipai service install\` to re-point the service at the managed shim`,
+                ? "Run `myrmidon install` to restore the managed payload and shim, then `myrmidon service start`"
+                : `Restore the executable at ${serviceExecutable}, or unset PAPERCLIP_SHIM_PATH and run \`myrmidon install\` followed by \`myrmidon service install\` to re-point the service at the managed shim`,
           }
         : health.ok
           ? {
               name: "Service runtime",
               status: "fail",
               message: `${status.serviceName} is inactive but the configured port is serving another Paperclip process`,
-              repairHint: "Run `paperclipai service start`, or stop the conflicting foreground process first",
+              repairHint: "Run `myrmidon service start`, or stop the conflicting foreground process first",
             }
           : {
               name: "Service runtime",
               status: "fail",
               message: `${status.serviceName} is ${status.detail ?? "inactive"}`,
-              repairHint: "Run `paperclipai service start`; inspect `paperclipai service logs` if it does not stay up",
+              repairHint: "Run `myrmidon service start`; inspect `myrmidon service logs` if it does not stay up",
             },
   );
 
@@ -131,14 +132,14 @@ export async function serviceHealthChecks(
           name: "Service health",
           status: "fail",
           message: health.error ?? "Health endpoint did not report ok",
-          repairHint: "Inspect `paperclipai service status` and `paperclipai service logs`",
+          repairHint: "Inspect `myrmidon service status` and `myrmidon service logs`",
         }
       : expectedVersion && health.version !== expectedVersion
         ? {
             name: "Service version",
             status: "fail",
             message: `Running ${health.version ?? "unknown"}; managed install is ${expectedVersion}`,
-            repairHint: "Run `paperclipai service restart --expected-version " + expectedVersion + "`",
+            repairHint: "Run `myrmidon service restart --expected-version " + expectedVersion + "`",
           }
         : status.active
           ? {
@@ -158,7 +159,7 @@ export async function serviceHealthChecks(
       name: "Service linger",
       status: "warn",
       message: "Start-on-login is enabled but systemd user lingering is off",
-      repairHint: "Re-run `paperclipai service install --enable-linger` if the service must survive logout",
+      repairHint: "Re-run `myrmidon service install --enable-linger` if the service must survive logout",
     });
   }
 

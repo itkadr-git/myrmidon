@@ -95,7 +95,20 @@ export const en = {
     saveFailed: "Could not save the language choice. It stays for this browser only.",
     serverHint: "The choice is saved to your user profile and follows you across devices.",
     telegramBridgeUser: "The Telegram bot answers you in this language too.",
-    telegramBridgeEnv: "The Telegram bot ignores this choice right now: the server environment forces {language} for every chat.",
+    telegramBridgeEnv: "The Telegram bot ignores this choice right now: the server environment forces {{language}} for every chat.",
+    // myrmidon(1.6.5-TG-LOCALE-C): the two remaining sources the screen must
+    // name honestly — the instance setting and the built-in default.
+    telegramBridgeInstance:
+      "The Telegram bot answers in {{language}} — the instance language, because you have not chosen one here.",
+    telegramBridgeDefault:
+      "The Telegram bot answers in {{language}} — the instance default, because you have not chosen one here.",
+    instanceLanguageTitle: "Telegram bot language for the instance",
+    instanceLanguageDescription:
+      "Used for every board member who has not chosen a language above. Only an instance admin can change it; it applies from the next reply, without a restart.",
+    instanceLanguageSave: "Save",
+    instanceLanguageSaved: "Instance language for the Telegram bot: {{language}}.",
+    instanceLanguageFailed: "Could not save the instance language.",
+    instanceLanguageAdminOnly: "Only an instance admin can change the instance language.",
   },
   status: {
     open: "Open",
@@ -351,6 +364,19 @@ export const en = {
         placeholderTitle: "This screen arrives with 2.0",
         placeholderBody: "The 2.0 layout for this area is not wired yet; the working screen below keeps the flow.",
         placeholderLegacyLink: "Back to the current layout",
+        fleet: {
+          title: "Servers",
+          subtitle: "Live infrastructure health from the configured monitoring sources.",
+          monitoringError: "Monitoring is not configured or is unavailable.",
+          monitoringUnavailable: "Monitoring data is unavailable.",
+          hosts: "Hosts",
+          services: "Services",
+          empty: "No fleet data",
+          emptyBody: "No hosts or services were returned for this company.",
+          error: "Fleet data is unavailable.",
+          metrics: "CPU {{cpu}}% · memory {{memory}}% · disk {{disk}}%",
+          states: { running: "Running", stopped: "Stopped", unknown: "Unknown" },
+        },
       },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning
@@ -453,6 +479,14 @@ export type Ui2Catalog = {
     serverHint: string;
     telegramBridgeUser: string;
     telegramBridgeEnv: string;
+    telegramBridgeInstance: string;
+    telegramBridgeDefault: string;
+    instanceLanguageTitle: string;
+    instanceLanguageDescription: string;
+    instanceLanguageSave: string;
+    instanceLanguageSaved: string;
+    instanceLanguageFailed: string;
+    instanceLanguageAdminOnly: string;
   };
   status: Record<
     | "open"
@@ -710,6 +744,7 @@ export type Ui2Catalog = {
       placeholderTitle: string;
       placeholderBody: string;
       placeholderLegacyLink: string;
+      fleet: { title: string; subtitle: string; monitoringError: string; monitoringUnavailable: string; hosts: string; services: string; empty: string; emptyBody: string; error: string; metrics: string; states: { running: string; stopped: string; unknown: string } };
     },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning

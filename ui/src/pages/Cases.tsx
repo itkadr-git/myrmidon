@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpDown, Check, ChevronDown, Columns3, Filter, Layers, ListTree, Search, SearchX } from "lucide-react";
@@ -22,6 +23,8 @@ import { Input } from "@/components/ui/input";
 import { CaseCopyableToken } from "@/components/CaseIdentifierKey";
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "@/lib/keyboardShortcuts";
 import { cn, relativeTime } from "@/lib/utils";
+import { Trans } from "react-i18next";
+import { i18n, useTranslation } from "@/i18n";
 
 type GroupBy = "type" | "project" | "status" | "none";
 type CaseColumn = "id" | "key" | "title" | "status" | "updated" | "created" | "type" | "project" | "parent";
@@ -39,39 +42,45 @@ type CaseViewState = {
   treeView: boolean;
 };
 
-const STATUS_FILTER_OPTIONS: { value: CaseStatus; label: string }[] = [
-  { value: "draft", label: "Draft" },
-  { value: "in_progress", label: "In progress" },
-  { value: "in_review", label: "In review" },
-  { value: "approved", label: "Approved" },
-  { value: "done", label: "Done" },
-  { value: "cancelled", label: "Cancelled" },
-];
+function statusFilterOptions(): { value: CaseStatus; label: string }[] {
+  return [
+    { value: "draft", label: i18n.t("area.pipelines-cases.cases.status.draft") },
+    { value: "in_progress", label: i18n.t("area.pipelines-cases.cases.status.inProgress") },
+    { value: "in_review", label: i18n.t("area.pipelines-cases.cases.status.inReview") },
+    { value: "approved", label: i18n.t("area.pipelines-cases.cases.status.approved") },
+    { value: "done", label: i18n.t("area.pipelines-cases.cases.status.done") },
+    { value: "cancelled", label: i18n.t("area.pipelines-cases.cases.status.cancelled") },
+  ];
+}
 
 const ALL = "__all__";
 const DEFAULT_STATUS_FILTERS: CaseStatus[] = CASE_STATUSES.filter((status) => !TERMINAL_CASE_STATUSES.includes(status));
 const DEFAULT_CASE_COLUMNS: CaseColumn[] = ["id", "title", "status", "updated"];
 const CASE_COLUMN_ORDER: CaseColumn[] = ["id", "key", "title", "type", "status", "updated", "created", "project", "parent"];
-const CASE_COLUMN_LABELS: Record<CaseColumn, string> = {
-  id: "ID",
-  key: "Key",
-  title: "Title",
-  status: "Status",
-  updated: "Updated",
-  created: "Created at",
-  type: "Type",
-  project: "Project",
-  parent: "Parent case",
-};
-const CASE_SORT_LABELS: Record<CaseSortField, string> = {
-  updated: "Last updated",
-  created: "Created at",
-  title: "Title",
-  status: "Status",
-  id: "ID",
-  type: "Type",
-  project: "Project",
-};
+function caseColumnLabels(): Record<CaseColumn, string> {
+  return {
+    id: i18n.t("area.pipelines-cases.cases.columns.id"),
+    key: i18n.t("area.pipelines-cases.cases.columns.key"),
+    title: i18n.t("area.pipelines-cases.cases.columns.title"),
+    status: i18n.t("area.pipelines-cases.cases.columns.status"),
+    updated: i18n.t("area.pipelines-cases.cases.columns.updated"),
+    created: i18n.t("area.pipelines-cases.cases.columns.created"),
+    type: i18n.t("area.pipelines-cases.cases.columns.type"),
+    project: i18n.t("area.pipelines-cases.cases.columns.project"),
+    parent: i18n.t("area.pipelines-cases.cases.columns.parent"),
+  };
+}
+function caseSortLabels(): Record<CaseSortField, string> {
+  return {
+    updated: i18n.t("area.pipelines-cases.cases.sort.updated"),
+    created: i18n.t("area.pipelines-cases.cases.sort.created"),
+    title: i18n.t("area.pipelines-cases.cases.sort.title"),
+    status: i18n.t("area.pipelines-cases.cases.sort.status"),
+    id: i18n.t("area.pipelines-cases.cases.sort.id"),
+    type: i18n.t("area.pipelines-cases.cases.sort.type"),
+    project: i18n.t("area.pipelines-cases.cases.sort.project"),
+  };
+}
 const defaultCaseViewState: CaseViewState = {
   search: "",
   typeFilters: [],
@@ -86,7 +95,7 @@ const defaultCaseViewState: CaseViewState = {
 };
 
 function getCaseViewStorageKey(companyId: string | null | undefined): string | null {
-  return companyId ? `paperclip:cases:${companyId}:view` : null;
+  return companyId ? `myrmidon:cases:${companyId}:view` : null;
 }
 
 function normalizeCaseColumns(value: unknown): CaseColumn[] {
@@ -212,6 +221,7 @@ function CaseStatusPicker({
   onChange: (next: CaseStatus) => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -220,7 +230,7 @@ function CaseStatusPicker({
           type="button"
           disabled={disabled}
           className="inline-flex items-center gap-1 rounded-md hover:bg-accent/50 disabled:opacity-50"
-          aria-label="Change case status"
+          aria-label={t("area.pipelines-cases.cases.statusPicker.ariaLabel")}
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -238,7 +248,7 @@ function CaseStatusPicker({
           event.stopPropagation();
         }}
       >
-        {STATUS_FILTER_OPTIONS.map((option) => (
+        {statusFilterOptions().map((option) => (
           <button
             key={option.value}
             type="button"
@@ -280,6 +290,7 @@ function CaseTrailingColumns({
   treeCollapsed?: boolean;
   onTreeToggle?: (caseId: string) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <span className="grid min-w-0 flex-1 items-center gap-2" style={{ gridTemplateColumns: caseTrailingGridTemplate(columns) }}>
       {columns.map((column) => {
@@ -288,7 +299,7 @@ function CaseTrailingColumns({
             <CaseCopyableToken
               key={column}
               value={row.identifier}
-              label="case ID"
+              label={t("area.pipelines-cases.cases.caseIdLabel")}
               className="font-mono text-xs text-muted-foreground"
               containerClassName="shrink-0"
               stopPropagation
@@ -300,12 +311,12 @@ function CaseTrailingColumns({
             <CaseCopyableToken
               key={column}
               value={row.key}
-              label="case key"
+              label={t("area.pipelines-cases.cases.caseKeyLabel")}
               className="font-mono text-xs text-muted-foreground"
               stopPropagation
             />
           ) : (
-            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">None</span>
+            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">{t("common.none")}</span>
           );
         }
         if (column === "title") {
@@ -324,7 +335,7 @@ function CaseTrailingColumns({
                     <button
                       type="button"
                       className="flex h-4 w-4 items-center justify-center rounded-sm transition-colors hover:bg-accent/50"
-                      aria-label={`${treeCollapsed ? "Expand" : "Collapse"} ${row.title}`}
+                      aria-label={t(treeCollapsed ? "area.pipelines-cases.cases.expandRow" : "area.pipelines-cases.cases.collapseRow", { title: row.title })}
                       aria-expanded={!treeCollapsed}
                       onClick={(event) => {
                         event.preventDefault();
@@ -358,12 +369,12 @@ function CaseTrailingColumns({
           return <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">{row.caseType}</span>;
         }
         if (column === "project") {
-          return <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">{projectName ?? "No project"}</span>;
+          return <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">{projectName ?? t("area.pipelines-cases.cases.noProject")}</span>;
         }
         if (column === "parent") {
           return (
             <span key={column} className="min-w-0 truncate font-mono text-xs text-muted-foreground">
-              {row.parentCaseId ? "Parent" : "None"}
+              {row.parentCaseId ? t("area.pipelines-cases.cases.parentLabel") : t("common.none")}
             </span>
           );
         }
@@ -413,6 +424,7 @@ function CaseListRow({
   selected?: boolean;
   onSelect?: () => void;
 }) {
+  const { t } = useTranslation();
   const caseHref = useCaseHref();
   return (
     <Link
@@ -439,7 +451,7 @@ function CaseListRow({
           {visibleColumnSet.has("id") ? (
             <CaseCopyableToken
               value={row.identifier}
-              label="case ID"
+              label={t("area.pipelines-cases.cases.caseIdLabel")}
               className="font-mono text-xs text-muted-foreground"
               containerClassName="shrink-0"
               stopPropagation
@@ -448,7 +460,7 @@ function CaseListRow({
           {visibleColumnSet.has("key") && row.key ? (
             <CaseCopyableToken
               value={row.key}
-              label="case key"
+              label={t("area.pipelines-cases.cases.caseKeyLabel")}
               className="shrink-0 font-mono text-xs text-muted-foreground"
               stopPropagation
             />
@@ -483,13 +495,15 @@ function CaseColumnHeader({
   visibleColumnSet: ReadonlySet<CaseColumn>;
   trailingColumns: CaseColumn[];
 }) {
+  useTranslation();
+  const labels = caseColumnLabels();
   return (
     <div className="hidden border-b border-border px-2 py-1 text-(length:--text-micro) font-medium uppercase tracking-(--tracking-caps) text-muted-foreground sm:flex sm:items-center">
       {trailingColumns.length > 0 ? (
         <span className="grid min-w-0 flex-1 items-center gap-2" style={{ gridTemplateColumns: caseTrailingGridTemplate(trailingColumns) }}>
           {trailingColumns.map((column) => (
             <span key={column} className={cn("truncate", (column === "updated" || column === "created") && "text-right")}>
-              {CASE_COLUMN_LABELS[column]}
+              {labels[column]}
             </span>
           ))}
         </span>
@@ -515,6 +529,7 @@ function CaseGroup({
   onSelect: () => void;
   children: React.ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="mt-6 first:mt-0">
       <div
@@ -529,7 +544,7 @@ function CaseGroup({
           onToggle={onToggle}
           trailing={(
             <span className="text-xs text-muted-foreground tabular-nums">
-              {count} {count === 1 ? "case" : "cases"}
+              {t("area.pipelines-cases.cases.casesCount", { count })}
             </span>
           )}
         />
@@ -636,14 +651,16 @@ function CaseColumnPicker({
   onToggle: (column: CaseColumn, enabled: boolean) => void;
   onReset: () => void;
 }) {
+  const { t } = useTranslation();
+  const labels = caseColumnLabels();
   return (
-    <CaseToolbarButton icon={Columns3} title="Columns" active={!sameStringSet([...visibleColumns], DEFAULT_CASE_COLUMNS)}>
+    <CaseToolbarButton icon={Columns3} title={t("area.pipelines-cases.cases.toolbar.columns")} active={!sameStringSet([...visibleColumns], DEFAULT_CASE_COLUMNS)}>
       <PopoverContent align="end" className="w-(--sz-300px) p-1.5">
         <div className="px-2 pb-1 pt-1.5">
           <div className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-            Desktop case rows
+            {t("area.pipelines-cases.cases.toolbar.desktopRows")}
           </div>
-          <div className="text-sm font-medium text-foreground">Choose visible columns</div>
+          <div className="text-sm font-medium text-foreground">{t("area.pipelines-cases.cases.toolbar.chooseColumns")}</div>
         </div>
         <div className="space-y-0.5">
           {CASE_COLUMN_ORDER.map((column) => (
@@ -653,7 +670,7 @@ function CaseColumnPicker({
               className="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm hover:bg-accent/50"
               onClick={() => onToggle(column, !visibleColumns.has(column))}
             >
-              <span>{CASE_COLUMN_LABELS[column]}</span>
+              <span>{labels[column]}</span>
               {visibleColumns.has(column) ? <Check className="h-3.5 w-3.5 text-muted-foreground" /> : null}
             </button>
           ))}
@@ -664,7 +681,7 @@ function CaseColumnPicker({
             className="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent/50"
             onClick={onReset}
           >
-            Reset defaults
+            {t("area.pipelines-cases.cases.toolbar.resetDefaults")}
           </button>
         </div>
       </PopoverContent>
@@ -681,10 +698,12 @@ function CaseSortPicker({
   sortDir: "asc" | "desc";
   onChange: (patch: Pick<CaseViewState, "sortField" | "sortDir">) => void;
 }) {
+  const { t } = useTranslation();
+  const labels = caseSortLabels();
   return (
-    <CaseToolbarButton icon={ArrowUpDown} title="Sort" active={sortField !== "updated" || sortDir !== "desc"}>
+    <CaseToolbarButton icon={ArrowUpDown} title={t("common.sort")} active={sortField !== "updated" || sortDir !== "desc"}>
       <PopoverContent align="end" className="w-48 p-2">
-        {(Object.keys(CASE_SORT_LABELS) as CaseSortField[]).map((field) => (
+        {(Object.keys(labels) as CaseSortField[]).map((field) => (
           <button
             key={field}
             type="button"
@@ -700,7 +719,7 @@ function CaseSortPicker({
               }
             }}
           >
-            <span>{CASE_SORT_LABELS[field]}</span>
+            <span>{labels[field]}</span>
             {sortField === field ? (
               <span className="text-xs text-muted-foreground">{sortDir === "asc" ? "↑" : "↓"}</span>
             ) : null}
@@ -713,33 +732,38 @@ function CaseSortPicker({
 
 /** Full-page onboarding hero shown when the company has zero cases (§6). */
 function CasesEmptyHero() {
+  const { t } = useTranslation();
   return (
     <div className="mx-auto flex max-w-xl flex-col items-center gap-4 py-16 text-center">
       <Layers className="h-10 w-10 text-muted-foreground" />
-      <h2 className="text-lg font-semibold">No cases yet</h2>
+      <h2 className="text-lg font-semibold">{t("area.pipelines-cases.cases.hero.title")}</h2>
       <p className="text-sm text-muted-foreground">
-        Cases are durable work products — blog posts, tweet storms, docs pages — that tasks create and
-        iterate on. In v1 they&apos;re created by agents, not from the UI.
+        {t("area.pipelines-cases.cases.hero.description")}
       </p>
       <div className="w-full space-y-2 rounded-lg border border-border bg-muted/50 p-4 text-left">
-        <p className="text-sm font-medium">To start creating cases, add this to a skill:</p>
+        <p className="text-sm font-medium">{t("area.pipelines-cases.cases.hero.startHint")}</p>
         <pre className="overflow-x-auto rounded bg-background/60 p-3 font-mono text-xs text-muted-foreground">
-{`"Create a case of type blog_post with fields
-{slug, target_audience, publish_url} and key <release>/<slug>."`}
+{t("area.pipelines-cases.cases.hero.example")}
         </pre>
         <p className="text-xs text-muted-foreground">
-          See the paperclip skill → <code className="font-mono">references/cases.md</code> for the API.
+          <Trans
+            i18nKey="area.pipelines-cases.cases.hero.seeSkill"
+            components={[<code key="0" className="font-mono" />]}
+          />
         </p>
       </div>
       <p className="text-xs text-muted-foreground">
-        Feature is gated by the <code className="font-mono">enableCases</code> experimental flag
-        (Settings → Experimental).
+        <Trans
+          i18nKey="area.pipelines-cases.cases.hero.gated"
+          components={[<code key="0" className="font-mono" />]}
+        />
       </p>
     </div>
   );
 }
 
 export function Cases() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { keyboardShortcutsEnabled } = useGeneralSettings();
@@ -755,8 +779,8 @@ export function Cases() {
   const [selectedIndex, setSelectedIndex] = useState(-1);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Cases" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("area.pipelines-cases.cases.title") }]);
+  }, [setBreadcrumbs, t]);
 
   useEffect(() => {
     setViewState(loadCaseViewState(viewStorageKey));
@@ -892,7 +916,7 @@ export function Cases() {
       let key: string;
       if (viewState.groupBy === "type") key = c.caseType;
       else if (viewState.groupBy === "status") key = c.status;
-      else key = c.projectId ? projectName.get(c.projectId) ?? "Unknown project" : "No project";
+      else key = c.projectId ? projectName.get(c.projectId) ?? t("area.pipelines-cases.cases.unknownProject") : t("area.pipelines-cases.cases.noProject");
       const bucket = map.get(key);
       if (bucket) bucket.push(c);
       else map.set(key, [c]);
@@ -900,7 +924,7 @@ export function Cases() {
     return [...map.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([label, rows]) => ({ key: label, label, rows }));
-  }, [sorted, viewState.groupBy, projectName]);
+  }, [sorted, viewState.groupBy, projectName, t]);
 
   const treeRows = useMemo((): CaseTreeRow[] => {
     const rowById = new Map(sortedTreeSource.map((row) => [row.id, row]));
@@ -1020,33 +1044,33 @@ export function Cases() {
   }, [selectedIndex]);
 
   const activeFilters: FilterValue[] = [];
-  if (viewState.search.trim()) activeFilters.push({ key: "search", label: "Search", value: viewState.search.trim() });
+  if (viewState.search.trim()) activeFilters.push({ key: "search", label: t("area.pipelines-cases.cases.filters.search"), value: viewState.search.trim() });
   if (viewState.typeFilters.length > 0) {
-    activeFilters.push({ key: "type", label: "Type", value: viewState.typeFilters.join(", ") });
+    activeFilters.push({ key: "type", label: t("area.pipelines-cases.cases.filters.type"), value: viewState.typeFilters.join(", ") });
   }
   if (!usesDefaultStatusFilter) {
     activeFilters.push({
       key: "status",
-      label: "Status",
+      label: t("area.pipelines-cases.cases.filters.status"),
       value: viewState.statusFilters.length === CASE_STATUSES.length
-        ? "All"
+        ? t("area.pipelines-cases.cases.filters.all")
         : viewState.statusFilters
-          .map((status) => STATUS_FILTER_OPTIONS.find((option) => option.value === status)?.label ?? status)
+          .map((status) => statusFilterOptions().find((option) => option.value === status)?.label ?? status)
           .join(", "),
     });
   }
   if (viewState.projectFilters.length > 0) {
     activeFilters.push({
       key: "project",
-      label: "Project",
+      label: t("area.pipelines-cases.cases.filters.project"),
       value: viewState.projectFilters
-        .map((projectId) => projectId === ALL ? "No project" : projectName.get(projectId) ?? "Project")
+        .map((projectId) => projectId === ALL ? t("area.pipelines-cases.cases.noProject") : projectName.get(projectId) ?? t("area.pipelines-cases.cases.filters.project"))
         .join(", "),
     });
   }
   if (viewState.labelFilter !== ALL) {
-    const name = (labelsQuery.data ?? []).find((l) => l.id === viewState.labelFilter)?.name ?? "Label";
-    activeFilters.push({ key: "label", label: "Label", value: name });
+    const name = (labelsQuery.data ?? []).find((l) => l.id === viewState.labelFilter)?.name ?? t("area.pipelines-cases.cases.filters.label");
+    activeFilters.push({ key: "label", label: t("area.pipelines-cases.cases.filters.label"), value: name });
   }
 
   function removeFilter(key: string) {
@@ -1194,8 +1218,8 @@ export function Cases() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <h1 className="text-xl font-bold">Cases</h1>
-          <Badge variant="secondary">Experimental</Badge>
+          <h1 className="text-xl font-bold">{t("area.pipelines-cases.cases.title")}</h1>
+          <Badge variant="secondary">{t("area.pipelines-cases.cases.experimental")}</Badge>
         </div>
       </div>
 
@@ -1209,9 +1233,9 @@ export function Cases() {
               <Input
                 value={viewState.search}
                 onChange={(e) => updateView({ search: e.target.value })}
-                placeholder="Search cases..."
+                placeholder={t("area.pipelines-cases.cases.searchPlaceholder")}
                 className="pl-7 text-xs sm:text-sm"
-                aria-label="Search cases"
+                aria-label={t("area.pipelines-cases.cases.searchAria")}
                 data-page-search-target="true"
               />
             </div>
@@ -1222,8 +1246,8 @@ export function Cases() {
                 variant="outline"
                 size="icon"
                 className={cn("h-8 w-8 shrink-0", viewState.treeView && "bg-accent")}
-                title={viewState.treeView ? "Show flat case list" : "Show parent/children tree"}
-                aria-label={viewState.treeView ? "Show flat case list" : "Show parent/children tree"}
+                title={viewState.treeView ? t("area.pipelines-cases.cases.toolbar.showFlat") : t("area.pipelines-cases.cases.toolbar.showTree")}
+                aria-label={viewState.treeView ? t("area.pipelines-cases.cases.toolbar.showFlat") : t("area.pipelines-cases.cases.toolbar.showTree")}
                 aria-pressed={viewState.treeView}
                 onClick={() => updateView({ treeView: !viewState.treeView })}
               >
@@ -1236,13 +1260,13 @@ export function Cases() {
                 onReset={resetColumns}
               />
 
-              <CaseToolbarButton icon={Filter} title="Filters" active={hasActiveFilters}>
+              <CaseToolbarButton icon={Filter} title={t("area.pipelines-cases.cases.toolbar.filters")} active={hasActiveFilters}>
                 <PopoverContent align="end" className="w-72 p-3">
                   <div className="grid gap-3">
-                    <FilterField label="Type">
+                    <FilterField label={t("area.pipelines-cases.cases.filters.type")}>
                       <div className="max-h-40 overflow-y-auto">
                         {distinctTypes.length === 0 ? (
-                          <p className="px-1 py-1 text-xs text-muted-foreground">No types yet</p>
+                          <p className="px-1 py-1 text-xs text-muted-foreground">{t("area.pipelines-cases.cases.filters.noTypes")}</p>
                         ) : distinctTypes.map((type) => (
                           <FilterCheckboxRow
                             key={type}
@@ -1253,9 +1277,9 @@ export function Cases() {
                         ))}
                       </div>
                     </FilterField>
-                    <FilterField label="Status">
+                    <FilterField label={t("area.pipelines-cases.cases.filters.status")}>
                       <div>
-                        {STATUS_FILTER_OPTIONS.map((option) => (
+                        {statusFilterOptions().map((option) => (
                           <FilterCheckboxRow
                             key={option.value}
                             label={option.label}
@@ -1265,10 +1289,10 @@ export function Cases() {
                         ))}
                       </div>
                     </FilterField>
-                    <FilterField label="Project">
+                    <FilterField label={t("area.pipelines-cases.cases.filters.project")}>
                       <div className="max-h-40 overflow-y-auto">
                         <FilterCheckboxRow
-                          label="No project"
+                          label={t("area.pipelines-cases.cases.noProject")}
                           checked={viewState.projectFilters.includes(ALL)}
                           onCheckedChange={(checked) => toggleStringFilter("projectFilters", ALL, checked)}
                         />
@@ -1282,10 +1306,10 @@ export function Cases() {
                         ))}
                       </div>
                     </FilterField>
-                    <FilterField label="Label">
+                    <FilterField label={t("area.pipelines-cases.cases.filters.label")}>
                       <div className="max-h-40 overflow-y-auto">
                         <FilterCheckboxRow
-                          label="All labels"
+                          label={t("area.pipelines-cases.cases.filters.allLabels")}
                           checked={viewState.labelFilter === ALL}
                           onCheckedChange={(checked) => {
                             if (checked) updateView({ labelFilter: ALL });
@@ -1302,7 +1326,7 @@ export function Cases() {
                       </div>
                     </FilterField>
                     <Button type="button" variant="ghost" size="sm" onClick={clearFilters} disabled={!hasActiveFilters}>
-                      Clear filters
+                      {t("area.pipelines-cases.cases.filters.clear")}
                     </Button>
                   </div>
                 </PopoverContent>
@@ -1314,13 +1338,13 @@ export function Cases() {
                 onChange={updateView}
               />
 
-              <CaseToolbarButton icon={Layers} title="Group" active={viewState.groupBy !== "type"}>
+              <CaseToolbarButton icon={Layers} title={t("common.group")} active={viewState.groupBy !== "type"}>
                 <PopoverContent align="end" className="w-44 p-2">
                   {([
-                    ["type", "Type"],
-                    ["project", "Project"],
-                    ["status", "Status"],
-                    ["none", "None"],
+                    ["type", t("area.pipelines-cases.cases.filters.type")],
+                    ["project", t("area.pipelines-cases.cases.filters.project")],
+                    ["status", t("area.pipelines-cases.cases.filters.status")],
+                    ["none", t("common.none")],
                   ] as const).map(([value, label]) => (
                     <button
                       key={value}
@@ -1343,7 +1367,7 @@ export function Cases() {
           <FilterBar filters={activeFilters} onRemove={removeFilter} onClear={clearFilters} />
 
           {filtered.length === 0 ? (
-            <EmptyState icon={SearchX} message="No cases match these filters." action="Clear filters" onAction={clearFilters} />
+            <EmptyState icon={SearchX} message={t("area.pipelines-cases.cases.noMatch")} action={t("area.pipelines-cases.cases.filters.clear")} onAction={clearFilters} />
           ) : (
             <div ref={caseListRef}>
               <CaseColumnHeader visibleColumnSet={visibleColumnSet} trailingColumns={trailingColumns} />

@@ -11,7 +11,7 @@
 // that differ from the stored values (the core merges a partial body and
 // records every changed field in the changelog). Editing is board-only on
 // the server; a 403 on GET shows the denied state like the other System
-// sections. The contract types come from @paperclipai/shared so the UI
+// sections. The contract types come from @myrmidon/shared so the UI
 // cannot drift from the core.
 
 import { useEffect, useMemo, useState } from "react";
@@ -22,7 +22,7 @@ import type {
   TelegramEscalationChannel,
   TelegramNotifySettings,
   TelegramProactivityMode,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { telegramNotifyApi, telegramNotifyQueryKey } from "@/api/myrmidonTelegramNotify";
 import { useCompany } from "@/context/CompanyContext";
 import { formatDateTime } from "@/lib/utils";
@@ -432,8 +432,11 @@ export function Ui2TelegramNotifySettings() {
             <span className="ui2-tn-field-name text-sm">{t("ui2.settings.tgNotify.proactivity.rarelyMaxPerDay")}</span>
             <input
               type="number"
-              min={0}
-              max={1000}
+              // myrmidon(1.6.1-TG-NOTIFY): the single 1–50 range of the merged
+              // proactivity contract (pull request 397); see the shared
+              // contract module for the provenance note.
+              min={1}
+              max={50}
               className="ui2-tn-number-input w-32 rounded-md border border-input bg-background px-2 py-1 text-right font-mono text-sm tabular-nums"
               value={effective("proactivity", "rarelyMaxPerDay")}
               disabled={effective("proactivity", "mode") !== "rarely"}

@@ -5,7 +5,7 @@ import { createServer as createNetServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   connectionGrants,
   smokeRuns,
@@ -17,7 +17,7 @@ import {
   toolProfileEntries,
   toolProfiles,
   toolStdioCommandTemplates,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   CreateSmokeRun,
   DeploymentExposure,
@@ -27,11 +27,13 @@ import type {
   SmokeRun,
   SmokeRunStep,
   UpdateSmokeRun,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { instanceSettingsService } from "./instance-settings.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
+// myrmidon(DB-PERF-C-P4): the smoke lab writes profiles, entries and bindings directly.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 
 export const SMOKE_LAB_DEMO_EMAIL = "smoke@paperclip.test";
 export const SMOKE_LAB_DEMO_PASSWORD = "smoke-password";
@@ -956,6 +958,8 @@ export function smokeLabService(db: Db, options: {
         createdAt: now,
       }).returning())[0];
 
+    // myrmidon(DB-PERF-C-P4): the lab rewrote a profile, its entries and its binding.
+    invalidateToolPolicyCache(db, input.companyId);
     return { profile, profileEntries, profileBinding };
   }
 
@@ -1251,6 +1255,8 @@ export function smokeLabService(db: Db, options: {
         inArray(toolApplications.applicationKey, [HTTP_APP_KEY, STDIO_APP_KEY]),
       ));
       await db.delete(toolProfiles).where(and(eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, PROFILE_KEY)));
+      // myrmidon(DB-PERF-C-P4): the lab removed its own profile rows.
+      invalidateToolPolicyCache(db, companyId);
       return { reset: true };
     },
   };

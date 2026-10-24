@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useTranslation } from "@/i18n";
 import { useParams } from "@/lib/router";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -10,19 +11,20 @@ export function ProfileDetailRoute() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const params = useParams<{ profileId?: string }>();
+  const { t } = useTranslation();
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
-      { label: "Access profiles", href: advancedTabHref("profiles") },
-      { label: "Profile detail" },
+      { label: selectedCompany?.name ?? t("area.tools-profiles-2.profile-detail-route.breadcrumbCompany"), href: "/dashboard" },
+      { label: t("area.tools-profiles-2.profile-detail-route.breadcrumbApps"), href: "/apps" },
+      { label: t("area.tools-profiles-2.profile-detail-route.breadcrumbProfiles"), href: advancedTabHref("profiles") },
+      { label: t("area.tools-profiles-2.profile-detail-route.breadcrumbDetail") },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs, selectedCompany?.name, t]);
 
   if (!selectedCompanyId || !params.profileId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization and profile.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("area.tools-profiles-2.profile-detail-route.selectPrompt")}</div>;
   }
 
   return (

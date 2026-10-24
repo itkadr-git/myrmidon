@@ -3,11 +3,11 @@ import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it, vi, afterEach } from "vitest";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
 import {
   GITHUB_LAUNCHER_PAYLOAD_VERSION,
   githubLauncherProgramFiles,
-} from "@paperclipai/adapter-utils/github-launcher";
+} from "@myrmidon/adapter-utils/github-launcher";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import {
@@ -24,7 +24,7 @@ import {
 // see the tool.completed preview-caching test below.
 import { parseHermesStdoutLine } from "../../ui/parse-stdout.js";
 // myrmidon(1.6.5 BOT-DISK-H5a): the C6 contract fixture is the oracle for the
-// workspace body field. This package does not depend on @paperclipai/shared
+// workspace body field. This package does not depend on @myrmidon/shared
 // (and tsc's rootDir forbids importing it by path), so the schema's three
 // field formats are restated in runWorkspaceFieldSchema below; the contract
 // test in packages/shared keeps the fixture and the real schema in lockstep.
@@ -148,6 +148,12 @@ describe("resolveSessionKey", () => {
         issueId: "issue-1",
       }),
     ).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+  });
+
+  it("starts a fresh gateway session for a server-assigned generation (OPE-6168)", () => {
+    const base = { strategy: "issue" as const, companyId: "company-1", agentId: "agent-1", runId: "run-1", issueId: "issue-1" };
+    expect(resolveSessionKey({ ...base, generation: 1 })).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+    expect(resolveSessionKey({ ...base, generation: 3 })).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1:g3");
   });
 
   it("omits the session key for none strategy", () => {
@@ -508,6 +514,42 @@ describe("execute", () => {
 
   const wsBaseConfig = { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 };
 
+  // myrmidon(F06-D): a chat's `/model` and `/think` choice is stored as an issue
+  // override; heartbeat merges it over the agent card into `ctx.config` before
+  // the adapter runs (heartbeat.ts: `mergedConfig`). The run the next turn
+  // makes must carry exactly that model and effort — this pins the adapter's
+  // half, so the owner-visible chain «button → override → next run» has a test
+  // on both sides.
+  it("sends the model and the reasoning effort of the merged config as the run's model and model_options", async () => {
+    const body = await runAndReadBody(
+      makeCtx({ ...wsBaseConfig, model: "zai-glm-5.3", effort: "high" }),
+    );
+    expect(body.model).toBe("zai-glm-5.3");
+    expect(body.model_options).toEqual({ reasoning: { effort: "high" } });
+  });
+
+  // myrmidon(F06-D): heartbeat merges `{ ...card, ...issueAssigneeOverrides.adapterConfig }`
+  // into ctx.config. A gateway model chosen in a native-provider card's chat is
+  // stored together with the provider that routes it (overrides.ts,
+  // providerOverrideForModel), so the pair on the wire is never the card's old
+  // provider + the new gateway model.
+  it("sends the provider and model of a chat override merged over a native-provider card as one pair", async () => {
+    const card = { ...wsBaseConfig, provider: "anthropic", model: "claude-own" };
+    const override = { model: "zai-glm-5.3", provider: "custom" };
+    const body = await runAndReadBody(makeCtx({ ...card, ...override }));
+    expect(body.model).toBe("zai-glm-5.3");
+    expect(body.provider).toBe("custom");
+    // The same override without the reconciled provider is the broken pair.
+    const broken = await runAndReadBody(makeCtx({ ...card, model: "zai-glm-5.3" }));
+    expect(broken.provider).toBe("anthropic");
+  });
+
+  it("sends no model when the merged config names none (the agent's profile decides)", async () => {
+    const body = await runAndReadBody(makeCtx({ ...wsBaseConfig }));
+    expect("model" in body).toBe(false);
+    expect("model_options" in body).toBe(false);
+  });
+
   it("sends workspace {key, repo, baseRef} that passes the C6 schema for a task with a repository", async () => {
     const ctx = makeCtx(wsBaseConfig);
     ctx.context.paperclipWake = { issue: { identifier: "ABC-101", title: "T" } };
@@ -547,6 +589,31 @@ describe("execute", () => {
     if (workspace) ctx.context.paperclipWorkspace = workspace;
     const body = await runAndReadBody(ctx);
     expect("workspace" in body).toBe(false);
+  });
+
+  it("falls back to the instance default repository when the project gives none, without a baseRef", async () => {
+    for (const workspace of [undefined, { repoUrl: "" }, { repoUrl: "https://gitlab.com/acme/widgets.git", repoRef: "main" }]) {
+      const ctx = makeCtx(wsBaseConfig);
+      ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+      if (workspace) ctx.context.paperclipWorkspace = workspace;
+      ctx.context.paperclipBotDiskDefaultRepo = "itkadr-git/myrmidon";
+      const body = await runAndReadBody(ctx);
+      expect(body.workspace).toEqual({ key: "ABC-101", repo: "itkadr-git/myrmidon" });
+      expect(runWorkspaceFieldSchema.safeParse(body.workspace).success).toBe(true);
+    }
+  });
+
+  it("prefers the project repository over the default, and ignores an invalid default", async () => {
+    const withBoth = makeCtx(wsBaseConfig);
+    withBoth.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    withBoth.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets", repoRef: "main" };
+    withBoth.context.paperclipBotDiskDefaultRepo = "itkadr-git/myrmidon";
+    expect((await runAndReadBody(withBoth)).workspace).toEqual(fixture);
+
+    const invalid = makeCtx(wsBaseConfig);
+    invalid.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    invalid.context.paperclipBotDiskDefaultRepo = "not a repo";
+    expect("workspace" in (await runAndReadBody(invalid))).toBe(false);
   });
 
   it("drops an invalid baseRef instead of sending a body the gateway would reject", async () => {
@@ -1175,6 +1242,23 @@ describe("mapFinalResultForTest", () => {
     expect(result.errorFamily).toBeUndefined();
   });
 
+  it("marks a provider input-length rejection as input_overflow, not transient (OPE-6168)", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-1",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error: "InternalError.Algo.InvalidParameter: Range of input length should be [1, 1048576]",
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorFamily).toBe("input_overflow");
+  });
+
   // myrmidon(RECOVERY-HERMES-GATEWAY): the upstream-restart signature is the
   // only failed-run family that is transient; every other failure keeps the
   // vendor's hold-and-ask behavior.
@@ -1280,6 +1364,116 @@ describe("mapFinalResultForTest", () => {
     expect(result.resultJson?.result).toHaveLength(9_000);
     expect(result.resultJson?.output).toBe(longAnswer);
   });
+
+  // myrmidon(F06-MODEL-TELEMETRY): the run journal's model used to come from
+  // the gateway payload alone, so a terminal answer that named no model was
+  // recorded as "unknown". The payload still wins; the LiteLLM route name is
+  // the second source; the run's configured model is the last resort.
+  it("takes the model the terminal payload reports", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-model",
+        status: "completed",
+        payload: { status: "completed", model: "route-a", model_group: "route-b" },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      configuredModel: "card-model",
+    });
+
+    expect(result.model).toBe("route-a");
+  });
+
+  it("takes the payload's model_group when it names no model", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-model",
+        status: "completed",
+        payload: { status: "completed", model_group: "route-b" },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      configuredModel: "card-model",
+    });
+
+    expect(result.model).toBe("route-b");
+  });
+
+  it("reads model_group from inside usage too", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-model",
+        status: "completed",
+        payload: { status: "completed", usage: { model_group: "route-b" } },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      configuredModel: "card-model",
+    });
+
+    expect(result.model).toBe("route-b");
+  });
+
+  it("falls back to the run's configured model when the payload names none", () => {
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-model", status: "completed", payload: { status: "completed" } },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      configuredModel: "card-model",
+    });
+
+    expect(result.model).toBe("card-model");
+  });
+
+  it("treats an empty or blank payload model as absent", () => {
+    const blank = mapFinalResultForTest({
+      terminal: {
+        runId: "run-model",
+        status: "completed",
+        payload: { status: "completed", model: "   ", usage: { model: "" } },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      configuredModel: "card-model",
+    });
+    const empty = mapFinalResultForTest({
+      terminal: { runId: "run-model", status: "completed", payload: { status: "completed", model: "" } },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(blank.model).toBe("card-model");
+    expect(empty.model).toBeNull();
+  });
+
+  it("does not read the telemetry sentinel back as a model", () => {
+    const fallback = mapFinalResultForTest({
+      terminal: {
+        runId: "run-model",
+        status: "completed",
+        payload: { status: "completed", model: "unknown", model_group: "unknown" },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      configuredModel: "card-model",
+    });
+    const alone = mapFinalResultForTest({
+      terminal: { runId: "run-model", status: "completed", payload: { status: "completed", model: "unknown" } },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(fallback.model).toBe("card-model");
+    expect(alone.model).toBeNull();
+  });
 });
 
 // myrmidon(G4): defaults, cancellation, approvals, per-run model, instructions
@@ -1344,6 +1538,44 @@ describe("execute — operator cancellation (G4)", () => {
       state: "acknowledged",
       forced: false,
     });
+  });
+
+  it("logs the cancellation correlation id and sender when it stops the gateway run", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-cancel-trace", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        controller.abort();
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/stop")) {
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      if (init?.method === "GET") {
+        return new Response(JSON.stringify({ status: "cancelled", last_event: "run.cancelled" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 30 });
+    ctx.signal = controller.signal;
+    ctx.paperclipCancellation = {
+      current: {
+        correlationId: "corr-trace-1",
+        source: { code: "board_operator", endpoint: "POST /api/heartbeat-runs/:runId/cancel", actor: "user-42" },
+        reason: "Cancelled by a board operator",
+      },
+    };
+    ctx.onCancellationReady = vi.fn(async () => undefined);
+
+    await execute(ctx);
+
+    const logText = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line)).join("\n");
+    expect(logText).toContain("stop requested for run run-cancel-trace correlationId=corr-trace-1 sender=user-42");
   });
 
   it("does not claim cancellation acknowledged when the post-stop status check cannot verify termination", async () => {
@@ -2148,6 +2380,49 @@ describe("execute — per-run model/provider/effort (G4)", () => {
     expect(body.model).toBeUndefined();
     expect(body.provider).toBeUndefined();
     expect(body.model_options).toBeUndefined();
+  });
+});
+
+// myrmidon(F06-MODEL-TELEMETRY): the run's model reaches the run journal
+// through the adapter result, so a completed turn whose gateway answer names no
+// model must still report the model the card configured.
+describe("execute — run model telemetry (F06)", () => {
+  const runCompleted = (data: Record<string, unknown>) => new Response(
+    sseStream(["event: run.completed", `data: ${JSON.stringify({ status: "completed", output: "done", ...data })}`, ""].join("\n")),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+  const fetchMockFor = (terminal: () => Response) => vi.fn(async (input: RequestInfo | URL) => (
+    String(input).endsWith("/v1/runs")
+      ? new Response(JSON.stringify({ run_id: "run-model-tel", status: "started" }), { status: 200 })
+      : terminal()
+  ));
+
+  it("reports the card's model when the terminal payload names none", async () => {
+    vi.stubGlobal("fetch", fetchMockFor(() => runCompleted({})));
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "test-key",
+      timeoutSec: 5,
+      model: "provider-a/model-a",
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.model).toBe("provider-a/model-a");
+  });
+
+  it("still prefers the model the terminal payload reports", async () => {
+    vi.stubGlobal("fetch", fetchMockFor(() => runCompleted({ model_group: "route-from-gateway" })));
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "test-key",
+      timeoutSec: 5,
+      model: "provider-a/model-a",
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.model).toBe("route-from-gateway");
   });
 });
 
@@ -3014,5 +3289,72 @@ describe("prompt breakdown (myrmidon 1.6.5 PROMPT-BUDGET A)", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("model input limit (OPE-6168)", () => {
+  function completedFetchMock() {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: run.completed",
+              'data: {"status":"completed","output":"done","session_id":"session-1"}',
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+  }
+
+  async function sentBody(config: Record<string, unknown>, taskMarkdown: string) {
+    const fetchMock = completedFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5, ...config });
+    ctx.context = { ...ctx.context, paperclipTaskMarkdown: taskMarkdown };
+    const result = await execute(ctx);
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    return { result, ctx, body: JSON.parse(String((createCall?.[1] as RequestInit).body)) as Record<string, string> };
+  }
+
+  it("trims a request over the model input budget before sending it", async () => {
+    const huge = `# Task\n\n${"Work on the thing. ".repeat(10_000)}END-OF-TASK`;
+    const { result, ctx, body } = await sentBody(
+      { inputLimit: { model: "m", source: "catalog", maxInputTokens: 4_000, charsPerToken: 3, safety: 0.9 } },
+      huge,
+    );
+    expect(result.exitCode).toBe(0);
+    // budget = 4000 * 3 * 0.9 = 10 800 chars for instructions + input together
+    expect(body.input.length + body.instructions.length).toBeLessThanOrEqual(10_800);
+    expect(body.input).toContain("You are Hermes, an AI agent employee");
+    expect(body.input).toContain("characters omitted");
+    const logs = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[1])).join("");
+    expect(logs).toContain("input limit:");
+  });
+
+  it("sends a request that fits the budget unchanged", async () => {
+    const small = "# Task\n\nShort brief.";
+    const { body } = await sentBody(
+      { inputLimit: { model: "m", source: "catalog", maxInputTokens: 1_000_000 } },
+      small,
+    );
+    expect(body.input).toContain("Short brief.");
+    expect(body.input).not.toContain("characters omitted");
+  });
+
+  it("does nothing without a limit in the config", async () => {
+    const huge = `# Task\n\n${"Work on the thing. ".repeat(10_000)}END-OF-TASK`;
+    const { body } = await sentBody({}, huge);
+    expect(body.input).toContain("END-OF-TASK");
+    expect(body.input).not.toContain("characters omitted");
   });
 });

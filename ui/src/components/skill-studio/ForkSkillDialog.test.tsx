@@ -9,7 +9,7 @@ import type {
   CompanySkillForkPrecheckResult,
   CompanySkillForkSummary,
   CompanySkillUsageAgent,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ForkSkillDialog } from "./ForkSkillDialog";
 
@@ -141,6 +141,7 @@ function makeSkill(over: Partial<CompanySkillDetail> = {}): CompanySkillDetail {
     sourcePath: null,
     currentVersion: null,
     starredByCurrentActor: false,
+    requiredEnv: [],
     existingForks: [],
     ...over,
   };

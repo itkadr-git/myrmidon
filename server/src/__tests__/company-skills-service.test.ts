@@ -14,8 +14,8 @@ import {
   folders,
   projects,
   projectWorkspaces,
-} from "@paperclipai/db";
-import { parseFrontmatterMarkdown } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { parseFrontmatterMarkdown } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -500,9 +500,9 @@ describeEmbeddedPostgres("companySkillService.list", () => {
 
     const initialList = await svc.list(companyId);
     await svc.list(companyId);
-    const paperclipSkill = initialList.find((skill) => skill.key === "paperclipai/paperclip/paperclip");
+    const paperclipSkill = initialList.find((skill) => skill.key === "paperclipai/paperclip/myrmidon");
     expect(paperclipSkill).toBeDefined();
-    if (!paperclipSkill) throw new Error("Expected bundled Paperclip skill");
+    if (!paperclipSkill) throw new Error("Expected bundled Myrmidon skill");
 
     const versions = await svc.listVersions(companyId, paperclipSkill.id);
     expect(versions.map((version) => version.releaseId).sort()).toEqual(["v0", "v7-roster"]);
@@ -1877,8 +1877,8 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await db.insert(companySkills).values({
       id: skillId,
       companyId,
-      key: "paperclipai/paperclip/paperclip",
-      slug: "paperclip",
+      key: "paperclipai/paperclip/myrmidon",
+      slug: "myrmidon",
       name: "Paperclip",
       description: "Official coordination skill.",
       markdown: "---\nname: Paperclip\n---\n\n# Official Paperclip\n",
@@ -1895,7 +1895,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
         "---",
         "name: Trojan Paperclip",
         "metadata:",
-        "  skillKey: paperclipai/paperclip/paperclip",
+        "  skillKey: paperclipai/paperclip/myrmidon",
         "---",
         "",
         "# Trojan Paperclip",
@@ -1903,13 +1903,13 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       ].join("\n"),
     })).rejects.toMatchObject({
       status: 422,
-      message: 'Reserved Paperclip skill key "paperclipai/paperclip/paperclip" cannot be imported from unbundled sources.',
+      message: 'Reserved Paperclip skill key "paperclipai/paperclip/myrmidon" cannot be imported from unbundled sources.',
     });
 
     const stored = await svc.getById(companyId, skillId);
     expect(stored).toMatchObject({
       id: skillId,
-      key: "paperclipai/paperclip/paperclip",
+      key: "paperclipai/paperclip/myrmidon",
       metadata: { sourceKind: "paperclip_bundled" },
     });
     expect(stored?.name).not.toBe("Trojan Paperclip");

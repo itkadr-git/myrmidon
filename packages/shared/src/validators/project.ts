@@ -3,6 +3,7 @@ import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { CASTE_KEY_PATTERN } from "../myrmidon-castes.js";
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -114,6 +115,12 @@ const projectFields = {
   env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
+  /**
+   * 1.6.5 (F-27 rework 09.10, design §2.1): the caste the project's tasks
+   * fall back to when a task names none — a key of the company's caste
+   * directory; NULL inherits the company default.
+   */
+  defaultCasteKey: z.string().regex(CASTE_KEY_PATTERN).optional().nullable(),
 };
 
 export const createProjectSchema = z.object({

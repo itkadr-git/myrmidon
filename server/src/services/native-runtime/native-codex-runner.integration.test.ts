@@ -17,7 +17,7 @@ import {
   issues,
   nativeRunFinalizations,
   nativeRunResults,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 
 import {
   getEmbeddedPostgresTestSupport,

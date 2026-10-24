@@ -28,7 +28,7 @@ import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { and, desc, eq, gte } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   companies,
@@ -36,17 +36,17 @@ import {
   pluginLogs,
   pluginWebhookDeliveries,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   PluginApiRouteDeclaration,
   PluginStatus,
   PaperclipPluginManifestV1,
   PluginBridgeErrorCode,
   PluginLauncherRenderContextSnapshot,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   PLUGIN_STATUSES,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import {
@@ -64,8 +64,8 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
-import type { PluginPerformActionActorContext, ToolRunContext } from "@paperclipai/plugin-sdk";
-import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
+import type { PluginPerformActionActorContext, ToolRunContext } from "@myrmidon/plugin-sdk";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@myrmidon/plugin-sdk";
 import {
   assertAuthenticated,
   assertBoard,
@@ -182,9 +182,9 @@ const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXPERIMENTAL_BUNDLED_PLUGIN_PACKAGE_NAMES = new Set([
-  "@paperclipai/plugin-llm-wiki",
-  "@paperclipai/plugin-modal",
-  "@paperclipai/plugin-workspace-diff",
+  "@myrmidon/plugin-llm-wiki",
+  "@myrmidon/plugin-modal",
+  "@myrmidon/plugin-workspace-diff",
 ]);
 /**
  * Cached bundled-plugin discovery. Static metadata (name, key, display, paths)
@@ -786,6 +786,8 @@ export function pluginRoutes(
         agentId: null,
         runId: req.actor.runId ?? null,
         companyId: scopedCompanyId,
+        // myrmidon(PLUGIN-INSTANCE-ADMIN): the host-verified instance-admin flag.
+        isInstanceAdmin: req.actor.isInstanceAdmin === true,
       };
     }
     return {
@@ -1006,7 +1008,7 @@ export function pluginRoutes(
    *
    * Response: `ToolExecutionResult`
    * Errors:
-   * - 400 if request validation fails
+   * - 400 if request validation fails, or the registered tool has no worker handler (`code: "UNKNOWN_ACTION"`)
    * - 404 if tool is not found
    * - 501 if tool dispatcher is not configured
    * - 502 if the plugin worker is unavailable or the RPC call fails
@@ -1014,7 +1016,7 @@ export function pluginRoutes(
   router.post("/plugins/tools/execute", async (req, res) => {
     assertBoardOrAgent(req);
 
-    if (!toolDeps) {
+    if (!toolDeps && !(req.actor.type === "agent" && toolGatewayDeps)) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
       return;
     }
@@ -1072,6 +1074,18 @@ export function pluginRoutes(
           return;
         }
         const message = err instanceof Error ? err.message : String(err);
+        // Unknown tool key inside the plugin worker is a caller error (400),
+        // not a worker failure — mirror the board path below so agents get
+        // the same UNKNOWN_ACTION contract.
+        const rpcCode = (err as { code?: unknown }).code;
+        if (rpcCode === PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION) {
+          res.status(400).json({
+            error: message,
+            code: "UNKNOWN_ACTION",
+            details: (err as { data?: unknown }).data,
+          });
+          return;
+        }
         if (message.includes("not running") || message.includes("worker")) {
           res.status(502).json({ error: message });
         } else {
@@ -1082,14 +1096,14 @@ export function pluginRoutes(
     }
 
     // Verify the tool exists
-    const registeredTool = toolDeps.toolDispatcher.getTool(tool);
+    const registeredTool = toolDeps?.toolDispatcher.getTool(tool);
     if (!registeredTool) {
       res.status(404).json({ error: `Tool "${tool}" not found` });
       return;
     }
 
     try {
-      const result = await toolDeps.toolDispatcher.executeTool(
+      const result = await toolDeps!.toolDispatcher.executeTool(
         tool,
         parameters ?? {},
         runContext,
@@ -1097,6 +1111,20 @@ export function pluginRoutes(
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+
+      // Unknown tool inside the plugin worker is a caller error (400), not a
+      // worker failure — the dispatcher lists registered tools up front, so a
+      // tool that exists in the registry but has no worker handler is the
+      // caller asking the wrong plugin.
+      const rpcCode = (err as { code?: unknown }).code;
+      if (rpcCode === PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION) {
+        res.status(400).json({
+          error: message,
+          code: "UNKNOWN_ACTION",
+          details: (err as { data?: unknown }).data,
+        });
+        return;
+      }
 
       // Distinguish between "worker not running" (502) and other errors (500)
       if (message.includes("not running") || message.includes("worker")) {
@@ -1316,6 +1344,12 @@ export function pluginRoutes(
             message: err.message,
             details: err.data,
           };
+        case PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION:
+          return {
+            code: "UNKNOWN_ACTION",
+            message: err.message,
+            details: err.data,
+          };
         default:
           return {
             code: "UNKNOWN",
@@ -1392,6 +1426,8 @@ export function pluginRoutes(
    * - 400 if request validation fails
    * - 404 if plugin not found
    * - 501 if bridge deps are not configured
+   * - 400 if the requested key is unknown to the plugin (`code: "UNKNOWN_ACTION"`,
+   *   `details.known` lists the keys the plugin actually serves)
    * - 502 if the worker is unavailable or returns an error
    *
    * @see PLUGIN_SPEC.md §13.8 — `getData`
@@ -1458,7 +1494,7 @@ export function pluginRoutes(
         bridgeMethod: "getData",
         dataKey: body.key,
       });
-      res.status(502).json(bridgeError);
+      res.status(bridgeError.code === "UNKNOWN_ACTION" ? 400 : 502).json(bridgeError);
     }
   });
 
@@ -1485,6 +1521,8 @@ export function pluginRoutes(
    * - 400 if request validation fails
    * - 404 if plugin not found
    * - 501 if bridge deps are not configured
+   * - 400 if the requested key is unknown to the plugin (`code: "UNKNOWN_ACTION"`,
+   *   `details.known` lists the keys the plugin actually serves)
    * - 502 if the worker is unavailable or returns an error
    *
    * @see PLUGIN_SPEC.md §13.9 — `performAction`
@@ -1551,7 +1589,7 @@ export function pluginRoutes(
         bridgeMethod: "performAction",
         actionKey: body.key,
       });
-      res.status(502).json(bridgeError);
+      res.status(bridgeError.code === "UNKNOWN_ACTION" ? 400 : 502).json(bridgeError);
     }
   });
 
@@ -1579,6 +1617,8 @@ export function pluginRoutes(
    * Errors:
    * - 404 if plugin not found
    * - 501 if bridge deps are not configured
+   * - 400 if the requested key is unknown to the plugin (`code: "UNKNOWN_ACTION"`,
+   *   `details.known` lists the keys the plugin actually serves)
    * - 502 if the worker is unavailable or returns an error
    *
    * @see PLUGIN_SPEC.md §13.8 — `getData`
@@ -1645,7 +1685,7 @@ export function pluginRoutes(
         bridgeMethod: "getData",
         dataKey: key,
       });
-      res.status(502).json(bridgeError);
+      res.status(bridgeError.code === "UNKNOWN_ACTION" ? 400 : 502).json(bridgeError);
     }
   });
 
@@ -1669,6 +1709,8 @@ export function pluginRoutes(
    * Errors:
    * - 404 if plugin not found
    * - 501 if bridge deps are not configured
+   * - 400 if the requested key is unknown to the plugin (`code: "UNKNOWN_ACTION"`,
+   *   `details.known` lists the keys the plugin actually serves)
    * - 502 if the worker is unavailable or returns an error
    *
    * @see PLUGIN_SPEC.md §13.9 — `performAction`
@@ -1735,7 +1777,7 @@ export function pluginRoutes(
         bridgeMethod: "performAction",
         actionKey: key,
       });
-      res.status(502).json(bridgeError);
+      res.status(bridgeError.code === "UNKNOWN_ACTION" ? 400 : 502).json(bridgeError);
     }
   });
 
@@ -2215,10 +2257,11 @@ export function pluginRoutes(
    *
    * Request body (optional):
    * - version: Target version (defaults to latest)
+   * - approvedCapabilities: Exact capability names explicitly approved for this upgrade
    *
    * If the upgrade adds new capabilities, the plugin transitions to
-   * 'upgrade_pending' state for board approval. Otherwise, it goes
-   * directly to 'ready'.
+   * 'upgrade_pending' state unless `approvedCapabilities` exactly matches the
+   * added capabilities. Otherwise, it goes directly to 'ready'.
    *
    * Response: PluginRecord
    * Errors: 404 if plugin not found, 400 for lifecycle errors
@@ -2227,8 +2270,12 @@ export function pluginRoutes(
     assertInstanceAdmin(req);
     assertPluginManagementVisible();
     const { pluginId } = req.params;
-    const body = req.body as { version?: string } | undefined;
+    const body = req.body as { version?: string; approvedCapabilities?: string[] } | undefined;
     const version = body?.version;
+    const approvedCapabilities = body?.approvedCapabilities;
+    if (approvedCapabilities !== undefined && (!Array.isArray(approvedCapabilities) || approvedCapabilities.some((capability) => typeof capability !== "string"))) {
+      throw badRequest("approvedCapabilities must be an array of capability names");
+    }
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
@@ -2242,13 +2289,18 @@ export function pluginRoutes(
       // 2. Compare capabilities
       // 3. If new capabilities, mark as upgrade_pending
       // 4. Otherwise, transition to ready
-      const result = await lifecycle.upgrade(plugin.id, version);
-      await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
+      const result = approvedCapabilities === undefined
+        ? await lifecycle.upgrade(plugin.id, version)
+        : await lifecycle.upgrade(plugin.id, version, approvedCapabilities);
+      await logPluginMutationActivity(req, approvedCapabilities === undefined ? "plugin.upgraded" : "plugin.upgrade.approved", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
         previousVersion: plugin.version,
         version: result?.version ?? plugin.version,
         targetVersion: version ?? null,
+        approvedCapabilities: approvedCapabilities ?? [],
+        approvedBy: approvedCapabilities === undefined ? null : getActorInfo(req).actorId,
+        approvedAt: approvedCapabilities === undefined ? null : new Date().toISOString(),
       });
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
       res.json(result);
@@ -2555,7 +2607,9 @@ export function pluginRoutes(
     }
 
     const rawStatus = req.query.status as string | undefined;
-    const validStatuses = ["active", "paused", "failed"];
+    // `running` is the transient CAS capture state (OPE-5401 ч.B): readable
+    // for operators, never settable through this route.
+    const validStatuses = ["active", "paused", "failed", "running"];
     if (rawStatus !== undefined && !validStatuses.includes(rawStatus)) {
       res.status(400).json({
         error: `Invalid status '${rawStatus}'. Must be one of: ${validStatuses.join(", ")}`,

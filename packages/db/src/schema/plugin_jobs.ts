@@ -10,7 +10,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { plugins } from "./plugins.js";
-import type { PluginJobStatus, PluginJobRunStatus, PluginJobRunTrigger } from "@paperclipai/shared";
+import type { PluginJobStatus, PluginJobRunStatus, PluginJobRunTrigger } from "@myrmidon/shared";
 
 /**
  * `plugin_jobs` table — registration and runtime configuration for
@@ -24,7 +24,9 @@ import type { PluginJobStatus, PluginJobRunStatus, PluginJobRunTrigger } from "@
  * Status values:
  * - `active` — job is enabled and will run on schedule
  * - `paused` — job is temporarily disabled by the operator
- * - `error` — job has been disabled due to repeated failures
+ * - `failed` — job has been disabled due to repeated failures
+ * - `running` — job launch is captured by a scheduler process for the
+ *   duration of one run (cross-process CAS lease; see `captureJobForRun`)
  *
  * @see PLUGIN_SPEC.md §21.3 — `plugin_jobs`
  */

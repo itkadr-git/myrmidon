@@ -2,7 +2,7 @@
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentPermissions } from "@paperclipai/shared";
+import type { AgentPermissions } from "@myrmidon/shared";
 import { TrustPresetSection } from "./TrustPresetSection";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -48,7 +48,7 @@ describe("TrustPresetSection", () => {
 
     expect(view.text()).toContain("Trust preset");
     expect(view.text()).not.toContain("Boundary type");
-    expect(view.text()).not.toContain("Get Paperclip EE.");
+    expect(view.text()).not.toContain("Get Myrmidon EE.");
   });
 
   it("shows a selectable CE boundary editor for low-trust review", () => {
@@ -68,7 +68,7 @@ describe("TrustPresetSection", () => {
     expect(view.text()).toContain("Containment active");
     expect(view.text()).toContain("Boundary type");
     expect(view.text()).toContain("Paperclip App");
-    expect(view.text()).toContain("Get Paperclip EE.");
+    expect(view.text()).toContain("Get Myrmidon EE.");
     expect(view.text()).not.toContain("Managed by EE/API");
   });
 

@@ -41,10 +41,15 @@
 
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
-import { heartbeatRuns, litellmCostEvents, litellmModels, type Db } from "@paperclipai/db";
+import { heartbeatRuns, litellmCostEvents, litellmModels, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 // myrmidon(HERMES-USAGE-COST): the post-sweep pass that fills the vendor ledger.
 import { reconcileUnpricedCostEvents } from "./reconcile.js";
+// myrmidon(1.6.5-F-18): the empty-catalog attention signal the sweep records
+// after every model refresh; the attention feed turns the registry into a card.
+import { recordEmptyCatalogSweep } from "./attention.js";
+
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
 
 export const LITELLM_BASE_URL_ENV = "MYRMIDON_LITELLM_BASE_URL";
 export const LITELLM_KEY_SECRET_ENV = "MYRMIDON_LITELLM_KEY_SECRET";
@@ -102,8 +107,9 @@ export function readLitellmCostSettings(env: NodeJS.ProcessEnv = process.env): L
     }
   }
   let intervalSec = DEFAULT_SWEEP_INTERVAL_SEC;
-  const raw = env[LITELLM_SWEEP_INTERVAL_ENV]?.trim();
-  if (raw) {
+  const configuredInterval = env[LITELLM_SWEEP_INTERVAL_ENV] ?? liveBehaviorSetting<number | null>("litellmCostIntervalSec");
+  const raw = configuredInterval == null ? undefined : String(configuredInterval);
+  if (raw?.trim()) {
     const value = Number(raw);
     if (Number.isInteger(value) && value >= MIN_SWEEP_INTERVAL_SEC && value <= MAX_SWEEP_INTERVAL_SEC) {
       intervalSec = value;
@@ -133,11 +139,43 @@ export interface GatewayModelRow {
   maxInputTokens: number | null;
   maxOutputTokens: number | null;
   rates: Record<string, number | null>;
+  /**
+   * myrmidon(F06-D): the gateway's own declaration of what the model does
+   * (`model_info.mode`: `chat`, `embedding`, `ocr`, `image_generation`, ...).
+   * `/model` lists chat models by this declaration, not by guessing from the id.
+   */
+  mode?: string | null;
 }
 
 export interface LitellmGatewayClient {
   listSpendLogs(window: { from: Date; to: Date }): Promise<SpendLogEntry[]>;
   listModels(): Promise<GatewayModelRow[]>;
+  /**
+   * myrmidon(F06-A): the model ids `/v1/models` answers — the OpenAI-shaped
+   * list, unlike the richer `/v1/model/info` read above. Called with an agent's
+   * own gateway key it is that key's allowlist (the models this agent may run);
+   * called with the instance key it is the whole catalog. The Telegram
+   * bridge's `/model` uses it to list what a gateway agent can choose.
+   */
+  listAvailableModels(): Promise<string[]>;
+}
+
+/**
+ * myrmidon(F06-A): the `/v1/models` payload — `{ data: [{ id, ... }] }`.
+ * Returns null for any other shape, so a wrong endpoint surfaces as an error
+ * and never as "no models"; entries without a usable id are skipped and the
+ * order the gateway returned is kept.
+ */
+export function parseOpenAiModelList(payload: unknown): string[] | null {
+  const body = asRecord(payload);
+  if (!body || !Array.isArray(body.data)) return null;
+  const models: string[] = [];
+  for (const item of body.data) {
+    const row = asRecord(item);
+    const id = row && typeof row.id === "string" ? row.id.trim() : "";
+    if (id) models.push(id);
+  }
+  return models;
 }
 
 /** The gateway's v2 date parameters are UTC "YYYY-MM-DD HH:MM:SS". */
@@ -231,9 +269,23 @@ export function createLitellmGatewayClient(baseUrl: string, keyValue: string): L
           maxInputTokens: asNullableNumber(info?.max_input_tokens),
           maxOutputTokens: asNullableNumber(info?.max_tokens),
           rates: readRates(info),
+          mode: typeof info?.mode === "string" && info.mode.trim() ? info.mode.trim().toLowerCase() : null,
         });
       }
       return rows;
+    },
+
+    /**
+     * myrmidon(F06-A): `/v1/models` is the cheap per-key read — what a chat
+     * command may ask the gateway for one agent, where `/v1/model/info` above
+     * is the cost sweep's richer (admin-key) one. Kept separate on purpose:
+     * the sweep's shape may grow, this one stays the OpenAI contract.
+     */
+    async listAvailableModels() {
+      const payload = await getJson<unknown>("/v1/models");
+      const models = parseOpenAiModelList(payload);
+      if (!models) throw new Error("LLM gateway /v1/models answered in an unexpected shape");
+      return models;
     },
   };
 }
@@ -387,6 +439,8 @@ export interface SweepResult {
   /** myrmidon(HERMES-USAGE-COST): unpriced vendor cost_events filled by the reconcile pass. */
   reconciledCostEvents: number;
   window: { from: Date; to: Date };
+  /** myrmidon(FEATURES): the pass collected nothing because the gateway key secret is missing. */
+  keyMissing?: boolean;
 }
 
 /**
@@ -416,7 +470,15 @@ export async function sweepLitellmCosts(
   const keyValue = await deps.readGatewayKey(companyId, settings.keySecret);
   if (!keyValue) {
     log.warn({ companyId }, "litellm cost sweep skipped: gateway key secret not found");
-    return { collected: 0, written: 0, skippedUnattributed: 0, modelsRefreshed: null, reconciledCostEvents: 0, window };
+    return {
+      collected: 0,
+      written: 0,
+      skippedUnattributed: 0,
+      modelsRefreshed: null,
+      reconciledCostEvents: 0,
+      window,
+      keyMissing: true,
+    };
   }
 
   const entries = await deps.client(settings.baseUrl, keyValue).listSpendLogs(window);
@@ -433,6 +495,10 @@ export async function sweepLitellmCosts(
   } catch (err) {
     log.warn({ err }, "litellm cost sweep: model catalog refresh failed");
   }
+  // myrmidon(1.6.5-F-18): a successful refresh with 0 models means the
+  // accounting key is misconfigured (restricted model list) — record the
+  // operator signal; a failed read (null) proves nothing and changes nothing.
+  recordEmptyCatalogSweep(companyId, modelsRefreshed, to.toISOString());
 
   // myrmidon(HERMES-USAGE-COST): move the gateway's prices into the vendor
   // ledger so the dashboard/Costs screens stop showing unpriced $0 runs.
@@ -545,7 +611,9 @@ async function refreshModels(db: Db, models: GatewayModelRow[], seenAt: Date): P
         provider: model.provider,
         maxInputTokens: model.maxInputTokens,
         maxOutputTokens: model.maxOutputTokens,
-        rates: model.rates,
+        // myrmidon(F06-D): the declared mode rides in the rates JSON (no
+        // migration); every other key there stays a number.
+        rates: (model.mode ? { ...model.rates, mode: model.mode } : model.rates) as typeof model.rates,
         seenAt,
       })
       .onConflictDoNothing();
@@ -605,6 +673,8 @@ export interface LitellmModelView {
   outputCostPerToken: number | null;
   cacheReadInputTokenCost: number | null;
   cacheCreationInputTokenCost: number | null;
+  /** myrmidon(F06-D): the gateway's declared model mode, when the sweep saw one. */
+  mode?: string | null;
   seenAt: string;
 }
 
@@ -626,6 +696,11 @@ export async function listLitellmModels(db: Db): Promise<LitellmModelView[]> {
   return rows.map((row) => toModelView(row.model));
 }
 
+function readStoredMode(rates: unknown): string | null {
+  const mode = asRecord(rates)?.mode;
+  return typeof mode === "string" && mode.trim() ? mode.trim().toLowerCase() : null;
+}
+
 function toModelView(row: typeof litellmModels.$inferSelect): LitellmModelView {
   const rates = row.rates ?? {};
   return {
@@ -637,6 +712,7 @@ function toModelView(row: typeof litellmModels.$inferSelect): LitellmModelView {
     outputCostPerToken: rates.output_cost_per_token ?? null,
     cacheReadInputTokenCost: rates.cache_read_input_token_cost ?? null,
     cacheCreationInputTokenCost: rates.cache_creation_input_token_cost ?? null,
+    mode: readStoredMode(row.rates),
     seenAt: row.seenAt instanceof Date ? row.seenAt.toISOString() : String(row.seenAt),
   };
 }

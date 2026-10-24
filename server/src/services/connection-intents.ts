@@ -1,8 +1,8 @@
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
-import { aiConnectionBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema } from "@myrmidon/shared";
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   toolConnections,
@@ -11,7 +11,7 @@ import {
   heartbeatRuns,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   APP_STORE_DEFINITIONS,
   CONNECTABLE_APP_DEFINITIONS,
@@ -26,11 +26,12 @@ import {
   type ConnectionsSearchResult,
   type ToolApplication,
   type ToolConnection,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { toolAccessService } from "./tool-access.js";
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js"; // myrmidon(DB-PERF-C-P4)
 import { captureRunIdentity } from "./run-identity.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 
@@ -554,7 +555,7 @@ export function connectionIntentService(db: Db) {
       options.bypassCurrentMembershipCheck,
     );
     const payload = connectionIntentPayloadSchema.parse(loaded.interaction.payload);
-    return db.transaction(async (tx) => {
+    const completedIntent = await db.transaction(async (tx) => {
       const [task] = await tx.select().from(issues).where(and(eq(issues.id, loaded.issue.id), eq(issues.companyId, loaded.issue.companyId))).for("update");
       if (!task || task.assigneeAgentId !== payload.requestingAgentId || ["done", "cancelled"].includes(task.status)) throw conflict("Connection request no longer belongs to an active task");
       // Membership downgrade/removal takes the same row lock. Whichever side
@@ -682,6 +683,11 @@ export function connectionIntentService(db: Db) {
         { userId },
       );
     });
+    // myrmidon(DB-PERF-C-P4): the installs written above (profile bindings) were
+    // written on the transaction handle; drop the company snapshot only now that
+    // they are committed, or a decision in between would cache the old rows.
+    invalidateToolPolicyCache(db, loaded.issue.companyId);
+    return completedIntent;
   }
 
   async function decline(

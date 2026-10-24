@@ -1,4 +1,6 @@
 export const queryKeys = {
+  fleet: (companyId: string) => ["fleet", companyId] as const,
+  fleetSites: (companyId: string) => ["fleet-sites", companyId] as const,
   agentChats: {
     detail: (companyId: string | null, userId: string | null, agentId: string | undefined) =>
       ["agent-chat", companyId, userId, agentId] as const,

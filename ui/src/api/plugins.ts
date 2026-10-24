@@ -18,7 +18,7 @@ import type {
   PluginRecord,
   PluginConfig,
   PluginStatus,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { api } from "./client";
 
 /**
@@ -315,16 +315,11 @@ export const pluginsApi = {
   },
 
   /**
-   * Upgrade a plugin to a newer version.
-   *
-   * If the new version declares additional capabilities, the plugin is
-   * transitioned to `upgrade_pending` state awaiting operator approval.
-   *
-   * @param pluginId - UUID of the plugin to upgrade.
-   * @param version - Target version (optional; defaults to latest published).
+   * Upgrade a plugin to a newer version. Capability escalations must include
+   * the exact set returned by the server's approval error.
    */
-  upgrade: (pluginId: string, version?: string) =>
-    api.post<{ ok: boolean }>(`/plugins/${pluginId}/upgrade`, version ? { version } : {}),
+  upgrade: (pluginId: string, options?: { version?: string; approvedCapabilities?: string[] }) =>
+    api.post<PluginRecord>(`/plugins/${pluginId}/upgrade`, options ?? {}),
 
   /**
    * Returns normalized UI contribution declarations for ready plugins.

@@ -143,6 +143,8 @@ import {
   companySkillCreateSchema,
   companySkillFileDeleteSchema,
   companySkillFileUpdateSchema,
+  companySkillDiscoverSchema,
+  companySkillDiscoverResultSchema,
   companySkillImportSchema,
   companySkillProjectBrowseRequestSchema,
   companySkillProjectBrowseResultSchema,
@@ -284,11 +286,11 @@ import {
   resolveChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
   updateChatEndpointSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
   companyImportTransferDeclarationSchema,
-} from "@paperclipai/shared/company-import-transfer";
+} from "@myrmidon/shared/company-import-transfer";
 
 type JsonSchema = Record<string, unknown>;
 type OpenApiResponse = Record<string, unknown>;
@@ -1501,6 +1503,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications",
   "GET /api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications/{publicationId}/status",
   "GET /api/issues/{issueId}/chat-binding",
+  "POST /api/issues/{id}/stalled-review-decision",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -2935,6 +2938,22 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/external-sessions",
+  tags: ["agents"],
+  summary: "List external sessions for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      agentId: z.string().optional(),
+      issueId: z.string().optional(),
+      limit: z.coerce.number().int().min(1).max(200).optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/agents",
   tags: ["agents"],
@@ -3019,6 +3038,14 @@ const createAgentSecretProposalSchema = z
       description: z.string().optional().nullable(),
       value: z.string().min(1),
       justification: z.string().min(1),
+      /**
+       * Rotation target: the id of an existing active company secret this
+       * proposal's value should become the next version of. Without it, a
+       * proposal whose name collides with a live secret is rejected at create
+       * time with 409, because approving it could only ever fail with "Secret
+       * already exists" (OPE-2998).
+       */
+      rotateSecretId: z.string().guid().optional().nullable(),
     }),
     z.object({
       kind: z.literal("binding"),
@@ -3063,12 +3090,15 @@ registry.registerPath({
   path: "/api/agents/me/secret-proposals",
   tags: ["secrets"],
   summary: "Propose a company secret or agent secret binding",
+  description:
+    "Creates a pending proposal for board approval. A secret-kind proposal with `rotateSecretId` targets an existing active company secret: approving it rotates that secret to a new version instead of creating a new secret. Without `rotateSecretId`, a secret-kind proposal whose name or key collides with an existing live secret is rejected with 409 at creation.",
   request: { body: jsonBody(createAgentSecretProposalSchema) },
   responses: {
     201: r.ok(),
     400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
+    409: r.conflict,
     422: r.unprocessable,
   },
 });
@@ -3653,10 +3683,15 @@ registry.registerPath({
   tags: ["issues"],
   summary: "List issues in a company",
   description:
-    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract.",
+    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract. " +
+    "myrmidon(F16): for an agent actor the instance setting `issuesListAgentDefaults` (default on) changes the defaults — " +
+    "a request without `view` is answered as `view=compact`, `limit` defaults to 200 with a maximum of 500 (a larger value is a 400 " +
+    "advising pagination via `offset`/`afterId`), and the compact body omits `description`. An agent may pass an explicit " +
+    "`view=full` only together with an explicit `limit <= 100`. With `issuesListAgentDefaults.enabled: false` the agent behaviour is the same as the board's.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ view: z.enum(["compact"]).optional() }).passthrough(),
+    // myrmidon(F16): `view=full` is accepted for agent actors only (capped by limit).
+    query: z.object({ view: z.enum(["compact", "full"]).optional() }).passthrough(),
   },
   responses: {
     200: r.ok(),
@@ -4036,6 +4071,16 @@ registry.registerPath({
   summary: "Release an issue",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+// myrmidon(execution-hold): the explicit exit from execution_reconciliation_required
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/execution-hold/confirm-continue",
+  tags: ["issues"],
+  summary: "Confirm the failed run made no external action and continue the task",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({
@@ -5167,6 +5212,39 @@ registry.registerPath({
     200: {
       description: "Agent action audit export",
       content: { "text/csv": { schema: z.string() } },
+    },
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+// myrmidon(AUDIT-JSONL): fork-only JSONL export of the agent action audit feed.
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/audit/agent-actions.jsonl",
+  tags: ["activity"],
+  summary: "Export agent action audit entries as JSONL",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      agentId: z.string().guid().optional(),
+      responsibleUserId: z.string().min(1).optional(),
+      runId: z.string().guid().optional(),
+      entityType: z.string().min(1).optional(),
+      entityId: z.string().min(1).optional(),
+      action: z.string().min(1).optional(),
+      actorType: z.enum(["agent", "user", "system", "plugin"]).optional(),
+      from: z.string().datetime().optional(),
+      to: z.string().datetime().optional(),
+      cursor: z.string().min(1).optional(),
+      limit: z.coerce.number().int().min(1).max(200).optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Agent action audit export, one JSON object per line",
+      content: { "application/x-ndjson": { schema: z.string() } },
     },
     400: r.badRequest,
     401: r.unauthorized,
@@ -7636,6 +7714,23 @@ registry.registerPath({
     }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skills/discover",
+  tags: ["skills"],
+  summary: "Discover agentskills.io skills from a site",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companySkillDiscoverSchema),
+  },
+  responses: {
+    200: r.ok(companySkillDiscoverResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({
@@ -11269,4 +11364,145 @@ registerCurrentRoute({
   tags: ["ai-connections"], summary: "Check the local operator's subscription sign-in without saving a connection",
   body: localAiConnectionSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+// --- myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): the knowledge service (REST + MCP) ----
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/search",
+  tags: ["knowledge"], summary: "Full-text search over the company knowledge (one service for people and agents)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items",
+  tags: ["knowledge"], summary: "List knowledge items with kind/status/space filters",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}",
+  tags: ["knowledge"], summary: "Read one knowledge item by id or slug",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/revisions",
+  tags: ["knowledge"], summary: "List the revisions of a knowledge item",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/revisions/{revisionId}",
+  tags: ["knowledge"], summary: "Read one revision of a knowledge item",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/backlinks",
+  tags: ["knowledge"], summary: "List the knowledge items linking to this one",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/suggestions",
+  tags: ["knowledge"], summary: "List the knowledge suggestions (proposed changes)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/export",
+  tags: ["knowledge"], summary: "Export the knowledge tree as a gzipped document",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items",
+  tags: ["knowledge"], summary: "Create a knowledge item (draft until submitted/published)",
+  responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/revisions",
+  tags: ["knowledge"], summary: "Add a draft revision to a knowledge item",
+  responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/draft",
+  tags: ["knowledge"], summary: "Write a draft revision (injection-scanned) without submitting it",
+  responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/submit",
+  tags: ["knowledge"], summary: "Submit a revision for review",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/publish",
+  tags: ["knowledge"], summary: "Publish a revision (agents outside the auto sections get 409 + an approval card)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/approve",
+  tags: ["knowledge"], summary: "Approve a revision (rule approvals by agents are forbidden outright — тест П4)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/rollback",
+  tags: ["knowledge"], summary: "Roll a knowledge item back to an earlier revision",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/archive",
+  tags: ["knowledge"], summary: "Archive a knowledge item",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/supersede",
+  tags: ["knowledge"], summary: "Supersede a knowledge item with another one",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/propose",
+  tags: ["knowledge"], summary: "Propose a knowledge change (needs at least one source; 422 otherwise)",
+  responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/accept",
+  tags: ["knowledge"], summary: "Accept a knowledge suggestion (applies it to the target item)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/decline",
+  tags: ["knowledge"], summary: "Decline a knowledge suggestion",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/import",
+  tags: ["knowledge"], summary: "Import a gzipped knowledge tree (operator action)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/mcp",
+  tags: ["knowledge"], summary: "Company knowledge MCP endpoint (initialize/tools/list/tools/call; same rights as REST)",
+  body: z.object({
+    jsonrpc: z.literal("2.0"),
+    id: z.union([z.string(), z.number()]).nullable().optional(),
+    method: z.string(),
+    params: z.record(z.string(), z.unknown()).optional(),
+  }),
+  responses: { 200: r.ok(), 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });

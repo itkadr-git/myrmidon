@@ -2,20 +2,60 @@
 
 import { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { CatalogSkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { CatalogSkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, FolderListResult } from "@myrmidon/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  DiscoveredSkillsDialog,
   DiscoveryGrid,
   InstallPreviewDialog,
+  SkillDeliveryCheckSection,
   SkillDetailPage,
+  SkillRequiredKeysSection,
   buildDiscoveryCards,
   defaultInstallAgentSelection,
   getSkillVersionDiffSelection,
+  isDomainImportSource,
   resolveDiscoveryTab,
   withDiscoveryTab,
   skillDetailBreadcrumbs,
 } from "./CompanySkills";
+import { companySkillsApi } from "../api/companySkills";
+import { secretsApi } from "../api/secrets";
+import { agentsApi } from "../api/agents";
 import { skillStudioNewRoute } from "../lib/company-skill-routes";
+
+vi.mock("../api/companySkills", () => ({
+  companySkillsApi: {
+    discover: vi.fn(),
+    importFromSource: vi.fn(),
+    testRunDetail: vi.fn(),
+    createTestRun: vi.fn(),
+  },
+}));
+
+vi.mock("../api/secrets", () => ({
+  secretsApi: {
+    list: vi.fn().mockResolvedValue([]),
+    create: vi.fn(),
+  },
+}));
+
+vi.mock("../api/agents", () => ({
+  agentsApi: {
+    listConfigurations: vi.fn().mockResolvedValue([]),
+    get: vi.fn(),
+    update: vi.fn(),
+  },
+}));
+
+vi.mock("../context/ToastContext", () => ({
+  useToastActions: () => ({
+    pushToast: vi.fn(),
+    dismissToast: vi.fn(),
+    clearToasts: vi.fn(),
+  }),
+}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -180,6 +220,7 @@ function makeDetail(currentVersion: CompanySkillVersion, overrides: Partial<Comp
     sourcePath: null,
     currentVersion,
     starredByCurrentActor: false,
+    requiredEnv: [],
     ...overrides,
   };
 }
@@ -193,47 +234,53 @@ async function renderSkillDetail(
   root = createRoot(container);
   const detail = props.detail ?? makeDetail(versions[0]!);
 
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+
   await act(async () => {
     root?.render(
-      <SkillDetailPage
-        detail={detail}
-        loading={false}
-        activeTab={props.activeTab ?? "versions"}
-        onTabChange={vi.fn()}
-        selectedPath="SKILL.md"
-        file={null}
-        fileLoading={false}
-        viewMode="preview"
-        editMode={false}
-        draft=""
-        setViewMode={vi.fn()}
-        setEditMode={vi.fn()}
-        setDraft={vi.fn()}
-        onSave={vi.fn()}
-        savePending={false}
-        versions={versions}
-        versionsLoading={false}
-        attachAgents={[]}
-        onSubmitAttach={vi.fn()}
-        attachPending={false}
-        expandedDirs={new Set()}
-        onToggleDir={vi.fn()}
-        onSelectPath={vi.fn()}
-        updateStatus={null}
-        updateStatusLoading={false}
-        onCheckUpdates={vi.fn()}
-        checkUpdatesPending={false}
-        onInstallUpdate={vi.fn()}
-        installUpdatePending={false}
-        onToggleStar={vi.fn()}
-        starPending={false}
-        onFork={vi.fn()}
-        onUpdateSettings={vi.fn()}
-        updateSettingsPending={false}
-        onDelete={vi.fn()}
-        deletePending={false}
-        {...props}
-      />,
+      <QueryClientProvider client={queryClient}>
+        <SkillDetailPage
+          detail={detail}
+          loading={false}
+          activeTab={props.activeTab ?? "versions"}
+          onTabChange={vi.fn()}
+          selectedPath="SKILL.md"
+          file={null}
+          fileLoading={false}
+          viewMode="preview"
+          editMode={false}
+          draft=""
+          setViewMode={vi.fn()}
+          setEditMode={vi.fn()}
+          setDraft={vi.fn()}
+          onSave={vi.fn()}
+          savePending={false}
+          versions={versions}
+          versionsLoading={false}
+          attachAgents={[]}
+          onSubmitAttach={vi.fn()}
+          attachPending={false}
+          expandedDirs={new Set()}
+          onToggleDir={vi.fn()}
+          onSelectPath={vi.fn()}
+          updateStatus={null}
+          updateStatusLoading={false}
+          onCheckUpdates={vi.fn()}
+          checkUpdatesPending={false}
+          onInstallUpdate={vi.fn()}
+          installUpdatePending={false}
+          onToggleStar={vi.fn()}
+          starPending={false}
+          onFork={vi.fn()}
+          onUpdateSettings={vi.fn()}
+          updateSettingsPending={false}
+          onDelete={vi.fn()}
+          deletePending={false}
+          {...props}
+        />
+      </QueryClientProvider>,
     );
   });
 
@@ -934,46 +981,49 @@ describe("SkillDetailPage settings", () => {
     await inputValue(categoryInput, "memory");
     await click(buttonsNamed(node.querySelector('[role="dialog"]') as HTMLElement, "Save settings")[0] as HTMLButtonElement);
 
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root?.render(
-        <SkillDetailPage
-          detail={detail}
-          loading={false}
-          activeTab="overview"
-          onTabChange={vi.fn()}
-          selectedPath="SKILL.md"
-          file={null}
-          fileLoading={false}
-          viewMode="preview"
-          editMode={false}
-          draft=""
-          setViewMode={vi.fn()}
-          setEditMode={vi.fn()}
-          setDraft={vi.fn()}
-          onSave={vi.fn()}
-          savePending={false}
-          versions={[v1]}
-          versionsLoading={false}
-          attachAgents={[]}
-          onSubmitAttach={vi.fn()}
-          attachPending={false}
-          expandedDirs={new Set()}
-          onToggleDir={vi.fn()}
-          onSelectPath={vi.fn()}
-          updateStatus={null}
-          updateStatusLoading={false}
-          onCheckUpdates={vi.fn()}
-          checkUpdatesPending={false}
-          onInstallUpdate={vi.fn()}
-          installUpdatePending={false}
-          onToggleStar={vi.fn()}
-          starPending={false}
-          onFork={vi.fn()}
-          onUpdateSettings={onUpdateSettings}
-          updateSettingsPending={false}
-          onDelete={vi.fn()}
-          deletePending={false}
-        />,
+        <QueryClientProvider client={queryClient}>
+          <SkillDetailPage
+            detail={detail}
+            loading={false}
+            activeTab="overview"
+            onTabChange={vi.fn()}
+            selectedPath="SKILL.md"
+            file={null}
+            fileLoading={false}
+            viewMode="preview"
+            editMode={false}
+            draft=""
+            setViewMode={vi.fn()}
+            setEditMode={vi.fn()}
+            setDraft={vi.fn()}
+            onSave={vi.fn()}
+            savePending={false}
+            versions={[v1]}
+            versionsLoading={false}
+            attachAgents={[]}
+            onSubmitAttach={vi.fn()}
+            attachPending={false}
+            expandedDirs={new Set()}
+            onToggleDir={vi.fn()}
+            onSelectPath={vi.fn()}
+            updateStatus={null}
+            updateStatusLoading={false}
+            onCheckUpdates={vi.fn()}
+            checkUpdatesPending={false}
+            onInstallUpdate={vi.fn()}
+            installUpdatePending={false}
+            onToggleStar={vi.fn()}
+            starPending={false}
+            onFork={vi.fn()}
+            onUpdateSettings={onUpdateSettings}
+            updateSettingsPending={false}
+            onDelete={vi.fn()}
+            deletePending={false}
+          />
+        </QueryClientProvider>,
       );
     });
 
@@ -1122,5 +1172,295 @@ describe("install-time agent enablement", () => {
     await click(buttonsNamed(node, "Install update")[0] as HTMLButtonElement);
 
     expect(onConfirm).toHaveBeenCalledWith({ slug: "wireframe", force: false, agentIds: [] });
+  });
+});
+
+describe("isDomainImportSource", () => {
+  it("identifies domain URLs as true", () => {
+    expect(isDomainImportSource("https://kie.ai")).toBe(true);
+    expect(isDomainImportSource("http://kie.ai")).toBe(true);
+    expect(isDomainImportSource("kie.ai")).toBe(true);
+    expect(isDomainImportSource("https://sub.vendor.co/path")).toBe(true);
+  });
+
+  it("identifies github and skills.sh and local sources as false", () => {
+    expect(isDomainImportSource("https://github.com/itkadr-git/myrmidon")).toBe(false);
+    expect(isDomainImportSource("https://skills.sh/org/repo/skill")).toBe(false);
+    expect(isDomainImportSource("npx skills add org/repo")).toBe(false);
+    expect(isDomainImportSource("./local/skill")).toBe(false);
+    expect(isDomainImportSource("/workspace/skill")).toBe(false);
+    expect(isDomainImportSource("")).toBe(false);
+    expect(isDomainImportSource("plainword")).toBe(false);
+  });
+});
+
+describe("DiscoveredSkillsDialog", () => {
+  const discoveredSkills = [
+    {
+      name: "kie-models",
+      description: "Kie AI models and text generation skill.",
+      digest: "sha256:1111222233334444",
+      url: "https://kie.ai/downloads/kie-models.tar.gz",
+    },
+    {
+      name: "kie-images",
+      description: "Kie AI image generation skill.",
+      digest: "sha256:5555666677778888",
+      url: "https://kie.ai/downloads/kie-images.tar.gz",
+    },
+  ];
+
+  it("renders discovered skills with name, description, and digest", async () => {
+    const onImport = vi.fn();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <DiscoveredSkillsDialog
+          open
+          onOpenChange={vi.fn()}
+          source="https://kie.ai"
+          skills={discoveredSkills}
+          onImport={onImport}
+          isPending={false}
+        />,
+      );
+    });
+
+    const node = container as ParentNode;
+    expect(node.textContent).toContain("Discovered Skills");
+    expect(node.textContent).toContain("kie-models");
+    expect(node.textContent).toContain("kie-images");
+    expect(node.textContent).toContain("Kie AI models and text generation skill.");
+    expect(node.textContent).toContain("sha256:11112");
+
+    await click(buttonsNamed(node, "Import selected")[0] as HTMLButtonElement);
+    expect(onImport).toHaveBeenCalledWith("kie-models");
+  });
+
+  it("allows selecting another skill to import", async () => {
+    const onImport = vi.fn();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <DiscoveredSkillsDialog
+          open
+          onOpenChange={vi.fn()}
+          source="https://kie.ai"
+          skills={discoveredSkills}
+          onImport={onImport}
+          isPending={false}
+        />,
+      );
+    });
+
+    const node = container as ParentNode;
+    const cards = Array.from(node.querySelectorAll('[role="button"]'));
+    expect(cards).toHaveLength(2);
+
+    await act(async () => {
+      cards[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await click(buttonsNamed(node, "Import selected")[0] as HTMLButtonElement);
+    expect(onImport).toHaveBeenCalledWith("kie-images");
+  });
+});
+
+describe("SkillRequiredKeysSection", () => {
+  const dummyAgents = [
+    {
+      id: "agent-1",
+      name: "BBQ Director",
+      adapterType: "claude",
+      supportsSkills: true,
+      required: false,
+      icon: null,
+      paused: false,
+      urlKey: "bbq-director",
+    },
+    {
+      id: "agent-2",
+      name: "BBQ Operator",
+      adapterType: "codex",
+      supportsSkills: true,
+      required: false,
+      icon: null,
+      paused: false,
+      urlKey: "bbq-operator",
+    },
+  ];
+
+  it("renders empty state message when requiredEnv is empty", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <SkillRequiredKeysSection
+            companyId="comp-1"
+            requiredEnv={[]}
+            attachAgents={dummyAgents}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    const node = container as ParentNode;
+    expect(node.textContent).toContain("Required keys");
+    expect(node.textContent).toContain("No required environment variables declared.");
+  });
+
+  it("renders required keys and handles secret selection and creation", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(secretsApi.list).mockResolvedValue([
+      { id: "sec-1", name: "KIE_API_KEY", key: "kie_api_key", status: "active" } as any,
+    ]);
+    vi.mocked(secretsApi.create).mockResolvedValue({
+      id: "sec-2",
+      name: "NEW_SECRET",
+      key: "new_secret",
+      status: "active",
+    } as any);
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <SkillRequiredKeysSection
+            companyId="comp-1"
+            requiredEnv={["KIE_API_KEY"]}
+            attachAgents={dummyAgents}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    const node = container as ParentNode;
+    expect(node.textContent).toContain("KIE_API_KEY");
+    expect(node.querySelector('[data-testid="required-env-KIE_API_KEY"]')).not.toBeNull();
+
+    // Click "+ Create secret"
+    const createBtn = buttonsNamed(node, "+ Create secret")[0];
+    expect(createBtn).toBeDefined();
+    await click(createBtn as HTMLButtonElement);
+
+    // Form is shown with password input
+    const inputs = Array.from(node.querySelectorAll("input"));
+    const passwordInput = inputs.find((i) => i.type === "password");
+    expect(passwordInput).toBeDefined();
+
+    // Type secret value and save
+    await inputValue(passwordInput as HTMLInputElement, "secret-token-123");
+    const saveBtn = buttonsNamed(node, "Save secret")[0];
+    await click(saveBtn as HTMLButtonElement);
+
+    expect(secretsApi.create).toHaveBeenCalledWith("comp-1", {
+      name: "KIE_API_KEY",
+      value: "secret-token-123",
+    });
+  });
+});
+
+describe("SkillDeliveryCheckSection", () => {
+  const dummyAgents = [
+    {
+      id: "agent-1",
+      name: "BBQ Director",
+      adapterType: "claude",
+      supportsSkills: true,
+      required: false,
+      icon: null,
+      paused: false,
+      urlKey: "bbq-director",
+    },
+  ];
+
+  it("creates test run and renders success outcome", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(companySkillsApi.createTestRun).mockResolvedValue({
+      id: "run-1",
+      agentId: "agent-1",
+      status: "succeeded",
+      outputSnapshot: "Kie API credit balance: 420.00 credits. Delivery verified.",
+      error: null,
+    } as any);
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <SkillDeliveryCheckSection
+            companyId="comp-1"
+            skillId="skill-1"
+            agents={dummyAgents}
+            attachedAgentIds={["agent-1"]}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    const node = container as ParentNode;
+    const checkBtn = node.querySelector('[data-testid="check-delivery-button"]') as HTMLButtonElement;
+    expect(checkBtn).not.toBeNull();
+
+    await click(checkBtn);
+
+    expect(companySkillsApi.createTestRun).toHaveBeenCalledWith("comp-1", "skill-1", {
+      agentId: "agent-1",
+      content: expect.stringMatching(/\S/),
+    });
+
+    expect(node.textContent).toContain("Delivery verified");
+    expect(node.textContent).toContain("Kie API credit balance: 420.00 credits");
+  });
+
+  it("renders failure outcome when test run fails", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(companySkillsApi.createTestRun).mockResolvedValue({
+      id: "run-2",
+      agentId: "agent-1",
+      status: "failed",
+      outputSnapshot: "",
+      error: "401 Unauthorized: Invalid KIE_API_KEY",
+    } as any);
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <SkillDeliveryCheckSection
+            companyId="comp-1"
+            skillId="skill-1"
+            agents={dummyAgents}
+            attachedAgentIds={["agent-1"]}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    const node = container as ParentNode;
+    const checkBtn = node.querySelector('[data-testid="check-delivery-button"]') as HTMLButtonElement;
+    await click(checkBtn);
+
+    expect(node.textContent).toContain("Delivery check failed");
+    expect(node.textContent).toContain("401 Unauthorized: Invalid KIE_API_KEY");
   });
 });

@@ -6,7 +6,7 @@
 // every settings write applies itself (see service.ts).
 
 import { asc, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { heartbeatRuns, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../../services/index.js";
 import {
@@ -65,6 +65,12 @@ function defaultDeps(db: Db): RuntimeLimitsServiceDeps {
           logger.error({ err }, "queued run resweep after a runtime limits change failed");
         }),
       ),
+    // myrmidon(1.6.5 C0-ui): the host and container memory the load screen is
+    // about, read by the same admission that gates on it.
+    memorySnapshot: () => sharedRunAdmission().memorySnapshot(),
+    // myrmidon(1.6.5 F-09): the admission denial counters the queue/limits
+    // screen reports next to the live queue snapshot.
+    admissionDenials: () => sharedRunAdmission().admissionDenials(),
   };
 }
 

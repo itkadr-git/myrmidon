@@ -1,4 +1,5 @@
 import { createCoalescedAsyncTrigger } from "../../services/chat-publication-reconciliation.js";
+import { laneInterval } from "../monitoring/board-load/lanes.js";
 
 /**
  * Gets the fallback interval for chat reconciliation in milliseconds.
@@ -49,10 +50,10 @@ export function createReconcileInterval(input: {
   const startFallbackTimer = () => {
     if (stopped || fallbackTimer) return;
     
-    fallbackTimer = setInterval(() => {
+    fallbackTimer = laneInterval("chat_reconcile", fallbackIntervalMs, () => {
       // Only run fallback reconciliation if no recent event-driven activity
-      eventTrigger.poll();
-    }, fallbackIntervalMs);
+      return eventTrigger.poll();
+    });
     
     // Unref the timer so it doesn't keep the process alive
     if (fallbackTimer && typeof (fallbackTimer as any).unref === 'function') {
@@ -131,11 +132,13 @@ export function createReconcileInterval(input: {
  * while chats are idle — a deployment-specific value, not a new default
  * cadence.
  */
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
+
 export function chatReconcileMinimumSpacingMs(
   env: { MYRMIDON_CHAT_RECONCILE_INTERVAL_MS?: string } = process.env,
 ): number | undefined {
-  const raw = env.MYRMIDON_CHAT_RECONCILE_INTERVAL_MS;
-  if (!raw) return undefined;
-  const parsed = Number.parseInt(raw, 10);
+  const configured = env.MYRMIDON_CHAT_RECONCILE_INTERVAL_MS ?? liveBehaviorSetting<number | null>("chatReconcileIntervalMs");
+  const raw = configured == null ? undefined : String(configured);
+  const parsed = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }

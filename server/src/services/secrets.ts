@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   companies,
@@ -17,7 +17,7 @@ import {
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   AgentApiKeyScope,
   AgentEnvConfig,
@@ -34,7 +34,7 @@ import type {
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
   SecretVersionSelector,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   CLASS3_STATIC_LEASE_ALLOWLIST,
   createSecretProviderConfigSchema,
@@ -45,7 +45,7 @@ import {
   secretProviderConfigPayloadSchema,
   secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -85,7 +85,7 @@ import { logActivity } from "./activity-log.js";
 import {
   assertAccountHomeCacheDirStillValid,
   withAccountHomeSecretMutationLock,
-} from "@paperclipai/adapter-codex-local/server";
+} from "@myrmidon/adapter-codex-local/server";
 // myrmidon(S5): resolved secret values are masked in stored text
 import { registerSecretValues } from "../myrmidon/secret-masking.js";
 
@@ -1408,7 +1408,15 @@ export function secretService(db: Db | DbTransaction) {
         db
           .update(companySecrets)
           .set({ lastResolvedAt: new Date(), updatedAt: new Date() })
-          .where(eq(companySecrets.id, secret.id))
+          .where(
+            and(
+              eq(companySecrets.id, secret.id),
+              or(
+                sql`${companySecrets.lastResolvedAt} IS NULL`,
+                sql`${companySecrets.lastResolvedAt} < ${new Date(Date.now() - 5 * 60_000).toISOString()}`,
+              ),
+            ),
+          )
           .catch(() => undefined),
         recordAccessEvent({
           companyId,
@@ -1857,6 +1865,99 @@ export function secretService(db: Db | DbTransaction) {
         resolvedVersion: versionSelector === "latest" ? secret.latestVersion : versionSelector,
       }];
     }).sort((left, right) => left.key.localeCompare(right.key));
+  }
+
+  // myrmidon(1.6.5-F-23): metadata listing for an agent acting without an
+  // active run (administrative role from an operator session). The route layer
+  // has already verified the active secrets:read_off_run grant; this function
+  // reads the direct agent-target bindings only (no run manifest), and every
+  // call writes a secret_access_events row with details.offRun = true.
+  async function listAgentSecretAccessOffRun(
+    companyId: string,
+    context: {
+      agentId: string;
+      actorSource: "agent_jwt" | "agent_key";
+      keyId?: string | null;
+      keyScope?: AgentApiKeyScope | null;
+      responsibleUserId?: string | null;
+      remoteAddress?: string | null;
+    },
+  ): Promise<AgentSecretAccessEntry[]> {
+    const bindings = await db.select().from(companySecretBindings).where(and(
+      eq(companySecretBindings.companyId, companyId),
+      eq(companySecretBindings.targetType, "agent"),
+      eq(companySecretBindings.targetId, context.agentId),
+      or(
+        like(companySecretBindings.configPath, "env.%"),
+        like(companySecretBindings.configPath, `${AGENT_ACCESS_CONFIG_PATH_PREFIX}%`),
+      ),
+    ));
+    const secrets = bindings.length === 0 ? [] : await db
+      .select()
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.companyId, companyId),
+        eq(companySecrets.scope, "company"),
+        eq(companySecrets.status, "active"),
+        inArray(companySecrets.id, [...new Set(bindings.map((binding) => binding.secretId))]),
+      ));
+    const secretsById = new Map(secrets.map((secret) => [secret.id, secret]));
+    const bindingsBySecret = new Map<string, typeof bindings>();
+    for (const binding of bindings) {
+      const current = bindingsBySecret.get(binding.secretId) ?? [];
+      current.push(binding);
+      bindingsBySecret.set(binding.secretId, current);
+    }
+    const entries = [...bindingsBySecret.entries()].flatMap(([secretId, secretBindings]) => {
+      const secret = secretsById.get(secretId);
+      if (!secret) return [];
+      const accessBinding = secretBindings.find((binding) => binding.configPath.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX));
+      const selectedBinding = accessBinding ?? secretBindings[0];
+      const hasEnv = secretBindings.some((binding) => binding.configPath.startsWith("env."));
+      const hasApi = Boolean(accessBinding);
+      const versionSelector: SecretVersionSelector = selectedBinding.versionSelector === "latest"
+        ? "latest"
+        : Number(selectedBinding.versionSelector);
+      const delivery: AgentSecretAccessEntry["delivery"] = hasEnv && hasApi ? "both" : hasEnv ? "env" : "api";
+      return [{
+        secretId,
+        bindingId: selectedBinding.id,
+        configPath: selectedBinding.configPath,
+        key: secret.key,
+        name: secret.name,
+        description: secret.description ?? null,
+        delivery,
+        projectionClass: (selectedBinding.projectionClass ?? "unclassified") as SecretProjectionClass,
+        latestVersion: secret.latestVersion,
+        versionSelector,
+        resolvedVersion: versionSelector === "latest" ? secret.latestVersion : versionSelector,
+      }];
+    }).sort((left, right) => left.key.localeCompare(right.key));
+
+    await db.insert(secretAccessEvents).values({
+      companyId,
+      secretId: null,
+      secretScope: "company",
+      version: null,
+      provider: "local_encrypted",
+      responsibleUserId: context.responsibleUserId ?? null,
+      actorType: "agent",
+      actorId: context.agentId,
+      consumerType: "agent",
+      consumerId: context.agentId,
+      configPath: null,
+      heartbeatRunId: null,
+      outcome: "success",
+      details: {
+        offRun: true,
+        access: "agent_self_metadata",
+        keyId: context.keyId ?? null,
+        remoteAddress: context.remoteAddress ?? null,
+        listedSecretCount: entries.length,
+      },
+    });
+
+    return entries;
   }
 
   async function resolveSecretVersion(
@@ -4535,6 +4636,7 @@ export function secretService(db: Db | DbTransaction) {
     resolveSecretVersion,
     resolveSecretValueForAgentAccess,
     listAgentSecretAccess,
+    listAgentSecretAccessOffRun,
     resolveSecretValueForEphemeralAccess,
     resolveSecretValueForSandboxCleanup,
     resolveSecretValueForDeviceLoginCheck,

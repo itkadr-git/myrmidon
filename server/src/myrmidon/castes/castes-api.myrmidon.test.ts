@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { errorHandler } from "../../middleware/index.js";
 import { casteRoutes } from "./routes.js";
 import type { CasteService } from "./service.js";
-import type { CasteView } from "@paperclipai/shared";
+import type { CasteView } from "@myrmidon/shared";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const OTHER_COMPANY = "33333333-3333-4333-8333-333333333333";
@@ -31,6 +31,8 @@ const casteView = (key: string): CasteView => ({
   swarmEligible: true,
   maxActiveTasks: null,
   builtIn: true,
+  sensitive: false,
+  isDefault: true, // myrmidon(1.6.5 F-26 T3): the shared view carries the flag
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
 });
@@ -157,5 +159,11 @@ describe("myrmidon(1.6.1 CUSTOM-CASTES) routes: parsing", () => {
     const { server, calls } = app(member);
     await request(server).delete(`${base}/engineer`).send({ reassignTo: "Nope!" }).expect(400);
     expect(calls).toHaveLength(0);
+  });
+
+  it("passes the default flag through on PATCH (myrmidon 1.6.5 F-26 T3)", async () => {
+    const { server, calls } = app(member);
+    await request(server).patch(`${base}/engineer`).send({ isDefault: true }).expect(200);
+    expect(calls[0]).toMatchObject({ op: "update", key: "engineer", body: { isDefault: true } });
   });
 });

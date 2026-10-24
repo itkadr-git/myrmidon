@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
-import type { Db } from "@paperclipai/db";
-import type { PermissionKey, SecretBindingTargetType } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import type { PermissionKey, SecretBindingTargetType } from "@myrmidon/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
@@ -78,6 +78,44 @@ export function assertBoardOrgAccess(req: Request) {
   throw forbidden("Company membership or instance admin access required");
 }
 
+/**
+ * Agent-grant predicate injected into `assertBoardOrAgentGrant`. Structurally
+ * satisfied by `accessService(db).hasPermission`, so route modules do not need
+ * to import the service barrel into `authz.ts` (import-cycle rule below).
+ */
+export type AgentGrantPermissionChecker = (
+  companyId: string,
+  principalType: "agent",
+  principalId: string,
+  permissionKey: PermissionKey,
+) => Promise<boolean>;
+
+/**
+ * myrmidon(1.6.5-F22): board actors pass as they do under assertBoard,
+ * while an agent actor is admitted only with an explicit company grant of one
+ * of `permissionKeys` (active membership + decidePrincipalGrant, enforced by
+ * the access service). Routes without a companyId in the path must call this
+ * after loading the entity, with the entity's companyId. Denial is 403.
+ * The permission predicate is injected (accessService(db).hasPermission) so
+ * this module keeps no service-runtime import.
+ */
+export async function assertBoardOrAgentGrant(
+  req: Request,
+  hasPermission: AgentGrantPermissionChecker,
+  companyId: string,
+  ...permissionKeys: PermissionKey[]
+): Promise<void> {
+  assertAuthenticated(req);
+  if (req.actor.type === "board") return;
+  if (req.actor.type !== "agent" || !req.actor.agentId) {
+    throw forbidden("Board access or an authenticated agent key required");
+  }
+  for (const permissionKey of permissionKeys) {
+    if (await hasPermission(companyId, "agent", req.actor.agentId, permissionKey)) return;
+  }
+  throw forbidden(`Missing permission: ${permissionKeys.join(" or ")}`);
+}
+
 export function assertBoardOrAgent(req: Request) {
   if (req.actor.type === "agent") {
     return;
@@ -147,6 +185,19 @@ export function assertCompanyAccess(req: Request, companyId: string) {
       }
     }
   }
+}
+
+/**
+ * myrmidon(1.6.6 OPE-8999): board actors only, and only a company owner/admin (active membership)
+ * or an instance admin. Viewers, plain members and agents get 403.
+ */
+export function assertCompanyAdmin(req: Request, companyId: string) {
+  assertBoard(req);
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+  assertCompanyAccess(req, companyId);
+  const membership = req.actor.memberships?.find((m) => m.companyId === companyId && m.status === "active");
+  if (membership?.membershipRole === "owner" || membership?.membershipRole === "admin") return;
+  throw forbidden("Company admin access required");
 }
 
 /**

@@ -135,6 +135,10 @@ export const githubAppEntrySchema = z
     privateKeySecretId: z.string().uuid(),
     /** Installation id; null — discovered per repository (GET /repos/{owner}/{repo}/installation). */
     installationId: z.string().trim().regex(/^[0-9]{1,20}$/).nullable().default(null),
+    // myrmidon(GITHUB-APP-MANIFEST): the App's GitHub slug (from the manifest
+    // flow; manually registered Apps may leave it null) — backs the
+    // one-click "Install" URL. Additive; no migration (instance_settings JSON).
+    slug: z.string().trim().min(1).max(100).nullable().default(null),
     ...agentScopeFields,
     allowedRepos: z.array(repoPatternSchema).max(MAX_ALLOWED_REPOS).default([]),
     /** The permission list the broker requests verbatim on every token for this App. */
@@ -144,11 +148,23 @@ export const githubAppEntrySchema = z
 
 export const MAX_GITHUB_APPS = 20;
 
+/** A PAT is a static company secret, scoped to one repo set and agent set. */
+export const githubPatEntrySchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().trim().min(1).max(100),
+  tokenSecretId: z.string().uuid(),
+  agentIds: z.array(z.string().uuid()).max(500).default([]),
+  allowedRepos: z.array(repoPatternSchema).max(MAX_ALLOWED_REPOS).default([]),
+}).strict();
+
+export type GitHubPatEntry = z.output<typeof githubPatEntrySchema>;
+
 /** The document a board PUT replaces. */
 export const githubSharedIdentitySettingsInputSchema = z
   .object({
     enabled: z.boolean(),
     apps: z.array(githubAppEntrySchema).max(MAX_GITHUB_APPS).default([]),
+    pats: z.array(githubPatEntrySchema).max(MAX_GITHUB_APPS).default([]),
     commitEmailDomain: z.string().trim().toLowerCase().regex(EMAIL_DOMAIN, "Not a domain name").nullable().default(null),
   })
   .strict()
@@ -159,6 +175,10 @@ export const githubSharedIdentitySettingsInputSchema = z
         ctx.addIssue({ code: "custom", path: ["apps", index, "id"], message: "Duplicate entry id" });
       }
       seen.add(app.id);
+    });
+    value.pats.forEach((pat, index) => {
+      if (seen.has(pat.id)) ctx.addIssue({ code: "custom", path: ["pats", index, "id"], message: "Duplicate entry id" });
+      seen.add(pat.id);
     });
   });
 
@@ -176,11 +196,12 @@ export interface GitHubSharedIdentitySettings {
   version: 1;
   enabled: boolean;
   apps: GitHubAppEntry[];
+  pats: GitHubPatEntry[];
   commitEmailDomain: string | null;
 }
 
 export function defaultGitHubSharedIdentitySettings(): GitHubSharedIdentitySettings {
-  return { version: 1, enabled: false, apps: [], commitEmailDomain: null };
+  return { version: 1, enabled: false, apps: [], pats: [], commitEmailDomain: null };
 }
 
 function dedupe(values: string[], caseInsensitive = false): string[] {
@@ -202,6 +223,7 @@ export function toStoredGitHubSharedIdentitySettings(
   return {
     version: 1,
     enabled: input.enabled,
+    pats: input.pats.map((pat) => ({ ...pat, agentIds: dedupe(pat.agentIds), allowedRepos: dedupe(pat.allowedRepos, true) })),
     apps: input.apps.map((app) => ({
       ...app,
       roles: dedupe(app.roles),
@@ -221,7 +243,9 @@ export function parseStoredGitHubSharedIdentitySettings(raw: unknown): GitHubSha
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return defaultGitHubSharedIdentitySettings();
   const { version: _version, ...rest } = raw as Record<string, unknown>;
   const parsed = githubSharedIdentitySettingsInputSchema.safeParse(rest);
-  return parsed.success ? toStoredGitHubSharedIdentitySettings(parsed.data) : defaultGitHubSharedIdentitySettings();
+  if (!parsed.success) return defaultGitHubSharedIdentitySettings();
+  // Older documents predate PAT entries; normalize them to an empty list.
+  return toStoredGitHubSharedIdentitySettings({ ...parsed.data, pats: parsed.data.pats ?? [] });
 }
 
 /**
@@ -319,4 +343,11 @@ export function agentCommitIdentity(
     .replace(/^-+|-+$/g, "")
     .slice(0, 64) || `agent-${agent.id.slice(0, 8)}`;
   return { name, email: `${slug}@${settings.commitEmailDomain ?? DEFAULT_COMMIT_EMAIL_DOMAIN}` };
+}
+
+
+/** PAT entries matching both the agent and repository. */
+export function githubPatsFor(settings: GitHubSharedIdentitySettings, agentId: string, repository: string | null): GitHubPatEntry[] {
+  if (!settings.enabled || !repository) return [];
+  return settings.pats.filter((entry) => entry.agentIds.includes(agentId) && isRepositoryAllowed(entry.allowedRepos, repository));
 }

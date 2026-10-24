@@ -6,7 +6,7 @@
 //   the top task of its role's queue behind a lease. Agent-authenticated; the
 //   per-agent ceiling and the P0 order apply inside the service.
 // - POST .../swarm-claim/heartbeat — the run refreshes its own lease.
-// - GET/PATCH /api/myrmidon/swarm-claim — the pilot settings (the flag, the
+// - GET/PATCH /api/myrmidon/swarm-claim — the swarm settings (the flag, the
 //   TTL, the ceiling, the sweep interval), the same read/write rule the other
 //   instance settings follow: any board member reads, instance-admin writes.
 //
@@ -15,8 +15,9 @@
 // (OPE-3609, swarm-claim-supervisor/). This file owns the claim side only.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { patchSwarmClaimSettingsSchema, type SwarmClaimSettingsPatch } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { readSwarmQueueCounters } from "./matcher.js";
+import { patchSwarmClaimSettingsSchema, type SwarmClaimSettingsPatch } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { z } from "zod";
@@ -106,7 +107,13 @@ export function swarmClaimRoutes(
   router.get("/myrmidon/swarm-claim", async (req, res) => {
     assertBoardOrgAccess(req);
     const [resolved, journal] = await Promise.all([settingsService.read(), settingsService.journal()]);
-    res.json({ ...resolved, journal });
+    // 1.6.5 (OPE-6608 D): the live counters, scoped like the queues themselves
+    // (every company).
+    const counters = await readSwarmQueueCounters(db, {
+      companyIds: null,
+      now: new Date(),
+    });
+    res.json({ ...resolved, journal, counters });
   });
 
   router.patch(
@@ -149,7 +156,7 @@ async function releaseAllLiveClaimRows(db: Db, now: Date): Promise<number> {
   const { swarmClaimTableReady, listAllLiveClaims, releaseClaim } = await import("./store.js");
   const { logActivity } = await import("../../services/activity-log.js");
   const { SWARM_CLAIM_RELEASE_REASON_DISABLED } = await import("./sweep.js");
-  const { SWARM_CLAIM_RELEASED_ACTION } = await import("@paperclipai/shared");
+  const { SWARM_CLAIM_RELEASED_ACTION } = await import("@myrmidon/shared");
   if (!(await swarmClaimTableReady(db))) return 0;
   const rows = await listAllLiveClaims(db, 200);
   let released = 0;

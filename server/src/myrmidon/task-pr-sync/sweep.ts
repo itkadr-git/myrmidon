@@ -29,8 +29,8 @@ import {
   issueWorkProducts,
   issues,
   type Db,
-} from "@paperclipai/db";
-import type { IssueWorkProduct } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { IssueWorkProduct } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import type { IssuePostCommitAction } from "../../services/issues.js";
@@ -54,7 +54,7 @@ import { readTaskPrSyncSettings, type TaskPrSyncSettings } from "./settings.js";
 /**
  * The service layer is loaded lazily. This module sits in the server entry
  * point's static import graph, and some vendor startup suites replace
- * `@paperclipai/db` and the service barrel with partial mocks; importing the
+ * `@myrmidon/db` and the service barrel with partial mocks; importing the
  * issue and work-product services eagerly would pull their table reads into
  * that graph and fail those suites at import time. The modules are cached by the
  * runtime after the first pass, so the cost is one dynamic import per process.
@@ -320,7 +320,33 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
         .then((rows) => rows[0] ?? null);
       if (!locked) return false;
       if (TERMINAL_ISSUE_STATUSES.has(locked.status)) return false;
-      const svc = services.issueService(txDb);
+      // Transaction callers cannot perform provider I/O. Persist freshly verified
+      // merge state before issueService enforces the completion guard.
+      for (const pr of prFacts) {
+        if (pr.state !== "merged") continue;
+        const [product] = await tx
+          .select({ id: issueWorkProducts.id, metadata: issueWorkProducts.metadata })
+          .from(issueWorkProducts)
+          .where(and(eq(issueWorkProducts.id, pr.workProductId), eq(issueWorkProducts.issueId, locked.id)))
+          .limit(1);
+        if (!product) continue;
+        await tx
+          .update(issueWorkProducts)
+          .set({
+            status: "merged",
+            metadata: {
+              ...((product.metadata && typeof product.metadata === "object") ? product.metadata as Record<string, unknown> : {}),
+              state: "merged",
+              draft: false,
+              ...(pr.mergedSha ? { lastMergedSha: pr.mergedSha } : {}),
+            },
+          })
+          .where(and(eq(issueWorkProducts.id, pr.workProductId), eq(issueWorkProducts.issueId, locked.id)));
+      }
+      // Keep the service's root DB distinct from the supplied transaction. This
+      // makes issueService.update use its stored-state guard instead of trying
+      // to perform provider I/O while the settle transaction is open.
+      const svc = services.issueService(deps.db);
       const comment = await svc.addComment(locked.id, body, { runId: null }, { authorType: "system" }, tx);
       // The settle mirrors the board's manual PATCH: status `done` and the task's
       // execution workflow dissolved (pending stages and runtime state cleared)
@@ -540,7 +566,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
             result.failed += 1;
             // Constant errorKind only: an exception message can carry a credential.
             logger.warn(
-              { errorKind: "task_pr_sync_issue_failed", issueId: issue.id },
+              { errorKind: "task_pr_sync_issue_failed", issueId: issue.id, errorName: err instanceof Error ? err.name : typeof err },
               "task PR sync failed for one task",
             );
           }

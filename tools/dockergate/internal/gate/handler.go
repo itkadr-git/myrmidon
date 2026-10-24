@@ -87,7 +87,9 @@ func checkHeaders(r *http.Request) *deny.Error {
 	return nil
 }
 
-func hasBody(id string) bool { return id == route.A4 || id == route.A5 }
+func hasBody(id string) bool {
+	return id == route.A4 || id == route.A5 || id == route.A15 || id == route.A18
+}
 
 func (rs *reqState) handle() *deny.Error {
 	g, r := rs.g, rs.r
@@ -116,6 +118,8 @@ func (rs *reqState) handle() *deny.Error {
 	rs.key = rt.BotKey
 	if rt.ID == route.A1 {
 		rs.target = rt.ImageRef
+	} else if rt.ID == route.A14 {
+		rs.target = route.DiskTarget
 	} else {
 		rs.target = rt.Name
 	}
@@ -166,10 +170,18 @@ func (rs *reqState) handle() *deny.Error {
 		return rs.a9(ctx, st, rt, bs)
 	case route.A10:
 		return rs.a10(ctx, st, rt, bs)
+	case route.A17:
+		return rs.a17(ctx, st, rt, bs)
 	case route.A11:
 		return rs.a11(ctx, st, rt, bs)
+	case route.A18:
+		return rs.a18(ctx, st, rt, bs, bot)
 	case route.A12:
 		return rs.a12(ctx, st, rt, bs)
+	case route.A15:
+		return rs.a15(ctx, st, rt)
+	case route.A14:
+		return rs.a14(ctx, st)
 	}
 	return deny.New(deny.RouteNotAllowed)
 }

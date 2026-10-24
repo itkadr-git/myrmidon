@@ -10,7 +10,7 @@
 // volume or the driver's reserved bookkeeping paths — only what these functions
 // accept ever reaches the Docker API.
 
-import { isScopeInstanceDirName } from "@paperclipai/shared";
+import { isScopeInstanceDirName, WS_BOTD_BOARD_KEY_ENV_VALUE, WS_PROFILE_ENV, type BotDiskMechanics } from "@myrmidon/shared"; // myrmidon(1.6.5-BOT-DISK-H5c)
 import type { BotContainerSpec, BotExtraMount } from "./driver.js";
 import type { CompiledProfileFile } from "./types.js";
 
@@ -134,12 +134,17 @@ export function isDevBuildImage(image: string): boolean {
  *  DEVBUILD_SSH_CONTAINER_PATH. Null when the wiring is off — the caller adds
  *  nothing. The card's profile .env is a separate file (hermes/.env) and is not
  *  touched by this. */
-export function devbuildContainerEnv(settings: DevbuildSettings): Record<string, string> | null {
+export function devbuildContainerEnv(settings: DevbuildSettings, botKey?: string): Record<string, string> | null {
   if (settings.host === null) return null;
   return {
     DEVBUILD_HOST: settings.host,
     DEVBUILD_USER: settings.user,
     DEVBUILD_BASE: settings.base,
+    // myrmidon(1.6.6 DEVBUILD-ISOLATION): every bot container runs as the same
+    // "bot" user, so the build host copy must be keyed by the bot itself or all
+    // bots share (and --delete) one directory. The key is validated by
+    // validateBotKey (BOT_KEY_PATTERN), safe as a path segment.
+    ...(botKey ? { DEVBUILD_BOT_NAME: botKey } : {}),
   };
 }
 
@@ -234,13 +239,21 @@ export const BOT_SCOPE_SUBDIR_ENV = "MYRMIDON_BOT_SCOPE_SUBDIR";
 export const BOT_SCOPE_DATA_TMPFS = "uid=10001,gid=10001,mode=0755,size=1m";
 /** Where the prepare helper of a member sees the instance directory (to hand it to the bot's uid). */
 export const BOT_SCOPE_HELPER_MOUNT = "/scope";
+/** myrmidon(1.6.5-BOT-DISK-UV-B board side): where the root-owned prepare
+ *  helper sees the host directory of the shared package cache, so the prepare
+ *  script can create and chown every cache subdirectory for the bot's uid.
+ *  The helper's root filesystem is read-only, so this must be its own bind,
+ *  not a subpath of the three volume binds. Only the prepare helper carries
+ *  it; the bot container mounts each cache subdirectory on its own
+ *  (PACKAGE_CACHE_MOUNTS), and the apply-profile helper never touches it. */
+export const HELPER_PACKAGE_CACHE_MOUNT = "/package-cache";
 /** Image label declaring the runtime can run as a member (entrypoint links, WORKDIR-independent start). */
 export const BOT_RUNTIME_SCOPE_LABEL = "myrmidon.bot-runtime.scope";
 
 /** A member's place: the instance directory name under the shared root. */
 export interface BotScopeMount {
   scopeRoot: string;
-  /** `<kind>-<id>`, see `scopeInstanceDirName` in @paperclipai/shared. */
+  /** `<kind>-<id>`, see `scopeInstanceDirName` in @myrmidon/shared. */
   dirName: string;
 }
 
@@ -333,29 +346,37 @@ export function buildHelperBinds(
   scope?: BotScopeMount,
   /** The prepare helper of a member also binds the instance directory itself. */
   withInstanceDir = false,
+  /** myrmidon(1.6.5-BOT-DISK-UV-B board side): the host directory of the
+   *  shared package cache, bound read-write at {@link HELPER_PACKAGE_CACHE_MOUNT}
+   *  for the root-owned prepare helper only — the prepare script creates and
+   *  chowns every cache subdirectory there, so Docker's first-bind creation
+   *  (root-owned) never leaves a directory the bot's uid cannot write. */
+  packageCachePath?: string,
 ): string[] {
   validateBotKey(botKey);
+  let binds: string[];
   if (scope) {
     // myrmidon(BOT-ROOT-TRAVERSE): a shared member has no separate bot root to
     // normalize — its tree root IS the instance directory, already bound read-write
     // at the helper's /scope and handed to uid 10001 by the prepare script itself.
     assertScopeMount(scope);
     const base = `${scope.scopeRoot}/${scope.dirName}/${botKey}`;
-    const binds = BOT_VOLUME_MOUNTS.map((mount) => `${base}/${mount.hostSuffix}:${mount.containerPath}`);
+    binds = BOT_VOLUME_MOUNTS.map((mount) => `${base}/${mount.hostSuffix}:${mount.containerPath}`);
     if (withInstanceDir) binds.push(`${scope.scopeRoot}/${scope.dirName}:${BOT_SCOPE_HELPER_MOUNT}`);
-    return binds;
+  } else {
+    binds = BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`);
+    if (withInstanceDir) {
+      // myrmidon(BOT-ROOT-TRAVERSE): the isolated bot's whole directory (the one bind
+      // the bot container gets at BOT_ROOT_MOUNT) must be enterable by uid 10001, but
+      // the three narrow binds stop below it, so the helper never sees the root. The
+      // prepare helper gets the root itself, as the SAME bind string the bot container
+      // carries (`<volumeRoot>/<botKey>:/bot`, rw — chmod over a read-only bind is
+      // EROFS): the script runs one non-recursive chmod on the mount point, without
+      // ever listing or writing into the tree.
+      binds.push(`${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`);
+    }
   }
-  const binds = BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`);
-  if (withInstanceDir) {
-    // myrmidon(BOT-ROOT-TRAVERSE): the isolated bot's whole directory (the one bind
-    // the bot container gets at BOT_ROOT_MOUNT) must be enterable by uid 10001, but
-    // the three narrow binds stop below it, so the helper never sees the root. The
-    // prepare helper gets the root itself, as the SAME bind string the bot container
-    // carries (`<volumeRoot>/<botKey>:/bot`, rw — chmod over a read-only bind is
-    // EROFS): the script runs one non-recursive chmod on the mount point, without
-    // ever listing or writing into the tree.
-    binds.push(`${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`);
-  }
+  if (packageCachePath) binds.push(`${packageCachePath}:${HELPER_PACKAGE_CACHE_MOUNT}`);
   return binds;
 }
 
@@ -431,6 +452,10 @@ export function buildBinds(
     scope?: BotScopeMount;
     /** The bind layout the image's runtime contract declares (legacy = three binds, single = one /bot bind). */
     volumeLayout?: BotVolumeLayout;
+    /** myrmidon(1.6.1-BOT-DISK-D): the host shared directory bound at `/shared`
+     *  for a bot with shared mount access; `writable` picks rw or ro. Appended
+     *  LAST (after the runtime binds) through {@link withSharedMount}. */
+    sharedMount?: { hostPath: string; writable: boolean };
   } = {},
 ): string[] {
   validateBotKey(botKey);
@@ -489,7 +514,7 @@ export function buildBinds(
       binds.push(`${runtime}/${mount.hostSubdir}:${botTreeRealPath(mount.containerPath, botKey, extra)}:ro`);
     }
   }
-  return binds;
+  return withSharedMount(binds, extra.sharedMount);
 }
 
 /**
@@ -552,22 +577,65 @@ export function botTreeRealPath(
 export const GIT_MIRROR_MOUNT = { hostSubdir: "git", containerPath: "/cache/git" } as const;
 
 /**
- * myrmidon(BOT-DISK-D): where pnpm keeps its content-addressed store by default
- * (settings `pnpmStoreDir`; the image's `npm_config_store_dir` is the same
- * value). It is inside the bot's single mount, so every clone anywhere in the
- * bot's tree can hard-link into it. Never `/cache/pnpm`: that is a different
- * mount, and pnpm cannot hard-link across mounts.
+ * myrmidon(1.6.5-BOT-DISK-H8a): where pnpm keeps its content-addressed store by
+ * default (settings `pnpmStoreDir`; the image's `npm_config_store_dir` is the
+ * same value): ONE store per partition, the host directory
+ * `<sharedPackageCachePath>/pnpm-store` bound read-write at `/cache/pnpm-store`
+ * into every bot of `sharedCacheRoles` (see {@link PACKAGE_CACHE_MOUNTS}). It
+ * replaces the per-bot `/workspace/.pnpm-store` of BOT-DISK-D (8 stores of
+ * 2.4 GiB each). It must be on the same partition as the bot volumes: a reflink
+ * only works inside one filesystem, and the instance setting is validated for
+ * that (packages/shared myrmidon-bot-disk.ts). Never `/cache/pnpm`: that is the
+ * download cache.
  */
-export const DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
+export const DEFAULT_PNPM_STORE_DIR = "/cache/pnpm-store";
 
-/** The import method pnpm is told to use: `hardlink` only tries hard links (no
- *  reflink attempts). pnpm 9 still copies when the kernel refuses a link, so a
- *  broken layout is caught by the container's start-time self-check
- *  (docker/bot-runtime/entrypoint.sh), not by pnpm. */
-export const DEFAULT_PNPM_IMPORT_METHOD = "hardlink";
+/** The import method pnpm is told to use: `clone` — a reflink, strictly. Not
+ *  `clone-or-copy`: that copies silently where the reflink is refused, and the
+ *  refusal has to be loud. A write to a file in node_modules never reaches the
+ *  store (copy-on-write), unlike a hard link. */
+export const DEFAULT_PNPM_IMPORT_METHOD = "clone";
 
-/** Container roots a pnpm store may live under (all inside the single mount). */
-export const PNPM_STORE_ROOTS: readonly string[] = ["/workspace", "/data", "/scratch", BOT_ROOT_MOUNT, BOT_SCOPE_MOUNT];
+/** Container roots a pnpm store may live under: the shared store mount, and the
+ *  bot's own tree (a store per bot; the settings validation warns about it). */
+export const PNPM_STORE_ROOTS: readonly string[] = [
+  DEFAULT_PNPM_STORE_DIR,
+  "/workspace",
+  "/data",
+  "/scratch",
+  BOT_ROOT_MOUNT,
+  BOT_SCOPE_MOUNT,
+];
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-UV-A): where uv keeps its package cache by default
+ * (settings `uvCacheDir`; the image's `UV_CACHE_DIR` is the same value): ONE
+ * cache per partition, the host directory `<sharedPackageCachePath>/uv` bound
+ * read-write at `/cache/uv` into every bot of `sharedCacheRoles` (see
+ * {@link PACKAGE_CACHE_MOUNTS}). Like the pnpm store it must be on the same
+ * partition as the bot volumes: a reflink only works inside one filesystem,
+ * and the instance setting is validated for that (packages/shared
+ * myrmidon-bot-disk.ts).
+ */
+export const DEFAULT_UV_CACHE_DIR = "/cache/uv";
+
+/** The link mode uv is told to use: `clone` — a reflink on a CoW filesystem.
+ *  uv's own fallback (clone -> hardlink -> copy, with a warning in the bot's
+ *  log) is acceptable here, so a refused reflink does not fail the install.
+ *  `symlink` is refused by the settings validation: environments linked into
+ *  the shared cache break bot isolation (packages/shared myrmidon-bot-disk.ts). */
+export const DEFAULT_UV_LINK_MODE = "clone";
+
+/** Container roots the uv cache may live under: the shared cache mount, and the
+ *  bot's own tree (a cache per bot; the settings validation warns about it). */
+export const UV_CACHE_ROOTS: readonly string[] = [
+  DEFAULT_UV_CACHE_DIR,
+  "/workspace",
+  "/data",
+  "/scratch",
+  BOT_ROOT_MOUNT,
+  BOT_SCOPE_MOUNT,
+];
 
 /** Where the shared package cache appears inside a bot container. Outside the
  *  three volumes and /tmp, so dockergate's reserved-target rule holds. */
@@ -592,8 +660,12 @@ export interface PackageCacheMount {
  * Mirrored by dockergate (`PackageCacheMounts` in tools/dockergate/internal/policy/create.go).
  */
 export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
-  // pnpm: a DOWNLOAD cache only (registry metadata), never the store (see DEFAULT_PNPM_STORE_DIR).
+  // pnpm: a DOWNLOAD cache only (registry metadata), never the store (see the next entry).
   { hostSubdir: "pnpm", containerPath: "/cache/pnpm", envName: "npm_config_cache_dir" },
+  // myrmidon(1.6.5-BOT-DISK-H8a): the pnpm STORE, one per partition (DEFAULT_PNPM_STORE_DIR).
+  { hostSubdir: "pnpm-store", containerPath: DEFAULT_PNPM_STORE_DIR, envName: "npm_config_store_dir" },
+  // myrmidon(1.6.5-BOT-DISK-UV-A): the uv cache, one per partition (DEFAULT_UV_CACHE_DIR).
+  { hostSubdir: "uv", containerPath: DEFAULT_UV_CACHE_DIR, envName: "UV_CACHE_DIR" },
   { hostSubdir: "go-mod", containerPath: "/cache/go-mod", envName: "GOMODCACHE" },
   { hostSubdir: "go-build", containerPath: "/cache/go-build", envName: "GOCACHE" },
   { hostSubdir: "gradle", containerPath: "/cache/gradle", envName: "GRADLE_USER_HOME" },
@@ -603,18 +675,20 @@ export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
  * The environment that points each tool at its shared cache mount, plus the pnpm
  * store variables.
  *
- * myrmidon(BOT-DISK-D): pnpm links a project's node_modules to its store with hard
- * links, and link(2) refuses to cross a mount point. The store therefore lives
- * INSIDE the bot's single mount ({@link DEFAULT_PNPM_STORE_DIR}), `/cache/pnpm`
- * stays a download cache only, and the import method is `hardlink` by default (pnpm
- * does not report a refused link, it copies: the start-time self-check does). Both values come from the
- * bot-disk settings (`pnpmStoreDir`, `pnpmImportMethod`).
+ * myrmidon(1.6.5-BOT-DISK-H8a): pnpm imports a package into a project's
+ * node_modules by reflink (`clone`): the copy shares the store's blocks on disk
+ * and a write does not reach the store. A reflink works between mount points of
+ * one filesystem, so the store is the shared `/cache/pnpm-store` mount (one per
+ * partition, {@link DEFAULT_PNPM_STORE_DIR}); `/cache/pnpm` stays a download
+ * cache only. Both values come from the bot-disk settings (`pnpmStoreDir`,
+ * `pnpmImportMethod`); a stored value of an earlier release is migrated on read.
  */
 export function packageCacheEnv(
   pnpm: { storeDir?: string; importMethod?: string } = {},
+  uv: { cacheDir?: string; linkMode?: string } = {},
 ): Record<string, string> {
   const env = Object.fromEntries(PACKAGE_CACHE_MOUNTS.map((mount) => [mount.envName, mount.containerPath]));
-  return { ...env, ...pnpmEnv(pnpm) };
+  return { ...env, ...pnpmEnv(pnpm), ...uvEnv(uv) };
 }
 
 /** Just the pnpm variables (see {@link packageCacheEnv}). */
@@ -623,6 +697,55 @@ export function pnpmEnv(pnpm: { storeDir?: string; importMethod?: string } = {})
     npm_config_store_dir: pnpm.storeDir ?? DEFAULT_PNPM_STORE_DIR,
     npm_config_package_import_method: pnpm.importMethod ?? DEFAULT_PNPM_IMPORT_METHOD,
   };
+}
+
+/** Just the uv variables (see {@link packageCacheEnv}).
+ *  myrmidon(1.6.5-BOT-DISK-UV-A): `UV_CACHE_DIR` is absolute — uv hardlinking
+ *  through the shared `/cache/uv` mount crosses a device boundary, so the mount
+ *  and the variable must name the same path; `UV_LINK_MODE` defaults to `clone`
+ *  (reflink on a CoW filesystem; uv falls back clone->hardlink->copy itself).
+ *  `symlink` never gets here — the settings validation refuses it. */
+export function uvEnv(uv: { cacheDir?: string; linkMode?: string } = {}): Record<string, string> {
+  return {
+    UV_CACHE_DIR: uv.cacheDir ?? DEFAULT_UV_CACHE_DIR,
+    UV_LINK_MODE: uv.linkMode ?? DEFAULT_UV_LINK_MODE,
+  };
+}
+
+/** The .env variable botd reads for the key it reports under (docker/bot-runtime/botd). */
+export const BOT_KEY_ENV = "MYRMIDON_BOT_KEY";
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H5c): the environment of the BOT-DISK-H mechanics
+ * (C7) that the profile compiler writes into every bot's hermes/.env. The
+ * variable NAMES come from the H0 contract (`WS_PROFILE_ENV`), the values from
+ * `general.botDisk.*` with the contract defaults for a key the operator never
+ * set, so `myr-ws` (H2) and botd (H3) on every bot of the instance apply the
+ * same policy — and a settings PATCH reaches the bots on the next reconcile
+ * pass, without a board restart (the port re-reads the settings per tick, like
+ * the pnpm store settings above).
+ *
+ * The board address is the one the gateway already compiled for the bot
+ * (MYRMIDON_BOT_BOARD_URL — the board as the container reaches it), and the
+ * key travels only as the NAME of the .env variable that holds it
+ * (PAPERCLIP_API_KEY): the value itself stays in the one place the driver
+ * already puts it. `botdIntervalSec` is written only when the operator set it
+ * — the contract pins no default for it (botd's in-image default, H3).
+ */
+export function botdProfileEnv(mechanics: BotDiskMechanics, boardUrl: string, botKey?: string): Record<string, string> {
+  const env: Record<string, string> = {
+    [WS_PROFILE_ENV.partitionThresholdPercent]: String(mechanics.partitionThresholdPercent),
+    [WS_PROFILE_ENV.partitionRefuseOpenPercent]: String(mechanics.partitionRefuseOpenPercent),
+    [WS_PROFILE_ENV.partitionCriticalPercent]: String(mechanics.partitionCriticalPercent),
+    [WS_PROFILE_ENV.graceClosingMinutes]: String(mechanics.graceClosingMinutes),
+    [WS_PROFILE_ENV.scratchTtlHours]: String(mechanics.scratchTtlHours),
+    [WS_PROFILE_ENV.boardUrl]: boardUrl,
+    [WS_PROFILE_ENV.boardKeyEnv]: WS_BOTD_BOARD_KEY_ENV_VALUE,
+  };
+  // botd reports under its own bot key (the agent id, not a secret); the hostname fallback is a container id the board refuses.
+  if (botKey) env[BOT_KEY_ENV] = botKey;
+  if (mechanics.botdIntervalSec !== undefined) env[WS_PROFILE_ENV.botdIntervalSec] = String(mechanics.botdIntervalSec);
+  return env;
 }
 
 /** The one extra bind the driver itself may add (the devbuild ssh key mount).
@@ -647,6 +770,31 @@ function validateDriverMount(mount: BotExtraMount, allowedSources: readonly stri
   return `${mount.source}:${mount.containerPath}:ro`;
 }
 
+/** myrmidon(1.6.1-BOT-DISK-D): add the shared mount bind (host path -> `/shared`,
+ *  read-write or read-only) when a shared mount is given for this bot. The host
+ *  path is checked like every other host path of a bind: a plain absolute
+ *  directory, and no ":" or "," (a colon would smuggle bind options into the
+ *  "source:target:mode" string). */
+export function withSharedMount(
+  binds: string[],
+  sharedMount?: { hostPath: string; writable: boolean },
+): string[] {
+  if (!sharedMount) return binds;
+  const reason = unsafeAbsolutePathReason(sharedMount.hostPath);
+  if (reason) {
+    throw new BotContainerTemplateError(`shared mount host path ${JSON.stringify(sharedMount.hostPath)} ${reason}`);
+  }
+  if (sharedMount.hostPath.includes(":") || sharedMount.hostPath.includes(",")) {
+    throw new BotContainerTemplateError(
+      `shared mount host path ${JSON.stringify(sharedMount.hostPath)} contains ":" or ","`,
+    );
+  }
+  return [...binds, `${sharedMount.hostPath}:${SHARED_MOUNT_CONTAINER_PATH}:${sharedMount.writable ? "rw" : "ro"}`];
+}
+
+/** Where the shared directory appears inside a bot container. */
+export const SHARED_MOUNT_CONTAINER_PATH = "/shared";
+
 /** Mount points and paths the driver itself owns inside every bot container: an
  *  extra mount may neither take one of them over nor shadow a path under them
  *  (the profile lands in the three volumes, and `/tmp` is the image's tmpfs).
@@ -662,6 +810,7 @@ const RESERVED_CONTAINER_PATHS: readonly string[] = [
   "/data",
   "/tmp",
   DEVBUILD_SSH_CONTAINER_PATH,
+  "/shared",
 ];
 
 /** Why `value` is not usable as an absolute host directory or container mount
@@ -769,6 +918,7 @@ export const BOT_LABEL_KEYS = {
   /** Set on the driver's helper containers instead of `bot`, so they never show
    *  up as a bot in `list()`. */
   helper: "myrmidon.bot-helper",
+  idleStopped: "myrmidon.idle-stopped",
 } as const;
 
 /**

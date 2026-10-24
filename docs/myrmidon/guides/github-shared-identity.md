@@ -19,17 +19,27 @@ repository of each operation**, so the two never mix.
 
 ## How it works
 
-- **Registration.** The operator creates a GitHub App under the account or
-  organization that owns the repositories (Settings → Developer settings →
-  GitHub Apps → New GitHub App), with only the repository permissions the
-  agents need: **Contents: Read and write, Pull requests: Read and write,
-  Metadata: Read**, plus **Workflows: Read and write** when agents should be
-  able to edit `.github/workflows/*`. No Secrets, no Administration; webhooks
-  off. Then installs it on that product's repositories only and generates a
-  private key (PEM). The token never requests more than the entry's
-  permission list allows, but a permission GitHub refuses to grant an App
-  (Workflows is not enabled on the registration) means every token minted
-  with it fails — so widen the App first, then the entry.
+- **Registration.** The one-click path: in Company settings → **Shared GitHub
+  authorization** click **Create GitHub App**, confirm the dialog (owner —
+  your personal account or an organization, the App name `Myrmidon —
+  <instance>`, the description), and confirm the pre-filled form GitHub
+  opens. You land back on the board and the new App appears in the list by
+  itself; the board has already stored the App's private key as a company
+  secret and it is never shown. The manifest flow registers the App with
+  exactly the permissions the agents need: **Contents: Read and write, Pull
+  requests: Read and write, Metadata: Read**, webhooks off. The manual path
+  (GitHub → Settings → Developer settings → GitHub Apps → New GitHub App,
+  then paste the App id and the key secret into the panel) keeps working as
+  an alternative — see "The manual path" below. A manifest-created App can
+  be widened later on GitHub (for example **Workflows: Read and write**, when agents
+  should edit `.github/workflows/*`): a permission GitHub refuses to grant
+  an App means every token minted with it fails — so widen the App first,
+  then the entry.
+- **Installation.** A manifest-created App carries an **Install on
+  repositories** button in its entry: it opens the App's install page on
+  GitHub, where you pick the repositories of this product and confirm. Back
+  on the board no installation id is needed — the board finds it per
+  repository with `GET /repos/{owner}/{repo}/installation`.
 - **Storage.** The private key goes into a company secret (Settings → Secrets).
   Company settings → **Shared GitHub authorization** lists the Apps: name,
   App id, the key secret (secret picker), the installation id (optional —
@@ -83,15 +93,55 @@ deliberately uses the vendor service. The settings screen shows the state.
 
 ## Operator steps
 
-1. **Per account or organization, register an App** with the permissions
-   above (Workflows only if this product's agents should edit CI), install it
-   on that product's repositories only, and generate a private key.
+1. **Create the App in one click.** In Company settings → **Shared GitHub
+   authorization** click **Create GitHub App**. In the dialog pick the owner
+   (**My personal account** or **An organization** — then enter its login),
+   keep or edit the App name (`Myrmidon — <instance>`; GitHub requires the
+   name to be unique — if it is taken, the board says so and you change the
+   name and retry) and the description, then press **Create on GitHub**.
+
+   ![The Create GitHub App dialog on the board](assets/github-app-manifest/01-create-dialog.png)
+
+   GitHub opens in the same tab with the registration form already filled —
+   check it and confirm.
+
+   ![The pre-filled confirmation page on GitHub](assets/github-app-manifest/02-github-confirm.png)
+
+   You land back on the board and the new App is already in the list: the
+   board exchanged GitHub's one-time code and stored the App's private key
+   as a company secret — the key never appears on the screen.
+
+   ![The created App back in the board list](assets/github-app-manifest/03-back-on-board.png)
+
+   An App created this way is private and carries exactly Contents and Pull
+   requests `write` plus Metadata `read`, with webhooks off.
+2. **Install the App on the repositories.** In the new App's entry click
+   **Install on repositories**: the App's install page opens on GitHub —
+   pick the repositories of this product and confirm.
+
+   ![Choosing repositories on the App's GitHub install page](assets/github-app-manifest/04-github-install.png)
+
+   Then, in the entry, set the allowed repositories (`owner-a/*`), the
+   roles (`engineer`) and/or individual agents, and the token permissions
+   (default: Contents and Pull requests `write`). Enable and save. Repeat
+   for the next product's App.
+
+### The manual path (alternative)
+
+Registering the App by hand keeps working and is the way to go when the App
+must exist before the board is configured:
+
+1. **Register the App on GitHub** under the account or organization that
+   owns the repositories (Settings → Developer settings → GitHub Apps →
+   New GitHub App) with the permissions above (Workflows only if this
+   product's agents should edit CI), install it on that product's
+   repositories only, and generate a private key (PEM).
 2. **Store the key** as a company secret (paste the PEM).
-3. **Add the App** in Company settings → Shared GitHub authorization: ***
+3. **Add the App** in Company settings → Shared GitHub authorization: name,
    App id, key secret, optionally the installation id, the repositories
    (`owner-a/*`), the roles (`engineer`) and/or individual agents, and the
    token permissions (default: Contents and Pull requests `write`). Enable
-   and save. Repeat for the next product's App.
+   and save.
 4. **To let agents edit CI** (`.github/workflows/*`): first widen the App
    itself — on GitHub: the App's settings → "Repository permissions" →
    **Workflows: Read and write** → save; on an existing installation accept
@@ -156,9 +206,22 @@ prompt switch and the commit identity are taken from the broker's answer, so a
 broker-supplied credential helper can never replace the staged one that names
 the repository.
 
+## Reading pull requests and issues (external-object resolver)
+
+The server-side resolver that reads GitHub pull-request and issue state (done
+gate, work-product sync, link cards) uses the same Apps to read private
+repositories. For each repository it takes, in order: a company secret named
+`GITHUB_TOKEN` / `GH_TOKEN` / `PAPERCLIP_GITHUB_TOKEN`; otherwise the single
+App whose `allowedRepos` matches the repository (agent scope is not
+consulted — the reader is the board itself), with a read-only installation
+token (`contents: read`, `pull_requests: read`, metadata) for that one
+repository; otherwise an anonymous request. Two Apps matching one repository
+is an error and no token is issued. The key is read as the system consumer
+`github-external-object-resolver`. When a PR still cannot be read, the done
+gate says that the board has no access to the repository and asks to configure
+a GitHub App or PAT, instead of saying the PR is not merged yet.
+
 ## Limits
 
-- The GitHub App manifest flow (one-click registration) is not automated
-  yet: the App is registered by hand with the permissions listed above.
 - The App's own MCP tools are not wired: App tokens serve shell git/gh
   through the broker and the server-side workspace git of a run.

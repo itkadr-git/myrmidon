@@ -1,11 +1,13 @@
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this pass obeys, so an operator can change the throttle and the wake
 // budget without restarting the server — a restart drops every run in flight.
-import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
+import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
+// myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
+import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
 
 /**
  * Idle pickup (IDLE-PICKUP, Myrmidon 1.3).
@@ -46,12 +48,31 @@ export const IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV = "MYRMIDON_IDLE_PICKUP_WAKE_BU
 export const IDLE_PICKUP_WAKE_BATCH_ENV = "MYRMIDON_IDLE_PICKUP_WAKE_BATCH";
 export const IDLE_WAKE_REASON = "idle_pickup";
 export const IDLE_WAKE_IDEMPOTENCY_PREFIX = "idle_pickup";
+/**
+ * myrmidon(1.6.6 OPE-8988): how long a queued wake request without a run still
+ * counts as covering its issue — the window in which its run is being created.
+ * Past it, a request no run carries is an orphan, not work in flight.
+ */
+export const ORPHAN_WAKE_GRACE_SEC = 600;
 
 /** Default: the sweep runs on every scheduler tick (about 30 s), like the other recovery passes. */
 export const DEFAULT_IDLE_PICKUP_INTERVAL_SEC = 30;
 export const MIN_IDLE_PICKUP_INTERVAL_SEC = 5;
-/** Default: an issue whose own run succeeded this recently is left to the handoff/recovery paths. */
-export const DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS = 15 * 60 * 1000;
+/**
+ * Default: an issue whose own run succeeded this recently — and which got no new
+ * inbound activity since that run ended — is left to the handoff/recovery paths.
+ *
+ * myrmidon(IDLE-PICKUP-QUIET): two hours, not the earlier fifteen minutes. A run
+ * that ends without changing anything on its issue (no disposition, no comment,
+ * no new run) used to count as "recently succeeded" for a quarter of an hour
+ * only, so the next sweep woke the very same issue 15 minutes later, that run
+ * ended the same way, and the pair repeated every 15–20 minutes with no new
+ * input on the board: four idle wakes on one issue inside an hour. The vendor
+ * handoff/recovery paths act within minutes, so two hours is the window in which
+ * a silent success still means "this issue was just worked". A comment the run
+ * did not write itself ends the silence — see `issueHasInboundActivitySince`.
+ */
+export const DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 /**
  * Company-wide wake budget: at most this many idle-pickup wakes for one company
@@ -99,6 +120,10 @@ export function readIdlePickupEnabled(env: NodeJS.ProcessEnv = process.env): boo
  * idle-pickup wake for that same issue (the successful-run-handoff and
  * stranded-recovery paths own the next step there). `0` disables the
  * suppression; invalid values fall back to the default.
+ *
+ * myrmidon(IDLE-PICKUP-QUIET): inside the window the suppression holds only
+ * while the issue stays silent — a comment written after that run ended, by
+ * anyone other than the run itself, reopens the issue for idle pickup.
  */
 export function readIdlePickupRecentSuccessWindowMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env[IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV]?.trim();
@@ -335,7 +360,7 @@ function issuePriorityRank(priority: string | null | undefined): number {
  * no execution hold (HOLD-READY). The remaining checks (live run, queued wake) need per-issue lookups and
  * run in the loop in `idlePickupForAgent`.
  */
-function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
+export function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
   return db
     .select({
       id: issues.id,
@@ -348,6 +373,9 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
       and(
         eq(issues.companyId, companyId),
         eq(issues.assigneeAgentId, agentId),
+        // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): NOT project-gated. A task already
+        // assigned to this agent (by hand or by a gated claim) stays theirs —
+        // the scope applies where a task is handed out (matcher, role queue).
         isNull(issues.assigneeUserId),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
@@ -393,6 +421,19 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
             and decomp.source_issue_id = ${issues.id}
             and decomp.status = 'in_flight'
         )`,
+        // myrmidon(IDLE-PICKUP-MONITOR): not owned by a scheduled monitor. An
+        // issue with monitor_next_check_at in the future already has its wake
+        // owner — tickDueIssueMonitors (heartbeat.ts) wakes it exactly at
+        // nextCheckAt (for status in_progress/in_review). Letting idle-pickup
+        // also select it burned a run every sweep interval until the monitor
+        // fired (observed: 4 no-op runs in 2h on one such issue). An elapsed
+        // monitor (<= now) is NOT excluded: the tick owns the wake, but
+        // suppressing readiness here serves nothing — and if the issue sat in
+        // a monitor-ineligible status, idle-pickup is the only path left.
+        or(
+          isNull(issues.monitorNextCheckAt),
+          sql`${issues.monitorNextCheckAt} <= now()`,
+        ),
         // myrmidon(HOLD-READY): not held by an execution hold. The wake
         // admission parks every automatic wake of such an issue
         // (`deferred_issue_execution` + `executionWait`), so reporting it as
@@ -447,6 +488,7 @@ export async function idlePickupForAgent(
     idlePickupCandidateRows(deps.db, agent.companyId, agent.id),
     deps.db
       .select({
+        id: heartbeatRuns.id,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         status: heartbeatRuns.status,
         finishedAt: heartbeatRuns.finishedAt,
@@ -486,24 +528,35 @@ export async function idlePickupForAgent(
   // step for exactly that shape (a disposition is missing, and those paths send
   // the instructive wake). Waking it again here only races them — and in tests
   // it turns one background run into a chain that leaks into the next suite.
-  const recentlySucceededIssueIds = new Set(
-    liveRuns
-      .filter((run) => run.status === "succeeded")
-      .map((run) => ({
-        issueId: readNonEmptyString(run.contextSnapshot?.issueId),
-        endedAt: run.finishedAt ?? run.startedAt ?? run.createdAt,
-      }))
-      .filter(
-        (run): run is { issueId: string; endedAt: Date } =>
-          Boolean(run.issueId) &&
-          Date.now() - run.endedAt.getTime() < recentSuccessWindowMs,
-      )
-      .map((run) => run.issueId),
-  );
+  //
+  // myrmidon(IDLE-PICKUP-QUIET): the run is not the whole story — what happened
+  // on the issue after it ended is. A success that moved nothing (no new
+  // comment, nobody asking) leaves nothing to wake for, while a success whose
+  // issue got a new comment meanwhile is work waiting for the agent. The latest
+  // success per issue decides, because its silence is the one that must hold.
+  const recentSuccessesByIssueId = new Map<string, { runId: string; endedAt: Date }>();
+  for (const run of liveRuns) {
+    if (run.status !== "succeeded") continue;
+    const issueId = readNonEmptyString(run.contextSnapshot?.issueId);
+    if (!issueId) continue;
+    const endedAt = run.finishedAt ?? run.startedAt ?? run.createdAt;
+    if (Date.now() - endedAt.getTime() >= recentSuccessWindowMs) continue;
+    const known = recentSuccessesByIssueId.get(issueId);
+    if (!known || known.endedAt.getTime() < endedAt.getTime()) {
+      recentSuccessesByIssueId.set(issueId, { runId: run.id, endedAt });
+    }
+  }
 
   // Highest priority first, oldest blocked-transition breaks ties: the same
   // order the queued-run start path uses for one agent's runs.
   const ordered = orderIdlePickupCandidates(candidates);
+
+  // myrmidon(1.6.5 F-26 T5, design §4.3): cooling. A task whose last
+  // automatic run ended stale and that has not moved since is not woken again
+  // until the exponential window (base*2^(n-1), ceiling 24 h) elapses — this
+  // is what stops the "blocked 100/246 М" repeat-wake burn. One settings read
+  // per pass; the per-issue check is one indexed query each.
+  const swarmSettings = await readSwarmSettings(deps.db);
 
   for (const candidate of ordered) {
     // The release path passes the issue whose execution was just released:
@@ -522,11 +575,50 @@ export async function idlePickupForAgent(
       result.alreadyActive += 1;
       continue;
     }
-    if (recentlySucceededIssueIds.has(candidate.id)) {
+    const recentSuccess = recentSuccessesByIssueId.get(candidate.id);
+    if (recentSuccess) {
       // The issue just had a successful run without a disposition; the
       // successful-run-handoff / stranded-recovery paths own that next step.
-      result.alreadyActive += 1;
-      continue;
+      //
+      // myrmidon(IDLE-PICKUP-QUIET): unless the issue got inbound activity after
+      // that run ended — a comment the run did not write itself. Then the wake is
+      // the point of this feature (and a comment wake already queued for the
+      // issue still filters it out further down, in hasCoveringWake).
+      const spokenSinceRun = await issueHasInboundActivitySince(deps.db, {
+        companyId: agent.companyId,
+        issueId: candidate.id,
+        since: recentSuccess.endedAt,
+        excludeRunId: recentSuccess.runId,
+      });
+      if (!spokenSinceRun) {
+        result.alreadyActive += 1;
+        continue;
+      }
+    }
+    // myrmidon(1.6.5 F-26 T5, design §4.3): skip a task that is cooling down.
+    {
+      const cooling = await isIssueCoolingDown(
+        deps.db,
+        agent.companyId,
+        candidate.id,
+        swarmSettings,
+      );
+      if (cooling.cooling) {
+        result.alreadyActive += 1;
+        logger.info(
+          {
+            agentId: agent.id,
+            companyId: agent.companyId,
+            issueId: candidate.id,
+            staleCount: cooling.staleCount,
+            cooldownMin: cooling.cooldownMin,
+            nextWakeAt: cooling.nextWakeAt?.toISOString() ?? null,
+            reason: cooling.reason,
+          },
+          "myrmidon.wake_task_guard.cooling: idle pickup skipped a cooling issue",
+        );
+        continue;
+      }
     }
     // A wake already covers this issue in any non-terminal status (queued,
     // deferred_issue_execution, claimed — not only "queued"): the admission
@@ -601,6 +693,41 @@ export async function idlePickupForAgent(
 }
 
 /**
+ * Did the issue get inbound activity after `since`?
+ *
+ * myrmidon(IDLE-PICKUP-QUIET): the quiet window after a successful run is only
+ * quiet while nothing arrives on the issue. A comment someone else wrote is the
+ * signal that a person (or another agent) is waiting on an answer, and the
+ * agent's own run does not answer a question asked after it exited. A comment
+ * the recent run wrote itself (`created_by_run_id`) does not count — runs report
+ * on their issue as the last thing they do, and that report is not new input.
+ *
+ * An assignee change is not checked here: a reassignment produces its own wake
+ * through the assignment path, so this pass has nothing to add for it.
+ */
+async function issueHasInboundActivitySince(
+  db: Db,
+  input: { companyId: string; issueId: string; since: Date; excludeRunId: string | null },
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: issueComments.id })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, input.companyId),
+        eq(issueComments.issueId, input.issueId),
+        isNull(issueComments.deletedAt),
+        sql`${issueComments.createdAt} > ${input.since.toISOString()}::timestamptz`,
+        input.excludeRunId
+          ? sql`(${issueComments.createdByRunId} is null or ${issueComments.createdByRunId} <> ${input.excludeRunId}::uuid)`
+          : undefined,
+      ),
+    )
+    .limit(1);
+  return Boolean(rows[0]);
+}
+
+/**
  * A wake already covers this issue in any non-terminal status (queued/deferred/claimed).
  *
  * myrmidon(HOLD-READY): except a deferred wake parked on an execution hold
@@ -627,6 +754,40 @@ async function hasCoveringWake(
         ]),
         sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
         wakeNotParkedOnExecutionHold(),
+        // myrmidon(1.6.6 OPE-8988): a queued/claimed request covers the issue
+        // only while it is real work in flight — a live run carries it, or it
+        // is a just-queued request whose run is still being created. On prod
+        // 147 queued and 438 claimed requests had no live run at all (the
+        // oldest from August): each one covered its issue forever, so idle
+        // pickup counted the agent "already active" and never woke it.
+        sql`(
+          (
+            -- myrmidon(1.6.6 OPE-8988): a deferred wake waits for the issue's
+            -- execution lock to clear; it covers the issue only while that lock
+            -- is still held, or briefly while the promotion after release is in
+            -- flight. A deferred wake whose lock is long gone was never promoted
+            -- (OPE-8268) and covered its issue forever (prod 24.10: 10 such, the
+            -- oldest a day old). Parked holds (executionWait) are excluded above.
+            ${agentWakeupRequests.status} = 'deferred_issue_execution'
+            and (
+              exists (
+                select 1 from ${issues} li
+                where li.id::text = ${agentWakeupRequests.payload} ->> 'issueId'
+                  and (li.execution_run_id is not null or li.checkout_run_id is not null)
+              )
+              or ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+            )
+          )
+          or exists (
+            select 1 from ${heartbeatRuns} hr
+            where hr.wakeup_request_id = ${agentWakeupRequests.id}
+              and hr.status in ('queued', 'running', 'scheduled_retry')
+          )
+          or (
+            ${agentWakeupRequests.status} = 'queued'
+            and ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+          )
+        )`,
       ),
     )
     .limit(1)

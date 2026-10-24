@@ -3,10 +3,10 @@
 // myrmidon(1.6-FORAGE): entry point of FORAGING.
 //
 // Wires the store, the reader and the candidate port to the database and hands
-// app.ts a router. The candidate port is the seam with SKILL-LIFECYCLE: while
-// that module is not merged the port is absent and findings stay `unverified`;
-// once it lands, `foragingCandidatePort` below is the single place to connect it,
-// so no other file of this feature changes.
+// app.ts a router. The candidate port is the seam with SKILL-LIFECYCLE: it is
+// connected here (the single place of the wiring), so findings with a diff
+// become skill candidates through the lifecycle service; a deployment without
+// the connection still records them `unverified` through the null port.
 //
 // 1.6.1 (FORAGING-LIMITS-UI): the settings the sweep runs with are the instance
 // settings row (`general.foraging`), resolved on EVERY pass — the env stays the
@@ -16,8 +16,8 @@
 // one `training_charge` event per pass, and the baseline port feeds the
 // cost-per-task auto-off rule.
 
-import type { Db } from "@paperclipai/db";
-import { financeEvents } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { financeEvents } from "@myrmidon/db";
 import { secretService } from "../../services/index.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { logger } from "../../middleware/logger.js";
@@ -26,7 +26,21 @@ import { createForagingReader } from "./reader.js";
 import { readForagingSettings, resolveForagingEffectiveSettings, foragingSettingsService } from "./settings.js";
 import { createForagingService, type ForagingService } from "./service.js";
 import { createDbForagingStore, type ForagingStore } from "./store.js";
+import { createDbForagingSkillStore, createForagingCandidatePort } from "./candidate-port.js";
+import { skillLifecycleService } from "../skill-lifecycle/index.js";
+import { createKnowledgeModule } from "../knowledge/service.js";
+import { createForagingKnowledgePort, createDbForagingQuarantineStore } from "./knowledge-port.js";
 import { foragingRoutes } from "./routes.js";
+import {
+  foragingIdleGateService,
+  readForagingIdleGate,
+  FORAGING_IDLE_GATE_ENABLED_ENV,
+  FORAGING_IDLE_GATE_SETTINGS_KEY,
+} from "./idle-gate-settings.js";
+import { foragingIdleGateRoutes } from "./idle-gate-routes.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal and its route.
+import { foragingPassJournalService } from "./pass-journal.js";
+import { foragingPassRoutes } from "./pass-routes.js";
 
 export {
   FORAGING_BUDGET_CENTS_ENV,
@@ -41,22 +55,75 @@ export {
 } from "./domain.js";
 export type { ForagingCandidatePort, ForagingSweepResult, ForagingSourceRef } from "./domain.js";
 export { readForagingSettings, FORAGING_ENABLED_ENV, foragingSettingsService, resolveForagingEffectiveSettings } from "./settings.js";
+export {
+  FORAGING_IDLE_GATE_ENABLED_ENV,
+  FORAGING_IDLE_GATE_SETTINGS_KEY,
+  foragingIdleGateService,
+  readForagingIdleGate,
+} from "./idle-gate-settings.js";
+export { foragingIdleGateRoutes } from "./idle-gate-routes.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal of a company.
+export {
+  foragingPassJournalService,
+  FORAGING_PASS_JOURNAL_KEY,
+  type ForagingPassJournalService,
+  type ForagingPassSummary,
+} from "./pass-journal.js";
+export { foragingPassRoutes } from "./pass-routes.js";
 export { createForagingService } from "./service.js";
 export { createDbForagingStore } from "./store.js";
 export { createForagingReader } from "./reader.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 export * from "./limits.js";
+export { createForagingCandidatePort, createDbForagingSkillStore, buildCandidateMarkdown } from "./candidate-port.js";
+export type { ForagingSkillStore, ForagedSkillRef } from "./candidate-port.js";
+// myrmidon(1.7-KNOWLEDGE-L5): the knowledge port and its quarantine store.
+export {
+  createForagingKnowledgePort,
+  createDbForagingQuarantineStore,
+  buildProposalBody,
+  buildQuarantineMarkdown,
+  FORAGING_INBOX_DATASET,
+  type ForagingKnowledgePortDeps,
+  type ForagingQuarantineStore,
+} from "./knowledge-port.js";
 
 /**
  * The candidate port of the running instance.
  *
- * SKILL-LIFECYCLE is a separate feature (its own tables and service). Until its
- * service is available in this deployment the port stays absent: a finding is
- * recorded `unverified` and nothing else happens. The wiring is one call site,
- * so connecting the lifecycle later does not touch the sweep.
+ * The port is the seam with SKILL-LIFECYCLE: a finding with a diff resolves or
+ * creates the company skill, records a revision that shows the diff and moves
+ * the skill to `candidate` through the lifecycle service. The wiring is one
+ * call site (`foragingWiring` below), so the sweep itself never changes. When
+ * the connection cannot be constructed the null port keeps findings
+ * `unverified` instead of failing the pass.
  */
-export function foragingCandidatePort(): ForagingCandidatePort {
-  return nullForagingCandidatePort;
+export function foragingCandidatePort(db: Db): ForagingCandidatePort {
+  // myrmidon(1.7-KNOWLEDGE-L5): findings route to KNOWLEDGE first — the
+  // proposal (quarantined text in the `foraging-inbox` corpus dataset,
+  // trust=external) is the candidate_ref. If the knowledge module cannot be
+  // constructed the skill port below stays the fallback, and the null port is
+  // still the last resort.
+  try {
+    const knowledgePort = createForagingKnowledgePort({
+      knowledge: (companyId: string) => createKnowledgeModule(db, companyId),
+      quarantine: createDbForagingQuarantineStore(db),
+      log: logger,
+    });
+    return knowledgePort;
+  } catch (knowledgeError) {
+    logger.warn({ error: knowledgeError }, "foraging: knowledge port could not be constructed, falling back to skill candidates");
+  }
+  try {
+    return createForagingCandidatePort({
+      skillStore: createDbForagingSkillStore(db),
+      lifecycle: skillLifecycleService(db),
+      log: logger,
+    });
+  } catch (error) {
+    logger.warn({ error }, "foraging: candidate port could not be constructed, findings stay unverified");
+    return nullForagingCandidatePort;
+  }
 }
 
 export interface ForagingWiring {
@@ -82,7 +149,19 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
         return secrets.resolveSecretValue(companyId, row.id, "latest");
       },
     }),
-    candidatePort: foragingCandidatePort(),
+    candidatePort: foragingCandidatePort(db),
+    // myrmidon(1.6.3-FORAGING-IDLE-GATE): the per-role idle check reads the
+    // swarm-claim queue and the agents of the role from this database.
+    db,
+    // myrmidon(1.6.3-FORAGING-IDLE-GATE): the toggle is re-read on every pass
+    // from instance_settings.general (the env stays the forced override).
+    idleGate: {
+      getGeneral: () => settings.getGeneral(),
+      env,
+    },
+    // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): every pass appends itself
+    // to the journal, so the "Foraging" page can show the pass history.
+    journal: foragingPassJournalService(db),
     // 1.6.1: live settings — the row is read on every pass, no restart.
     resolveSettings: async () => {
       const effective = await resolveForagingEffectiveSettings(settings, env);
@@ -120,7 +199,7 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
 export function myrmidonForagingRoutes(db: Db, env: NodeJS.ProcessEnv = process.env) {
   const wiring = foragingWiring(db, env);
   const settings = instanceSettingsService(db);
-  return foragingRoutes({
+  const router = foragingRoutes({
     db,
     store: wiring.store,
     service: wiring.service,
@@ -128,4 +207,22 @@ export function myrmidonForagingRoutes(db: Db, env: NodeJS.ProcessEnv = process.
     settingsService: foragingSettingsService(db, { settings, env }),
     env: wiring.env,
   });
+  return router;
+}
+
+/**
+ * Router for app.ts: GET/PATCH /api/myrmidon/foraging/idle-gate —
+ * the settings-page toggle of the idle gate (myrmidon 1.6.3).
+ */
+export function myrmidonForagingIdleGateRoutes(db: Db) {
+  return foragingIdleGateRoutes(db, foragingIdleGateService(db));
+}
+
+/**
+ * Router for app.ts: GET /api/myrmidon/companies/:id/foraging/passes — the
+ * pass history of a company: what each pass read and which roles it left
+ * alone, with the reason (myrmidon 1.6.3-FORAGING-IDLE-GATE, UI half).
+ */
+export function myrmidonForagingPassRoutes(db: Db) {
+  return foragingPassRoutes(db, foragingPassJournalService(db));
 }

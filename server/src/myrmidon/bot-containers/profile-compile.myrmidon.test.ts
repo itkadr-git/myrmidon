@@ -26,6 +26,8 @@ import {
   type BotProfilePorts,
 } from "./profile-compile.js";
 import { BOT_EGRESS_MODE_ENV, BOT_EGRESS_PROXY_ENV } from "./egress.js";
+import { readMediaMcpSignals, resetMediaMcpSignals } from "./media-mcp.js";
+import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_ENV } from "@myrmidon/shared";
 import { classifyProfileChange, type CompiledProfile } from "./types.js";
 
 // Placeholder data only: fake ids, example.com URLs, obviously-fake secrets.
@@ -81,7 +83,7 @@ function fakeBoard(overrides: Partial<BotProfilePorts> = {}): FakeBoard {
       calls.push("ensureApiServerKey");
       const name = `api-server-key-${record.id}`;
       if (!secrets.has(name)) secrets.set(name, `fake-api-server-key-${secrets.size}`);
-      return { value: secrets.get(name) as string, secretId: `secret-${name}` };
+      return { value: secrets.get(name) as string, secretId: `secret-${name}`, version: 1 };
     },
     async ensureAgentApiKey(record) {
       calls.push("ensureAgentApiKey");
@@ -139,12 +141,12 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     it("a member of a shared scope instance gets the instance's pnpm store, with or without the shared package cache", async () => {
       const board = fakeBoard({
         scopeLayout: async () => ({ kind: "shared", dirName: "caste-x-engineer" }),
-        pnpmSettings: async () => ({ storeDir: "/workspace/.pnpm-store", importMethod: "hardlink" }),
+        pnpmSettings: async () => ({ storeDir: "/cache/pnpm-store", importMethod: "clone" }),
       });
       const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
       expect(env).toContain('npm_config_store_dir="/bot-scope/.pnpm-store"');
-      expect(env).toContain('npm_config_package_import_method="hardlink"');
-      expect(env).not.toContain("/workspace/.pnpm-store");
+      expect(env).toContain('npm_config_package_import_method="clone"');
+      expect(env).not.toContain("/cache/pnpm-store");
       // myrmidon(1.6.5 BOT-DISK-G): and the instance's shared git object store.
       expect(env).toContain('MYRMIDON_GIT_LOCAL_MIRROR="/bot-scope/.git-objects"');
     });
@@ -158,6 +160,33 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
         // per-bot default (no variable): its store lives in its own hermes home.
         expect(env).not.toContain("MYRMIDON_GIT_LOCAL_MIRROR");
       }
+    });
+
+    it("myrmidon(1.6.5-BOT-DISK-UV-A): a configured cache compiles the uv pair into hermes/.env", async () => {
+      const board = fakeBoard({
+        sharedPackageCachePath: async () => "/srv/cache",
+        uvSettings: async () => ({ cacheDir: "/cache/uv", linkMode: "clone" }),
+      });
+      const compiled = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const env = fileContent(compiled, "hermes/.env");
+      expect(env).toContain('UV_CACHE_DIR="/cache/uv"');
+      expect(env).toContain('UV_LINK_MODE="clone"');
+      // The board's value wins over the card's, with a warning, like the cache variables.
+      const cardBoard = fakeBoard({
+        sharedPackageCachePath: async () => "/srv/cache",
+        resolveCardEnv: async () => ({ env: { UV_CACHE_DIR: { value: "/elsewhere", secret: false } }, warnings: [] }),
+      });
+      const reported: string[][] = [];
+      const cardCompiled = await createBotProfileCompile(cardBoard.ports, {
+        env: INSTANCE_ENV,
+        onWarnings: (_botKey, list) => {
+          reported.push([...list]);
+        },
+      })("agent-a", "agent-a");
+      const cardEnv = fileContent(cardCompiled, "hermes/.env");
+      expect(cardEnv).toContain('UV_CACHE_DIR="/cache/uv"');
+      expect(cardEnv).not.toContain("/elsewhere");
+      expect(reported.flat().some((warning) => warning.includes('"UV_CACHE_DIR"') && warning.includes("card's value was dropped"))).toBe(true);
     });
 
     it("changing the applied layout changes the restart hash, so the container restarts onto it", async () => {
@@ -178,6 +207,122 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     expect(second.restartHash).toBe(first.restartHash);
     expect(second.filesHash).toBe(first.filesHash);
     expect(board.secrets.size).toBe(3); // the LLM key plus the two per-bot secrets, created once
+  });
+
+  describe("myrmidon(1.6.5-BOT-DISK-H5c) workspace/botd mechanics (C7)", () => {
+    it("compiles the mechanics env with the contract defaults when the settings row is empty", async () => {
+      const board = fakeBoard({
+        botDiskMechanics: async () => ({
+          graceClosingMinutes: WS_BOT_DISK_SETTING_DEFAULTS.graceClosingMinutes,
+          scratchTtlHours: WS_BOT_DISK_SETTING_DEFAULTS.scratchTtlHours,
+          partitionThresholdPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionThresholdPercent,
+          partitionRefuseOpenPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionRefuseOpenPercent,
+          partitionCriticalPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionCriticalPercent,
+        }),
+      });
+      const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionThresholdPercent}="85"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionRefuseOpenPercent}="90"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionCriticalPercent}="95"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.graceClosingMinutes}="30"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.scratchTtlHours}="24"`);
+      // No operator-set interval: no variable, botd's in-image default applies (H3).
+      expect(env).not.toContain(WS_PROFILE_ENV.botdIntervalSec);
+      // The board address is the one the gateway already points the bot at, and the
+      // key travels only as the NAME of the .env variable holding it — never the value.
+      expect(env).toContain(`${WS_PROFILE_ENV.boardUrl}="http://board.example.com:3100"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.boardKeyEnv}="${WS_BOTD_BOARD_KEY_ENV_VALUE}"`);
+      expect(env).not.toContain(`${WS_PROFILE_ENV.boardKeyEnv}="fake-paperclip-api-key`);
+      // botd reports under its own key: the agent id, written by the board.
+      expect(env).toContain('MYRMIDON_BOT_KEY="agent-a"');
+    });
+
+    it("compiles the operator-set values (incl. the botd interval) over the defaults", async () => {
+      const board = fakeBoard({
+        botDiskMechanics: async () => ({
+          graceClosingMinutes: 45,
+          scratchTtlHours: 12,
+          partitionThresholdPercent: 80,
+          partitionRefuseOpenPercent: 88,
+          partitionCriticalPercent: 93,
+          botdIntervalSec: 300,
+        }),
+      });
+      const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionThresholdPercent}="80"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionRefuseOpenPercent}="88"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionCriticalPercent}="93"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.graceClosingMinutes}="45"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.scratchTtlHours}="12"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.botdIntervalSec}="300"`);
+    });
+
+    it("the instance values win over the card's own, with a warning", async () => {
+      const board = fakeBoard({
+        async resolveCardEnv() {
+          return { env: { [WS_PROFILE_ENV.partitionThresholdPercent]: { value: "99", secret: false } }, warnings: [] };
+        },
+        botDiskMechanics: async () => ({
+          graceClosingMinutes: 30,
+          scratchTtlHours: 24,
+          partitionThresholdPercent: 85,
+          partitionRefuseOpenPercent: 90,
+          partitionCriticalPercent: 95,
+        }),
+      });
+      const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const env = fileContent(profile, "hermes/.env");
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionThresholdPercent}="85"`);
+      expect(env).not.toContain('"99"');
+    });
+
+    it("changes the restart hash when the mechanics change: the next tick restarts the bot onto them", async () => {
+      const defaults = fakeBoard({
+        botDiskMechanics: async () => ({
+          graceClosingMinutes: 30,
+          scratchTtlHours: 24,
+          partitionThresholdPercent: 85,
+          partitionRefuseOpenPercent: 90,
+          partitionCriticalPercent: 95,
+        }),
+      });
+      const changed = fakeBoard({
+        botDiskMechanics: async () => ({
+          graceClosingMinutes: 60,
+          scratchTtlHours: 24,
+          partitionThresholdPercent: 85,
+          partitionRefuseOpenPercent: 90,
+          partitionCriticalPercent: 95,
+        }),
+      });
+      const first = await createBotProfileCompile(defaults.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const second = await createBotProfileCompile(changed.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      expect(second.restartHash).not.toBe(first.restartHash);
+    });
+
+    it("keeps the profile byte-identical between two compiles of the same settings (deterministic output)", async () => {
+      const ports: Partial<BotProfilePorts> = {
+        botDiskMechanics: async () => ({
+          graceClosingMinutes: 45,
+          scratchTtlHours: 12,
+          partitionThresholdPercent: 80,
+          partitionRefuseOpenPercent: 88,
+          partitionCriticalPercent: 93,
+          botdIntervalSec: 300,
+        }),
+      };
+      const a = await createBotProfileCompile(fakeBoard(ports).ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const b = await createBotProfileCompile(fakeBoard(ports).ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      expect(fileContent(b, "hermes/.env")).toBe(fileContent(a, "hermes/.env"));
+      expect(fileContent(b, "hermes/config.yaml")).toBe(fileContent(a, "hermes/config.yaml"));
+    });
+
+    it("without the port the profile carries no BOT-DISK-H variables (a board before H5c)", async () => {
+      const env = fileContent(await createBotProfileCompile(fakeBoard().ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
+      for (const name of Object.values(WS_PROFILE_ENV)) {
+        expect(env).not.toContain(name);
+      }
+    });
   });
 
   it("puts the company's skills, MCP servers and instance defaults through to the profile", async () => {
@@ -470,6 +615,103 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       const first = await compile("agent-a", "agent-a");
       const second = await compile("agent-a", "agent-a");
       expect(second.restartHash).toBe(first.restartHash);
+    });
+  });
+
+  describe("media MCP block (OPE-6377, 1.6.5-F11-A)", () => {
+    it("adds the media server when the card carries MEDIA_TOOLS_TOKEN, never printing the token", async () => {
+      const board = fakeBoard({
+        async resolveCardEnv() {
+          return { env: { MEDIA_TOOLS_TOKEN: { value: "fake-media-token-agent-a", secret: false } }, warnings: [] };
+        },
+      });
+      const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const config = fileContent(profile, "hermes/config.yaml");
+      expect(config).toContain("media:");
+      expect(config).toContain("http://media-mcp:8080/mcp");
+      expect(config).toContain("Bearer ${MYRMIDON_MCP_TOKEN_MEDIA}");
+      expect(config).not.toContain("fake-media-token-");
+      const env = fileContent(profile, "hermes/.env");
+      expect(env).toContain('MEDIA_TOOLS_TOKEN="fake-media-token-agent-a"');
+      expect(env).toContain("MEDIA_TOOLS_URL=");
+      expect(env).toContain('MYRMIDON_MCP_TOKEN_MEDIA="fake-media-token-agent-a"');
+    });
+
+    it("honors MYRMIDON_MEDIA_MCP_URL when set", async () => {
+      const board = fakeBoard({
+        async resolveCardEnv() {
+          return { env: { MEDIA_TOOLS_TOKEN: { value: "fake-media-token-1", secret: false } }, warnings: [] };
+        },
+      });
+      const profile = await createBotProfileCompile(board.ports, {
+        env: { ...INSTANCE_ENV, MYRMIDON_MEDIA_MCP_URL: "http://media-mcp.example:8080/mcp" },
+      })("agent-a", "agent-a");
+      expect(fileContent(profile, "hermes/config.yaml")).toContain("http://media-mcp.example:8080/mcp");
+    });
+
+    it("without a card token there is no media block and no media env — the «media not connected» state lives on the board, not in the compile log", async () => {
+      const board = fakeBoard();
+      const reported: string[][] = [];
+      const profile = await createBotProfileCompile(board.ports, {
+        env: INSTANCE_ENV,
+        onWarnings: (_botKey, warnings) => {
+          reported.push([...warnings]);
+        },
+      })("agent-a", "agent-a");
+      const config = fileContent(profile, "hermes/config.yaml");
+      expect(config).not.toContain("media:");
+      expect(config).not.toContain("media-mcp");
+      const env = fileContent(profile, "hermes/.env");
+      expect(env).not.toContain("MEDIA_TOOLS_TOKEN");
+      expect(env).not.toContain("MYRMIDON_MCP_TOKEN_MEDIA");
+      // A token-less card is a normal state: no compile warning, the advisory
+      // attention card is the channel (see the signal test below).
+      expect(reported.flat()).toEqual([]);
+    });
+
+    it("records one «media not connected» signal per pass when the card token is missing", async () => {
+      const board = fakeBoard();
+      const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
+      const pass = compile.beginPass();
+      await compile("agent-a", "agent-a");
+      compile.endPass(pass);
+      const signals = readMediaMcpSignals("company-1");
+      expect(signals).toHaveLength(1);
+      expect(signals[0].agentId).toBe("agent-a");
+      expect(signals[0].botKey).toBe("agent-a");
+      expect(signals[0].whyNow).toContain("media");
+      resetMediaMcpSignals();
+    });
+
+    it("a bot whose card carries the token inside the pass leaves no signal", async () => {
+      const board = fakeBoard({
+        async resolveCardEnv() {
+          return { env: { MEDIA_TOOLS_TOKEN: { value: "fake-media-token-1", secret: false } }, warnings: [] };
+        },
+      });
+      const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
+      const pass = compile.beginPass();
+      await compile("agent-a", "agent-a");
+      compile.endPass(pass);
+      expect(readMediaMcpSignals("company-1")).toEqual([]);
+      resetMediaMcpSignals();
+    });
+
+    it("a blank card token (whitespace) is no token: no media block, signal recorded", async () => {
+      const board = fakeBoard({
+        async resolveCardEnv() {
+          return { env: { MEDIA_TOOLS_TOKEN: { value: "   ", secret: false } }, warnings: [] };
+        },
+      });
+      const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
+      const pass = compile.beginPass();
+      const profile = await compile("agent-a", "agent-a");
+      compile.endPass(pass);
+      expect(fileContent(profile, "hermes/config.yaml")).not.toContain("media:");
+      const signals = readMediaMcpSignals("company-1");
+      expect(signals).toHaveLength(1);
+      expect(signals[0].agentId).toBe("agent-a");
+      resetMediaMcpSignals();
     });
   });
 
@@ -1090,7 +1332,7 @@ describe("myrmidon(PERF-DIET-G) createBotProfileCompile — one read per pass", 
         return name === "FLEET_LLM_API_KEY" ? "fake-llm-key-0001" : null;
       },
       async ensureApiServerKey(record) {
-        return { value: `fake-api-server-key-${record.id}`, secretId: `secret-${record.id}` };
+        return { value: `fake-api-server-key-${record.id}`, secretId: `secret-${record.id}`, version: 1 };
       },
       async ensureAgentApiKey(record) {
         return { value: `fake-paperclip-api-key-${record.id}` };
@@ -1125,6 +1367,11 @@ describe("myrmidon(PERF-DIET-G) createBotProfileCompile — one read per pass", 
         calls.push("pnpmSettings");
         return { storeDir: "/cache/pnpm/store", importMethod: "hardlink" };
       },
+      // myrmidon(1.6.5-BOT-DISK-UV-A): the uv pair is read per tick from the same row.
+      async uvSettings() {
+        calls.push("uvSettings");
+        return { cacheDir: "/cache/uv", linkMode: "clone" };
+      },
       async cloneIdleTtlSec() {
         calls.push("cloneIdleTtlSec");
         return 600;
@@ -1155,6 +1402,8 @@ describe("myrmidon(PERF-DIET-G) createBotProfileCompile — one read per pass", 
     // (the scope instance's store path). On the code path this replaces, the same
     // three bots paid six of these.
     expect(board.count("pnpmSettings")).toBe(3);
+    // myrmidon(1.6.5-BOT-DISK-UV-A): the uv pair is cached the same way.
+    expect(board.count("uvSettings")).toBe(3);
     // The applied scope is the bot's own and is never shared.
     expect(board.count("scopeLayout")).toBe(3);
     expect(board.calls.filter((call) => call.startsWith("loadAgent:"))).toHaveLength(3);
@@ -1175,6 +1424,8 @@ describe("myrmidon(PERF-DIET-G) createBotProfileCompile — one read per pass", 
       "sharedPackageCachePath",
       "cloneIdleTtlSec",
       "pnpmSettings",
+      // myrmidon(1.6.5-BOT-DISK-UV-A): the uv pair shares the pass cache, like pnpm.
+      "uvSettings",
     ]) {
       expect(board.count(name), name).toBe(1);
     }

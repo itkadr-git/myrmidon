@@ -1,7 +1,8 @@
 import { and, desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { inboxDismissals } from "@paperclipai/db";
-import type { InboxDismissalKind } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { inboxDismissals } from "@myrmidon/db";
+import type { InboxDismissalKind } from "@myrmidon/shared";
+import { invalidateAttentionFeedCache } from "./attention.js";
 
 export function inboxDismissalService(db: Db) {
   async function upsert(
@@ -34,6 +35,9 @@ export function inboxDismissalService(db: Db) {
         },
       })
       .returning();
+    // myrmidon(ATTENTION-WINDOW-CACHE): a dismissal/snooze must show on the very
+    // next feed read, not after the per-company feed cache TTL.
+    invalidateAttentionFeedCache(db, companyId);
     return row;
   }
 
@@ -69,6 +73,7 @@ export function inboxDismissalService(db: Db) {
           eq(inboxDismissals.itemKey, itemKey),
         ))
         .returning();
+      invalidateAttentionFeedCache(db, companyId);
       return row ?? null;
     },
   };

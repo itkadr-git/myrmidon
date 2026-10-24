@@ -20,6 +20,7 @@
 import {
   boolean,
   index,
+  integer,
   pgTable,
   text,
   timestamp,
@@ -34,6 +35,7 @@ export const MODEL_PROVIDER_TYPES = [
   "dashscope",
   "google",
   "openai-compatible",
+  "chatgpt-pool",
 ] as const;
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number];
 
@@ -58,8 +60,18 @@ export const modelProviders = pgTable(
     credentialSecretName: text("credential_secret_name"),
     /** Whether the provider is a free-tier or paid provider for this company. */
     free: boolean("free").notNull().default(false),
+    /** Optional key/package expiry, used to surface rotation work before use. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** Provider-declared requests-per-minute allowance. */
+    rpmLimit: integer("rpm_limit"),
+    /** Provider package or plan label. */
+    packageName: text("package_name"),
     /** When the key was last validated against the provider (model list fetch). */
     keyValidatedAt: timestamp("key_validated_at", { withTimezone: true }),
+    /** Last persisted background tool-call compatibility result. */
+    toolCallCompatible: boolean("tool_call_compatible"),
+    toolCallCheckedAt: timestamp("tool_call_checked_at", { withTimezone: true }),
+    toolCallCheckError: text("tool_call_check_error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

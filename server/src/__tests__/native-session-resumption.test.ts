@@ -25,7 +25,7 @@ import {
   statusDecisionEffects,
   statusDecisions,
   workAssessments,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   type NativeExecutionInputV1,
   type NativeExecutionInput,
@@ -33,7 +33,7 @@ import {
   type NativeSessionBackend,
   type PersistedNativeSession,
   type PrpEvent,
-} from "@paperclipai/paperclip-runner";
+} from "@myrmidon/paperclip-runner";
 import {
   CONTROL_PLANE_CONFORMANCE_RESULT,
   CONTROL_PLANE_CONFORMANCE_TERMINAL,
@@ -44,6 +44,7 @@ import {
   claimNativeSessionResumptions,
   dispatchNativeSessionResumptions,
 } from "../services/native-runtime/native-finalization-reconciler.js";
+import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 
 const legacyAdapterExecute = vi.hoisted(() => vi.fn(async () => ({
   exitCode: 0,
@@ -563,10 +564,8 @@ describe("P6-25 pre-result native session recovery", () => {
     const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
 
     await claimNativeSessionResumptions({ db, runnerInstanceId: "reaper", runIds: [freshRunId] });
-    // The Sentry report fires without an await inside the reconciler, so a
-    // follow-up round trip to the real database gives that fire-and-forget
-    // call room to complete before this test reads the spy.
-    await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, freshRunId));
+    // Wait for the fire-and-forget Sentry report to complete.
+    await waitForPendingRunFailureReports(30_000);
 
     const newCaptures = mockCaptureRunFailure.mock.calls.slice(captureCallsBefore);
     expect(newCaptures).toHaveLength(1);
@@ -1196,35 +1195,27 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
           .from(agentWakeupRequests)
           .where(eq(agentWakeupRequests.idempotencyKey, newerWakeKey));
         expect(receipt.payload).toMatchObject({ commentId: newerCommentId });
-        expect(receipt.status).toBe("completed");
-        expect(receipt.runId).not.toBe(runId);
-        expect(freshStartTurn).toHaveBeenCalledOnce();
-        const [freshRun] = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, receipt.runId!));
-        expect(freshRun).toMatchObject({
-          status: "succeeded",
-          nativePhase: "committed",
-        });
-        expect(
-          await db
-            .select()
-            .from(nativeRunResults)
-            .where(eq(nativeRunResults.runId, receipt.runId!)),
-        ).toHaveLength(1);
+        // Terminal issue cleanup cancels a deferred wake even when it was
+        // admitted for a newer comment while the original run recovered.
+        expect(receipt.status).toBe("cancelled");
+        expect(receipt.error).toBe("issue_closed");
+        // The original run closes the issue before the independently admitted
+        // wake can start a replacement turn. Terminal cleanup must therefore
+        // leave the receipt without a child run and without provider activity.
+        expect(receipt.runId).toBeNull();
+        expect(freshStartTurn).not.toHaveBeenCalled();
         expect(
           factoryInputs.filter((input) => input.binding.runId === runId),
         ).toHaveLength(1);
         await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 });
         await drainHeartbeatRunsToQuiescence(db, heartbeat);
-        expect(freshStartTurn).toHaveBeenCalledOnce();
+        expect(freshStartTurn).not.toHaveBeenCalled();
         expect(
           await db
             .select()
             .from(heartbeatRuns)
             .where(eq(heartbeatRuns.companyId, companyId)),
-        ).toHaveLength(2);
+        ).toHaveLength(1);
         return;
       }
       const recoveryState = {

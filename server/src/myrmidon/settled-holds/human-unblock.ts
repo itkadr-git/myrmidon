@@ -8,16 +8,19 @@
 // PATCH sends — the status-change wake and the comment wake — are not explicit
 // (settled-holds/wake-classification.ts), so they were parked too. Moving the
 // issue out of `blocked` or reassigning it is exactly the operator's "carry
-// on"; it now acts as the operator resolve it is (the same
-// `clearSettledReplayBlock` the board's `recovery-actions/resolve` uses),
+// on". REQUEUE-HOLD (myrmidon(OPE-6954)) leaves a re-queued task in
+// `todo`/`backlog` instead, so a move into a workable status from any other
+// status counts as well. Either way it acts as the operator resolve it is
+// (the same `clearSettledReplayBlock` the board's `recovery-actions/resolve`
+// uses),
 // inside the PATCH's own transaction. The wakes parked on the hold are
 // re-planned after commit: one fresh wake for the assignee re-enters the
 // ordinary admission, which (with no hold left) adopts the parked comment
 // wakes into the new run (heartbeat.ts `adoptedComments`); any other parked
 // wake is drained behind that run by the vendor release path.
-// See docs/myrmidon/DIVERGENCE.md "HOLD-READY".
+// See docs/myrmidon/DIVERGENCE.md "HOLD-READY" and "REQUEUE-HOLD".
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { agentWakeupRequests, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, issueRecoveryActions, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import type { ActivityPublication } from "../../services/activity-log.js";
 import { executionBlockerPredicate, getExecutionBlocker } from "../../services/execution-blocker.js";
@@ -29,11 +32,45 @@ const WORKABLE_STATUSES = ["todo", "in_progress"] as const;
 export const HUMAN_UNBLOCK_REPLAN_REASON = "execution_hold_cleared";
 export const HUMAN_UNBLOCK_NOTE =
   "Cleared by a board operator unblocking the issue (moved out of blocked or reassigned).";
+// myrmidon(REPLAY-BLOCK-TRIAGE): the hold belongs to the *previous* executor's
+// stopped run — a new executor never ran it and must not inherit it. An
+// assignee change by any actor (board person, an agent PATCH, a workflow
+// transition, a checkout) clears it; see docs/myrmidon/DIVERGENCE.md.
+export const REASSIGN_UNBLOCK_NOTE =
+  "Cleared on reassignment: the replay hold belongs to the previous executor's run.";
 
 interface IssueSide {
   status: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+}
+
+/**
+ * Whether this PATCH changes who works the issue. The settled replay hold was
+ * recorded against the *previous* executor's stopped run, so an assignee change
+ * by ANY actor (board person, an agent PATCH, a workflow transition) lifts it —
+ * unlike the `blocked`-out unblock, which is a human decision only.
+ */
+export function isAssigneeChangePatch(input: {
+  existing: IssueSide;
+  assigneeAgentIdPatch: string | null | undefined;
+  assigneeUserIdPatch: string | null | undefined;
+}): boolean {
+  const nextAgent =
+    input.assigneeAgentIdPatch === undefined
+      ? input.existing.assigneeAgentId
+      : input.assigneeAgentIdPatch;
+  const nextUser =
+    input.assigneeUserIdPatch === undefined
+      ? input.existing.assigneeUserId
+      : input.assigneeUserIdPatch;
+  if (nextAgent === input.existing.assigneeAgentId && nextUser === input.existing.assigneeUserId) {
+    return false;
+  }
+  // Only a hand-off to another agent-executor matters: a hold on a task
+  // reassigned to a human (or unassigned) is the board's to clear by assigning
+  // an executor first, exactly as in the OPE-6011 card population.
+  return Boolean(nextAgent);
 }
 
 interface UnblockActor {
@@ -51,15 +88,26 @@ interface UnblockActor {
 export function mayBeHumanUnblock(input: UnblockActor & {
   existingStatus: string;
   assigneeChangeRequested: boolean;
+  /** myrmidon(OPE-6954): the PATCH asks for a different status (see below). */
+  statusChangeRequested?: boolean;
 }): boolean {
   if (input.requestActorType !== "board" || input.runId) return false;
-  return input.existingStatus === "blocked" || input.assigneeChangeRequested;
+  // myrmidon(OPE-6954): a status change is what a person has left to lift a
+  // hold the settle no longer parks behind `blocked` (REQUEUE-HOLD leaves a
+  // re-queued task in `todo`/`backlog`).
+  return (
+    input.existingStatus === "blocked" ||
+    input.assigneeChangeRequested ||
+    input.statusChangeRequested === true
+  );
 }
 
 /**
  * The decision on the committed row: a board person (no run) moved the issue
- * out of `blocked` into a workable status, or reassigned a workable issue to
- * another agent. Either way the issue ends assigned to an agent.
+ * into a workable status — out of `blocked` (HOLD-READY) or from any other
+ * status (myrmidon(OPE-6954): the state a re-queued task now sits in), or
+ * reassigned a workable issue to another agent. Either way the issue ends
+ * assigned to an agent.
  */
 export function isHumanUnblock(input: UnblockActor & { before: IssueSide; after: IssueSide }): boolean {
   if (input.requestActorType !== "board" || input.runId) return false;
@@ -68,7 +116,10 @@ export function isHumanUnblock(input: UnblockActor & { before: IssueSide; after:
   if (!(WORKABLE_STATUSES as readonly string[]).includes(after.status)) return false;
   const leftBlocked = before.status === "blocked";
   const reassigned = before.assigneeAgentId !== after.assigneeAgentId;
-  return leftBlocked || reassigned;
+  // myrmidon(OPE-6954): a person who put the task into a workable status it
+  // was not in is carrying on with it, whichever status it came from.
+  const startedWork = before.status !== after.status;
+  return leftBlocked || reassigned || startedWork;
 }
 
 /**
@@ -134,6 +185,8 @@ export async function clearReplayHoldsOnHumanUnblock(input: {
   issueId: string;
   assigneeAgentId: string;
   actor: { actorType: "user" | "agent"; actorId: string };
+  /** Activity note on each cleared hold (defaults to the operator unblock). */
+  note?: string;
   postCommitActivityPublications?: ActivityPublication[];
 }): Promise<HumanUnblockResult> {
   const { tx, companyId, issueId } = input;
@@ -149,7 +202,7 @@ export async function clearReplayHoldsOnHumanUnblock(input: {
       companyId,
       action,
       actor: input.actor,
-      note: HUMAN_UNBLOCK_NOTE,
+      note: input.note ?? HUMAN_UNBLOCK_NOTE,
       postCommitActivityPublications: input.postCommitActivityPublications,
     });
     clearedActionIds.push(action.id);
@@ -182,7 +235,7 @@ type WakeupFn = (
     triggerDetail: "system";
     reason: string;
     payload: Record<string, unknown>;
-    requestedByActorType: "user";
+    requestedByActorType: "user" | "agent";
     requestedByActorId: string;
     contextSnapshot: Record<string, unknown>;
   },
@@ -196,7 +249,13 @@ type WakeupFn = (
  */
 export async function replanParkedWakesAfterUnblock(
   wakeup: WakeupFn,
-  input: { issueId: string; agentId: string; actorId: string; clearedActionIds: string[] },
+  input: {
+    issueId: string;
+    agentId: string;
+    actorId: string;
+    actorType?: "user" | "agent";
+    clearedActionIds: string[];
+  },
 ): Promise<void> {
   try {
     await wakeup(input.agentId, {
@@ -204,7 +263,7 @@ export async function replanParkedWakesAfterUnblock(
       triggerDetail: "system",
       reason: HUMAN_UNBLOCK_REPLAN_REASON,
       payload: { issueId: input.issueId, mutation: "update", clearedRecoveryActionIds: input.clearedActionIds },
-      requestedByActorType: "user",
+      requestedByActorType: input.actorType ?? "user",
       requestedByActorId: input.actorId,
       contextSnapshot: {
         issueId: input.issueId,

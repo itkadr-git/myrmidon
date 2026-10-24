@@ -12,8 +12,8 @@ import {
   pluginDatabaseNamespaces,
   pluginMigrations,
   plugins,
-} from "@paperclipai/db";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -161,8 +161,12 @@ describe("buildPluginWorkerEnv", () => {
     });
 
     expect(env).toEqual({
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
       ANTHROPIC_API_KEY: "anthropic-token",
       OPENAI_API_KEY: "openai-token",
     });
@@ -181,8 +185,12 @@ describe("buildPluginWorkerEnv", () => {
     });
 
     expect(env).toEqual({
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
       KUBERNETES_SERVICE_HOST: "10.0.0.1",
       KUBERNETES_SERVICE_PORT: "443",
     });
@@ -198,8 +206,12 @@ describe("buildPluginWorkerEnv", () => {
     });
 
     expect(env).toEqual({
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
     });
   });
 
@@ -209,7 +221,7 @@ describe("buildPluginWorkerEnv", () => {
         capabilities: ["environment.drivers.register"],
         environmentDrivers: [{ driverKey: "daytona" }],
       },
-      packageName: "@paperclipai/plugin-daytona",
+      packageName: "@myrmidon/plugin-daytona",
       packagePath: null,
       instanceInfo,
       processEnv: {
@@ -220,8 +232,12 @@ describe("buildPluginWorkerEnv", () => {
     });
 
     expect(env).toEqual({
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
       DAYTONA_API_KEY: "daytona-token",
     });
   });
@@ -232,7 +248,7 @@ describe("buildPluginWorkerEnv", () => {
         capabilities: ["environment.drivers.register"],
         environmentDrivers: [{ driverKey: "daytona" }],
       },
-      packageName: "@paperclipai/plugin-daytona",
+      packageName: "@myrmidon/plugin-daytona",
       packagePath: "/app/packages/plugins/sandbox-providers/daytona",
       trustedLocalPluginRoots: ["/app/packages/plugins"],
       instanceInfo,
@@ -242,8 +258,12 @@ describe("buildPluginWorkerEnv", () => {
     });
 
     expect(env).toEqual({
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
       DAYTONA_API_KEY: "daytona-token",
     });
   });
@@ -254,7 +274,7 @@ describe("buildPluginWorkerEnv", () => {
         capabilities: ["environment.drivers.register"],
         environmentDrivers: [{ driverKey: "daytona" }],
       },
-      packageName: "@paperclipai/plugin-daytona",
+      packageName: "@myrmidon/plugin-daytona",
       packagePath: "/home/operator/.paperclip/plugins/fake-daytona",
       trustedLocalPluginRoots: ["/app/packages/plugins"],
       instanceInfo,
@@ -264,8 +284,12 @@ describe("buildPluginWorkerEnv", () => {
     });
 
     expect(env).toEqual({
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
     });
   });
 
@@ -283,8 +307,12 @@ describe("buildPluginWorkerEnv", () => {
     });
 
     expect(env).toEqual({
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
     });
   });
 
@@ -294,7 +322,7 @@ describe("buildPluginWorkerEnv", () => {
         capabilities: ["environment.drivers.register"],
         environmentDrivers: [{ driverKey: "kubernetes" }],
       },
-      packageName: "@paperclipai/plugin-daytona",
+      packageName: "@myrmidon/plugin-daytona",
       instanceInfo,
       processEnv: {
         DAYTONA_API_KEY: "daytona-token",
@@ -302,8 +330,12 @@ describe("buildPluginWorkerEnv", () => {
     });
 
     expect(env).toEqual({
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+      MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
     });
   });
 });
@@ -721,6 +753,8 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       expect.objectContaining({
         databaseNamespace: namespace,
         env: {
+          MYRMIDON_DEPLOYMENT_MODE: "authenticated",
+          MYRMIDON_DEPLOYMENT_EXPOSURE: "public",
           PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
           PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
         },

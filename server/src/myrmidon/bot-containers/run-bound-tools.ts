@@ -20,10 +20,11 @@
 //      audit attributes the call to the run without touching hermes.
 
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, issues, type Db } from "@myrmidon/db";
 import { createLocalAgentJwt } from "../../agent-auth-jwt.js";
 import { callProjectTool, projectToolDefinitions } from "../../services/project-tools.js";
 import type { ToolGatewayDescriptor, ToolGatewaySession } from "../../services/tool-gateway.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 /** The provider type carried by the task/project tool descriptors below. */
 export const RUN_BOUND_PROJECT_PROVIDER = "paperclip_self" as const;
@@ -154,7 +155,7 @@ export async function executeRunBoundProjectTool(input: {
   if (!projectToolDefinitions(issue.workMode, true).some((tool) => tool.name === input.toolName)) {
     throw new RunBoundToolError(403, "Tool is unavailable in this mode", "tool_mode_denied");
   }
-  const apiUrl = process.env.PAPERCLIP_API_URL;
+  const apiUrl = readProductEnv("API_URL");
   if (!apiUrl) throw new RunBoundToolError(500, "Board API origin is unavailable", "api_origin_unavailable");
   const adapterType = agentRow?.adapterType || "process";
   const token = createLocalAgentJwt(

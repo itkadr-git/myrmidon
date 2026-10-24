@@ -1,10 +1,11 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 // @vitest-environment jsdom
 
 import type { ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Approval, HeartbeatRun, Issue } from "@paperclipai/shared";
+import type { Approval, HeartbeatRun, Issue } from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyJoinRequest } from "../api/access";
 import {
@@ -469,7 +470,7 @@ describe("Inbox toolbar", () => {
 
   it("keeps archive hover actions and swipe targets on every unread non-task Mine row", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    localStorage.setItem("paperclip:inbox:group-by", "none");
+    localStorage.setItem("myrmidon:inbox:group-by", "none");
     apiMocks.approvalsList.mockResolvedValue([createApproval()]);
     apiMocks.heartbeatRunsList.mockResolvedValue([createFailedRun()]);
     apiMocks.joinRequestsList.mockResolvedValue([createJoinRequest()]);
@@ -522,7 +523,7 @@ describe("Inbox toolbar", () => {
 
   it("restores folded and unfolded sub-tasks across remounts", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    const storageKey = "paperclip:inbox:collapsed-parents:company-1";
+    const storageKey = "myrmidon:inbox:collapsed-parents:company-1";
     localStorage.removeItem(storageKey);
 
     const parent = createIssue({
@@ -672,7 +673,7 @@ describe("Inbox toolbar", () => {
 
   it("explains that live-run filtering is different from active task statuses", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    localStorage.setItem("paperclip:inbox:filters:company-1", JSON.stringify({
+    localStorage.setItem("myrmidon:inbox:filters:company-1", JSON.stringify({
       allCategoryFilter: "everything",
       allApprovalFilter: "all",
       issueFilters: { liveOnly: true },
@@ -693,7 +694,7 @@ describe("Inbox toolbar", () => {
     expect(container.querySelector('[data-testid="inbox-filter-scope-feedback"]')?.textContent)
       .toBe("Live runs only — tasks currently connected to an agent run.");
     const migrated = JSON.parse(
-      localStorage.getItem("paperclip:task-collection:v1:company-1:inbox") ?? "null",
+      localStorage.getItem("myrmidon:task-collection:v1:company-1:inbox") ?? "null",
     ) as { companyId?: string; collectionKey?: string } | null;
     expect(migrated).toMatchObject({ companyId: "company-1", collectionKey: "inbox" });
 
@@ -780,7 +781,7 @@ describe("Inbox toolbar", () => {
 
   it("shows the resolved isolated workspace name in canonical task metadata", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
+    localStorage.setItem("myrmidon:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
     apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
     apiMocks.executionWorkspaceSummaries.mockResolvedValue([{
       id: "execution-workspace-1",

@@ -27,10 +27,9 @@ import { z } from "zod";
  * - otherwise the environment variable (the deployment default);
  * - otherwise the built-in default.
  *
- * The pilot flag is deliberately the only value whose default is "off": the
- * whole feature ships dark and an operator turns it on for one team, which is
- * what makes it possible to compare a pilot window against the BASELINE
- * snapshot.
+ * The swarm is switched on or off per instance by one flag (`enabled`); who
+ * takes part is decided by the caste directory (`swarmEligible` of the caste)
+ * and nothing else.
  */
 
 /**
@@ -54,12 +53,11 @@ export const SWARM_CLAIM_ENV_KEYS = {
 
 export const SWARM_CLAIM_SETTING_KEYS = [
   "enabled",
-  "enabledRoles",
-  "enabledCompanyIds",
   "leaseTtlSec",
   "maxActiveTasks",
   "sweepIntervalSec",
   "p0Preemption",
+  "pheromone",
 ] as const;
 
 export type SwarmClaimSettingKey = (typeof SWARM_CLAIM_SETTING_KEYS)[number];
@@ -70,25 +68,26 @@ export type SwarmClaimSettingSource = "settings" | "env" | "default";
 /**
  * Stored-settings key inside `instance_settings.general` that holds the whole
  * object — one key, like `runLimits` and `workspaceHygiene`, so a partial
- * hand-edit cannot silently enable the pilot.
+ * hand-edit cannot silently enable the swarm.
  */
 export const SWARM_CLAIM_SETTINGS_KEY = "swarmClaim";
 
-/** Master switch of the pilot. Off unless a value on the list below turns it on. */
-export const DEFAULT_SWARM_CLAIM_ENABLED = false;
-
 /**
- * 1.6.1 (SWARM-SETTINGS-UI): the pilot set. Empty means "no restriction": with
- * `enabled` on, every role of every company claims. A non-empty list narrows
- * the pilot to the listed roles (the pilot on the dev team) — a role not on
- * the list keeps vendor behavior even while the pilot is on elsewhere.
- * An empty string in the env override means "no restriction", the same reading
- * the other list-valued myrmidon settings use.
+ * The stored swarm-claim settings of an instance `general` block. One reader
+ * for every consumer (the claim service, the sweep, the matcher, the hooks),
+ * so the key is spelled in one place. `general.swarm` is a different block —
+ * the wake guard of F-26 (`myrmidon-swarm-wake.ts`: the taskless gate and the
+ * cooling window) — and is never read here.
  */
-export const SWARM_CLAIM_ENABLED_ROLES_ENV = "MYRMIDON_SWARM_CLAIM_ENABLED_ROLES";
-export const SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV = "MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS";
-export const DEFAULT_SWARM_CLAIM_ENABLED_ROLES: string[] = [];
-export const DEFAULT_SWARM_CLAIM_ENABLED_COMPANY_IDS: string[] = [];
+export function readStoredSwarmSettings(
+  general: Record<string, unknown> | null | undefined,
+): unknown {
+  if (!general) return undefined;
+  return general[SWARM_CLAIM_SETTINGS_KEY];
+}
+
+/** Master switch of the swarm. Off unless the stored value or the override turns it on. */
+export const DEFAULT_SWARM_CLAIM_ENABLED = false;
 
 /**
  * 1.6.1 (SWARM-SETTINGS-UI): whether a P0 (critical) task preempts the queue
@@ -114,6 +113,14 @@ export const MAX_SWARM_MAX_ACTIVE_TASKS = 100;
 /** How often the expired-lease sweep runs, in seconds. */
 export const DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC = 30;
 export const MIN_SWARM_CLAIM_SWEEP_INTERVAL_SEC = 5;
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): the per-agent switch telling whether the
+ * agent may take a task from the queue. It lives in `agents.metadata` under
+ * this key so an agent carries it without a migration; absent means "ask the
+ * caste" (see `resolveSwarmQueueEligibility`).
+ */
+export const SWARM_QUEUE_ELIGIBILITY_METADATA_KEY = "swarmQueueEligible";
 
 /**
  * The wake reason the queue uses when it wakes the next agent of a role. Part A
@@ -192,11 +199,23 @@ export interface SwarmQueueCandidate {
   issueId: string;
   identifier?: string | null;
   priority: string | null;
+  /**
+   * 1.6.5 (F-27 PHEROMONE): numeric pheromone strength of the task; the higher
+   * the value, the earlier the task ranks inside its P0 band. Rows fetched
+   * before the column landed (or callers that do not carry it yet) read as 0.
+   */
+  pheromoneStrength?: number | null;
+  /**
+   * 1.6.5 (F-27 rework 09.10): runs that ended failed/blocked/needs_followup/
+   * timed_out with no task change after them — the evaporation count of the
+   * effective strength (design §2.3). Fed by the SQL twin; absent reads as 0.
+   */
+  failedRunsSinceLastChange?: number | null;
   /** Tie-break: the older the task entered the queue, the earlier it ranks. */
   queuedAt: Date | number | string | null;
 }
 
-function queuedAtMs(value: SwarmQueueCandidate["queuedAt"]): number {
+function queuedAtMsValue(value: Date | number | string | null | undefined): number {
   if (value === null || value === undefined) return 0;
   if (value instanceof Date) return value.getTime();
   if (typeof value === "number") return value;
@@ -204,29 +223,43 @@ function queuedAtMs(value: SwarmQueueCandidate["queuedAt"]): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+function queuedAtMs(value: SwarmQueueCandidate["queuedAt"]): number {
+  return queuedAtMsValue(value);
+}
+
 /**
- * The queue order: highest priority first (a `critical` task is the top of the
- * queue), oldest entry into the queue breaks ties. This is the single order the
- * core picks in and the supervisor view renders, so "the top of the queue" means
- * the same thing in both.
+ * The queue order (owner 09.10: "the more pheromone, the higher the priority
+ * of the task"): a `critical` (P0) task preempts the whole queue; inside its
+ * band the higher EFFECTIVE pheromone strength wins (`effectivePheromone`:
+ * strength + aging − failure penalty); the oldest entry into the queue breaks
+ * ties, and the issue id makes the order total. This is the single order the
+ * core picks in, the F-26 board-side matching reads and the supervisor view
+ * renders, so "the top of the queue" means the same thing everywhere.
  *
  * 1.6.1 (SWARM-SETTINGS-UI): `p0Preemption` off demotes the priority rank to a
- * tie-break-only signal — the queue becomes strictly oldest-first, so a critical
- * task no longer jumps it. Passing the setting is optional so every existing
- * call site (the supervisor view included) keeps the 1.6 order by default.
+ * tie-break-only signal — the queue orders by effective strength, then age, so
+ * a critical task no longer jumps it. `dynamics` are the aging/penalty knobs of
+ * the `pheromone` settings (`pheromoneDynamicsOf`); absent = the design defaults.
  */
 export function orderSwarmQueueCandidates<T extends SwarmQueueCandidate>(
   candidates: readonly T[],
-  options?: { p0Preemption?: boolean },
+  options?: { p0Preemption?: boolean; dynamics?: PheromoneDynamicsSettings; now?: Date | number },
 ): T[] {
   const p0Preemption = options?.p0Preemption ?? true;
+  const dynamics = options?.dynamics ?? DEFAULT_PHEROMONE_DYNAMICS;
+  const now = options?.now ?? new Date();
   return [...candidates].sort((left, right) => {
     if (p0Preemption) {
       const leftRank = swarmPriorityRank(left.priority);
       const rightRank = swarmPriorityRank(right.priority);
       if (leftRank !== rightRank) return leftRank - rightRank;
     }
-    return queuedAtMs(left.queuedAt) - queuedAtMs(right.queuedAt);
+    const strengthDelta =
+      effectivePheromone(right, dynamics, now) - effectivePheromone(left, dynamics, now);
+    if (strengthDelta !== 0) return strengthDelta;
+    const ageDelta = queuedAtMs(left.queuedAt) - queuedAtMs(right.queuedAt);
+    if (ageDelta !== 0) return ageDelta;
+    return left.issueId < right.issueId ? -1 : left.issueId > right.issueId ? 1 : 0;
   });
 }
 
@@ -235,6 +268,8 @@ export interface SwarmClaimLease {
   id: string;
   issueId: string;
   agentId: string;
+  /** Provenance is absent on pre-migration rows and must be treated as unknown. */
+  origin?: "auto_match" | "checkout" | null;
   heartbeatAt: Date | number | string | null;
   expiresAt: Date | number | string | null;
   releasedAt: Date | number | string | null;
@@ -278,37 +313,236 @@ const maxActiveTasksSchema = z
   .max(MAX_SWARM_MAX_ACTIVE_TASKS)
   .nullable();
 const sweepIntervalSchema = z.number().int().min(MIN_SWARM_CLAIM_SWEEP_INTERVAL_SEC);
+/**
+ * Keys that earlier builds stored next to the live ones (the pilot role and
+ * company lists of 1.6.1 and the idle-wake batch of the 1.6.5 candidates). They
+ * no longer mean anything; a stored value that still carries them is read with
+ * them dropped instead of being refused as a whole (which would silently turn
+ * the switch back to the default).
+ */
+export const SWARM_CLAIM_RETIRED_SETTING_KEYS = [
+  "enabledRoles",
+  "enabledCompanyIds",
+  "idleWakeBatch",
+] as const;
 
-// 1.6.1 (SWARM-SETTINGS-UI): the pilot-set lists. Non-empty arrays of trimmed
-// non-empty strings; an empty array is the honest "no restriction" and is
-// stored as such (not omitted), so the settings screen can tell "the operator
-// chose everyone" from "nothing was ever saved".
-const enabledRolesSchema = z.array(z.string().trim().min(1).max(200)).max(200);
-const enabledCompanyIdsSchema = z.array(z.string().trim().min(1).max(64)).max(200);
+// myrmidon(1.6.5 SWARM-T4): pheromone tuning fields (design §5.1). Numbers
+// integer-tuned, whole numbers ≥ 0; an absent field is the design default
+// (§2.3), stored as an empty object — the panel shows the default in the
+// placeholder.
+/**
+ * myrmidon(1.6.5 SWARM-T4, design §5.1): the pheromone tuning subset of the
+ * swarm settings — priority → strength seeds plus aging/evaporation knobs.
+ * All fields optional; absent = the design default (§2.3).
+ */
+export const PHEROMONE_NUMBER_KEYS = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "agingStepHours",
+  "agingStep",
+  "agingCap",
+  "failPenalty",
+] as const;
+
+export type PheromoneNumberKey = (typeof PHEROMONE_NUMBER_KEYS)[number];
+
+/**
+ * myrmidon(1.6.5 SWARM-PANEL-COOLING, OPE-6894): `cooldownBaseMin` and
+ * `cooldownCapMin` lived in the `pheromone` subset but no server code ever
+ * read them — the real cooling rule is `general.swarm` (F-26 wake guard,
+ * `myrmidon-swarm-wake.ts` + `wake-task-guard.ts`). They are retired here:
+ * they are no longer part of the schema, and a stored or incoming row that
+ * still carries them has them silently stripped (not rejected), so an
+ * existing swarm-claim block keeps parsing.
+ */
+export const PHEROMONE_RETIRED_KEYS = ["cooldownBaseMin", "cooldownCapMin"] as const;
+
+export const PHEROMONE_FIELD_DEFAULTS: Record<PheromoneNumberKey, number> = {
+  critical: 100,
+  high: 30,
+  medium: 10,
+  low: 1,
+  agingStepHours: 24,
+  agingStep: 1,
+  agingCap: 5,
+  failPenalty: 10,
+};
+
+const pheromoneNumberSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(100000);
+
+/**
+ * A stored `pheromone` subset from before OPE-6894 may still carry the dead
+ * cooldown keys. Strip them on read so the strict schema keeps accepting the
+ * row (mirrors `dropRetiredSwarmKeys` one level up).
+ */
+function dropRetiredPheromoneKeys(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const copy = { ...(raw as Record<string, unknown>) };
+  for (const key of PHEROMONE_RETIRED_KEYS) delete copy[key];
+  return copy;
+}
+
+export const pheromoneSchema = z.preprocess(
+  dropRetiredPheromoneKeys,
+  z
+    .object({
+      critical: pheromoneNumberSchema,
+      high: pheromoneNumberSchema,
+      medium: pheromoneNumberSchema,
+      low: pheromoneNumberSchema,
+      agingStepHours: pheromoneNumberSchema,
+      agingStep: pheromoneNumberSchema,
+      agingCap: pheromoneNumberSchema,
+      failPenalty: pheromoneNumberSchema,
+    })
+    .partial()
+    .strict(),
+);
+
+/**
+ * 1.6.5 (F-27 PHEROMONE): bounds of the numeric strength a task carries
+ * (`issues.pheromone_strength`).
+ */
+export const MIN_PHEROMONE_STRENGTH = 0;
+export const MAX_PHEROMONE_STRENGTH = 1_000_000;
+
+/**
+ * 1.6.5 (F-27 rework 09.10, design §2.3): the knobs of the *effective*
+ * pheromone strength — read from the single `pheromone` settings key (T4), an
+ * absent field is the design default (`PHEROMONE_FIELD_DEFAULTS`). A task
+ * waiting unclaimed gathers strength (`agingStep` per `agingStepHours`, capped
+ * at `agingCap`); each failed run without a change to the task evaporates
+ * `failPenalty`; the effective value never drops below 0.
+ */
+export interface PheromoneDynamicsSettings {
+  agingStepHours: number;
+  agingStep: number;
+  agingCap: number;
+  failPenalty: number;
+}
+
+export const DEFAULT_PHEROMONE_DYNAMICS: PheromoneDynamicsSettings = {
+  agingStepHours: PHEROMONE_FIELD_DEFAULTS.agingStepHours,
+  agingStep: PHEROMONE_FIELD_DEFAULTS.agingStep,
+  agingCap: PHEROMONE_FIELD_DEFAULTS.agingCap,
+  failPenalty: PHEROMONE_FIELD_DEFAULTS.failPenalty,
+};
+
+/** Dynamics from the (partial) stored `pheromone` subset; absent = default. */
+export function pheromoneDynamicsOf(
+  pheromone: Partial<Record<PheromoneNumberKey, number>> | null | undefined,
+): PheromoneDynamicsSettings {
+  const pick = (key: keyof PheromoneDynamicsSettings) => {
+    const value = pheromone?.[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : PHEROMONE_FIELD_DEFAULTS[key];
+  };
+  return {
+    agingStepHours: pick("agingStepHours"),
+    agingStep: pick("agingStep"),
+    agingCap: pick("agingCap"),
+    failPenalty: pick("failPenalty"),
+  };
+}
+
+/**
+ * The strength a new task of `priority` starts with — the `critical`/`high`/
+ * `medium`/`low` fields of the `pheromone` subset. An unknown priority reads as
+ * `medium`, matching the schema default.
+ */
+export function pheromoneStrengthForPriority(
+  pheromone: Partial<Record<PheromoneNumberKey, number>> | null | undefined,
+  priority: string | null | undefined,
+): number {
+  const key = (priority ?? "medium").toLowerCase();
+  const field: PheromoneNumberKey =
+    key === "critical" || key === "high" || key === "medium" || key === "low" ? key : "medium";
+  const value = pheromone?.[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : PHEROMONE_FIELD_DEFAULTS[field];
+}
+
+/**
+ * The effective pheromone strength of a task at `now` (design §2.3):
+ *   eff = strength
+ *       + min(agingCap, floor(hoursWaiting / agingStepHours) × agingStep)
+ *       − failPenalty × failedRunsSinceLastChange
+ * never below 0. `queuedAt` is when the wait started;
+ * `failedRunsSinceLastChange` is the count of runs that ended failed/blocked/
+ * needs_followup/timed_out with no task change after them (the SQL twin
+ * computes it from heartbeat_runs and the task's change trail). Pure and
+ * deterministic — the queue, the run-priority scorer and the card hint must
+ * agree on it.
+ */
+export interface EffectivePheromoneInput {
+  pheromoneStrength?: number | null;
+  queuedAt?: Date | number | string | null;
+  failedRunsSinceLastChange?: number | null;
+}
+
+export function effectivePheromone(
+  input: EffectivePheromoneInput,
+  dynamics: PheromoneDynamicsSettings = DEFAULT_PHEROMONE_DYNAMICS,
+  now: Date | number = new Date(),
+): number {
+  const strength =
+    typeof input.pheromoneStrength === "number" && Number.isFinite(input.pheromoneStrength)
+      ? input.pheromoneStrength
+      : 0;
+  const queuedAt = queuedAtMsValue(input.queuedAt);
+  const nowMs = now instanceof Date ? now.getTime() : now;
+  let agingBonus = 0;
+  if (dynamics.agingStepHours > 0 && dynamics.agingStep > 0 && queuedAt > 0) {
+    const hoursWaiting = Math.max(0, nowMs - queuedAt) / 3_600_000;
+    agingBonus = Math.min(
+      dynamics.agingCap,
+      Math.floor(hoursWaiting / dynamics.agingStepHours) * dynamics.agingStep,
+    );
+  }
+  const failedRuns =
+    typeof input.failedRunsSinceLastChange === "number" &&
+    Number.isFinite(input.failedRunsSinceLastChange)
+      ? Math.max(0, Math.floor(input.failedRunsSinceLastChange))
+      : 0;
+  const penalty = dynamics.failPenalty * failedRuns;
+  return Math.max(0, strength + agingBonus - penalty);
+}
+
+function dropRetiredSwarmKeys(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const copy = { ...(raw as Record<string, unknown>) };
+  for (const key of SWARM_CLAIM_RETIRED_SETTING_KEYS) delete copy[key];
+  return copy;
+}
 
 /** The canonical stored shape of `instance_settings.general.swarmClaim`. */
-export const swarmClaimSettingsSchema = z
-  .object({
-    enabled: z.boolean(),
-    enabledRoles: enabledRolesSchema.default(DEFAULT_SWARM_CLAIM_ENABLED_ROLES),
-    enabledCompanyIds: enabledCompanyIdsSchema.default(DEFAULT_SWARM_CLAIM_ENABLED_COMPANY_IDS),
-    leaseTtlSec: leaseTtlSchema,
-    maxActiveTasks: maxActiveTasksSchema,
-    sweepIntervalSec: sweepIntervalSchema,
-    p0Preemption: z.boolean().default(DEFAULT_SWARM_CLAIM_P0_PREEMPTION),
-  })
-  .strict();
+export const swarmClaimSettingsSchema = z.preprocess(
+  dropRetiredSwarmKeys,
+  z
+    .object({
+      enabled: z.boolean(),
+      leaseTtlSec: leaseTtlSchema,
+      maxActiveTasks: maxActiveTasksSchema,
+      sweepIntervalSec: sweepIntervalSchema,
+      p0Preemption: z.boolean().default(DEFAULT_SWARM_CLAIM_P0_PREEMPTION),
+      pheromone: pheromoneSchema.default({}),
+    })
+    .strict(),
+);
 
 /** Body of `PATCH /api/myrmidon/swarm-claim`: any subset; absent keys keep their value. */
 export const patchSwarmClaimSettingsSchema = z
   .object({
     enabled: z.boolean().optional(),
-    enabledRoles: enabledRolesSchema.optional(),
-    enabledCompanyIds: enabledCompanyIdsSchema.optional(),
     leaseTtlSec: leaseTtlSchema.optional(),
     maxActiveTasks: maxActiveTasksSchema.optional(),
     sweepIntervalSec: sweepIntervalSchema.optional(),
     p0Preemption: z.boolean().optional(),
+    pheromone: pheromoneSchema.optional(),
   })
   .strict();
 
@@ -320,7 +554,7 @@ export interface ResolvedSwarmClaimSettings {
   sources: Record<SwarmClaimSettingKey, SwarmClaimSettingSource>;
 }
 
-/** The single truth for "is this string an explicit on?". A typo must not enable the pilot. */
+/** The single truth for "is this string an explicit on?". A typo must not enable the swarm. */
 export function parseSwarmClaimEnabled(raw: string | undefined | null): boolean | null {
   const value = raw?.trim().toLowerCase();
   if (!value) return null;
@@ -361,18 +595,8 @@ export function readSwarmClaimSettingsFromEnv(
         : DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
     p0Preemption:
       parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? DEFAULT_SWARM_CLAIM_P0_PREEMPTION,
-    enabledRoles: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_ROLES_ENV]),
-    enabledCompanyIds: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV]),
+    pheromone: {},
   };
-}
-
-/** A comma-separated list variable: trimmed entries, empty entries dropped. */
-export function readSwarmClaimListEnv(raw: string | undefined): string[] {
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
 }
 
 /** The stored settings value, or null when the row holds nothing usable. */
@@ -383,9 +607,9 @@ export function normalizeSwarmClaimSettings(raw: unknown): SwarmClaimSettings | 
 
 /**
  * Effective settings and where each value came from. `stored` is the raw
- * `general.swarmClaim` value; an unreadable one counts as absent, so the
- * environment (or the default) applies instead — a hand-edited row cannot
- * enable the pilot on its own.
+ * `general.swarmClaim` value (see `readStoredSwarmSettings`); an unreadable one
+ * counts as absent, so the environment (or the default) applies instead — a
+ * hand-edited row cannot enable the swarm on its own.
  *
  * 1.6.1 (SWARM-SETTINGS-UI): precedence is per key — the environment variable
  * wins over the stored value only for the keys whose variable is actually set
@@ -416,14 +640,7 @@ export function resolveSwarmClaimSettings(options: {
         }),
         p0Preemption:
           parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? stored.p0Preemption,
-        enabledRoles:
-          env[SWARM_CLAIM_ENABLED_ROLES_ENV] !== undefined
-            ? envSettings.enabledRoles
-            : stored.enabledRoles,
-        enabledCompanyIds:
-          env[SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV] !== undefined
-            ? envSettings.enabledCompanyIds
-            : stored.enabledCompanyIds,
+        pheromone: stored.pheromone ?? {},
       }
     : envSettings;
 
@@ -433,16 +650,6 @@ export function resolveSwarmClaimSettings(options: {
   const sources = {} as Record<SwarmClaimSettingKey, SwarmClaimSettingSource>;
   const hasOverride = (name: string) => env[name] !== undefined && env[name]!.trim() !== "";
   sources.enabled = hasOverride(SWARM_CLAIM_ENV_KEYS.enabled)
-    ? "env"
-    : stored
-      ? "settings"
-      : "default";
-  sources.enabledRoles = hasOverride(SWARM_CLAIM_ENABLED_ROLES_ENV)
-    ? "env"
-    : stored
-      ? "settings"
-      : "default";
-  sources.enabledCompanyIds = hasOverride(SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV)
     ? "env"
     : stored
       ? "settings"
@@ -467,6 +674,11 @@ export function resolveSwarmClaimSettings(options: {
     : stored
       ? "settings"
       : "default";
+  // myrmidon(1.6.5 SWARM-T4, design §5.1): the pheromone subset is
+  // settings-only (no env override) — the stored row or the design default.
+  sources.pheromone = stored?.pheromone && Object.keys(stored.pheromone).length > 0
+    ? "settings"
+    : "default";
   return { settings, sources };
 }
 
@@ -504,30 +716,16 @@ function envMaxActiveOr(raw: string | undefined, stored: number | null): number 
 }
 
 /**
- * 1.6.1 (SWARM-SETTINGS-UI): is the claim path enabled for one company + role?
- * The pilot gate the server actually enforces: the master switch, the company
- * list (empty = every company) and the role list (empty = every role) must all
- * pass. Exported so the settings screen, the claim service and the supervisor
- * view agree on who is in the pilot.
+ * 1.6.5 (SWARM-T4, design §5.1): the claim gate the server enforces. The
+ * role/company restriction lists are gone — one switch, the whole board or nothing.
+ * Kept as a named function so the settings screen, the claim service and the
+ * supervisor view keep calling one gate.
  */
 export function isSwarmClaimEnabledFor(
-  settings: Pick<
-    SwarmClaimSettings,
-    "enabled" | "enabledCompanyIds" | "enabledRoles"
-  >,
-  input: { companyId: string; role: string },
+  settings: Pick<SwarmClaimSettings, "enabled">,
+  _input: { companyId: string; role: string },
 ): boolean {
-  if (!settings.enabled) return false;
-  if (
-    settings.enabledCompanyIds.length > 0 &&
-    !settings.enabledCompanyIds.includes(input.companyId)
-  ) {
-    return false;
-  }
-  if (settings.enabledRoles.length > 0 && !settings.enabledRoles.includes(input.role)) {
-    return false;
-  }
-  return true;
+  return settings.enabled;
 }
 
 /** A patch over the effective values, the shape that gets stored. */
@@ -537,16 +735,56 @@ export function mergeSwarmClaimSettings(
 ): SwarmClaimSettings {
   return {
     enabled: patch.enabled === undefined ? base.enabled : patch.enabled,
-    enabledRoles: patch.enabledRoles === undefined ? base.enabledRoles : patch.enabledRoles,
-    enabledCompanyIds:
-      patch.enabledCompanyIds === undefined ? base.enabledCompanyIds : patch.enabledCompanyIds,
     leaseTtlSec: patch.leaseTtlSec === undefined ? base.leaseTtlSec : patch.leaseTtlSec,
     maxActiveTasks:
       patch.maxActiveTasks === undefined ? base.maxActiveTasks : patch.maxActiveTasks,
     sweepIntervalSec:
       patch.sweepIntervalSec === undefined ? base.sweepIntervalSec : patch.sweepIntervalSec,
     p0Preemption: patch.p0Preemption === undefined ? base.p0Preemption : patch.p0Preemption,
+    // myrmidon(1.6.5 SWARM-T4, design §5.1): a pheromone patch replaces the
+    // subset wholesale (absent keys fall back to the design default, not to
+    // the previous stored value — the panel always submits the full subset).
+    pheromone: patch.pheromone === undefined ? base.pheromone : patch.pheromone,
   };
+}
+
+/** Where the effective per-agent queue switch came from. */
+export type SwarmQueueEligibilitySource = "agent" | "caste";
+
+export interface SwarmQueueEligibility {
+  eligible: boolean;
+  /** `agent` — the agent's own switch decided; `caste` — the caste default did. */
+  source: SwarmQueueEligibilitySource;
+}
+
+/**
+ * The explicit per-agent switch stored in `agents.metadata`, or null when the
+ * agent carries none (a value that is not a boolean is not an answer: a
+ * hand-edited row cannot silently take an agent out of the queue, nor put it
+ * in).
+ */
+export function readSwarmQueueEligibilityOverride(
+  metadata: Record<string, unknown> | null | undefined,
+): boolean | null {
+  const raw = metadata?.[SWARM_QUEUE_ELIGIBILITY_METADATA_KEY];
+  return typeof raw === "boolean" ? raw : null;
+}
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): may this agent take a task from the
+ * queue? The agent's own switch wins when it is set; otherwise the caste
+ * decides (`swarmEligible` in the caste directory) and nothing else: whether
+ * other agents report to the agent does not matter — the operator who wants a
+ * manager out of the queue puts it in a caste with `swarmEligible` off, or
+ * flips the agent's own switch.
+ */
+export function resolveSwarmQueueEligibility(facts: {
+  metadata?: Record<string, unknown> | null;
+  casteEligible: boolean;
+}): SwarmQueueEligibility {
+  const override = readSwarmQueueEligibilityOverride(facts.metadata);
+  if (override !== null) return { eligible: override, source: "agent" };
+  return { eligible: facts.casteEligible, source: "caste" };
 }
 
 /** The lease TTL in milliseconds — the unit the store and the sweep work in. */
@@ -585,6 +823,15 @@ export function swarmActiveTaskLimitReached(
  * can tell "this caste never takes tasks" from "nothing to take".
  */
 export const SWARM_CLAIM_REASON_CASTE_EXCLUDED = "caste_excluded";
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): the claim outcome reason for an agent
+ * switched out of the queue in its own card (`agents.metadata`
+ * `swarmQueueEligible=false`), or for one that the default rule keeps out
+ * because it is a manager. Kept apart from `caste_excluded` so the supervisor
+ * says which switch refused the task.
+ */
+export const SWARM_CLAIM_REASON_AGENT_EXCLUDED = "agent_excluded";
 
 /**
  * One entry of a company caste directory (`agents.role` keys). Part A owns

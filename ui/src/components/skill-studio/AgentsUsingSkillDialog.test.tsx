@@ -9,7 +9,7 @@ import type {
   CompanySkillDetail,
   CompanySkillUsageAgent,
   CompanySkillVersion,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AgentsUsingSkillBadge,
@@ -173,6 +173,7 @@ function makeSkill(overrides: Partial<CompanySkillDetail> = {}): CompanySkillDet
     sourcePath: null,
     currentVersion: makeVersion({ id: "ver-3", revisionNumber: 3 }),
     starredByCurrentActor: false,
+    requiredEnv: [],
     existingForks: [],
     ...overrides,
   };

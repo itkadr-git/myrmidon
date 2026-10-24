@@ -1,4 +1,4 @@
-import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
+import type { AdapterConfigSchema } from "@myrmidon/adapter-utils";
 import { DEFAULT_EVENT_RECONNECT_MS, DEFAULT_TIMEOUT_SEC } from "../shared/constants.js";
 
 export function getConfigSchema(): AdapterConfigSchema {
@@ -44,6 +44,15 @@ export function getConfigSchema(): AdapterConfigSchema {
         label: "Timeout seconds",
         type: "number",
         default: DEFAULT_TIMEOUT_SEC,
+      },
+      {
+        // myrmidon(N4-RUN-LIVENESS): per-agent opt-in for event-based
+        // liveness; the instance-wide switch is MYRMIDON_RUN_LIVENESS_EVENTS.
+        key: "livenessEvents",
+        label: "Liveness by gateway events",
+        type: "toggle",
+        default: false,
+        hint: "On: a run that keeps emitting gateway events past its timeout is left alive; only a run silent for the whole timeout budget is cut. Off (default): the fixed wall-clock timeout. The instance env MYRMIDON_RUN_LIVENESS_EVENTS enables it for every card.",
       },
       {
         // myrmidon(G5): per-agent run-create timeout

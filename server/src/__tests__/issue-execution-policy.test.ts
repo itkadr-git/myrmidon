@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
-import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
+import { applyIssueExecutionPolicyTransition, mayNeedDefaultEscalationChain, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import type { IssueExecutionPolicy, IssueExecutionState } from "@myrmidon/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
 const qaAgentId = "22222222-2222-4222-8222-222222222222";
 const ctoAgentId = "33333333-3333-4333-8333-333333333333";
+const leadAgentId = "66666666-6666-4666-8666-666666666666";
 const ctoUserId = "cto-user";
 const boardUserId = "board-user";
 
@@ -41,6 +42,19 @@ describe("normalizeIssueExecutionPolicy", () => {
 
   it("returns null when stages are empty", () => {
     expect(normalizeIssueExecutionPolicy({ stages: [] })).toBeNull();
+  });
+
+  it("keeps escalation-only policies and de-duplicates technical roles", () => {
+    const result = normalizeIssueExecutionPolicy({
+      stages: [],
+      reviewEscalationPolicy: {
+        participantRoles: ["secondary_reviewer", "lead", "lead"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "revision-1",
+      },
+    });
+    expect(result?.reviewEscalationPolicy?.participantRoles).toEqual(["lead", "secondary_reviewer"]);
   });
 
   it("throws when all participants are invalid (missing agentId)", () => {
@@ -967,6 +981,61 @@ describe("issue execution policy transitions", () => {
     const policy = twoStagePolicy();
     const reviewStageId = policy.stages[0].id;
 
+    it("preserves a scheduled monitor when an issue becomes blocked", () => {
+      const monitor = {
+        nextCheckAt: "2026-10-16T20:00:00.000Z",
+        notes: "Await CI",
+        scheduledBy: "assignee",
+      };
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: { ...policy, monitor },
+          executionState: null,
+          monitorNextCheckAt: new Date(monitor.nextCheckAt),
+          monitorAttemptCount: 2,
+        },
+        policy: { ...policy, monitor },
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch.status).toBeUndefined();
+      expect(result.patch.monitorNextCheckAt).toEqual(new Date(monitor.nextCheckAt));
+      expect(result.patch.executionPolicy).toBeUndefined();
+    });
+
+    it("preserves the scheduled monitor when a board override moves a review into blocked", () => {
+      const monitor = {
+        nextCheckAt: "2026-10-16T20:00:00.000Z",
+        notes: "Await CI",
+        scheduledBy: "assignee",
+      };
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: { ...policy, monitor },
+          executionState: null,
+          monitorNextCheckAt: new Date(monitor.nextCheckAt),
+          monitorAttemptCount: 2,
+        },
+        policy: { ...policy, monitor },
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        allowBoardOverride: true,
+      });
+
+      expect(result.patch.status).toBeUndefined();
+      expect(result.patch.monitorNextCheckAt).toEqual(new Date(monitor.nextCheckAt));
+      expect(result.patch.executionPolicy).toBeUndefined();
+    });
+
     it("non-done status change without review context is a no-op", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: {
@@ -1745,7 +1814,7 @@ describe("issue execution policy transitions", () => {
       expect(() =>
         applyIssueExecutionPolicyTransition({
           issue: {
-            status: "blocked",
+            status: "done",
             assigneeAgentId: coderAgentId,
             assigneeUserId: null,
             executionPolicy: null,
@@ -1875,46 +1944,255 @@ describe("review round circuit breaker", () => {
     });
   });
 
-  it("escalates the pending stage to the responsible human at the round cap", () => {
+  it("escalates the pending stage to the first agent of the senior chain at the round cap, never to a human", () => {
+    const result = applyIssueExecutionPolicyTransition({
+      issue: { ...reviewPendingIssue({}, { changesRequestedCount: 2 }), defaultEscalationAgentIds: [ctoAgentId, leadAgentId] },
+      policy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Round three feedback - still not converging",
+    });
+
+    expect(result.decision).toMatchObject({ outcome: "changes_requested" });
+    expect(result.patch.status).toBe("in_review");
+    expect(result.patch.assigneeAgentId).toBe(ctoAgentId);
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.executionState).toMatchObject({
+      status: "pending",
+      currentStageId: reviewStageId,
+      currentParticipant: { type: "agent", agentId: ctoAgentId },
+      escalationToParticipant: { type: "agent", agentId: ctoAgentId },
+      changesRequestedCount: 0,
+    });
+    expect(result.recoveryInteraction).toBeUndefined();
+  });
+
+  it("continues the chain after an escalated holder and skips the return assignee and the reviewer", () => {
+    const issue = {
+      ...reviewPendingIssue(
+        { assigneeAgentId: ctoAgentId },
+        { changesRequestedCount: 2, reviewCycleId: "cycle-1", currentParticipant: { type: "agent", agentId: ctoAgentId }, escalationToParticipant: { type: "agent", agentId: ctoAgentId } },
+      ),
+      defaultEscalationAgentIds: [coderAgentId, ctoAgentId, leadAgentId],
+    };
+    const result = applyIssueExecutionPolicyTransition({
+      issue,
+      policy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: ctoAgentId },
+      commentBody: "Still not converging",
+    });
+    // coder is the executor (returnAssignee), cto is the holder: next is lead.
+    expect(result.patch.assigneeAgentId).toBe(leadAgentId);
+    expect(result.patch.assigneeUserId).toBeNull();
+  });
+
+  it("raises a recovery card, not a human hand-off, when the senior chain is empty", () => {
+    const result = applyIssueExecutionPolicyTransition({
+      issue: { ...reviewPendingIssue({}, { changesRequestedCount: 2 }), id: "issue-empty-chain", defaultEscalationAgentIds: [] },
+      policy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Round three feedback",
+    });
+    expect(result.patch.status).toBe("in_review");
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.assigneeAgentId).toBe(qaAgentId);
+    expect(result.patch.executionState).toMatchObject({
+      currentParticipant: { type: "agent", agentId: qaAgentId },
+      escalationToParticipant: null,
+      escalationPolicyRevision: "default-senior-chain",
+    });
+    expect(result.recoveryInteraction).toMatchObject({ queue: "adm-review-recovery" });
+  });
+
+  it("never hands the stage to the responsible human when the chain was not computed", () => {
     const result = applyIssueExecutionPolicyTransition({
       issue: reviewPendingIssue({}, { changesRequestedCount: 2 }),
       policy,
       requestedStatus: "in_progress",
       requestedAssigneePatch: {},
       actor: { agentId: qaAgentId },
-      commentBody: "Round three feedback — still not converging",
+      commentBody: "Round three feedback",
     });
-
-    // The decision is still recorded, but the stage stays pending with the
-    // responsible human as participant instead of bouncing to the executor.
-    expect(result.decision).toMatchObject({ outcome: "changes_requested" });
-    expect(result.patch.status).toBe("in_review");
-    expect(result.patch.assigneeAgentId).toBeNull();
-    expect(result.patch.assigneeUserId).toBe(boardUserId);
-    expect(result.patch.executionState).toMatchObject({
-      status: "pending",
-      currentStageId: reviewStageId,
-      currentParticipant: { type: "user", userId: boardUserId },
-      changesRequestedCount: 3,
-    });
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.assigneeAgentId).toBe(coderAgentId);
   });
 
-  it("keeps the escalated hold sticky across unrelated transitions", () => {
+  it("mayNeedDefaultEscalationChain is true only at the cap without a configured policy", () => {
+    expect(mayNeedDefaultEscalationChain(reviewPendingIssue({}, { changesRequestedCount: 2 }), policy)).toBe(true);
+    expect(mayNeedDefaultEscalationChain(reviewPendingIssue({}, { changesRequestedCount: 0 }), policy)).toBe(false);
+    expect(mayNeedDefaultEscalationChain(reviewPendingIssue({}, { changesRequestedCount: 2 }), null)).toBe(false);
+  });
+
+  it("keeps an escalated agent hold sticky across unrelated transitions", () => {
+    const escalatedAgent = ctoAgentId;
     const result = applyIssueExecutionPolicyTransition({
       issue: reviewPendingIssue(
-        { assigneeAgentId: null, assigneeUserId: boardUserId },
+        // The assignee drifted away from the escalated agent.
+        { assigneeAgentId: coderAgentId, assigneeUserId: null },
         {
-          currentParticipant: { type: "user", userId: boardUserId },
+          currentParticipant: { type: "agent", agentId: escalatedAgent },
           changesRequestedCount: 3,
+          reviewCycleId: "issue:review:rev-7",
+          escalationPolicyRevision: "rev-7",
+          escalationReason: "review_round_limit",
+          escalationFromParticipant: { type: "agent", agentId: qaAgentId },
+          escalationToParticipant: { type: "agent", agentId: escalatedAgent },
         },
       ),
       policy,
       requestedAssigneePatch: {},
       actor: { agentId: coderAgentId },
+      commentBody: "Unrelated transition",
     });
 
-    expect(result.patch.executionState).toBeUndefined();
-    expect(result.patch.assigneeAgentId).toBeUndefined();
+    expect(result.patch.status).toBe("in_review");
+    expect(result.patch.assigneeAgentId).toBe(escalatedAgent);
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "agent", agentId: escalatedAgent },
+      reviewCycleId: "issue:review:rev-7",
+      escalationPolicyRevision: "rev-7",
+      escalationReason: "review_round_limit",
+      escalationFromParticipant: { type: "agent", agentId: qaAgentId },
+      escalationToParticipant: { type: "agent", agentId: escalatedAgent },
+    });
+  });
+
+  it("rejects a non-escalated actor advancing the stage during an escalated agent hold", () => {
+    expect(() =>
+      applyIssueExecutionPolicyTransition({
+        issue: reviewPendingIssue(
+          { assigneeAgentId: ctoAgentId, assigneeUserId: null },
+          {
+            currentParticipant: { type: "agent", agentId: ctoAgentId },
+            changesRequestedCount: 3,
+            reviewCycleId: "issue:review:rev-7",
+            escalationPolicyRevision: "rev-7",
+          },
+        ),
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Unrelated transition",
+      }),
+    ).toThrow("Only the escalated reviewer can advance the current execution stage");
+  });
+
+  it("does not open a second review stage when the same escalation is replayed", () => {
+    const escalationPolicy = normalizeIssueExecutionPolicy({
+      stages: [{ id: reviewStageId, type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      maxReviewRounds: 1,
+      reviewEscalationPolicy: {
+        participantRoles: ["lead"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "rev-replay",
+        participants: { lead: { type: "agent", agentId: ctoAgentId, projectId: null, casteKey: null } },
+      },
+    })!;
+    const base = { ...reviewPendingIssue({}, { changesRequestedCount: 0 }), id: "replay-issue" };
+    const request = {
+      policy: escalationPolicy,
+      requestedStatus: "in_progress" as const,
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Round limit reached",
+    };
+    const first = applyIssueExecutionPolicyTransition({ issue: base, ...request });
+    const firstState = first.patch.executionState as Record<string, unknown>;
+    expect(firstState).toMatchObject({ currentParticipant: { type: "agent", agentId: ctoAgentId } });
+
+    // Replaying the same request against the already-escalated state must not
+    // restart the stage: the old reviewer can no longer advance it.
+    expect(() =>
+      applyIssueExecutionPolicyTransition({
+        issue: { ...base, status: "in_review", assigneeAgentId: ctoAgentId, executionState: firstState },
+        ...request,
+      }),
+    ).toThrow("Only the escalated reviewer can advance the current execution stage");
+
+    // The recovery key is deterministic per (issue, cycle, policyRevision).
+    const emptyPolicy = normalizeIssueExecutionPolicy({
+      stages: [{ id: reviewStageId, type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      maxReviewRounds: 1,
+      reviewEscalationPolicy: {
+        participantRoles: ["lead"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "rev-replay",
+      },
+    })!;
+    const a = applyIssueExecutionPolicyTransition({ issue: base, ...request, policy: emptyPolicy });
+    const b = applyIssueExecutionPolicyTransition({ issue: base, ...request, policy: emptyPolicy });
+    expect(a.recoveryInteraction?.idempotencyKey).toBe(b.recoveryInteraction?.idempotencyKey);
+  });
+
+  it("replays the escalated continuation without opening a second review stage", () => {
+    const escalationPolicy = normalizeIssueExecutionPolicy({
+      stages: [{ id: reviewStageId, type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      maxReviewRounds: 1,
+      reviewEscalationPolicy: {
+        participantRoles: ["lead"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "rev-continuation",
+        participants: { lead: { type: "agent", agentId: ctoAgentId, projectId: null, casteKey: null } },
+      },
+    })!;
+    const base = { ...reviewPendingIssue({}, { changesRequestedCount: 0 }), id: "continuation-issue" };
+    const first = applyIssueExecutionPolicyTransition({
+      issue: base,
+      policy: escalationPolicy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Round limit reached",
+    });
+    const firstState = first.patch.executionState as Record<string, unknown>;
+    const replay = applyIssueExecutionPolicyTransition({
+      issue: { ...base, status: "in_review", assigneeAgentId: ctoAgentId, executionState: firstState },
+      policy: escalationPolicy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: ctoAgentId },
+      commentBody: "Continuation replay",
+    });
+
+    expect(replay.patch.status).toBe("in_review");
+    expect(replay.patch.executionState).toMatchObject({
+      currentStageId: reviewStageId,
+      reviewCycleId: firstState.reviewCycleId,
+      escalationPolicyRevision: "rev-continuation",
+      escalationToParticipant: null,
+    });
+    expect(replay.recoveryInteraction?.idempotencyKey).toBe(
+      `review-recovery:continuation-issue:${firstState.reviewCycleId}:rev-continuation`,
+    );
+  });
+
+  it("rejects a non-escalated actor advancing the agent-held stage", () => {
+    expect(() =>
+      applyIssueExecutionPolicyTransition({
+        issue: reviewPendingIssue(
+          { assigneeAgentId: qaAgentId, assigneeUserId: null },
+          {
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            changesRequestedCount: 3,
+          },
+        ),
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+      }),
+    ).toThrow("Only the active reviewer or approver can advance the current execution stage");
   });
 
   it("rejects a non-escalated actor advancing the stage during the hold", () => {
@@ -1978,7 +2256,6 @@ describe("review round circuit breaker", () => {
       changesRequestedCount: 3,
     });
   });
-
   it("resets the counter when the escalated human requests changes", () => {
     const result = applyIssueExecutionPolicyTransition({
       issue: reviewPendingIssue(
@@ -2044,6 +2321,308 @@ describe("review round circuit breaker", () => {
     });
   });
 
+  it("routes exhausted review rounds through technical roles and never to the issue owner", () => {
+    const policyWithEscalation = normalizeIssueExecutionPolicy({
+      stages: [{ id: reviewStageId, type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      maxReviewRounds: 1,
+      reviewEscalationPolicy: {
+        participantRoles: ["lead", "architect", "secondary_reviewer"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "rev-7",
+        participants: {
+          lead: { type: "agent", agentId: ctoAgentId, projectId: null, casteKey: null },
+          architect: { type: "agent", agentId: qaAgentId, projectId: null, casteKey: null },
+          secondary_reviewer: { type: "agent", agentId: coderAgentId, projectId: null, casteKey: null },
+        },
+      },
+    })!;
+    const replayGraph = Array.from({ length: 16 }, (_, index) => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          ...reviewPendingIssue({}, { changesRequestedCount: 0 }),
+          id: `issue-${index}`,
+          reviewEscalationParticipants: {
+            lead: index % 3 === 0 ? null : { type: "agent", agentId: ctoAgentId, projectId: null, casteKey: null },
+            architect: { type: "agent", agentId: qaAgentId, projectId: null, casteKey: null },
+            secondary_reviewer: { type: "agent", agentId: coderAgentId, projectId: null, casteKey: null },
+          },
+          responsibleUserId: boardUserId,
+          createdByUserId: boardUserId,
+        },
+        policy: policyWithEscalation,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Round limit reached",
+      });
+      return result.patch;
+    });
+
+    expect(replayGraph).toHaveLength(16);
+    for (const patch of replayGraph) {
+      expect(patch.assigneeUserId).toBeNull();
+      expect(patch.assigneeAgentId).toBe(ctoAgentId);
+      expect(patch.executionState).toMatchObject({
+        status: "pending",
+        currentParticipant: { type: "agent", agentId: ctoAgentId },
+        reviewCycleId: expect.any(String),
+        escalationPolicyRevision: "rev-7",
+      });
+    }
+  });
+
+  it("uses architect then secondary reviewer when earlier technical roles are missing", () => {
+    const policyWithEscalation = normalizeIssueExecutionPolicy({
+      stages: [{ id: reviewStageId, type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      maxReviewRounds: 1,
+      reviewEscalationPolicy: {
+        participantRoles: ["lead", "architect", "secondary_reviewer"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "rev-8",
+      },
+    })!;
+    for (const [participants, expected] of [
+      [{ architect: { type: "agent", agentId: ctoAgentId, projectId: null, casteKey: null } }, ctoAgentId],
+      [{ secondary_reviewer: { type: "agent", agentId: coderAgentId, projectId: null, casteKey: null } }, coderAgentId],
+    ] as const) {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          ...reviewPendingIssue({}, { changesRequestedCount: 0 }),
+          id: "sequence-issue",
+          reviewEscalationParticipants: participants,
+          responsibleUserId: boardUserId,
+        },
+        policy: policyWithEscalation,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Round limit reached",
+      });
+      expect(result.patch.assigneeUserId).toBeNull();
+      expect(result.patch.assigneeAgentId).toBe(expected);
+    }
+  });
+
+  it("progresses lead -> architect -> secondary across rounds and never reselects the exhausted actor", () => {
+    const architectAgentId = "44444444-4444-4444-8444-444444444444";
+    const secondaryAgentId = "55555555-5555-4555-8555-555555555555";
+    const progressionPolicy = normalizeIssueExecutionPolicy({
+      stages: [{ id: reviewStageId, type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      maxReviewRounds: 1,
+      reviewEscalationPolicy: {
+        participantRoles: ["lead", "architect", "secondary_reviewer"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "rev-progress",
+        participants: {
+          lead: { type: "agent", agentId: ctoAgentId, projectId: null, casteKey: null },
+          architect: { type: "agent", agentId: architectAgentId, projectId: null, casteKey: null },
+          secondary_reviewer: { type: "agent", agentId: secondaryAgentId, projectId: null, casteKey: null },
+        },
+      },
+    })!;
+    const base = { ...reviewPendingIssue({}, { changesRequestedCount: 0 }), id: "progress-issue" };
+    const step = (
+      issue: Parameters<typeof applyIssueExecutionPolicyTransition>[0]["issue"],
+      actorAgentId: string,
+    ) =>
+      applyIssueExecutionPolicyTransition({
+        issue,
+        policy: progressionPolicy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: actorAgentId },
+        commentBody: "Round limit reached",
+      });
+    const next = (previous: ReturnType<typeof step>, assignee: string) => ({
+      ...base,
+      status: "in_review",
+      assigneeAgentId: assignee,
+      executionState: previous.patch.executionState,
+    });
+
+    const first = step(base, qaAgentId);
+    expect(first.patch.executionState).toMatchObject({
+      currentParticipant: { type: "agent", agentId: ctoAgentId },
+      escalationReason: "review_round_limit",
+      escalationFromParticipant: { type: "agent", agentId: qaAgentId },
+      escalationToParticipant: { type: "agent", agentId: ctoAgentId },
+      changesRequestedCount: 0,
+    });
+
+    const second = step(next(first, ctoAgentId), ctoAgentId);
+    expect(second.patch.executionState).toMatchObject({
+      currentParticipant: { type: "agent", agentId: architectAgentId },
+      escalationFromParticipant: { type: "agent", agentId: ctoAgentId },
+      escalationToParticipant: { type: "agent", agentId: architectAgentId },
+    });
+
+    const third = step(next(second, architectAgentId), architectAgentId);
+    expect(third.patch.executionState).toMatchObject({
+      currentParticipant: { type: "agent", agentId: secondaryAgentId },
+      escalationFromParticipant: { type: "agent", agentId: architectAgentId },
+      escalationToParticipant: { type: "agent", agentId: secondaryAgentId },
+    });
+
+    // The last role exhausted: nobody is left, so the issue stays in review on
+    // the same reviewer and one recovery interaction is raised.
+    const fourth = step(next(third, secondaryAgentId), secondaryAgentId);
+    expect(fourth.patch.status).toBe("in_review");
+    expect(fourth.patch.executionState).toMatchObject({
+      currentParticipant: { type: "agent", agentId: secondaryAgentId },
+      escalationToParticipant: null,
+    });
+    expect(fourth.recoveryInteraction?.idempotencyKey).toContain("rev-progress");
+    expect(fourth.escalationMetric).toBe("review_escalation_to_user_owner");
+  });
+
+  it("does not reselect the exhausted actor when it holds a configured role", () => {
+    const selfPolicy = normalizeIssueExecutionPolicy({
+      stages: [{ id: reviewStageId, type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      maxReviewRounds: 1,
+      reviewEscalationPolicy: {
+        participantRoles: ["lead"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "rev-self",
+        participants: { lead: { type: "agent", agentId: qaAgentId, projectId: null, casteKey: null } },
+      },
+    })!;
+    const result = applyIssueExecutionPolicyTransition({
+      issue: { ...reviewPendingIssue({}, { changesRequestedCount: 0 }), id: "self-issue" },
+      policy: selfPolicy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Round limit reached",
+    });
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.executionState).toMatchObject({ escalationToParticipant: null });
+    expect(result.recoveryInteraction).toBeDefined();
+  });
+
+  it("rejects review escalation participants outside the issue project or caste", () => {
+    const policyWithEscalation = normalizeIssueExecutionPolicy({
+      stages: [{ id: reviewStageId, type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      maxReviewRounds: 1,
+      reviewEscalationPolicy: {
+        participantRoles: ["lead", "architect", "secondary_reviewer"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "rev-9",
+      },
+    })!;
+    const result = applyIssueExecutionPolicyTransition({
+      issue: {
+        ...reviewPendingIssue({}, { changesRequestedCount: 0 }),
+        id: "scoped-issue",
+        projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        casteKey: "engineering",
+        reviewEscalationParticipants: {
+          lead: {
+            type: "agent",
+            agentId: ctoAgentId,
+            projectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          },
+          architect: {
+            type: "agent",
+            agentId: coderAgentId,
+            projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            casteKey: "review",
+          },
+        },
+      },
+      policy: policyWithEscalation,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Round limit reached",
+    });
+    // No participant passes the project/caste scope check: the stage stays
+    // in review, never goes to the owner, and a recovery interaction is raised.
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.status).toBe("in_review");
+    expect(result.patch.executionState).toMatchObject({
+      status: "pending",
+      escalationPolicyRevision: "rev-9",
+      escalationToParticipant: null,
+    });
+    expect(result.recoveryInteraction).toMatchObject({ queue: "review-recovery" });
+  });
+
+  it("skips a lead who is also the issue owner", () => {
+    const issue = {
+      ...reviewPendingIssue({}, { changesRequestedCount: 0 }),
+      id: "owner-lead-issue",
+      responsibleUserId: ctoAgentId,
+      reviewEscalationParticipants: {
+        lead: { type: "agent" as const, agentId: ctoAgentId },
+        architect: { type: "agent" as const, agentId: qaAgentId },
+      },
+    };
+    const policyWithEscalation = normalizeIssueExecutionPolicy({
+      stages: [{ id: reviewStageId, type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      maxReviewRounds: 1,
+      reviewEscalationPolicy: {
+        participantRoles: ["lead", "architect"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "rev-owner",
+      },
+    })!;
+    const result = applyIssueExecutionPolicyTransition({
+      issue,
+      policy: policyWithEscalation,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Round limit reached",
+    });
+
+    expect(result.patch.assigneeAgentId).toBe(qaAgentId);
+    expect(result.patch.assigneeUserId).toBeNull();
+  });
+
+  it("keeps owner assignment out when no technical resolver exists", () => {
+    const policyWithEscalation = normalizeIssueExecutionPolicy({
+      stages: [{ id: reviewStageId, type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      maxReviewRounds: 1,
+      reviewEscalationPolicy: {
+        participantRoles: ["lead", "architect"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "rev-empty",
+      },
+    })!;
+    const result = applyIssueExecutionPolicyTransition({
+      issue: reviewPendingIssue({}, { changesRequestedCount: 2 }),
+      policy: policyWithEscalation,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Round limit reached",
+    });
+
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.status).toBe("in_review");
+    expect(result.patch.executionState).toMatchObject({
+      status: "pending",
+      reviewCycleId: expect.any(String),
+      escalationPolicyRevision: "rev-empty",
+      escalationReason: "review_round_limit",
+      escalationToParticipant: null,
+    });
+    expect(result.escalationMetric).toBe("review_escalation_to_user_owner");
+    expect(result.recoveryInteraction).toEqual({
+      idempotencyKey: expect.stringContaining("review-recovery:"),
+      queue: "review-recovery",
+      title: "Review escalation needs recovery",
+      summary: expect.stringContaining("review-recovery"),
+    });
+  });
+
   it("honors a policy maxReviewRounds override", () => {
     const strictPolicy = normalizeIssueExecutionPolicy({
       stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
@@ -2057,6 +2636,7 @@ describe("review round circuit breaker", () => {
         assigneeAgentId: qaAgentId,
         assigneeUserId: null,
         responsibleUserId: boardUserId,
+        defaultEscalationAgentIds: [ctoAgentId],
         executionPolicy: strictPolicy,
         executionState: {
           status: "pending",
@@ -2077,11 +2657,11 @@ describe("review round circuit breaker", () => {
       commentBody: "First and only agent round",
     });
 
-    expect(result.patch.assigneeUserId).toBe(boardUserId);
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.assigneeAgentId).toBe(ctoAgentId);
     expect(result.patch.executionState).toMatchObject({
       status: "pending",
-      currentParticipant: { type: "user", userId: boardUserId },
-      changesRequestedCount: 1,
+      currentParticipant: { type: "agent", agentId: ctoAgentId },
     });
   });
 });

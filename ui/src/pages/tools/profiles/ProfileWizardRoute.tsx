@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useTranslation } from "@/i18n";
 import { useParams, useSearchParams } from "@/lib/router";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -17,6 +18,7 @@ export function ProfileWizardRoute({ mode }: { mode: "new" | "edit" }) {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const params = useParams<{ profileId?: string }>();
+  const { t: tr } = useTranslation();
   const [searchParams] = useSearchParams();
 
   const templateParam = searchParams.get("template");
@@ -28,16 +30,16 @@ export function ProfileWizardRoute({ mode }: { mode: "new" | "edit" }) {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
-      { label: "Access profiles", href: advancedTabHref("profiles") },
-      { label: mode === "edit" ? "Resume draft" : "New profile" },
+      { label: selectedCompany?.name ?? tr("area.tools-profiles-2.profile-wizard-route.breadcrumbOrganization"), href: "/dashboard" },
+      { label: tr("area.tools-profiles-2.profile-wizard-route.breadcrumbApps"), href: "/apps" },
+      { label: tr("area.tools-profiles-2.profile-wizard-route.breadcrumbProfiles"), href: advancedTabHref("profiles") },
+      { label: mode === "edit" ? tr("area.tools-profiles-2.profile-wizard-route.breadcrumbResume") : tr("area.tools-profiles-2.profile-wizard-route.breadcrumbNew") },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name, mode]);
+  }, [setBreadcrumbs, selectedCompany?.name, mode, tr]);
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to create a profile.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{tr("area.tools-profiles-2.profile-wizard-route.selectPrompt")}</div>;
   }
 
   return (
@@ -45,10 +47,10 @@ export function ProfileWizardRoute({ mode }: { mode: "new" | "edit" }) {
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 p-4 sm:p-6">
         <header>
           <h1 className="text-xl font-bold text-foreground">
-            {mode === "edit" ? "Finish your profile" : "New access profile"}
+            {mode === "edit" ? tr("area.tools-profiles-2.profile-wizard-route.titleEdit") : tr("area.tools-profiles-2.profile-wizard-route.titleNew")}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Choose which tools this profile allows, then assign it to the agents that need them.
+            {tr("area.tools-profiles-2.profile-wizard-route.subtitle")}
           </p>
         </header>
         <ProfileWizard

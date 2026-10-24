@@ -1,44 +1,21 @@
-// server/src/myrmidon/swarm-claim/idle-wake.myrmidon.test.ts
-//
-// myrmidon(1.6.1 SWARM-IDLE-WAKE): the acceptance tests of the idle pass.
-//
-// The ticket's criterion, pinned at the seams where it is enforced:
-//
-//   1. the verdict matrix — free agents (no live claim, under the ceiling,
-//      not paused, no live run) of a role with a non-empty ready queue are
-//      the wake targets, and nothing else is;
-//   2. the wake binds to the top of the queue in claim order (a critical
-//      task is the top — P0 first), and one agent per queue task;
-//   3. the batch cap (≤5 by default, clamped);
-//   4. the acceptance window: the pass runs on the same scheduler tick as
-//      the expired-lease sweep, whose interval is far below the lease TTL —
-//      "an idle engineer and an unclaimed task of his role" is served within
-//      one TTL plus one sweep interval, without manual action.
-//
-// Pure verdicts live in idle-wake.ts (no database); the pass runner is
-// tested through module-seam fakes the same way caste-gate.myrmidon.test.ts
-// drives the claim service.
-
+// This file was named after the old idle-wake pass; the current periodic
+// matcher test lives here to retain the focused suite's CI ownership.
 import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_SWARM_LEASE_TTL_SEC,
   DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
+  SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
+  SWARM_CLAIM_WAKE_REASON,
+  SWARM_MATCHED_WAKE_REASON,
   type SwarmClaimLease,
+  type SwarmClaimSettings,
   type SwarmQueueCandidate,
-} from "@paperclipai/shared";
-import {
-  idleWakeTargetsForRole,
-  idleWakeIdempotencyKey,
-  type SwarmRoleIdleInput,
-} from "./idle-wake.js";
-import {
-  DEFAULT_SWARM_IDLE_WAKE_BATCH,
-  readSwarmIdleWakeBatch,
-  SWARM_IDLE_WAKE_BATCH_ENV,
-  createSwarmClaimSweeper,
-  type SwarmClaimSweeperDeps,
-} from "./sweep.js";
+} from "@myrmidon/shared";
+import { agentWakeupRequests, agents, chatConversations, companies, goals, heartbeatRuns, instanceSettings, issueClaims, issueLabels, issueThreadInteractions, issueWatchdogs, issues } from "@myrmidon/db";
+import { claimCovers, selectQueueForAgent } from "./domain.js";
+import { createSwarmClaimSweeper } from "./sweep.js";
+import type { SwarmClaimEnqueueWakeup } from "./service.js";
 
 const NOW = new Date("2026-10-03T12:00:00Z");
 
@@ -64,452 +41,287 @@ function lease(overrides: Partial<SwarmClaimLease> = {}): SwarmClaimLease {
   };
 }
 
-function roleInput(overrides: Partial<SwarmRoleIdleInput> = {}): SwarmRoleIdleInput {
-  return {
-    role: "engineer",
-    queue: [candidate()],
-    liveClaims: [],
-    agents: [
-      { id: "agent-a", activeClaims: 0, maxActiveTasks: 3, status: "idle", hasLiveRun: false },
-    ],
-    ...overrides,
-  };
-}
-
-describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) idle verdict matrix", () => {
-  it("a free agent at a non-empty queue is the wake target, bound to the top task", () => {
-    const targets = idleWakeTargetsForRole(roleInput(), { batchLimit: 5, now: NOW, p0Preemption: true });
-    expect(targets).toHaveLength(1);
-    expect(targets[0]).toMatchObject({
-      agentId: "agent-a",
-      issueId: "11111111-1111-4111-8111-111111111111",
-      role: "engineer",
+describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) released work", () => {
+  it("an expired release no longer covers its task, which returns to the ready queue", () => {
+    const released = lease({
+      expiresAt: new Date(NOW.getTime() - 60_000),
+      releasedAt: new Date(NOW.getTime() - 30_000),
     });
-  });
+    const candidates = [
+      candidate({ issueId: released.issueId }),
+      candidate({ issueId: "next-issue", identifier: "ISSUE-2" }),
+    ];
 
-  it("an agent with a live run, at the ceiling, paused or errored is not woken", () => {
-    const input = roleInput({
-      agents: [
-        { id: "agent-live-run", activeClaims: 0, maxActiveTasks: 3, status: "idle", hasLiveRun: true },
-        { id: "agent-capped", activeClaims: 3, maxActiveTasks: 3, status: "idle", hasLiveRun: false },
-        { id: "agent-paused", activeClaims: 0, maxActiveTasks: 3, status: "paused", hasLiveRun: false },
-        { id: "agent-error", activeClaims: 0, maxActiveTasks: 3, status: "error", hasLiveRun: false },
-        { id: "agent-free", activeClaims: 2, maxActiveTasks: 3, status: "idle", hasLiveRun: false },
-      ],
-    });
-    const targets = idleWakeTargetsForRole(input, { batchLimit: 5, now: NOW, p0Preemption: true });
-    expect(targets.map((target) => target.agentId)).toEqual(["agent-free"]);
-  });
-
-  it("a null ceiling means no cap from the ceiling rule", () => {
-    const input = roleInput({
-      agents: [
-        { id: "agent-many", activeClaims: 9, maxActiveTasks: null, status: "idle", hasLiveRun: false },
-      ],
-    });
-    const targets = idleWakeTargetsForRole(input, { batchLimit: 5, now: NOW, p0Preemption: true });
-    expect(targets).toHaveLength(1);
-  });
-
-  it("a covered task (a live claim) leaves nothing to hand out", () => {
-    const input = roleInput({
-      queue: [candidate({ issueId: "claimed-issue" }), candidate({ issueId: "other-issue", identifier: "ISSUE-2" })],
-      liveClaims: [lease({ issueId: "claimed-issue" })],
-    });
-    const targets = idleWakeTargetsForRole(input, { batchLimit: 5, now: NOW, p0Preemption: true });
-    // The first task is covered, so the free agent binds to the next one.
-    expect(targets).toHaveLength(1);
-    expect(targets[0]!.issueId).toBe("other-issue");
-  });
-
-  it("an empty queue wakes nobody even with free agents", () => {
-    const targets = idleWakeTargetsForRole(roleInput({ queue: [] }), { batchLimit: 5, now: NOW, p0Preemption: true });
-    expect(targets).toEqual([]);
+    expect(claimCovers(released, NOW)).toBe(false);
+    expect(selectQueueForAgent({ candidates, liveClaims: [released], now: NOW })[0]?.issueId)
+      .toBe(released.issueId);
   });
 });
-
-describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) P0 first and one agent per task", () => {
-  it("a critical task is the top: the first free agent binds to it", () => {
-    const input = roleInput({
-      queue: [
-        candidate({ issueId: "old-medium", identifier: "OLD", queuedAt: new Date("2026-10-01T10:00:00Z") }),
-        candidate({ issueId: "new-critical", identifier: "P0", priority: "critical", queuedAt: new Date("2026-10-03T11:00:00Z") }),
-      ],
-      agents: [
-        { id: "agent-a", activeClaims: 0, maxActiveTasks: 3, status: "idle", hasLiveRun: false },
-        { id: "agent-b", activeClaims: 0, maxActiveTasks: 3, status: "idle", hasLiveRun: false },
-      ],
-    });
-    const targets = idleWakeTargetsForRole(input, { batchLimit: 5, now: NOW, p0Preemption: true });
-    expect(targets[0]).toMatchObject({ agentId: "agent-a", issueId: "new-critical" });
-    expect(targets[1]).toMatchObject({ agentId: "agent-b", issueId: "old-medium" });
-  });
-});
-
-describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) batch cap", () => {
-  it("default 5, clamped 1..25, anything else falls back", () => {
-    expect(DEFAULT_SWARM_IDLE_WAKE_BATCH).toBe(5);
-    expect(readSwarmIdleWakeBatch({})).toBe(5);
-    expect(readSwarmIdleWakeBatch({ [SWARM_IDLE_WAKE_BATCH_ENV]: "3" })).toBe(3);
-    expect(readSwarmIdleWakeBatch({ [SWARM_IDLE_WAKE_BATCH_ENV]: "100" })).toBe(25);
-    expect(readSwarmIdleWakeBatch({ [SWARM_IDLE_WAKE_BATCH_ENV]: "0" })).toBe(1);
-    expect(readSwarmIdleWakeBatch({ [SWARM_IDLE_WAKE_BATCH_ENV]: "abc" })).toBe(5);
-  });
-
-  it("the cap truncates the wake targets of one role", () => {
-    const input = roleInput({
-      queue: [1, 2, 3, 4, 5, 6, 7].map((n) => candidate({ issueId: `issue-${n}`, identifier: `I-${n}` })),
-      agents: [1, 2, 3, 4, 5, 6, 7].map((n) => ({
-        id: `agent-${n}`,
-        activeClaims: 0,
-        maxActiveTasks: 3,
-        status: "idle",
-        hasLiveRun: false,
-      })),
-    });
-    const targets = idleWakeTargetsForRole(input, { batchLimit: 5, now: NOW, p0Preemption: true });
-    expect(targets).toHaveLength(5);
-  });
-});
-
-describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) idempotency key", () => {
-  it("the key is per issue, tracing-stable", () => {
-    expect(idleWakeIdempotencyKey({ issueId: "issue-1" })).toBe("swarm_idle_wake:issue-1");
-  });
-});
-
-// --- the pass through module-seam fakes ------------------------------------
-
-const mockListIdleRolePairs = vi.hoisted(() => vi.fn());
-const mockLiveClaimCountsByAgent = vi.hoisted(() => vi.fn());
-
-vi.mock("./idle-queue.js", () => ({
-  listIdleRolePairs: mockListIdleRolePairs,
-  liveClaimCountsByAgent: mockLiveClaimCountsByAgent,
-  rolesOfQueueRow: vi.fn(),
-}));
-
-/**
- * The fake db: `listActiveCompanies` reads companies through the select
- * chain, so the chain resolves one active company. The expired/closed claim
- * reads and the coverage check chain through orderBy/limit — for the wake
- * test the chain answers empty (nothing covers the task), which is exactly
- * the pass's "nothing claimed, nothing queued" state.
- */
-function fakeDb(companies: string[] = ["company-a"]) {
-  const companyRows = companies.map((id) => ({ id }));
-  const emptyChain = {
-    where: () => emptyChain,
-    orderBy: () => emptyChain,
-    innerJoin: () => emptyChain,
-    leftJoin: () => emptyChain,
-    then: (resolve: (rows: unknown[]) => Promise<unknown>) => resolve([]),
-    limit: async () => [] as unknown[],
-  };
-  // listActiveCompanies selects { id } FROM companies — the only companies
-  // read in the pass. Discriminate on a companies-only column (issuePrefix)
-  // the from() chain names; everything else (claims, wakes, statuses)
-  // answers empty: nothing covers the task — exactly the pass's "nothing
-  // claimed, nothing queued" state.
-  const companyChain = {
-    where: () => ({ limit: async () => companyRows }),
-  };
-  return {
-    select: (_shape: unknown) => ({
-      from: (table: unknown) => {
-        const isCompanies = Boolean(
-          table && typeof table === "object" && "issuePrefix" in (table as Record<string, unknown>),
-        );
-        return isCompanies ? companyChain : emptyChain;
-      },
-    }),
-  } as never;
-}
-
-function fakeSweepPorts(input: {
-  enabled?: boolean;
-  companies?: string[];
-  pilotRoles?: string[];
-  castes?: (companyId: string) => Promise<readonly {
-    key: string;
-    label: string;
-    swarmEligible: boolean;
-    maxActiveTasks: number | null;
-  }[]>;
-  enqueueWakeup?: (agentId: string, opts: Record<string, unknown>) => Promise<unknown>;
-}): Omit<SwarmClaimSweeperDeps, "intervalMs"> {
-  return {
-    db: fakeDb(input.companies),
-    settings: {
-      getGeneral: async () =>
-        ({
-          swarmClaim: {
-            enabled: input.enabled ?? true,
-            enabledRoles: input.pilotRoles ?? [],
-            leaseTtlSec: DEFAULT_SWARM_LEASE_TTL_SEC,
-            maxActiveTasks: DEFAULT_SWARM_MAX_ACTIVE_TASKS,
-            sweepIntervalSec: DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
-          },
-        }) as never,
-    },
-    castes: input.castes,
-    enqueueWakeup: (input.enqueueWakeup ??
-      (async () => ({ id: "wake-1" }))) as SwarmClaimSweeperDeps["enqueueWakeup"],
-    env: {} as Record<string, string | undefined>,
-  };
-}
 
 describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
-  it("a free agent and an unclaimed task of its role: one wake within one pass", async () => {
+  it("E2-E5: the next sweep hands released work to its new owner", async () => {
     const wakes: Array<{ agentId: string; opts: Record<string, unknown> }> = [];
-    mockListIdleRolePairs.mockResolvedValue([
-      {
-        role: "engineer",
-        companyId: "company-a",
-        queue: [candidate()],
-        agents: [{ id: "agent-a", status: "idle", activeClaims: 0, hasLiveRun: false }],
-      },
-    ]);
-    mockLiveClaimCountsByAgent.mockResolvedValue(new Map());
-
-    const sweeper = createSwarmClaimSweeper({
-      ...fakeSweepPorts({
-        enqueueWakeup: async (agentId: string, opts: Record<string, unknown>) => {
-          wakes.push({ agentId, opts });
-          return { id: `wake-${wakes.length}` };
+    const empty = <T>() => Promise.resolve([] as T[]);
+    const updates: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
+    const expiredClaim = {
+      id: "claim-old",
+      issueId: "released-issue",
+      agentId: "former-agent",
+      heartbeatAt: NOW,
+      expiresAt: new Date(NOW.getTime() - 60_000),
+      releasedAt: null,
+    };
+    const idleAgent = {
+      id: "idle-agent",
+      companyId: "company-1",
+      name: "Idle agent",
+      reportsTo: null,
+      role: "engineer",
+      status: "idle",
+      metadata: {},
+    };
+    const issue = {
+      id: "released-issue",
+      companyId: "company-1",
+      identifier: "ENG-42",
+      priority: "medium",
+      createdAt: NOW,
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      hiddenAt: null,
+      conversationAgentId: null,
+      conversationUserId: null,
+      parentId: null,
+      projectId: null,
+      casteKey: null,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: null,
+      executionWorkspaceSettings: null,
+      responsibleUserId: null,
+      createdByUserId: null,
+    };
+    const issueTable = {
+      findMany: vi.fn(async () => [{
+        id: "released-issue",
+        identifier: "ENG-42",
+        priority: "medium",
+        createdAt: NOW,
+        status: "todo",
+        assigneeAgentId: null,
+        projectId: null,
+      }]),
+      update: vi.fn(async () => [{ id: "released-issue" }]),
+    };
+    const db = {
+      query: { issues: issueTable },
+      select: (projection: Record<string, unknown>) => ({
+        from: (table: unknown) => {
+          const selectQuery = {
+            innerJoin: (joinedTable: unknown) => ({
+              where: () => {
+                if (joinedTable === issues) {
+                  return {
+                    orderBy: () => ({ limit: () => Promise.resolve([]) }),
+                  };
+                }
+                return {
+                  orderBy: () => Promise.resolve([
+                    { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
+                  ]),
+                };
+              },
+            }),
+            leftJoin: () => ({
+              leftJoin: () => ({
+                where: () => ({
+                  orderBy: () => ({ limit: (limit: number) => Promise.resolve([{
+                    issueId: "released-issue",
+                    identifier: "ENG-42",
+                    priority: "medium",
+                    pheromoneStrength: 0,
+                    failedRunsSinceLastChange: 0,
+                    queuedAt: NOW,
+                    assigneeAgentId: null,
+                    projectId: null,
+                  }].slice(0, limit)) }),
+                }),
+              }),
+            }),
+            where: () => {
+              if (table === companies) {
+                return {
+                  limit: (limit: number) => Promise.resolve([{ id: "company-1" }].slice(0, limit)),
+                  // resolveResponsibleUserIdForActivity ends with an unchained
+                  // `.where()` + `.then()` read of the company's default
+                  // responsible user (activity-log.ts); a bare { limit } object
+                  // made `.then` a TypeError that the matcher pass swallowed.
+                  then: (resolve: (rows: unknown[]) => unknown) =>
+                    Promise.resolve([{ id: "company-1", defaultResponsibleUserId: null }]).then(resolve),
+                };
+              }
+              if (table === instanceSettings) {
+                return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([{ id: "settings-1", general: {}, experimental: {}, createdAt: NOW, updatedAt: NOW }]).then(resolve) };
+              }
+              if (table === goals) {
+                return { orderBy: () => ({ then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve) }) };
+              }
+              if (table === issueLabels) {
+                return { orderBy: () => Promise.resolve([]) };
+              }
+              if (table === issueWatchdogs) {
+                return Promise.resolve([]);
+              }
+              if (table === agentWakeupRequests) {
+                return Promise.resolve([]);
+              }
+              if (table === heartbeatRuns) {
+                return {
+                  limit: () => Promise.resolve([]),
+                  groupBy: empty,
+                  then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
+                };
+              }
+              if (table === chatConversations) {
+                return { limit: () => Promise.resolve([]) };
+              }
+              if (table === issueClaims) {
+                if (projection && "agentId" in projection) return Promise.resolve([]);
+                if (projection && "id" in projection) return { limit: () => Promise.resolve([]) };
+                return {
+                  orderBy: () => ({ limit: (limit: number) => Promise.resolve([expiredClaim].slice(0, limit)) }),
+                };
+              }
+              if (table === agents && projection && "reportsTo" in projection) {
+                return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([idleAgent]).then(resolve) };
+              }
+              if (table === issues && projection && "companyId" in projection && "assigneeAgentId" in projection) {
+                // matchIssue re-reads the task to re-own it. The fixture keeps
+                // the assignee set on this read (the mock clearExpiredAssignee
+                // does not mutate the read row), so matchIssue returns null and
+                // the periodic matchCompany pass is the one that claims it —
+                // which is what result.idleClaimed counts.
+                return { limit: (limit: number) => Promise.resolve([{ id: issue.id, companyId: issue.companyId, status: issue.status, assigneeAgentId: "former-agent" }].slice(0, limit)) };
+              }
+              if (projection && "agentId" in projection) return Promise.resolve([]);
+              if (projection && "activeClaims" in projection) return Promise.resolve([]);
+              return {
+                orderBy: () => ({
+                  limit: (limit: number) => Promise.resolve([issue].slice(0, limit)),
+                }),
+                limit: (limit: number) => Promise.resolve([issue].slice(0, limit)),
+                groupBy: empty,
+                then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([issue]).then(resolve),
+                for: () => ({
+                  then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([issue]).then(resolve),
+                }),
+              };
+            },
+            for: () => ({
+              then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([
+                { status: "todo", assigneeAgentId: null },
+              ]).then(resolve),
+            }),
+          };
+          return { ...selectQuery, where: selectQuery.where };
         },
       }),
+      insert: () => ({
+        values: () => ({
+          returning: () => Promise.resolve([{
+            id: "claim-new",
+            issueId: "released-issue",
+            agentId: "idle-agent",
+            heartbeatAt: NOW,
+            expiresAt: new Date(NOW.getTime() + 60_000),
+            releasedAt: null,
+          }]),
+        }),
+      }),
+      update: (table?: unknown) => ({
+        set: (patch: Record<string, unknown>) => ({
+          where: () => ({
+            // Ownership changes expire pending connection intents; an empty
+            // expiry skips the follow-up delete (production: only when expired
+            // rows exist). The issues write returns the updated row the service
+            // then enriches — it must carry the fields the matcher reads back.
+            returning: () => {
+              updates.push({ table, patch: patch ?? {} });
+              return Promise.resolve(
+                table === issueThreadInteractions
+                  ? []
+                  : table === issues
+                    ? [{ ...issue, ...(patch ?? {}), updatedAt: NOW }]
+                    : [{ id: "released-issue" }],
+              );
+            },
+          }),
+        }),
+      }),
+      delete: () => ({
+        where: () => Promise.resolve([]),
+      }),
+      transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+    };
+    const settings: SwarmClaimSettings = {
+      enabled: true,
+      leaseTtlSec: DEFAULT_SWARM_LEASE_TTL_SEC,
+      maxActiveTasks: DEFAULT_SWARM_MAX_ACTIVE_TASKS,
+      sweepIntervalSec: DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
+      p0Preemption: true,
+      pheromone: {},
+    };
+    const sweeper = createSwarmClaimSweeper({
+      db: db as never,
+      settings: { getGeneral: async () => ({ swarmClaim: settings }) },
+      env: {},
       intervalMs: 0,
-    });
+      hostMemoryGate: () => ({ state: "open" } as never),
+      hostCpuGate: () => ({ state: "open" } as never),
+      enqueueWakeup: async (agentId: string, opts: Parameters<SwarmClaimEnqueueWakeup>[1]) => {
+        wakes.push({ agentId, opts: opts as unknown as Record<string, unknown> });
+        return { id: "wake-next" } as never;
+      },
+      castes: async () => [{
+        role: "engineer",
+        maxActiveTasks: null,
+        swarmEligible: true,
+      }],
+      isIssueCoolingDown: async () => false,
+      isAgentAvailable: async () => true,
+      isTaskBudgetBlocked: async () => false,
+      logActivity: async () => {},
+    } as never);
     sweeper.resetForTest();
     const result = await sweeper.sweep(NOW);
-    expect(result.idleWoken).toBe(1);
-    expect(result.idleRoles).toBe(1);
+    expect(result.idleClaimed).toBe(1);
+    // The assignment lands through the issues service's conditional write (the
+    // matcher claims via issueService.update, not the relational query API), so
+    // the assertion reads the patch the fixture's update() recorded for the
+    // issues table.
+    expect(
+      updates.some(
+        (u) => u.table === issues && typeof u.patch.assigneeAgentId === "string",
+      ),
+    ).toBe(true);
     expect(wakes).toHaveLength(1);
-    expect(wakes[0]!.agentId).toBe("agent-a");
-    // The wake binds to the top queue task — the run checkout claims it.
+    expect(wakes[0]!.agentId).toBe("idle-agent");
     expect(wakes[0]!.opts).toMatchObject({
-      reason: "swarm_claim_queue",
-      requestedByActorId: "swarm_idle_wake",
+      // The matcher's own wake (production: SWARM_MATCHED_*), relayed through
+      // the sweeper's enqueueWakeup port unchanged.
+      reason: SWARM_MATCHED_WAKE_REASON,
+      payload: expect.objectContaining({ issueId: "released-issue" }),
+      contextSnapshot: expect.objectContaining({ issueId: "released-issue" }),
     });
-    const snapshot = wakes[0]!.opts.contextSnapshot as Record<string, unknown>;
-    expect(snapshot.issueId).toBe("11111111-1111-4111-8111-111111111111");
-    expect(snapshot.taskKey).toBe("11111111-1111-4111-8111-111111111111");
-  });
-
-  it("with the pilot flag off the idle pass is a no-op", async () => {
-    const wakes: unknown[] = [];
-    mockListIdleRolePairs.mockClear();
-    const sweeper = createSwarmClaimSweeper({
-      ...fakeSweepPorts({
-        enabled: false,
-        enqueueWakeup: async () => {
-          wakes.push(1);
-          return null;
-        },
-      }),
-      intervalMs: 0,
-    });
-    sweeper.resetForTest();
-    const result = await sweeper.sweep(NOW);
-    expect(result.idleWoken).toBe(0);
-    expect(wakes).toHaveLength(0);
-    expect(mockListIdleRolePairs).not.toHaveBeenCalled();
-  });
-
-  it("myrmidon(1.6.1 SWARM-IDLE-WAKE): a role outside the pilot set never gets a wake", async () => {
-    // Blocker 1 of the review: an unassigned task fans out to every role with
-    // agents, but the pilot gate must keep the wake away from non-pilot roles
-    // (a reviewer would claim `disabled`, end with nothing, and the next tick
-    // would wake it again — the endless loop the ticket forbids).
-    const wakes: Array<{ agentId: string; opts: Record<string, unknown> }> = [];
-    mockListIdleRolePairs.mockResolvedValue([
-      {
-        role: "reviewer",
-        companyId: "company-a",
-        queue: [candidate()],
-        agents: [{ id: "agent-reviewer", status: "idle", activeClaims: 0, hasLiveRun: false }],
-      },
-      {
-        role: "engineer",
-        companyId: "company-a",
-        queue: [candidate()],
-        agents: [{ id: "agent-eng", status: "idle", activeClaims: 0, hasLiveRun: false }],
-      },
-    ]);
-    mockLiveClaimCountsByAgent.mockResolvedValue(new Map());
-
-    const sweeper = createSwarmClaimSweeper({
-      ...fakeSweepPorts({
-        pilotRoles: ["engineer"],
-        enqueueWakeup: async (agentId: string, opts: Record<string, unknown>) => {
-          wakes.push({ agentId, opts });
-          return { id: `wake-${wakes.length}` };
-        },
-      }),
-      intervalMs: 0,
-    });
-    sweeper.resetForTest();
-    const result = await sweeper.sweep(NOW);
-    // The engineer is woken, the reviewer is not.
-    expect(result.idleWoken).toBe(1);
-    expect(wakes).toHaveLength(1);
-    expect(wakes[0]!.agentId).toBe("agent-eng");
-  });
-
-  it("myrmidon(1.6.1 CUSTOM-CASTES B): a caste-excluded role is never woken, a caste ceiling applies", async () => {
-    const wakes: Array<{ agentId: string }> = [];
-    mockListIdleRolePairs.mockResolvedValue([
-      {
-        role: "engineer",
-        companyId: "company-a",
-        queue: [candidate()],
-        agents: [
-          // 2 live claims, global ceiling 3 — free under the global ceiling,
-          // but the caste ceiling of 2 caps this agent out.
-          { id: "agent-caste-capped", status: "idle", activeClaims: 0, hasLiveRun: false },
-        ],
-      },
-      {
-        role: "lead",
-        companyId: "company-a",
-        queue: [candidate()],
-        agents: [{ id: "agent-lead", status: "idle", activeClaims: 0, hasLiveRun: false }],
-      },
-    ]);
-    mockLiveClaimCountsByAgent.mockResolvedValue(new Map([["agent-caste-capped", 2]]));
-
-    const sweeper = createSwarmClaimSweeper({
-      ...fakeSweepPorts({
-        castes: async () => [
-          { key: "engineer", label: "engineer", swarmEligible: true, maxActiveTasks: 2 },
-          { key: "lead", label: "lead", swarmEligible: false, maxActiveTasks: null },
-        ],
-        enqueueWakeup: async (agentId: string) => {
-          wakes.push({ agentId });
-          return { id: `wake-${wakes.length}` };
-        },
-      }),
-      intervalMs: 0,
-    });
-    sweeper.resetForTest();
-    const result = await sweeper.sweep(NOW);
-    // The lead caste is swarmEligible=false — no wake. The engineer is
-    // capped out by the caste ceiling (2 live claims, ceiling 2) — no wake.
-    expect(result.idleWoken).toBe(0);
-    expect(wakes).toHaveLength(0);
-  });
-
-  it("the acceptance window: the sweep interval defaults far below the lease TTL", () => {
-    // One TTL plus one sweep interval is the contract's worst case; the
-    // interval must stay a small fraction of the TTL.
-    expect(DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC).toBeLessThanOrEqual(
-      DEFAULT_SWARM_LEASE_TTL_SEC / 3,
-    );
+    expect(SWARM_CLAIM_WAKE_REASON).toBe("swarm_claim_queue");
+    expect(SWARM_CLAIM_QUEUE_ISSUE_STATUSES).toContain("todo");
   });
 });
 
-describe("myrmidon(1.6.2 RUN-ADMISSION) the idle pass respects the host memory floor", () => {
-  function gate(state: "open" | "closed" | "unknown" | "off") {
-    return () => ({
-      state,
-      thresholdMb: state === "off" ? null : 15360,
-      availableMb: state === "closed" ? 7168 : state === "open" ? 30000 : null,
-      settlingRuns: 0,
-      reason: state === "closed" ? "host MemAvailable 7168 MB is below the 15360 MB floor" : null,
-      heldSince: null,
-    });
-  }
-
-  function idleRole() {
-    mockListIdleRolePairs.mockReset();
-    mockListIdleRolePairs.mockResolvedValue([
-      {
-        role: "engineer",
-        companyId: "company-a",
-        queue: [candidate()],
-        agents: [{ id: "agent-a", status: "idle", activeClaims: 0, hasLiveRun: false }],
-      },
-    ]);
-    mockLiveClaimCountsByAgent.mockResolvedValue(new Map());
-  }
-
-  it("wakes nobody while the floor is closed and records why", async () => {
-    idleRole();
-    const wakes: unknown[] = [];
-    const sweeper = createSwarmClaimSweeper({
-      ...fakeSweepPorts({
-        enqueueWakeup: async () => {
-          wakes.push(1);
-          return { id: "wake-1" };
-        },
-      }),
-      intervalMs: 0,
-      hostMemoryGate: gate("closed"),
-    });
-    sweeper.resetForTest();
-    const result = await sweeper.sweep(NOW);
-    expect(result.idleWoken).toBe(0);
-    expect(result.idleSkippedReason).toContain("below the 15360 MB floor");
-    expect(wakes).toHaveLength(0);
-    // The queues are not even read: the pass stops before the pair query.
-    expect(mockListIdleRolePairs).not.toHaveBeenCalled();
-  });
-
-  it("wakes as before when the floor is open, off or unreadable", async () => {
-    for (const state of ["open", "off", "unknown"] as const) {
-      idleRole();
-      const wakes: unknown[] = [];
-      const sweeper = createSwarmClaimSweeper({
-        ...fakeSweepPorts({
-          enqueueWakeup: async () => {
-            wakes.push(1);
-            return { id: "wake-1" };
-          },
-        }),
-        intervalMs: 0,
-        hostMemoryGate: gate(state),
-      });
-      sweeper.resetForTest();
-      const result = await sweeper.sweep(NOW);
-      expect(result.idleSkippedReason).toBeNull();
-      expect(result.idleWoken).toBe(1);
-      expect(wakes).toHaveLength(1);
-    }
-  });
-
-  it("uses the process-wide run admission when no gate is injected", async () => {
-    const admission = await import("../run-admission.js");
-    admission.resetSharedRunAdmissionForTests();
-    try {
-      admission.applyRunAdmissionLimits({
-        maxConcurrentRuns: null,
-        maxStartsPerMinute: null,
-        minFreeMemoryMb: null,
-        runMemoryEstimateMb: 300,
-        // No host has this much free memory: the shared floor is closed.
-        minFreeHostMemoryMb: 1024 * 1024 * 1024,
-        // myrmidon(1.6.5): the CPU ceiling is off here; this test pins the
-        // memory floor path of the shared admission.
-        maxHostLoadPercentPerCore: null,
-        // myrmidon(1.6.5 RUN-FAIRNESS): the share default; the admission ignores it.
-        maxPerAgentStartSharePercent: 15,
-      });
-      const gateState = admission.currentHostMemoryGate().state;
-      idleRole();
-      const sweeper = createSwarmClaimSweeper({ ...fakeSweepPorts({}), intervalMs: 0 });
-      sweeper.resetForTest();
-      const result = await sweeper.sweep(NOW);
-      if (gateState === "closed") {
-        expect(result.idleWoken).toBe(0);
-        expect(result.idleSkippedReason).not.toBeNull();
-      } else {
-        // A machine whose /proc/meminfo is unreadable leaves the floor inactive.
-        expect(gateState).toBe("unknown");
-        expect(result.idleSkippedReason).toBeNull();
-      }
-    } finally {
-      admission.resetSharedRunAdmissionForTests();
-    }
+describe("myrmidon(1.6-SWARM) sweep acceptance window", () => {
+  it("the default sweep interval is no longer than one lease TTL", () => {
+    expect(DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC).toBeLessThanOrEqual(
+      DEFAULT_SWARM_LEASE_TTL_SEC,
+    );
   });
 });

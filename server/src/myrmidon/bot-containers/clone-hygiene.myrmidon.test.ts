@@ -21,7 +21,8 @@ import {
   parseCloneReport,
   parseGitRefCheck,
   parseGitStoreState,
-  parseHardlinkCheck,
+  parseReflinkCheck,
+  parseUvCacheCheck,
   resetCloneHygieneStateForTests,
   type CloneReportEntry,
 } from "./clone-hygiene.js";
@@ -163,8 +164,12 @@ describe("the board without a mount of the bot volumes", () => {
     const config = { enabled: true, idleTtlMs: 1000, defaultIdleTtlMs: 1000 };
 
     expect(lifecycleNotEffective()).toBeNull();
-    await expect(sweepAllBotVolumes(config)).resolves.toBeUndefined();
-    await expect(sweepAllBotVolumes(config)).resolves.toBeUndefined();
+    // myrmidon(FEATURES): the sweep returns a BotDiskSweepReport; the
+    // no-mount pass reports the missing root as rootError.
+    const first = await sweepAllBotVolumes(config);
+    const second = await sweepAllBotVolumes(config);
+    expect(first?.rootError?.code).toBe("ENOENT");
+    expect(second?.rootError?.code).toBe("ENOENT");
     expect(warn).toHaveBeenCalledTimes(1);
     expect(error).not.toHaveBeenCalled();
     expect(lifecycleNotEffective()).toBe(true);
@@ -205,30 +210,30 @@ describe("the board-side sweep on a host that does see the volumes", () => {
   });
 });
 
-// myrmidon(BOT-DISK-D): the container-start hard-link self-check rides the clone-hygiene
-// report and becomes an attention signal per failing clone root.
-describe("hard-link self-check in the clone report", () => {
+// myrmidon(BOT-DISK-H8b): the container-start reflink self-check rides the
+// clone-hygiene report and becomes an attention signal per failing clone root.
+describe("reflink self-check in the clone report", () => {
   const now = Date.parse("2026-10-05T12:00:00Z");
-  const reportWith = (hardlinkCheck: unknown) =>
-    JSON.stringify({ version: 1, inspectedAt: "2026-10-05T11:59:00Z", repos: [], ...(hardlinkCheck === undefined ? {} : { hardlinkCheck }) });
+  const reportWith = (reflinkCheck: unknown) =>
+    JSON.stringify({ version: 1, inspectedAt: "2026-10-05T11:59:00Z", repos: [], ...(reflinkCheck === undefined ? {} : { reflinkCheck }) });
   const failing = {
     store: "/workspace/.pnpm-store",
-    importMethod: "hardlink",
+    importMethod: "reflink",
     ok: false,
     roots: [
       { root: "/data/hermes", ok: true, error: null },
-      { root: "/workspace", ok: false, error: "Invalid cross-device link" },
-      { root: "/scratch", ok: false, error: "Invalid cross-device link" },
+      { root: "/workspace", ok: false, error: "cp: failed to clone: Invalid cross-device link" },
+      { root: "/scratch", ok: false, error: "cp: failed to clone: Operation not supported" },
     ],
   };
 
   beforeEach(() => resetCloneHygieneStateForTests());
 
   it("parses the check and tolerates its absence or garbage", () => {
-    expect(parseCloneReport(reportWith(undefined), now)?.hardlinkCheck).toBeNull();
-    expect(parseCloneReport(reportWith("x"), now)?.hardlinkCheck).toBeNull();
-    expect(parseHardlinkCheck({ store: 1, ok: true, roots: [] })).toBeNull();
-    const parsed = parseCloneReport(reportWith(failing), now)?.hardlinkCheck;
+    expect(parseCloneReport(reportWith(undefined), now)?.reflinkCheck).toBeNull();
+    expect(parseCloneReport(reportWith("x"), now)?.reflinkCheck).toBeNull();
+    expect(parseReflinkCheck({ store: 1, ok: true, roots: [] })).toBeNull();
+    const parsed = parseCloneReport(reportWith(failing), now)?.reflinkCheck;
     expect(parsed?.ok).toBe(false);
     expect(parsed?.roots).toHaveLength(3);
   });
@@ -238,9 +243,9 @@ describe("hard-link self-check in the clone report", () => {
     const signals = cloneHygieneSignals();
     expect(signals.map((signal) => signal.path).sort()).toEqual(["/scratch", "/workspace"]);
     for (const signal of signals) {
-      expect(signal.kind).toBe("hardlink");
+      expect(signal.kind).toBe("reflink");
       expect(signal.reason).toContain("/workspace/.pnpm-store");
-      expect(signal.reason).toContain("Invalid cross-device link");
+      expect(signal.reason).toContain("cp: failed to clone");
     }
     // The next report, with the check passing (the bot restarted), clears them.
     const passing = { ...failing, ok: true, roots: failing.roots.map((root) => ({ ...root, ok: true, error: null })) };
@@ -356,5 +361,64 @@ describe("shared git-object store facts in the clone report", () => {
     expect(parsed.repos).toHaveLength(498);
     expect(parsed.repos).toContain("itkadr-git/myrmidon");
     expect(parsed.repos).not.toContain(42);
+  });
+});
+
+// myrmidon(1.6.5-BOT-DISK-UV-B board side): the container-start uv cache
+// self-check rides the same report and raises one signal per failed probe root.
+describe("uv cache self-check in the clone report", () => {
+  const now = Date.parse("2026-10-08T12:00:00Z");
+  const reportWith = (uvCacheCheck: unknown) =>
+    JSON.stringify({ version: 1, inspectedAt: "2026-10-08T11:59:00Z", repos: [], ...(uvCacheCheck === undefined ? {} : { uvCacheCheck }) });
+  const failing = {
+    version: 1,
+    method: "clone",
+    checkedAt: "2026-10-08T11:58:12Z",
+    cache: "/cache/uv",
+    ok: false,
+    roots: [
+      { root: "/data/hermes", ok: false, error: "probe-hermes-abc: cannot create file in /cache/uv: Permission denied" },
+      { root: "/workspace", ok: true, error: null },
+      { root: "/scratch", ok: false, error: "probe-scratch-def: file missing from /cache/uv" },
+    ],
+  };
+
+  beforeEach(() => resetCloneHygieneStateForTests());
+
+  it("parses the check and tolerates its absence or garbage", () => {
+    expect(parseCloneReport(reportWith(undefined), now)?.uvCacheCheck).toBeNull();
+    expect(parseCloneReport(reportWith("x"), now)?.uvCacheCheck).toBeNull();
+    expect(parseUvCacheCheck({ cache: "/cache/uv", ok: "no", roots: [] })).toBeNull();
+    expect(parseUvCacheCheck({ ok: true, roots: [] })).toBeNull(); // cache is required
+    const parsed = parseCloneReport(reportWith(failing), now)?.uvCacheCheck;
+    expect(parsed?.ok).toBe(false);
+    expect(parsed?.cache).toBe("/cache/uv");
+    expect(parsed?.method).toBe("clone");
+    expect(parsed?.roots).toHaveLength(3);
+    // A garbage item is dropped, a long field is truncated, not a crash.
+    const ragged = parseUvCacheCheck({
+      ok: false,
+      cache: "x".repeat(900),
+      roots: [{ root: 1, ok: true }, { root: "/workspace", ok: false, error: "e".repeat(900) }],
+    });
+    expect(ragged?.roots).toHaveLength(1);
+    expect(ragged?.roots[0]?.error).toHaveLength(500);
+    expect(ragged?.cache).toHaveLength(500);
+  });
+
+  it("raises one signal per failing root, naming the cache and the error, and none for a passing check", () => {
+    expect(ingestCloneReport("bot-a", reportWith(failing), 3_600_000, now)).toBe(true);
+    const signals = cloneHygieneSignals();
+    expect(signals.map((signal) => signal.reason)).toEqual([
+      "uv cache check of /data/hermes against /cache/uv failed: probe-hermes-abc: cannot create file in /cache/uv: Permission denied",
+      "uv cache check of /scratch against /cache/uv failed: probe-scratch-def: file missing from /cache/uv",
+    ]);
+    for (const signal of signals) {
+      expect(signal.kind).toBe("uvcache");
+    }
+    // The next report, with the check passing (the bot restarted), clears them.
+    const passing = { ...failing, ok: true, roots: failing.roots.map((r) => ({ ...r, ok: true, error: null })) };
+    ingestCloneReport("bot-a", reportWith(passing), 3_600_000, now);
+    expect(cloneHygieneSignals()).toEqual([]);
   });
 });

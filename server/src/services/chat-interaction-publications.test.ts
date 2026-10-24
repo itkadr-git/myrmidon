@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
+import type { AskUserQuestionsInteraction } from "@myrmidon/shared";
 import { TelegramAdapter } from "@chat-adapter/telegram";
 import { Actions, Button, Card, CardText } from "chat";
 import {
   createChatQuestionOptionActionToken,
   nativeChatQuestion,
+  NATIVE_QUESTION_BUTTON_LABEL_MAX,
+  nativeQuestionButtonLabel,
+  nativeQuestionCardBody,
   TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
   telegramCallbackDataByteLength,
   telegramChatSdkCallbackData,
@@ -140,5 +143,40 @@ describe("Telegram question action payloads", () => {
     expect(
       telegramCallbackDataByteLength(actionId, interactionId),
     ).toBeGreaterThan(TELEGRAM_CALLBACK_DATA_LIMIT_BYTES);
+  });
+});
+
+describe("native question card readability", () => {
+  const longOptions = [
+    "Поручить владельцу BBQ определить владельца/срок хранения медиа и workspace; затем предложить точечный архив только неактивных данных.",
+    "Поручить оценить отдельный диск или расширение: ёмкость, стоимость и риски; данных не трогать.",
+    "Параллельно провести инвентаризацию BBQ и оценку отдельного диска; вернуться с фактами и рекомендацией, ничего не менять.",
+  ];
+
+  it("keeps button labels short and numbered", () => {
+    longOptions.forEach((label, index) => {
+      const button = nativeQuestionButtonLabel(index, label);
+      expect(Array.from(button).length).toBeLessThanOrEqual(NATIVE_QUESTION_BUTTON_LABEL_MAX);
+      expect(button.startsWith(`${index + 1}. `)).toBe(true);
+      expect(button.endsWith("…")).toBe(true);
+    });
+    expect(nativeQuestionButtonLabel(0, "High")).toBe("1. High");
+  });
+
+  it("puts help text, every full option and the task link into the card body", () => {
+    const question = {
+      ...closedQuestion().payload.questions[0]!,
+      helpText: "Корень заполнен на 90%.",
+      options: longOptions.map((label, index) => ({
+        id: `o${index}`,
+        label,
+        ...(index === 2 ? { description: "рекомендую" } : {}),
+      })),
+    };
+    const body = nativeQuestionCardBody(question, "https://board.example/OPE/issues/OPE-7369");
+    expect(body).toContain("Корень заполнен на 90%.");
+    longOptions.forEach((label, index) => expect(body).toContain(`${index + 1}. ${label}`));
+    expect(body).toContain("— рекомендую");
+    expect(body).toContain("https://board.example/OPE/issues/OPE-7369");
   });
 });

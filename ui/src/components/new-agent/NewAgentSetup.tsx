@@ -1,6 +1,6 @@
 import { AiConnectionField, aiProviderForAdapter } from "../ai-connections/AiConnectionField";
-import type { AiConnectionBinding } from "@paperclipai/shared";
-import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
+import type { AiConnectionBinding } from "@myrmidon/shared";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@myrmidon/adapter-codex-local";
 import {
   SETUP_CREDENTIAL_KEYS,
   SETUP_LOGIN_HINTS,
@@ -18,8 +18,8 @@ import type {
   AdapterEnvironmentTestResult,
   Agent,
   EnvBinding,
-} from "@paperclipai/shared";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@myrmidon/shared";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { agentsApi } from "@/api/agents";
 import { adaptersApi } from "@/api/adapters";
@@ -63,6 +63,7 @@ import {
   AgentProviderConnection,
   type ProviderConnection,
 } from "./AgentProviderConnection";
+import { useTranslation } from "@/i18n";
 
 const controlClass =
   "w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -71,12 +72,13 @@ const blocking = (result: AdapterEnvironmentTestResult) =>
   result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
 
 export function NewAgentSetup() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const [params] = useSearchParams();
   if (!selectedCompanyId)
     return (
       <p className="text-sm text-muted-foreground">
-        Select an organization to create an agent.
+        {t("area.agents-3.new-agent-setup.newAgentSetup.selectAnOrganizationToCreate")}
       </p>
     );
   return (
@@ -104,6 +106,7 @@ function Setup({
   runnerProvider: string;
   createdAgentId: string | null;
 }) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const cache = useQueryClient();
   const { openNewIssue } = useDialogActions();
@@ -120,7 +123,7 @@ function Setup({
       ? brandType
       : null;
   const multiProvider =
-    brandType === "opencode_local" || brandType === "pi_local";
+    brandType === "opencode_local" || brandType === "pi_local" || brandType === "omp_local";
   const providerKeys = setupProviderKeys(brandType);
   const chooseProvider = multiProvider || brandType === "hermes_local";
   const hasCredentialField =
@@ -254,7 +257,7 @@ function Setup({
     environmentError =
       cause instanceof Error
         ? cause.message
-        : "Could not resolve the environment.";
+        : t("area.agents-3.new-agent-setup.setup.errResolveEnvironment");
   }
   const environment = envs.data?.find((env) => env.id === environmentId);
   const sandboxProvider =
@@ -380,12 +383,12 @@ function Setup({
   }
   function preparedConfig(nextConnection = connection) {
     if (multiProvider && (!model.trim() || !model.includes("/")))
-      throw new Error("Choose or enter a model in provider/model format.");
+      throw new Error(t("area.agents-3.new-agent-setup.setup.errModelFormat"));
     if (
       adapterType === "cursor_cloud" &&
       !/^https:\/\/github\.com\/[^/]+\/[^/]+/.test(repository.trim())
     )
-      throw new Error("Enter a GitHub repository URL.");
+      throw new Error(t("area.agents-3.new-agent-setup.setup.errRepositoryUrl"));
     if (
       ["cursor_cloud", "hermes_gateway"].includes(adapterType) &&
       !apiKey.trim() &&
@@ -393,19 +396,19 @@ function Setup({
     )
       throw new Error(
         adapterType === "cursor_cloud"
-          ? "Enter a Cursor API key."
-          : `Enter ${envKey} or select an organization secret.`,
+          ? t("area.agents-3.new-agent-setup.setup.errCursorKey")
+          : t("area.agents-3.new-agent-setup.setup.errKeyOrSecret", { envKey }),
       );
     if (adapterType === "hermes_gateway") {
       try {
         const url = new URL(gatewayUrl.trim());
         if (!["https:", "http:"].includes(url.protocol)) throw new Error();
       } catch {
-        throw new Error("Enter the Hermes API base URL.");
+        throw new Error(t("area.agents-3.new-agent-setup.setup.errHermesUrl"));
       }
     }
     if (usingKimiApi && !kimiModel.trim())
-      throw new Error("Enter the Kimi API model name.");
+      throw new Error(t("area.agents-3.new-agent-setup.setup.errKimiModel"));
     return buildConfig(nextConnection);
   }
   function pendingCredentials(nextConnection = connection) {
@@ -448,7 +451,7 @@ function Setup({
     } catch (cause) {
       if (run === generation.current) {
         setError(
-          cause instanceof Error ? cause.message : "Could not test the agent.",
+          cause instanceof Error ? cause.message : t("area.agents-3.new-agent-setup.setup.errTestAgent"),
         );
         setTestState("fail");
       }
@@ -534,7 +537,7 @@ function Setup({
       ]);
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "Could not create the agent.",
+        cause instanceof Error ? cause.message : t("area.agents-3.new-agent-setup.setup.errCreateAgent"),
       );
     } finally {
       if (!hired) {
@@ -564,8 +567,8 @@ function Setup({
         className="text-sm text-muted-foreground"
       >
         {savedAgent.error
-          ? "Could not load the created agent. Return to Agents to view it."
-          : "Loading your agent…"}
+          ? t("area.agents-3.new-agent-setup.setup.loadCreatedFailed")
+          : t("area.agents-3.new-agent-setup.setup.loadingAgent")}
       </p>
     );
   if (!name || !adapterType)
@@ -587,9 +590,9 @@ function Setup({
     "saved" as const,
   ];
   const labels = {
-    connect: "Connect",
-    runtime: "Configure",
-    saved: "Confirmation",
+    connect: t("area.agents-3.new-agent-setup.setup.stepConnect"),
+    runtime: t("area.agents-3.new-agent-setup.setup.stepConfigure"),
+    saved: t("area.agents-3.new-agent-setup.setup.stepConfirmation"),
   };
   const confirmationEnvironment = created?.defaultEnvironmentId
     ? envs.data?.find((env) => env.id === created.defaultEnvironmentId)
@@ -603,7 +606,7 @@ function Setup({
       ? createdKimiModel
       : (createdKimiModel as { value?: string } | undefined)?.value) ||
     model ||
-    "Default";
+    t("area.agents-3.new-agent-setup.setup.defaultModel");
   const environmentLabel =
     adapterType === "cursor_cloud"
       ? "Cursor Cloud"
@@ -611,7 +614,7 @@ function Setup({
         ? "Hermes Gateway"
         : confirmationEnvironment
           ? environmentDisplayLabel(confirmationEnvironment)
-          : "Local machine";
+          : t("area.agents-3.new-agent-setup.setup.localMachine");
   const setupError =
     adapters.error ??
     envs.error ??
@@ -637,7 +640,7 @@ function Setup({
                 <span>
                   ·{" "}
                   {runnerProvider === "codex"
-                    ? "Native app server runner"
+                    ? t("area.agents-3.new-agent-setup.setup.nativeRunner")
                     : "Myrmidon Runner"}
                 </span>
               )}
@@ -656,19 +659,18 @@ function Setup({
         )}
         {adapters.data && !available && (
           <p role="alert" className="text-sm text-destructive">
-            This adapter is unavailable. Choose an enabled adapter.
+            {t("area.agents-3.new-agent-setup.setup.thisAdapterIsUnavailableChoose")}
           </p>
         )}
         {(managedOnly || forced.forced) &&
           !envs.isPending &&
           !environmentId && (
             <p role="alert" className="text-sm text-destructive">
-              No managed environment is available. Configure an environment
-              before continuing.
+              {t("area.agents-3.new-agent-setup.setup.noManagedEnvironmentIsAvailable")}
             </p>
           )}
         <div className="flex flex-col gap-8 md:flex-row">
-          <nav aria-label="Agent setup steps" className="shrink-0 md:w-44">
+          <nav aria-label={t("area.agents-3.new-agent-setup.setup.agentSetupSteps")} className="shrink-0 md:w-44">
             <ol className="flex flex-wrap gap-2 md:flex-col">
               {steps.map((step, index) => (
                 <li key={step}>
@@ -709,8 +711,8 @@ function Setup({
                   <OnboardingCard className="mx-auto">
                     <div className="mb-8">
                       <OnboardingHeading
-                        title="Connect a model"
-                        lede={`Connect ${name} to ${connectionAdapter === "claude_local" ? "Claude" : connectionAdapter === "grok_local" ? "Grok" : "OpenAI"}.`}
+                        title={t("area.agents-3.new-agent-setup.setup.connectAModel")}
+                        lede={t("area.agents-3.new-agent-setup.setup.connectLede", { name, provider: connectionAdapter === "claude_local" ? "Claude" : connectionAdapter === "grok_local" ? "Grok" : "OpenAI" })}
                         center
                       />
                     </div>
@@ -749,27 +751,27 @@ function Setup({
                       <h2 className="flex items-center gap-3 text-lg font-semibold">
                         <Check className="size-5" />
                         {created.status === "pending_approval"
-                          ? "Agent submitted for approval"
-                          : "Your agent is ready"}
+                          ? t("area.agents-3.new-agent-setup.setup.submittedForApproval")
+                          : t("area.agents-3.new-agent-setup.setup.agentReady")}
                       </h2>
                       <dl className="grid grid-cols-2 gap-4 text-sm">
-                        <dt className="text-muted-foreground">Adapter</dt>
+                        <dt className="text-muted-foreground">{t("area.agents-3.new-agent-setup.setup.adapter")}</dt>
                         <dd>{getAdapterDisplay(adapterType).label}</dd>
                         {showModel && (
                           <>
-                            <dt className="text-muted-foreground">Model</dt>
+                            <dt className="text-muted-foreground">{t("agents.filterModel")}</dt>
                             <dd className="break-all">
                               {String(confirmationModel)}
                             </dd>
                           </>
                         )}
-                        <dt className="text-muted-foreground">Environment</dt>
+                        <dt className="text-muted-foreground">{t("area.agents-3.new-agent-setup.setup.environment")}</dt>
                         <dd>{environmentLabel}</dd>
                       </dl>
                       <p className="text-sm text-muted-foreground">
                         {created.status === "pending_approval"
-                          ? "An organization administrator must approve this agent before it can work."
-                          : "Assign a task when you’re ready for this agent to work."}
+                          ? t("area.agents-3.new-agent-setup.setup.approvalNeeded")
+                          : t("area.agents-3.new-agent-setup.setup.assignTaskHint")}
                       </p>
                     </div>
                     <div className="flex flex-wrap justify-between gap-3">
@@ -778,7 +780,7 @@ function Setup({
                         onClick={() => navigate(`${agentUrl(created)}/runtime`)}
                       >
                         <Settings2 className="size-4" />
-                        Edit configuration
+                        {t("area.agents-3.new-agent-setup.setup.editConfiguration")}
                       </Button>
                       <Button
                         disabled={created.status === "pending_approval"}
@@ -789,7 +791,7 @@ function Setup({
                           })
                         }
                       >
-                        Assign {created.name} a Task
+                        {t("area.agents-3.new-agent-setup.setup.assignTask", { name: created.name })}
                         <ArrowRight className="size-4" />
                       </Button>
                     </div>
@@ -803,19 +805,19 @@ function Setup({
                     }}
                   >
                     <h2 className="text-xl font-semibold">
-                      Configure your agent
+                      {t("area.agents-3.new-agent-setup.setup.configureYourAgent")}
                     </h2>
                     <fieldset disabled={busy} className="space-y-8">
                       <section className="space-y-5">
-                        <h3 className="text-sm font-semibold">Runtime</h3>
+                        <h3 className="text-sm font-semibold">{t("area.agents-3.new-agent-setup.setup.runtime")}</h3>
                         {aiProviderForAdapter(brandType) && (
                           connection && !aiBinding ? (
                             <div className="space-y-3">
                               <p className="text-sm text-muted-foreground">
-                                Using the connection selected in the Connect step.
+                                {t("area.agents-3.new-agent-setup.setup.usingTheConnectionSelectedIn")}
                               </p>
                               <Button type="button" variant="outline" onClick={() => setScreen("connect")}>
-                                Change connection
+                                {t("area.agents-3.new-agent-setup.setup.changeConnection")}
                               </Button>
                             </div>
                           ) : (
@@ -823,7 +825,7 @@ function Setup({
                               onChange={binding => { setRuntimeAiBinding(binding); resetTest(); }} />
                           )
                         )}
-                        {models.error && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
+                        {models.error && <p role="alert" className="text-sm text-destructive">{t("area.agents-3.new-agent-setup.setup.couldNotLoadModelsRetry")}</p>}
                         {((showModel && !usingKimiApi) ||
                           efforts.length > 0) && (
                           <div className="grid items-start gap-5 sm:grid-cols-2">
@@ -861,9 +863,9 @@ function Setup({
                               />
                             )}
                             {efforts.length > 0 && (
-                              <Field label="Thinking effort">
+                              <Field label={t("area.agents-3.new-agent-setup.setup.thinkingEffort")}>
                                 <select
-                                  aria-label="Thinking effort"
+                                  aria-label={t("area.agents-3.new-agent-setup.setup.thinkingEffort")}
                                   className={controlClass}
                                   value={effort}
                                   onChange={(event) => {
@@ -871,7 +873,7 @@ function Setup({
                                     resetTest();
                                   }}
                                 >
-                                  <option value="">Auto</option>
+                                  <option value="">{t("area.agents-3.new-agent-setup.setup.auto")}</option>
                                   {efforts.map((value) => (
                                     <option key={value} value={value}>
                                       {value}
@@ -889,16 +891,15 @@ function Setup({
                         )}
                         {showModel && models.error && (
                           <p className="text-xs text-muted-foreground">
-                            Couldn’t load models. You can enter a model ID
-                            manually.
+                            {t("area.agents-3.new-agent-setup.setup.couldnTLoadModelsYou")}
                           </p>
                         )}
                         {hasCredentialField && !aiBinding && (
                           <div className="grid gap-5 sm:grid-cols-2">
                             {chooseProvider && (
-                              <Field label="API key provider">
+                              <Field label={t("area.agents-3.new-agent-setup.setup.apiKeyProvider")}>
                                 <select
-                                  aria-label="API key provider"
+                                  aria-label={t("area.agents-3.new-agent-setup.setup.apiKeyProvider")}
                                   className={controlClass}
                                   value={provider}
                                   onChange={(event) => {
@@ -949,13 +950,13 @@ function Setup({
                                     }}
                                     placeholder={
                                       selectedBinding
-                                        ? "Using saved key"
+                                        ? t("area.agents-3.new-agent-setup.setup.usingSavedKey")
                                         : [
                                               "cursor_cloud",
                                               "hermes_gateway",
                                             ].includes(adapterType)
-                                          ? "Required"
-                                          : "Optional if already configured"
+                                          ? t("area.agents-3.new-agent-setup.setup.required")
+                                          : t("area.agents-3.new-agent-setup.setup.optionalIfConfigured")
                                     }
                                   />
                                   {adapterType === "cursor_cloud" && (
@@ -965,7 +966,7 @@ function Setup({
                                       rel="noopener noreferrer"
                                       className="shrink-0 text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
                                     >
-                                      get api key
+                                      {t("area.agents-3.new-agent-setup.setup.getApiKey")}
                                     </a>
                                   )}
                                 </div>
@@ -977,7 +978,7 @@ function Setup({
                                   chooseProvider ? "sm:col-span-2" : undefined
                                 }
                               >
-                                <Field label="Or use an organization secret">
+                                <Field label={t("area.agents-3.new-agent-setup.setup.orUseAnOrganizationSecret")}>
                                   <SecretPicker
                                     secretId={
                                       selectedBinding &&
@@ -1002,41 +1003,40 @@ function Setup({
                               </div>
                             )}
                             <p className="text-xs text-muted-foreground sm:col-span-2">
-                              New keys are saved as organization secrets when
-                              you finish setup.
-                              {multiProvider && ` Use a ${provider}/model ID.`}
+                              {t("area.agents-3.new-agent-setup.setup.newKeysSaved")}
+                              {multiProvider && ` ${t("area.agents-3.new-agent-setup.setup.useProviderModelId", { provider })}`}
                             </p>
                           </div>
                         )}
                         {adapterType === "hermes_gateway" && (
-                          <Field label="Hermes API base URL">
+                          <Field label={t("area.agents-3.new-agent-setup.setup.hermesApiBaseUrl")}>
                             <Input
-                              aria-label="Hermes API base URL"
+                              aria-label={t("area.agents-3.new-agent-setup.setup.hermesApiBaseUrl")}
                               value={gatewayUrl}
                               onChange={(event) => {
                                 setGatewayUrl(event.target.value);
                                 resetTest();
                               }}
-                              placeholder="https://hermes.example.com"
+                              placeholder={t("area.agents-3.new-agent-setup.setup.httpsHermesExampleCom")}
                             />
                           </Field>
                         )}
                         {usingKimiApi && (
                           <div className="grid gap-5 sm:grid-cols-2">
-                            <Field label="Kimi API model name">
+                            <Field label={t("area.agents-3.new-agent-setup.setup.kimiApiModelName")}>
                               <Input
-                                aria-label="Kimi API model name"
+                                aria-label={t("area.agents-3.new-agent-setup.setup.kimiApiModelName")}
                                 value={kimiModel}
                                 onChange={(event) => {
                                   setKimiModel(event.target.value);
                                   resetTest();
                                 }}
-                                placeholder="kimi-for-coding"
+                                placeholder={t("area.agents-3.new-agent-setup.setup.kimiForCoding")}
                               />
                             </Field>
-                            <Field label="Kimi API protocol">
+                            <Field label={t("area.agents-3.new-agent-setup.setup.kimiApiProtocol")}>
                               <select
-                                aria-label="Kimi API protocol"
+                                aria-label={t("area.agents-3.new-agent-setup.setup.kimiApiProtocol")}
                                 className={controlClass}
                                 value={kimiProtocol}
                                 onChange={(event) => {
@@ -1052,38 +1052,38 @@ function Setup({
                               </select>
                             </Field>
                             <Field
-                              label="Kimi API base URL"
-                              hint="Optional override for your provider endpoint."
+                              label={t("area.agents-3.new-agent-setup.setup.kimiApiBaseUrl")}
+                              hint={t("area.agents-3.new-agent-setup.setup.endpointOverrideHint")}
                             >
                               <Input
-                                aria-label="Kimi API base URL"
+                                aria-label={t("area.agents-3.new-agent-setup.setup.kimiApiBaseUrl")}
                                 value={kimiBaseUrl}
                                 onChange={(event) => {
                                   setKimiBaseUrl(event.target.value);
                                   resetTest();
                                 }}
-                                placeholder="Provider default"
+                                placeholder={t("area.agents-3.new-agent-setup.setup.providerDefault")}
                               />
                             </Field>
                           </div>
                         )}
                         {adapterType === "cursor_cloud" && (
                           <div className="grid gap-5 sm:grid-cols-2">
-                            <Field label="GitHub repository">
+                            <Field label={t("area.agents-3.new-agent-setup.setup.githubRepository")}>
                               <Input
-                                aria-label="GitHub repository"
+                                aria-label={t("area.agents-3.new-agent-setup.setup.githubRepository")}
                                 value={repository}
                                 onChange={(event) => {
                                   setRepository(event.target.value);
                                   resetTest();
                                 }}
-                                placeholder="https://github.com/your-org/repo"
+                                placeholder={t("area.agents-3.new-agent-setup.setup.httpsGithubComYourOrg")}
                               />
                             </Field>
-                            <Field label="Branch">
+                            <Field label={t("area.agents-3.new-agent-setup.setup.branch")}>
                               <Input
-                                aria-label="Branch"
-                                placeholder="Repository default"
+                                aria-label={t("area.agents-3.new-agent-setup.setup.branch")}
+                                placeholder={t("area.agents-3.new-agent-setup.setup.repositoryDefault")}
                                 value={branch}
                                 onChange={(event) => {
                                   setBranch(event.target.value);
@@ -1098,9 +1098,9 @@ function Setup({
                         adapterType,
                       ) && (
                         <section className="space-y-5">
-                          <h3 className="text-sm font-semibold">Environment</h3>
+                          <h3 className="text-sm font-semibold">{t("area.agents-3.new-agent-setup.setup.environment")}</h3>
                           <select
-                            aria-label="Environment"
+                            aria-label={t("area.agents-3.new-agent-setup.setup.environment")}
                             className={controlClass}
                             value={environmentOverride}
                             disabled={forced.forced || managedOnly}
@@ -1112,7 +1112,7 @@ function Setup({
                             }}
                           >
                             <option value="">
-                              Default: {environmentLabel}
+                              {t("area.agents-3.new-agent-setup.setup.defaultEnvironment", { label: environmentLabel })}
                             </option>
                             {(envs.data ?? [])
                               .filter((env) => env.status === "active")
@@ -1146,7 +1146,7 @@ function Setup({
                           onClick={() => setScreen("connect")}
                         >
                           <ArrowLeft className="size-4" />
-                          Connection
+                          {t("area.agents-3.new-agent-setup.setup.connection")}
                         </Button>
                       ) : (
                         <span />
@@ -1160,7 +1160,7 @@ function Setup({
                           Boolean(connectionAdapter && !connection)
                         }
                       >
-                        {saving ? "Creating…" : "Finish setup"}
+                        {saving ? t("area.agents-3.new-agent-setup.setup.creating") : t("area.agents-3.new-agent-setup.setup.finishSetup")}
                         <Check className="size-4" />
                       </Button>
                     </div>

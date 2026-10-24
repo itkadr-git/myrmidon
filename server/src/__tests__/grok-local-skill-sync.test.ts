@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   listGrokSkills,
   syncGrokSkills,
-} from "@paperclipai/adapter-grok-local/server";
+} from "@myrmidon/adapter-grok-local/server";
 
 describe("grok local skill sync", () => {
-  const paperclipKey = "paperclipai/paperclip/paperclip";
+  const paperclipKey = "paperclipai/paperclip/myrmidon";
 
   it("defaults the operational Paperclip skill as ephemeral workspace-mounted state", async () => {
     const snapshot = await listGrokSkills({

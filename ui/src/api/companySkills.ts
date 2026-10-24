@@ -9,6 +9,7 @@ import type {
   CompanySkillCommentUpdateRequest,
   CompanySkillCreateRequest,
   CompanySkillDetail,
+  CompanySkillDiscoverResult,
   CompanySkillFileDetail,
   CompanySkillFileDeleteRequest,
   CompanySkillFileDeleteResult,
@@ -39,7 +40,7 @@ import type {
   CompanySkillUpdateStatus,
   CompanySkillVersion,
   CompanySkillVersionCreateRequest,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { api } from "./client";
 
 export interface CatalogListQuery {
@@ -212,10 +213,15 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}`,
       payload,
     ),
-  importFromSource: (companyId: string, source: string) =>
+  discover: (companyId: string, source: string) =>
+    api.post<CompanySkillDiscoverResult>(
+      `/companies/${encodeURIComponent(companyId)}/skills/discover`,
+      { source },
+    ),
+  importFromSource: (companyId: string, source: string, skillName?: string | null) =>
     api.post<CompanySkillImportResult>(
       `/companies/${encodeURIComponent(companyId)}/skills/import`,
-      { source },
+      { source, ...(skillName ? { skillName } : {}) },
     ),
   browseProject: (companyId: string, payload: CompanySkillProjectBrowseRequest) =>
     api.post<CompanySkillProjectBrowseResult>(

@@ -12,26 +12,33 @@
 // Every request's read-write-audit sequence runs through one queue, so two
 // overlapping PATCHes cannot commit in one order and audit in the other.
 
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
   BOT_DISK_LAYOUT_KEYS,
   botRoleGetsSharedCache,
   BOT_DISK_SETTING_KEYS,
+  BOT_DISK_WORKSPACE_LIFECYCLE_KEYS,
   BOT_DISK_UPDATED_ACTION,
+  botDiskPnpmWarnings,
+  // myrmidon(1.6.5-BOT-DISK-UV-A): the uv warnings, logged like the pnpm ones.
+  botDiskUvWarnings,
   mergeBotDiskSettings,
   resolveBotDiskSettings,
   resolveBotDiskLayout,
+  resolveBotDiskMechanics,
   resolveSharedPackageCachePath,
   resolveSharedBotRuntimePath,
   type BotDiskLayout,
+  type BotDiskMechanics,
   type BotDiskSettings,
   type BotDiskSettingsPatch,
   type ResolvedBotDiskSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { sweepAllBotVolumes } from "./draft-lifecycle.js";
+import { recordBotDiskSweepOutcome } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { refreshGitMirrors } from "./git-mirror.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { dropCloneSignalsExcept, ingestCloneReport, noteCloneReportSeen } from "./clone-hygiene.js";
 import { getBotContainerRuntime } from "./routes-wiring.js";
@@ -117,6 +124,11 @@ export function botDiskService(
         for (const key of BOT_DISK_LAYOUT_KEYS) {
           if (JSON.stringify(before.settings[key]) !== JSON.stringify(next[key])) changedKeys.push(key);
         }
+        // myrmidon(1.6.6-SETTINGS-UI-B): the workspace-lifecycle numbers of the
+        // same object belong in the audit trail too.
+        for (const key of BOT_DISK_WORKSPACE_LIFECYCLE_KEYS) {
+          if (before.settings[key] !== next[key]) changedKeys.push(key);
+        }
 
         await deps.settings.updateGeneral({ botDisk: next });
 
@@ -198,7 +210,52 @@ export async function readSharedBotRuntimePath(db: Db): Promise<string | undefin
  */
 export async function readBotDiskLayout(db: Db): Promise<BotDiskLayout> {
   const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
-  return resolveBotDiskLayout((await settings.getGeneral()).botDisk);
+  const stored = (await settings.getGeneral()).botDisk;
+  warnPnpmSettings(stored);
+  warnUvSettings(stored);
+  return resolveBotDiskLayout(stored);
+}
+
+/** The pnpm warnings already logged (a layout is read on every tick; each text goes out once per process). */
+const loggedPnpmWarnings = new Set<string>();
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H8a): a pnpm value of an earlier release that reads as
+ * a different one today, or a store inside the bot's own tree, is logged — once
+ * per text — rather than applied or dropped silently.
+ */
+function warnPnpmSettings(stored: unknown): void {
+  for (const warning of botDiskPnpmWarnings(stored)) {
+    if (loggedPnpmWarnings.has(warning)) continue;
+    loggedPnpmWarnings.add(warning);
+    logger.warn({ setting: "general.botDisk" }, warning);
+  }
+}
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-UV-A): a uv cache inside the bot's own tree is a
+ * cache per bot — logged once per text like the pnpm warnings above, never
+ * dropped silently.
+ */
+const loggedUvWarnings = new Set<string>();
+
+function warnUvSettings(stored: unknown): void {
+  for (const warning of botDiskUvWarnings(stored)) {
+    if (loggedUvWarnings.has(warning)) continue;
+    loggedUvWarnings.add(warning);
+    logger.warn({ setting: "general.botDisk" }, warning);
+  }
+}
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H5c): the BOT-DISK-H mechanics (C7) resolved from the
+ * same `general.botDisk` row, read per tick like the layout above — the profile
+ * compiler hands them to the bots (template.ts `botdProfileEnv`), so a settings
+ * PATCH reaches the bots on the next reconcile pass.
+ */
+export async function readBotDiskMechanics(db: Db): Promise<BotDiskMechanics> {
+  const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
+  return resolveBotDiskMechanics((await settings.getGeneral()).botDisk);
 }
 
 /**
@@ -262,7 +319,15 @@ export async function runBotDiskSweep(db: Db): Promise<void> {
   const layout = resolveBotDiskLayout(general.botDisk);
   void refreshGitMirrors(layout).catch((err) => logger.warn({ err }, "git mirror refresh failed"));
   const lifecycle = await resolveBotDiskLifecycleConfig({ getGeneral: async () => general });
-  await sweepAllBotVolumes(lifecycle);
+  // myrmidon(FEATURES): the sweep's report reaches the features page, so a pass
+  // that fails on every tick (a volume root that does not exist) is visible.
+  try {
+    const report = await sweepAllBotVolumes(lifecycle);
+    recordBotDiskSweepOutcome(report);
+  } catch (err) {
+    recordBotDiskSweepOutcome(null, err);
+    throw err;
+  }
 }
 
 /**

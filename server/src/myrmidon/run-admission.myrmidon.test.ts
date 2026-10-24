@@ -17,6 +17,7 @@ import {
   readHostCpuStatProbe,
   readHostMemory,
   readCgroupFreeMemoryBytes,
+  readCgroupMemoryUsageBytes,
   readRunAdmissionLimits,
   resetSharedRunAdmissionForTests,
   scheduleQueuedResweep,
@@ -195,6 +196,49 @@ describe("memory headroom", () => {
         throw new Error("ENOENT");
       }),
     ).toBeNull();
+  });
+});
+
+describe("myrmidon(1.6.5 C0-ui) the memory snapshot of the load screen", () => {
+  it("reports the cgroup usage as limit, usage and free, with the inactive cache reclaimable", () => {
+    const files: Record<string, string> = {
+      "/cg/memory.max": "8589934592\n",
+      "/cg/memory.current": "7800532992\n",
+      "/cg/memory.stat": "anon 4545642496\ninactive_file 2337927168\nactive_file 401641472\n",
+    };
+    expect(readCgroupMemoryUsageBytes("/cg", (path) => files[path]!)).toEqual({
+      limitBytes: 8589934592,
+      usedBytes: 7800532992 - 2337927168,
+      freeBytes: 8589934592 - (7800532992 - 2337927168),
+    });
+    // No cgroup v2 limit (cgroup v1, `memory.max` is "max", unreadable file)
+    // — nothing to report, and the load screen shows nothing rather than a
+    // number it made up.
+    expect(readCgroupMemoryUsageBytes("/cg", (path) => (path.endsWith("max") ? "max" : "0"))).toBeNull();
+    expect(
+      readCgroupMemoryUsageBytes("/none", () => {
+        throw new Error("ENOENT");
+      }),
+    ).toBeNull();
+  });
+
+  it("the admission's snapshot carries the host and the container memory, each null when unreadable", () => {
+    const GB = 1024 * MB;
+    const admission = createRunAdmission({
+      limits: { ...NO_MEMORY, maxConcurrentRuns: null, maxStartsPerMinute: null },
+      hostMemory: () => ({ known: true as const, availableBytes: 44 * GB, totalBytes: 128 * GB }),
+    });
+    const snapshot = admission.memorySnapshot();
+    expect(snapshot.host).toEqual({ availableMb: 44 * 1024, totalMb: 128 * 1024 });
+    // The test process is not under a cgroup v2 limit, so the container side
+    // is null — and the test still proves the view carries it when it reads.
+    expect(snapshot.container === null || typeof snapshot.container.usedMb === "number").toBe(true);
+
+    const blind = createRunAdmission({
+      limits: { ...NO_MEMORY, maxConcurrentRuns: null, maxStartsPerMinute: null },
+      hostMemory: () => ({ known: false as const, reason: "no meminfo" }),
+    });
+    expect(blind.memorySnapshot().host).toBeNull();
   });
 });
 
@@ -864,6 +908,38 @@ describe("myrmidon(1.6.5 RUN-FAIRNESS)", () => {
       expect(share.byAgent.has("anonymous")).toBe(false);
     });
 
+    it("myrmidon(1.6.6 OPE-8988): a released slot leaves the agent's share — an empty claim is no start", () => {
+      const admission = createRunAdmission({ limits: { ...OPEN } });
+      admission.reserve(2, { agentId: AGENT_A });
+      admission.reserve(1, { agentId: AGENT_B }); // lands while A awaits its claims
+      admission.release(2, { agentId: AGENT_A }); // neither of A's runs could be claimed
+      const share = admission.agentStartShare();
+      expect(share.total).toBe(1);
+      expect(share.byAgent.get(AGENT_A)).toBeUndefined();
+      expect(share.byAgent.get(AGENT_B)).toBe(1);
+    });
+
+    it("myrmidon(1.6.6 OPE-8988): an agent whose queued run never claims is not held by its own empty reservations", () => {
+      const admission = createRunAdmission({ limits: { ...OPEN } });
+      // other agents start for real
+      for (let i = 0; i < 20; i += 1) admission.reserve(1, { agentId: AGENT_B });
+      // AGENT_A's sweep reserves and its claim comes back empty, pass after pass
+      for (let pass = 0; pass < 50; pass += 1) {
+        const got = admission.reserve(1, { agentId: AGENT_A });
+        admission.release(got, { agentId: AGENT_A });
+      }
+      const share = admission.agentStartShare();
+      expect(share.byAgent.get(AGENT_A)).toBeUndefined();
+      expect(
+        evaluateAgentStartShare({
+          windowedStarts: share.total,
+          agentStarts: share.byAgent.get(AGENT_A) ?? 0,
+          sharePercent: 15,
+          otherAgentsWaiting: true,
+        }).allowed,
+      ).toBe(true);
+    });
+
     it("drops starts older than the 10-minute window", () => {
       let clock = 0;
       const admission = createRunAdmission({ limits: { ...OPEN }, now: () => clock });
@@ -1257,5 +1333,170 @@ describe("myrmidon(1.6.5 RUN-ADMISSION, rc.3) host CPU busy ceiling", () => {
     expect(cpuBusyPercentFromDelta({ idle: 300, total: 1000 }, { idle: 600, total: 2000 })).toBe(70);
     expect(cpuBusyPercentFromDelta({ idle: 300, total: 1000 }, { idle: 300, total: 1000 })).toBeNull();
     expect(cpuBusyPercentFromDelta({ idle: 300, total: 1000 }, { idle: 300, total: 1001 })).toBeCloseTo(100, 0);
+  });
+});
+
+// myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the owner's own turn in a chat does not
+// wait behind the host ceilings. The production pair the ticket names on
+// 09.10: minFreeHostMemoryMb 7168 and minFreeMemoryMb 1500.
+describe("owner chat turns (OWNER-CHAT-ADMISSION)", () => {
+  const GB = 1024 * MB;
+  /** The host is busy; the server container itself has room. */
+  const BUSY_HOST = {
+    maxConcurrentRuns: null,
+    maxStartsPerMinute: null,
+    minFreeMemoryMb: 1500,
+    runMemoryEstimateMb: 300,
+    minFreeHostMemoryMb: 7168,
+    maxHostLoadPercentPerCore: null,
+    maxPerAgentStartSharePercent: 15,
+  };
+  const hostBelowFloor = () => ({
+    known: true as const,
+    availableBytes: 4 * GB,
+    totalBytes: 64 * GB,
+  });
+  const cpu =
+    (load1: number, cores = 16, load15: number | null = load1) =>
+    () => ({ known: true as const, load1, load15, cores });
+
+  it("starts the owner's turn and queues the automatic run with memory between the floors", () => {
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => 4 * GB, // 4096 MB free, 2596 MB above the 1500 MB floor
+      hostMemory: hostBelowFloor,
+    });
+    // The automatic run waits: the host is below its own 7168 MB floor.
+    expect(admission.reserve(2)).toBe(0);
+    expect(admission.lastDenialReason()).toBe("host_memory");
+    // The owner's own turn starts: the container itself is above its floor.
+    expect(admission.reserve(2, { agentId: "agent-a", ownerChatTurns: 1 })).toBe(1);
+    // The automatic one left queued still says why it waits.
+    expect(admission.lastDenialReason()).toBe("host_memory");
+  });
+
+  it("holds the owner's turn when the HOST is below the owner floor, container healthy", () => {
+    const hostExhausted = () => ({ known: true as const, availableBytes: 1000 * MB, totalBytes: 64 * GB });
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => 4 * GB, // the container's cgroup is fine, the bots ate the host
+      hostMemory: hostExhausted,
+    });
+    expect(admission.reserve(1, { ownerChatTurns: 1 })).toBe(0);
+    expect(admission.lastDenialReason()).toBe("host_memory");
+    const gate = admission.ownerChatTurnGate();
+    expect(gate.state).toBe("closed");
+    expect(gate.reason).toContain("host MemAvailable");
+  });
+
+  it("holds the owner's turn on an exhausted host when the container floor is unreadable", () => {
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => null,
+      hostMemory: () => ({ known: true as const, availableBytes: 1000 * MB, totalBytes: 64 * GB }),
+    });
+    expect(admission.reserve(1, { ownerChatTurns: 1 })).toBe(0);
+    expect(admission.ownerChatTurnGate().state).toBe("closed");
+  });
+
+  it("budgets the runs still starting against the host for the owner's turn", () => {
+    let clock = 0;
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => 8 * GB,
+      // 1500 floor + 300 for exactly one more run
+      hostMemory: () => ({ known: true as const, availableBytes: 1800 * MB, totalBytes: 64 * GB }),
+      now: () => clock,
+    });
+    expect(admission.reserve(2, { ownerChatTurns: 2 })).toBe(1);
+    clock += 1000;
+    expect(admission.reserve(1, { ownerChatTurns: 1 })).toBe(0);
+  });
+
+  it("serves the owner turns first and no more of them than the host holds, automatic runs none", () => {
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => 8 * GB,
+      hostMemory: () => ({ known: true as const, availableBytes: 2100 * MB, totalBytes: 64 * GB }), // 2 runs above 1500
+    });
+    // 3 queued: 3 owner turns at the front; only 2 fit the host owner floor.
+    expect(admission.reserve(3, { ownerChatTurns: 3 })).toBe(2);
+  });
+
+  it("holds the owner's turn when the container is below its own floor", () => {
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST, minFreeHostMemoryMb: null },
+      freeMemoryBytes: () => 1200 * MB, // below the 1500 MB floor
+      hostMemory: () => ({ known: true as const, availableBytes: 60 * GB, totalBytes: 64 * GB }),
+    });
+    expect(admission.reserve(1, { ownerChatTurns: 1 })).toBe(0);
+    expect(admission.lastDenialReason()).toBe("memory");
+  });
+
+  it("does not let the CPU ceiling hold the owner's turn", () => {
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST, minFreeHostMemoryMb: null, maxHostLoadPercentPerCore: 90 },
+      freeMemoryBytes: () => 4 * GB,
+      hostCpuLoad: cpu(300, 16, 10), // 1875 % of a core, the background is 63 %
+    });
+    expect(admission.hostCpuGate().state).toBe("closed");
+    expect(admission.reserve(1)).toBe(0);
+    expect(admission.lastDenialReason()).toBe("host_cpu");
+    expect(admission.reserve(1, { ownerChatTurns: 1 })).toBe(1);
+  });
+
+  it("reports the owner-turn gate: open, closed, off, unknown", () => {
+    const open = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => 4 * GB,
+      hostMemory: hostBelowFloor,
+    });
+    expect(open.ownerChatTurnGate()).toMatchObject({
+      state: "open",
+      thresholdMb: 1500,
+      freeMb: 4096,
+      settlingRuns: 0,
+      reason: null,
+    });
+    const closed = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => 1200 * MB,
+      hostMemory: hostBelowFloor,
+    });
+    expect(closed.ownerChatTurnGate()).toMatchObject({
+      state: "closed",
+      thresholdMb: 1500,
+      freeMb: 1200,
+    });
+    const off = createRunAdmission({
+      limits: { ...BUSY_HOST, minFreeMemoryMb: null },
+      freeMemoryBytes: () => 4 * GB,
+    });
+    expect(off.ownerChatTurnGate().state).toBe("off");
+    const unknown = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => null,
+      hostMemory: () => ({ known: true as const, availableBytes: 60 * GB, totalBytes: 64 * GB }),
+    });
+    expect(unknown.ownerChatTurnGate()).toMatchObject({ state: "unknown", freeMb: null });
+  });
+
+  it("names the runs still settling when the owner-turn gate closes", () => {
+    let clock = 0;
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST, minFreeHostMemoryMb: null },
+      freeMemoryBytes: () => 2100 * MB, // exactly two 300 MB runs above the floor
+      now: () => clock,
+    });
+    // The chat notice asks this before it speaks: open, so nothing to announce.
+    expect(admission.ownerChatTurnGate()).toMatchObject({ state: "open", settlingRuns: 0 });
+    expect(admission.reserve(2)).toBe(2);
+    clock += 1000;
+    expect(admission.ownerChatTurnGate()).toMatchObject({
+      state: "closed",
+      freeMb: 2100,
+      settlingRuns: 2,
+    });
+    expect(admission.ownerChatTurnGate().reason).toContain("still starting");
   });
 });

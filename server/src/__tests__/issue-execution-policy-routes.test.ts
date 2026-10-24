@@ -19,6 +19,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
+  insertReviewAdmissionWakeup: vi.fn(async () => ({ created: true })),
   triggerIssueMonitor: vi.fn(async () => ({ outcome: "triggered" as const })),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
@@ -31,32 +32,39 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
   hasPermission: vi.fn(async () => false),
 }));
+const defaultRow = {
+  id: "55555555-5555-4555-8555-555555555555",
+  companyId: "company-1",
+  agentId: "33333333-3333-4333-8333-333333333333",
+  contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+  permissions: null,
+};
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
   for: () => ({
     then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-      Promise.resolve([{
-        id: "55555555-5555-4555-8555-555555555555",
-        companyId: "company-1",
-        agentId: "33333333-3333-4333-8333-333333333333",
-        contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-        permissions: null,
-      }]).then(onFulfilled, onRejected),
+      Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
   }),
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([{
-      id: "55555555-5555-4555-8555-555555555555",
-      companyId: "company-1",
-      agentId: "33333333-3333-4333-8333-333333333333",
-      contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-      permissions: null,
-    }]).then(onFulfilled, onRejected),
+    Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
 })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
+const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: vi.fn(async () => undefined) })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
-  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
-    callback({ select: mockDbSelect })),
+  insert: mockDbInsert,
+  // Transaction callbacks in issue PATCH must support downstream external-object sync.
+  update: vi.fn(() => ({
+    set: vi.fn(() => ({
+      where: vi.fn(async () => undefined),
+    })),
+  })),
+  delete: vi.fn(() => ({
+    where: vi.fn(async () => undefined),
+  })),
+  execute: vi.fn(async () => undefined),
+  transaction: vi.fn(async (callback: (tx: typeof mockDb) => Promise<unknown>) =>
+    callback(mockDb)),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -93,6 +101,7 @@ function registerModuleMocks() {
       getById: vi.fn(async (agentId: string) => ({
         id: agentId,
         companyId: "company-1",
+        role: "reviewer",
         permissions: null,
       })),
       resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
@@ -127,6 +136,10 @@ function registerModuleMocks() {
           censorUsernameInLogs: false,
           feedbackDataSharingPreference: "prompt",
         },
+      })),
+      getExperimental: vi.fn(async () => ({
+        enableExternalObjects: false,
+        enableAgentChat: false,
       })),
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
@@ -218,22 +231,10 @@ describe("issue execution policy routes", () => {
     mockDbSelectWhere.mockImplementation(() => ({
       for: () => ({
         then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-          Promise.resolve([{
-            id: "55555555-5555-4555-8555-555555555555",
-            companyId: "company-1",
-            agentId: "33333333-3333-4333-8333-333333333333",
-            contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-            permissions: null,
-          }]).then(onFulfilled, onRejected),
+          Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
       }),
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-        Promise.resolve([{
-          id: "55555555-5555-4555-8555-555555555555",
-          companyId: "company-1",
-          agentId: "33333333-3333-4333-8333-333333333333",
-          contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-          permissions: null,
-        }]).then(onFulfilled, onRejected),
+        Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
     }));
     mockIssueService.createChild.mockResolvedValue({
       issue: {
@@ -341,9 +342,7 @@ describe("issue execution policy routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("allows an agent-authored in_review transition with reviewPolicy human_only as the review path", async () => {
-    // myrmidon(HUMAN-REVIEW-WAIT): declaring the human-only wait is itself a
-    // real reviewer path — no fabricated interaction/approval needed.
+  it("rejects an agent-authored in_review transition with reviewPolicy human_only", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
@@ -352,10 +351,41 @@ describe("issue execution policy routes", () => {
       assigneeUserId: null,
       createdByUserId: "local-board",
       identifier: "PAP-1003H",
-      title: "Waiting on the owner",
+      title: "Human-only policy is not an agent review path",
       executionPolicy: null,
       executionState: null,
       reviewPolicy: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", reviewPolicy: "human_only" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).not.toContain('declare reviewPolicy "human_only"');
+    expect(res.body.details.validReviewPaths).not.toContain("human_only_review_policy");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows an agent-authored in_review transition with a different reviewer agent", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "reviewer-agent",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1003R",
+      title: "Reviewer agent handoff",
+      executionPolicy: null,
+      executionState: null,
+      reviewPolicy: "not_creator",
     };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
@@ -371,14 +401,9 @@ describe("issue execution policy routes", () => {
       runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_review", reviewPolicy: "human_only" });
+      .send({ status: "in_review", assigneeAgentId: "reviewer-agent" });
 
-    expect(res.status).toBe(200);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      expect.objectContaining({ status: "in_review", reviewPolicy: "human_only" }),
-      expect.anything(),
-    );
+    expect(res.status).not.toBe(422);
   });
 
   it("rejects an agent-authored in_review transition that would remain pathless after a non-human policy", async () => {

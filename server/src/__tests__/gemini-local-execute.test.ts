@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execute } from "@paperclipai/adapter-gemini-local/server";
+import { execute } from "@myrmidon/adapter-gemini-local/server";
 
 async function writeFakeGeminiCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -90,7 +90,7 @@ describe("gemini execute", () => {
     const configuredHome = path.join(root, "configured-home");
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
-    const skillSource = await createSkillDir(path.join(root, "runtime-skills"), "paperclip");
+    const skillSource = await createSkillDir(path.join(root, "runtime-skills"), "myrmidon");
     await fs.mkdir(workspace, { recursive: true });
     await writeFakeGeminiCommand(commandPath);
 
@@ -119,8 +119,8 @@ describe("gemini execute", () => {
           cwd: workspace,
           env: { HOME: configuredHome },
           paperclipRuntimeSkills: [{
-            key: "paperclipai/paperclip/paperclip",
-            runtimeName: "paperclip",
+            key: "paperclipai/paperclip/myrmidon",
+            runtimeName: "myrmidon",
             source: skillSource,
           }],
           promptTemplate: "Follow the paperclip heartbeat.",
@@ -131,10 +131,10 @@ describe("gemini execute", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      const installedSkill = path.join(configuredHome, ".gemini", "skills", "paperclip");
+      const installedSkill = path.join(configuredHome, ".gemini", "skills", "myrmidon");
       expect((await fs.lstat(installedSkill)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(installedSkill)).toBe(await fs.realpath(skillSource));
-      await expect(fs.lstat(path.join(processHome, ".gemini", "skills", "paperclip"))).rejects.toThrow();
+      await expect(fs.lstat(path.join(processHome, ".gemini", "skills", "myrmidon"))).rejects.toThrow();
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

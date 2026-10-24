@@ -16,7 +16,7 @@
 // runs through one queue (see `withRuntimeLimitsTransition`), exactly as the
 // task-drain transition does.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   RUN_LIMITS_PATCH_KEYS,
   mergeRunLimits,
@@ -24,7 +24,7 @@ import {
   type RunLimits,
   type RunLimitsPatch,
   type ResolvedRunLimits,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import type { HostCpuGate } from "../run-admission.js";
@@ -54,6 +54,40 @@ export type RuntimeLimitsView = ResolvedRunLimits & {
     oldestQueuedAt: string | null;
     /** The agent whose run waits longest, or null when the queue is empty. */
     oldestQueuedAgentId: string | null;
+  } | null;
+  /**
+   * myrmidon(1.6.5 F-09): the in-memory admission denial counter — how many
+   * reservations the gates refused since startup, broken down by gate, and the
+   * most recent denial. `null` when the process has no admission yet, so the
+   * settings page shows nothing rather than a number it made up. Counters
+   * reset on restart (the state lives in the singleton).
+   */
+  admissionDenials: {
+    total: number;
+    byReason: Record<string, number>;
+    lastReason: string | null;
+    lastAt: string | null;
+  } | null;
+  /**
+   * myrmidon(1.6.5 C0-ui): the memory the load screen is about — the host's
+   * free memory as the admission's host floor reads it, and the server
+   * container's own cgroup usage (the container the run budgets of
+   * `minFreeMemoryMb` are counted against). Each side is `null` when it
+   * cannot be read (the host meminfo is missing or virtualized, the process
+   * is not in a cgroup v2 with a limit), so the screen shows nothing rather
+   * than a number it made up. The snapshot does not decide admission; it
+   * only reports what the admission already reads for its gates.
+   */
+  memory: {
+    host: {
+      availableMb: number;
+      totalMb: number;
+    } | null;
+    container: {
+      limitMb: number;
+      usedMb: number;
+      freeMb: number;
+    } | null;
   } | null;
 };
 
@@ -99,6 +133,23 @@ export interface RuntimeLimitsServiceDeps {
    * never fails on it.
    */
   queueSnapshot?(): Promise<RuntimeLimitsView["queue"]>;
+  /**
+   * myrmidon(1.6.5 C0-ui): the live memory snapshot for the GET view — host
+   * memory and the server container's cgroup. `null` when the reading fails,
+   * so the view never fails on it (same rule as the queue snapshot).
+   */
+  memorySnapshot?(): RuntimeLimitsView["memory"];
+  /**
+   * myrmidon(1.6.5 F-09): the in-memory admission denial counters for the GET
+   * view. `null` when the process has no admission yet, so the view never
+   * fails on it (same rule as the queue snapshot).
+   */
+  admissionDenials?(): {
+    total: number;
+    byReason: Record<string, number>;
+    lastReason: string | null;
+    lastAt: number | null;
+  } | null;
   env?: Record<string, string | undefined>;
 }
 
@@ -164,6 +215,43 @@ export function runtimeLimitsService(
     }
   }
 
+  /**
+   * myrmidon(1.6.5 C0-ui): the live memory snapshot (host + server container
+   * cgroup), or null when the reading fails. Reading it must never fail the
+   * view, exactly like the queue snapshot above.
+   */
+  function memorySnapshot(): RuntimeLimitsView["memory"] {
+    if (!deps.memorySnapshot) return null;
+    try {
+      return deps.memorySnapshot();
+    } catch (err) {
+      logger.warn({ err }, "run admission memory snapshot unavailable for the runtime limits view");
+      return null;
+    }
+  }
+
+  /**
+   * myrmidon(1.6.5 F-09): the in-memory admission denial counters, or null
+   * when the process has no admission yet. Reading it must never fail the
+   * view, exactly like the queue and memory snapshots.
+   */
+  function admissionDenials(): RuntimeLimitsView["admissionDenials"] {
+    if (!deps.admissionDenials) return null;
+    try {
+      const raw = deps.admissionDenials();
+      if (!raw) return null;
+      return {
+        total: raw.total,
+        byReason: raw.byReason,
+        lastReason: raw.lastReason,
+        lastAt: raw.lastAt != null ? new Date(raw.lastAt).toISOString() : null,
+      };
+    } catch (err) {
+      logger.warn({ err }, "run admission denial counters unavailable for the runtime limits view");
+      return null;
+    }
+  }
+
   return {
     read: async (): Promise<RuntimeLimitsView> => {
       const general = await deps.settings.getGeneral();
@@ -171,6 +259,8 @@ export function runtimeLimitsService(
         ...resolveRunLimits({ stored: general.runLimits, env }),
         hostLoad: hostLoad(),
         queue: await queueSnapshot(),
+        memory: memorySnapshot(),
+        admissionDenials: admissionDenials(),
       };
     },
 
@@ -215,6 +305,8 @@ export function runtimeLimitsService(
           ...resolveRunLimits({ stored: next, env }),
           hostLoad: hostLoad(),
           queue: await queueSnapshot(),
+          memory: memorySnapshot(),
+          admissionDenials: admissionDenials(),
         };
       }),
   };

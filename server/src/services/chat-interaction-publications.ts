@@ -1,7 +1,7 @@
 import { nativePhotonInteraction } from "./photon/interactions.js";
 import { randomBytes } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   chatActions,
   chatConversations,
@@ -9,19 +9,27 @@ import {
   chatPublications,
   heartbeatRuns,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   AskUserQuestionsInteraction,
   AskUserQuestionsQuestion,
   IssueThreadInteraction,
   RequestConfirmationInteraction,
   SafeExternalChatCardAction,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { readConfigFile } from "../config-file.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 // myrmidon(B1): product name in the user-facing text below; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 // myrmidon(U2): owner-delivery bindings for tasks without their own chat thread.
 import { telegramOwnerDeliveryBindings } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
+// myrmidon(U2): owner Telegram questions and confirmations are delivered as text only.
+import {
+  TelegramOwnerTextTooLongError,
+  telegramOwnerBoardOnlyText,
+  telegramOwnerInteractionText,
+} from "../myrmidon/owner-delivery/telegram-text.js";
+import { logger } from "../middleware/logger.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
 import {
@@ -116,12 +124,12 @@ function terminalNativeInteractionCopy(
 
 export function publicChatInteractionTaskUrl(issueId: string): string | null {
   const configured =
-    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim() ||
+    readProductEnv("AUTH_PUBLIC_BASE_URL")?.trim() ||
     process.env.BETTER_AUTH_URL?.trim() ||
     process.env.BETTER_AUTH_BASE_URL?.trim() ||
-    process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
+    readProductEnv("PUBLIC_URL")?.trim() ||
     readConfigFile()?.auth?.publicBaseUrl?.trim() ||
-    process.env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL?.trim();
+    readProductEnv("MANAGED_RUNTIME_PUBLIC_URL")?.trim();
   return safeChatTaskUrl(configured, issueId);
 }
 
@@ -219,6 +227,42 @@ function textForQuestionInteraction(
   return lines.join("\n");
 }
 
+/**
+ * myrmidon: a native question card shows the full text of every option in its
+ * body and short numbered buttons. Telegram cuts long inline-button labels on
+ * a phone ("Поручить вла…"), so the owner could not read what each button
+ * meant; the body carries the complete options, the help text and the task
+ * link, the buttons only the number and the opening words.
+ */
+export const NATIVE_QUESTION_BUTTON_LABEL_MAX = 24;
+
+export function nativeQuestionButtonLabel(index: number, label: string): string {
+  const prefix = `${index + 1}. `;
+  const text = label.trim().replace(/\s+/g, " ");
+  const room = NATIVE_QUESTION_BUTTON_LABEL_MAX - prefix.length;
+  const chars = Array.from(text);
+  if (chars.length <= room) return prefix + text;
+  return prefix + chars.slice(0, room - 1).join("").trimEnd() + "…";
+}
+
+export function nativeQuestionCardBody(
+  question: AskUserQuestionsQuestion,
+  taskUrl: string | null,
+): string {
+  const lines: string[] = [];
+  if (question.helpText?.trim()) lines.push(question.helpText.trim(), "");
+  question.options.forEach((option, index) => {
+    const description = option.description?.trim();
+    lines.push(
+      description
+        ? `${index + 1}. ${option.label.trim()} — ${description}`
+        : `${index + 1}. ${option.label.trim()}`,
+    );
+  });
+  if (taskUrl) lines.push("", taskUrl);
+  return lines.join("\n");
+}
+
 function genericInteractionText(taskUrl: string | null): string {
   return [
     `This task needs an authorized response in ${PRODUCT_NAME}.`,
@@ -293,18 +337,21 @@ export async function enqueueIssueInteractionChatPublications(
         inArray(chatEndpoints.status, ["active", "verifying"]),
       ),
     );
-  let bindings = vendorBindings;
-  // myrmidon(U2): when the task has no chat-thread binding of its own, deliver
-  // the card to the owner's standing Telegram DM conversation with the
-  // authoring agent (the X8b bridge) instead of leaving it board-only. The
-  // vendor's own bindings, when present, always win; this is additive.
-  if (bindings.length === 0) {
-    bindings = await telegramOwnerDeliveryBindings(db, {
-      companyId: interaction.companyId,
-      issueId: interaction.issueId,
-      createdByAgentId: interaction.createdByAgentId,
-    });
-  }
+  // Vendor-bound conversations always keep their existing routing. Only use
+  // the owner DM as a fallback when the issue has no chat-thread binding.
+  const ownerBindings =
+    vendorBindings.length === 0
+      ? await telegramOwnerDeliveryBindings(db, {
+          companyId: interaction.companyId,
+          issueId: interaction.issueId,
+          createdByAgentId: interaction.createdByAgentId,
+          effectiveResolverPolicy: interaction.effectiveResolverPolicy,
+          addresseeAgentId: interaction.addresseeAgentId,
+          addresseeUserId: interaction.addresseeUserId,
+        })
+      : [];
+  const ownerOnly = vendorBindings.length === 0 && ownerBindings.length > 0;
+  const bindings = ownerOnly ? ownerBindings : vendorBindings;
   if (bindings.length === 0) return [];
 
   const taskUrl = publicChatInteractionTaskUrl(interaction.issueId);
@@ -315,6 +362,8 @@ export async function enqueueIssueInteractionChatPublications(
   const inserted: Array<typeof chatPublications.$inferSelect> = [];
   for (const { conversation, endpoint } of bindings) {
     if (endpoint.assignedAgentId !== interaction.createdByAgentId) continue;
+    const isOwnerTelegramBinding =
+      ownerOnly && endpoint.provider === "telegram";
     const formDraft =
       interaction.kind === "ask_user_questions" &&
       (endpoint.provider === "slack" ||
@@ -330,26 +379,61 @@ export async function enqueueIssueInteractionChatPublications(
           )
         : null;
     const supportsCallbacks =
+      !isOwnerTelegramBinding &&
       endpoint.provider !== "imessage-photon" &&
       formDraft === null &&
       question !== null &&
       endpoint.capabilities.actions === true;
-    const questionActionTokens = supportsCallbacks
-      ? question.options.map((option) => ({
-          actionId: createChatQuestionOptionActionToken(),
-          option,
-        }))
-      : [];
     const confirmation =
       endpoint.provider === "telegram" && endpoint.capabilities.actions === true
         ? nativeTelegramConfirmation(interaction)
         : null;
-    const confirmationActionTokens = confirmation
-      ? (["accept", "reject"] as const).map((decision) => ({
-          actionId: createChatConfirmationActionToken(),
-          decision,
-        }))
-      : [];
+    let ownerTelegramText: string | null = null;
+    if (isOwnerTelegramBinding) {
+      try {
+        ownerTelegramText = telegramOwnerInteractionText(
+          interaction,
+          taskUrl,
+          true,
+        );
+        // Nothing renderable (tool/secret/connection confirmation and other
+        // kinds): the owner still learns that a decision waits on the board.
+        ownerTelegramText ??= telegramOwnerBoardOnlyText(taskUrl, "board_only");
+      } catch (error) {
+        if (!(error instanceof TelegramOwnerTextTooLongError)) throw error;
+        // A valid interaction must not roll back, and the owner must not
+        // learn nothing, because Telegram cannot fit the complete text. Never
+        // truncate and never fall back to an executable card: send a short
+        // board-only notice and leave a log trace (ids only, no content).
+        logger.warn(
+          {
+            interactionId: interaction.id,
+            issueId: interaction.issueId,
+            endpointId: endpoint.id,
+            textLength: error.length,
+          },
+          "Owner Telegram interaction text exceeds the message limit; sent a board-only notice",
+        );
+        ownerTelegramText = telegramOwnerBoardOnlyText(taskUrl, "too_long");
+      }
+    }
+    const isTextOnlyOwnerTelegram =
+      isOwnerTelegramBinding &&
+      ownerTelegramText !== null;
+    const questionActionTokens =
+      supportsCallbacks && question && !isTextOnlyOwnerTelegram
+        ? question.options.map((option) => ({
+            actionId: createChatQuestionOptionActionToken(),
+            option,
+          }))
+        : [];
+    const confirmationActionTokens =
+      !isTextOnlyOwnerTelegram && confirmation
+        ? (["accept", "reject"] as const).map((decision) => ({
+            actionId: createChatConfirmationActionToken(),
+            decision,
+          }))
+        : [];
     if (
       endpoint.provider === "telegram" &&
       [...questionActionTokens, ...confirmationActionTokens].some(
@@ -360,7 +444,9 @@ export async function enqueueIssueInteractionChatPublications(
     ) {
       throw new Error("Generated Telegram question action exceeds 64 bytes");
     }
-    const actions: SafeExternalChatCardAction[] = formDraft
+    const actions: SafeExternalChatCardAction[] = isTextOnlyOwnerTelegram
+      ? []
+      : formDraft
       ? [
           {
             type: "callback" as const,
@@ -370,10 +456,10 @@ export async function enqueueIssueInteractionChatPublications(
           },
         ]
       : supportsCallbacks
-        ? questionActionTokens.map(({ actionId, option }) => ({
+        ? questionActionTokens.map(({ actionId, option }, index) => ({
             type: "callback" as const,
             actionId,
-            label: option.label,
+            label: nativeQuestionButtonLabel(index, option.label),
           }))
         : confirmation
           ? confirmationActionTokens.map(({ actionId, decision }) => ({
@@ -397,16 +483,17 @@ export async function enqueueIssueInteractionChatPublications(
                 },
               ]
             : [];
-    const text =
-      interaction.kind === "ask_user_questions"
+    const text = ownerTelegramText ??
+      (interaction.kind === "ask_user_questions"
         ? textForQuestionInteraction(interaction, taskUrl)
-        : genericInteractionText(taskUrl);
+        : genericInteractionText(taskUrl));
     const payload = projectSafeChatPublication({
       classification: "external",
       source: "issue_interaction",
       text,
+      interactionId: isTextOnlyOwnerTelegram ? interaction.id : undefined,
       progressState: "waiting_for_input",
-      interaction: {
+      interaction: isTextOnlyOwnerTelegram ? undefined : {
         id: interaction.id,
         card: {
           kind:
@@ -426,7 +513,9 @@ export async function enqueueIssueInteractionChatPublications(
                 : `Response needed in ${PRODUCT_NAME}`,
           body:
             interaction.kind === "ask_user_questions"
-              ? (question?.helpText ?? undefined)
+              ? supportsCallbacks && question
+                ? nativeQuestionCardBody(question, taskUrl)
+                : (question?.helpText ?? undefined)
               : interaction.kind === "request_confirmation"
                 ? (interaction.payload.detailsMarkdown ?? undefined)
                 : `Open the task in ${PRODUCT_NAME} to review and respond.`,

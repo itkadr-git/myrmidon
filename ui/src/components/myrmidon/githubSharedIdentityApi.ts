@@ -81,16 +81,21 @@ export interface BeginAppManifestBody {
 export interface BeginAppManifestResponse {
   manifestUrl: string;
   manifest: Record<string, unknown>;
+  /** Anti-CSRF state: POST to GitHub as a separate form field; echoed back on the callback. */
+  state: string;
 }
 
 export interface AppInstallUrlResponse {
   installUrl: string;
 }
 
+export interface GitHubPatEntry { id: string; name: string; tokenSecretId: string; agentIds: string[]; allowedRepos: string[]; }
+
 export interface GitHubSharedIdentitySettings {
   version: 1;
   enabled: boolean;
   apps: GitHubAppEntry[];
+  pats: GitHubPatEntry[];
   commitEmailDomain: string | null;
 }
 

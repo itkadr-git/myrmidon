@@ -1,9 +1,10 @@
-import type { Issue, IssueStatus } from "@paperclipai/shared";
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
+import type { Issue, IssueStatus } from "@myrmidon/shared";
 
 export const RECENT_TASKS_LIMIT = 5;
 export const RECENT_TASKS_UPDATED_EVENT = "paperclip:recent-tasks-updated";
-const STORAGE_PREFIX = "paperclip.recentTasks.v2:";
-const LEGACY_STORAGE_PREFIX = "paperclip.recentTasks:";
+const STORAGE_PREFIX = "myrmidon.recentTasks.v2:";
+const LEGACY_STORAGE_PREFIXES = ["myrmidon.recentTasks:", "paperclip.recentTasks:"] as const;
 
 export interface RecentTaskEntry {
   id: string;
@@ -46,10 +47,11 @@ function isRecentTaskEntry(value: unknown, companyId: string): value is RecentTa
 export function readRecentTasks(storageKey: string, companyId: string): RecentTaskEntry[] {
   if (typeof window === "undefined") return [];
   try {
-    const legacyKey = storageKey.startsWith(STORAGE_PREFIX)
-      ? LEGACY_STORAGE_PREFIX + storageKey.slice(STORAGE_PREFIX.length)
-      : storageKey;
-    const raw = window.localStorage.getItem(storageKey) ?? window.localStorage.getItem(legacyKey);
+    const legacyKeys = storageKey.startsWith(STORAGE_PREFIX)
+      ? LEGACY_STORAGE_PREFIXES.map((prefix) => prefix + storageKey.slice(STORAGE_PREFIX.length))
+      : [storageKey];
+    const raw = window.localStorage.getItem(storageKey)
+      ?? legacyKeys.map((key) => window.localStorage.getItem(key)).find((value) => value !== null);
     const parsed = JSON.parse(raw ?? "[]") as unknown;
     if (!Array.isArray(parsed)) return [];
     return normalizeRecentTasks(

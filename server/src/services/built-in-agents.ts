@@ -2,12 +2,12 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@myrmidon/adapter-utils/server-utils";
 import { and, desc, eq, ne } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
-import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
-import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@myrmidon/db";
+import { syncRoutineVariablesWithTemplate } from "@myrmidon/shared";
+import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@myrmidon/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsService } from "./agent-instructions.js";
@@ -237,7 +237,7 @@ export function readBuiltInTextWithFallback(
         if (!warnedBuiltInTextReadErrors.has(warningKey)) {
           warnedBuiltInTextReadErrors.add(warningKey);
           console.warn(
-            "[paperclip] Built-in agent asset " + label + " read error on " + candidatePath + ": " + codeLabel,
+            "[myrmidon] Built-in agent asset " + label + " read error on " + candidatePath + ": " + codeLabel,
           );
         }
       }
@@ -248,7 +248,7 @@ export function readBuiltInTextWithFallback(
   if (!warnedBuiltInTextFallbacks.has(label)) {
     warnedBuiltInTextFallbacks.add(label);
     console.warn(
-      `[paperclip] Built-in agent asset ${label} was not readable; using bundled fallback text. `
+      `[myrmidon] Built-in agent asset ${label} was not readable; using bundled fallback text. `
       + `Checked: ${attemptedPaths.join(", ")}`,
     );
   }
@@ -263,7 +263,7 @@ function readBuiltInText(relativePath: string, fallbackText: string) {
   );
 }
 
-const skillsCatalogRoot = resolvePackageRoot("@paperclipai/skills-catalog");
+const skillsCatalogRoot = resolvePackageRoot("@myrmidon/skills-catalog");
 const REFLECTION_COACH_INSTRUCTIONS = readBuiltInText("reflection-coach/AGENTS.md", FALLBACK_REFLECTION_COACH_INSTRUCTIONS);
 const REFLECTION_COACH_ROUTINE = readBuiltInText(
   "reflection-coach/routines/recent-agent-reflection.md",

@@ -6,22 +6,22 @@
 // `setSkillCurrentVersion`, which moves the skill's `current_version_id` to the
 // revision a rollback restored (that pointer is what the delivery path reads).
 
-import { and, asc, desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
+import type { Db } from "@myrmidon/db";
 import {
   approvals,
   companySkillLifecycle,
   companySkillLifecycleEvents,
   companySkillVersions,
   companySkills,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   SkillLifecycleApprovalRef,
   SkillLifecycleEvent,
   SkillLifecycleRecord,
   SkillLifecycleState,
 } from "./domain.js";
-import { isSkillLifecycleState } from "./domain.js";
+import { BOT_BACKIMPORT_ORIGIN_METADATA_KEY, isSkillLifecycleState } from "./domain.js";
 
 export interface SkillLifecycleSkillRef {
   id: string;
@@ -29,6 +29,8 @@ export interface SkillLifecycleSkillRef {
   name: string;
   slug: string;
   currentVersionId: string | null;
+  /** Back-import origin marker (the authoring bot's id), when the skill has one. */
+  originAgentId?: string | null;
 }
 
 export interface SkillLifecycleVersionRef {
@@ -49,6 +51,8 @@ export interface SkillLifecycleStore {
   listEvents(companyId: string, skillId: string): Promise<SkillLifecycleEvent[]>;
   getVersion(companyId: string, skillId: string, versionId: string): Promise<SkillLifecycleVersionRef | null>;
   getApproval(approvalId: string): Promise<SkillLifecycleApprovalRef | null>;
+  /** Atomically claims an approved promotion approval for this company and skill. */
+  consumeApproval(approvalId: string, companyId: string, skillId: string): Promise<SkillLifecycleApprovalRef | null>;
   setSkillCurrentVersion(companyId: string, skillId: string, versionId: string | null): Promise<void>;
 }
 
@@ -82,6 +86,12 @@ function toEvent(row: typeof companySkillLifecycleEvents.$inferSelect): SkillLif
   };
 }
 
+function originAgentFromMetadata(metadata: unknown): string | null {
+  if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) return null;
+  const value = (metadata as Record<string, unknown>)[BOT_BACKIMPORT_ORIGIN_METADATA_KEY];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 export function createDbSkillLifecycleStore(db: Db): SkillLifecycleStore {
   return {
     async getSkill(companyId, skillId) {
@@ -107,11 +117,16 @@ export function createDbSkillLifecycleStore(db: Db): SkillLifecycleStore {
           name: companySkills.name,
           slug: companySkills.slug,
           currentVersionId: companySkills.currentVersionId,
+          metadata: companySkills.metadata,
         })
         .from(companySkills)
         .where(eq(companySkills.companyId, companyId))
         .orderBy(asc(companySkills.name));
-      return rows.map((row) => ({ ...row, currentVersionId: row.currentVersionId ?? null }));
+      return rows.map(({ metadata, ...row }) => ({
+        ...row,
+        currentVersionId: row.currentVersionId ?? null,
+        originAgentId: originAgentFromMetadata(metadata),
+      }));
     },
 
     async getRecord(companyId, skillId) {
@@ -238,6 +253,30 @@ export function createDbSkillLifecycleStore(db: Db): SkillLifecycleStore {
         payload: (row.payload ?? {}) as Record<string, unknown>,
         decidedByUserId: row.decidedByUserId ?? null,
         decidedAt: row.decidedAt ? row.decidedAt.toISOString() : null,
+      };
+    },
+
+    async consumeApproval(approvalId, companyId, skillId) {
+      const row = await db
+        .update(approvals)
+        .set({ status: "used", updatedAt: new Date() })
+        .where(and(
+          eq(approvals.id, approvalId),
+          eq(approvals.companyId, companyId),
+          eq(approvals.type, "skill_promotion"),
+          eq(approvals.status, "approved"),
+          sql`${approvals.payload}->>'skillId' = ${skillId}`,
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      return {
+        id: row.id,
+        type: row.type,
+        status: "approved",
+        payload: (row.payload ?? {}) as Record<string, unknown>,
+        decidedByUserId: row.decidedByUserId ?? null,
+        decidedAt: row.decidedAt?.toISOString() ?? null,
       };
     },
 

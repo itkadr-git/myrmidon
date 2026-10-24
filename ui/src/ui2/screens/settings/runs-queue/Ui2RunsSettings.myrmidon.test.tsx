@@ -95,6 +95,12 @@ const openView = {
     oldestQueuedAt: "2026-10-06T08:00:00.000Z",
     oldestQueuedAgentId: "agent-1",
   },
+  // myrmidon(1.6.5 C0-ui): the memory snapshot — the host's memory and the
+  // server container's cgroup usage the screen shows under the queue block.
+  memory: {
+    host: { availableMb: 45056, totalMb: 131072 },
+    container: { limitMb: 8192, usedMb: 3000, freeMb: 5192 },
+  },
 };
 
 describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
@@ -158,6 +164,11 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
         queued: 0,
         oldestQueuedAt: null,
         oldestQueuedAgentId: null,
+      },
+      // myrmidon(1.6.5 C0-ui): the update response carries the memory snapshot too.
+      memory: {
+        host: { availableMb: 45056, totalMb: 131072 },
+        container: { limitMb: 8192, usedMb: 3000, freeMb: 5192 },
       },
     }));
     // myrmidon(1.6.5 RUN-FAIRNESS): the live-runs list of the company — one
@@ -262,6 +273,36 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
     expect(container.querySelector("[data-testid=ui2-run-queue]")).toBeNull();
   });
 
+  it("myrmidon(1.6.5 C0-ui): shows the host and container memory; a missing snapshot shows no block", async () => {
+    await renderScreen();
+    const line = container.querySelector("[data-testid=ui2-run-memory]")?.textContent ?? "";
+    expect(line).toContain("Host memory: 45056 MB available of 131072 MB.");
+    expect(line).toContain("Server container: 3000 MB used of 8192 MB (5192 MB free).");
+
+    mockRuntimeLimitsApi.get.mockResolvedValue({ ...openView, memory: null });
+    flushSync(() => root?.unmount());
+    root = null;
+    await renderScreen();
+    expect(container.querySelector("[data-testid=ui2-run-memory]")).toBeNull();
+  });
+
+  it("myrmidon(1.6.5 C0-ui): the memory block is localized (ru)", async () => {
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <Ui2I18nProvider initialLocale="ru">
+            <Ui2RunsSettings />
+          </Ui2I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    const line = container.querySelector("[data-testid=ui2-run-memory]")?.textContent ?? "";
+    expect(line).toContain("Память хоста: 45056 МБ свободно из 131072 МБ.");
+    expect(line).toContain("Контейнер сервера: занято 3000 МБ из 8192 МБ (свободно 5192 МБ).");
+  });
+
   it("myrmidon(1.6.5 RUN-FAIRNESS): the queue block and the fair-share field are localized (ru)", async () => {
     root = createRoot(container);
     flushSync(() => {
@@ -360,6 +401,111 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
     root = null;
     await renderScreen();
     expect(container.querySelector("[data-testid=ui2-run-limit-host-load]")).toBeNull();
+  });
+
+  it("myrmidon(1.6.5 F-09): shows the admission denial counter with its breakdown and the last refusal", async () => {
+    mockRuntimeLimitsApi.get.mockResolvedValue({
+      ...openView,
+      admissionDenials: {
+        total: 7,
+        // A gate that refused nothing is dropped; an unknown token (a server
+        // ahead of this UI) renders as its raw value.
+        byReason: { global_cap: 4, host_cpu: 3, memory: 0 },
+        lastReason: "host_cpu",
+        lastAt: "2026-10-06T08:00:00.000Z",
+      },
+    });
+    await renderScreen();
+
+    const block = container.querySelector("[data-testid=ui2-run-admission-denials]")?.textContent ?? "";
+    expect(block).toContain("Admission refusals since the server started: 7.");
+
+    const byReason = container.querySelector("[data-testid=ui2-run-admission-denials-by-reason]")?.textContent ?? "";
+    expect(byReason).toContain("the concurrency ceiling is full: 4");
+    expect(byReason).toContain("the host CPU ceiling is closed: 3");
+    expect(byReason).not.toContain("the server keeps its free-memory floor");
+
+    const last = container.querySelector("[data-testid=ui2-run-admission-denials-last]")?.textContent ?? "";
+    expect(last).toContain("Last refusal: the host CPU ceiling is closed at 08:00:00 UTC");
+  });
+
+  it("myrmidon(1.6.5 F-09): an unknown gate renders raw and a zero total still shows the counter", async () => {
+    mockRuntimeLimitsApi.get.mockResolvedValue({
+      ...openView,
+      admissionDenials: {
+        total: 1,
+        byReason: { some_future_gate: 1 },
+        lastReason: "some_future_gate",
+        lastAt: null,
+      },
+    });
+    await renderScreen();
+    const byReason = container.querySelector("[data-testid=ui2-run-admission-denials-by-reason]")?.textContent ?? "";
+    expect(byReason).toContain("some_future_gate: 1");
+    // No timestamp on the refusal: the reason alone, no invented time.
+    expect(
+      container.querySelector("[data-testid=ui2-run-admission-denials-last]")?.textContent ?? "",
+    ).toBe("Last refusal: some_future_gate.");
+
+    mockRuntimeLimitsApi.get.mockResolvedValue({
+      ...openView,
+      admissionDenials: { total: 0, byReason: {}, lastReason: null, lastAt: null },
+    });
+    flushSync(() => root?.unmount());
+    root = null;
+    await renderScreen();
+    expect(
+      container.querySelector("[data-testid=ui2-run-admission-denials]")?.textContent,
+    ).toBe("Admission refusals since the server started: 0.");
+    expect(container.querySelector("[data-testid=ui2-run-admission-denials-by-reason]")).toBeNull();
+    expect(container.querySelector("[data-testid=ui2-run-admission-denials-last]")).toBeNull();
+  });
+
+  it("myrmidon(1.6.5 F-09): a server without the counter hides the block and does not break the screen", async () => {
+    // An older server: the field is absent from the view entirely.
+    await renderScreen();
+    expect(container.querySelector("[data-testid=ui2-run-admission-denials]")).toBeNull();
+    // The rest of the screen still renders.
+    expect(container.querySelector("[data-testid=ui2-run-queue]")).not.toBeNull();
+
+    mockRuntimeLimitsApi.get.mockResolvedValue({ ...openView, admissionDenials: null });
+    flushSync(() => root?.unmount());
+    root = null;
+    await renderScreen();
+    expect(container.querySelector("[data-testid=ui2-run-admission-denials]")).toBeNull();
+    expect(container.querySelector("[data-testid=ui2-run-memory]")).not.toBeNull();
+  });
+
+  it("myrmidon(1.6.5 F-09): the admission denial block is localized (ru)", async () => {
+    mockRuntimeLimitsApi.get.mockResolvedValue({
+      ...openView,
+      admissionDenials: {
+        total: 7,
+        byReason: { global_cap: 4, host_cpu: 3 },
+        lastReason: "host_cpu",
+        lastAt: "2026-10-06T08:00:00.000Z",
+      },
+    });
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <Ui2I18nProvider initialLocale="ru">
+            <Ui2RunsSettings />
+          </Ui2I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const block = container.querySelector("[data-testid=ui2-run-admission-denials]")?.textContent ?? "";
+    expect(block).toContain("Отказов допуска с момента старта сервера: 7.");
+    const byReason = container.querySelector("[data-testid=ui2-run-admission-denials-by-reason]")?.textContent ?? "";
+    expect(byReason).toContain("потолок одновременных прогонов занят: 4");
+    expect(byReason).toContain("потолок нагрузки CPU хоста закрыт: 3");
+    expect(
+      container.querySelector("[data-testid=ui2-run-admission-denials-last]")?.textContent ?? "",
+    ).toContain("Последний отказ: потолок нагрузки CPU хоста закрыт в 08:00:00 UTC");
   });
 
   it("applies only the changed limit through the same PATCH api", async () => {

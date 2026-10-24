@@ -23,16 +23,6 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
   merge_group:
     types: [checks_requested]
-  # Started by myrmidon-pr-autoupdate.yml after it merges main into a PR
-  # branch: a push made with GITHUB_TOKEN does not start pull_request runs, so
-  # the status on the new head would never appear. The run is not a
-  # `synchronize`, so the review-approved label stays: the PR's own code did
-  # not change, only main was merged in.
-  workflow_dispatch:
-    inputs:
-      pr:
-        description: Pull request number
-        required: true
 
 permissions:
   contents: read
@@ -63,14 +53,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          PR: ${{ github.event.pull_request.number }}
           ACTION: ${{ github.event.action }}
           SHA: ${{ github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          if [[ "$EVENT" == "workflow_dispatch" ]]; then
-            SHA="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')"
-          fi
           if [[ "$EVENT" == "merge_group" ]]; then
             # Review is enforced on the PR before it enters the queue. For the
             # queue the job only reports the status on the candidate commit.
@@ -88,8 +75,16 @@ jobs:
           fi
           echo "Затронуты ключевые файлы:"; echo "$touched"
           if [[ "$ACTION" == "synchronize" ]]; then
-            gh api -X DELETE "repos/$REPO/issues/$PR/labels/review-approved" >/dev/null 2>&1 || true
-            echo "Новый push после ревью — метка review-approved снята, нужно повторное ревью."
+            # myrmidon-pr-autoupdate merges main into the branch through the
+            # update-branch API (merge commit by a GitHub App, committer web-flow).
+            # That `synchronize` leaves the PR's own code unchanged, so the label stays.
+            head="$(gh api "repos/$REPO/commits/$SHA" --jq '[(.parents|length),.author.login,.committer.login,(.commit.message|split("\n")[0])]|@tsv')"
+            if [[ "$head" =~ ^2$'\t'[^$'\t']+\[bot\]$'\t'web-flow$'\t'Merge\ branch\ \'main\'\ into\  ]]; then
+              echo "Head — слияние main (update-branch, бот): метка review-approved остаётся."
+            else
+              gh api -X DELETE "repos/$REPO/issues/$PR/labels/review-approved" >/dev/null 2>&1 || true
+              echo "Новый push после ревью — метка review-approved снята, нужно повторное ревью."
+            fi
           fi
           labels="$(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name')"
           if grep -qx 'review-approved' <<<"$labels"; then

@@ -8,13 +8,16 @@ import {
   issueThreadInteractions,
   issues,
   type Db,
-} from "@paperclipai/db";
-import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { ExecutionContinuationEnvelope } from "@myrmidon/shared";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 // myrmidon(P3): bounded continuation history
 import { limitExecutionContinuationHistory } from "../myrmidon/continuation-history-limit.js";
+// myrmidon(DB-CARE DBC-3): the envelope is read from heartbeat_run_continuations,
+// with the legacy context_snapshot copy as fallback for older rows.
+import { loadRunContinuationEnvelope } from "./run-continuation-snapshot.js";
 
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
@@ -46,6 +49,8 @@ export async function currentContinuationOrigins(
   companyId: string,
   issueId: string,
   context: unknown,
+  /** myrmidon(DB-CARE DBC-3): run whose stored envelope is merged in. */
+  sourceRunId?: string | null,
 ): Promise<string[]> {
   const [latest] = await db
     .select({ id: issueComments.id })
@@ -62,9 +67,26 @@ export async function currentContinuationOrigins(
     )
     .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
     .limit(1);
+  // myrmidon(DB-CARE DBC-3): the source run's envelope lives in
+  // heartbeat_run_continuations; the loader still sees the legacy snapshot copy.
+  const envelope = sourceRunId
+    ? object(
+        await loadRunContinuationEnvelope(db, {
+          companyId,
+          runId: sourceRunId,
+          legacyContext: context,
+        }),
+      )
+    : {};
+  const envelopeOrigins = Array.isArray(envelope.originCommentIds)
+    ? envelope.originCommentIds.filter(
+        (id): id is string => typeof id === "string" && id.length > 0,
+      )
+    : [];
   return [
     ...new Set([
       ...continuationOriginCommentIds(context),
+      ...envelopeOrigins,
       ...(latest ? [latest.id] : []),
     ]),
   ];
@@ -122,35 +144,74 @@ export async function buildExecutionContinuation(input: {
   );
   const explicitContinuation = object(input.context.explicitUserContinuation);
   const explicitUserSource = string(explicitContinuation.previousRunId);
-  const sourceRunId =
-    explicitUserSource ??
-    triggerInteraction?.sourceRunId ??
-    string(input.context.retryOfRunId) ??
-    string(input.context.previousRunId) ??
-    string(input.context.interruptedRunId);
-  const sourceRun = sourceRunId
-    ? (
-        await db
-          .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
-          .from(heartbeatRuns)
-          .where(
-            and(
-              eq(heartbeatRuns.companyId, companyId),
-              eq(heartbeatRuns.id, sourceRunId),
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-            ),
-          )
-      )[0]
-    : null;
-  if (sourceRunId && !sourceRun)
-    throw new Error(explicitUserSource ? "continuation_user_authorization_missing" : "continuation_source_context_missing");
+
+  let sourceRunId: string | null = null;
+  let sourceRun: { context: unknown; result: unknown } | null = null;
+
+  if (explicitUserSource) {
+    sourceRunId = explicitUserSource;
+    const [row] = await db
+      .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.id, explicitUserSource),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      );
+    sourceRun = row ?? null;
+    if (!sourceRun) {
+      throw new Error("continuation_user_authorization_missing");
+    }
+  } else {
+    // Candidates in order of precedence: interaction source run (if on this issue),
+    // followed by retry/continuation runs for this task.
+    const candidates = [
+      triggerInteraction?.sourceRunId,
+      string(input.context.retryOfRunId),
+      string(input.context.previousRunId),
+      string(input.context.interruptedRunId),
+    ].filter((id): id is string => typeof id === "string" && id.length > 0);
+
+    for (const candidateId of candidates) {
+      const [row] = await db
+        .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.id, candidateId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+        );
+      if (row) {
+        sourceRunId = candidateId;
+        sourceRun = row;
+        break;
+      }
+    }
+
+    const requestedRunId =
+      string(input.context.retryOfRunId) ??
+      string(input.context.previousRunId) ??
+      string(input.context.interruptedRunId);
+    if (requestedRunId && !sourceRun) {
+      throw new Error("continuation_source_context_missing");
+    }
+  }
+
   const originCommentIds = [
     ...new Set([
       ...continuationOriginCommentIds(input.context),
       ...continuationOriginCommentIds(sourceRun?.context),
-      ...(triggerInteraction?.originCommentIds ?? []),
-      ...(triggerInteraction?.sourceCommentId
-        ? [triggerInteraction.sourceCommentId]
+      ...(triggerInteraction && (!triggerInteraction.sourceRunId || sourceRunId === triggerInteraction.sourceRunId)
+        ? [
+            ...(triggerInteraction.originCommentIds ?? []),
+            ...(triggerInteraction.sourceCommentId
+              ? [triggerInteraction.sourceCommentId]
+              : []),
+          ]
         : []),
     ]),
   ];
@@ -190,7 +251,15 @@ export async function buildExecutionContinuation(input: {
           )
       )[0]
     : null;
-  const priorEnvelope = object(previousRun?.context?.executionContinuation);
+  const priorEnvelope = object(
+    input.previousContextRunId
+      ? await loadRunContinuationEnvelope(db, {
+          companyId,
+          runId: input.previousContextRunId,
+          legacyContext: previousRun?.context,
+        })
+      : null,
+  );
   const deliveredMessages = Array.isArray(priorEnvelope.messages)
     ? priorEnvelope.messages.map(object)
     : null;
@@ -205,12 +274,16 @@ export async function buildExecutionContinuation(input: {
                 (prior) =>
                   prior.id === message.id &&
                   prior.updatedAt === message.updatedAt &&
-                  prior.body === message.body &&
-                  prior.deleted === message.deleted &&
-                  prior.authorId === message.authorId &&
-                  (prior.createdByRunId ?? null) === message.createdByRunId &&
-                  JSON.stringify(prior.sourceTrust) ===
-                    JSON.stringify(message.sourceTrust),
+                  // myrmidon(DB-CARE DBC-3): a body the character budget turned
+                  // into a reference stays delivered; only freshness matters.
+                  (prior.bodyOmitted === true
+                    ? prior.deleted === message.deleted
+                    : prior.body === message.body &&
+                      prior.deleted === message.deleted &&
+                      prior.authorId === message.authorId &&
+                      (prior.createdByRunId ?? null) === message.createdByRunId &&
+                      JSON.stringify(prior.sourceTrust) ===
+                        JSON.stringify(message.sourceTrust)),
               ),
           ),
         }
@@ -231,7 +304,18 @@ export async function buildExecutionContinuation(input: {
       ),
     )
     .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id));
-  const completedActions = priorRuns.flatMap((run) =>
+  // myrmidon(DB-CARE DBC-3): receipts come from the run that carries this
+  // context — the previous context run, or the handoff source run when the task
+  // moved to another agent — instead of every run the task ever had.
+  const completedActionRunIds = new Set(
+    [input.previousContextRunId, sourceRunId].filter(
+      (id): id is string => typeof id === "string" && id.length > 0,
+    ),
+  );
+  const completedActionRuns = priorRuns.filter((run) =>
+    completedActionRunIds.has(run.id),
+  );
+  const completedActions = completedActionRuns.flatMap((run) =>
     Object.entries(object(object(run.result).apiToolReceipts)).flatMap(
       ([receiptId, receipt]) => {
         const value = object(receipt);

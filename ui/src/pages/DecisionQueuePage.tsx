@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Settings2, X } from "lucide-react";
-import type { Agent, AttentionItem } from "@paperclipai/shared";
+import type { Agent, AttentionItem } from "@myrmidon/shared";
 import { useParams } from "@/lib/router";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
@@ -48,6 +48,8 @@ import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { Button } from "../components/ui/button";
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
+import { issuesApi } from "../api/issues";
+import { getStuckSignalCounts } from "../lib/stuckSignal";
 
 /**
  * Queue page. A single queue's pending
@@ -116,6 +118,15 @@ export function DecisionQueuePage() {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: openIssues } = useQuery({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "stuck-signal-open"],
+    queryFn: () => issuesApi.listAll(selectedCompanyId!, { status: "todo,in_progress,blocked,in_review" }),
+    enabled: !!selectedCompanyId,
+  });
+  const stuckCounts = useMemo(
+    () => getStuckSignalCounts(feed?.items ?? [], openIssues ?? [], agents ?? []),
+    [feed?.items, openIssues, agents],
+  );
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -129,8 +140,8 @@ export function DecisionQueuePage() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Decisions", href: "/decisions" }, { label: queue?.title ?? queueKey }]);
-  }, [setBreadcrumbs, queue?.title, queueKey]);
+    setBreadcrumbs([{ label: t("nav.decisions"), href: "/decisions" }, { label: queue?.title ?? queueKey }]);
+  }, [setBreadcrumbs, queue?.title, queueKey, t]);
 
   // Re-hydrate per-company preferences when the company changes.
   useEffect(() => {
@@ -225,6 +236,10 @@ export function DecisionQueuePage() {
 
   return (
     <div className="max-w-3xl space-y-4">
+      <section aria-label={t("area.approvals-decisions-notices-2.decision-queue-page.workloadSignals")} className="grid grid-cols-2 gap-3 rounded-lg border bg-card p-3">
+        <div><p className="text-xs text-muted-foreground">{t("area.approvals-decisions-notices-2.decision-queue-page.signaledWithoutMotion")}</p><p className="text-2xl font-semibold">{stuckCounts.attentionIssuesWithoutMotion}</p></div>
+        <div><p className="text-xs text-muted-foreground">{t("area.approvals-decisions-notices-2.decision-queue-page.idleEngineers")}</p><p className="text-2xl font-semibold">{stuckCounts.idleEngineers}</p></div>
+      </section>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <h1 className="text-xl font-bold">{queue?.title ?? queueKey}</h1>
@@ -323,13 +338,13 @@ export function DecisionQueuePage() {
 
           {agingItems.length > 0 && (
             <Curtain
-              label="Aging"
+              label={t("decisions.aging")}
               count={agingItems.length}
               open={agingOpen}
               onToggle={() => setAgingOpen((prev) => !prev)}
             >
               <p className="text-xs text-muted-foreground">
-                Idle past {ATTENTION_AGING_DAYS} days — kept off the queue. Keep any you still want surfaced.
+                {t("area.approvals-decisions-notices-2.decision-queue-page.agingHint", { days: ATTENTION_AGING_DAYS })}
               </p>
               {agingItems.map((item) => (
                 <AgingItemRow

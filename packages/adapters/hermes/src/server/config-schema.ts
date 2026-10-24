@@ -1,4 +1,4 @@
-import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
+import type { AdapterConfigSchema } from "@myrmidon/adapter-utils";
 
 import {
   DEFAULT_GRACE_SEC,
@@ -17,7 +17,7 @@ function providerLabel(provider: string): string {
     .join(" ");
 }
 // myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
-import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
+import { PRODUCT_NAME } from "@myrmidon/adapter-utils";
 
 export function getConfigSchema(): AdapterConfigSchema {
   return {
@@ -78,6 +78,42 @@ export function getConfigSchema(): AdapterConfigSchema {
         type: "toggle",
         default: false,
         hint: "Pass Hermes --checkpoints.",
+      },
+      {
+        key: "filesystemScope",
+        label: "Filesystem scope",
+        type: "select",
+        options: [{ value: "workspace", label: "Workspace only" }],
+        hint: "Set to workspace to run hermes_local without host-root access. Off by default; requires Bubblewrap.",
+      },
+      {
+        key: "filesystemSandboxCommand",
+        label: "Filesystem sandbox command",
+        type: "text",
+        default: "bwrap",
+        hint: "Bubblewrap executable name or absolute path used when filesystemScope is workspace.",
+      },
+      {
+        key: "filesystemExtraPaths",
+        label: "Filesystem extra paths",
+        type: "text",
+        hint: "Optional comma-separated paths to expose in the hermes_local workspace sandbox.",
+      },
+      {
+        key: "networkScope",
+        label: "Network scope",
+        type: "select",
+        options: [
+          { value: "deny", label: "Deny network" },
+          { value: "allowlist", label: "Allowlist" },
+        ],
+        hint: "Optional hermes_local network confinement. allowlist requires networkAllowlist.",
+      },
+      {
+        key: "networkAllowlist",
+        label: "Network allowlist",
+        type: "text",
+        hint: "Optional comma-separated hostnames, host:port entries, or origin URLs.",
       },
       {
         key: "quiet",

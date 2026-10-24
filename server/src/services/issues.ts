@@ -1,10 +1,13 @@
 import { documentService } from "./documents.js";
 // myrmidon(P5): lock owner lifecycle in checkout 409s
 import { checkoutRunStatusForIssue } from "../myrmidon/issue-checkout-guard.js";
+
+// myrmidon(1.6.5 OPE-6608): the board matcher's issue events
+import { notifySwarmIssueEvent } from "../myrmidon/swarm-claim/events.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
-import type { ExecutionProjection } from "@paperclipai/shared";
+import type { ExecutionProjection } from "@myrmidon/shared";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -26,7 +29,7 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   activityLog,
   chatActions,
@@ -70,7 +73,7 @@ import {
   projects,
   toolConnections,
   workspaceOperations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   AcceptedPlanDecomposition,
   IssueComment,
@@ -87,7 +90,7 @@ import type {
   IssueWatchdogSummary,
   LowTrustBoundary,
   SuccessfulRunHandoffState,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   clampIssueRequestDepth,
   extractAgentMentionIds,
@@ -97,7 +100,12 @@ import {
   issueCommentPresentationSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
-} from "@paperclipai/shared";
+  resolveSwarmClaimSettings,
+  readScentSettings,
+  pheromoneStrengthForPriority,
+} from "@myrmidon/shared";
+import type { IssueScent } from "@myrmidon/shared";
+import { deriveScentAuto } from "../myrmidon/scent/create-hook.js";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
@@ -140,6 +148,7 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 // myrmidon(S5): mask secret values in agent comments
 import { maskSecretsInText } from "../myrmidon/secret-masking.js";
+import { createCasteStore } from "../myrmidon/castes/store.js";
 import {
   resolveIssueGoalId,
   resolveNextIssueGoalId,
@@ -194,10 +203,12 @@ import { buildIssueChanges } from "./issue-change-receipt.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 // myrmidon(X8g): absolute board links in the copy of an agent reply that reaches Telegram
 // myrmidon(X9b): display-name prefix for an @<alias>-addressed agent's reply
+// myrmidon(1.6.6 CH-CONNECTOR-D): the board-link theme is reached through the
+// bridge seam, so a channel connector can serve it.
 import {
   absolutizedTextByTelegramEndpoint,
   addressedReplyPrefixByTelegramEndpoint,
-} from "../myrmidon/agent-chat-bridge/links.js";
+} from "../myrmidon/channel-connectors/bridge/links.js";
 import { stageChannelTaskCompletionPublication } from "../myrmidon/channel-task-control-completion.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
 
@@ -1854,12 +1865,6 @@ type IssueReadStat = {
   issueId: string;
   myLastReadAt: Date | null;
 };
-type IssueLastActivityStat = {
-  issueId: string;
-  latestCommentAt: Date | null;
-  latestLogAt: Date | null;
-};
-
 function serializeAcceptedPlanDecomposition(
   decomposition: IssuePlanDecompositionRow,
 ): AcceptedPlanDecomposition {
@@ -2888,50 +2893,14 @@ function myLastTouchAtExpr(companyId: string, userId: string) {
   `;
 }
 
-const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = [
-  "issue.read_marked",
-  "issue.read_unmarked",
-  "issue.inbox_archived",
-  "issue.inbox_unarchived",
-] as const;
-
-function issueLatestCommentAtExpr(companyId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${issueComments.createdAt})
-      FROM ${issueComments}
-      WHERE ${issueComments.issueId} = ${issues.id}
-        AND ${issueComments.companyId} = ${companyId}
-    )
-  `;
-}
-
-function issueLatestLogAtExpr(companyId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${activityLog.createdAt})
-      FROM ${activityLog}
-      WHERE ${activityLog.companyId} = ${companyId}
-        AND ${activityLog.entityType} = 'issue'
-        AND ${activityLog.entityId} = ${issues.id}::text
-        AND ${activityLog.action} NOT IN (${sql.join(
-          ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
-          sql`, `,
-        )})
-    )
-  `;
-}
-
-function issueCanonicalLastActivityAtExpr(companyId: string) {
-  const latestCommentAt = issueLatestCommentAtExpr(companyId);
-  const latestLogAt = issueLatestLogAtExpr(companyId);
-  return sql<Date>`
-    GREATEST(
-      ${issues.updatedAt},
-      COALESCE(${latestCommentAt}, to_timestamp(0)),
-      COALESCE(${latestLogAt}, to_timestamp(0))
-    )
-  `;
+// myrmidon(DB-PERF-P7): the canonical "last activity" of an issue is
+// greatest(updated_at, newest comment, newest activity_log row outside the
+// local-inbox actions). It is denormalized into issues.last_activity_at and kept
+// current by the triggers of migration 0355, so ordering and reporting read one
+// column instead of two correlated MAX subqueries per candidate row (the cost
+// that dominated GET /issues before this column existed).
+function issueCanonicalLastActivityAtExpr() {
+  return sql<Date>`${issues.lastActivityAt}`;
 }
 
 function unreadForUserCondition(companyId: string, userId: string) {
@@ -3083,22 +3052,6 @@ export function deriveIssueUserContext(
   };
 }
 
-function latestIssueActivityAt(
-  ...values: Array<Date | string | null | undefined>
-): Date | null {
-  const normalized = values
-    .map((value) => {
-      if (!value) return null;
-      if (value instanceof Date)
-        return Number.isNaN(value.getTime()) ? null : value;
-      const parsed = new Date(value);
-      return Number.isNaN(parsed.getTime()) ? null : parsed;
-    })
-    .filter((value): value is Date => value instanceof Date)
-    .sort((a, b) => b.getTime() - a.getTime());
-  return normalized[0] ?? null;
-}
-
 type InboxArchiveAttributionRow = {
   issueId: string;
   archivedAt: Date;
@@ -3163,7 +3116,7 @@ function issueListOrderBy(
   },
 ) {
   if (sortField === "id") return [sortDir === "desc" ? desc(issues.id) : asc(issues.id)];
-  const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
+  const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr();
   if (sortField === "updated") {
     const activityOrder =
       sortDir === "asc"
@@ -4659,6 +4612,7 @@ async function listIssueReviewAttentionMap(
       conversationState: issue.conversationState,
       executionPolicy: issue.executionPolicy,
       executionState: issue.executionState,
+      blockerMetadata: issue.blockerMetadata,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
       // myrmidon(HUMAN-REVIEW-WAIT): the human-review-wait facts.
@@ -4898,6 +4852,9 @@ const issueListSelect = {
   hiddenAt: issues.hiddenAt,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
+  // myrmidon(DB-PERF-P7): the list response reads the denormalized column
+  // instead of aggregating comments and activity rows for every returned page.
+  lastActivityAt: issues.lastActivityAt,
 };
 
 function withActiveRuns(
@@ -4980,73 +4937,6 @@ async function userReadStatsForIssues(
   return stats;
 }
 
-async function lastActivityStatsForIssues(
-  dbOrTx: any,
-  companyId: string,
-  issueIds: string[],
-): Promise<IssueLastActivityStat[]> {
-  const byIssueId = new Map<string, IssueLastActivityStat>();
-  for (const issueIdChunk of chunkList(
-    issueIds,
-    ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
-  )) {
-    const [commentRows, logRows] = await Promise.all([
-      dbOrTx
-        .select({
-          issueId: issueComments.issueId,
-          latestCommentAt: sql<Date | null>`MAX(${issueComments.createdAt})`,
-        })
-        .from(issueComments)
-        .where(
-          and(
-            eq(issueComments.companyId, companyId),
-            inArray(issueComments.issueId, issueIdChunk),
-          ),
-        )
-        .groupBy(issueComments.issueId),
-      dbOrTx
-        .select({
-          issueId: activityLog.entityId,
-          latestLogAt: sql<Date | null>`MAX(${activityLog.createdAt})`,
-        })
-        .from(activityLog)
-        .where(
-          and(
-            eq(activityLog.companyId, companyId),
-            eq(activityLog.entityType, "issue"),
-            inArray(activityLog.entityId, issueIdChunk),
-            sql`${activityLog.action} NOT IN (${sql.join(
-              ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map(
-                (action) => sql`${action}`,
-              ),
-              sql`, `,
-            )})`,
-          ),
-        )
-        .groupBy(activityLog.entityId),
-    ]);
-
-    for (const row of commentRows) {
-      byIssueId.set(row.issueId, {
-        issueId: row.issueId,
-        latestCommentAt: row.latestCommentAt,
-        latestLogAt: null,
-      });
-    }
-    for (const row of logRows) {
-      const existing = byIssueId.get(row.issueId);
-      if (existing) existing.latestLogAt = row.latestLogAt;
-      else {
-        byIssueId.set(row.issueId, {
-          issueId: row.issueId,
-          latestCommentAt: null,
-          latestLogAt: row.latestLogAt,
-        });
-      }
-    }
-  }
-  return [...byIssueId.values()];
-}
 
 async function blockedByMapForIssues(
   dbOrTx: any,
@@ -5772,6 +5662,7 @@ async function listIssueBlockedInboxAttentionMap(
       conversationState: issue.conversationState,
       executionPolicy: issue.executionPolicy,
       executionState: issue.executionState,
+      blockerMetadata: issue.blockerMetadata,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
       // myrmidon(HUMAN-REVIEW-WAIT): the human-review-wait facts.
@@ -6324,7 +6215,7 @@ async function listBlockedInboxIssues(
       .from(issues)
       .where(and(...conditions))
       .orderBy(
-        desc(issueCanonicalLastActivityAtExpr(companyId)),
+        desc(issueCanonicalLastActivityAtExpr()),
         desc(issues.updatedAt),
         desc(issues.id),
       )
@@ -6348,7 +6239,6 @@ async function listBlockedInboxIssues(
   const [
     statsRows,
     readRows,
-    lastActivityRows,
     blockedByMap,
     blockerAttentionByIssueId,
     reviewAttentionByIssueId,
@@ -6361,7 +6251,6 @@ async function listBlockedInboxIssues(
     contextUserId
       ? userReadStatsForIssues(dbOrTx, companyId, contextUserId, issueIds)
       : Promise.resolve([]),
-    lastActivityStatsForIssues(dbOrTx, companyId, issueIds),
     blockedByMapForIssues(dbOrTx, companyId, issueIds),
     listIssueBlockerAttentionMap(dbOrTx, companyId, withRuns),
     listIssueReviewAttentionMap(dbOrTx, companyId, withRuns),
@@ -6399,9 +6288,6 @@ async function listBlockedInboxIssues(
   const readByIssueId = new Map(
     readRows.map((row) => [row.issueId, row.myLastReadAt]),
   );
-  const lastActivityByIssueId = new Map(
-    lastActivityRows.map((row) => [row.issueId, row]),
-  );
 
   const enriched = withRuns
     .flatMap((row) => {
@@ -6416,13 +6302,7 @@ async function listBlockedInboxIssues(
       )
         return [];
 
-      const activity = lastActivityByIssueId.get(row.id);
-      const lastActivityAt =
-        latestIssueActivityAt(
-          row.updatedAt,
-          activity?.latestCommentAt ?? null,
-          activity?.latestLogAt ?? null,
-        ) ?? row.updatedAt;
+      const lastActivityAt = row.lastActivityAt;
       return [
         {
           ...row,
@@ -6531,6 +6411,45 @@ async function countBlockedInboxIssues(
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
+  const casteStore = createCasteStore({ db });
+
+  // 1.6.5 (F-27 rework 09.10): a caste key the caller names must exist in the
+  // company's caste directory (design §2.1). NULL clears to the project/company
+  // default — only a non-null key is validated.
+  async function assertCasteKeyExists(
+    companyId: string,
+    casteKey: string | null | undefined,
+    runner?: Db,
+  ) {
+    if (casteKey == null) return;
+    // `runner` is the caller's transaction when it has one: a lookup on the
+    // pool from inside a transaction needs a second connection and can
+    // deadlock a drained pool.
+    const row = await (runner ? createCasteStore({ db: runner }) : casteStore).findCaste(companyId, casteKey);
+    if (!row) {
+      throw unprocessable(`caste "${casteKey}" does not exist in this company`, {
+        code: "issue_caste_unknown",
+      });
+    }
+  }
+
+  // 1.6.5 (F-27 PHEROMONE): the strength a new task starts with when the
+  // caller did not set one — the swarm settings map `priority` to a number
+  // (the critical/high/medium/low fields of the `pheromone` key of swarmClaim,
+  // edited in the swarm settings UI). Unknown
+  // priorities read as `medium`, matching the schema default.
+  async function defaultPheromoneStrengthForPriority(
+    priority: string,
+    runner?: Db,
+  ): Promise<number> {
+    const raw = (await (runner ? instanceSettingsService(runner) : instanceSettings).getGeneral()) as unknown as Record<string, unknown> | null;
+    const stored = raw && typeof raw === "object" ? (raw as { swarmClaim?: unknown }).swarmClaim : undefined;
+    const resolved = resolveSwarmClaimSettings({
+      env: process.env,
+      stored: stored && typeof stored === "object" ? stored : null,
+    });
+    return pheromoneStrengthForPriority(resolved.settings.pheromone, priority);
+  }
 
   function normalizeCreateIssueTitle(title: string) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
@@ -8007,7 +7926,10 @@ export function issueService(db: Db) {
             ? baseQuery
             : baseQuery.limit(limit);
       const rows = (await pageQuery).map((row) => ({
-        ...row,
+        // 1.6.5 (F-27 PHEROMONE): a Partial-bounded pageQuery map loses the
+        // drizzle row type; the shape stays the full issues row + a decoded
+        // description, so narrow it back for withIssueLabels.
+        ...(row as typeof row & IssueRow),
         description: decodeDatabaseTextPreview(
           row.description,
           ISSUE_LIST_DESCRIPTION_MAX_CHARS,
@@ -8024,7 +7946,6 @@ export function issueService(db: Db) {
       const [
         statsRows,
         readRows,
-        lastActivityRows,
         archiveRows,
         blockedByMap,
         liveDescendantCountByIssueId,
@@ -8035,7 +7956,6 @@ export function issueService(db: Db) {
         contextUserId
           ? userReadStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
-        lastActivityStatsForIssues(db, companyId, issueIds),
         contextUserId
           ? inboxArchiveRowsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
@@ -8048,9 +7968,6 @@ export function issueService(db: Db) {
       ]);
       const statsByIssueId = new Map(
         statsRows.map((row) => [row.issueId, row]),
-      );
-      const lastActivityByIssueId = new Map(
-        lastActivityRows.map((row) => [row.issueId, row]),
       );
       const archiveByIssueId = new Map(
         archiveRows.map((row) => [row.issueId, row]),
@@ -8069,13 +7986,7 @@ export function issueService(db: Db) {
 
       if (!contextUserId) {
         return withRuns.map((row) => {
-          const activity = lastActivityByIssueId.get(row.id);
-          const lastActivityAt =
-            latestIssueActivityAt(
-              row.updatedAt,
-              activity?.latestCommentAt ?? null,
-              activity?.latestLogAt ?? null,
-            ) ?? row.updatedAt;
+          const lastActivityAt = row.lastActivityAt;
           return {
             ...row,
             ...(includeBlockedBy
@@ -8108,13 +8019,7 @@ export function issueService(db: Db) {
       );
 
       return withRuns.map((row) => {
-        const activity = lastActivityByIssueId.get(row.id);
-        const lastActivityAt =
-          latestIssueActivityAt(
-            row.updatedAt,
-            activity?.latestCommentAt ?? null,
-            activity?.latestLogAt ?? null,
-          ) ?? row.updatedAt;
+        const lastActivityAt = row.lastActivityAt;
         return {
           ...row,
           ...activeInboxArchiveFields(
@@ -8338,20 +8243,21 @@ export function issueService(db: Db) {
     },
 
     getActiveInboxArchiveFields: async (
-      issue: Pick<IssueRow, "id" | "companyId" | "updatedAt">,
+      issue: Pick<
+        IssueRow,
+        "id" | "companyId" | "updatedAt" | "lastActivityAt"
+      >,
       userId: string,
     ) => {
-      const [[activity], [archive]] = await Promise.all([
-        lastActivityStatsForIssues(db, issue.companyId, [issue.id]),
-        inboxArchiveRowsForIssues(db, issue.companyId, userId, [issue.id]),
-      ]);
-      const lastActivityAt =
-        latestIssueActivityAt(
-          issue.updatedAt,
-          activity?.latestCommentAt ?? null,
-          activity?.latestLogAt ?? null,
-        ) ?? issue.updatedAt;
-      return activeInboxArchiveFields(archive, lastActivityAt);
+      const [archive] = await inboxArchiveRowsForIssues(
+        db,
+        issue.companyId,
+        userId,
+        [issue.id],
+      );
+      // myrmidon(DB-PERF-P7): the archive is only active while it is newer than
+      // the denormalized last activity of the issue.
+      return activeInboxArchiveFields(archive, issue.lastActivityAt);
     },
 
     /**
@@ -9724,6 +9630,25 @@ export function issueService(db: Db) {
       ) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      // 1.6.5 (F-27): the settings read and the caste lookup run on the pool
+      // BEFORE the transaction opens. Inside it they would need a second
+      // connection while the transaction holds one — concurrent creates then
+      // exhaust the pool and deadlock (issue-watchdogs-routes timed out on it).
+      const defaultPheromoneStrength =
+        issueData.pheromoneStrength == null
+          ? await defaultPheromoneStrengthForPriority(issueData.priority ?? "medium")
+          : undefined;
+      // 1.6.5 (F-26 T10 SCENT): the caste directory (this also seeds the built-ins
+      // of a fresh company) and the scent settings are read on the pool BEFORE the
+      // insert transaction opens, for the same reason: the hook is a pure derivation
+      // over them and nothing inside the transaction waits on a second connection.
+      const scentCasteKeys = (await casteStore.listCastes(companyId)).map((row) => row.key);
+      const scentSettings = readScentSettings(
+        ((await instanceSettings.getGeneral()) as unknown as { swarm?: unknown } | null)?.swarm,
+        process.env,
+      );
+      // The directory read above seeds a fresh company, so the key check comes after it.
+      await assertCasteKeyExists(companyId, issueData.casteKey);
       const persist = async (tx: DbTransaction) => {
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
         if (issueData.conversationAgentId && issueData.conversationUserId) {
@@ -10067,15 +9992,75 @@ export function issueService(db: Db) {
               trustExplicitResponsibleUserId === true,
           },
         );
-
+        if (issueData.sourceTrust?.disposition === "quarantined") {
+          if (!responsibleUserId) {
+            throw unprocessable(
+              "Low-trust output cannot be quarantined without a promotion owner",
+            );
+          }
+        }
         const values = {
           ...issueData,
+          ...(issueData.sourceTrust?.disposition === "quarantined"
+            ? {
+                sourceTrust: {
+                  ...issueData.sourceTrust,
+                  promotionOwnerUserId: responsibleUserId,
+                },
+              }
+            : {}),
           // myrmidon(S5): issue descriptions are stored with secret values masked.
           // Applied here (the single write point for create) so every creation
           // path — board, agent, API — stores the masked description.
           ...(issueData.description
             ? { description: maskSecretsInText(issueData.description) }
             : {}),
+          // 1.6.5 (F-27 PHEROMONE): an explicit strength wins; otherwise the
+          // task starts with the strength the swarm settings map its priority
+          // to (swarmClaim.pheromone). Setting the number here — the
+          // single write point — keeps board, agent and import creates
+          // consistent without each path re-reading the settings.
+          ...(defaultPheromoneStrength !== undefined
+            ? { pheromoneStrength: defaultPheromoneStrength }
+            : {}),
+          // 1.6.5 (F-27 rework 09.10): the caste key — validated against the
+          // company's directory just below; a null clears to the defaults.
+          ...(issueData.casteKey !== undefined ? { casteKey: issueData.casteKey } : {}),
+          // 1.6.5 (F-26 T10 SCENT): the caste. The pure derivation lives in
+          // myrmidon/scent/create-hook.ts — an explicit key is kept and
+          // stamped 'manual', a high-confidence scent (top ≥ 0.5) lands as
+          // 'auto', anything else stays NULL and the §2.1 chain
+          // (project default ?? company default) resolves at read time. The
+          // hook NEVER materializes the company default with source 'auto'.
+          ...(await (async () => {
+            return deriveScentAuto(
+              {
+                title: issueData.title ?? "",
+                description: issueData.description ?? null,
+                priority: issueData.priority ?? "medium",
+                casteKey: issueData.casteKey ?? null,
+                casteSource: issueData.casteSource ?? null,
+                pheromoneStrength: issueData.pheromoneStrength ?? null,
+                scent: (issueData as { scent?: IssueScent | null }).scent ?? null,
+              },
+              scentCasteKeys,
+              scentSettings,
+              defaultPheromoneStrength !== undefined ? () => defaultPheromoneStrength : undefined,
+            );
+          })().then((auto) => ({
+            casteKey: auto.casteKey,
+            casteSource: auto.casteSource,
+            // The strength is touched only when the caller sent a scent with
+            // the task: without one the value the F-27 branch above wrote
+            // (the instance's swarmClaim.pheromoneDefaults mapping) must stand,
+            // not be replaced by the shared hard-coded defaults. The usual
+            // path — scent arriving later from the markup queue — applies the
+            // consequences bonus in scent/service.ts.
+            ...(issueData.pheromoneStrength == null &&
+            (issueData as { scent?: IssueScent | null }).scent
+              ? { pheromoneStrength: auto.pheromoneStrength }
+              : {}),
+          }))),
           originRunId: issueData.originRunId ?? actorRunId ?? null,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
@@ -10166,8 +10151,22 @@ export function issueService(db: Db) {
         );
         return withRelations;
       };
-      if (dbOrTx === db) return db.transaction(persist);
-      return persist(dbOrTx as DbTransaction);
+      const created = dbOrTx === db
+        ? await db.transaction(persist)
+        : await persist(dbOrTx as DbTransaction);
+      // myrmidon(1.6.5 OPE-6608, review item 2): a task born ready and ownerless
+      // is the board matcher's event. Inside the caller's own transaction the
+      // commit is not ours to see, so the pairing waits a moment there.
+      notifySwarmIssueEvent(
+        {
+          issueId: created.id,
+          status: created.status,
+          assigneeAgentId: created.assigneeAgentId,
+          created: true,
+        },
+        { deferMs: dbOrTx === db ? 0 : 1_000 },
+      );
+      return created;
     },
 
     /**
@@ -10548,8 +10547,31 @@ export function issueService(db: Db) {
         .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
+      const donePullRequestSnapshot = existing.status !== "done" && data.status === "done"
+        && dbOrTx === db
+        ? await (async () => {
+            const [{ assertIssueDonePullRequestsSettled, inspectIssueDonePullRequests }, { createPullRequestMergeDetailsResolver }] = await Promise.all([
+              import("../myrmidon/issue-done-gate/guard.js"),
+              import("./github-pull-request-merge.js"),
+            ]);
+            const resolverDb = db;
+            const snapshot = await inspectIssueDonePullRequests(
+              resolverDb,
+              existing.companyId,
+              id,
+              createPullRequestMergeDetailsResolver(resolverDb),
+            );
+            assertIssueDonePullRequestsSettled(snapshot);
+            return snapshot;
+          })()
+        : null;
       if (data.parentId !== undefined && data.parentId !== existing.parentId) {
         await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
+      }
+      // 1.6.5 (F-27 rework 09.10): validate a changed caste against the
+      // company's directory (design §2.1); null clears to the defaults.
+      if (data.casteKey !== undefined && data.casteKey !== existing.casteKey) {
+        await assertCasteKeyExists(existing.companyId, data.casteKey, dbOrTx as Db);
       }
       if (existing.conversationAgentId) {
         if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
@@ -10563,6 +10585,7 @@ export function issueService(db: Db) {
       const {
         labelIds: nextLabelIds,
         blockedByIssueIds,
+        blockerMetadata,
         actorAgentId,
         actorUserId,
         companyGuard,
@@ -10631,6 +10654,7 @@ export function issueService(db: Db) {
 
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
+        ...(blockerMetadata !== undefined ? { blockerMetadata } : {}),
         // myrmidon(S5): issue descriptions are stored with secret values masked.
         // The single write point for update: every path that PATCHes the
         // description (board edit, agent amend, API) stores the masked text.
@@ -10653,6 +10677,15 @@ export function issueService(db: Db) {
       }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
+      }
+      // 1.6.5 (F-27 PHEROMONE): an explicit null resets the strength to the
+      // priority default (the same mapping the create path uses), so a client
+      // can "clear" the manual strength without knowing the mapping.
+      if (issueData.pheromoneStrength === null) {
+        patch.pheromoneStrength = await defaultPheromoneStrengthForPriority(
+          (issueData.priority as string | undefined) ?? existing.priority,
+          dbOrTx as Db,
+        );
       }
 
       const nextAssigneeAgentId =
@@ -10843,6 +10876,28 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (receiptExisting.status !== "done" && patch.status === "done" && donePullRequestSnapshot) {
+          const { assertIssueDoneSnapshotUnchanged } = await import("../myrmidon/issue-done-gate/guard.js");
+          await assertIssueDoneSnapshotUnchanged(tx as Db, existing.companyId, id, donePullRequestSnapshot);
+        } else if (receiptExisting.status !== "done" && patch.status === "done") {
+          // External transaction callers cannot perform provider requests without
+          // holding their transaction open; fail closed unless the stored facts
+          // already prove every linked PR merged.
+          const { assertStoredIssueDonePullRequestsSettled } = await import("../myrmidon/issue-done-gate/guard.js");
+          const products = await tx.select({
+            id: issueWorkProducts.id,
+            companyId: issueWorkProducts.companyId,
+            type: issueWorkProducts.type,
+            status: issueWorkProducts.status,
+            url: issueWorkProducts.url,
+            metadata: issueWorkProducts.metadata,
+          }).from(issueWorkProducts).where(and(
+            eq(issueWorkProducts.companyId, receiptExisting.companyId),
+            eq(issueWorkProducts.issueId, id),
+            eq(issueWorkProducts.type, "pull_request"),
+          ));
+          assertStoredIssueDonePullRequestsSettled(products);
+        }
         if (actorAgentId && patch.status === "done") {
           const [review] = await tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(eq(toolActionRequests.companyId, existing.companyId), eq(toolActionRequests.issueId, id), inArray(toolActionRequests.status, ["pending", "approved", "executing"]))).limit(1);
           if (review) throw conflict("This task is waiting for a connection review. Finish unrelated work, then yield in_review without retrying the governed call.", { code: "tool_review_pending", actionRequestId: review.id });
@@ -10938,6 +10993,12 @@ export function issueService(db: Db) {
           }
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
+            // myrmidon(DEFERRED-WAKE-LEAK): cancel all deferred executions for terminal issue
+            await cancelDeferredExecutionsForTerminalIssue(
+              updated.id,
+              updated.companyId,
+              tx,
+            );
             // myrmidon(CHANNEL-TASK-CLOSE): the assigned agent's status-only
             // close of a channel-bound (Telegram-born) task must notify the
             // bound conversation the same way the chat-side /close command
@@ -11193,6 +11254,22 @@ export function issueService(db: Db) {
       }
       if (dbOrTx === db && !postCommitActions) {
         await executeIssuePostCommitActions(db, ownedPostCommitActions);
+      }
+      // myrmidon(1.6.5 OPE-6608, review item 2): a change that makes a task
+      // available (status into the queue, the owner taken off, caste label or
+      // blockers changed) is the board matcher's event. `result` is null when
+      // the write found nothing; inside the caller's transaction the pairing
+      // waits for the commit.
+      if (result) {
+        notifySwarmIssueEvent(
+          {
+            issueId: id,
+            status: (result as { status?: string | null }).status,
+            assigneeAgentId: (result as { assigneeAgentId?: string | null }).assigneeAgentId,
+            touched: Object.keys(data).filter((key) => (data as Record<string, unknown>)[key] !== undefined),
+          },
+          { deferMs: dbOrTx === db ? 0 : 1_000 },
+        );
       }
       return result;
     },
@@ -13301,8 +13378,42 @@ export function issueService(db: Db) {
       companyId: string,
       dbOrTx?: any,
     ) => Promise<number>;
+    cancelDeferredExecutionsForTerminalIssue: (
+      issueId: string,
+      companyId: string,
+      dbOrTx?: any,
+    ) => Promise<number>;
   };
   const serviceApi = service as IssueServiceApi;
+
+  // myrmidon(DEFERRED-WAKE-LEAK): Cancel deferred executions for issue when it transitions to done/cancelled
+  async function cancelDeferredExecutionsForTerminalIssue(
+    issueId: string,
+    companyId: string,
+    dbOrTx: any = db,
+  ): Promise<number> {
+    const now = new Date();
+    const result = await dbOrTx
+      .update(agentWakeupRequests)
+      .set({
+        status: "cancelled",
+        error: "issue_closed",
+        finishedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          wakeRequestTargetsIssue(issueId),
+        ),
+      )
+      .returning({ id: agentWakeupRequests.id });
+
+    return result.length;
+  }
+
+  serviceApi.cancelDeferredExecutionsForTerminalIssue = cancelDeferredExecutionsForTerminalIssue;
 
   // A company-scoped wrapper around `update`. It passes the company as a
   // guard on every read, lock, and write predicate, so a caller with only

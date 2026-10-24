@@ -13,9 +13,9 @@ server and without interrupting runs that are already in flight.
 |---|---|---|
 | `maxConcurrentRuns` | How many runs this server process may have in flight at once. Runs over the cap stay `queued`; the queue goes oldest first | off |
 | `maxStartsPerMinute` | The start ramp: how many runs may start within a sliding minute, whatever woke them | `5` (since 1.6.2; was off) |
-| `minFreeMemoryMb` | A run starts only if this much free memory remains in the server's cgroup (v2) after budgeting the run | off |
+| `minFreeMemoryMb` | A run starts only if this much free memory remains in the server's cgroup (v2) after budgeting the run. Since 1.6.5 OWNER-CHAT-ADMISSION this is the floor an answer to a message the owner wrote in a chat is admitted by, applied to the container and to the host's `MemAvailable`: the softer host floor below does not hold it back | off |
 | `runMemoryEstimateMb` | How many megabytes one run is budgeted at when free memory is counted | `300` |
-| `minFreeHostMemoryMb` | A run starts only while the HOST keeps at least this much `MemAvailable` (minus the budget of runs started in the last 30 s). Bots run in their own containers, outside the server cgroup, so `minFreeMemoryMb` cannot see them; this one can | `15360` (15 GB, since 1.6.2) |
+| `minFreeHostMemoryMb` | A run starts only while the HOST keeps at least this much `MemAvailable` (minus the budget of runs started in the last 30 s). Bots run in their own containers, outside the server cgroup, so `minFreeMemoryMb` cannot see them; this one can. Since 1.6.5 OWNER-CHAT-ADMISSION it paces the automatic runs only: the owner's own turn in a chat is admitted by `minFreeMemoryMb` (against the host's `MemAvailable` too) and starts while this floor is closed | `15360` (15 GB, since 1.6.2) |
 
 A value of "off" (empty field, `null` in the stored settings) disables that
 limit. `runMemoryEstimateMb` cannot be disabled: it is the budget the free-
@@ -37,6 +37,40 @@ holds runs back for more than 10 minutes, the operator gets an attention card
 "Runs held: host memory" with the current free memory and the floor; it
 disappears with the first admitted run. Lowering the floor (or switching it
 off) in the settings releases the queue within a minute, without a restart.
+
+### Who waits at which floor (1.6.5 OWNER-CHAT-ADMISSION)
+
+The floors measure different things, so from 1.6.5 they hold different runs:
+
+- `minFreeHostMemoryMb` and `maxHostLoadPercentPerCore` pace the AUTOMATIC runs
+  — schedules, monitors, idle pickup, background follow-ups. A run held by them
+  stays `queued` and the queue pass retries it every 15 s, as described above.
+- `minFreeMemoryMb` is the hard floor of the server container and, from 1.6.5,
+  the ONLY memory floor an answer to a message the owner wrote in a chat is
+  admitted by. It is applied twice: to the container's free memory and to the
+  host's `MemAvailable` (minus the budget of runs still starting) — the bots
+  live outside the container, so the host reading is the one that sees them.
+  With the host between `minFreeMemoryMb` and `minFreeHostMemoryMb` the answer
+  starts at once while the automatic runs keep waiting; on a host below
+  `minFreeMemoryMb` it waits as well.
+
+A turn is recognised by its durable inbound chat receipt (the wake request whose
+`idempotencyKey` starts with `chat-inbound:` and whose requester is a board
+user) that the queued run points at; the chat's own "retry the failed run"
+button and a chat wake opened by a system actor are not the owner's turn. The
+sweep sorts such turns ahead of the automatic runs, so a turn that still waits —
+only `minFreeMemoryMb` can hold it back — is the first one started, ahead of
+every automatic run, whatever task state either has. A turn whose task still
+waits for its dependencies keeps its place behind the ready runs.
+
+The whole pipeline keeps naming who waits: the waits of the queued runs still
+read `host_memory` / `host_cpu` / `memory`, the operator's attention card and
+the "Runs & queue" screen list them, and the chat says a turn is waiting only
+while it really waits (i.e. while `minFreeMemoryMb` holds it, on the container
+or on the host), and says that the queue is re-checked every 15 seconds.
+
+The idempotency key `chat-inbound:` is reserved for the durable chat receipt:
+the public wakeup routes of an agent reject a key that starts with it (`422`).
 
 ## Where the effective value comes from
 
@@ -88,6 +122,47 @@ curl -X PATCH \
 A `0`, a negative, a fractional or a non-numeric value, a `null` memory budget
 or an unknown key is rejected with `400` and nothing is written.
 
+## The load view (1.6.5)
+
+The same `GET /api/myrmidon/runtime-limits` is also the run-load screen of
+the instance: next to the limits themselves it carries three live snapshots,
+each read by the same admission that gates on it:
+
+- `queue` — runs in flight against the ceiling, how many wait, and the head
+  of the queue with its agent;
+- `hostLoad` — the host CPU load the ceiling is measured against;
+- `memory` — the memory the memory floors decide on:
+
+```json
+"memory": {
+  "host": { "availableMb": 21450, "totalMb": 32768 },
+  "container": { "limitMb": 4096, "usedMb": 1630, "freeMb": 2466 }
+}
+```
+
+`memory.host` is the host's `MemAvailable`/`MemTotal` as the host memory
+floor reads them (see "The host memory floor" above). `memory.container` is
+the server container's own cgroup v2 usage against its limit: `memory.max`
+minus `memory.current`, with the reclaimable `inactive_file` page cache
+counted as free — the same rule the `minFreeMemoryMb` floor applies. Either
+side is `null` when the server cannot read it (no `/proc/meminfo` or a
+virtualized one, no cgroup v2 limit), and the whole `memory` block is `null`
+on an older server or when the read failed — a consumer shows nothing rather
+than a number the server made up. The snapshot only reports; it does not
+decide admission.
+
+Both settings panels — Instance → General «Run limits» and Settings →
+«Runs & queue» — show the snapshot as a line next to the queue line:
+
+```
+Host memory: 21,450 MB available of 32,768 MB. Server container: 1,630 MB
+used of 4,096 MB (2,466 MB free).
+```
+
+A side the server could not read is simply not mentioned. A changed limit is
+visible in the next read of the view, in the snapshot as well as in the
+admission — no restart.
+
 ## What happens after a change
 
 The change is persisted to `instance_settings.general.runLimits`, an activity
@@ -109,3 +184,67 @@ check is inactive and one warning `run admission cannot read the cgroup memory
 limit…` is written to the log. The concurrency and start-rate limits still
 hold. If the warning is present but the container has a memory limit, check
 how the server was started.
+
+## Seeing the admission's refusals (1.6.5)
+
+The Run limits section draws one more line:
+
+```
+Admission refusals: 12 since the server started. By reason: concurrency ceiling
+x7, start ramp x3, host memory floor x1, memory floor x1. The last refusal: the
+start ramp.
+```
+
+The total counts the sweeps that left a queued run waiting because of a global
+or host ceiling — a run that is merely behind others in the queue is not part
+of it. Alongside the total the line shows the breakdown by reason, largest
+first, and the reason of the most recent refusal (a reason the screen does not
+know is shown under its own name).
+
+The line is fed by `admissionDenials` in the reply of
+`GET /api/myrmidon/runtime-limits`. A server that does not send the field (one
+older than the change that adds it) draws no line at all — the screen shows
+nothing rather than a zero it invented, and the rest of the section is
+unaffected.
+
+## Why a queued run waits (1.6.5 F-09)
+
+A run that stays `queued` always carries the reason of its wait, written into
+its context snapshot as `waitReason`. Every exit of the queue sweep that leaves
+runs waiting leaves a reason too; the claim that starts a run clears the note
+again, so a running run shows no stale reason.
+
+| `waitReason` | Why the run waits |
+|---|---|
+| `global_cap` | The concurrency ceiling (`maxConcurrentRuns`) is full |
+| `start_ramp` | The start ramp (`maxStartsPerMinute`) is spent for the current minute |
+| `memory` | The container free-memory floor (`minFreeMemoryMb`) is closed |
+| `host_memory` | The host memory floor (`minFreeHostMemoryMb`) is closed |
+| `host_cpu` | The host CPU ceiling (`maxHostLoadPercentPerCore`) is closed |
+| `agent_fair_share` | The agent has used up its share of starts (`maxPerAgentStartSharePercent`) |
+| `agent_concurrency` | The agent's own concurrency ceiling is full |
+| `priority` | The queue pass started runs, but a heavier run took the slot |
+| `higher_priority_ready` | A ready higher-priority task of the same agent holds this run back |
+| `maintenance` | The agent's maintenance window is open |
+| `agent_not_invokable` | The agent cannot be woken (paused, retired, or similar) and is not being cancelled |
+| `scheduling_suppressed` | The whole scheduling pass is suppressed (e.g. by pause) |
+
+A run that waits longer than the explain threshold is guaranteed to carry a
+reason; the threshold is `MYRMIDON_QUEUED_RUN_EXPLAIN_AFTER_SEC` (default
+`60` seconds, clamped to 10…86400 s), overridden live by
+`instance_settings.general.queuedRunExplainAfterSec`.
+
+There is one deliberate exception: a run whose wait no exit explained keeps
+`waitReason = null`. That is the bug the F-09 fix guards against, and it is
+what the `queue_stall` attention card reports — see
+[queued-run-stall.md](queued-run-stall.md).
+
+## Queued runs cancelled before the ceilings (1.6.5 F-09)
+
+Before the per-agent ceiling and the fair-share exits are even evaluated, the
+sweep cancels every queued run whose task is not startable: a task in
+`backlog`. The cancel is recorded on the run with the error code
+`queued_run_issue_not_startable`, so the run history says why the work
+disappeared instead of looking like a silent loss. A run whose task is hidden
+stays queued — hidden todos are the supported Summarizer pattern, and the
+claim path decides their fate.

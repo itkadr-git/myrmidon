@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CompanySkillDetail } from "@paperclipai/shared";
+import type { CompanySkillDetail } from "@myrmidon/shared";
 import {
   buildBlankSkillDraft,
   buildForkSkillDraft,
@@ -50,6 +50,7 @@ function skill(overrides: Partial<CompanySkillDetail> = {}): CompanySkillDetail 
     sourcePath: null,
     currentVersion: null,
     starredByCurrentActor: false,
+    requiredEnv: [],
     existingForks: [],
     ...overrides,
   };

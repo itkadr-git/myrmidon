@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   authUsers,
   boardApiKeys,
@@ -8,8 +8,9 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
-} from "@paperclipai/db";
-import { normalizeBoardApiKeyScope } from "@paperclipai/shared";
+  userBlocks,
+} from "@myrmidon/db";
+import { normalizeBoardApiKeyScope } from "@myrmidon/shared";
 import { conflict, forbidden, notFound } from "../errors.js";
 
 export const BOARD_API_KEY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -68,7 +69,7 @@ export function boardAuthService(db: Db) {
     }
   }
   async function resolveBoardAccess(userId: string) {
-    const [user, memberships, adminRole] = await Promise.all([
+    const [user, memberships, adminRole, blockedRow] = await Promise.all([
       db
         .select({
           id: authUsers.id,
@@ -98,7 +99,17 @@ export function boardAuthService(db: Db) {
         .from(instanceUserRoles)
         .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
         .then((rows) => rows[0] ?? null),
+      // myrmidon(OPE-8985): blocked users (Users screen) have no board access.
+      db
+        .select({ userId: userBlocks.userId })
+        .from(userBlocks)
+        .where(eq(userBlocks.userId, userId))
+        .then((rows) => rows[0] ?? null),
     ]);
+
+    if (blockedRow) {
+      return { user: null, companyIds: [], memberships: [], isInstanceAdmin: false };
+    }
 
     return {
       user,
@@ -202,7 +213,7 @@ export function boardAuthService(db: Db) {
     userId: string;
     name: string;
     expiresAt?: Date | null;
-    scope?: import("@paperclipai/shared").BoardApiKeyScope | null;
+    scope?: import("@myrmidon/shared").BoardApiKeyScope | null;
   }) {
     const token = createBoardApiToken();
     const created = await db
@@ -288,7 +299,9 @@ export function boardAuthService(db: Db) {
     const challengeSecret = createCliAuthSecret();
     const pendingBoardToken = createBoardApiToken();
     const expiresAt = cliAuthChallengeExpiresAt();
-    const labelBase = input.clientName?.trim() || "paperclipai cli";
+    // myrmidon(DB2): visible fallback label on the CLI-auth challenge screen;
+    // follows the part-d binary rename (`myrmidon` CLI).
+    const labelBase = input.clientName?.trim() || "myrmidon cli";
     const pendingKeyName =
       input.requestedAccess === "instance_admin_required"
         ? `${labelBase} (instance admin)`

@@ -3,7 +3,7 @@
 // superseded, who is eligible. No database and no clock here; the sweep feeds
 // these functions (the same shape as policy.ts, which stays the task-lane half).
 
-import { REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY, REVIEW_ROUTING_PR_KIND_METADATA_KEY } from "@paperclipai/shared";
+import { REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY, REVIEW_ROUTING_PR_KIND_METADATA_KEY } from "@myrmidon/shared";
 
 /** The per-head CI/review state the github.ts resolver reads off GitHub. */
 export type PullRequestHeadCiState = "green" | "not_green" | "unknown";
@@ -62,6 +62,27 @@ export function stewardTaskDueForHead(head: PullRequestHeadState): boolean {
   if (!head.open) return false;
   if (head.fetchFailed || head.ci !== "green") return false;
   return head.reviewDecision === "APPROVED";
+}
+
+/**
+ * myrmidon(UPDATE-BRANCH-STEWARD): the command that brings the PR head up to
+ * date with its base. This is GitHub's
+ * `PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch` — exactly what
+ * `gh pr update-branch` runs. On a branch that is already current it is a
+ * no-op (GitHub answers "branch is already up to date"), so refreshing is
+ * always safe and can be issued unconditionally before landing.
+ */
+export function stewardUpdateBranchCommand(head: PullRequestHeadState): string {
+  return `gh pr update-branch ${head.repository}#${head.number}`;
+}
+
+/**
+ * myrmidon(UPDATE-BRANCH-STEWARD): the landing command, run only after the
+ * refreshed head went green. The refresh happens here, in the open, by the
+ * steward itself — the lane never hands the wait over to GitHub.
+ */
+export function stewardMergeCommand(head: PullRequestHeadState): string {
+  return `gh pr merge ${head.repository}#${head.number} --merge`;
 }
 
 /**
@@ -135,5 +156,18 @@ export function prRoutingTaskDescription(head: PullRequestHeadState, kind: "revi
     head.baseRef ? `Base: ${head.baseRef}` : "Base: (unknown)",
     trigger,
   ];
+  if (kind === "merge") {
+    // myrmidon(UPDATE-BRANCH-STEWARD): the steward lands the PR in the open:
+    // refresh the head onto the base, wait for the refreshed head's CI, then
+    // merge. Update-branch plus the green-on-latest-head rule is what keeps
+    // main green after the merge.
+    lines.push(
+      "Landing path (update-branch steward):",
+      `1. Refresh the head onto its base: run \`${stewardUpdateBranchCommand(head)}\`. An already-current branch answers as a no-op, so run it even when the head looks fresh.`,
+      "2. Wait for the refreshed head to go green: the update-branch push moves the PR head, the old head's CI verdict no longer covers the merge, and the board cancels this task as superseded — so finish the job on THIS task only if the branch was already current. If the head moved, stop here: the lane routes the refreshed head (review verdict, green CI) and a new steward task merges it.",
+      `3. Merge: run \`${stewardMergeCommand(head)}\` once the CURRENT head is green, then mark this task done.`,
+      "Do NOT merge a head that is not the PR's current head, and do not skip step 1: `main-protection` refuses a merge whose branch is behind, and the run that catches a real regression is the CI on the refreshed head — not a direct merge of a stale one.",
+    );
+  }
   return lines.join("\n");
 }

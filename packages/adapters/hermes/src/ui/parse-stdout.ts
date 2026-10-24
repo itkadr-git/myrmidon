@@ -21,7 +21,7 @@ function stripAnsi(text: string): string {
  * tool cards (with status icons, expand/collapse) instead of raw stdout blocks.
  */
 
-import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+import type { TranscriptEntry } from "@myrmidon/adapter-utils";
 
 import { TOOL_OUTPUT_PREFIX } from "../shared/constants.js";
 
@@ -198,7 +198,13 @@ export function parseHermesStdoutLine(
   if (!trimmed) return [];
 
   // ── System/adapter messages ────────────────────────────────────────────
-  if (trimmed.startsWith("[hermes]") || trimmed.startsWith("[paperclip]")) {
+  if (
+      // myrmidon(DB2): OPE-5805-b renamed the server tag to [myrmidon];
+      // keep [paperclip] so legacy logs still classify as system noise.
+      trimmed.startsWith("[hermes]") ||
+      trimmed.startsWith("[myrmidon]") ||
+      trimmed.startsWith("[paperclip]")
+    ) {
     return [{ kind: "system", ts, text: trimmed }];
   }
 

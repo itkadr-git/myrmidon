@@ -7,7 +7,7 @@
 // from the interface (the "Foraging" block on Instance → General, saved through
 // PATCH /api/myrmidon/foraging-settings). The precedence — the stored row, a
 // per-key environment override, the built-in default — is decided once in
-// `@paperclipai/shared` (`myrmidon-foraging.ts`); this module only adapts the
+// `@myrmidon/shared` (`myrmidon-foraging.ts`); this module only adapts the
 // resolved settings to the shape the sweep and the routes consume, and hosts
 // the read/write service of the stored row. `readForagingSettings` stays
 // exported (the startup, the wiring and the routes call it on every use, so a
@@ -17,7 +17,7 @@
 // of a company secret whose value is sent as a bearer token to the source. The
 // value is read from the company's secrets at call time and never logged.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   FORAGING_SETTINGS_KEY,
   mergeForagingSettings,
@@ -25,7 +25,7 @@ import {
   type ForagingSettings,
   type ForagingSettingsPatch,
   type ResolvedForagingSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 import type { ForagingBudget } from "./domain.js";
 
@@ -34,6 +34,10 @@ export const FORAGING_BUDGET_CENTS_ENV = "MYRMIDON_FORAGING_BUDGET_CENTS";
 export const FORAGING_INTERVAL_SEC_ENV = "MYRMIDON_FORAGING_INTERVAL_SEC";
 export const FORAGING_KEY_SECRET_ENV = "MYRMIDON_FORAGING_KEY_SECRET";
 export const FORAGING_MIN_HOST_INTERVAL_SEC_ENV = "MYRMIDON_FORAGING_MIN_HOST_INTERVAL_SEC";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): the idle-gate toggle moved to
+// instance_settings.general.foragingIdleGate (read on every pass); the env
+// MYRMIDON_FORAGING_IDLE_GATE_ENABLED stays the forced override — the
+// contract lives in @myrmidon/shared (myrmidon-foraging-idle-gate.ts).
 
 /** Activity action written for every foraging settings change. */
 export const FORAGING_SETTINGS_UPDATED_ACTION = "instance.foraging.updated";
