@@ -117,7 +117,7 @@ export function myrmidonModelProviderRoutes(db: Db, env: NodeJS.ProcessEnv = pro
     service: modelProviderService,
     getLitellmSync: syncForCompany,
     refreshAgentAllowlists: (companyId) =>
-      updateAgentAllowlistsForCompany(db, defaultAgentGatewayKeyDeps(db, env), companyId, [], [], true),
+      updateAgentAllowlistsForCompany(db, defaultAgentGatewayKeyDeps(db, env), companyId),
     recordActivity: (entry) => recordModelProviderActivity(db, entry),
   };
 
