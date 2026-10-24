@@ -105,6 +105,7 @@ import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
+import { AdminUsers } from "./pages/AdminUsers";
 import { UsersAdmin } from "./pages/UsersAdmin";
 import { PasswordSetPage } from "./pages/PasswordSet"; // myrmidon(OPE-8985)
 import { InstanceFeatures } from "./pages/InstanceFeatures"; // myrmidon(FEATURES)
@@ -301,6 +302,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="instance.access" />}>
         <Route path="company/settings/instance/access" element={<InstanceAccess />} />
+        <Route path="company/settings/instance/users" element={<AdminUsers />} />
         {/* myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management */}
         <Route path="company/settings/instance/board-api-keys" element={<BoardApiKeysPage />} />
       </Route>

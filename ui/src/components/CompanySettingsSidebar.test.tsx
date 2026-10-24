@@ -16,6 +16,7 @@ const mockPluginsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 const mockUsePluginSlots = vi.hoisted(() => vi.fn());
+const mockUseIsInstanceAdmin = vi.hoisted(() => vi.fn());
 const mockApi = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
@@ -58,6 +59,11 @@ vi.mock("@/context/SidebarContext", () => ({
     isMobile: false,
     setSidebarOpen: vi.fn(),
   }),
+}));
+
+vi.mock("@/components/myrmidon/licensingApi", () => ({
+  LICENSES_PATH: "/company/settings/instance/licenses",
+  useIsInstanceAdmin: mockUseIsInstanceAdmin,
 }));
 
 vi.mock("./SidebarNavItem", () => ({
@@ -139,12 +145,34 @@ describe("CompanySettingsSidebar", () => {
       isLoading: false,
       errorMessage: null,
     });
+    mockUseIsInstanceAdmin.mockReturnValue(true);
   });
 
   afterEach(() => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("hides the instance users link from non-admins", async () => {
+    mockUseIsInstanceAdmin.mockReturnValue(false);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/company/settings/instance/users" }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/company/settings/users", label: "Users" }),
+    );
+    root.unmount();
   });
 
   it("renders a primary-style settings takeover with a back-to-app link", async () => {
@@ -233,6 +261,13 @@ describe("CompanySettingsSidebar", () => {
       expect.objectContaining({
         to: "/company/settings/instance/access",
         label: "Access",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/instance/users",
+        label: "Instance users",
         end: true,
       }),
     );
