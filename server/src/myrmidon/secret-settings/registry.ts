@@ -169,6 +169,15 @@ export const INSTANCE_SECRET_SETTINGS: readonly InstanceSecretSettingDescriptor[
     description: "Bearer token the board presents to the browser screen-console node",
     consumers: ["browser-console"],
   },
+  // myrmidon(SETTINGS-UI E2.7): telemetry credentials. Auth, handoff and
+  // signing secrets are deliberately absent (bootstrap, env only): see
+  // docs/myrmidon/e2-secret-coverage-1.6.6.md.
+  {
+    name: "feedback_export.backend_token",
+    envOverride: "MYRMIDON_FEEDBACK_EXPORT_BACKEND_TOKEN",
+    description: "Bearer token for the feedback/telemetry export backend (one token for both URLs)",
+    consumers: ["feedback-export"],
+  },
 ];
 
 /** Consumer parts append their dynamic families here. */
