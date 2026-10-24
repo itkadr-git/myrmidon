@@ -180,7 +180,11 @@ function peerActor(): Express.Request["actor"] {
 }
 
 describe("external object routes", () => {
-  // Warm the large route graph before the first test's 15s timeout starts.
+  // Load the real route and middleware modules once before the tests run. The
+  // first import transforms a large module graph. Under the loaded serial shard
+  // (maxWorkers=1) that cold cost crossed the 5s testTimeout of the first test.
+  // The hook has a 30s budget, so it absorbs the transform cost and every later
+  // createApp() call hits the cached modules.
   beforeAll(async () => {
     await createApp(boardActor());
   });
