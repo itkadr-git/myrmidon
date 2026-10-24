@@ -11,6 +11,7 @@
 // one source. The Langfuse ClickHouse endpoints are new MYRMIDON_TRACING_*
 // rows (deployment-off by default).
 
+import { resolveOptionalInstanceSecret } from "../secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.6)
 import {
   createLitellmGatewayClient,
   LITELLM_BASE_URL_ENV,
@@ -92,6 +93,19 @@ export function readTracingHealthSettings(env: NodeJS.ProcessEnv = process.env):
     windowMs,
     cacheTtlMs,
   };
+}
+
+/**
+ * myrmidon(SETTINGS-UI E2.6): the ClickHouse password may come from a bound secret ref.
+ * The env value (emergency override) still wins; the ref is read server-side per check.
+ */
+export async function withClickhousePassword(
+  settings: TracingHealthSettings,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<TracingHealthSettings> {
+  if (settings.clickhousePassword) return settings;
+  const password = await resolveOptionalInstanceSecret("tracing.clickhouse_password", "tracing-health", env);
+  return password ? { ...settings, clickhousePassword: password } : settings;
 }
 
 // ---------------------------------------------------------------------------
