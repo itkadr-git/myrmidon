@@ -20128,9 +20128,16 @@ export function heartbeatService(
         lte(agentWakeupRequests.updatedAt, new Date(now - 30_000)),
       )).returning({ id: agentWakeupRequests.id });
       if (!claimed) continue;
+      // Runs can persist the task key as either issueId (canonical) or taskId
+      // (legacy and some native wake sources). Match both or a free lock has no
+      // terminal owner for the ordinary release drain to adopt.
       const runsOfIssue = db.select().from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, wake.companyId),
-        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        or(
+          eq(heartbeatRuns.nativeIssueId, issueId),
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+          sql`${heartbeatRuns.contextSnapshot}->>'taskId' = ${issueId}`,
+        ),
       ));
       const [latestOfAgent] = await runsOfIssue.orderBy(desc(sql`${heartbeatRuns.agentId} = ${wake.agentId}`),
         desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
@@ -20139,9 +20146,15 @@ export function heartbeatService(
       // Recovery bookkeeping for a fresh failure is written asynchronously;
       // judge only a run old enough that its hold, if any, already exists.
       if (!latestOfAgent.finishedAt || latestOfAgent.finishedAt > new Date(now - 10 * 60_000)) continue;
+      // A live run keyed by nativeIssueId or taskId owns the issue too; missing
+      // it here would promote the deferred wake into a second concurrent run.
       const [live] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, wake.companyId),
-        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        or(
+          eq(heartbeatRuns.nativeIssueId, issueId),
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+          sql`${heartbeatRuns.contextSnapshot}->>'taskId' = ${issueId}`,
+        ),
         inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
       )).limit(1);
       if (live) continue;
