@@ -60,11 +60,17 @@ export function createPoolChatHttpTransport(options: PoolChatHttpTransportOption
           max_tokens: request.maxOutputTokens,
         };
       }
-      const response = await fetch(options.endpoint, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-      });
+      let response: Response;
+      try {
+        response = await fetch(options.endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        });
+      } catch {
+        // Fetch errors can embed the full request URL, including credentials.
+        throw new Error("provider transport failed");
+      }
       if (!response.ok) throw new Error("provider request failed");
       let payload: Record<string, any>;
       try {

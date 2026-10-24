@@ -96,6 +96,7 @@ describe("pool-chat transports", () => {
       }
       expect(redactTransportError(thrown)).toBe("provider_transport_failed");
       expect(String(thrown)).not.toContain("provider-secret");
+      expect(String(thrown)).toBe("Error: provider transport failed");
     } finally {
       vi.unstubAllGlobals();
     }
