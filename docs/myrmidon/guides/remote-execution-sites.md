@@ -462,3 +462,22 @@ To migrate bots (e.g. `work-finansist` or `work-qa`) from local or unmanaged man
 5. **Rollback Runbook**:
    - If an issue occurs during canary, set `container.host = null` or revert card to manual mode (`container.enabled = false`, `apiBaseUrl = "http://fleetd.internal:18642"`).
    - Data volumes on disk are **never deleted** on rollback.
+
+---
+
+### 4.5 Site Memory (C-MEM): hindsight-work on the site, replica on the board
+
+The work-memory of a site is **primary on the site**: its bots recall and retain on the site's own `hindsight-work`, never over the link to the board. The board keeps a replica in the bank `fleet-work-replica`. If the link breaks, bots keep working on local memory; the replica catches up when it is back.
+
+1. **Bring up the memory service** on the site from the canonical compose `docker/site-memory/docker-compose.yml` (`hs-pg` with pgvector, then `hindsight-work`, bound to `127.0.0.1:8890`). Secrets and settings are not in the file: place `profile/hs-pg.env` and `profile/hindsight-work.env` next to it (examples: `*.env.example` next to the compose; rendering them from the site profile on the board is not automated yet), and the images are pinned by digest in `profile/images.env`. `docker compose up` stops when a pin is missing.
+   ```bash
+   docker compose -f docker-compose.yml --env-file profile/images.env up -d
+   docker compose -f docker-compose.yml ps   # hs-pg healthy, hindsight-work running
+   ```
+2. **Point fleetd at it** with the `memory` object of `fleetd.json`: `{"enabled": true, "url": "http://127.0.0.1:8890", "bank": "<the site's bank>"}`. `POST /v1/memory/recall`, `/v1/memory/retain` and `/v1/memory/export` then work for the bots enrolled on the site.
+3. **Turn the sync on at the board** (it runs inside the site-health lane, `MYRMIDON_SITE_HEALTH=1`): `MYRMIDON_FLEET_MEMORY_SYNC=1`, `MYRMIDON_FLEET_MEMORY_HINDSIGHT_URL=<the board's hindsight>` and, when it needs one, `MYRMIDON_FLEET_MEMORY_HINDSIGHT_TOKEN`. The replica bank must exist (`fleet-work-replica`, or the bank named by `MYRMIDON_FLEET_MEMORY_REPLICA_BANK`).
+4. **What runs**: the lane `myrmidon-memory-sync` copies the site's bank into the replica once a night (after `MYRMIDON_FLEET_MEMORY_SYNC_HOUR_UTC`, 20 by default) with a merge import that skips documents the replica already has; a failed attempt is repeated every 15 minutes until one succeeds. A live bot move runs one more sync right after the source container stops. Every attempt is a row of `myrmidon_fleet_memory_syncs`:
+   ```sql
+   SELECT site_name, kind, status, documents_imported, documents_skipped, error, started_at
+   FROM myrmidon_fleet_memory_syncs ORDER BY started_at DESC LIMIT 20;
+   ```
