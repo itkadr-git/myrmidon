@@ -47,6 +47,8 @@ export interface RegulationActor {
 /**
  * One approved regulation as the delivery path sees it. `version` is the
  * revision number the text came from, so a run can tell which text it read.
+ * `pageId` is the knowledge item the text was read from and equals the `slug`
+ * (K-3: "wikiPageId = slug"); `sources` is the provenance of that revision.
  */
 export interface ApprovedRegulation {
   pageId: string;
@@ -55,4 +57,5 @@ export interface ApprovedRegulation {
   content: string;
   version: number;
   roles: string[];
+  sources: Array<{ kind: string; ref: string; note: string | null }>;
 }
