@@ -1089,6 +1089,8 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
       const contextIssueId = run.nativeIssueId ??
         readNonEmptyString(parseObject(run.contextSnapshot).issueId) ??
         readNonEmptyString(parseObject(run.contextSnapshot).taskId);
+      // Read before the lock on purpose: it is an instance-wide switch, not an
+      // issue row, so a value that is stale by the lock wait is acceptable.
       const enableAgentChat = Boolean((await instanceSettingsService(db).getExperimental()).enableAgentChat);
       const interruptQueueId = run.runtimeMode !== "native"
         ? readNonEmptyString(run.resultJson?.queuedCommentInterruptQueueId)
@@ -1171,8 +1173,12 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
 
         // A queue interrupt authorizes only its original pending queue. Replays
         // after dispatch or deleting the final message cannot launch other work.
-        const [interruptedQueue] = interruptQueueId && issueRow && issueRow.id === contextIssueId
-          ? [preInterruptedQueue]
+        // The pre-lock read is only a short-circuit for "no such queue": a
+        // deferred queue never appears for this run while we wait, but the
+        // lock holder may dispatch or delete it. So a pre-lock hit is always
+        // re-checked here by primary key under the lock.
+        const [interruptedQueue] = interruptQueueId && issueRow && issueRow.id === contextIssueId && !preInterruptedQueue
+          ? []
           : interruptQueueId && issueRow
           ? await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
               eq(agentWakeupRequests.id, interruptQueueId),
@@ -1216,6 +1222,10 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         // queued successor still owns the next turn, including during a late
         // finalization/stranded-queue retry under this issue lock. Another
         // agent's review participation retains its separate recovery path.
+        // Successor, execution blocker, recovery tail and the drain stay under
+        // the lock: they decide, and then write, from the state of the locked
+        // issue rows (a queued successor or a lease claim by a concurrent
+        // writer between a pre-read and the lock would be missed).
         const [successor] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, input.companyId),
           eq(heartbeatRuns.agentId, run.agentId),

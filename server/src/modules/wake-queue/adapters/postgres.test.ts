@@ -1,7 +1,7 @@
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../../../myrmidon/maintenance/domain.js";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@myrmidon/db";
 import {
@@ -806,6 +806,63 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(row.checkoutRunId).toBeNull();
     }
     await Promise.all([dbA.$client.end(), dbB.$client.end()]);
+  });
+
+  it("re-checks the interrupt queue under the lock: a queue dispatched by the lock holder while the release waits does not send it into the drain", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId } });
+    const queueId = await seedDeferredWake({ companyId, agentId, issueId });
+    await db.update(heartbeatRuns).set({
+      resultJson: { executionCancellation: { state: "acknowledged" }, queuedCommentInterruptQueueId: queueId },
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+
+    const dbHolder = createDb(tempDb!.connectionString);
+    const dbRelease = createDb(tempDb!.connectionString);
+    let drainCalls = 0;
+    let releaseHolder!: () => void;
+    const holderMayCommit = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    let holderLocked!: () => void;
+    const holderHasLock = new Promise<void>((resolve) => { holderLocked = resolve; });
+    // The lock holder owns the issue row, then dispatches the interrupt queue
+    // and commits only after the release is provably blocked on the row lock.
+    const holder = dbHolder.transaction(async (rawTx: unknown) => {
+      const tx = rawTx as unknown as Db;
+      await tx.execute(sql`select id from issues where id = ${issueId} for update`);
+      holderLocked();
+      await holderMayCommit;
+      await tx.update(agentWakeupRequests).set({ status: "completed" }).where(eq(agentWakeupRequests.id, queueId));
+    });
+    await holderHasLock;
+
+    const adapter = createPostgresWakeQueueAdapter(dbRelease, stubDeps);
+    const release = adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async () => {
+      drainCalls += 1;
+      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+    });
+    // Barrier: wait until the release is really parked on the row lock (its
+    // pre-lock reads have therefore already seen the deferred queue).
+    for (let i = 0; i < 200; i += 1) {
+      const waiting = await db.execute(sql`
+        select 1 from pg_stat_activity
+        where wait_event_type = 'Lock' and query ilike '%for update%' and query ilike '%execution_run_id%'`);
+      if ((waiting as unknown as { length?: number; rows?: unknown[] }).length ||
+          (waiting as unknown as { rows?: unknown[] }).rows?.length) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    releaseHolder();
+    await holder;
+    const result = await release;
+
+    // The queue is gone by the time the release holds the lock: it must settle
+    // as released without draining, exactly once, and the lock must be cleared.
+    expect(result.outcome.kind).toBe("released");
+    expect(drainCalls).toBe(0);
+    const [row] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(row?.executionRunId).toBeNull();
+    await Promise.all([dbHolder.$client.end(), dbRelease.$client.end()]);
   });
 
   it("clears both lock columns on every sibling and keeps a transferred executionRunId", async () => {
