@@ -25,6 +25,16 @@ export type InstanceSecretSettingStore = {
   describeSecret(
     secretId: string,
   ): Promise<{ name: string; status: string; companyId: string } | null>;
+  /** Create a managed secret holding `value`; returns its id. The value is never echoed. */
+  createSecret(input: {
+    companyId: string;
+    name: string;
+    value: string;
+    description: string;
+  }): Promise<string>;
+  findSecretByName(companyId: string, name: string): Promise<string | null>;
+  /** Compensate if a new secret could not be bound. */
+  deleteSecret(secretId: string): Promise<void>;
   setBinding(name: string, secretId: string): Promise<InstanceSecretBinding>;
   clearBinding(name: string): Promise<boolean>;
 };
@@ -50,6 +60,15 @@ export type InstanceSecretMigrationPlanRow = {
   envPresent: boolean;
   refBound: boolean;
   action: "none" | "create_secret_and_bind" | "unset_env_when_ready";
+};
+
+export type InstanceSecretMigrationResultRow = {
+  name: string;
+  envOverride: string;
+  outcome: "planned" | "bound" | "skipped" | "error";
+  errorCode?: "migration_failed" | "migration_secret_name_conflict";
+  /** Only for `bound`: the id of the secret now referenced. Never a value. */
+  secretId?: string;
 };
 
 function requireDescriptor(
@@ -181,7 +200,86 @@ export function createInstanceSecretSettingResolver(deps: {
     return rows;
   }
 
-  return { resolve, status, list, setRef, clearRef, migrationPlan };
+  /**
+   * Move env-held values into secrets and bind them. Dry-run unless `apply` is
+   * exactly true. Only settings that have a value in env and no ref are touched;
+   * the env variable itself is left in place (the operator unsets it afterwards).
+   * The value is read here, handed to the store and dropped: it is not returned,
+   * logged or put into an error.
+   */
+  async function migrate(options: {
+    apply?: boolean;
+    companyId?: string | null;
+    onBound?: (name: string, secretId: string) => Promise<void>;
+  }): Promise<{ dryRun: boolean; rows: InstanceSecretMigrationResultRow[] }> {
+    const apply = options.apply === true;
+    if (apply && !options.companyId) {
+      throw unprocessable("companyId is required to apply the migration", { code: "migration_company_required" });
+    }
+    const rows: InstanceSecretMigrationResultRow[] = [];
+    for (const descriptor of registry.list()) {
+      let createdSecretId: string | null = null;
+      try {
+        const value = readEnv(getEnv(), descriptor.envOverride);
+        const bound = (await store.getBinding(descriptor.name)) !== null;
+        const row: InstanceSecretMigrationResultRow = {
+          name: descriptor.name,
+          envOverride: descriptor.envOverride,
+          outcome: value !== null && !bound ? "planned" : "skipped",
+        };
+        if (apply && value !== null && !bound) {
+          const companyId = options.companyId as string;
+          const secretName = `instance-setting.${descriptor.name}`;
+          let secretId = await store.findSecretByName(companyId, secretName);
+          if (!secretId) {
+            createdSecretId = await store.createSecret({
+              companyId,
+              name: secretName,
+              value,
+              description: `Migrated from ${descriptor.envOverride}`,
+            });
+            secretId = createdSecretId;
+          }
+          const existing = await store.describeSecret(secretId);
+          if (!existing || existing.companyId !== companyId || existing.name !== secretName) {
+            throw unprocessable("A secret with the migration name already exists", {
+              code: "migration_secret_name_conflict",
+              settingName: descriptor.name,
+            });
+          }
+          await store.setBinding(descriptor.name, secretId);
+          await options.onBound?.(descriptor.name, secretId);
+          deps.registerForRedaction?.(value);
+          row.outcome = "bound";
+          row.secretId = secretId;
+          createdSecretId = null;
+        }
+        rows.push(row);
+      } catch (err) {
+        if (createdSecretId) {
+          try {
+            await store.deleteSecret(createdSecretId);
+          } catch {
+            // Keep the row failure and attempt cleanup without exposing the underlying error.
+          }
+        }
+        const details = err && typeof err === "object" && "details" in err
+          ? (err as { details?: { code?: string } }).details
+          : undefined;
+        rows.push({
+          name: descriptor.name,
+          envOverride: descriptor.envOverride,
+          outcome: "error",
+          errorCode: details?.code === "migration_secret_name_conflict"
+            ? "migration_secret_name_conflict"
+            : "migration_failed",
+        });
+      }
+    }
+    return { dryRun: !apply, rows };
+  }
+
+  return { resolve, status, list, setRef, clearRef, migrationPlan, migrate };
 }
 
 export type InstanceSecretSettingResolver = ReturnType<typeof createInstanceSecretSettingResolver>;

@@ -33,6 +33,7 @@ function makeStore() {
     [SECRET_B, { name: "old", status: "disabled", companyId: COMPANY, value: "x" }],
   ]);
   const resolved: Array<{ settingName: string; consumerId: string }> = [];
+  const created: Array<{ name: string; companyId: string }> = [];
   const store: InstanceSecretSettingStore = {
     async getBinding(name) {
       return bindings.get(name) ?? null;
@@ -50,6 +51,22 @@ function makeStore() {
       const secret = secrets.get(secretId);
       return secret ? { name: secret.name, status: secret.status, companyId: secret.companyId } : null;
     },
+    async createSecret(input) {
+      if (input.value === "boom") throw new Error(`provider failed for ${input.value}`);
+      const id = `66666666-6666-4666-8666-${String(secrets.size).padStart(12, "0")}`;
+      secrets.set(id, { name: input.name, status: "active", companyId: input.companyId, value: input.value });
+      created.push({ name: input.name, companyId: input.companyId });
+      return id;
+    },
+    async findSecretByName(companyId, name) {
+      for (const [id, secret] of secrets) {
+        if (secret.companyId === companyId && secret.name === name) return id;
+      }
+      return null;
+    },
+    async deleteSecret(secretId) {
+      secrets.delete(secretId);
+    },
     async setBinding(name, secretId) {
       const binding = { companyId: COMPANY, secretId };
       bindings.set(name, binding);
@@ -59,19 +76,19 @@ function makeStore() {
       return bindings.delete(name);
     },
   };
-  return { store, bindings, secrets, resolved };
+  return { store, bindings, secrets, resolved, created };
 }
 
-function make(env: NodeJS.ProcessEnv = {}) {
-  const fake = makeStore();
+async function make(env: NodeJS.ProcessEnv = {}) {
+  const t = makeStore();
   const redacted: string[] = [];
   const resolver = createInstanceSecretSettingResolver({
     registry,
-    store: fake.store,
+    store: t.store,
     env,
     registerForRedaction: (value) => redacted.push(value),
   });
-  return { ...fake, resolver, redacted };
+  return { ...t, resolver, redacted };
 }
 
 async function codeOf(promise: Promise<unknown>) {
@@ -86,7 +103,7 @@ async function codeOf(promise: Promise<unknown>) {
 
 describe("instance secret setting resolver", () => {
   it("resolves a bound ref server-side and registers the value for masking", async () => {
-    const t = make();
+    const t = await make();
     await t.resolver.setRef(NAME, SECRET_A);
     const out = await t.resolver.resolve(NAME, { consumerId: "cloud-connector" });
     expect(out).toEqual({ source: "secret_ref", value: SECRET_VALUE });
@@ -95,7 +112,7 @@ describe("instance secret setting resolver", () => {
   });
 
   it("denies a consumer outside the setting scope, before touching env or store", async () => {
-    const t = make({ TEST_CLOUD_GDRIVE_CLIENT_SECRET: ENV_VALUE });
+    const t = await make({ TEST_CLOUD_GDRIVE_CLIENT_SECRET: ENV_VALUE });
     await t.resolver.setRef(NAME, SECRET_A);
     const denied = await codeOf(t.resolver.resolve(NAME, { consumerId: "tool-oauth" }));
     expect(denied).toMatchObject({ status: 403, code: "setting_consumer_denied" });
@@ -104,7 +121,7 @@ describe("instance secret setting resolver", () => {
   });
 
   it("rejects an unregistered name", async () => {
-    const t = make();
+    const t = await make();
     expect(await codeOf(t.resolver.resolve("nope", { consumerId: "cloud-connector" }))).toMatchObject({
       status: 404,
       code: "setting_unknown",
@@ -113,7 +130,7 @@ describe("instance secret setting resolver", () => {
   });
 
   it("reports a missing ref without falling back to anything", async () => {
-    const t = make();
+    const t = await make();
     expect(await codeOf(t.resolver.resolve(NAME, { consumerId: "cloud-connector" }))).toMatchObject({
       status: 422,
       code: "setting_ref_missing",
@@ -121,7 +138,7 @@ describe("instance secret setting resolver", () => {
   });
 
   it("emergency env override wins over the stored ref", async () => {
-    const t = make({ TEST_CLOUD_GDRIVE_CLIENT_SECRET: ` ${ENV_VALUE} ` });
+    const t = await make({ TEST_CLOUD_GDRIVE_CLIENT_SECRET: ` ${ENV_VALUE} ` });
     await t.resolver.setRef(NAME, SECRET_A);
     const out = await t.resolver.resolve(NAME, { consumerId: "cloud-connector" });
     expect(out).toEqual({ source: "env", value: ENV_VALUE });
@@ -130,13 +147,13 @@ describe("instance secret setting resolver", () => {
   });
 
   it("an empty env value does not override the ref", async () => {
-    const t = make({ TEST_CLOUD_GDRIVE_CLIENT_SECRET: "   " });
+    const t = await make({ TEST_CLOUD_GDRIVE_CLIENT_SECRET: "   " });
     await t.resolver.setRef(NAME, SECRET_A);
     expect((await t.resolver.resolve(NAME, { consumerId: "cloud-connector" })).source).toBe("secret_ref");
   });
 
   it("revoke: clearing the ref makes the next resolve fail", async () => {
-    const t = make();
+    const t = await make();
     await t.resolver.setRef(NAME, SECRET_A);
     await t.resolver.clearRef(NAME);
     expect(await codeOf(t.resolver.resolve(NAME, { consumerId: "cloud-connector" }))).toMatchObject({
@@ -145,7 +162,7 @@ describe("instance secret setting resolver", () => {
   });
 
   it("rotation/disable: a ref whose secret became inactive fails typed, and the ref can be swapped", async () => {
-    const t = make();
+    const t = await make();
     await t.resolver.setRef(NAME, SECRET_A);
     t.secrets.get(SECRET_A)!.status = "disabled";
     expect(await codeOf(t.resolver.resolve(NAME, { consumerId: "cloud-connector" }))).toMatchObject({
@@ -157,7 +174,7 @@ describe("instance secret setting resolver", () => {
   });
 
   it("setRef refuses a missing, deleted or inactive secret", async () => {
-    const t = make();
+    const t = await make();
     expect(await codeOf(t.resolver.setRef(NAME, "44444444-4444-4444-8444-444444444444"))).toMatchObject({
       code: "secret_missing",
     });
@@ -175,7 +192,7 @@ describe("instance secret setting resolver", () => {
   });
 
   it("never discloses values in status, listing, migration plan or errors", async () => {
-    const t = make({ TEST_CLOUD_GDRIVE_CLIENT_SECRET: ENV_VALUE });
+    const t = await make({ TEST_CLOUD_GDRIVE_CLIENT_SECRET: ENV_VALUE });
     await t.resolver.setRef(NAME, SECRET_A);
     const blob = JSON.stringify([
       await t.resolver.status(NAME),
@@ -189,7 +206,7 @@ describe("instance secret setting resolver", () => {
   });
 
   it("migration plan is a dry run that reads no store values", async () => {
-    const t = make({ TEST_CLOUD_GDRIVE_CLIENT_SECRET: ENV_VALUE });
+    const t = await make({ TEST_CLOUD_GDRIVE_CLIENT_SECRET: ENV_VALUE });
     expect(await t.resolver.migrationPlan()).toEqual([
       {
         name: NAME,
@@ -202,6 +219,88 @@ describe("instance secret setting resolver", () => {
     await t.resolver.setRef(NAME, SECRET_A);
     expect((await t.resolver.migrationPlan())[0]).toMatchObject({ refBound: true, action: "unset_env_when_ready" });
     expect(t.resolved).toHaveLength(0);
+  });
+});
+
+describe("migration", () => {
+  const ENV = { TEST_CLOUD_GDRIVE_CLIENT_SECRET: ENV_VALUE };
+
+  it("is a dry run by default: nothing is created or bound, no value is shown", async () => {
+    const t = await make(ENV);
+    const out = await t.resolver.migrate({});
+    expect(out.dryRun).toBe(true);
+    expect(out.rows).toEqual([
+      { name: NAME, envOverride: "TEST_CLOUD_GDRIVE_CLIENT_SECRET", outcome: "planned" },
+    ]);
+    expect(t.created).toHaveLength(0);
+    expect(t.bindings.size).toBe(0);
+    expect(JSON.stringify(out)).not.toContain(ENV_VALUE);
+  });
+
+  it("only exactly apply:true writes, and it needs a company", async () => {
+    const t = await make(ENV);
+    expect((await t.resolver.migrate({ apply: undefined, companyId: COMPANY })).dryRun).toBe(true);
+    expect(await codeOf(t.resolver.migrate({ apply: true }))).toMatchObject({ code: "migration_company_required" });
+    expect(t.created).toHaveLength(0);
+  });
+
+  it("apply creates the secret, binds it, leaves env alone and never echoes the value", async () => {
+    const t = await make(ENV);
+    const out = await t.resolver.migrate({ apply: true, companyId: COMPANY });
+    expect(out.dryRun).toBe(false);
+    expect(out.rows[0]).toMatchObject({ name: NAME, outcome: "bound" });
+    expect(t.created).toEqual([{ name: `instance-setting.${NAME}`, companyId: COMPANY }]);
+    expect(t.bindings.get(NAME)?.secretId).toBe(out.rows[0]!.secretId);
+    expect(JSON.stringify(out)).not.toContain(ENV_VALUE);
+    expect(ENV.TEST_CLOUD_GDRIVE_CLIENT_SECRET).toBe(ENV_VALUE);
+    // Second apply is idempotent: the ref exists, nothing more is created.
+    const again = await t.resolver.migrate({ apply: true, companyId: COMPANY });
+    expect(again.rows[0]!.outcome).toBe("skipped");
+    expect(t.created).toHaveLength(1);
+  });
+
+  it("a failing provider is reported as a row error without the value and later rows still run", async () => {
+    const localRegistry = new InstanceSecretSettingRegistry([
+      { name: "cloud.first", envOverride: "FIRST", description: "First", consumers: ["cloud-connector"] },
+      { name: "cloud.second", envOverride: "SECOND", description: "Second", consumers: ["cloud-connector"] },
+      { name: "cloud.third", envOverride: "THIRD", description: "Third", consumers: ["cloud-connector"] },
+    ]);
+    const env = { FIRST: "first-value", SECOND: "boom", THIRD: "third-value" };
+    const fake = makeStore();
+    let count = 0;
+    const originalCreate = fake.store.createSecret.bind(fake.store);
+    fake.store.createSecret = async (input) => {
+      count += 1;
+      if (input.value === "boom") throw new Error(`provider failed for ${input.value}`);
+      return originalCreate(input);
+    };
+    const resolver = createInstanceSecretSettingResolver({ registry: localRegistry, store: fake.store, env });
+    const out = await resolver.migrate({ apply: true, companyId: COMPANY });
+    expect(out.rows.map((row) => row.outcome)).toEqual(["bound", "error", "bound"]);
+    expect(out.rows[1]).toMatchObject({ errorCode: "migration_failed" });
+    expect(fake.bindings.has("cloud.first")).toBe(true);
+    expect(fake.bindings.has("cloud.second")).toBe(false);
+    expect(fake.bindings.has("cloud.third")).toBe(true);
+    expect(JSON.stringify(out)).not.toContain("first-value");
+    expect(JSON.stringify(out)).not.toContain("boom");
+    expect(count).toBe(3);
+  });
+
+  it("reuses the deterministic secret after a binding is cleared", async () => {
+    const t = await make(ENV);
+    const first = await t.resolver.migrate({ apply: true, companyId: COMPANY });
+    await t.resolver.clearRef(NAME);
+    const again = await t.resolver.migrate({ apply: true, companyId: COMPANY });
+    expect(again.rows[0]).toMatchObject({ outcome: "bound", secretId: first.rows[0]!.secretId });
+    expect(t.created).toHaveLength(1);
+  });
+
+  it("a failing provider is reported without the value", async () => {
+    const t = await make({ TEST_CLOUD_GDRIVE_CLIENT_SECRET: "boom" });
+    const out = await t.resolver.migrate({ apply: true, companyId: COMPANY });
+    expect(out.rows[0]).toMatchObject({ outcome: "error", errorCode: "migration_failed" });
+    expect(JSON.stringify(out)).not.toContain("boom");
+    expect(t.bindings.size).toBe(0);
   });
 });
 

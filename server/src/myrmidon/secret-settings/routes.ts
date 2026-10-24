@@ -12,11 +12,18 @@ import { secretService } from "../../services/secrets.js";
 import { createInstanceSecretSettingService } from "./wiring.js";
 import type { InstanceSecretSettingRegistry } from "./registry.js";
 
+const migrateBodySchema = z
+  .object({ apply: z.boolean().optional(), companyId: z.string().guid().optional() })
+  .strict();
 const setRefBodySchema = z.object({ secretId: z.string().guid() }).strict();
 
-export function instanceSecretSettingsRoutes(db: Db, registry?: InstanceSecretSettingRegistry) {
+export function instanceSecretSettingsRoutes(
+  db: Db,
+  registry?: InstanceSecretSettingRegistry,
+  env?: NodeJS.ProcessEnv,
+) {
   const router = Router();
-  const svc = createInstanceSecretSettingService(db, registry);
+  const svc = createInstanceSecretSettingService(db, registry, env);
   const secrets = secretService(db);
 
   async function audit(
@@ -52,6 +59,31 @@ export function instanceSecretSettingsRoutes(db: Db, registry?: InstanceSecretSe
     assertInstanceAdmin(req);
     res.json({ dryRun: true, rows: await svc.migrationPlan() });
   });
+
+  // Dry run unless the body says `"apply": true`. Never returns a value.
+  router.post(
+    "/instance/secret-settings/migrate",
+    validate(migrateBodySchema),
+    async (req, res) => {
+      assertInstanceAdmin(req);
+      const result = await svc.migrate({
+        apply: req.body.apply === true,
+        companyId: req.body.companyId,
+      });
+      if (!result.dryRun) {
+        for (const row of result.rows) {
+          if (row.outcome === "bound") {
+            try {
+              await audit(req, "instance.secret_setting.migrated", row.name, row.secretId ?? null);
+            } catch {
+              // Migration and audit are independent best-effort effects; don't leak values.
+            }
+          }
+        }
+      }
+      res.json(result);
+    },
+  );
 
   router.put(
     "/instance/secret-settings/:name/ref",
