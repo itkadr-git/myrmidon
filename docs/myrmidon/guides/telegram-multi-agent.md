@@ -2,12 +2,10 @@
 
 > Russian version: [telegram-multi-agent.ru.md](telegram-multi-agent.ru.md)
 
-One bridged Telegram DM (guide [telegram-dm-status.md](telegram-dm-status.md), setting `MYRMIDON_TELEGRAM_DM_CONVERSATIONS`) can address any agent of the company, not only the agent assigned to that endpoint. There are two ways to pick the addressee:
+One bridged Telegram chat can address another agent with a matching `@`-mention in an ordinary message. `/to` stores a selected addressee shown by `/who` and `/agents`; ordinary messages without a matching mention continue to the endpoint's assigned agent.
 
 - **A `@`-mention in the message text** routes that one message to the mentioned agent; the reply comes back in the same chat with the agent's display name in brackets, like `[Hypotheses] …`.
-- **The `/to` command** sets a sticky default addressee for the chat, so the following messages go to the chosen agent without a mention.
-
-Mentions and commands work in the same chat and combine freely: a `/to` choice holds until you change it, and a `@`-mention addresses its agent for that message.
+- **The `/to` command** stores the chat's selected addressee, which `/who` and `/agents` display. It does not change ordinary-message routing: without a matching `@`-mention, messages continue to the endpoint's assigned agent.
 
 ## Aliases
 
@@ -15,7 +13,11 @@ An alias is a short handle for an agent, stored in the agent card as `telegramAl
 
 When two agents could match, an alias beats a name, and a name beats a title.
 
-Setting or changing aliases is a card edit by an administrator; there is no chat command for it.
+Setting or changing aliases is a card edit by an administrator — the card's
+**Telegram** section edits them right in the UI
+([agent-telegram-card.md](agent-telegram-card.md)); there is no chat command
+for it. While the list is empty, the bridge answers to a default alias
+computed from the agent name (the last dash-separated segment, lower-cased).
 
 ## `/agents` — who can be addressed
 
@@ -23,15 +25,15 @@ Lists the company's agents that this chat may address: display name and aliases,
 
 If the company has no addressable agents, the reply says so.
 
-## `/to` — choose the default addressee
+## `/to` — store the selected addressee
 
-- `/to <alias>` — the chat now addresses that agent by default, until the next `/to`. The reply confirms the chosen agent and its aliases. Choosing the agent that is already the default answers that the addressee is already set.
-- `/to` without an argument — clears the choice; the chat's assigned agent replies from then on. If no choice was set, the reply names the agent that replies by default.
+- `/to <alias>` — stores that agent as the chat's selected addressee until the next `/to`. The reply confirms the choice and aliases. Choosing the already selected agent confirms it is set.
+- `/to` without an argument — clears the stored choice. If no choice was set, the reply names the chat's assigned agent.
 - An unknown alias answers with the list of available aliases (or, when no aliases are set at all, points to `/agents`).
 
 The choice is stored in the conversation issue's `assignee_adapter_overrides` JSON column under the key `telegramStickyAgentId` — the same column `/model` and `/think` use, merged with their values; the `adapterConfig` key is untouched, so choosing an addressee never resets the chat's model session. Each change is recorded in the activity log as `issue.updated`.
 
-In this release the stored choice is reported by `/who` and `/agents` and kept for the conversation; routing of unmentioned messages to the sticky addressee arrives with the next part of the feature. Until then, address another agent with a `@`-mention.
+During addressing, the `/to` choice remains stored for the conversation but is not the addressee of ordinary inbound messages. Include a matching `@`-mention to address another agent.
 
 ## `/who` — who replies now
 

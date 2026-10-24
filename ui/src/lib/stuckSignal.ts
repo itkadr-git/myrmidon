@@ -1,4 +1,4 @@
-import type { AttentionItem, Issue, AgentListItem } from "@paperclipai/shared";
+import type { AttentionItem, Issue, AgentListItem } from "@myrmidon/shared";
 
 export interface StuckSignalCounts {
   attentionIssuesWithoutMotion: number;
@@ -22,7 +22,7 @@ export function getStuckSignalCounts(
       .map((issue) => issue.assigneeAgentId!),
   );
   const idleEngineers = agents.filter((agent) =>
-    /engineer/i.test(`${agent.role} ${agent.title ?? ""}`)
+    agent.role.trim().toLowerCase() === "engineer"
       && agent.status === "active"
       && !openByAgent.has(agent.id),
   ).length;

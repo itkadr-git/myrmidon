@@ -47,11 +47,13 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
-/** The knowledge kinds of the 2.0 model (§3.2). */
-export const KNOWLEDGE_KINDS = ["note", "wiki", "answer", "task_outcome", "rule"] as const;
+/** The knowledge kinds of the 2.0 model (§3.2). `skill_card` is the skill's
+ *  knowledge card written by the K-7 backfill and kept by the lifecycle. */
+export const KNOWLEDGE_KINDS = ["note", "wiki", "answer", "task_outcome", "rule", "skill_card"] as const;
 export type KnowledgeKind = (typeof KNOWLEDGE_KINDS)[number];
 
 /** Item workflow statuses (§2.4): draft → in_review → published → archived/superseded. */
@@ -61,6 +63,10 @@ export type KnowledgeItemStatus = (typeof KNOWLEDGE_ITEM_STATUSES)[number];
 /** Revision statuses: a revision is drafted, submitted for approval, approved, or rejected. */
 export const KNOWLEDGE_REVISION_STATUSES = ["draft", "submitted", "approved", "rejected"] as const;
 export type KnowledgeRevisionStatus = (typeof KNOWLEDGE_REVISION_STATUSES)[number];
+
+/** Languages supported by the knowledge translation contract. */
+export const KNOWLEDGE_REVISION_LANGS = ["en", "ru"] as const;
+export type KnowledgeRevisionLang = (typeof KNOWLEDGE_REVISION_LANGS)[number];
 
 /** Source kinds a claim may cite. */
 export const KNOWLEDGE_SOURCE_KINDS = ["task", "pr", "issue", "run", "document", "decision", "url"] as const;
@@ -86,6 +92,14 @@ export const knowledgeItems = pgTable(
     /** Folder path of the tree without the slug segments ("" = nest root). */
     folderPath: text("folder_path").notNull().default(""),
     tags: jsonb("tags").$type<string[]>().notNull().default([]),
+    /**
+     * myrmidon(1.6.6 KNOWLEDGE-2.0 K-3): the castes a `kind=rule` item governs,
+     * as caste keys; `["*"]` means every caste of the company (the port of the
+     * wiki model's `roles`). Empty on every other kind. The rules resolver
+     * (`knowledge.rules.resolved(nest, caste)`) reads exactly this column, and
+     * `approver_kind` is derived from it (sensitive caste → owner).
+     */
+    roles: jsonb("roles").$type<string[]>().notNull().default([]),
     /** True for rules (kind "rule" is seeded with this true): publish needs approve. */
     approvalRequired: boolean("approval_required").notNull().default(false),
     /**
@@ -114,6 +128,7 @@ export const knowledgeItems = pgTable(
     nestSlugUq: uniqueIndex("knowledge_items_nest_slug_uq").on(table.nestId, table.slug),
     nestStatusIdx: index("knowledge_items_nest_status_idx").on(table.nestId, table.status),
     nestKindStatusIdx: index("knowledge_items_nest_kind_status_idx").on(table.nestId, table.kind, table.status),
+    rolesIdx: index("knowledge_items_roles_idx").using("gin", table.roles),
     nestFolderIdx: index("knowledge_items_nest_folder_idx").on(table.nestId, table.folderPath),
     companyIdx: index("knowledge_items_company_idx").on(table.companyId),
   }),
@@ -135,6 +150,8 @@ export const knowledgeRevisions = pgTable(
     /** 1-based, strictly increasing within the item (S2). */
     revisionNumber: integer("revision_number").notNull(),
     status: text("status").$type<KnowledgeRevisionStatus>().notNull().default("draft"),
+    lang: text("lang").$type<KnowledgeRevisionLang>().notNull().default("en"),
+    translationOf: uuid("translation_of").references((): AnyPgColumn => knowledgeRevisions.id, { onDelete: "set null" }),
     content: text("content").notNull(),
     /** What changed, free text — shown in the revision diff (K-4 UI). */
     changeSummary: text("change_summary"),
@@ -153,6 +170,7 @@ export const knowledgeRevisions = pgTable(
     itemRevisionUq: uniqueIndex("knowledge_revisions_item_revision_uq").on(table.itemId, table.revisionNumber),
     nestIdx: index("knowledge_revisions_nest_idx").on(table.nestId),
     companyIdx: index("knowledge_revisions_company_idx").on(table.companyId),
+    translationIdx: index("knowledge_revisions_translation_idx").on(table.translationOf),
   }),
 );
 
@@ -215,6 +233,10 @@ export const knowledgeSources = pgTable(
 export const KNOWLEDGE_SUGGESTION_STATUSES = ["pending", "accepted", "declined"] as const;
 export type KnowledgeSuggestionStatus = (typeof KNOWLEDGE_SUGGESTION_STATUSES)[number];
 
+/** The provenance trust of a suggestion (§2.2): internal evidence or external url. */
+export const KNOWLEDGE_SUGGESTION_TRUSTS = ["internal", "external"] as const;
+export type KnowledgeSuggestionTrust = (typeof KNOWLEDGE_SUGGESTION_TRUSTS)[number];
+
 export const knowledgeSuggestions = pgTable(
   "knowledge_suggestions",
   {
@@ -231,6 +253,8 @@ export const knowledgeSuggestions = pgTable(
     rationale: text("rationale"),
     sourceKind: text("source_kind").$type<KnowledgeSourceKind>(),
     sourceRef: text("source_ref"),
+    /** Provenance trust (L-5): `external` = the only source is a foreign url. */
+    trust: text("trust").$type<KnowledgeSuggestionTrust>(),
     status: text("status").$type<KnowledgeSuggestionStatus>().notNull().default("pending"),
     createdByAgentId: text("created_by_agent_id"),
     createdByUserId: text("created_by_user_id"),
@@ -241,6 +265,8 @@ export const knowledgeSuggestions = pgTable(
   (table) => ({
     nestStatusIdx: index("knowledge_suggestions_nest_status_idx").on(table.nestId, table.status),
     companyIdx: index("knowledge_suggestions_company_idx").on(table.companyId),
+    // L-5: provenance lookups (which external suggestions are pending).
+    trustIdx: index("knowledge_suggestions_trust_idx").on(table.trust),
   }),
 );
 

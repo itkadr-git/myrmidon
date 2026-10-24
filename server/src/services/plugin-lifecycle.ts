@@ -36,12 +36,12 @@
  * @see PLUGIN_SPEC.md §12.5 — Graceful Shutdown Policy
  */
 import { EventEmitter } from "node:events";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import type {
   PluginStatus,
   PluginRecord,
   PaperclipPluginManifestV1,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { pluginLoader, type PluginLoader } from "./plugin-loader.js";
 import type { PluginWorkerManager, WorkerStartOptions } from "./plugin-worker-manager.js";
@@ -185,7 +185,7 @@ export interface PluginLifecycleManager {
    * If the upgrade adds new capabilities, transitions to `upgrade_pending`.
    * Otherwise, transitions to `ready` directly.
    */
-  upgrade(pluginId: string, version?: string): Promise<PluginRecord>;
+  upgrade(pluginId: string, version?: string, approvedCapabilities?: string[]): Promise<PluginRecord>;
 
   /**
    * Start the worker process for a plugin that is already in `ready` state.
@@ -636,7 +636,7 @@ export function pluginLifecycleManager(
      * @returns The updated `PluginRecord`.
      * @throws {BadRequest} If the plugin is not in a ready or upgrade_pending state.
      */
-    async upgrade(pluginId: string, version?: string): Promise<PluginRecord> {
+    async upgrade(pluginId: string, version?: string, approvedCapabilities?: string[]): Promise<PluginRecord> {
       const plugin = await requirePlugin(pluginId);
 
       // Can only upgrade plugins that are ready or already in upgrade_pending
@@ -656,7 +656,7 @@ export function pluginLifecycleManager(
 
       // 1. Download and validate new package via loader
       const { oldManifest, newManifest, discovered } =
-        await pluginLoaderInstance.upgradePlugin(pluginId, { version });
+        await pluginLoaderInstance.upgradePlugin(pluginId, { version, approvedCapabilities });
 
       log.info(
         {
@@ -674,7 +674,7 @@ export function pluginLifecycleManager(
       );
 
       // 3. Transition state
-      if (addedCaps.length > 0) {
+      if (addedCaps.length > 0 && approvedCapabilities === undefined) {
         // New capabilities require operator approval — worker stays stopped
         log.info(
           { pluginId, pluginKey: plugin.pluginKey, addedCaps },

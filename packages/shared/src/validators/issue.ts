@@ -445,6 +445,33 @@ export const issueExecutionMonitorPolicySchema = z.object({
     .default(null),
 });
 
+export const issueBlockReasonSchema = z.enum([
+  "external_wait",
+  "dependency",
+  "recovery",
+  "human_decision",
+  "resource",
+]);
+
+export const issueBlockerMetadataSchema = z.object({
+  blockReason: issueBlockReasonSchema,
+  owner: z.union([
+    z.object({ agentId: z.string().uuid() }).strict(),
+    z.object({ userId: z.string().uuid() }).strict(),
+  ]),
+  blockedByIssueIds: z.array(z.string().uuid()).max(20).optional(),
+  externalRef: z.string().trim().min(1).max(500).optional(),
+  nextCheckAt: z.string().datetime(),
+  timeoutAt: z.string().datetime(),
+  escalationPolicy: z.string().trim().min(1).max(120),
+}).strict().refine(
+  (value: {
+    blockedByIssueIds?: string[];
+    externalRef?: string;
+  }) => Boolean(value.blockedByIssueIds?.length || value.externalRef),
+  { message: "Provide blockedByIssueIds or externalRef", path: ["externalRef"] },
+);
+
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
@@ -460,6 +487,36 @@ export const issueExecutionPolicySchema = z.object({
     .optional()
     .nullable()
     .default(null),
+  reviewEscalationPolicy: z.object({
+    maxReviewRounds: z.number().int().positive().max(100).optional(),
+    participantRoles: z.array(z.enum(["lead", "architect", "secondary_reviewer"])).min(1).max(3),
+    fallbackQueue: z.string().trim().min(1).max(200),
+    timeoutAt: z.string().datetime().nullable(),
+    policyRevision: z.string().trim().min(1).max(200),
+    participants: z.object({
+      lead: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+      architect: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+      secondary_reviewer: z.object({
+        type: z.enum(["agent", "user"]),
+        agentId: z.string().trim().min(1).nullable().optional(),
+        userId: z.string().trim().min(1).nullable().optional(),
+        projectId: z.string().guid().nullable().optional(),
+        casteKey: z.string().trim().min(1).nullable().optional(),
+      }).strict().nullable().optional(),
+    }).strict().optional(),
+  }).strict().nullable().optional(),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({
@@ -506,6 +563,8 @@ export const issueExecutionMonitorStateSchema = z.object({
     .default(null),
   clearedAt: z.string().datetime().nullable(),
   clearReason: z.enum(ISSUE_EXECUTION_MONITOR_CLEAR_REASONS).nullable(),
+  // myrmidon(MON-RESTORE): distinct from nextCheckAt, which is null when cleared.
+  nextScheduledAt: z.string().datetime().nullable().optional(),
 });
 
 export const issueReviewRequestSchema = z
@@ -527,6 +586,11 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
   changesRequestedCount: z.number().int().nonnegative().optional().default(0),
+  reviewCycleId: z.string().min(1).max(200).nullable().optional().default(null),
+  escalationPolicyRevision: z.string().min(1).max(200).nullable().optional().default(null),
+  escalationReason: z.literal("review_round_limit").nullable().optional().default(null),
+  escalationFromParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
+  escalationToParticipant: issueExecutionStagePrincipalSchema.nullable().optional().default(null),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({
@@ -697,6 +761,7 @@ const createIssueBaseSchema = z.object({
   goalId: z.string().guid().optional().nullable(),
   parentId: z.string().guid().optional().nullable(),
   blockedByIssueIds: z.array(z.string().guid()).optional(),
+  blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
   unblockDescriptor: z
     .object({
       owner: z.union([
@@ -831,11 +896,13 @@ function requireReasonRefForBlockedTransition(
   value: {
     status?: unknown;
     blockedByIssueIds?: unknown;
+    blockerMetadata?: unknown;
     unblockDescriptor?: { reasonRef?: unknown } | null;
   },
   ctx: z.RefinementCtx,
 ) {
   if (value.status !== "blocked") return;
+  if (value.blockerMetadata !== undefined && value.blockerMetadata !== null) return;
   const hasBlockers =
     Array.isArray(value.blockedByIssueIds) &&
     value.blockedByIssueIds.length > 0;
@@ -965,6 +1032,7 @@ export const updateIssueShapeSchema = objectWithoutDefaults(
     interrupt: z.boolean().optional(),
     deferWakeForGoal: z.boolean().optional(),
     hiddenAt: z.string().datetime().nullable().optional(),
+    blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
   });
 
 export const updateIssueSchema = objectWithoutDefaults(
@@ -991,6 +1059,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     /** Assignment-only handoff; the following structured goal action owns the wake. */
     deferWakeForGoal: z.boolean().optional(),
     hiddenAt: z.string().datetime().nullable().optional(),
+    blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
     // myrmidon(STALE-BLOCK): blocked transitions need a reason reference
     // (issue | event | date) — enforced on PATCH via the refine below.
   })

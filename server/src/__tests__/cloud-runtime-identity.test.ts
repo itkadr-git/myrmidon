@@ -2,7 +2,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createDb, instanceSettings } from "@paperclipai/db";
+import { createDb, instanceSettings } from "@myrmidon/db";
 import {
   applyCloudRuntimeIdentityAssertion,
   CLOUD_RUNTIME_IDENTITY_AUDIENCE,
@@ -90,7 +90,7 @@ describeEmbeddedPostgres("Cloud runtime identity", () => {
     resetCloudRuntimeIdentityForTests();
     process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-tenant-server-token";
     process.env.PAPERCLIP_CLOUD_STACK_ID = STACK_ID;
-    process.env.PAPERCLIP_CLOUD_API_ORIGIN = "https://my-staging.paperclip.app";
+    process.env.MYRMIDON_CLOUD_API_ORIGIN = POOL_ORIGIN;
     process.env.PAPERCLIP_PUBLIC_URL = POOL_ORIGIN;
     process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL = POOL_ORIGIN;
     process.env.PAPERCLIP_API_URL = POOL_ORIGIN;
@@ -109,7 +109,7 @@ describeEmbeddedPostgres("Cloud runtime identity", () => {
     for (const key of [
       "PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN",
       "PAPERCLIP_CLOUD_STACK_ID",
-      "PAPERCLIP_CLOUD_API_ORIGIN",
+      "MYRMIDON_CLOUD_API_ORIGIN",
       "PAPERCLIP_PUBLIC_URL",
       "PAPERCLIP_AUTH_PUBLIC_BASE_URL",
       "PAPERCLIP_API_URL",

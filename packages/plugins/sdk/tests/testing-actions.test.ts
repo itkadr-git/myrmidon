@@ -60,6 +60,7 @@ describe("createTestHarness action context", () => {
       agentId: null,
       runId: "run-1",
       companyId: "host-company",
+      isInstanceAdmin: false, // myrmidon(PLUGIN-INSTANCE-ADMIN)
     });
     expect(result.contextFrozen).toBe(true);
     expect(result.actorFrozen).toBe(true);
@@ -150,5 +151,63 @@ describe("createTestHarness issue interactions", () => {
         maxSelected: 2,
       },
     });
+  });
+});
+
+describe("createTestHarness issue attachments", () => {
+  it("denies ctx.issues.uploadAttachment without issue.attachments.write capability", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: ["issues.create"],
+    });
+    const issue = await harness.ctx.issues.create({
+      companyId: "company-1",
+      title: "No write cap issue",
+    });
+
+    await expect(
+      harness.ctx.issues.uploadAttachment({
+        issueId: issue.id,
+        companyId: "company-1",
+        filename: "proof.txt",
+        contentType: "text/plain",
+        contentBase64: Buffer.from("test").toString("base64"),
+      }),
+    ).rejects.toThrow(/issue\.attachments\.write/);
+  });
+
+  it("allows ctx.issues.uploadAttachment with issue.attachments.write and stores attachment", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: ["issues.create", "issue.attachments.write", "issue.attachments.read"],
+    });
+    const issue = await harness.ctx.issues.create({
+      companyId: "company-1",
+      title: "Attachment upload issue",
+    });
+
+    const attachment = await harness.ctx.issues.uploadAttachment({
+      issueId: issue.id,
+      companyId: "company-1",
+      filename: "proof.txt",
+      contentType: "text/plain",
+      contentBase64: Buffer.from("content-bytes").toString("base64"),
+    });
+
+    expect(attachment).toMatchObject({
+      issueId: issue.id,
+      companyId: "company-1",
+      originalFilename: "proof.txt",
+      contentType: "text/plain",
+      byteSize: Buffer.from("content-bytes").length,
+    });
+
+    const list = await harness.ctx.issues.listAttachments(issue.id, "company-1");
+    expect(list).toHaveLength(1);
+    expect(list[0]!.id).toBe(attachment.id);
+
+    const read = await harness.ctx.issues.getAttachmentContent(attachment.id, "company-1");
+    expect(read).not.toBeNull();
+    expect(read!.contentBase64).toBe(Buffer.from("content-bytes").toString("base64"));
   });
 });

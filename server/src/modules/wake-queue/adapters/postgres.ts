@@ -1,11 +1,15 @@
 import { isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
+// myrmidon(1.6.1 OPE-3983): the native-failure block carries the recovery-liveness reasonRef.
+import { recoveryLivenessDescriptor } from "../../../myrmidon/stale-block/event-keys.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
+import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../../../myrmidon/maintenance/domain.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { logger } from "../../../middleware/logger.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { runContextPersistenceFields } from "@paperclipai/db";
-import { extractIssueReferenceIdentifiers } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { runContextPersistenceFields } from "@myrmidon/db";
+import { extractIssueReferenceIdentifiers } from "@myrmidon/shared";
 import {
   activityLog,
   agentWakeupRequests,
@@ -17,7 +21,7 @@ import {
   issueRelations,
   issues,
   nativeRunFinalizations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { legacyExecutionNeedsReconciliation } from "../../../services/legacy-execution-recovery.js";
 import {
@@ -190,6 +194,30 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     : null;
 
   return {
+    async findIssue({ companyId, issueId }): Promise<IssueSnapshot | null> {
+      const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+      return issue ? toIssueSnapshot(issue) : null;
+    },
+    async claimIssueExecutionLease({ companyId, issueId, runId }): Promise<boolean> {
+      const [claimed] = await tx
+        .update(issues)
+        .set({ executionRunId: runId })
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.id, issueId),
+          isNull(issues.executionRunId),
+          isNull(issues.checkoutRunId),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ))
+        .returning({ id: issues.id });
+      return Boolean(claimed);
+    },
+    async releaseIssueExecutionLease({ companyId, issueId, runId }): Promise<void> {
+      await tx
+        .update(issues)
+        .set({ executionRunId: null })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId), eq(issues.executionRunId, runId)));
+    },
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
       const agent = await tx
         .select()
@@ -714,6 +742,9 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
 }
 
 async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow, issue: IssueRow, now: Date): Promise<boolean> {
+  // Maintenance owns an explicit successor retry. Treating the expected stop
+  // as an unknown native execution creates a reconciliation hold instead.
+  if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   const applies =
     run.runtimeMode === "native" &&
     ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status) &&
@@ -737,7 +768,19 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
     .limit(1);
   let nativeFailureBlock: { runId: string; statusVersion: number } | undefined;
   if (issue.status !== "blocked") {
-    const projected = await issueService(tx).update(issue.id, { status: "blocked" }, tx);
+    const projected = await issueService(tx).update(
+      issue.id,
+      {
+        status: "blocked",
+        // myrmidon(1.6.1 OPE-3983): the reconciliation incident created alongside
+        // this block is the liveness oracle the stale-block sweep judges.
+        unblockDescriptor: recoveryLivenessDescriptor(
+          issue.id,
+          "Inspect the original failure and reconcile the previous execution before continuing.",
+        ),
+      },
+      tx,
+    );
     if (projected) {
       nativeFailureBlock = { runId: run.id, statusVersion: projected.statusVersion };
       await tx.insert(activityLog).values({
@@ -1012,23 +1055,64 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
 
 export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAdapterDeps): IssueLockWriter {
   return {
-    async withIssueExecutionLock(input, fn): Promise<ReleaseTransactionResult & { run: RunSnapshot }> {
-      return db.transaction(async (rawTx) => {
+    async claimIssueExecutionLease({ companyId, issueId, runId }): Promise<boolean> {
+      return db.transaction(async (rawTx: unknown) => {
         const tx = rawTx as unknown as Db;
-        const run = await tx
-          .select()
-          .from(heartbeatRuns)
-          .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
-          .then((rows) => rows[0] ?? null);
-        if (!run) {
-          throw new Error(`wake-queue: run ${input.runId} was not found while releasing issue execution`);
-        }
-        const runSnapshot = toRunSnapshot(run);
-        const contextIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+        const [claimed] = await tx.update(issues)
+          .set({ executionRunId: runId })
+          .where(and(
+            eq(issues.companyId, companyId),
+            eq(issues.id, issueId),
+            isNull(issues.executionRunId),
+            isNull(issues.checkoutRunId),
+            notInArray(issues.status, ["done", "cancelled"]),
+          ))
+          .returning({ id: issues.id });
+        return Boolean(claimed);
+      });
+    },
+    async withIssueExecutionLock(input, fn): Promise<ReleaseTransactionResult & { run: RunSnapshot }> {
+      const transactionStartedAt = performance.now();
+      let lockWaitMs = 0;
+      let drainMs = 0;
+      // Everything that does not depend on the issue row locks is read BEFORE
+      // the transaction, so the FOR UPDATE below is held only for the drain.
+      const run = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!run) {
+        throw new Error(`wake-queue: run ${input.runId} was not found while releasing issue execution`);
+      }
+      const runSnapshot = toRunSnapshot(run);
+      const contextIssueId = run.nativeIssueId ??
+        readNonEmptyString(parseObject(run.contextSnapshot).issueId) ??
+        readNonEmptyString(parseObject(run.contextSnapshot).taskId);
+      // Read before the lock on purpose: it is an instance-wide switch, not an
+      // issue row, so a value that is stale by the lock wait is acceptable.
+      const enableAgentChat = Boolean((await instanceSettingsService(db).getExperimental()).enableAgentChat);
+      const interruptQueueId = run.runtimeMode !== "native"
+        ? readNonEmptyString(run.resultJson?.queuedCommentInterruptQueueId)
+        : null;
+      // Pre-read of the interrupt queue for the context issue; reused under the
+      // lock only when the primary issue turns out to be that same issue.
+      const [preInterruptedQueue] = interruptQueueId && contextIssueId
+        ? await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.id, interruptQueueId),
+            eq(agentWakeupRequests.companyId, run.companyId),
+            eq(agentWakeupRequests.agentId, run.agentId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            sql`${agentWakeupRequests.payload}->>'issueId' = ${contextIssueId}`,
+          )).limit(1)
+        : [];
+      const result: ReleaseTransactionResult & { run: RunSnapshot } = await db.transaction(async (rawTx: unknown): Promise<ReleaseTransactionResult & { run: RunSnapshot }> => {
+        const tx = rawTx as unknown as Db;
 
         // Lock the context issue (if any) and every issue that still references this
         // run, in id order, so two concurrent finalizations can never deadlock on
         // each other's row-lock acquisition order.
+        const lockStartedAt = performance.now();
         await tx.execute(
           contextIssueId
             ? sql`
@@ -1051,6 +1135,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
               `,
         );
 
+        lockWaitMs = performance.now() - lockStartedAt;
         const candidateIssues = await tx
           .select()
           .from(issues)
@@ -1064,6 +1149,17 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           )
           .orderBy(asc(issues.id));
 
+        const releaseCandidateRows = candidateIssues.filter((candidate: IssueRow) =>
+          candidate.executionRunId === run.id || candidate.checkoutRunId === run.id,
+        );
+        const contextIssueRow = contextIssueId
+          ? candidateIssues.find((candidate: IssueRow) => candidate.id === contextIssueId) ?? null
+          : null;
+        const issueRow = contextIssueRow ?? releaseCandidateRows[0] ?? null;
+        const releasedSiblingIssue = issueRow
+          ? releaseCandidateRows.find((candidate: IssueRow) => candidate.id !== issueRow.id &&
+              candidate.status !== "done" && candidate.status !== "cancelled")
+          : undefined;
         // Two separate updates: a retry can move `executionRunId` to a new run
         // while `checkoutRunId` still points at this one finishing.
         await tx
@@ -1075,15 +1171,15 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           .set({ checkoutRunId: null, updatedAt: input.now })
           .where(and(eq(issues.companyId, input.companyId), eq(issues.checkoutRunId, run.id)));
 
-        const issueRow =
-          (contextIssueId ? candidateIssues.find((candidate) => candidate.id === contextIssueId) : candidateIssues[0]) ?? null;
-
         // A queue interrupt authorizes only its original pending queue. Replays
         // after dispatch or deleting the final message cannot launch other work.
-        const interruptQueueId = run.runtimeMode !== "native"
-          ? readNonEmptyString(run.resultJson?.queuedCommentInterruptQueueId)
-          : null;
-        const [interruptedQueue] = interruptQueueId && issueRow
+        // The pre-lock read is only a short-circuit for "no such queue": a
+        // deferred queue never appears for this run while we wait, but the
+        // lock holder may dispatch or delete it. So a pre-lock hit is always
+        // re-checked here by primary key under the lock.
+        const [interruptedQueue] = interruptQueueId && issueRow && issueRow.id === contextIssueId && !preInterruptedQueue
+          ? []
+          : interruptQueueId && issueRow
           ? await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
               eq(agentWakeupRequests.id, interruptQueueId),
               eq(agentWakeupRequests.companyId, run.companyId),
@@ -1100,30 +1196,36 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           issueStatus: issueRow?.status ?? "",
           hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
           assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
-          legacyExecutionNeedsReconciliation: legacyExecutionNeedsReconciliation(run),
+          legacyExecutionNeedsReconciliation:
+            !input.ignoreUnrecordedReconciliation && legacyExecutionNeedsReconciliation(run),
           // An operator stop never promotes old queued work by itself. The
           // next explicit wake adopts those messages atomically when it
           // queues a run.
           executionCancellationAcknowledged:
             run.status === "cancelled" &&
             (parseObject(run.resultJson?.executionCancellation).state === "acknowledged" || isAcknowledgedNativeStop(run)) &&
-            !interruptedQueue,
+            !interruptedQueue &&
+            !input.deferredWakesPostdateRun,
         };
         const preDrain = decidePreDrain(preDrainFacts);
 
-        if (preDrain.kind === "released") {
-          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
-        }
+        const releaseOutcome = preDrain.kind === "released" ? {
+          outcome: { kind: "released" } as const, postCommitEffects: [], run: runSnapshot,
+        } : null;
 
         // decidePreDrain only returns "blocked" or "proceed" when the issue row is present.
         if (!issueRow) {
-          throw new Error(`wake-queue: pre-drain decision ${preDrain.kind} reached without an issue row`);
+          return releaseOutcome ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
         // Enqueue does not stamp executionRunId until dispatch. A concurrent
         // queued successor still owns the next turn, including during a late
         // finalization/stranded-queue retry under this issue lock. Another
         // agent's review participation retains its separate recovery path.
+        // Successor, execution blocker, recovery tail and the drain stay under
+        // the lock: they decide, and then write, from the state of the locked
+        // issue rows (a queued successor or a lease claim by a concurrent
+        // writer between a pre-read and the lock would be missed).
         const [successor] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, input.companyId),
           eq(heartbeatRuns.agentId, run.agentId),
@@ -1132,7 +1234,9 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueRow.id}`),
           inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
         )).limit(1);
-        if (successor) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        if (successor || (releaseOutcome && !releasedSiblingIssue)) {
+          return releaseOutcome ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
 
         if (preDrain.kind === "blocked") {
           return {
@@ -1185,14 +1289,35 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         // Releases still settle while Agent Chat is disabled, but no deferred
         // turn or recovery successor may be created. Check here in the shared
         // transaction so cleanup retries and restart sweeps use the same gate.
-        if (issueRow.conversationAgentId && !(await instanceSettingsService(tx).getExperimental()).enableAgentChat) {
+        if (issueRow.conversationAgentId && !enableAgentChat) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
-        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot, recoveryOnly };
-        const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
-        return { ...result, run: runSnapshot };
+        const locked: LockedIssueExecution = {
+          primaryIssue: toIssueSnapshot(issueRow),
+          primaryReleaseOnly: Boolean(releaseOutcome),
+          releasedSiblingIssue: releasedSiblingIssue && releasedSiblingIssue.status !== "done" && releasedSiblingIssue.status !== "cancelled"
+            ? toIssueSnapshot(releasedSiblingIssue)
+            : undefined,
+          run: runSnapshot,
+          recoveryOnly,
+        };
+        const drainStartedAt = performance.now();
+        const drainResult = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
+        drainMs = performance.now() - drainStartedAt;
+        return { ...drainResult, run: runSnapshot };
       });
+      const transactionMs = performance.now() - transactionStartedAt;
+      if (transactionMs > 1_000 || lockWaitMs > 1_000 || drainMs > 1_000) {
+        logger.warn({
+          companyId: input.companyId,
+          runId: input.runId,
+          transactionMs: Math.round(transactionMs),
+          issueLockWaitMs: Math.round(lockWaitMs),
+          drainMs: Math.round(drainMs),
+        }, "wake-queue release transaction exceeded 1s");
+      }
+      return result;
     },
   };
 }

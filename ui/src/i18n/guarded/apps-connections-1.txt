@@ -1,0 +1,11 @@
+# myrmidon(OPE-8950): area apps-connections-1
+components/AdapterLoginChrome.tsx
+components/AppConnectionSidebar.production.tsx
+components/AppConnectionSidebar.tsx
+components/AppsSidebar.production.tsx
+components/AppsSidebar.tsx
+components/CloudAccessGate.tsx
+components/OnboardingChat.tsx
+components/OnboardingWizard.tsx
+components/ai-connections/AiConnectionAccountControls.tsx
+components/ai-connections/AiConnectionAuth.tsx

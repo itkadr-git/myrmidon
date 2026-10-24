@@ -3,7 +3,7 @@
 // myrmidon(1.6.5-DBC1): read/write of `general.datastoreCare.retention`.
 //
 // The stored value is the truth; when the block (or the day key) is absent,
-// the environment variable PAPERCLIP_HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS
+// the environment variable MYRMIDON_HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS
 // applies, then the default (7 days). The sweep re-reads the value at the top
 // of every pass, so a settings change needs no restart. The pass state rides
 // the same block under `contextLastRun`, the same shape the data-retention module
@@ -19,7 +19,8 @@ import {
   type DatastoreCareRetentionLastRun,
   type DatastoreCareRetentionPatch,
   type PatchInstanceGeneralSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import type { instanceSettingsService } from "../../../services/instance-settings.js";
 
 export type DatastoreCareSettingsService = Pick<
@@ -29,7 +30,7 @@ export type DatastoreCareSettingsService = Pick<
 
 /** The environment override for the compaction window, in whole days. */
 export const HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS_ENV =
-  "PAPERCLIP_HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS";
+  "MYRMIDON_HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS";
 
 // myrmidon(1.6.5-F14B): the environment override for batches per company per
 // compaction pass. The first live passes on an IO-starved board need a lower
@@ -53,7 +54,7 @@ export interface ResolvedRetentionSettings {
 }
 
 function envRetentionDays(env: Record<string, string | undefined>): number | undefined {
-  const raw = env[HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS_ENV]?.trim();
+  const raw = readProductEnvFrom(env, "HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS")?.trim();
   if (!raw) return undefined;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed < 0 || parsed > 3650) return undefined;

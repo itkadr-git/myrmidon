@@ -36,9 +36,10 @@ import type {
   PluginUiSlotDeclaration,
   PluginUiSlotEntityType,
   PluginUiSlotType,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
+import { accessApi } from "@/api/access"; // myrmidon(PLUGIN-INSTANCE-ADMIN)
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import {
@@ -256,11 +257,11 @@ function buildPluginUiUrl(contribution: PluginUiContribution): string {
 /**
  * Import a plugin's UI entry module with bare-specifier rewriting.
  *
- * Plugin bundles are built with `external: ["@paperclipai/plugin-sdk/ui", "react", "react-dom"]`,
+ * Plugin bundles are built with `external: ["@myrmidon/plugin-sdk/ui", "react", "react-dom"]`,
  * so their ESM output contains bare specifier imports like:
  *
  * ```js
- * import { usePluginData } from "@paperclipai/plugin-sdk/ui";
+ * import { usePluginData } from "@myrmidon/plugin-sdk/ui";
  * import React from "react";
  * ```
  *
@@ -379,7 +380,7 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
  * - `import { ... } from "react";`
  * - `import React from "react";`
  * - `import * as React from "react";`
- * - `import { ... } from "@paperclipai/plugin-sdk/ui";`
+ * - `import { ... } from "@myrmidon/plugin-sdk/ui";`
  *
  * Also handles re-exports:
  * - `export { ... } from "react";`
@@ -387,10 +388,10 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
 function rewriteBareSpecifiers(source: string): string {
   // Build a mapping of bare specifiers to blob URLs.
   const rewrites: Record<string, string> = {
-    '"@paperclipai/plugin-sdk/ui"': `"${getShimBlobUrl("sdk-ui")}"`,
-    "'@paperclipai/plugin-sdk/ui'": `'${getShimBlobUrl("sdk-ui")}'`,
-    '"@paperclipai/plugin-sdk/ui/hooks"': `"${getShimBlobUrl("sdk-ui")}"`,
-    "'@paperclipai/plugin-sdk/ui/hooks'": `'${getShimBlobUrl("sdk-ui")}'`,
+    '"@myrmidon/plugin-sdk/ui"': `"${getShimBlobUrl("sdk-ui")}"`,
+    "'@myrmidon/plugin-sdk/ui'": `'${getShimBlobUrl("sdk-ui")}'`,
+    '"@myrmidon/plugin-sdk/ui/hooks"': `"${getShimBlobUrl("sdk-ui")}"`,
+    "'@myrmidon/plugin-sdk/ui/hooks'": `'${getShimBlobUrl("sdk-ui")}'`,
     '"react/jsx-runtime"': `"${getShimBlobUrl("react/jsx-runtime")}"`,
     "'react/jsx-runtime'": `'${getShimBlobUrl("react/jsx-runtime")}'`,
     '"react-dom/client"': `"${getShimBlobUrl("react-dom/client")}"`,
@@ -462,7 +463,7 @@ async function importPluginModule(url: string): Promise<Record<string, unknown>>
  * exports to the correct `pluginKey:exportName` registry keys.
  *
  * Plugin modules are loaded with bare-specifier rewriting so that imports
- * of `@paperclipai/plugin-sdk/ui`, `react`, and `react-dom` resolve to the
+ * of `@myrmidon/plugin-sdk/ui`, `react`, and `react-dom` resolve to the
  * host-provided implementations via the bridge registry.
  *
  * Web-component registrations still work: if the module has a named export
@@ -778,9 +779,10 @@ type PluginSlotMountProps = {
  * The bridge hooks need the full host context shape; the slot context carries
  * the subset available from the rendering location.
  */
-function slotContextToHostContext(
+export function slotContextToHostContext(
   pluginSlotContext: PluginSlotContext,
   userId: string | null,
+  isInstanceAdmin = false, // myrmidon(PLUGIN-INSTANCE-ADMIN)
 ): PluginHostContext {
   return {
     companyId: pluginSlotContext.companyId ?? null,
@@ -790,6 +792,7 @@ function slotContextToHostContext(
     entityType: pluginSlotContext.entityType ?? null,
     parentEntityId: pluginSlotContext.parentEntityId ?? null,
     userId,
+    isInstanceAdmin, // myrmidon(PLUGIN-INSTANCE-ADMIN)
     renderEnvironment: null,
   };
 }
@@ -814,7 +817,17 @@ function PluginBridgeScope({
     queryFn: () => authApi.getSession(),
   });
   const userId = session?.user?.id ?? session?.session?.userId ?? null;
-  const hostContext = useMemo(() => slotContextToHostContext(context, userId), [context, userId]);
+  // myrmidon(PLUGIN-INSTANCE-ADMIN): the same access answer the host shell uses.
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const isInstanceAdmin = Boolean(boardAccess?.isInstanceAdmin || boardAccess?.source === "local_implicit");
+  const hostContext = useMemo(
+    () => slotContextToHostContext(context, userId, isInstanceAdmin),
+    [context, userId, isInstanceAdmin],
+  );
   const value = useMemo(() => ({ pluginId, hostContext }), [pluginId, hostContext]);
 
   return (

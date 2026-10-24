@@ -24,11 +24,16 @@
 // has gone silent (BOT_DISK_REPORT_STALE_MS) and age out archives past the
 // 30-day retention (BOT_DISK_ARCHIVE_RETENTION_MS).
 
+import { createInstanceTokenReader } from "./instance-token-reader.js"; // myrmidon(SETTINGS-UI E2.3)
+import {
+  BOT_DISK_DOCKERGATE_CONSUMER,
+  DOCKERGATE_TOKEN_SETTING,
+} from "../secret-settings/bot-fleet-settings.js"; // myrmidon(SETTINGS-UI E2.3)
 import http from "node:http";
 import https from "node:https";
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import type { WsDiskApiResponse } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import type { WsDiskApiResponse } from "@myrmidon/shared";
 import { assertBoardOrgAccess } from "../../routes/authz.js";
 import { readBotDiskReports } from "./bot-disk-report-store.js";
 import { botDiskService } from "./bot-disk-service.js";
@@ -133,6 +138,8 @@ export function botDiskPhysicalRoutes(
   overrides: {
     env?: Record<string, string | undefined>;
     fetchGate?: (path: string) => Promise<Record<string, unknown> | null>;
+    /** myrmidon(SETTINGS-UI E2.3): the gate token (env override, then secret ref); null = not configured. */
+    readToken?: () => Promise<string | null>;
     timeoutMs?: number;
   } = {},
 ) {
@@ -140,12 +147,17 @@ export function botDiskPhysicalRoutes(
   const service = botDiskService(db);
   const env = overrides.env ?? process.env;
 
+  const readToken =
+    overrides.readToken ??
+    createInstanceTokenReader(db, DOCKERGATE_TOKEN_SETTING, BOT_DISK_DOCKERGATE_CONSUMER, env as NodeJS.ProcessEnv);
+
   const fetchGate =
     overrides.fetchGate ??
-    ((path: string) => {
+    (async (path: string) => {
       const baseUrl = env[DOCKERGATE_BASE_URL_ENV]?.trim();
-      const token = env[DOCKERGATE_TOKEN_ENV]?.trim();
-      if (!baseUrl || !token) return Promise.resolve(null);
+      if (!baseUrl) return null;
+      const token = await readToken();
+      if (!token) return null;
       return getJson(baseUrl, token, path, overrides.timeoutMs ?? BOT_DISK_PHYSICAL_TIMEOUT_MS);
     });
 
@@ -157,7 +169,7 @@ export function botDiskPhysicalRoutes(
     const view = await service.read().catch(() => null);
     const base: BotDiskPhysicalSnapshot = { lifecycle: view?.settings as Record<string, unknown> | undefined, gateReached: gate !== null };
     if (gate === null) {
-      const configured = Boolean(env[DOCKERGATE_BASE_URL_ENV]?.trim() && env[DOCKERGATE_TOKEN_ENV]?.trim());
+      const configured = Boolean(env[DOCKERGATE_BASE_URL_ENV]?.trim() && (await readToken()));
       res.json({ ...base, note: configured ? "gate unreachable" : "gate not configured" });
       return;
     }
@@ -177,7 +189,7 @@ export function botDiskPhysicalRoutes(
   router.get("/myrmidon/bot-disk/reports", async (req, res) => {
     assertBoardOrgAccess(req);
     const reports = readBotDiskReports()
-      .map((entry) => ({ ...entry.report, receivedAt: entry.receivedAt }))
+      .map((entry) => ({ ...entry.report, receivedAt: entry.receivedAt, foreignUid: entry.foreignUid ?? null }))
       .sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt));
     res.json({ reports, staleAfterMs: REPORT_STALE_MS });
   });

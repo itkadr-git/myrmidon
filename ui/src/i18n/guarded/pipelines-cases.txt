@@ -1,0 +1,13 @@
+# OPE-8950: area pipelines-cases
+components/CaseActivityFeed.tsx
+components/CaseAttachmentsGallery.tsx
+components/CaseChildrenTree.tsx
+components/CaseFieldsPanel.tsx
+components/CaseIdentifierKey.tsx
+components/CaseRevisionRail.tsx
+components/PipelineItemBodyDocument.tsx
+components/PipelineStageHistoryPanel.tsx
+components/PipelineWorkReferences.tsx
+pages/CaseDetail.tsx
+pages/Cases.tsx
+pages/Pipelines.tsx

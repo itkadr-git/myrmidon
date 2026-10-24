@@ -43,6 +43,14 @@ Blanket pruning (such as `systemd-tmpfiles -d /tmp`) is **prohibited** because l
 /opt/myrmidon/scripts/myrmidon/janitor/myrmidon-tmp-janitor.sh --dry-run
 ```
 
+### Safety guarantees (review OPE-7773)
+
+- **Age** is the newest mtime anywhere inside the tree (`find -P -xdev`), so a live profile with fresh writes is never considered stale.
+- **Re-check before delete**: after the checks the entry is renamed to `.janitor-trash-<pid>-<name>`, owner/age/in-use are verified again on the renamed path (restored if anything changed), then removed with `find -P -xdev -depth -delete`. Leftover `.janitor-trash-*` from a crashed run are cleaned by the next run under the same checks.
+- **Owner allow-list**: `MYRMIDON_JANITOR_OWNERS` (or `--owners`), comma-separated user names or uids. Entries owned by anyone else are skipped and logged; an empty list removes nothing.
+- **Symlinks / mounts**: symlink candidates are skipped, trees are never followed through symlinks and never crossed into other mounts.
+- **Unit hardening**: `NoNewPrivileges`, `ProtectSystem=strict` + `ReadWritePaths=/tmp`, `PrivateDevices`, `ProtectHome=read-only`; runs as the unprivileged `myrmidon` user (create it, or change `User=` and `MYRMIDON_JANITOR_OWNERS` together). Running as root is only needed if profiles belong to other users; then list them in the owner list via a drop-in.
+
 ## 4. Systemd Timer Setup
 
 To schedule the janitor hourly:

@@ -38,9 +38,20 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 
 const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
   redactForRuns: vi.fn(async (_companyId: string, values: unknown[]) => values),
-  redactForRun: vi.fn(
-    async (_companyId: string, _runId: string, value: unknown) => value,
-  ),
+  redactForRun: vi.fn(async (_companyId: string, _runId: string, value: unknown) => {
+    const redact = (item: unknown): unknown => {
+      if (Array.isArray(item)) return item.map(redact);
+      if (typeof item === "string") return item;
+      if (typeof item !== "object" || item === null) return item;
+      return Object.fromEntries(
+        Object.entries(item).map(([key, nested]) => [
+          key,
+          /api.?key|token|secret|credential/i.test(key) ? "[REDACTED]" : redact(nested),
+        ]),
+      );
+    };
+    return redact(value);
+  }),
 }));
 
 const mockProviderTraceStore = vi.hoisted(() => ({
@@ -73,6 +84,17 @@ const mockWorkspaceOperationService = vi.hoisted(() => ({
 // through the idle-pickup module; mocked here to keep the route test hermetic.
 const mockIdlePickup = vi.hoisted(() => ({
   findTopReadyIssueForAgent: vi.fn(),
+}));
+
+// myrmidon(1.6-AUTONOMY): the pause/resume/wakeup routes consult the autonomy
+// gate before they act. This suite is about vendor wake/retry admission, so the
+// gate is stubbed as "allowed" and keeps the route hermetic; the matrix and its
+// holding are covered by src/myrmidon/autonomy/*.myrmidon.test.ts and
+// src/routes/agents.myrmidon.test.ts.
+const mockAutonomyGate = vi.hoisted(() => ({
+  decide: vi.fn(async () => ({ verdict: "allowed", role: null, actionClass: "pause_wake_agents" })),
+  assertAllowed: vi.fn(async () => undefined),
+  holdOrAssert: vi.fn(async () => ({ verdict: "allowed", held: false })),
 }));
 
 const routeAgentId = "11111111-1111-4111-8111-111111111111";
@@ -156,6 +178,11 @@ function registerModuleMocks() {
 
   // myrmidon(WAKE-BIND): wake-binding resolves the top ready task via idle-pickup.
   vi.doMock("../myrmidon/idle-pickup.js", () => mockIdlePickup);
+  // myrmidon(1.6-AUTONOMY): the wakeup route consults the autonomy gate first.
+  vi.doMock("../myrmidon/autonomy/gate.js", () => ({
+    dbAutonomyGate: () => mockAutonomyGate,
+    autonomyGate: () => mockAutonomyGate,
+  }));
 }
 
 async function createApp(
@@ -293,6 +320,7 @@ describe("agent live run routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     vi.doUnmock("../myrmidon/idle-pickup.js");
+    vi.doUnmock("../myrmidon/autonomy/gate.js");
     registerModuleMocks();
     vi.clearAllMocks();
     // myrmidon(WAKE-BIND): default — the agent has no ready task, so an
@@ -715,6 +743,38 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(
       50,
     );
+  });
+
+  it("lists scoped external sessions with run status and log/cancel controls", async () => {
+    const row = {
+      id: "run-session-1", agentId: "agent-1", status: "running", startedAt: new Date(), finishedAt: null,
+      createdAt: new Date(), logBytes: 12, exitCode: null, errorCode: null,
+      externalSession: { provider: "claude_code", model: "sonnet" }, issueId: "issue-1",
+    };
+    const { db, limit } = createLiveRunsDbStub([row]);
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/external-sessions?issueId=issue-1&limit=500"),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(limit).toHaveBeenCalledWith(200);
+    expect(res.body).toEqual([expect.objectContaining({
+      id: "run-session-1", status: "running", issueId: "issue-1",
+      logUrl: "/api/heartbeat-runs/run-session-1/log",
+      cancelUrl: "/api/heartbeat-runs/run-session-1/cancel",
+    })]);
+  });
+
+  it("does not return external-session credentials", async () => {
+    const { db } = createLiveRunsDbStub([{
+      id: "run-session-2", agentId: "agent-1", status: "completed", startedAt: null, finishedAt: new Date(),
+      createdAt: new Date(), logBytes: 12, exitCode: 0, errorCode: null,
+      externalSession: { provider: "claude_code", apiKey: "never-return-this" }, issueId: null,
+    }]);
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/external-sessions"),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain("never-return-this");
   });
 
   it("treats explicit zero or invalid live run limit as the capped default", async () => {

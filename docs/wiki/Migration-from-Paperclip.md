@@ -2,9 +2,10 @@
 
 > Russian version: [migration-from-paperclip.ru.md](migration-from-paperclip.ru.md)
 
-This guide shows how to copy one Paperclip instance (database, files and secrets) into a clean
-Myrmidon installation with the `myrmidon:migrate` command. The command never changes the source.
-It stops before it writes anything to the target if the source or a key does not fit.
+The `myrmidon:migrate` command copies one Paperclip instance (database, files and secrets) into a
+clean Myrmidon installation. It never changes the source: it writes only to the empty target that
+it creates itself. It stops before the transfer if the migration chain, a key, the schema or the
+data do not pass its checks.
 
 Read the whole guide once before you start: the rollback section matters most **before** you
 cut over.
@@ -13,7 +14,7 @@ cut over.
 
 | Item | Supported |
 |---|---|
-| Source | One of these Paperclip releases: `v2026.916.1` (278 migrations), `v2026.1001.0` (282), `v2026.1005.0` (292), `v2026.1012.0` (304, the newest at the time of writing). Compatibility is decided by the **hashes** of the applied migrations: the source list must equal, in order, the list of exactly one of these releases. Version strings and the number of the last migration decide nothing. The dry run names the release it recognised (`source.vendorRelease`). |
+| Source | One of these Paperclip releases: `v2026.916.0` (alias of `v2026.916.1`; both have the same 278 migrations), `v2026.916.1`, `v2026.1001.0` (282), `v2026.1005.0` (292), or `v2026.1012.0` (304, the newest at the time of writing). Compatibility is decided by the **hashes** of the applied migrations: the source list must equal, in order, the list of exactly one of these releases. Version strings and the number of the last migration decide nothing. For the shared 916.0/916.1 chain, the dry run reports canonical release `v2026.916.1` (`source.vendorRelease`). |
 | Older, newer or unknown source | Rejected before any target write, with the reason (`older-than-supported-release`, `newer-than-supported-release`, `hash-mismatch`) and the list of supported releases. Bring the source to one of them first. No adapter exists. |
 | Data of Paperclip features that Myrmidon lacks | Not transferred; see the next section. Needs `--accept-vendor-only-data` when it is not empty. |
 | Source access | A PostgreSQL URL (read-only snapshot), or a **plain-format** `pg_dump` file. |
@@ -33,7 +34,9 @@ is yours to carry over.
 
 Paperclip releases after `v2026.916.1` added tables and columns that Myrmidon does not have (for
 example browser-use runs, MCP OAuth clients, chat endpoints, the appearance of an agent). This is
-not an error, but that data is **not** copied. The dry run lists it under `vendorOnlyData`: the
+not an error, but that data is **not** copied into the target database: it goes into the report
+instead. The report is the JSON that the command prints; a real run also saves it as `report.json`
+in `--state-dir`. Read it under `vendorOnlyData` (there is no `skippedSourceData` field). It lists the
 table or column, the number of rows that hold data (for a column: not null and not just the
 default value) and the release that introduced it.
 

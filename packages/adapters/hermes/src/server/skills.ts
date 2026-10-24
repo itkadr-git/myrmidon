@@ -4,14 +4,14 @@ import type {
   AdapterSkillContext,
   AdapterSkillEntry,
   AdapterSkillSnapshot,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 import {
   ensurePaperclipSkillSymlink,
   isPaperclipSkillSourceMissing,
   readInstalledSkillTargets,
   readPaperclipRuntimeSkillEntries,
   resolveLegacyPaperclipDesiredSkillNames,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 import { fileURLToPath } from "node:url";
 import {
   moveOccupiedSkillTargetAside,
@@ -35,7 +35,7 @@ interface SkillFrontmatter {
   metadata?: Record<string, unknown>;
 }
 // myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
-import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
+import { PRODUCT_NAME } from "@myrmidon/adapter-utils";
 
 function parseSkillFrontmatter(content: string): SkillFrontmatter {
   const match = content.match(/^---\s*\n([\s\S]*?)\n---/);

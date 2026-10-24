@@ -1,13 +1,13 @@
 // myrmidon(CORPUS-A): store/queue tests on embedded PostgreSQL 18, by the
-// knowledge K-1 pattern (startEmbeddedPostgresTestDatabase from @paperclipai/db).
+// knowledge K-1 pattern (startEmbeddedPostgresTestDatabase from @myrmidon/db).
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sql as rawSql } from "drizzle-orm";
-import { createDb } from "@paperclipai/db";
+import { createDb } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestDatabase,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { PostgresCorpusStore } from "./postgres/store.js";
 import { PostgresWorkQueue } from "./postgres/queue.js";
 import { PostgresCorpusSettingsStore } from "./postgres/settings.js";
@@ -108,7 +108,8 @@ d("corpus store/queue on embedded Postgres", () => {
     const tables = rowsOf<{ table_name: string }>(
       await db.execute(rawSql`
         select table_name from information_schema.tables
-        where table_schema = 'public' and table_name like 'corpus_%' order by 1
+        where table_schema = 'public' and table_name like 'corpus_%'
+          and table_name <> 'corpus_shadow_log' order by 1
       `),
     );
     const names = tables.map((r) => r.table_name);

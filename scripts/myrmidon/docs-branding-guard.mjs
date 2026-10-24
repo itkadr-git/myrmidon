@@ -24,8 +24,8 @@ const docsRoot = path.join(repoRoot, "docs");
 // name, a license/attribution string, or a historical record of a pre-rename
 // state.
 const ALLOWLIST = [
-  "[Paperclip](https://github.com/paperclipai/paperclip)",
-  "paperclipai", // @paperclipai/* packages, the paperclipai CLI, vendor repo URLs
+  "paperclipai", // @myrmidon/* packages, the paperclipai CLI, vendor repo URLs
+  "Paperclip AI", // vendor company name (license/provenance sections)
   "PAPERCLIP_", // env vars
   "X-Paperclip-", // HTTP headers
   "Paperclip Cloud", "Paperclip Labs", "Paperclip EE", "Paperclip Enterprise",
@@ -58,6 +58,9 @@ const ALLOWLIST = [
   "PaperclipLockup", "PaperclipLoading", "AnimatedPaperclipIcon",
   "Paperclip-managed skills", "Paperclip skill", "Навык Paperclip",
   "Paperclip needs a disposition", // legacy notification body, still recognized
+  "Paperclip v2026.916.1", // source release in the migration changelog
+  "Paperclip → Myrmidon", // source product named in the migration changelog
+  "пользователей Paperclip на Myrmidon", // Russian migration changelog wording
   "Close the current Paperclip task", // frozen legacy Discord command digest
   "«Paperclip ", "Paperclip connections", "Paperclip projects",
   "Paperclip connected",
@@ -80,6 +83,7 @@ const ALLOWLIST = [
   "Allow Paperclip reads", "upstream Paperclip", "вендорского Paperclip",
   "Paperclip server failed to start", "Paperclip вендора",
   "Paperclip v2026.1001.0",
+  "Paperclip v2026.916.1", "Paperclip → Myrmidon", "пользователей Paperclip",
   "from Paperclip to Myrmidon", "с Paperclip на Myrmidon",
   "Paperclip instance", "экземпляр Paperclip",
   "Paperclip release",
@@ -96,6 +100,15 @@ const ALLOWLIST = [
 
 // Product-name mentions that are never allowed outside the allowlist matches.
 const PRODUCT_NAME = /(?<![\w@./-])Paperclip(?![\w-])/;
+const BRANDING_EXEMPTIONS = new Set([
+  path.join(docsRoot, "architecture", "README.md"),
+  path.join(docsRoot, "architecture", "adr", "ADR-0006-2026-09-27-myrmidon-fork.md"),
+  path.join(docsRoot, "architecture", "adr", "ADR-0007-2026-09-27-mit-license.md"),
+  path.join(docsRoot, "architecture", "adr", "ADR-0008-2026-09-27-no-upstream.md"),
+  path.join(docsRoot, "architecture", "adr", "ADR-0011-2026-09-28-brand-first.md"),
+  path.join(docsRoot, "wiki", "Home.md"),
+  path.join(docsRoot, "wiki", "Home.ru.md"),
+]);
 
 function* walk(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -110,6 +123,7 @@ for (const file of walk(docsRoot)) {
   const lines = fs.readFileSync(file, "utf8").split("\n");
   lines.forEach((line, i) => {
     if (!PRODUCT_NAME.test(line)) return;
+    if (BRANDING_EXEMPTIONS.has(file)) return;
     let rest = line;
     for (const kept of ALLOWLIST) rest = rest.split(kept).join("");
     if (PRODUCT_NAME.test(rest)) {

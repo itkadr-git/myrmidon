@@ -9,7 +9,7 @@ import {
   TELEGRAM_DM_PROGRESS_MIN_INTERVAL_SEC,
   type TelegramDmProgressPatch,
   type TelegramDmProgressSource,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Input } from "@/components/ui/input";

@@ -1,5 +1,5 @@
 // myrmidon(UI-0a): UI-2.0 phone frame — 56px header (logo + status) and the
-// 5-tab bottom bar (Center / Decisions / Fleet / Commander / More) at 390px.
+// bottom tab bar (Center / Decisions / Agents / Servers / Commander / More) at 390px.
 // Touch targets: tab items 60px high (screen-map §3.3: >= 44px, bar items 60).
 // Desktop rail is hidden on phone; pages render in the column between the
 // two bars.
@@ -115,11 +115,18 @@ export function Ui2PhoneHeader() {
   );
 }
 
+export function isUi2PhoneTabActive(tabPath: string, pathname: string): boolean {
+  const normalizedPath = pathname.split("?")[0].replace(/\/$/, "") || "/";
+  const normalizedTabPath = tabPath.replace(/\/$/, "") || "/";
+  if (normalizedTabPath === "/agents/all") return normalizedPath === "/agents/all";
+  if (normalizedTabPath === "/agents") return normalizedPath === "/agents" || normalizedPath.startsWith("/agents/") && !normalizedPath.startsWith("/agents/all");
+  return normalizedPath === normalizedTabPath || normalizedPath.startsWith(`${normalizedTabPath}/`);
+}
+
 export function Ui2PhoneTabBar() {
   const { t } = useTranslation();
   const location = useLocation();
   const attentionCount = useUi2AttentionCount();
-  const activeSegment = location.pathname.split("/").filter(Boolean).slice(1)[0] ?? "dashboard";
 
   return (
     <nav
@@ -127,21 +134,21 @@ export function Ui2PhoneTabBar() {
       style={{
         height: "var(--myr-phone-tabbar-height)",
         display: "grid",
-        gridTemplateColumns: "repeat(5, 1fr)",
+        gridTemplateColumns: `repeat(${UI2_PHONE_TABS.length}, 1fr)`,
         background: "var(--myr-surface-raised)",
         borderTop: "1px solid var(--myr-hairline)",
       }}
       aria-label={t("ui2.nav.railLabel", { defaultValue: "Main navigation" })}
     >
       {UI2_PHONE_TABS.map((tab) => {
-        const segment = tab.to.replace(/^\//, "").split("/")[0];
+        const active = isUi2PhoneTabActive(tab.to, location.pathname);
         return (
           <PhoneTab
             key={tab.labelKey}
             to={tab.to}
             icon={tab.icon}
             label={t(tab.labelKey)}
-            active={segment === activeSegment}
+            active={active}
             badge={tab.badge === "attention" ? (attentionCount ?? undefined) : undefined}
           />
         );

@@ -37,6 +37,7 @@ function runJanitor(args = [], env = {}) {
     encoding: "utf8",
     env: {
       ...cleanEnv,
+      MYRMIDON_JANITOR_OWNERS: os.userInfo().username,
       ...env,
     },
   });
@@ -172,7 +173,7 @@ describe("tmp-janitor", () => {
     fs.mkdirSync(subDir, { recursive: true });
     const lockFile = path.join(subDir, "session.lock");
     fs.writeFileSync(lockFile, "lock");
-    setOldMtime(activeDir, 120);
+    for (const p of [lockFile, subDir, path.dirname(subDir), activeDir]) setOldMtime(p, 120);
 
     // Keep lockFile open in a child process with deterministic readiness handshake
     const holder = spawn(
@@ -231,7 +232,7 @@ describe("tmp-janitor", () => {
     const activeDir = path.join(sandbox, "native-active-session");
     const subDir = path.join(activeDir, "workspace");
     fs.mkdirSync(subDir, { recursive: true });
-    setOldMtime(activeDir, 120);
+    for (const p of [subDir, activeDir]) setOldMtime(p, 120);
 
     const holder = spawn(
       process.execPath,
@@ -296,5 +297,106 @@ describe("tmp-janitor", () => {
     assert.ok(fs.existsSync(candidate), "candidate must be preserved when process inspection is unavailable (fail-closed)");
     assert.match(res.stdout, /skipped active: 1/);
     assert.match(res.stdout, /cleaned: 0/);
+  });
+
+  it("keeps an old-looking profile that has a fresh file inside (age = newest mtime in tree)", () => {
+    const sandbox = makeTestSandbox();
+    const profile = path.join(sandbox, "chr-live-profile");
+    fs.mkdirSync(path.join(profile, "Default"), { recursive: true });
+    const fresh = path.join(profile, "Default", "Cookies");
+    fs.writeFileSync(fresh, "x");
+    setOldMtime(path.join(profile, "Default"), 120);
+    setOldMtime(profile, 120);
+
+    const res = runJanitor(["--target", sandbox, "--ttl-minutes", "60"]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(fs.existsSync(fresh), "fresh file inside must keep the whole profile");
+    assert.match(res.stdout, /skipped young: 1/);
+  });
+
+  it("removes a tree whose every entry is older than TTL", () => {
+    const sandbox = makeTestSandbox();
+    const profile = path.join(sandbox, "chr-dead-profile");
+    const inner = path.join(profile, "Default", "f");
+    fs.mkdirSync(path.dirname(inner), { recursive: true });
+    fs.writeFileSync(inner, "x");
+    setOldMtime(inner);
+    setOldMtime(path.dirname(inner));
+    setOldMtime(profile);
+
+    const res = runJanitor(["--target", sandbox, "--ttl-minutes", "60"]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(!fs.existsSync(profile));
+    const leftovers = fs.readdirSync(sandbox).filter((n) => n.startsWith(".janitor-trash-"));
+    assert.deepEqual(leftovers, []);
+  });
+
+  it("skips entries whose owner is not in the allow-list and logs it", () => {
+    const sandbox = makeTestSandbox();
+    const profile = path.join(sandbox, "chr-foreign-owner");
+    fs.mkdirSync(profile);
+    setOldMtime(profile);
+
+    const res = runJanitor(["--target", sandbox, "--ttl-minutes", "60"], {
+      MYRMIDON_JANITOR_OWNERS: "nobody-such-user,999999",
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(fs.existsSync(profile), "foreign-owned entry must not be removed");
+    assert.match(res.stdout, /not in allow-list/);
+    assert.match(res.stdout, /skipped owner: 1/);
+  });
+
+  it("removes nothing when the owner list is empty (fail-closed)", () => {
+    const sandbox = makeTestSandbox();
+    const profile = path.join(sandbox, "native-no-owners");
+    fs.mkdirSync(profile);
+    setOldMtime(profile);
+
+    const res = runJanitor(["--target", sandbox, "--ttl-minutes", "60"], { MYRMIDON_JANITOR_OWNERS: "" });
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(fs.existsSync(profile));
+  });
+
+  it("accepts numeric uid in the owner list and --owners flag", () => {
+    const sandbox = makeTestSandbox();
+    const profile = path.join(sandbox, "mdep-by-uid");
+    fs.mkdirSync(profile);
+    setOldMtime(profile);
+
+    const res = runJanitor(["--target", sandbox, "--ttl-minutes", "60", "--owners", String(os.userInfo().uid)], {
+      MYRMIDON_JANITOR_OWNERS: "",
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(!fs.existsSync(profile));
+  });
+
+  it("does not follow or delete symlinks (top-level link and link inside a tree)", () => {
+    const sandbox = makeTestSandbox();
+    const outside = path.join(sandbox, "outside-precious");
+    fs.mkdirSync(outside);
+    const precious = path.join(outside, "keep.txt");
+    fs.writeFileSync(precious, "keep");
+    setOldMtime(precious);
+    setOldMtime(outside);
+
+    // top-level symlink matching the whitelist
+    const link = path.join(sandbox, "chr-link");
+    fs.symlinkSync(outside, link);
+
+    // symlink inside an otherwise stale tree
+    const tree = path.join(sandbox, "native-with-link");
+    fs.mkdirSync(tree);
+    const inner = path.join(tree, "escape");
+    fs.symlinkSync(outside, inner);
+    const past = new Date(Date.now() - 120 * 60 * 1000);
+    fs.lutimesSync(inner, past, past);
+    setOldMtime(tree);
+
+    const res = runJanitor(["--target", sandbox, "--ttl-minutes", "60"]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(fs.lstatSync(link).isSymbolicLink(), "top-level symlink must be left alone");
+    assert.ok(fs.existsSync(precious), "symlink target contents must survive");
+    assert.ok(!fs.existsSync(tree), "stale tree itself is removed");
+    assert.match(res.stdout, /symlink; not followed/);
   });
 });

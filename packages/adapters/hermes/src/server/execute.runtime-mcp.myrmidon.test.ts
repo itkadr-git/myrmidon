@@ -13,8 +13,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/server-utils")>();
+vi.mock("@myrmidon/adapter-utils/server-utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@myrmidon/adapter-utils/server-utils")>();
   return {
     ...actual,
     runChildProcess: vi.fn(async () => ({
@@ -42,8 +42,8 @@ import {
   rewriteRuntimeMcpServerUrl,
   type HermesRuntimeMcpEntry,
 } from "./myrmidon-runtime-mcp.js";
-import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
-import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
+import type { AdapterRuntimeMcpServer } from "@myrmidon/adapter-utils";
+import * as serverUtils from "@myrmidon/adapter-utils/server-utils";
 
 const PROFILE_CONFIG = [
   "model:",
@@ -375,6 +375,24 @@ describe("P4 execute() spawn contract", () => {
 
     // both run-scoped artifacts are removed once the child is gone
     expect(fsSync.existsSync(observed.hermesHome as string)).toBe(false);
+  });
+
+  it("passes workspace confinement only when the feature flag is enabled", async () => {
+    const realHome = await makeRealHermesHome();
+    const { ctx } = makeCtx({ realHome, extraConfig: { filesystemScope: "workspace" } });
+    await execute(ctx as never);
+    const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+    const sandbox = (call[3] as { localProcessSandbox?: { filesystemScope?: string; workspaceDir?: string } }).localProcessSandbox;
+    expect(sandbox?.filesystemScope).toBe("workspace");
+    expect(sandbox?.workspaceDir).toBeTruthy();
+  });
+
+  it("passes explicit deny network confinement", async () => {
+    const realHome = await makeRealHermesHome();
+    const { ctx } = makeCtx({ realHome, extraConfig: { networkScope: "deny" } });
+    await execute(ctx as never);
+    const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+    expect((call[3] as { localProcessSandbox?: { networkScope?: string } }).localProcessSandbox?.networkScope).toBe("deny");
   });
 
   it("keeps the previous behavior for an agent without MCP connections", async () => {

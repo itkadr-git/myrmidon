@@ -11,8 +11,8 @@
 // stored object additively — unknown keys are preserved verbatim on write).
 
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
-import { instanceSettings } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { instanceSettings } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 
 export const MONITORING_SETTINGS_GENERAL_KEY = "myrmidonMonitoringDashboard";
@@ -39,6 +39,8 @@ export const monitoringConnectionSettingsSchema = z
     vmJobSelector: z.string().trim().min(1).max(200).default("node"),
     /** Zabbix host groups whose hosts the dashboard reads. Empty = all groups. */
     zabbixHostGroups: z.array(z.string().trim().min(1).max(200)).max(50).default([]),
+    /** Explicit VictoriaMetrics instance label -> Zabbix host/name mapping. */
+    zabbixHostMapping: z.record(z.string().trim().min(1).max(200), z.string().trim().min(1).max(200)).default({}),
     /** Per-source request timeout. */
     timeoutMs: z.number().int().min(500).max(60_000).default(10_000),
   })
@@ -69,6 +71,17 @@ export interface MonitoringSettingsStore {
   patch(companyId: string, patch: MonitoringConnectionPatch): Promise<MonitoringConnectionSettings>;
 }
 
+export function mergeMonitoringSettingsPatch(
+  current: MonitoringConnectionSettings,
+  patch: MonitoringConnectionPatch,
+): MonitoringConnectionSettings {
+  const next = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value !== undefined) (next as Record<string, unknown>)[key] = value;
+  }
+  return monitoringConnectionSettingsSchema.parse(next);
+}
+
 /**
  * Reads and writes the stored settings, falling back to the defaults per
  * company. The write is a read-modify-write on the instance row, the same
@@ -97,11 +110,7 @@ export function createDbMonitoringSettingsStore(db: Runner): MonitoringSettingsS
       const general = await readGeneral();
       const bucket = (general[MONITORING_SETTINGS_GENERAL_KEY] ?? {}) as Record<string, unknown>;
       const current = parseStored(bucket[companyId]);
-      const next: MonitoringConnectionSettings = { ...current };
-      for (const [key, value] of Object.entries(patch)) {
-        if (value === undefined) continue;
-        (next as Record<string, unknown>)[key] = value;
-      }
+      const next = mergeMonitoringSettingsPatch(current, patch);
       general[MONITORING_SETTINGS_GENERAL_KEY] = { ...bucket, [companyId]: next };
       await db
         .update(instanceSettings)
@@ -121,6 +130,7 @@ export function monitoringSettingsView(settings: MonitoringConnectionSettings) {
     zabbixTokenRef: settings.zabbixTokenRef,
     vmJobSelector: settings.vmJobSelector,
     zabbixHostGroups: settings.zabbixHostGroups,
+    zabbixHostMapping: settings.zabbixHostMapping,
     timeoutMs: settings.timeoutMs,
   };
 }

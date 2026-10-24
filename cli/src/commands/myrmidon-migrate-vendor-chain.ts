@@ -1,4 +1,4 @@
-import { listMigrationChain } from "@paperclipai/db";
+import { listMigrationChain, loadMigrationTargetSchema, type MigrationTargetSchema } from "@myrmidon/db";
 import { VENDOR_EXTRA_RELEASES } from "./myrmidon-migrate-vendor-releases.js";
 
 // The vendor Paperclip releases this tool migrates from, and the shape of their
@@ -40,6 +40,13 @@ export type VendorOnlyIndex = {
   tables: ReadonlyMap<string, string>;
   /** Key `table.column`. */
   columns: ReadonlyMap<string, string>;
+  droppedTables?: ReadonlySet<string>;
+  droppedColumns?: ReadonlySet<string>;
+};
+
+export type TargetSchemaLookup = {
+  tables: ReadonlySet<string>;
+  columns: ReadonlySet<string>;
 };
 
 let cachedBase: Promise<ReadonlyArray<VendorChainEntry>> | null = null;
@@ -63,6 +70,8 @@ export function buildVendorReleases(
 ): VendorRelease[] {
   return [
     { release: PAPERCLIP_VENDOR_RELEASE, chain: base },
+    // Treat the identical 916.0 chain as an alias without changing release attribution.
+    { release: "v2026.916.0", chain: base },
     ...extras.map((r) => ({
       release: r.release,
       chain: [...base, ...r.extra.map((e) => [e.tag, e.sha256, e.when] as const)],
@@ -74,15 +83,93 @@ export async function loadVendorReleases(): Promise<VendorRelease[]> {
   return buildVendorReleases(await loadVendorChain());
 }
 
-/** Tables and columns that exist only in later releases, keyed to the first release that has them. */
-export function buildVendorOnlyIndex(extras: ReadonlyArray<VendorReleaseExtra> = VENDOR_EXTRA_RELEASES): VendorOnlyIndex {
+/**
+ * Tables and columns that exist only in later releases and are absent from
+ * the target schema, taking into account net migration chain state (additions and drops).
+ */
+export function buildVendorOnlyIndex(
+  extras: ReadonlyArray<VendorReleaseExtra> = VENDOR_EXTRA_RELEASES,
+  targetSchema?: TargetSchemaLookup,
+): VendorOnlyIndex {
   const tables = new Map<string, string>();
   const columns = new Map<string, string>();
+  const droppedTables = new Set<string>();
+  const droppedColumns = new Set<string>();
+
   for (const r of extras) {
     for (const e of r.extra) {
-      for (const t of e.tables) if (!tables.has(t)) tables.set(t, r.release);
-      for (const c of e.columns) if (!columns.has(c)) columns.set(c, r.release);
+      for (const t of e.tables) {
+        if (!tables.has(t) && (!targetSchema || !targetSchema.tables.has(t))) {
+          tables.set(t, r.release);
+        }
+      }
+      for (const c of e.columns) {
+        if (!columns.has(c) && (!targetSchema || !targetSchema.columns.has(c))) {
+          columns.set(c, r.release);
+        }
+      }
+
+      const explicitDropTables = (e as any).dropTables as ReadonlyArray<string> | undefined;
+      if (explicitDropTables) {
+        for (const t of explicitDropTables) {
+          tables.delete(t);
+          droppedTables.add(t);
+          for (const colKey of columns.keys()) {
+            if (colKey.startsWith(`${t}.`)) {
+              columns.delete(colKey);
+              droppedColumns.add(colKey);
+            }
+          }
+        }
+      }
+      const explicitDropColumns = (e as any).dropColumns as ReadonlyArray<string> | undefined;
+      if (explicitDropColumns) {
+        for (const c of explicitDropColumns) {
+          columns.delete(c);
+          droppedColumns.add(c);
+        }
+      }
+
+      const dropMatch = /^\d+_drop_(.+)$/.exec(e.tag);
+      if (dropMatch) {
+        const dropTarget = dropMatch[1];
+        if (tables.has(dropTarget)) {
+          tables.delete(dropTarget);
+          droppedTables.add(dropTarget);
+          for (const colKey of columns.keys()) {
+            if (colKey.startsWith(`${dropTarget}.`)) {
+              columns.delete(colKey);
+              droppedColumns.add(colKey);
+            }
+          }
+        }
+        for (const colKey of [...columns.keys()]) {
+          if (colKey.replace(".", "_") === dropTarget) {
+            columns.delete(colKey);
+            droppedColumns.add(colKey);
+          }
+        }
+        if (dropTarget.includes("_")) {
+          const sepIdx = dropTarget.indexOf("_");
+          const candidateKey = `${dropTarget.slice(0, sepIdx)}.${dropTarget.slice(sepIdx + 1)}`;
+          columns.delete(candidateKey);
+          droppedColumns.add(candidateKey);
+        }
+      }
     }
   }
-  return { tables, columns };
+  return { tables, columns, droppedTables, droppedColumns };
 }
+
+/**
+ * Resolves the target schema from our migration tree and builds the vendor-only
+ * index containing only features that Myrmidon's target schema really lacks.
+ */
+export async function loadVendorOnlyIndex(
+  extras: ReadonlyArray<VendorReleaseExtra> = VENDOR_EXTRA_RELEASES,
+  targetSchema?: TargetSchemaLookup,
+): Promise<VendorOnlyIndex> {
+  const resolvedTarget = targetSchema ?? (await loadMigrationTargetSchema());
+  return buildVendorOnlyIndex(extras, resolvedTarget);
+}
+

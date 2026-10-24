@@ -35,7 +35,7 @@ import {
   type LitellmWorkersMetrics,
   type LitellmWorkersSignalStep,
   type LitellmWorkersStoredSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest } from "../../errors.js";
 import {
   createShellLitellmSignalRunner,

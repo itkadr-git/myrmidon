@@ -1,8 +1,12 @@
-import type { Db } from "@paperclipai/db";
-import type { ExternalObjectCanonicalUrl } from "@paperclipai/shared";
+import { and, eq, isNull } from "drizzle-orm";
+import { companySecrets, type Db } from "@myrmidon/db";
+import type { ExternalObjectCanonicalUrl } from "@myrmidon/shared";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import { secretService } from "./secrets.js";
+import { readGitHubSharedIdentitySettings } from "../myrmidon/github-shared-identity/store.js";
+import { isRepositoryAllowed, normalizeGitHubRepository } from "../myrmidon/github-shared-identity/settings.js";
+import { mintGitHubAppInstallationToken } from "../myrmidon/github-shared-identity/app-token.js";
 import type {
   ExternalObjectDetection,
   ExternalObjectDetector,
@@ -15,7 +19,7 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 export interface GitHubExternalObjectProviderOptions {
   fetch?: FetchLike;
-  tokenProvider?: (companyId: string) => Promise<string | null> | string | null;
+  tokenProvider?: (companyId: string, repository: string) => Promise<string | null> | string | null;
   secretNames?: readonly string[];
 }
 
@@ -169,7 +173,7 @@ function failureFromGitHubResponse(response: Response): ExternalObjectResolveRes
   return null;
 }
 
-function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): ExternalObjectResolverSnapshot {
+function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null, authenticated: boolean): ExternalObjectResolverSnapshot {
   return {
     displayKey: displayKeyFor(identity),
     iconKey: "github",
@@ -188,6 +192,9 @@ function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): 
       repo: identity.repo,
       number: identity.number,
       notFound: true,
+      // GitHub answers 404 for a private repository the caller cannot read:
+      // "not found" is not proof the PR does not exist.
+      authenticated,
     },
   };
 }
@@ -317,16 +324,88 @@ async function safeJson(response: Response) {
   }
 }
 
-async function defaultTokenProvider(db: Db, companyId: string, secretNames: readonly string[]) {
+/** Audit identity of the resolver's secret reads (system consumer, no agent/run). */
+const RESOLVER_CONSUMER_ID = "github-external-object-resolver";
+
+/** The resolver reads PR/issue state only: a read-only, single-repository token. */
+const READ_ONLY_APP_PERMISSIONS = {
+  contents: "read",
+  pull_requests: "read",
+  issues: "none",
+  actions: "none",
+  checks: "none",
+  deployments: "none",
+  environments: "none",
+  workflows: "none",
+} as const;
+
+/**
+ * Token for reading one repository, in order:
+ *   1. a company secret by name (GITHUB_TOKEN, ...);
+ *   2. the shared GitHub identity: exactly one company App that allows the
+ *      repository -> a read-only installation token for that repository;
+ *      two or more Apps -> throws (fail closed, never a silent pick);
+ *   3. null (anonymous), as before.
+ * Neither a token nor an App key is logged or returned in an error.
+ */
+async function defaultTokenProvider(
+  db: Db,
+  companyId: string,
+  repository: string,
+  secretNames: readonly string[],
+  fetchImpl?: FetchLike,
+) {
   const secrets = secretService(db);
+  const accessContext = {
+    consumerType: "system" as const,
+    consumerId: RESOLVER_CONSUMER_ID,
+    configPath: `github_token:${repository}`,
+    actorType: "system" as const,
+  };
   for (const secretName of secretNames) {
     const secret = await secrets.getByName(companyId, secretName);
     if (!secret) continue;
-    const token = await secrets.resolveSecretValue(companyId, secret.id, "latest");
+    const token = await secrets.resolveSecretValue(companyId, secret.id, "latest", { accessContext });
     const trimmed = token.trim();
     if (trimmed) return trimmed;
   }
-  return null;
+
+  const normalized = normalizeGitHubRepository(repository);
+  if (!normalized) return null;
+  const settings = await readGitHubSharedIdentitySettings(db, companyId);
+  if (!settings.enabled) return null;
+  const apps = settings.apps.filter((entry) => isRepositoryAllowed(entry.allowedRepos, normalized));
+  if (apps.length === 0) return null;
+  if (apps.length > 1) throw new Error("Several GitHub Apps allow this repository");
+  const app = apps[0]!;
+  const [keySecret] = await db
+    .select({ id: companySecrets.id })
+    .from(companySecrets)
+    .where(and(
+      eq(companySecrets.id, app.privateKeySecretId),
+      eq(companySecrets.companyId, companyId),
+      eq(companySecrets.scope, "company"),
+      eq(companySecrets.status, "active"),
+      isNull(companySecrets.deletedAt),
+    ));
+  if (!keySecret) return null;
+  try {
+    const privateKeyPem = await secrets.resolveSecretValue(companyId, keySecret.id, "latest", {
+      accessContext: { ...accessContext, configPath: `github_app:${normalized}` },
+    });
+    const minted = await mintGitHubAppInstallationToken({
+      appId: app.appId,
+      privateKeyPem,
+      installationId: app.installationId,
+      repository: normalized,
+      permissions: READ_ONLY_APP_PERMISSIONS,
+      fetchImpl: fetchImpl as typeof fetch | undefined,
+    });
+    return minted.token;
+  } catch {
+    // App not installed on the repo / key unreadable / GitHub down: read anonymously, as before.
+    return null;
+  }
 }
 
 export function createGitHubExternalObjectProvider(
@@ -337,7 +416,7 @@ export function createGitHubExternalObjectProvider(
   const secretNames = opts.secretNames ?? DEFAULT_GITHUB_TOKEN_SECRET_NAMES;
   const tokenProvider = Object.prototype.hasOwnProperty.call(opts, "tokenProvider") && opts.tokenProvider !== undefined
     ? opts.tokenProvider
-    : ((companyId: string) => defaultTokenProvider(db, companyId, secretNames));
+    : ((companyId: string, repository: string) => defaultTokenProvider(db, companyId, repository, secretNames, opts.fetch));
 
   const detector: ExternalObjectDetector = {
     key: "github",
@@ -378,7 +457,7 @@ export function createGitHubExternalObjectProvider(
 
         let token: string | null = null;
         try {
-          token = typeof tokenProvider === "function" ? await tokenProvider(companyId) : tokenProvider;
+          token = typeof tokenProvider === "function" ? await tokenProvider(companyId, `${identity.owner}/${identity.repo}`) : tokenProvider;
         } catch {
           return {
             ok: false,
@@ -414,7 +493,7 @@ export function createGitHubExternalObjectProvider(
 
         const etag = response.headers.get("etag");
         if (response.status === 404) {
-          return { ok: true, snapshot: notFoundSnapshot(identity, etag) };
+          return { ok: true, snapshot: notFoundSnapshot(identity, etag, Boolean(token)) };
         }
 
         const failure = failureFromGitHubResponse(response);

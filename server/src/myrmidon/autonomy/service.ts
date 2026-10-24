@@ -9,9 +9,9 @@
 // without a database.
 
 import { randomUUID } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { activityLog } from "@paperclipai/db";
+import { activityLog } from "@myrmidon/db";
 import {
   defaultAutonomyMatrix,
   type AutonomyActionClass,
@@ -23,7 +23,7 @@ import {
   type AutonomyRegulation,
   type AutonomyRegulationRevision,
   type AutonomySnapshot,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   AUTONOMY_REVISION_LIMIT,
   type AutonomyDocument,
@@ -40,7 +40,9 @@ export type AutonomyFailure =
   | { kind: "regulation_not_found"; regulationId: string }
   | { kind: "revision_not_found"; regulationId: string; revision: number }
   | { kind: "already_approved"; regulationId: string }
-  | { kind: "not_approved"; regulationId: string };
+  | { kind: "not_approved"; regulationId: string }
+  // myrmidon(1.6.6 K-3): the approver's grade is below the one the rule's castes ask for.
+  | { kind: "approver_kind_mismatch"; regulationId: string; required: string; presented: string | null };
 
 export type AutonomyResult<T> = { ok: true; value: T } | { ok: false; failure: AutonomyFailure };
 

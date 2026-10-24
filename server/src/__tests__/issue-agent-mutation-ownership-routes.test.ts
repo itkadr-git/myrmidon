@@ -171,7 +171,7 @@ function registerRouteMocks() {
     dbAutonomyGate: () => mockAutonomyGate,
   }));
 
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  vi.doMock("@myrmidon/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
   }));
@@ -467,7 +467,7 @@ function boardActor() {
 describe("agent issue mutation checkout ownership", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("@myrmidon/shared/telemetry");
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
@@ -2809,7 +2809,22 @@ describe("agent issue mutation checkout ownership", () => {
 
       // myrmidon(STALE-BLOCK): entering blocked needs a reason reference; the
       // watchdog (peer) agent must name itself as the unblock owner.
-      const blockedReasonRef = { status: "blocked", unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog blocked the issue", reasonRef: { kind: "issue", issueId } } };
+      const blockedReasonRef = {
+        status: "blocked",
+        unblockDescriptor: {
+          owner: { agentId: peerAgentId },
+          action: "Watchdog blocked the issue",
+          reasonRef: { kind: "issue", issueId },
+        },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: peerAgentId },
+          externalRef: "watchdog-scope-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      };
       const app = await createApp(watchdogActor(), createWatchdogDb());
       const res = await request(app).patch(`/api/issues/${issueId}`).send(
         status === "blocked" ? blockedReasonRef : { status },
@@ -2852,7 +2867,18 @@ describe("agent issue mutation checkout ownership", () => {
       });
 
       const app = await createApp(watchdogActor(), createWatchdogDb());
-      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked", unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } } }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({
+        status: "blocked",
+        unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: peerAgentId },
+          externalRef: "watchdog-boundary-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
 
       expect(res.status, JSON.stringify(res.body)).toBe(409);
       expect(res.body.error).toContain("Task-watchdog review is stale");
@@ -3015,7 +3041,18 @@ describe("agent issue mutation checkout ownership", () => {
         watchdogActor(),
         createWatchdogDb({ watchedIssueId: outsideWatched, ancestryParentId: null }),
       );
-      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked", unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } } }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({
+        status: "blocked",
+        unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: peerAgentId },
+          externalRef: "watchdog-boundary-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
       expect(res.body.error).toBe("Task-watchdog runs can only mutate the watched issue subtree.");
@@ -3059,7 +3096,18 @@ describe("agent issue mutation checkout ownership", () => {
       );
       mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: peerAgentId }));
 
-      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked", unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } } }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({
+        status: "blocked",
+        unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: peerAgentId },
+          externalRef: "watchdog-boundary-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
       expect(res.body.error).toBe("Task-watchdog run context is not backed by an active persisted watchdog.");

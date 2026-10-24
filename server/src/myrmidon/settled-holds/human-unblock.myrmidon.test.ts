@@ -22,7 +22,7 @@ import {
   issueComments,
   issueRecoveryActions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -320,7 +320,7 @@ describeEmbeddedPostgres("a board unblock lifts a settled replay hold (HOLD-READ
     const patched = await request(server).patch(`/api/issues/${issueId}`).send({ assigneeAgentId: otherAgentId });
     expect(patched.status, JSON.stringify(patched.body)).toBe(200);
 
-    expect(await replayOf(actionId)).toMatchObject({ replay: "cleared", replayClearedByType: "user" });
+    expect(await replayOf(actionId)).toMatchObject({ replay: "cleared", replayClearedByType: "user", replayClearedNote: expect.stringContaining("reassigned") });
     const runs = await waitForRun(companyId, otherAgentId, issueId);
     expect(runs.length, JSON.stringify(runs)).toBeGreaterThan(0);
     expect(runs.filter((run) => run.errorCode === "execution_reconciliation_required")).toEqual([]);

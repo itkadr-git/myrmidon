@@ -1121,6 +1121,7 @@ export type {
   IssueInboxAttentionKind,
   IssueBlockedInboxAction,
   IssueBlockedInboxAttention,
+  IssueBlockerMetadata,
   IssueUnblockDescriptor,
   IssueUnblockOwner,
   IssueBlockedInboxIssueRef,
@@ -1798,6 +1799,7 @@ export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
+  boardProcessesSettingsSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   instanceExperimentalSettingsWithManagedSchema,
@@ -1964,6 +1966,8 @@ export {
   updateIssueShapeSchema,
   stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
+  issueBlockReasonSchema,
+  issueBlockerMetadataSchema,
   issueExecutionStateSchema,
   resolveIssueRecoveryActionSchema,
   issueReviewRequestSchema,
@@ -2789,6 +2793,9 @@ export * from "./ai-connections.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";
 export * from "./announcements.js";
+// myrmidon(1.6.6 NOTIF-PREFS): per-agent notification preferences for
+// event-shaped wakes (assignment / mention / review), read at wake generation.
+export * from "./notification-prefs.js";
 
 // myrmidon(WORKSPACE-HYGIENE): workspace quota values and the measurement record shared by the
 // server, the sweep and the settings validator.
@@ -2873,6 +2880,7 @@ export * from "./myrmidon-telegram-notify.js";
 export * from "./myrmidon-agent-tool-permissions.js";
 // myrmidon(ADMIN-AGENT): the board administrator flag on an agent.
 export * from "./myrmidon-agent-board-admin.js";
+export * from "./myrmidon-idle-stop.js"; // myrmidon(OPE-7898)
 // myrmidon(M2-B): per-agent gateway key names and fallback-chain cycle checks.
 export * from "./myrmidon-litellm-sync.js";
 // myrmidon(1.6-SWARM): per-role task queues with leased claims — the shared
@@ -2898,6 +2906,7 @@ export * from "./myrmidon-fallback-signal.js";
 export * from "./myrmidon-base-skills.js";
 // myrmidon(1.6-AUTONOMY): role × action-class matrix, verdict resolver and per-role regulations.
 export * from "./myrmidon-autonomy.js";
+export * from "./myrmidon-knowledge-tools.js";
 // myrmidon(1.6-CTO-CHAT-B): the owner-message-to-epic proposal contract of the CTO chat.
 export * from "./myrmidon-cto-chat.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the shared contract of the per-agent WIP limit —
@@ -2935,6 +2944,11 @@ export * from "./myrmidon-debate.js";
 // foraging pass journal (what each pass read, and which roles it skipped why).
 export * from "./myrmidon-foraging-pass-journal.js";
 
+// myrmidon(1.7-DEBATE-ASYM-B): the per-caste debate configuration — the stored
+// override entry (enabled, role models, prompts, rounds, token ceiling), the
+// resolution over the instance configuration and the run gate.
+export * from "./myrmidon-debate-castes.js";
+
 // myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
 export * from "./myrmidon-plugin-entitlement.js";
 
@@ -2944,10 +2958,13 @@ export * from "./myrmidon-telegram-dm-progress.js";
 
 // myrmidon(1.6.1 MODEL-PROVIDERS): provider secret names, defaults and API schemas.
 export * from "./myrmidon-model-providers.js";
-
 // myrmidon(1.6.5-TG-LOCALE-C): instance-wide default language of the bridged
 // Telegram DM — storage key, precedence and resolver.
 export * from "./myrmidon-bridge-language.js";
+// myrmidon(FEATURES): the Instance -> Features page contract (registry view, health report).
+export * from "./myrmidon-features.js";
+// myrmidon(1.6.6 MODEL-MENU A): the model menu tree, its defaults and its resolution.
+export * from "./myrmidon-model-menu.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter
 // in_review with no reviewer — settings contract and activity actions.
 export * from "./myrmidon-review-routing.js";

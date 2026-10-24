@@ -1,4 +1,4 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/plugin-sdk";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "paperclipai.plugin-orchestration-smoke-example",
@@ -15,6 +15,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.write",
     "issues.read",
     "issues.create",
+    "issue.attachments.write",
     "issues.wakeup",
     "issue.relations.read",
     "issue.relations.write",

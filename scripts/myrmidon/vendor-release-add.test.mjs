@@ -1,7 +1,28 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { parseMigrationSql } from "./vendor-release-add.mjs";
+import { formatUnsupportedRelease, isStableReleaseTag, parseMigrationSql, selectLatestStableRelease } from "./vendor-release-add.mjs";
+
+describe("latest stable Paperclip release", () => {
+  it("ignores prerelease tags and selects the newest published stable release", () => {
+    const releases = [
+      { tag_name: "v2026.1012.0", published_at: "2026-10-12T00:00:00Z", prerelease: false, draft: false },
+      { tag_name: "nightly/2026-10-13", published_at: "2026-10-13T00:00:00Z", prerelease: false, draft: false },
+      { tag_name: "v2026.1013.0-beta", published_at: "2026-10-14T00:00:00Z", prerelease: true, draft: false },
+      { tag_name: "v2026.1005.0", published_at: "2026-10-05T00:00:00Z", prerelease: false, draft: false },
+    ];
+    assert.equal(isStableReleaseTag("v2026.1012.0"), true);
+    assert.equal(isStableReleaseTag("v2026.1013.0-beta"), false);
+    assert.equal(selectLatestStableRelease(releases).tag_name, "v2026.1012.0");
+  });
+
+  it("reports the unsupported tag and migration bounds", () => {
+    const message = formatUnsupportedRelease("v2026.1013.0", 317, "0318_new_migration");
+    assert.match(message, /v2026\.1013\.0/);
+    assert.match(message, /Release migrations: 317/);
+    assert.match(message, /Last migration: 0318_new_migration/);
+  });
+});
 
 describe("vendor-release-add parseMigrationSql", () => {
   it("finds created tables and added columns, one ALTER per statement", () => {

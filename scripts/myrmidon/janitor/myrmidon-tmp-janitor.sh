@@ -14,12 +14,20 @@
 #   - Any directory/file with active open file descriptors (checked recursively via lsof /proc)
 #   - Fail-closed: If process activity cannot be verified, candidates are preserved.
 #   - Non-whitelisted items are never touched.
+#   - Owner allow-list: only entries owned by users listed in
+#     MYRMIDON_JANITOR_OWNERS (comma-separated names or numeric uids; also
+#     --owners) are removed. Empty list = nothing is removed (fail-closed).
+#   - Age = newest mtime anywhere inside the tree (find -P -xdev), not the top dir.
+#   - Symlink candidates are skipped; trees are never followed across symlinks
+#     or mount points (find -P -xdev).
+#   - Delete flow: check -> rename to .janitor-trash-* -> re-check -> delete.
 
 set -euo pipefail
 
 TARGET_DIR="${MYRMIDON_JANITOR_TMP_DIR:-/tmp}"
 TTL_MINUTES="${MYRMIDON_JANITOR_TTL_MINUTES:-60}"
 DRY_RUN="${MYRMIDON_JANITOR_DRY_RUN:-0}"
+OWNERS="${MYRMIDON_JANITOR_OWNERS:-}"
 
 log() {
   local level="$1"; shift
@@ -35,6 +43,8 @@ Usage: myrmidon-tmp-janitor.sh [OPTIONS]
 Options:
   --target DIR          Directory to clean (default: /tmp)
   --ttl-minutes MIN     TTL in minutes; older entries are pruned (must be positive integer, default: 60)
+  --owners LIST         Comma-separated user names/uids whose entries may be removed
+                        (default: $MYRMIDON_JANITOR_OWNERS; empty = remove nothing)
   --dry-run             Log candidate actions without deleting
   -h, --help            Show this help message
 EOF
@@ -48,6 +58,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ttl-minutes)
       TTL_MINUTES="$2"
+      shift 2
+      ;;
+    --owners)
+      OWNERS="$2"
       shift 2
       ;;
     --dry-run)
@@ -77,10 +91,13 @@ if [[ ! -d "$TARGET_DIR" ]]; then
 fi
 
 # Whitelist glob prefixes
-PATTERNS=("chr-*" "native-*" "mdep-*" "myrmidon-install-test-*")
+PATTERNS=("chr-*" "native-*" "mdep-*" "myrmidon-install-test-*" ".janitor-trash-*")
 
 is_whitelisted() {
   local name="$1"
+  if [[ "$name" == .janitor-trash-* ]]; then
+    return 0
+  fi
   # Explicit protection against live profiles
   if [[ "$name" == claude-* || "$name" == *claude-1002* ]]; then
     return 1
@@ -184,13 +201,34 @@ is_in_use() {
   return 0
 }
 
+# Age is the newest mtime anywhere in the tree (not just the top directory),
+# so a live profile with fresh writes inside is "young". find -P: no symlink
+# following; -xdev: never cross into other mounts.
+# Returns 0 if the whole tree is older than TTL; 1 if anything is fresh.
 is_older_than_ttl() {
   local path="$1"
   local ttl="$2"
+  local fresh
+  fresh="$(find -P "$path" -xdev -mmin "-$ttl" -print -quit 2>/dev/null || echo "__find_failed__")"
+  [[ -z "$fresh" ]]
+}
 
-  local matched
-  matched="$(find "$path" -maxdepth 0 -mmin "+$ttl" 2>/dev/null || true)"
-  [[ -n "$matched" ]]
+# Owner allow-list check (lstat: a symlink is judged by its own owner).
+owner_allowed() {
+  local path="$1"
+  local uname uid o
+  uname="$(stat -c '%U' -- "$path" 2>/dev/null || true)"
+  uid="$(stat -c '%u' -- "$path" 2>/dev/null || true)"
+  [[ -n "$uid" ]] || return 1
+  local IFS=','
+  for o in $OWNERS; do
+    o="${o// /}"
+    [[ -n "$o" ]] || continue
+    if [[ "$o" == "$uname" || "$o" == "$uid" ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 log "INFO" "Starting janitor run on $TARGET_DIR (TTL: ${TTL_MINUTES}m, dry-run: $DRY_RUN)"
@@ -199,6 +237,10 @@ scanned=0
 cleaned=0
 skipped_active=0
 skipped_young=0
+skipped_owner=0
+skipped_unsafe=0
+
+target_dev="$(stat -c %d -- "$TARGET_DIR" 2>/dev/null || echo "")"
 
 # Iterate through top-level entries in TARGET_DIR matching whitelist patterns
 shopt -s nullglob dotglob
@@ -219,6 +261,24 @@ for item in "${candidates[@]}"; do
     continue
   fi
 
+  # Never follow/act on symlinks; never touch another mount point.
+  if [[ -L "$item" ]]; then
+    log "WARN" "Skipping $item (symlink; not followed)"
+    skipped_unsafe=$((skipped_unsafe + 1))
+    continue
+  fi
+  if [[ -n "$target_dev" && "$(stat -c %d -- "$item" 2>/dev/null)" != "$target_dev" ]]; then
+    log "WARN" "Skipping $item (different filesystem / mount point)"
+    skipped_unsafe=$((skipped_unsafe + 1))
+    continue
+  fi
+
+  if ! owner_allowed "$item"; then
+    log "WARN" "Skipping $item (owner $(stat -c '%U(%u)' -- "$item" 2>/dev/null) not in allow-list '${OWNERS}')"
+    skipped_owner=$((skipped_owner + 1))
+    continue
+  fi
+
   if ! is_older_than_ttl "$item" "$TTL_MINUTES"; then
     skipped_young=$((skipped_young + 1))
     continue
@@ -232,21 +292,41 @@ for item in "${candidates[@]}"; do
 
   size="unknown"
   if command -v du >/dev/null 2>&1; then
-    size="$(du -sh "$item" 2>/dev/null | awk '{print $1}' || echo "unknown")"
+    size="$(du -sxh "$item" 2>/dev/null | awk '{print $1}' || echo "unknown")"
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "DRY-RUN" "Would remove: $item (size: $size)"
     cleaned=$((cleaned + 1))
-  else
-    if rm -rf -- "$item" 2>/dev/null; then
-      log "CLEANED" "Removed: $item (size: $size)"
-      cleaned=$((cleaned + 1))
-    else
-      log "ERROR" "Failed to remove: $item"
+    continue
+  fi
+
+  # Atomic-ish removal: rename out of the whitelist namespace, re-verify on the
+  # renamed path, only then delete. A process that started using the entry
+  # between the first check and the rename is detected by the second check.
+  trash="$item"
+  if [[ "$base" != .janitor-trash-* ]]; then
+    trash="$TARGET_DIR/.janitor-trash-$$-$base"
+    if ! mv -T -- "$item" "$trash" 2>/dev/null; then
+      log "ERROR" "Failed to rename $item for removal"
+      continue
     fi
+    if [[ -L "$trash" ]] || ! owner_allowed "$trash" || ! is_older_than_ttl "$trash" "$TTL_MINUTES" || is_in_use "$trash"; then
+      log "WARN" "Restoring $item (changed or became active after rename)"
+      mv -T -- "$trash" "$item" 2>/dev/null || log "ERROR" "Could not restore $item; left at $trash"
+      skipped_active=$((skipped_active + 1))
+      continue
+    fi
+  fi
+
+  # find -P -xdev -depth -delete: no symlink following, no mount crossing.
+  if find -P "$trash" -xdev -depth -delete 2>/dev/null; then
+    log "CLEANED" "Removed: $item (size: $size)"
+    cleaned=$((cleaned + 1))
+  else
+    log "ERROR" "Failed to remove: $item (partial leftovers at $trash)"
   fi
 done
 
-log "INFO" "Completed run. Scanned: $scanned, cleaned: $cleaned, skipped active: $skipped_active, skipped young: $skipped_young."
+log "INFO" "Completed run. Scanned: $scanned, cleaned: $cleaned, skipped active: $skipped_active, skipped young: $skipped_young, skipped owner: $skipped_owner, skipped unsafe: $skipped_unsafe."
 exit 0

@@ -42,7 +42,7 @@ import {
   toolApplications,
   toolConnectionInstalls,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { errorHandler } from "../middleware/index.js";
 import { runtimeConnectionIntentRoutes } from "../routes/connection-intents.js";
 import { createRuntimeToolsToken } from "../runtime-tools-token.js";
@@ -64,13 +64,14 @@ import {
   agentCommitIdentity,
   defaultGitHubSharedIdentitySettings,
   githubAppsFor,
+  githubPatsFor,
   isRepositoryAllowed,
   normalizeGitHubAppPermissions,
   normalizeGitHubRepository,
   type GitHubAppEntry,
   type GitHubSharedIdentitySettings,
 } from "../myrmidon/github-shared-identity/settings.js";
-import { DEFAULT_GITHUB_APP_PERMISSIONS, githubAppTokenPermissionsFor } from "../myrmidon/github-shared-identity/app-token.js";
+import { DEFAULT_GITHUB_APP_PERMISSIONS, githubAppTokenPermissionsFor, mintGitHubAppInstallationToken } from "../myrmidon/github-shared-identity/app-token.js";
 
 const DEDICATED_TOKEN = "test-dedicated-token-not-a-secret";
 
@@ -141,6 +142,16 @@ describe("GitHub App identity: pure policy", () => {
     expect(normalizeGitHubRepository("https://example.com/owner-a/repo-a")).toBeNull();
     expect(normalizeGitHubRepository("../../etc/passwd")).toBeNull();
     expect(normalizeGitHubRepository(42)).toBeNull();
+  });
+
+  it("selects PAT identities only for explicit agents and repositories", () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    const settings = { ...defaultGitHubSharedIdentitySettings(), enabled: true, pats: [
+      { id: randomUUID(), name: "Well", tokenSecretId: randomUUID(), agentIds: [agentId], allowedRepos: ["BastionPrime/well*"] },
+    ] };
+    expect(githubPatsFor(settings, agentId, "bastionprime/wellboard")).toHaveLength(1);
+    expect(githubPatsFor(settings, agentId, "itkadr-git/myrmidon")).toHaveLength(0);
+    expect(githubPatsFor(settings, randomUUID(), "BastionPrime/wellboard")).toHaveLength(0);
   });
 
   it("matches owner/repo patterns with a literal owner", () => {
@@ -349,6 +360,32 @@ const support = await getEmbeddedPostgresTestSupport();
     return connectionId;
   }
 
+  it("reuses installation tokens until five minutes before expiry", async () => {
+    resetGitHubAppTokenCacheForTests();
+    const start = Date.now();
+    let issueCount = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const href = String(input);
+      if (href.endsWith("/installation")) return new Response(JSON.stringify({ id: 5001 }), { status: 200 });
+      if (href.endsWith("/access_tokens")) {
+        issueCount += 1;
+        return new Response(JSON.stringify({ token: `cache-token-${issueCount}`, expires_at: new Date(start + 60 * 60_000).toISOString() }), { status: 200 });
+      }
+      throw new Error(`unexpected GitHub request: ${href}`);
+    });
+    const input = { appId: "101", privateKeyPem: KEY_A.privatePem, installationId: null, repository: "owner-a/repo-a", fetchImpl, now: () => start };
+
+    const issued = await mintGitHubAppInstallationToken(input);
+    const reused = await mintGitHubAppInstallationToken(input);
+    expect(issued.reused).toBe(false);
+    expect(reused).toMatchObject({ token: issued.token, reused: true });
+    expect(issueCount).toBe(1);
+
+    const refreshed = await mintGitHubAppInstallationToken({ ...input, now: () => start + 56 * 60_000 });
+    expect(refreshed.reused).toBe(false);
+    expect(issueCount).toBe(2);
+  });
+
   it("mints a single-repository installation token on the board, with the agent as author, audited without the token", async () => {
     const input = await seed();
     const secretId = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-a", repos: ["owner-a/repo-a"] });
@@ -401,10 +438,13 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(text).not.toContain("PRIVATE KEY");
     }
 
-    // A second operation reuses the cached token without another GitHub call.
+    // A second operation reuses the cached token without another GitHub call
+    // or a duplicate issuance activity row.
     github.calls = [];
     expect((await resolveGitHubOperationCredentials(db, { ...input, repository: "owner-a/repo-a" })).env.GH_TOKEN).toBe(token);
     expect(github.calls).toEqual([]);
+    const repeatedActivity = await db.select().from(activityLog).where(eq(activityLog.companyId, input.companyId));
+    expect(repeatedActivity.filter((row) => row.action === "myrmidon.github_app.issued")).toHaveLength(1);
   });
 
   it("separates products: product A under App A, product B under App B, neither absent, both an error", async () => {
@@ -442,6 +482,30 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(both.reason).toMatch(/More than one GitHub App identity matches repository owner-a\/overlap/);
     expect(vault.resolveSecretValue).not.toHaveBeenCalled();
     expect(github.calls).toEqual([]);
+  });
+
+  it("routes Well repositories to an explicitly scoped PAT while Myrmidon remains on the App", async () => {
+    const input = await seed();
+    const appSecret = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-app", repos: ["itkadr-git/myrmidon"] });
+    const patSecret = randomUUID();
+    const patToken = "test-well-pat-token";
+    await db.insert(companySecrets).values({ id: patSecret, companyId: input.companyId, key: patSecret, name: "Well PAT", scope: "company" });
+    vaultState.values.set(patSecret, patToken);
+    const app = entry(appSecret, { allowedRepos: ["itkadr-git/myrmidon"] });
+    const pat = { id: randomUUID(), name: "Well", tokenSecretId: patSecret, agentIds: [input.agentId], allowedRepos: ["BastionPrime/well*"] };
+    await writeGitHubSharedIdentitySettings(db, input.companyId, rules([app], { pats: [pat] }));
+
+    const well = await resolveGitHubOperationCredentials(db, { ...input, repository: "BastionPrime/wellboard" });
+    expect(well).toMatchObject({ status: "available", source: "pat", login: "Well", env: { GH_TOKEN: patToken } });
+    expect(github.calls).toEqual([]);
+    const myrmidon = await resolveGitHubOperationCredentials(db, { ...input, repository: "itkadr-git/myrmidon" });
+    expect(myrmidon).toMatchObject({ status: "available", source: "app" });
+    expect(myrmidon.env.GH_TOKEN).toBe("tok-app-myrmidon");
+    const stranger = await resolveGitHubOperationCredentials(db, { ...input, repository: "other-owner/private" });
+    expect(stranger).toMatchObject({ status: "absent", env: {} });
+    expect(vault.resolveSecretValue).toHaveBeenCalledTimes(2);
+    expect(vault.resolveSecretValue.mock.calls.map(([ , id]) => id)).toContain(patSecret);
+    expect(JSON.stringify(await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.runId, input.runId)))).not.toContain(patToken);
   });
 
   it("fails closed when GitHub refuses, and stays absent outside the rules or without a repository", async () => {
@@ -501,9 +565,17 @@ const support = await getEmbeddedPostgresTestSupport();
       permissions: { metadata: "read", contents: "write", pull_requests: "write", issues: "read", workflows: "write" },
     });
     // The issuance audit carries the permission list, never the token.
+    // The rows are ordered client-side: the migration adding
+    // activity_log_company_action_created_idx (company_id, action, created_at
+    // DESC) lets Postgres satisfy this company_id-only select from the new
+    // index, whose (action, created_at DESC) order puts the later (widened)
+    // issuance first — array order must not depend on the plan.
     const activity = await db.select().from(activityLog).where(eq(activityLog.companyId, input.companyId));
-    const issued = activity.filter((row) => row.action === "myrmidon.github_app.issued");
+    const issued = activity
+      .filter((row) => row.action === "myrmidon.github_app.issued")
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
     expect(issued).toHaveLength(2);
+    expect(issued[0]!.details).toMatchObject({ permissions: { issues: "none", workflows: "none" } });
     expect(issued[1]!.details).toMatchObject({ permissions: { workflows: "write", issues: "read" } });
   });
 
@@ -616,6 +688,7 @@ const support = await getEmbeddedPostgresTestSupport();
           // Partial list normalized to complete: the defaults fill the rest.
           permissions: normalizeGitHubAppPermissions({ workflows: "write", issues: "read" }),
         }],
+        pats: [],
         commitEmailDomain: "example.com",
       };
       expect(saved.body.settings).toEqual(expected);

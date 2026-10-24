@@ -87,6 +87,10 @@ case "$1" in
           exit 1
         fi
         printf 'server\\ndockergate\\nfleetd\\n' ;;
+      *"--format json"*)
+        # LICENSE-DIR: the rendered compose project, when a test supplies one
+        if [ -f "$SANDBOX/compose-json" ]; then cat "$SANDBOX/compose-json"; fi
+        exit 0 ;;
       *logs*) echo '{"event":"self-check ok","version":"1.4.0+0123456789ab"}' ;;
       *) exit 0 ;;
     esac ;;
@@ -312,7 +316,7 @@ function pathWithoutGit(sb) {
 function run(sb, script, args, input) {
   const searchPath = sb.noGit ? pathWithoutGit(sb) : `${sb.bin}:${process.env.PATH}`;
   const result = spawnSync(bashPath(), [path.join(HERE, script), "--config", sb.config, ...args], {
-    env: { ...process.env, PATH: searchPath, SANDBOX: sb.dir },
+    env: { ...process.env, PATH: searchPath, SANDBOX: sb.dir, ...(sb.env ?? {}) },
     encoding: "utf8",
     input,
   });
@@ -440,6 +444,68 @@ describe("deploy.sh", () => {
   // pre-check the real window would, so an unreadable compose project fails
   // HERE, with the real compose error, instead of passing and surfacing after
   // the image pull and the database dump.
+  // LICENSE-DIR: the license issuing key must not sit in the directory that is
+  // mounted into the module containers; --dry-run is the check.
+  describe("license directory preflight", () => {
+    const licenseSandbox = () => {
+      const sb = sandbox();
+      const licDir = path.join(sb.dir, "etc-myrmidon-license");
+      fs.mkdirSync(licDir);
+      fs.writeFileSync(path.join(licDir, "license.key"), "MYR1.x\n");
+      sb.env = { MYR_LICENSE_PATH: path.join(licDir, "license.key") };
+      return { sb, licDir };
+    };
+
+    it("passes when the directory holds only the license and instance-id", () => {
+      const { sb, licDir } = licenseSandbox();
+      fs.writeFileSync(path.join(licDir, "instance-id"), "myr-aaaaaaaaaaaaaaaaaaaa\n");
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+    });
+
+    it("stops on an issuer subdirectory", () => {
+      const { sb, licDir } = licenseSandbox();
+      fs.mkdirSync(path.join(licDir, "issuer"));
+      const before = read(sb.override);
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /ключ выпуска лежит в каталоге лицензии — перенесите: sudo mv .*\/issuer .*-issuer и поправьте монтирование issuer/);
+      assert.doesNotMatch(calls(sb), /docker pull/);
+      assert.equal(read(sb.override), before);
+    });
+
+    it("stops on *.pem and *ed25519* files", () => {
+      for (const name of ["signing.pem", "issuer_ed25519.key"]) {
+        const { sb, licDir } = licenseSandbox();
+        fs.writeFileSync(path.join(licDir, name), "x");
+        const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+        assert.notEqual(code, 0, name);
+        assert.match(out, /ключ выпуска лежит в каталоге лицензии/, name);
+      }
+    });
+
+    it("stops when the compose issuer mount points inside the license directory", () => {
+      const { sb, licDir } = licenseSandbox();
+      fs.writeFileSync(
+        path.join(sb.dir, "compose-json"),
+        JSON.stringify({ services: { server: { volumes: [{ type: "bind", source: licDir, target: "/etc/myrmidon-license" }, { type: "bind", source: path.join(licDir, "keys"), target: "/run/issuer" }] } } }),
+      );
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /ключ выпуска лежит в каталоге лицензии/);
+    });
+
+    it("accepts an issuer mount outside the license directory", () => {
+      const { sb, licDir } = licenseSandbox();
+      fs.writeFileSync(
+        path.join(sb.dir, "compose-json"),
+        JSON.stringify({ services: { server: { volumes: [{ type: "bind", source: licDir, target: "/etc/myrmidon-license" }, { type: "bind", source: `${licDir}-issuer`, target: "/run/issuer" }] } } }),
+      );
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+    });
+  });
+
   it("--dry-run fails with the real compose error when the compose project cannot be read", () => {
     const sb = sandbox({ composeConfigFails: true });
     const before = read(sb.override);

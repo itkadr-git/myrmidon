@@ -9,7 +9,7 @@ import type {
   CompanySkillDetail,
   CompanySkillLastEditor,
   CompanySkillListItem,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SkillStudio } from "./SkillStudio";
 

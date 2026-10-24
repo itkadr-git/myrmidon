@@ -1,0 +1,200 @@
+{
+  "area": {
+    "tools-profiles-2": {
+      "profile-detail-route": {
+        "breadcrumbCompany": "Company",
+        "breadcrumbApps": "Apps",
+        "breadcrumbProfiles": "Access profiles",
+        "breadcrumbDetail": "Profile detail",
+        "selectPrompt": "Select an organization and profile."
+      },
+      "profile-wizard-route": {
+        "breadcrumbOrganization": "Organization",
+        "breadcrumbApps": "Apps",
+        "breadcrumbProfiles": "Access profiles",
+        "breadcrumbResume": "Resume draft",
+        "breadcrumbNew": "New profile",
+        "selectPrompt": "Select an organization to create a profile.",
+        "titleEdit": "Finish your profile",
+        "titleNew": "New access profile",
+        "subtitle": "Choose which tools this profile allows, then assign it to the agents that need them."
+      },
+      "tools-admin-gate": {
+        "title": "Access profiles are for administrators",
+        "bodyBefore": "Access profiles decide which tools your agents can use. Ask an administrator to set these up, or head back to",
+        "bodyLink": "your apps"
+      },
+      "shared": {
+        "unknown": "unknown",
+        "readOnly": "read-only",
+        "write": "write",
+        "destructive": "destructive",
+        "decision": {
+          "allowed": "allowed",
+          "denied": "denied",
+          "block": "block",
+          "requireApproval": "require approval",
+          "redacted": "redacted",
+          "rateLimited": "rate limited",
+          "deferred": "deferred",
+          "hidden": "hidden"
+        },
+        "never": "never",
+        "justNow": "just now",
+        "minutes": "{{n}}m",
+        "hours": "{{n}}h",
+        "days": "{{n}}d",
+        "inFuture": "in {{value}}",
+        "ago": "{{value}} ago",
+        "error": {
+          "forbidden": "You do not have permission to view this. Tools & Access requires board/admin access.",
+          "notAvailable": "Tools & Access isn't available on this server yet — try refreshing after the next deployment.",
+          "generic": "Something went wrong.",
+          "title": "Could not load this view"
+        },
+        "trackedIn": "Tracked in {{identifier}} →"
+      },
+      "profiles-index": {
+        "copyName": "{{name}} (copy)",
+        "toast": {
+          "duplicated": "Profile duplicated",
+          "duplicatedBody": "The copy is not assigned to anyone yet.",
+          "duplicateFailed": "Could not duplicate",
+          "archived": "Profile archived",
+          "archiveFailed": "Could not archive",
+          "restored": "Profile restored",
+          "restoreFailed": "Could not restore",
+          "deleted": "Profile deleted",
+          "deleteFailed": "Could not delete"
+        },
+        "title": "Access profiles",
+        "description": "Decide which tools your agents can use. Build a profile once, then assign it to the agents that need it.",
+        "checkAccess": "Check an agent's access",
+        "newProfile": "New profile",
+        "checkAccessDescription": "See exactly which tools an agent can use right now, and which profile allows each one.",
+        "loadingProfiles": "Loading profiles…",
+        "filterActive": "Active",
+        "filterArchived": "Archived",
+        "noArchived": "No archived profiles.",
+        "colProfile": "Profile",
+        "colAllows": "Allows",
+        "colAssigned": "Assigned to",
+        "colStatus": "Status",
+        "colUpdated": "Updated",
+        "newTools": "{{n}} new",
+        "noChangeHint": "— does not change access",
+        "resume": "Resume",
+        "rowMenu": {
+          "aria": "Profile actions",
+          "edit": "Edit",
+          "duplicate": "Duplicate",
+          "restore": "Restore",
+          "archive": "Archive",
+          "delete": "Delete"
+        },
+        "emptyPicker": {
+          "title": "Create your first access profile",
+          "description": "Pick a starting point. You can fine-tune exactly which tools it allows in the next step."
+        }
+      },
+      "wizard-tools-step": {
+        "loadingTools": "Loading tools…",
+        "comingSoonTitle": "App connections are coming soon",
+        "comingSoonBody": "Profiles will be available once app connections are ready. Browse the planned integrations in the meantime.",
+        "browseConnections": "Browse app connections",
+        "searchPlaceholder": "Search tools…",
+        "noMatch": "No tools match “{{search}}”.",
+        "clearSearch": "Clear search",
+        "allToolsAria": "All {{name}} tools",
+        "allToolsLabel": "All {{name}} tools ({{n}})",
+        "includesLater": "includes tools {{name}} adds later",
+        "newTools": {
+          "legend": "New tools that appear later",
+          "denyLabel": "Stay blocked until someone allows them",
+          "denyHint": "New tools an app adds later won't be usable until you review them.",
+          "allowLabel": "Allowed automatically",
+          "allowHint": "Any tool an app adds later becomes usable right away.",
+          "recommended": "Recommended",
+          "risky": "(risky)"
+        },
+        "ruleKind": {
+          "toolName": "Tool name pattern",
+          "riskLevel": "Risk level",
+          "catalogEntry": "By tool ID"
+        },
+        "ruleSummary": {
+          "allowMatching": "Allow tools matching {{value}}",
+          "blockMatching": "Block tools matching {{value}}",
+          "allowRisk": "Allow {{risk}} tools",
+          "blockRisk": "Block {{risk}} tools",
+          "allowTool": "Allow tool {{value}}",
+          "blockTool": "Block tool {{value}}"
+        },
+        "advanced": {
+          "title": "Advanced rules",
+          "hint": "Match tools by a name pattern, a risk level, or a specific tool ID. These run on top of the choices above.",
+          "removeRule": "Remove rule",
+          "allow": "Allow",
+          "block": "Block",
+          "riskRead": "Read-only",
+          "riskWrite": "Makes changes",
+          "riskDestructive": "Destructive",
+          "toolNamePlaceholder": "e.g. gmail.send*",
+          "toolIdPlaceholder": "tool ID",
+          "addRule": "Add rule"
+        }
+      },
+      "profile-wizard": {
+        "step": {
+          "name": "Name",
+          "chooseTools": "Choose tools",
+          "assign": "Assign"
+        },
+        "untitled": "Untitled profile",
+        "noDraft": "No draft to finish",
+        "toast": {
+          "saveFailed": "Could not save",
+          "profileSaveFailed": "Could not save profile",
+          "profileSaved": "Profile saved",
+          "draftSaved": "Draft saved",
+          "draftSavedBody": "Pick it back up from the profiles list."
+        },
+        "loadingDraft": "Loading draft…",
+        "allowsCount": "Allows <0>{{allowed}}</0> of {{total}} tools",
+        "saveLater": "Save & finish later",
+        "back": "Back",
+        "continue": "Continue",
+        "saveProfile": "Save profile",
+        "assignError": "Could not update assignment {{key}}",
+        "stepName": {
+          "startFrom": "Start from",
+          "whichProfile": "Which profile?",
+          "noOtherProfile": "You don't have another profile to copy yet.",
+          "nameLabel": "Name",
+          "namePlaceholder": "e.g. Everyday work",
+          "descriptionLabel": "Description (optional)",
+          "descriptionPlaceholder": "What is this profile for?",
+          "advanced": "Advanced",
+          "identifier": "Identifier",
+          "identifierHint": "Used in exports and the API. Auto-filled from the name."
+        },
+        "stepAssign": {
+          "orgDefault": "Make this the organization default",
+          "orgDefaultHint": "Every agent without its own profile uses this one.",
+          "replaces": "Replaces “{{name}}”.",
+          "assignToAgents": "Assign to agents",
+          "orgDefaultShort": "organization default",
+          "alreadyHas": "already has: {{list}}",
+          "noProfilesYet": "no profiles yet",
+          "severalProfiles": "If an agent has several profiles, it can use anything any of them allows.",
+          "moreTargets": "More targets",
+          "moreTargetsHint": "Assign this profile to a whole project or a scheduled routine instead of (or as well as) individual agents.",
+          "projects": "Projects",
+          "routines": "Routines"
+        },
+        "assignErrorRollback_one": "Could not update assignment {{key}}; {{count}} rollback operation also failed",
+        "assignErrorRollback_other": "Could not update assignment {{key}}; {{count}} rollback operations also failed"
+      }
+    }
+  }
+}

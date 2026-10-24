@@ -12,7 +12,7 @@
 // entry point. A transport failure is thrown and surfaces as 503 with the
 // previous cache intact; an HTTP status is recorded per component.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import {
   STACK_CHECKABLE_RELEASE_SOURCES,
@@ -37,7 +37,8 @@ import {
   readReleaseList,
   type StackFetchJson,
 } from "./releases.js";
-import { readStackCheckIntervalSec, readStackGithubToken } from "./settings.js";
+import { readStackCheckIntervalSec } from "./settings.js";
+import { resolveOptionalInstanceSecret } from "../secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.6)
 import { readStackDocument, writeStackDocument } from "./store.js";
 
 export const STACK_CHECK_PER_PAGE = 30;
@@ -175,7 +176,11 @@ async function checkComponent(
  */
 export async function checkStackReleases(db: Db, options: StackCheckOptions = {}): Promise<StackDocument> {
   const checkedAt = (options.now ?? (() => new Date()))().toISOString();
-  const port = options.fetchJson ?? githubJsonPort({ token: readStackGithubToken() ?? undefined });
+  const port =
+    options.fetchJson ??
+    githubJsonPort({
+      token: (await resolveOptionalInstanceSecret("stack.github_token", "stack-registry")) ?? undefined,
+    });
   const stored = await readStackDocument(db);
   const base = stored.components.length > 0 ? stored : seedStackDocument();
   const opts = { perPage: options.perPage ?? STACK_CHECK_PER_PAGE, noteLimit: options.noteLimit };

@@ -27,15 +27,15 @@ import {
   inferBindModeFromHost,
   resolveRuntimeBind,
   validateConfiguredBindMode,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
-  resolveDefaultBackupDir,
+  resolveDatabaseBackupDir,
   resolveDefaultEmbeddedPostgresDir,
   resolveDefaultSecretsKeyFilePath,
   resolveDefaultStorageDir,
   resolveHomeAwarePath,
 } from "./home-paths.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
 if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
@@ -283,11 +283,9 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.retentionDays ||
       7,
   );
-  const databaseBackupDir = resolveHomeAwarePath(
-    readProductEnv("DB_BACKUP_DIR") ??
-      fileDatabaseBackup?.dir ??
-      resolveDefaultBackupDir(),
-  );
+  const databaseBackupDir = resolveDatabaseBackupDir({ config: {
+    database: { backup: fileDatabaseBackup },
+  } });
   // The terminal-workspace reaper waits this many days after an issue tree
   // becomes terminal before it archives the workspace. A person can reopen the
   // work inside this window. A value of 0 disables the cooldown and restores

@@ -56,7 +56,11 @@ const A15 = "A15"
 // use (/bot, /data for LEGACY-layout, /bot-scope/<botKey> for a scope member).
 // The gate allows it on the main container only, like A3/A13; the flag itself
 // (MYRMIDON_BOT_SKILL_BACKIMPORT) is read by the board, not by the gate.
-const A16 = "A16"
+const (
+	A16 = "A16"
+	A17 = "A17"
+	A18 = "A18"
+)
 
 // skillsReadQuery is the skills directory the gate serves for A16, in the same
 // literal-encoded form the marker and clone-report queries use.
@@ -379,11 +383,21 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 			return nil, notAllowed()
 		}
 		r.ID = A10
+	case "/stop?t=30&myrmidon-idle=true":
+		if method != "POST" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A17
 	case "/restart?t=30":
 		if method != "POST" || suffix != SuffixMain {
 			return nil, notAllowed()
 		}
 		r.ID = A11
+	case "/update":
+		if method != "POST" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A18
 	default:
 		if q, ok := strings.CutPrefix(tail, "/archive?path="); ok {
 			// A5: the path parameter is one of three literals, then the fixed flag.
