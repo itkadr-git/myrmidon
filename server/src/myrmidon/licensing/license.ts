@@ -30,6 +30,8 @@ export interface LicensePayload {
   features: string[];
   expires: number | null;
   watermark: string | null;
+  /** optional signed license id (UUID); only licenses issued with one carry it */
+  id?: string;
 }
 
 function b64urlEncode(raw: Buffer): string {
@@ -65,7 +67,8 @@ export type VerifyReason =
   | "instance_mismatch"
   | "expired"
   | "module_not_granted"
-  | "feature_not_granted";
+  | "feature_not_granted"
+  | "revoked";
 
 /**
  * A public key the board trusts for license signatures. `kid` names the key
@@ -76,7 +79,7 @@ export type VerifyReason =
 export type TrustedIssuerKey = KeyObject | string;
 
 const PAYLOAD_FIELDS = ["rev", "instance_id", "modules", "features", "expires", "watermark"] as const;
-const OPTIONAL_PAYLOAD_FIELDS = ["kid"] as const;
+const OPTIONAL_PAYLOAD_FIELDS = ["kid", "id"] as const;
 /** Module-side `KEY_ID_LEN`. */
 export const KEY_ID_LEN = 16;
 
@@ -160,6 +163,7 @@ export function verifyLicense(
   const { rev, instance_id: pInstance, modules, features, expires, watermark } = payload as Record<string, unknown>;
   const strList = (v: unknown): v is string[] =>
     Array.isArray(v) && v.every((x) => typeof x === "string" && x.length > 0);
+  if ("id" in payload && (typeof payload.id !== "string" || payload.id.length === 0)) return fail("bad_payload");
   if (!Number.isInteger(rev)) return fail("bad_payload");
   if (typeof pInstance !== "string" || !pInstance) return fail("bad_payload");
   if (!strList(modules) || !strList(features)) return fail("bad_payload");
@@ -178,8 +182,9 @@ export function verifyLicense(
     features,
     expires: expires as number | null,
     watermark: watermark as string | null,
+    ...(typeof payload.id === "string" ? { id: payload.id } : {}),
   };
-  return { valid: true, reason: "ok", payload: result, kid: typeof payload.kid === "string" ? payload.kid : null };
+  return { valid: true, reason: "ok", payload: result, kid: typeof payload.kid === "string" ? payload.kid : keyId(signer) };
 }
 
 // --- MYRQ1 license request ---------------------------------------------------
