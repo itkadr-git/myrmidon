@@ -537,7 +537,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
           ? (checkedActorGrade === "admin" ? "adm" : checkedActorGrade)
           : approverKindInput;
         assertApproverAuthority(req, companyId, approverKind);
-        if (item.approverKind !== null && approverKind !== item.approverKind) {
+        if (item.approverKind != null && approverKind !== item.approverKind) {
           throw forbidden("The actor's membership grade does not match the rule approver grade.", {
             code: "approver_kind_mismatch",
           });

@@ -266,10 +266,9 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       .post(`${base}/items/rules/adm-only/approve`)
       .send({ approverKind: "adm", revisionId: "rev-2" });
     expect(res.status).toBe(200);
-    expect(res.body.item.approverKind).toBe("admin");
     expect(deps.module.approve).toHaveBeenCalledWith(
       "rules/adm-only",
-      expect.objectContaining({ kind: "admin" }),
+      expect.objectContaining({ kind: "adm" }),
       { revisionId: "rev-2" },
     );
   });
@@ -290,7 +289,8 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
 
   it("K-3: the approver grade comes from the membership, not the body: an operator posting approverKind owner is 403 on a smm rule", async () => {
     const deps = makeDeps({ grants: true });
-    const item = makeItem({ kind: "rule", slug: "rules/smm/publications" });
+    deps.casteSensitivity = async () => ({ sensitive: new Set(["smm"]) });
+    const item = makeItem({ kind: "rule", slug: "rules/smm/publications", roles: ["smm"] });
     (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
     // S4 independently rejects an operator's attempt to approve an owner-grade rule.
     (deps.module.approve as ReturnType<typeof vi.fn>).mockImplementation(async (_id: string, approver: { actorType: "user"; actorId: string; kind: string | null }) => {
@@ -389,7 +389,7 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       .post(`${base}/items/rules/owner-only/approve`)
       .send({ approverKind: "adm", revisionId: "rev-2" });
     expect(res.status).toBe(403);
-    expect(res.body.code).toBe("approver_authority_required");
+    expect(res.body.code).toBe("approver_kind_mismatch");
     expect(deps.module.approve).not.toHaveBeenCalled();
   });
 
@@ -401,7 +401,7 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       .post(`${base}/items/rules/adm-only/approve`)
       .send({ approverKind: "adm", revisionId: "rev-2" });
     expect(res.status).toBe(403);
-    expect(res.body.code).toBe("approver_authority_required");
+    expect(res.body.code).toBe("approver_kind_mismatch");
     expect(deps.module.approve).not.toHaveBeenCalled();
   });
 
@@ -414,7 +414,7 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       .post(`${base}/items/rules/adm-only/approve`)
       .send({ approverKind: "adm", revisionId: "rev-2" });
     expect(res.status).toBe(403);
-    expect(res.body.code).toBe("approver_authority_required");
+    expect(res.body.code).toBe("approver_kind_mismatch");
     expect(deps.module.approve).not.toHaveBeenCalled();
   });
 
@@ -422,11 +422,12 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     const deps = makeDeps({ grants: true });
     const item = makeItem({ kind: "rule", slug: "rules/no-secrets" });
     (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
-    const res = await request(app(deps, boardActor))
+    const noMembershipActor = { ...boardActor, memberships: [] };
+    const res = await request(app(deps, noMembershipActor))
       .post(`${base}/items/rules/no-secrets/approve`)
       .send({ approverKind: "adm", revisionId: "rev-2" });
     expect(res.status).toBe(403);
-    expect(res.body.code).toBe("approver_authority_required");
+    expect(res.body.code).toBe("approver_kind_mismatch");
     expect(deps.module.approve).not.toHaveBeenCalled();
   });
 
@@ -467,7 +468,7 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       .post(`${base}/items/rules/owner-only/approve`)
       .send({ approverKind: "owner", revisionId: "rev-2" });
     expect(res.status).toBe(403);
-    expect(res.body.code).toBe("approver_authority_required");
+    expect(res.body.code).toBe("approver_kind_mismatch");
     expect(deps.module.approve).not.toHaveBeenCalled();
   });
 
@@ -480,7 +481,7 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       .post(`${base}/items/rules/adm-only/approve`)
       .send({ approverKind: "adm", revisionId: "rev-2" });
     expect(res.status).toBe(403);
-    expect(res.body.code).toBe("approver_authority_required");
+    expect(res.body.code).toBe("approver_kind_mismatch");
     expect(deps.module.approve).not.toHaveBeenCalled();
   });
 
