@@ -507,10 +507,12 @@ describe.sequential("agent permission routes", () => {
   // carries adapterConfig at all, so the leak is impossible by construction.
   // The model the list column shows travels as the precomputed `adapterModel`.
   it("serves GET /api/companies/:companyId/agents with a version-key ETag", async () => {
-    const plaintextValue = "listed-value-must-not-leak";
-    mockAgentService.listSummaries.mockResolvedValue([
-      { ...baseAgentListItem, envLeakGuard: plaintextValue },
-    ]);
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read",
+      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+    }));
+    mockAgentService.listSummaries.mockResolvedValue([baseAgentListItem]);
 
     const app = await createApp({
       type: "board",
@@ -529,7 +531,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.headers["cache-control"]).toBe("private, must-revalidate");
     expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledWith(
       companyId,
-      "board:board-user:admin:configs=yes",
+      `board:board-user:admin:configs=yes:scope=${JSON.stringify([[companyId], []])}`,
     );
     expect(mockAgentService.listSummaries).toHaveBeenCalledWith(companyId);
     expect(mockAgentService.list).not.toHaveBeenCalled();
@@ -547,6 +549,11 @@ describe.sequential("agent permission routes", () => {
   }, 20_000);
 
   it("returns 304 for a matching agent-list ETag before building the list body", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read",
+      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+    }));
     const app = await createApp({
       type: "board",
       userId: "board-user",
@@ -565,7 +572,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.text).toBe("");
     expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledWith(
       companyId,
-      "board:board-user:admin:configs=yes",
+      `board:board-user:admin:configs=yes:scope=${JSON.stringify([[companyId], []])}`,
     );
     expect(mockAgentService.listSummaries).not.toHaveBeenCalled();
   }, 20_000);
@@ -707,7 +714,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledWith(
       companyId,
-      "board:member-user:user:configs=no",
+      `board:member-user:user:configs=no:scope=${JSON.stringify([[companyId], []])}`,
     );
     expect(res.body).toEqual([
       expect.objectContaining({

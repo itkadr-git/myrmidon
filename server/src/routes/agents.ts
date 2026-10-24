@@ -1210,7 +1210,10 @@ export function agentRoutes(
       if (!id || !companyId) return Promise.resolve({ allowed: false });
       return decideAgentRead(req, { id, companyId });
     }));
-    return rows.filter((_, index) => decisions[index]?.allowed);
+    return rows
+      .map((row, index) => ({ row, decision: decisions[index] }))
+      .filter(({ decision }) => decision?.allowed)
+      .map(({ row }) => row);
   }
 
   /**
@@ -4143,11 +4146,26 @@ function getActorIdentityPart(req: Request): string {
     }
 
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    const actorPart = `${getActorIdentityPart(req)}:configs=${canReadConfigs ? "yes" : "no"}`;
-    const vk = await svc.listSummariesVersionKey(companyId, actorPart);
+    const actorMemberships = Array.isArray(req.actor.memberships)
+      ? req.actor.memberships.map(({ companyId: membershipCompanyId, membershipRole, status }) => ({
+          companyId: membershipCompanyId,
+          membershipRole,
+          status,
+        }))
+      : [];
+    const actorCompanyScope = req.actor.type === "board"
+      ? req.actor.companyIds ?? []
+      : req.actor.companyId;
+    const actorPart = `${getActorIdentityPart(req)}:configs=${canReadConfigs ? "yes" : "no"}:scope=${JSON.stringify([actorCompanyScope, actorMemberships])}`;
+    const authorizedRows = await filterAgentsForActor(req, await svc.listSummaries(companyId));
+    const result = authorizedRows;
+    // Authorize/filter before considering a conditional response: access grants
+    // can change independently of the agent and membership rows.
+    const vk = await svc.listSummariesVersionKey(
+      companyId,
+      `${actorPart}:visible=${authorizedRows.map((agent) => agent.id).join(",")}`,
+    );
     if (notModifiedOrSetEtag(req, res, vk)) return;
-
-    const result = await filterAgentsForActor(req, await svc.listSummaries(companyId));
     // myrmidon(PERF-DIET-G): the list is a slim projection. It carries no
     // adapterConfig (so no per-row env redaction is needed any more) and the
     // model column travels as the SQL-computed `adapterModel`; the full
