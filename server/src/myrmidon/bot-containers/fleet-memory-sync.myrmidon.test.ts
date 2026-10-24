@@ -20,7 +20,7 @@ function site(over: Partial<MonitoredSite> = {}): MonitoredSite {
     id: "site-1",
     companyId: COMPANY,
     name: "myr-vm1",
-    url: "https://10.10.0.110:9100",
+    url: "https://192.0.2.10:9100",
     status: "active",
     labels: {},
     health: { snapshot: { missCount: 0 }, autoDrained: false, state: "healthy", recoveryPasses: 0, reconciled: true, updatedAt: "2026-10-24T00:00:00Z" },
@@ -68,7 +68,7 @@ describe("fleet memory sync service", () => {
     const service = createFleetMemorySyncService({
       store: journal,
       exportArchive: async () => {
-        throw new Error("connect ETIMEDOUT 10.10.0.110:9100");
+        throw new Error("connect ETIMEDOUT 192.0.2.10:9100");
       },
       importArchive,
     });
@@ -77,7 +77,7 @@ describe("fleet memory sync service", () => {
 
     expect(done.outcome).toBe("failed");
     expect(importArchive).not.toHaveBeenCalled();
-    expect(journal.rows[0]).toMatchObject({ status: "failed", error: "connect ETIMEDOUT 10.10.0.110:9100" });
+    expect(journal.rows[0]).toMatchObject({ status: "failed", error: "connect ETIMEDOUT 192.0.2.10:9100" });
   });
 
   it("treats an empty archive and a failing import as failures, keeping what the replica already had", async () => {
