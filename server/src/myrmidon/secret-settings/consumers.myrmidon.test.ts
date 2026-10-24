@@ -50,6 +50,9 @@ function setup() {
       const s = secrets.get(id);
       return s ? { name: s.name, status: s.status, companyId: COMPANY } : null;
     },
+    async createSecret() {
+      throw new Error("createSecret is not used by this suite");
+    },
     async setBinding(name, secretId) {
       const b = { companyId: COMPANY, secretId };
       bindings.set(name, b);
