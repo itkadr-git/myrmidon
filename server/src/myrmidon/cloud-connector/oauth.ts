@@ -65,7 +65,16 @@ export const CLOUD_OAUTH_SPECS: Record<CloudProviderId, OAuthProviderSpec> = {
 export interface OAuthClient {
   clientId: string;
   clientSecret: string | null;
+  /**
+   * myrmidon(SETTINGS-UI E2.7): resolved at use when no env secret is set (bound secret ref).
+   * Env wins: this is only consulted when `clientSecret` is null.
+   */
+  resolveClientSecret?: () => Promise<string | null>;
   redirectUri: string;
+}
+
+async function effectiveClientSecret(client: OAuthClient): Promise<string | null> {
+  return client.clientSecret ?? (client.resolveClientSecret ? await client.resolveClientSecret() : null);
 }
 
 /**
@@ -194,7 +203,8 @@ export async function exchangeCode(input: {
     redirect_uri: input.client.redirectUri,
     client_id: input.client.clientId,
   });
-  if (input.client.clientSecret) body.set("client_secret", input.client.clientSecret);
+  const clientSecret = await effectiveClientSecret(input.client);
+  if (clientSecret) body.set("client_secret", clientSecret);
   if (input.spec.usePkce && input.codeVerifier) body.set("code_verifier", input.codeVerifier);
   return tokenRequest({
     spec: input.spec,
@@ -218,7 +228,8 @@ export async function refreshTokenBundle(input: {
     refresh_token: input.refreshToken,
     client_id: input.client.clientId,
   });
-  if (input.client.clientSecret) body.set("client_secret", input.client.clientSecret);
+  const clientSecret = await effectiveClientSecret(input.client);
+  if (clientSecret) body.set("client_secret", clientSecret);
   return tokenRequest({
     spec: input.spec,
     client: input.client,
