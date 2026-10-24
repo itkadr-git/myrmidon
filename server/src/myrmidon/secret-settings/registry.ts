@@ -140,6 +140,33 @@ export const INSTANCE_SECRET_SETTINGS: readonly InstanceSecretSettingDescriptor[
     description: "Bearer token the board presents to the browser screen-console node",
     consumers: ["browser-console"],
   },
+  // myrmidon(SETTINGS-UI E2.7): telemetry and cloud connector credentials. Auth, handoff and
+  // signing secrets are deliberately absent (bootstrap, env only): see
+  // docs/myrmidon/e2-secret-coverage-1.6.6.md.
+  {
+    name: "feedback_export.backend_token",
+    envOverride: "MYRMIDON_FEEDBACK_EXPORT_BACKEND_TOKEN",
+    description: "Bearer token for the feedback/telemetry export backend (one token for both URLs)",
+    consumers: ["feedback-export"],
+  },
+  {
+    name: "cloud.onedrive.client_secret",
+    envOverride: "MYRMIDON_CLOUD_ONEDRIVE_CLIENT_SECRET",
+    description: "OAuth client secret of the OneDrive app",
+    consumers: ["cloud-connector"],
+  },
+  {
+    name: "cloud.google_drive.client_secret",
+    envOverride: "MYRMIDON_CLOUD_GOOGLE_DRIVE_CLIENT_SECRET",
+    description: "OAuth client secret of the Google Drive app",
+    consumers: ["cloud-connector"],
+  },
+  {
+    name: "cloud.yandex_disk.client_secret",
+    envOverride: "MYRMIDON_CLOUD_YANDEX_DISK_CLIENT_SECRET",
+    description: "OAuth client secret of the Yandex Disk app",
+    consumers: ["cloud-connector"],
+  },
 ];
 
 /** Consumer parts append their dynamic families here. */
