@@ -69,10 +69,18 @@ export function instanceSecretSettingsRoutes(
       const result = await svc.migrate({
         apply: req.body.apply === true,
         companyId: req.body.companyId,
-        onBound: async (name, secretId) => {
-          await audit(req, "instance.secret_setting.migrated", name, secretId);
-        },
       });
+      if (!result.dryRun) {
+        for (const row of result.rows) {
+          if (row.outcome === "bound") {
+            try {
+              await audit(req, "instance.secret_setting.migrated", row.name, row.secretId ?? null);
+            } catch {
+              // Migration and audit are independent best-effort effects; don't leak values.
+            }
+          }
+        }
+      }
       res.json(result);
     },
   );

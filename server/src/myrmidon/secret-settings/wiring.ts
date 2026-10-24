@@ -59,12 +59,12 @@ export function createDbInstanceSecretSettingStore(db: Db): InstanceSecretSettin
       return row ? { name: row.name, status: row.status, companyId: row.companyId } : null;
     },
     async createSecret(input) {
-    const created = await secrets.create(input.companyId, {
-      name: input.name,
-      provider: "local_encrypted",
-      value: input.value,
-      description: input.description,
-    });
+      const created = await secrets.create(input.companyId, {
+        name: input.name,
+        provider: "local_encrypted",
+        value: input.value,
+        description: input.description,
+      });
       return created.id;
     },
     async findSecretByName(companyId, name) {
