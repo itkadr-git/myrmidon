@@ -43,6 +43,9 @@ function make(env: NodeJS.ProcessEnv = {}) {
     async describeSecret() {
       return { name: secret.name, status: secret.status, companyId: COMPANY };
     },
+    async createSecret() {
+      return SECRET;
+    },
     async setBinding(name, secretId) {
       const b = { companyId: COMPANY, secretId };
       bindings.set(name, b);
@@ -193,6 +196,7 @@ describe("runner ACPX Codex auth JSON path", () => {
         let b: InstanceSecretBinding | null = null;
         return {
           getBinding: async () => b,
+          createSecret: async () => SECRET,
           resolveValue: async () => REF_VALUE,
           describeSecret: async () => ({ name: "codex", status: "active", companyId: COMPANY }),
           setBinding: async (_n: string, id: string) => (b = { companyId: COMPANY, secretId: id }),
