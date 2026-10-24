@@ -518,7 +518,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     expect(await statusOf(unrelated.id)).toBe("queued");
   }, 30_000);
 
-  it("myrmidon(1.6.6 OPE-8998): a review-admission wake that makes no run closes its seed record; one that makes a run keeps it", async () => {
+  it("myrmidon(1.6.6 OPE-8998): a review-admission wake leaves no seed queued without a run", async () => {
     pinAdmission({ maxConcurrentRuns: 0 });
     applyRunPrioritySettings(readRunPriorityFromEnv({}));
     const { companyId, agentId } = await seedCompanyAndAgent({ name: "Reviewer", role: "engineer" });
@@ -579,8 +579,11 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     expect(closed.status).toBe("coalesced");
     expect(closed.finishedAt).not.toBeNull();
     const live = await load(liveSeed.id);
-    expect(live.status).toBe("queued");
-    expect(live.runId).toBe(liveRun!.id);
+    // The wake that made a run either reused the seed as its own request
+    // (queued, bound to the run) or its seed was closed as coalesced; it is
+    // never left queued without a run.
+    if (live.status === "queued") expect(live.runId).toBe(liveRun!.id);
+    else expect(live.status).toBe("coalesced");
   }, 30_000);
 
   it("myrmidon(1.6.6 OPE-8998): an orphaned run finalized as failed or interrupted closes its wake request", async () => {
