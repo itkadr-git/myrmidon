@@ -184,7 +184,7 @@ export function verifyLicense(
     watermark: watermark as string | null,
     ...(typeof payload.id === "string" ? { id: payload.id } : {}),
   };
-  return { valid: true, reason: "ok", payload: result, kid: typeof payload.kid === "string" ? payload.kid : keyId(signer) };
+  return { valid: true, reason: "ok", payload: result, kid: typeof payload.kid === "string" ? payload.kid : null, signerKid: keyId(signer) };
 }
 
 // --- MYRQ1 license request ---------------------------------------------------

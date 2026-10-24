@@ -144,7 +144,7 @@ export function moduleStatuses(input: {
     });
     if (
       result.valid &&
-      input.denyList?.revoked({ licenseId: result.payload?.id, instanceId: input.installId, kid: result.kid })
+      input.denyList?.revoked({ licenseId: result.payload?.id, instanceId: input.installId, kid: result.signerKid })
     ) {
       // Shown as "invalid" with the support code `revoked` (no new UI state).
       return { module, installed, state: "invalid" as const, reason: "revoked" as const, expires: null };
