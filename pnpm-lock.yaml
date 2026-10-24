@@ -973,7 +973,7 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.1122.0
         version: 3.1122.0
-      '@paperclipai/corpus':
+      '@myrmidon/corpus':
         specifier: workspace:*
         version: link:../packages/corpus
       '@chat-adapter/discord':
