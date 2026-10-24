@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   createDb,
@@ -52,6 +52,15 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
+  beforeEach(() => {
+    mockRejectFirstComment.value = false;
+    mockAddComment.mockReset();
+    mockAddComment.mockImplementation(async (...args: Parameters<ReturnType<typeof issueService>["addComment"]>) => {
+      const comment = await issueService(db).addComment(...args);
+      return comment;
+    });
+  });
+
   afterEach(async () => {
     await db.delete(providerUsageWarningDeliveries);
     await db.delete(providerUsageSnapshots);
@@ -59,12 +68,6 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
     await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(companies);
-    mockRejectFirstComment.value = false;
-    mockAddComment.mockReset();
-    mockAddComment.mockImplementation(async (...args: Parameters<ReturnType<typeof issueService>["addComment"]>) => {
-      const comment = await issueService(db).addComment(...args);
-      return comment;
-    });
   });
 
   afterAll(async () => {
