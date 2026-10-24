@@ -6,7 +6,7 @@
 
 [![Последний выпуск](https://img.shields.io/github/v/release/itkadr-git/myrmidon?sort=semver&label=%D1%80%D0%B5%D0%BB%D0%B8%D0%B7)](https://github.com/itkadr-git/myrmidon/releases/latest)
 
-[Что это](#что-такое-myrmidon) &middot; [Зачем](#зачем-myrmidon) &middot; [Быстрый старт](#быстрый-старт--развёртывание) &middot; [Архитектура](#архитектура-одним-взглядом) &middot; [Настройка](#настройка) &middot; [Что умеет сегодня](#что-умеет-сегодня) &middot; [Идея](#идея-модель-муравейника) &middot; [Путь к 2.0](#куда-мы-идём-путь-к-20) &middot; [Обновление](#обновление)
+[Что это](#что-такое-myrmidon) &middot; [Адресация агентов в Telegram](docs/myrmidon/guides/telegram-alias-addressing.ru.md) &middot; [Зачем](#зачем-myrmidon) &middot; [Быстрый старт](#быстрый-старт--развёртывание) &middot; [Архитектура](#архитектура-одним-взглядом) &middot; [Настройка](#настройка) &middot; [Что умеет сегодня](#что-умеет-сегодня) &middot; [Идея](#идея-модель-муравейника) &middot; [Путь к 2.0](#куда-мы-идём-путь-к-20) &middot; [Обновление](#обновление)
 
 [English](README.md) &middot; Русский
 

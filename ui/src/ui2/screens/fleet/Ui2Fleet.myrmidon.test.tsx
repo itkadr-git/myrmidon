@@ -7,11 +7,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Ui2Fleet } from "./Ui2Fleet";
 import { Ui2I18nProvider } from "../../i18n/Ui2I18n";
+import { useCompany } from "@/context/CompanyContext";
 
 const mockFleetApi = vi.hoisted(() => ({ dashboard: vi.fn(), sites: vi.fn() }));
 vi.mock("@/api/fleet", () => ({ fleetApi: mockFleetApi }));
 vi.mock("@/context/CompanyContext", () => ({
-  useCompany: () => ({ selectedCompanyId: "company-1", selectedCompany: { id: "company-1" } }),
+  useCompany: vi.fn(() => ({ selectedCompanyId: "company-1", selectedCompany: { id: "company-1" } })),
 }));
 
 async function flushReact() {
@@ -65,7 +66,7 @@ describe("myrmidon(UI2) Ui2Fleet screen parity", () => {
   it("loads the dashboard and renders host/service statuses", async () => {
     await renderScreen();
     expect(mockFleetApi.dashboard).toHaveBeenCalledWith("company-1");
-    expect(container.textContent).toContain("Server fleet");
+    expect(container.textContent).toContain("Servers");
     expect(container.textContent).toContain("node-a");
     expect(container.textContent).toContain("worker-a");
     expect(container.textContent).toContain("Running");
@@ -74,8 +75,31 @@ describe("myrmidon(UI2) Ui2Fleet screen parity", () => {
   it("renders the empty state in Russian", async () => {
     mockFleetApi.dashboard.mockResolvedValue({ ok: true, generatedAt: "2026-10-20T00:00:00.000Z", sources: [], hosts: [], containers: [] });
     await renderScreen("ru");
-    expect(container.textContent).toContain("Флот серверов");
+    expect(container.textContent).toContain("Серверы");
     expect(container.textContent).toContain("Ресурсов флота пока нет");
+  });
+
+  it("shows monitoring source errors instead of the empty state", async () => {
+    mockFleetApi.dashboard.mockResolvedValue({ ok: false, generatedAt: "2026-10-20T00:00:00.000Z", sources: [{ name: "zabbix", ok: false, latency_ms: null, error: "not configured" }], hosts: [], containers: [] });
+    await renderScreen();
+    expect(container.textContent).toContain("Monitoring is not configured or is unavailable.");
+    expect(container.textContent).toContain("not configured");
+    expect(container.textContent).not.toContain("No fleet resources yet");
+  });
+
+  it("shows the generic monitoring message when ok=false and no source has an error", async () => {
+    mockFleetApi.dashboard.mockResolvedValue({ ok: false, generatedAt: "2026-10-20T00:00:00.000Z", sources: [], hosts: [], containers: [] });
+    await renderScreen();
+    expect(container.textContent).toContain("Monitoring is not configured or is unavailable.");
+    expect(container.textContent).toContain("Monitoring data is unavailable.");
+    expect(container.textContent).not.toContain("No fleet resources yet");
+  });
+
+  it("keeps loading while no company is selected", async () => {
+    vi.mocked(useCompany).mockReturnValueOnce({ selectedCompanyId: null, selectedCompany: null } as never);
+    await renderScreen();
+    expect(mockFleetApi.dashboard).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("No fleet resources yet");
   });
 
   it("renders an error with a retry action", async () => {
