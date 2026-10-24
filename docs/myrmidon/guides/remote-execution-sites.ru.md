@@ -452,3 +452,4 @@ curl -s --cacert ca.crt --cert client.crt --key client.key \
    SELECT site_name, kind, status, documents_imported, documents_skipped, error, started_at
    FROM myrmidon_fleet_memory_syncs ORDER BY started_at DESC LIMIT 20;
    ```
+5. **Боевой импорт `fleet-work` / `work` (П5) — отдельный ручной шаг ADM** в окне владельца; он **не** выполняется автоматически ни при старте, ни compose, ни lane синхронизации. Порядок: (а) поднять compose (шаг 1) и убедиться, что `hs-pg` healthy, а `hindsight-work` отвечает; (б) выполнить импорт П5 (выгрузка банков `fleet-work` и `work` из hindsight доски, `POST .../transfer/export`, затем `POST .../transfer/import?mode=restore` в `hindsight-work` площадки); (в) только после этого включить `MYRMIDON_FLEET_MEMORY_SYNC=1`, чтобы первая ночная синхронизация не встретила пустую память площадки.
