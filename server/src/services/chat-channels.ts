@@ -302,6 +302,11 @@ import { autoCloseOwnerDecisionOnOwnerComment } from "../myrmidon/owner-delivery
 // myrmidon(1.6.5-F21-A): the wording→decision mapping that writer uses. Same
 // parse as the task-comment hook, so «2) да» means option 2 in either place.
 import { classifyOwnerReplyText } from "../myrmidon/owner-reply/owner-reply-classifier.js";
+import { createOwnerReplyDeps } from "../myrmidon/owner-reply/owner-reply-execution.js";
+import {
+  handleTelegramOwnerReply,
+  loadRepliedInteractionIds,
+} from "../myrmidon/owner-reply/telegram-door.js";
 import {
   authorizeNativeChatReviewPresentation,
   NativeChatReviewPresentationContentionError,
@@ -17347,6 +17352,40 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           // (numbers, letters, the card's recommended option) instead of the
           // writer's built-in free-text fallback.
           deps: { heartbeat: options.heartbeat, classifyReply: classifyOwnerReplyText },
+        });
+      }
+      // myrmidon(1.6.6-U2-REPLY): the owner's text answer in the standing
+      // Telegram DM closes the card the bot explained there, attributed to the
+      // owner. A reply to a bot message is bound to the cards that message
+      // explained; with no reply, one open card closes and several are asked
+      // about. Never throws; the message still reaches the agent as usual.
+      if (
+        actorUserId &&
+        x8Dm.applies &&
+        endpoint.provider === "telegram" &&
+        !comment.sourceTrust &&
+        comment.body
+      ) {
+        const replyTarget = telegramReplyTargetMessageId(message.raw);
+        await handleTelegramOwnerReply(createOwnerReplyDeps(db), {
+          companyId: endpoint.companyId,
+          ownerUserId: actorUserId,
+          agentId: endpoint.assignedAgentId,
+          text: comment.body,
+          replyCommentId: comment.id,
+          sourceRef: `telegram-delivery:${activeDelivery.id}`,
+          at: comment.createdAt,
+          loadReplied: replyTarget
+            ? () =>
+                loadRepliedInteractionIds(db, {
+                  companyId: endpoint.companyId,
+                  endpointId: endpoint.id,
+                  conversationId: conversation.id,
+                  conversationIssueId: issue.id,
+                  agentId: endpoint.assignedAgentId,
+                  replyToProviderMessageId: replyTarget,
+                })
+            : null,
         });
       }
       // myrmidon(X8b): resume a paused bridged conversation on a literal
