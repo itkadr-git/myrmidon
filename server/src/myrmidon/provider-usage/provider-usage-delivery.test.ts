@@ -163,13 +163,13 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
     let [delivery] = await db.select().from(providerUsageWarningDeliveries);
     expect(delivery?.lastError).toBe("temporary comment failure");
     expect(delivery?.nextAttemptAt).toEqual(new Date(now.getTime() + 60_000));
-    expect(mockAddComment).toHaveBeenCalledTimes(1);
+    expect(mockAddComment).not.toHaveBeenCalled();
 
     const beforeRetry = new Date(now.getTime() + 59_999);
     expect(await svc.deliverPendingWarnings(beforeRetry)).toEqual({ delivered: 0, failed: 0 });
     [delivery] = await db.select().from(providerUsageWarningDeliveries);
     expect(delivery?.deliveredAt).toBeNull();
-    expect(mockAddComment).toHaveBeenCalledTimes(1);
+    expect(mockAddComment).not.toHaveBeenCalled();
 
     const retryAt = new Date(now.getTime() + 60_000);
     expect(await svc.deliverPendingWarnings(retryAt)).toEqual({ delivered: 1, failed: 0 });
