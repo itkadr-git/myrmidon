@@ -73,7 +73,7 @@ Resolution for a preconfigured OAuth client (a client id exists), first hit wins
 
 UI: the ref picker is the one from the E2 settings UI (#1736) over `/api/instance/secret-settings`; this part adds the registry rows it lists and no UI of its own.
 
-## E2.3 bot/container and fleet credentials (OPE-9036)
+## E2.3 bot/container and fleet credentials (OPE-9036, PR #1743)
 
 Finding: most names of this part are credentials of one bot (agent) of one company, or a pointer to such a credential. They already live as company secrets bound to the agent and resolved per agent with a binding check (`resolveEnvBindings` with the agent as consumer and a system actor). An instance-wide setting would give every bot the same value, so none is added for them. Two names are instance-wide tokens shared by the whole board; they become secret-ref settings.
 
