@@ -217,6 +217,36 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
     expect(promoted).toHaveLength(1);
   });
 
+  it("promotes a deferred wake when its finished run is keyed only by taskId", async () => {
+    const issueId = await seedIssue("todo");
+    await seedFinishedRun(issueId, { contextSnapshot: { taskId: issueId } });
+    const wakeId = await seedDeferredWake(issueId, { payload: { issueId } });
+
+    const result = await heartbeat.reconcileStrandedDeferredWakes();
+
+    expect(result.revisited).toBe(1);
+    expect((await wakeRow(wakeId)).status).not.toBe("deferred_issue_execution");
+  });
+
+  it("leaves the deferred wake alone while a live native run keyed by nativeIssueId owns the issue", async () => {
+    const issueId = await seedIssue("todo");
+    await seedFinishedRun(issueId);
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(), companyId, agentId, invocationSource: "automation", triggerDetail: "system",
+      status: "running", contextSnapshot: {}, nativeIssueId: issueId,
+      // older than the finished run, so the latest run is terminal and the
+      // reconcile reaches its live-run guard (the path this test pins)
+      createdAt: new Date(Date.now() - 9 * HOUR),
+    });
+    const wakeId = await seedDeferredWake(issueId, { payload: { issueId } });
+
+    await heartbeat.reconcileStrandedDeferredWakes();
+
+    expect((await wakeRow(wakeId)).status).toBe("deferred_issue_execution");
+    const promoted = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, wakeId));
+    expect(promoted).toHaveLength(0);
+  });
+
   it("promotes a deferred wake without comment ids on an open task whose lock is free", async () => {
     const issueId = await seedIssue("todo");
     await seedFinishedRun(issueId);
