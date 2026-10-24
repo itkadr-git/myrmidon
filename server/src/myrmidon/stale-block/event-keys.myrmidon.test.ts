@@ -88,4 +88,14 @@ describe("stale-block internal-path event keys", () => {
     expect(await reader(OTHER_ID, "some.other.gate")).toBe(true);
     expect(seen.called).toBe(0);
   });
+
+  it("OPE-9078: reads through the transaction handle when one is passed", async () => {
+    const root = { called: 0 };
+    const tx = { called: 0 };
+    const reader = createRecoveryLivenessEventReader(fakeDb([{ status: "active" }], root));
+    const txDb = fakeDb([{ status: "resolved" }], tx);
+    expect(await reader(OTHER_ID, recoveryLivenessEventKey(ISSUE_ID), txDb)).toBe(false);
+    expect(tx.called).toBe(1);
+    expect(root.called).toBe(0);
+  });
 });

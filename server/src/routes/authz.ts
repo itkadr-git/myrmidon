@@ -188,6 +188,19 @@ export function assertCompanyAccess(req: Request, companyId: string) {
 }
 
 /**
+ * myrmidon(1.6.6 OPE-8999): board actors only, and only a company owner/admin (active membership)
+ * or an instance admin. Viewers, plain members and agents get 403.
+ */
+export function assertCompanyAdmin(req: Request, companyId: string) {
+  assertBoard(req);
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+  assertCompanyAccess(req, companyId);
+  const membership = req.actor.memberships?.find((m) => m.companyId === companyId && m.status === "active");
+  if (membership?.membershipRole === "owner" || membership?.membershipRole === "admin") return;
+  throw forbidden("Company admin access required");
+}
+
+/**
  * Company permission check for BOTH actor types, following the
  * `assertCompanyPermission` precedent in `routes/access.ts`:
  *

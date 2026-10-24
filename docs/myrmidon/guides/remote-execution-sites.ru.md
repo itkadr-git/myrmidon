@@ -280,43 +280,67 @@
 
 ## 4. Регламент развёртывания и настройки оператором
 
-### 4.1 Требования к площадке
+### 4.1 Требования к площадке и PKI площадки
 
-1. **Сервер**: Linux VM (например, `myr-vm1`, 16+ ядер, 64 ГБ RAM, файловая система XFS с квотами в `/srv/myrmidon-xfs`).
-2. **Сеть**: Туннель IPsec между `vm-core` (`board.internal`) и `myr-vm1` (`fleetd.internal`). Порт `9100` не публикуется в публичную сеть.
-3. **Генерация токена**:
+1. **Сервер**: выделенная Linux VM с Docker (например, `myr-vm1`). XFS с проектными квотами в `/srv/myrmidon-xfs` желательна для дисковых лимитов ботов; на ext4 квот просто нет, а `volumeRoot` может указывать на любой каталог (например, `/srv/myrmidon-bots`).
+2. **Сеть**: доска должна достигать `fleetd` по его адресу `listen` (частная сеть или туннель). Порт `9100` не публикуется наружу; `listen` привязывается к адресу локальной сети, а не к `0.0.0.0`.
+3. **PKI площадки (mTLS обязателен)**: `fleetd` отдаёт только HTTPS, требует клиентский сертификат, подписанный site-CA, и поверх проверяет Bearer-токен. Без `siteCA`, `serverCert` и `serverKey` он не стартует. Команды выпуска в продукте нет; материал выпускается один раз на площадку через `openssl` на доверенном админ-хосте, в каталоге с правами `0700`, файлы ключей не печатать:
    ```bash
-   TOKEN=$(openssl rand -hex 32)
+   umask 077; mkdir site-myr-vm1 && cd site-myr-vm1
+   # CA площадки (3 года)
+   openssl ecparam -name prime256v1 -genkey -noout -out ca.key
+   openssl req -x509 -new -key ca.key -sha256 -days 1095 -subj "/CN=myrmidon-site-ca-myr-vm1" -out ca.crt
+   # серверный сертификат fleetd: SAN должен совпадать с хостом или IP в `url` при enroll
+   openssl ecparam -name prime256v1 -genkey -noout -out server.key
+   openssl req -new -key server.key -subj "/CN=fleetd-myr-vm1" -out server.csr
+   printf "subjectAltName=IP:192.0.2.10\nextendedKeyUsage=serverAuth\n" > server.ext
+   openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -sha256 -extfile server.ext -out server.crt
+   # клиентский сертификат доски
+   openssl ecparam -name prime256v1 -genkey -noout -out client.key
+   openssl req -new -key client.key -subj "/CN=myrmidon-board" -out client.csr
+   printf "extendedKeyUsage=clientAuth\n" > client.ext
+   openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -sha256 -extfile client.ext -out client.crt
+   # Bearer-токен (fleetd требует не менее 32 символов)
+   openssl rand -hex 32 > token
+   cat client.crt client.key > client.pem
+   openssl verify -CAfile ca.crt server.crt client.crt
    ```
+   Серверный и клиентский сертификаты живут 365 дней, CA три года; ротация ручная (перевыпустить, заменить файлы на площадке, обновить значение секрета). `ca.key` не держать ни на площадке, ни на доске.
 
 ---
 
 ### 4.2 Конфигурация site-agent (`myr-vm1`)
 
-Файл `/etc/myrmidon/fleetd.json` с правами `0600`:
+Скопируйте `ca.crt`, `server.crt` и `server.key` в `/etc/myrmidon/pki/` (ключ с правами `0600`), бинарник `fleetd` в `/usr/local/bin/fleetd`. Файл `/etc/myrmidon/fleetd.json` с правами `0600`. Файл читается с отклонением неизвестных ключей, поэтому имена должны быть точными:
 
 ```json
 {
   "siteId": "myr-vm1",
   "epoch": 1,
-  "listen": "0.0.0.0:9100",
-  "token": "<TOKEN>",
+  "listen": "192.0.2.10:9100",
+  "token": "<содержимое файла token>",
   "upstream": "/var/run/docker.sock",
+  "siteCA": "/etc/myrmidon/pki/ca.crt",
+  "serverCert": "/etc/myrmidon/pki/server.crt",
+  "serverKey": "/etc/myrmidon/pki/server.key",
+  "volumeRoot": "/srv/myrmidon-bots",
+  "network": "myrmidon-bots",
+  "images": ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
+  "boardAddress": "192.0.2.1:3100",
+  "boardExtraHost": "paperclip-server-1:192.0.2.1",
+  "gatewayBindIp": "192.0.2.10",
+  "gatewayPortStart": 18700,
+  "gatewayPortEnd": 18799,
   "bots": [
-    {
-      "botKey": "work-qa",
-      "maxMemoryMb": 4096,
-      "maxCpus": 2.0,
-      "maxPids": 512
-    },
-    {
-      "botKey": "work-finansist",
-      "maxMemoryMb": 4096,
-      "maxCpus": 2.0,
-      "maxPids": 512
-    }
+    { "botKey": "<UUID агента>", "maxMemoryMb": 4096, "maxCpus": 2.0, "maxPids": 512 }
   ]
 }
+```
+
+Примечания: список допустимых образов называется `images` (не `imageAllowlist`), принимаются только ссылки `repo@sha256:*`, теги отклоняются; без `gatewayPortStart`/`gatewayPortEnd` выдача порта падает с `gateway_port_exhausted`, без `volumeRoot` создание бота падает с `volume_root_not_configured`; `boardExtraHost` здесь — запись Docker `ExtraHosts` вида `имя:ip`; `bots[]` не может быть пустым и статичен (новый бот = правка файла и рестарт юнита). Проверка до запуска:
+
+```bash
+/usr/local/bin/fleetd --check-config --config /etc/myrmidon/fleetd.json
 ```
 
 Сервис systemd `/etc/systemd/system/myrmidon-fleetd.service`:
@@ -345,34 +369,46 @@ systemctl daemon-reload
 systemctl enable --now myrmidon-fleetd
 ```
 
-Проверка здоровья локально:
+Проверка здоровья с клиентским сертификатом (без него TLS-рукопожатие отклоняется, с сертификатом, но без токена ответ `401`):
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" http://fleetd.internal:9100/v1/health | jq .
+curl -s --cacert ca.crt --cert client.crt --key client.key \
+  -H "Authorization: Bearer $(cat token)" https://192.0.2.10:9100/v1/health | jq .
 ```
 
 ---
 
-### 4.3 Настройка на стороне доски (`vm-core`)
+### 4.3 Настройка на стороне доски (`vm-core`): регистрация площадки
 
-В переменной окружения `MYRMIDON_FLEET_HOSTS` на `vm-core`:
+Площадки регистрируются через API доски, без правок базы. `MYRMIDON_FLEET_HOSTS` — устаревший путь начальной загрузки: он принимает только адреса `http://` и не несёт mTLS-материал, для mTLS-площадки его не используют.
 
-```json
-MYRMIDON_FLEET_HOSTS='[
-  {
-    "name": "myr-vm1",
-    "url": "http://fleetd.internal:9100",
-    "tokenSecret": "fleetd-myr-vm1-token",
-    "hindsightUrl": "http://hindsight.internal:8890",
-    "llmBaseUrl": "http://llm.internal:4000",
-    "boardExtraHost": "paperclip-server-1",
-    "volumeRoot": "/srv/myrmidon-xfs/myrmidon-bots",
-    "network": "myrmidon-bots",
-    "imageAllowlist": ["ghcr.io/itkadr-git/myrmidon-bot@sha256:*"]
-  }
-]'
-```
-
-В Company Secrets доски регистрируется секрет `fleetd-myr-vm1-token`, содержащий токен площадки.
+1. Положите секреты в компанию (значения берутся из файлов и в запрос enroll не входят). Либо два секрета: `fleetd-myr-vm1-token` (токен) и `fleetd-myr-vm1-client` (`client.pem`: PEM-блоки сертификата и ключа или JSON `{"cert":"...","key":"..."}`), либо пара `fleetd-myr-vm1-client-cert` и `fleetd-myr-vm1-client-key`:
+   ```bash
+   jq -Rs '{name:"fleetd-myr-vm1-token", value:.}' < token \
+     | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
+   jq -Rs '{name:"fleetd-myr-vm1-client", value:.}' < client.pem \
+     | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
+   ```
+2. Зарегистрируйте площадку (только владелец/администратор компании или администратор экземпляра; viewer, обычные участники и агенты получают `403`). Необязательно добавьте `caFingerprint` (sha256 от `ca.crt`, `openssl x509 -in ca.crt -noout -fingerprint -sha256`), чтобы закрепить CA:
+   ```bash
+   jq -n --rawfile ca ca.crt '{
+     name: "myr-vm1",
+     url: "https://192.0.2.10:9100",
+     tokenSecret: "fleetd-myr-vm1-token",
+     clientCertSecretKey: "fleetd-myr-vm1-client",
+     caCert: $ca,
+     capacity: { maxCpus: 4, maxMemoryMb: 32768, maxBots: 5 },
+     gatewayPortStart: 18700,
+     gatewayPortEnd: 18799,
+     imageAllowlist: ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
+     hindsightUrl: "http://hindsight.internal:8890",
+     llmBaseUrl: "http://llm.internal:4000",
+     volumeRoot: "/srv/myrmidon-bots",
+     network: "myrmidon-bots"
+   }' | curl -sf -X POST "$BOARD/api/companies/$COMPANY/fleet/sites" \
+        -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
+   ```
+   Запрос отклоняется с `400`, если закреплённый отпечаток не совпал с `caCert`, клиентский сертификат в названном секрете не подписан `caCert`, адрес не вида `https://host[:port]`, CA не PEM-сертификат, названного секрета нет в компании, диапазон портов перевёрнут или `maxBots` больше числа портов; с `409`, если имя занято. `GET /api/companies/$COMPANY/fleet/sites` показывает площадки (ссылки и отпечаток CA, значений секретов нет); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` (только администраторы) удаляет площадку с ответом `204`, а пока на ней есть боты (`container.host`), отвечает `409`. Доска не подключается к площадке, у которой сохранённый CA перестал совпадать с отпечатком, записанным при регистрации. Доска подхватывает её за 30 секунд, рестарт не нужен.
+3. Диапазон портов шлюза в профиле дублирует `fleetd.json` для справки; авторитетен `fleetd.json`.
 
 ---
 
@@ -397,3 +433,23 @@ MYRMIDON_FLEET_HOSTS='[
 5. **План отката (Rollback)**:
    - При сбое у канарейки: вернуть карточку в ручной режим (`container.enabled = false`, `apiBaseUrl = http://fleetd.internal:18642`) либо перевести на локальный хост (`container.host = null`).
    - Данные на диске `/srv/myrmidon-xfs/myrmidon-bots` **никогда не удаляются**.
+
+---
+
+### 4.5 Память площадки (C-MEM): hindsight-work на площадке, реплика на доске
+
+Рабочая память площадки **первична на площадке**: её боты вспоминают и записывают в собственный `hindsight-work` и не ходят по связи к доске. Доска держит реплику в банке `fleet-work-replica`. Если связь рвётся, боты работают на локальной памяти, реплика догоняет после восстановления.
+
+1. **Поднимите сервис памяти** на площадке по каноническому compose `docker/site-memory/docker-compose.yml` (`hs-pg` с pgvector, затем `hindsight-work` на `127.0.0.1:8890`). Секретов и настроек в файле нет: положите `profile/hs-pg.env` и `profile/hindsight-work.env` рядом (образцы: `*.env.example` рядом с compose; формирование из профиля площадки на доске пока не автоматизировано), образы закреплены по digest в `profile/images.env`. Без закрепления `docker compose up` останавливается.
+   ```bash
+   docker compose -f docker-compose.yml --env-file profile/images.env up -d
+   docker compose -f docker-compose.yml ps   # hs-pg healthy, hindsight-work running
+   ```
+2. **Направьте fleetd на него** объектом `memory` в `fleetd.json`: `{"enabled": true, "url": "http://127.0.0.1:8890", "bank": "<банк площадки>"}`. После этого `POST /v1/memory/recall`, `/v1/memory/retain` и `/v1/memory/export` работают для ботов, зарегистрированных на площадке.
+3. **Включите синхронизацию на доске, только после импорта П5 из шага 5** (она работает внутри lane здоровья площадок, `MYRMIDON_SITE_HEALTH=1`): `MYRMIDON_FLEET_MEMORY_SYNC=1`, `MYRMIDON_FLEET_MEMORY_HINDSIGHT_URL=<hindsight доски>` и, если нужен, `MYRMIDON_FLEET_MEMORY_HINDSIGHT_TOKEN`. Банк реплики должен существовать (`fleet-work-replica` или банк из `MYRMIDON_FLEET_MEMORY_REPLICA_BANK`).
+4. **Что работает**: lane `myrmidon-memory-sync` раз в ночь (после часа `MYRMIDON_FLEET_MEMORY_SYNC_HOUR_UTC`, по умолчанию 20) копирует банк площадки в реплику слиянием, которое пропускает документы, уже лежащие в реплике; неудачная попытка повторяется каждые 15 минут до первой удачной. Живой переезд бота запускает ещё одну синхронизацию сразу после остановки исходного контейнера. Каждая попытка — строка `myrmidon_fleet_memory_syncs`:
+   ```sql
+   SELECT site_name, kind, status, documents_imported, documents_skipped, error, started_at
+   FROM myrmidon_fleet_memory_syncs ORDER BY started_at DESC LIMIT 20;
+   ```
+5. **Боевой импорт `fleet-work` / `work` (П5) — отдельный ручной шаг ADM** в окне владельца; он **не** выполняется автоматически ни при старте, ни compose, ни lane синхронизации. Порядок: (а) поднять compose (шаг 1) и убедиться, что `hs-pg` healthy, а `hindsight-work` отвечает; (б) выполнить импорт П5 (выгрузка банков `fleet-work` и `work` из hindsight доски, `POST .../transfer/export`, затем `POST .../transfer/import?mode=restore` в `hindsight-work` площадки); (в) только после этого включить `MYRMIDON_FLEET_MEMORY_SYNC=1`, чтобы первая ночная синхронизация не встретила пустую память площадки.

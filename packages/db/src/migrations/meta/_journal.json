@@ -2452,6 +2452,41 @@
       "when": 1792395512000,
       "tag": "0412_users_admin_a",
       "breakpoints": true
+    },
+    {
+      "idx": 413,
+      "version": "7",
+      "when": 1792395513000,
+      "tag": "0413_knowledge_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 414,
+      "version": "7",
+      "when": 1792395514000,
+      "tag": "0414_fleet_site_health_move_claim",
+      "breakpoints": true
+    },
+    {
+      "idx": 415,
+      "version": "7",
+      "when": 1792395515000,
+      "tag": "0415_activity_log_company_action_created_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 416,
+      "version": "7",
+      "when": 1792395516000,
+      "tag": "0416_fleet_memory_syncs",
+      "breakpoints": true
+    },
+    {
+      "idx": 417,
+      "version": "7",
+      "when": 1792399116000,
+      "tag": "0417_heartbeat_runs_provider_quota_idx",
+      "breakpoints": true
     }
   ]
 }

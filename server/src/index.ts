@@ -139,12 +139,14 @@ import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrm
 import { startProcessesSettings, createProcessSupervisor, reportReadyToSupervisor, wireSupervisorDrainHandler, type SupervisorListenerHandle } from "./myrmidon/processes/index.js"; // myrmidon(PROCS-1.1/1.2)
 import type { ProcessSupervisor } from "./myrmidon/processes/supervisor.js";
 import { resolveProcessesSettings } from "@myrmidon/shared";
+import { singletonProxyOptionsFor } from "./myrmidon/singleton-proxy/index.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 // myrmidon(PAUSE-GUARD): resumes operator pauses left older than a threshold
 import { createPauseGuardSweepFromHeartbeat } from "./myrmidon/pause-guard/index.js";
 import { startRunPriority } from "./myrmidon/run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { getBotContainerRuntime } from "./myrmidon/bot-containers/routes-wiring.js";
+import { registerSiteLostRunFinalizer } from "./myrmidon/bot-containers/site-health-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { initializeIdleStopService, shutdownIdleStopService } from "./myrmidon/idle-stop-startup.js";
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
 import {
@@ -263,6 +265,8 @@ export interface StartedServer {
   listenPort: number;
   apiUrl: string;
   databaseUrl: string;
+  processRole: ProcessRoleProfile["role"];
+  ownsBackgroundWork: boolean;
   shutdown: (signal?: "SIGINT" | "SIGTERM") => Promise<void>;
 }
 
@@ -1222,6 +1226,11 @@ async function startServerWithDatabaseTeardown(
     // periodic — the workers, exports, spools and plugin jobs stay with the
     // background role.
     backgroundWork: processRoleProfile.runsBackground,
+    // myrmidon(1.6.6 PROCS-1.5 / OPE-5412): only an api child forwards the
+    // single routes to the worker; null for `all` and `worker`.
+    singletonProxy: singletonProxyOptionsFor(processRoleProfile.role, {
+      readProcessesSetting: async () => (await instanceSettingsService(db).getGeneral()).processes,
+    }),
     processSupervisor,
     processBus,
     storageService,
@@ -2263,6 +2272,8 @@ async function startServerWithDatabaseTeardown(
     }
     await startMaintenanceMode(db as any); // myrmidon(R3): load open maintenance windows before startup recovery starts runs
     startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
+    // myrmidon(1.6.6 REMOTE-SITES-T4): the site-monitor lane finalizes the runs of a lost site through the heartbeat service of this process.
+    if (heartbeat && processRoleProfile.runsBackground) registerSiteLostRunFinalizer(heartbeat.finalizeSiteLostRun);
     startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
     // Initialize IDLE-STOP service after bot containers (needs the driver from runtime)
     const botContainerRuntime = getBotContainerRuntime();
@@ -3091,6 +3102,8 @@ async function startServerWithDatabaseTeardown(
     listenPort,
     apiUrl: configuredApiUrl,
     databaseUrl: activeDatabaseConnectionString,
+    processRole: processRoleProfile.role,
+    ownsBackgroundWork: processRoleProfile.runsBackground,
     shutdown: (signal = "SIGTERM") => shutdown(signal, false),
   };
   } catch (error) {

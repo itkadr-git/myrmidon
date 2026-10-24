@@ -46,6 +46,8 @@ import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime
 import { readBotCacheLayoutForBot, readSharedBotRuntimePath, startCloneReportCollection } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H11, 1.6.5-DOCKERGATE-A2A3-STORM)
 import { reportBotContainerEvent } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { startSiteScheduler } from "./site-scheduler-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
+import { startSiteHealth } from "./site-health-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
+import { isSiteHealthEnabled } from "./site-health-flag.js";
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import {
@@ -139,6 +141,12 @@ export interface BotContainersStartupPorts {
    * Its stop is folded into the stop of this run.
    */
   startSiteScheduler?: typeof startSiteScheduler;
+  /**
+   * myrmidon(1.6.6 REMOTE-SITES-T4): the site-monitor lane (30 s) and the replica lane (15 min).
+   * Opt-in (MYRMIDON_SITE_HEALTH=1), and only in a process that has a heartbeat service. Its
+   * stop is folded into the stop of this run.
+   */
+  startSiteHealth?: typeof startSiteHealth;
   log: BotContainersLog;
 }
 
@@ -170,6 +178,7 @@ const defaultPorts: BotContainersStartupPorts = {
   createFleetClientManager,
   bootstrapFleetSitesFromEnv,
   startSiteScheduler,
+  startSiteHealth,
   log: logger,
 };
 
@@ -207,6 +216,8 @@ export function startBotContainers(
   }
   // myrmidon(1.6.6 REMOTE-SITES-T5): after the runtime is registered, because a move uses it.
   const stopSiteScheduler = ports.startSiteScheduler?.(db, { env }) ?? null;
+  // myrmidon(1.6.6 REMOTE-SITES-T4): next to the scheduler; it reads the client manager's transports.
+  const stopSiteHealth = ports.startSiteHealth?.(db, { env, clientManager }) ?? null;
 
   let stopped = false;
   const stop = () => {
@@ -216,6 +227,7 @@ export function startBotContainers(
     stopCollector?.();
     clientManager.close();
     stopSiteScheduler?.();
+    stopSiteHealth?.();
     // Only clear the registry entry this run put there.
     if (ports.currentRuntime() === runtime) ports.registerRuntime(null);
     if (stopRunning === stop) stopRunning = null;
@@ -240,6 +252,7 @@ function build(
     const localDriver = ports.createDriver(driverConfig, db);
     const clientManager = (ports.createFleetClientManager ?? createFleetClientManager)({
       db,
+      keepDrainingClients: isSiteHealthEnabled(env),
       log: ports.log,
     });
 

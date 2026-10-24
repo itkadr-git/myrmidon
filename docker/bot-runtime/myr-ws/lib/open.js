@@ -290,6 +290,30 @@ function repoFromOrigin(git, dir) {
 
 // --- open ------------------------------------------------------------------
 
+/** Short directory suffix of a repository: `owner/name(.git)` -> `name`. */
+function repoShortName(repo) {
+  return repo.split("/")[1].replace(/\.git$/, "");
+}
+
+/**
+ * Where the copy of (key, repo) lives and the registry entry that already
+ * describes it. A scratch copy and a task's first copy sit at <root>/<key>; a
+ * task copy of another repository, while a copy of a different repository of the
+ * same key is present, goes to <root>/<key>.<name>.
+ */
+function resolveCopyDir(ctx, reg, { key, repo, scratch, klass }) {
+  const primary = path.join(scratch ? ctx.scratchRoot : ctx.workspaceRoot, key);
+  const sameKey = reg.entries.filter((e) => e.path === primary || (e.key === key && e.class === klass));
+  if (scratch || !repo) return { dir: primary, known: sameKey.find((e) => e.path === primary) || sameKey[0] };
+  const match =
+    sameKey.find((e) => e.repo === repo) || sameKey.find((e) => !e.repo && fs.existsSync(e.path));
+  if (match) return { dir: match.path, known: match };
+  const otherLive = sameKey.some((e) => e.repo && e.repo !== repo && fs.existsSync(e.path));
+  if (!otherLive) return { dir: primary, known: sameKey.find((e) => e.path === primary) };
+  const secondary = `${primary}.${repoShortName(repo)}`;
+  return { dir: secondary, known: reg.entries.find((e) => e.path === secondary) };
+}
+
 function makeCtx(deps = {}) {
   const env = deps.env || process.env;
   return {
@@ -317,17 +341,18 @@ async function open(request, deps = {}) {
   const ctx = makeCtx(deps);
   const { key, scratch } = request;
   let repo = request.repo;
-  const dir = path.join(scratch ? ctx.scratchRoot : ctx.workspaceRoot, key);
   const klass = scratch ? "G" : "E";
   const branch = scratch ? undefined : `${TASK_BRANCH_PREFIX}${key}`;
   const git = makeGit(ctx);
 
   // 1. Idempotence: a copy that is registered and present is returned as is.
+  //    One task may hold copies of several repositories (OPE-8946): the first sits at
+  //    /workspace/<KEY>, each further one next to it at /workspace/<KEY>.<name>.
   const reg = readRegistry(ctx);
-  const known = reg.entries.find((e) => e.path === dir || (e.key === key && e.class === klass));
+  const { dir, known } = resolveCopyDir(ctx, reg, { key, repo, scratch, klass });
   if (known && fs.existsSync(known.path)) {
     if (repo && known.repo && repo !== known.repo) {
-      throw usage(`${key} is already open for ${known.repo} at ${known.path}; close it before opening ${repo}`);
+      throw usage(`${dir} is already open for ${known.repo}; cannot open ${repo} there`);
     }
     return stripUndefined({
       ok: true,
@@ -495,6 +520,8 @@ async function runOpen(argv, deps = {}) {
 
 module.exports = {
   EXIT,
+  resolveCopyDir,
+  repoShortName,
   QUOTA_PREFIX,
   MyrWsError,
   parseOpenArgs,

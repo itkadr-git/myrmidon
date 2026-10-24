@@ -92,7 +92,7 @@ The split is configured from the board interface — **Instance → General →
 | `leaderLeaseTtlSec` | 5–600 | 30 | Leader lease TTL of the background role |
 | `liveEventsBus` | `local`, `pg` | `local` | How live events travel between processes |
 | `admissionStore` | `memory`, `db` | `memory` | Where run admission is decided |
-| `singletonProxy` | boolean | `true` | A non-leader process proxies single-process routes to the leader |
+| `singletonProxy` | boolean | `true` | An api process forwards the single routes (attention, plugins, bot-container, workspace-runtime) to the worker; counted in `myrmidon_board_singleton_proxy_total` |
 
 Read the effective values and the source of each (`settings` / `env` /
 `default`), plus the mode this build actually honours:

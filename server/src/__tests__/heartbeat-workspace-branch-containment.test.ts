@@ -26,7 +26,9 @@ import {
   issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
+  issueLabels,
   issues,
+  labels as labelsTable,
   projects,
   projectWorkspaces,
   workspaceOperations,
@@ -908,6 +910,8 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     // activity after the first cleanup pass observes all runs as non-active.
     await deleteHeartbeatRunsForCleanup(db);
     await db.delete(issueComments);
+    await db.delete(issueLabels);
+    await db.delete(labelsTable);
     await db.delete(issues);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -926,7 +930,10 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     await tempDb?.cleanup();
   }, 60_000);
 
-  it("blocks projectless isolated git-worktree issues before dispatch", async () => {
+  it.each<[string, string[]]>([
+    ["product issue", []],
+    ["engineer issue", ["needs-engineer"]],
+  ])("handles projectless isolated git-worktree %s before dispatch", async (kind, labels) => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -974,6 +981,23 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       },
     });
 
+    if (labels.length > 0) {
+      for (const name of labels) {
+        const labelId = randomUUID();
+        await db.insert(labelsTable).values({
+          id: labelId,
+          companyId,
+          name,
+          color: "#000000",
+        });
+        await db.insert(issueLabels).values({
+          issueId,
+          labelId,
+          companyId,
+        });
+      }
+    }
+
     const heartbeat = heartbeatService(db);
     const run = await heartbeat.wakeup(agentId, {
       source: "assignment",
@@ -989,9 +1013,10 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     const runRows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
     expect(runRows).toEqual([]);
 
-    const blockedIssue = await db
+    const resultingIssue = await db
       .select({
         status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
         executionAgentNameKey: issues.executionAgentNameKey,
@@ -999,8 +1024,23 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(blockedIssue).toEqual({
+    if (kind === "engineer issue") {
+      expect(resultingIssue).toEqual({
+        status: "todo",
+        assigneeAgentId: null,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+      });
+      const activity = await db.select({ action: activityLog.action })
+        .from(activityLog)
+        .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.engineer_workspace_requeued")));
+      expect(activity).toHaveLength(1);
+      return;
+    }
+    expect(resultingIssue).toEqual({
       status: "blocked",
+      assigneeAgentId: agentId,
       checkoutRunId: null,
       executionRunId: null,
       executionAgentNameKey: null,

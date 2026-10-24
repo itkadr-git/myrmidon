@@ -539,3 +539,118 @@ describe("site-registry — env bootstrap tenant scope", () => {
     expect(inserted.map((r) => r.companyId)).toEqual(["c1"]);
   });
 });
+
+// myrmidon(1.6.6 REMOTE-SITES-T4): a draining site keeps its client (its bots are managed there and the
+// return pass must reach it); a quarantined or disabled one loses it. The transport behind each client is exposed.
+describe("site-registry — client map and site status", () => {
+  const site = (name: string, status: string, url: string): FleetSite => ({
+    id: `id-${name}`,
+    companyId: "company-1",
+    name,
+    url,
+    tokenSecret: `${name}-token`,
+    status,
+    capacity: { maxCpus: 2, maxMemoryMb: 4096 },
+    profile: {},
+    enrolledAt: new Date(),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  it("keeps active and draining clients, drops quarantined ones, and exposes the transport of each kept client", async () => {
+    let sites = [
+      site("up", "active", "http://127.0.0.1:9101"),
+      site("drained", "draining", "http://127.0.0.1:9102"),
+      site("held", "quarantined", "http://127.0.0.1:9103"),
+    ];
+    const manager = createFleetClientManager({
+      db: { select: () => ({ from: () => Promise.resolve(sites) }) } as any,
+      keepDrainingClients: true,
+      readCompanySecret: async (_c, name) => `value-of-${name}`,
+      createDriver: (config) => fakeDriver(config.baseUrl),
+    });
+
+    const clients = await manager.refresh();
+    expect([...clients.keys()].sort()).toEqual([fleetSiteKey("company-1", "drained"), fleetSiteKey("company-1", "up")]);
+    expect(manager.getTransports?.().get(fleetSiteKey("company-1", "drained"))).toEqual({
+      baseUrl: "http://127.0.0.1:9102",
+      token: "value-of-drained-token",
+    });
+    expect(manager.getTransports?.().has(fleetSiteKey("company-1", "held"))).toBe(false);
+
+    // The monitor drains "up" and quarantines "drained": the client map follows the registry.
+    sites = [site("up", "draining", "http://127.0.0.1:9101"), site("drained", "quarantined", "http://127.0.0.1:9102")];
+    await manager.refresh();
+    expect([...manager.getClients().keys()]).toEqual([fleetSiteKey("company-1", "up")]);
+    expect(manager.getTransports?.().has(fleetSiteKey("company-1", "drained"))).toBe(false);
+    manager.close();
+    expect(manager.getTransports?.().size).toBe(0);
+  });
+
+  it("without keepDrainingClients (MYRMIDON_SITE_HEALTH off) a draining site loses its client, as before", async () => {
+    const sites = [site("up", "active", "http://127.0.0.1:9101"), site("drained", "draining", "http://127.0.0.1:9102")];
+    const manager = createFleetClientManager({
+      db: { select: () => ({ from: () => Promise.resolve(sites) }) } as any,
+      readCompanySecret: async (_c, name) => `value-of-${name}`,
+      createDriver: (config) => fakeDriver(config.baseUrl),
+    });
+    await manager.refresh();
+    expect([...manager.getClients().keys()]).toEqual([fleetSiteKey("company-1", "up")]);
+    manager.close();
+  });
+});
+
+
+describe("site-registry — CA pin and create", () => {
+  it("fingerprints a certificate and rejects garbage", async () => {
+    const { caCertFingerprint } = await import("./site-registry.js");
+    const { generateEphemeralTestPki, cleanupTestPki } = await import("./site-agent-pki.js");
+    const pki = generateEphemeralTestPki();
+    try {
+      expect(caCertFingerprint(pki.caCert)).toMatch(/^[0-9a-f]{64}$/);
+      expect(caCertFingerprint("nope")).toBeNull();
+    } finally {
+      cleanupTestPki(pki);
+    }
+  });
+
+  it("createFleetSite moves the registry version so a running board picks the site up", async () => {
+    const { createFleetSite } = await import("./site-registry.js");
+    const row = { id: "s1", companyId: "c", name: "x", url: "https://h:9100" };
+    const db = { insert: () => ({ values: () => ({ returning: async () => [row] }) }) } as never;
+    const before = getFleetRegistryVersion();
+    await createFleetSite(db, { companyId: "c", name: "x", url: "https://h:9100" });
+    expect(getFleetRegistryVersion()).toBeGreaterThan(before);
+  });
+
+  it("builds no client when the stored CA no longer matches its enrolled fingerprint", async () => {
+    const { generateEphemeralTestPki, cleanupTestPki } = await import("./site-agent-pki.js");
+    const { caCertFingerprint } = await import("./site-registry.js");
+    const pki = generateEphemeralTestPki();
+    try {
+      const mk = (fingerprint: string) =>
+        ({
+          id: "s1", companyId: "c", name: "x", url: "https://h:9100", status: "active", tokenSecret: "t",
+          caCert: pki.caCert, caCertFingerprint: fingerprint, capacity: {}, profile: {},
+          enrolledAt: new Date(), createdAt: new Date(), updatedAt: new Date(),
+        }) as unknown as FleetSite;
+      for (const [fp, expected] of [[caCertFingerprint(pki.caCert)!, 1], ["0".repeat(64), 0]] as const) {
+        const created: FleetdDriverConfig[] = [];
+        const manager = createFleetClientManager({
+          db: { select: () => ({ from: () => Promise.resolve([mk(fp)]) }) } as any,
+          readCompanySecret: async () => "tok",
+          createDriver: (c) => {
+            created.push(c);
+            return fakeDriver(c.baseUrl);
+          },
+          log: { warn: () => {}, info: () => {} } as any,
+        });
+        await manager.refresh();
+        expect(created).toHaveLength(expected);
+        manager.close();
+      }
+    } finally {
+      cleanupTestPki(pki);
+    }
+  });
+});
