@@ -64,8 +64,20 @@ export const CLOUD_OAUTH_SPECS: Record<CloudProviderId, OAuthProviderSpec> = {
 
 export interface OAuthClient {
   clientId: string;
+  /** Emergency environment value; wins over a bound secret ref. */
   clientSecret: string | null;
+  /**
+   * Server-side lookup of the client secret held as a secret ref (E2.5). Used only when
+   * `clientSecret` is empty, at token-request time, never at startup.
+   */
+  resolveClientSecret?: () => Promise<string | null>;
   redirectUri: string;
+}
+
+/** The secret to send to the token endpoint: emergency env first, then the bound ref. */
+export async function effectiveClientSecret(client: OAuthClient): Promise<string | null> {
+  if (client.clientSecret) return client.clientSecret;
+  return (await client.resolveClientSecret?.()) ?? null;
 }
 
 /**
@@ -75,6 +87,7 @@ export interface OAuthClient {
 export function readOAuthClients(
   env: NodeJS.ProcessEnv,
   redirectBase: string | null,
+  secretLookup?: (providerId: CloudProviderId) => Promise<string | null>,
 ): Partial<Record<CloudProviderId, OAuthClient>> {
   const clients: Partial<Record<CloudProviderId, OAuthClient>> = {};
   const definitions: Array<[CloudProviderId, string]> = [
@@ -88,6 +101,7 @@ export function readOAuthClients(
     clients[providerId] = {
       clientId,
       clientSecret: env[`MYRMIDON_CLOUD_${suffix}_CLIENT_SECRET`]?.trim() || null,
+      ...(secretLookup ? { resolveClientSecret: () => secretLookup(providerId) } : {}),
       redirectUri: `${(redirectBase ?? "").replace(/\/+$/, "")}/api/myrmidon/cloud-connector/oauth/callback`,
     };
   }
@@ -194,7 +208,8 @@ export async function exchangeCode(input: {
     redirect_uri: input.client.redirectUri,
     client_id: input.client.clientId,
   });
-  if (input.client.clientSecret) body.set("client_secret", input.client.clientSecret);
+  const clientSecret = await effectiveClientSecret(input.client);
+  if (clientSecret) body.set("client_secret", clientSecret);
   if (input.spec.usePkce && input.codeVerifier) body.set("code_verifier", input.codeVerifier);
   return tokenRequest({
     spec: input.spec,
@@ -218,7 +233,8 @@ export async function refreshTokenBundle(input: {
     refresh_token: input.refreshToken,
     client_id: input.client.clientId,
   });
-  if (input.client.clientSecret) body.set("client_secret", input.client.clientSecret);
+  const clientSecret = await effectiveClientSecret(input.client);
+  if (clientSecret) body.set("client_secret", clientSecret);
   return tokenRequest({
     spec: input.spec,
     client: input.client,
