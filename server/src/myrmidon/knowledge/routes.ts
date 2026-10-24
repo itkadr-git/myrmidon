@@ -534,15 +534,9 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
           ? await assertRuleGrade(req, companyId, item)
           : null;
         const approverKind = item.kind === "rule"
-          ? (item.approverKind ?? (checkedActorGrade === "admin" ? "adm" : checkedActorGrade))
+          ? (checkedActorGrade === "admin" ? "adm" : checkedActorGrade)
           : approverKindInput;
         assertApproverAuthority(req, companyId, approverKind);
-        const actorGrade = checkedActorGrade ?? approverKindInput;
-        if (actorGrade === null) {
-          throw forbidden("approving needs an operator, admin or owner membership of the company", {
-            code: "approver_kind_mismatch",
-          });
-        }
         if (item.approverKind !== null && approverKind !== item.approverKind) {
           throw forbidden("The actor's membership grade does not match the rule approver grade.", {
             code: "approver_kind_mismatch",

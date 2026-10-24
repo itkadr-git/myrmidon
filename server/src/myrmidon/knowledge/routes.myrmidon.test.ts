@@ -266,10 +266,10 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       .post(`${base}/items/rules/adm-only/approve`)
       .send({ approverKind: "adm", revisionId: "rev-2" });
     expect(res.status).toBe(200);
-    expect(res.body.item.approverKind).toBe("adm");
+    expect(res.body.item.approverKind).toBe("admin");
     expect(deps.module.approve).toHaveBeenCalledWith(
       "rules/adm-only",
-      expect.objectContaining({ kind: "adm" }),
+      expect.objectContaining({ kind: "admin" }),
       { revisionId: "rev-2" },
     );
   });
@@ -389,7 +389,7 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       .post(`${base}/items/rules/owner-only/approve`)
       .send({ approverKind: "adm", revisionId: "rev-2" });
     expect(res.status).toBe(403);
-    expect(res.body.code).toBe("approver_kind_mismatch");
+    expect(res.body.code).toBe("approver_authority_required");
     expect(deps.module.approve).not.toHaveBeenCalled();
   });
 
