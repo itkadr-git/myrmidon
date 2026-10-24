@@ -375,6 +375,7 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     const viewerRes = await request(app(deps, viewerActor)).post(`${base}/import`).set("Content-Type", "application/gzip").send(Buffer.from("x"));
     expect(viewerRes.status).toBe(403);
     expect(deps.module.importTree).not.toHaveBeenCalled();
+  });
 
   it("rejects a board user claiming ADM authority for an owner rule", async () => {
     const deps = makeDeps({ grants: true });
