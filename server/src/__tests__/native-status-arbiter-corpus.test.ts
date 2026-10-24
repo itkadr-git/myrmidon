@@ -2207,7 +2207,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
 
   it.each(["blocked", "done", "cancelled"])("dismisses the obsolete card without undoing a later %s status", async (status) => {
     const seeded = await seedPolicyReview();
-    await issueService(db).update(seeded.issueId, { status });
+    await issueService(db).update(seeded.issueId, status === "blocked" ? { status, unblockDescriptor: { owner: "board", action: "Test hold" } } : { status });
     const before = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
     await dismissObsoleteNativePolicyReviews(db, [seeded.runId]);
     const after = await db.select().from(issues).where(eq(issues.id, seeded.issueId));

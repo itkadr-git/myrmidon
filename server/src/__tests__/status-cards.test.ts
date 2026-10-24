@@ -546,6 +546,7 @@ describeEmbeddedPostgres("status card routes", () => {
     const staleIssue = await realIssuesSvc.create(company.id, {
       title: "Stale status-card update",
       status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Test hold" },
       priority: "medium",
       assigneeAgentId: summarizer.id,
       createdByUserId: "board-user",

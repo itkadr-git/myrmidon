@@ -23,7 +23,7 @@ import { workspaceFileResourceService } from "../workspace-file-resources.js";
 import { badRequest, forbidden } from "../../errors.js";
 import { searchRunnerApi } from "./runner-api-catalog.js";
 import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiFile } from "./runner-api-client.js";
-import { and, desc, eq, isNull, notInArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, notInArray } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   agents,
@@ -693,6 +693,16 @@ export class PaperclipRunnerToolAuthority {
         };
       }
       let deduplicated = false;
+      // myrmidon(BLOCKED-REASON): blocked only while a blocker is open; the
+      // service refuses a reasonless blocked, so a child whose blockers are all
+      // done is created as todo (a pending workspace sync-back re-blocks below).
+      const openBlockerRows = blockedByIssueIds.length > 0
+        ? await tx.select({ id: issues.id }).from(issues).where(and(
+            eq(issues.companyId, this.binding.companyId),
+            inArray(issues.id, blockedByIssueIds),
+            ne(issues.status, "done"),
+          ))
+        : [];
       const createInput = {
         projectId: nullableProviderId(input.projectId),
         initialPlan: nullableProviderId(input.initialPlan),
@@ -700,7 +710,7 @@ export class PaperclipRunnerToolAuthority {
         description: input.description === null || input.description === undefined
           ? null
           : requiredString(input.description),
-        status: blockedByIssueIds.length > 0 ? "blocked" as const : "todo" as const,
+        status: openBlockerRows.length > 0 ? "blocked" as const : "todo" as const,
         workMode: "standard" as const,
         priority,
         assigneeAgentId,
@@ -736,6 +746,19 @@ export class PaperclipRunnerToolAuthority {
           if (readyChild) {
             childStatus = readyChild.status;
             childStatusVersion = readyChild.statusVersion;
+          }
+        }
+      }
+      if (child.status === "todo" && !deduplicated && blockedByIssueIds.length > 0) {
+        const readiness = await issueService(tx).getDependencyReadiness(child.id, tx);
+        if (!readiness.isDependencyReady) {
+          const heldChild = await issueService(tx).update(child.id, {
+            status: "blocked",
+            actorAgentId: this.binding.agentId,
+          }, tx);
+          if (heldChild) {
+            childStatus = heldChild.status;
+            childStatusVersion = heldChild.statusVersion;
           }
         }
       }
