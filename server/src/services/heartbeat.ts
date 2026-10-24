@@ -25899,6 +25899,19 @@ export function heartbeatService(
               }
             }
             const nativeMcpServer = nativeMcpServers[0] ?? null;
+            // myrmidon(E2.8): instance secret-ref for the ACPX Codex auth, resolved server-side.
+            const runnerAcpxCodexAuthEnv = await resolveRunnerAcpxCodexAuthEnv(
+              createInstanceSecretSettingService(db),
+              {
+                existing: buildNativeProviderEnvironment(
+                  adapterEnv,
+                  process.env,
+                  executionWorkspace.cwd,
+                ),
+                managedCredentialFile: Boolean(managedAiRuntime),
+              },
+              logger,
+            );
             let sessionGoalControl = parseNativeSessionGoalControl(
               context.runnerGoalControl,
             );
@@ -26038,20 +26051,7 @@ export function heartbeatService(
                           process.env,
                           executionWorkspace.cwd,
                         ),
-                        ...(await resolveRunnerAcpxCodexAuthEnv(
-                          createInstanceSecretSettingService(db),
-                          {
-                            existing: {
-                              ...buildNativeProviderEnvironment(
-                                adapterEnv,
-                                process.env,
-                                executionWorkspace.cwd,
-                              ),
-                            },
-                            managedCredentialFile: Boolean(managedAiRuntime),
-                          },
-                          logger,
-                        )),
+                        ...runnerAcpxCodexAuthEnv,
                         ...(nativeGitHubBridge
                           ? {
                               PAPERCLIP_GITHUB_BROKER_URL:
