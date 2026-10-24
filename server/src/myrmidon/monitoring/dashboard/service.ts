@@ -174,6 +174,7 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
   // Merge: VM wins when it has the host, Zabbix-only hosts are appended.
   const hosts = [...vmHosts.values()];
   const mappedZabbixHosts = new Set<HostReading>();
+  let buildVpsCandidate: HostReading | null = null;
   for (const [instance, zabbixName] of Object.entries(deps.settings.zabbixHostMapping)) {
     const host = zabbixHosts.get(zabbixName);
     // Prometheus instances may carry a scrape port while the configured mapping
@@ -182,6 +183,9 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
     const vmHost = vmHosts.get(vmName);
     if (vmHost) {
       if (host) mappedZabbixHosts.add(host);
+      // A build/vps Zabbix host merged into a VM card still feeds the fleet rollup,
+      // even though its card now carries the VM instance name.
+      if (host && /build|vps/i.test(zabbixName)) buildVpsCandidate = vmHost;
       vmHost.cpuPercent ??= host?.cpuPercent ?? null;
       vmHost.memoryPercent ??= host?.memoryPercent ?? null;
       vmHost.swapPercent ??= host?.swapPercent ?? null;
@@ -229,7 +233,7 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
     } catch {
       // litellm readings are best-effort
     }
-    const buildHost = hosts.find((h) => /build|vps/i.test(h.name));
+    const buildHost = hosts.find((h) => /build|vps/i.test(h.name)) ?? buildVpsCandidate;
     if (buildHost) {
       vps = {
         cpuPercent: buildHost.cpuPercent,
