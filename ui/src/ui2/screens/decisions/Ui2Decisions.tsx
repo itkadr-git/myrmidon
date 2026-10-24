@@ -16,7 +16,8 @@ import type { Agent, AttentionItem, DecisionOption } from "@myrmidon/shared";
 import type { Decision } from "@/api/decisions";
 import { decisionsApi } from "@/api/decisions";
 import { attentionApi } from "@/api/attention";
-import { attentionBadgeCount } from "@/lib/attention";
+import { approvalsApi } from "@/api/approvals";
+import { isInlineResolvable } from "@/lib/attention";
 import { useNavigate } from "@/lib/router";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
@@ -79,11 +80,13 @@ export function Ui2Decisions() {
     return map;
   }, [agentsQuery.data]);
 
-  // The queue lists approvals and interactions as links into their context.
-  // Open decisions are not repeated here: they are the action cards below
-  // (decide / dismiss), and are counted in the header via deskBadgeCount.
+  // One queue with a typed row per waiting element: approval, decision or
+  // interaction. Approvals can be approved / rejected in place; the decision
+  // action cards (decide / dismiss with inputs) stay below.
   const waitingItems = useMemo(() => (attentionQuery.data?.items ?? []).filter((item) =>
-    item.sourceKind === "approval" || item.sourceKind === "issue_thread_interaction",
+    item.sourceKind === "approval" ||
+    item.sourceKind === "decision" ||
+    item.sourceKind === "issue_thread_interaction",
   ), [attentionQuery.data]);
 
   const decisions = useMemo(() => {
@@ -109,6 +112,12 @@ export function Ui2Decisions() {
         inputValues: input.values,
         idempotencyKey: crypto.randomUUID(),
       }),
+    onSuccess: invalidate,
+  });
+
+  const approvalMutation = useMutation({
+    mutationFn: (input: { approvalId: string; action: "approve" | "reject" }) =>
+      input.action === "approve" ? approvalsApi.approve(input.approvalId) : approvalsApi.reject(input.approvalId),
     onSuccess: invalidate,
   });
 
@@ -140,8 +149,8 @@ export function Ui2Decisions() {
   }
 
   const totalOpen = (openQuery.data ?? []).length;
-  // Same number as the shell chip: the server-side desk badge of the feed.
-  const queueCount = attentionBadgeCount(attentionQuery.data);
+  // The counter is the number of rows shown in the queue.
+  const queueCount = waitingItems.length;
   const nothingWaiting = waitingItems.length === 0 && totalOpen === 0;
 
   const openAttentionItem = (item: AttentionItem) => {
@@ -160,7 +169,15 @@ export function Ui2Decisions() {
           <Ui2EmptyStateView title={t("ui2.decisions.waiting.empty.title")} body={t("ui2.decisions.waiting.empty.body")} variant="done" />
         ) : (
           <div className="space-y-2" data-testid="ui2-decisions-waiting-list">
-            {waitingItems.map((item) => <WaitingItem key={item.id} item={item} onOpen={() => openAttentionItem(item)} />)}
+            {waitingItems.map((item) => (
+              <WaitingItem
+                key={item.id}
+                item={item}
+                onOpen={() => openAttentionItem(item)}
+                pending={approvalMutation.isPending && approvalMutation.variables?.approvalId === item.subject.id}
+                onResolve={(action) => approvalMutation.mutate({ approvalId: item.subject.id, action })}
+              />
+            ))}
           </div>
         )}
       </section>
@@ -414,11 +431,30 @@ function Ui2DecisionCard({
   );
 }
 
-function WaitingItem({ item, onOpen }: { item: AttentionItem; onOpen: () => void }) {
+function WaitingItem({
+  item,
+  onOpen,
+  onResolve,
+  pending,
+}: {
+  item: AttentionItem;
+  onOpen: () => void;
+  onResolve: (action: "approve" | "reject") => void;
+  pending: boolean;
+}) {
   const { t } = useUi2I18n();
   const label = item.sourceKind === "approval" ? t("ui2.decisions.waiting.approval") : item.sourceKind === "decision" ? t("ui2.decisions.waiting.decision") : t("ui2.decisions.waiting.interaction");
-  return <button type="button" className="ui2-decisions-waiting-item flex w-full items-center justify-between rounded-lg border border-border bg-card p-3 text-left hover:bg-accent" onClick={onOpen}>
-    <span><span className="mr-2 rounded bg-muted px-1.5 py-0.5 text-xs">{label}</span><span className="font-medium">{item.subject.title ?? item.whyNow}</span><span className="ml-2 text-xs text-muted-foreground">{item.originAgentName ?? ""}</span></span>
-    <span className="text-xs text-muted-foreground">{t("ui2.decisions.card.age", { age: ui2DecisionAge(item.createdAt) })}</span>
-  </button>;
+  const canResolve = item.sourceKind === "approval" && isInlineResolvable(item);
+  return <div className="ui2-decisions-waiting-item flex w-full items-center justify-between gap-2 rounded-lg border border-border bg-card p-3 hover:bg-accent">
+    <button type="button" className="ui2-decisions-waiting-open flex flex-1 items-center justify-between text-left" onClick={onOpen}>
+      <span><span className="mr-2 rounded bg-muted px-1.5 py-0.5 text-xs">{label}</span><span className="font-medium">{item.subject.title ?? item.whyNow}</span><span className="ml-2 text-xs text-muted-foreground">{item.originAgentName ?? ""}</span></span>
+      <span className="text-xs text-muted-foreground">{t("ui2.decisions.card.age", { age: ui2DecisionAge(item.createdAt) })}</span>
+    </button>
+    {canResolve ? (
+      <span className="flex gap-2">
+        <button type="button" className="ui2-waiting-approve rounded-md border border-border px-3 py-1 text-xs hover:bg-accent disabled:opacity-50" disabled={pending} onClick={() => onResolve("approve")}>{t("ui2.decisions.waiting.approve")}</button>
+        <button type="button" className="ui2-waiting-reject rounded-md border border-border px-3 py-1 text-xs hover:bg-accent disabled:opacity-50" disabled={pending} onClick={() => onResolve("reject")}>{t("ui2.decisions.waiting.reject")}</button>
+      </span>
+    ) : null}
+  </div>;
 }
