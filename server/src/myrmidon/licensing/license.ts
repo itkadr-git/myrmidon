@@ -107,7 +107,14 @@ export function verifyLicense(
   nowSeconds: number,
   publicKey: TrustedIssuerKey | readonly TrustedIssuerKey[],
   opts: { requiredModule?: string; requiredFeature?: string | null } = {},
-): { valid: boolean; reason: VerifyReason; payload?: LicensePayload; kid?: string | null } {
+): {
+  valid: boolean;
+  reason: VerifyReason;
+  payload?: LicensePayload;
+  kid?: string | null;
+  /** On `instance_mismatch`: the installation id the license was issued for. */
+  licenseInstanceId?: string;
+} {
   const fail = (reason: VerifyReason) => ({ valid: false, reason });
   if (!licenseText || !licenseText.trim()) return fail("no_license");
   const parts = licenseText.trim().split(".");
@@ -159,7 +166,7 @@ export function verifyLicense(
   if (expires !== null && !Number.isInteger(expires)) return fail("bad_payload");
   if (watermark !== null && typeof watermark !== "string") return fail("bad_payload");
   if (rev !== CONTRACT_REV) return fail("unsupported_rev");
-  if (pInstance !== instanceId) return fail("instance_mismatch");
+  if (pInstance !== instanceId) return { ...fail("instance_mismatch"), licenseInstanceId: pInstance };
   if (expires !== null && (expires as number) <= nowSeconds) return fail("expired");
   if (opts.requiredModule && !modules.includes(opts.requiredModule)) return fail("module_not_granted");
   const requiredFeature = opts.requiredFeature === undefined ? CORE_FEATURE : opts.requiredFeature;

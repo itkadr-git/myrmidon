@@ -45,7 +45,7 @@
 // the bounded retry follows the gateway's own hint.
 
 import { and, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
-import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 import { legacyControllerBootId } from "../services/legacy-controller-lease.js";
 

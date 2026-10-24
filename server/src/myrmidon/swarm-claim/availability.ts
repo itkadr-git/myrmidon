@@ -21,7 +21,7 @@
 // Neither read writes anything. A read that fails answers "available": the wake
 // layer still refuses the wake, and the matcher then tries the next agent.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { budgetService } from "../../services/budgets.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { readBudgetEnforcement } from "../budget-enforcement/settings.js";

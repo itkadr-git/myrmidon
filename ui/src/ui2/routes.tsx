@@ -21,6 +21,7 @@ import { Ui2LanguageSettings } from "./screens/settings/language/Ui2LanguageSett
 // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — a real ui2 screen, not
 // a placeholder (see screens/CommanderChatScreen.tsx).
 import { CommanderChatScreen } from "./screens/CommanderChatScreen";
+import { Ui2Fleet } from "./screens/fleet/Ui2Fleet";
 // myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): the knowledge module's own screens — the
 // reader of the knowledge store and the regulations of Autonomy.
 import { Ui2Knowledge } from "./screens/knowledge/Ui2Knowledge";
@@ -35,6 +36,7 @@ export type Ui2ScreenKey =
   | "settings-system"
   | "settings-language"
   | "commander-chat"
+  | "fleet"
   | "knowledge"
   | "knowledge-page"
   | "settings-autonomy-regulations";
@@ -62,6 +64,13 @@ function ui2Screen(element: ReactNode): ReactNode {
 }
 
 export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
+  {
+    key: "fleet",
+    path: "fleet",
+    titleKey: "ui2.screens.fleet",
+    element: ui2Screen(<Ui2Fleet />),
+    legacyPath: "/agents/all",
+  },
   {
     key: "decisions",
     path: "decisions",

@@ -15,7 +15,7 @@
 // or a number does not qualify, exactly like readBotContainerAgentConfig, which
 // the sweep applies to each row afterwards.
 
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidon/db";
 import { and, eq, ne, sql } from "drizzle-orm";
 import type { BotContainerAgent } from "./index.js";
 

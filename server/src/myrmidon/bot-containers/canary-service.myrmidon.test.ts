@@ -10,7 +10,7 @@
 //    pinned image in the card's place.
 
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { emptyBotCanaryDocument, type BotCanaryDocument } from "./canary-domain.js";
 import { botCanaryService, type BotCanaryRuntimePort, type BotCanaryServiceDeps } from "./canary-service.js";
 import { readBotCanarySettings, type BotCanarySettings } from "./canary-settings.js";

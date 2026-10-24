@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
+import { useTranslation } from "@/i18n";
 
 /** Shared by the task header and its Storybook composition. */
 export function TaskTreeControlMenuItems({
@@ -35,6 +36,7 @@ export function TaskTreeControlMenuItems({
   onCancel: () => void;
   onRestore: () => void;
 }) {
+  const { t } = useTranslation();
   const itemClass =
     "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 disabled:opacity-50 disabled:pointer-events-none";
   return (
@@ -42,13 +44,13 @@ export function TaskTreeControlMenuItems({
       {canPause ? (
         <button disabled={pending} className={itemClass} onClick={onPause}>
           <PauseCircle className="h-3 w-3" />
-          {scope === "leaf" ? "Pause work" : "Pause subtree"}
+          {scope === "leaf" ? t("area.shared-controls.task-tree-controls.menu.pauseWork") : t("area.shared-controls.task-tree-controls.menu.pauseSubtree")}
         </button>
       ) : null}
       {canResume ? (
         <button disabled={pending} className={itemClass} onClick={onResume}>
           <PlayCircle className="h-3 w-3" />
-          {scope === "leaf" ? "Resume work" : "Resume subtree"}
+          {scope === "leaf" ? t("area.shared-controls.task-tree-controls.menu.resumeWork") : t("area.shared-controls.task-tree-controls.menu.resumeSubtree")}
         </button>
       ) : null}
       {canCancel ? (
@@ -58,13 +60,13 @@ export function TaskTreeControlMenuItems({
           onClick={onCancel}
         >
           <XCircle className="h-3 w-3" />
-          Cancel subtree...
+          {t("area.shared-controls.task-tree-controls.menu.cancelSubtree")}
         </button>
       ) : null}
       {canRestore ? (
         <button disabled={pending} className={itemClass} onClick={onRestore}>
           <Repeat className="h-3 w-3" />
-          Restore subtree...
+          {t("area.shared-controls.task-tree-controls.menu.restoreSubtree")}
         </button>
       ) : null}
     </>
@@ -102,15 +104,15 @@ export function TaskTreeControlDialog({
   onRetry: () => void;
   onApply: () => void;
 }) {
+  const { t } = useTranslation();
   const cancel = mode === "cancel";
-  const tasks = `${affectedCount} task${affectedCount === 1 ? "" : "s"}`;
   const title = cancel
-    ? "Cancel subtree?"
+    ? t("area.shared-controls.task-tree-controls.dialog.cancelTitle")
     : mode === "restore"
-      ? "Restore subtree"
+      ? t("area.shared-controls.task-tree-controls.dialog.restoreTitle")
       : scope === "leaf"
-        ? "Resume work"
-        : "Resume subtree";
+        ? t("area.shared-controls.task-tree-controls.dialog.resumeWorkTitle")
+        : t("area.shared-controls.task-tree-controls.dialog.resumeSubtreeTitle");
   return (
     <Dialog
       open={open}
@@ -126,10 +128,12 @@ export function TaskTreeControlDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
             {loading
-              ? "Loading…"
+              ? t("common.loading")
               : cancel
-                ? `${tasks} will be cancelled.`
-                : `${tasks} will ${mode === "restore" ? "be restored" : "resume"}.`}
+                ? t("area.shared-controls.task-tree-controls.dialog.willCancel", { count: affectedCount })
+                : mode === "restore"
+                  ? t("area.shared-controls.task-tree-controls.dialog.willRestore", { count: affectedCount })
+                  : t("area.shared-controls.task-tree-controls.dialog.willResume", { count: affectedCount })}
           </DialogDescription>
         </DialogHeader>
         {error ? (
@@ -143,7 +147,7 @@ export function TaskTreeControlDialog({
               disabled={pending}
               onClick={onRetry}
             >
-              Retry preview
+              {t("area.shared-controls.task-tree-controls.dialog.retryPreview")}
             </Button>
           </div>
         ) : null}
@@ -155,7 +159,7 @@ export function TaskTreeControlDialog({
               disabled={pending || loading || affectedAgentCount === 0}
               onChange={(event) => onWakeAgentsChange(event.target.checked)}
             />
-            Wake affected agents ({affectedAgentCount})
+            {t("area.shared-controls.task-tree-controls.dialog.wakeAgents", { count: affectedAgentCount })}
           </label>
         ) : null}
         <DialogFooter>
@@ -164,7 +168,7 @@ export function TaskTreeControlDialog({
             disabled={pending}
             onClick={() => onOpenChange(false)}
           >
-            {cancel ? "Keep tasks" : "Close"}
+            {cancel ? t("area.shared-controls.task-tree-controls.dialog.keepTasks") : t("common.close")}
           </Button>
           <Button
             variant={cancel ? "destructive" : "default"}
@@ -172,11 +176,11 @@ export function TaskTreeControlDialog({
             onClick={onApply}
           >
             {pending
-              ? "Applying…"
+              ? t("area.shared-controls.task-tree-controls.dialog.applying")
               : cancel
-                ? `Cancel ${tasks}`
+                ? t("area.shared-controls.task-tree-controls.dialog.cancelTasks", { count: affectedCount })
                 : mode === "restore"
-                  ? `Restore ${tasks}`
+                  ? t("area.shared-controls.task-tree-controls.dialog.restoreTasks", { count: affectedCount })
                   : title}
           </Button>
         </DialogFooter>
@@ -199,6 +203,7 @@ export function TaskPauseNotice({
   className?: string;
   resumeLink?: ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       role="status"
@@ -208,7 +213,7 @@ export function TaskPauseNotice({
       )}
     >
       <span>
-        {scope === "subtree" ? "Subtree is paused." : "Task is paused."}
+        {scope === "subtree" ? t("area.shared-controls.task-tree-controls.notice.subtreePaused") : t("area.shared-controls.task-tree-controls.notice.taskPaused")}
       </span>
       {resumeLink ??
         (onResume ? (
@@ -218,7 +223,7 @@ export function TaskPauseNotice({
             disabled={pending}
             onClick={onResume}
           >
-            {scope === "subtree" ? "Resume subtree" : "Resume work"}
+            {scope === "subtree" ? t("area.shared-controls.task-tree-controls.menu.resumeSubtree") : t("area.shared-controls.task-tree-controls.menu.resumeWork")}
           </Button>
         ) : null)}
     </div>

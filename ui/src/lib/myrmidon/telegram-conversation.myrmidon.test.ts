@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@myrmidon/shared";
 import { isTelegramConversationIssue, TELEGRAM_CONVERSATION_USER_PREFIX } from "./telegram-conversation";
 
 type ConversationIssue = Pick<Issue, "conversationAgentId" | "conversationUserId">;

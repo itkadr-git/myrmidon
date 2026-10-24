@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { issues, issueWorkProducts, type Db } from "@paperclipai/db";
+import { issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { conflict } from "../../errors.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -29,6 +29,20 @@ function reference(product: GateProduct) {
     product.url,
     repo && number ? `${repo}#${number}` : null,
   ])[0] ?? null;
+}
+
+function noAccess(product: GateProduct, url?: string | null): never {
+  const link = url ?? product.url ?? "the linked pull request";
+  const ref = extractGitHubPullRequestReferences([link])[0] ?? null;
+  const repository = ref ? `${ref.owner}/${ref.repo}` : "неизвестный репозиторий";
+  throw conflict(`Не удаётся прочитать PR ${link}: у доски нет доступа к репозиторию ${repository} (настройте GitHub App/PAT)`, {
+    code: ISSUE_DONE_PULL_REQUEST_GATE,
+    reason: "repository_access_unavailable",
+    workProductId: product.id,
+    pullRequestUrl: url ?? product.url,
+    repository: ref ? repository : null,
+    retryable: true,
+  });
 }
 
 function block(product: GateProduct, url?: string | null): never {
@@ -80,7 +94,12 @@ export async function inspectIssueDonePullRequests(
           };
         }
       }
-      return { product, state: details.workProductState ?? "unknown", url: product.url };
+      return {
+        product,
+        state: details.workProductState ?? "unknown",
+        url: product.url,
+        ...(details.access === "denied" ? { accessDenied: true as const } : {}),
+      };
     } catch {
       return { product, state: "unknown" as const, url: product.url };
     }
@@ -95,6 +114,7 @@ export async function assertIssueCanBeDone(db: Db, companyId: string, issueId: s
 export function assertIssueDonePullRequestsSettled(states: Awaited<ReturnType<typeof inspectIssueDonePullRequests>>) {
   for (const entry of states) {
     if (entry.state === "superseded" || entry.state === "merged") continue;
+    if ("accessDenied" in entry && entry.accessDenied && entry.state === "unknown") noAccess(entry.product, entry.url);
     block(entry.product, entry.url);
   }
 }

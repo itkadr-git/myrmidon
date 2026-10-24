@@ -1,8 +1,8 @@
 // server/src/myrmidon/run-dispatch/index.ts
 //
-// myrmidon(1.6.6 RUN-DISPATCH, OPE-6977): part A of T1.4 — the run start dispatcher
+// myrmidon(1.6.6 RUN-DISPATCH, OPE-6443): part A of T1.4 — the run start dispatcher
 // and the 30 s resweep for "queued without running".
-// myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): part B — the role gate and the
+// myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): part B — the role gate and the
 // real `notify` mode over the process bus (T1.3, PROCS-1.3):
 //
 // - The dispatcher now knows the process role. A process that executes runs
@@ -51,7 +51,7 @@
 // second attempt sees the run no longer `queued`.
 
 import { and, asc, eq, gte, sql } from "drizzle-orm";
-import { companies, heartbeatRuns, type Db } from "@paperclipai/db";
+import { companies, heartbeatRuns, type Db } from "@myrmidon/db";
 import {
   DEFAULT_QUEUED_RESWEEP_SEC,
   loadRunDispatchSettings,
@@ -172,13 +172,13 @@ export interface RunStartDispatcherDeps {
   /** The worktree execution cutoff, when the host has one. */
   readCutoff?: () => Promise<Date | null>;
   /**
-   * myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): publish the `run_queued`
+   * myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): publish the `run_queued`
    * wakeup of the `notify` mode on the process bus (T1.3). The dispatcher owns
    * the decision to publish; this dep owns the wire.
    */
   requestRemoteStart?: (agentId: string) => Promise<void>;
   /**
-   * myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): the role gate of T1.1 —
+   * myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the role gate of T1.1 —
    * whether THIS process may execute runs. Absent (a single-process deployment
    * that never wires the role) is `true`: the default stays the vendor path.
    */
@@ -207,13 +207,25 @@ export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStart
       // behave exactly like main, whatever the role context says.
       return deps.startNextQueuedRunForAgent(agentId, options);
     }
-    // In notify mode every process publishes the wakeup. A worker starts the
-    // run only from its bus listener, which keeps this dispatcher from becoming
-    // an accidental inline path for API, heartbeat, or resweep callers.
-    // NOTIFY is only an accelerator; the worker resweep remains the correctness
-    // fallback (design OPE-5394 section 0 item 2).
+    // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the role gate of T1.1. In
+    // `notify` a process that must not execute runs (the api role) NEVER takes
+    // the vendor start path — it publishes `run_queued` and the executor's
+    // listener lifts the run. With no role context injected the process is
+    // treated as an api (part A reserved exactly this shape for the executor
+    // gate), so the default `notify` never starts locally: the resweep of the
+    // executor carries the run within its interval.
+    if ((deps.executesRuns?.() ?? false) !== true) {
+      await publishRemoteStart(agentId, runStartDispatch);
+      return [];
+    }
+    // `notify` on an executor: start inline — this process IS an executor — and
+    // ALSO publish `run_queued`, so the worker-side listener of the other
+    // executor processes can react without waiting for their own resweep.
+    // The local start does not wait for the publish: NOTIFY is the accelerator,
+    // never the carrier of correctness (design OPE-5394 section 0 item 2).
+    const started = await deps.startNextQueuedRunForAgent(agentId, options);
     await publishRemoteStart(agentId, runStartDispatch);
-    return [];
+    return started;
   };
 
   const publishRemoteStart = async (
@@ -287,7 +299,7 @@ export interface QueuedResweepArmDecision {
 /**
  * Whether this process arms the periodic resweep.
  *
- * myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): the arming rule now includes
+ * myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the arming rule now includes
  * the role gate of T1.1 (`role.runsBackground`): an api process never arms the
  * pass. The role is injected (not read from env here) so this module stays
  * usable in a deployment where T1.1 is not wired yet — absent means "arm", the
@@ -384,7 +396,7 @@ export function startQueuedResweepTimer(input: QueuedResweepTimerInput): () => v
 }
 
 // ---------------------------------------------------------------------------
-// myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): part B — the process-bus side
+// myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): part B — the process-bus side
 // of the `notify` mode (design OPE-5394 section 3, channel `run_queued`).
 // ---------------------------------------------------------------------------
 

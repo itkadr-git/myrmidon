@@ -3,7 +3,7 @@
 // One process-wide service: routes, the MCP guard registration and (part B)
 // the Guacamole console-token signing all share the same session state.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { secretService } from "../../services/secrets.js";
 import { browserConsoleService, type BrowserConsoleService } from "./service.js";

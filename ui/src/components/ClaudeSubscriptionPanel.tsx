@@ -1,4 +1,5 @@
-import type { QuotaWindow } from "@paperclipai/shared";
+import type { QuotaWindow } from "@myrmidon/shared";
+import { i18n, t as translate, useTranslation } from "@/i18n";
 import { cn, quotaSourceDisplayName } from "@/lib/utils";
 
 interface ClaudeSubscriptionPanelProps {
@@ -24,14 +25,14 @@ function normalizeLabel(text: string): string {
 function detailText(window: QuotaWindow): string | null {
   if (typeof window.detail === "string" && window.detail.trim().length > 0) return window.detail.trim();
   if (window.resetsAt) {
-    const formatted = new Date(window.resetsAt).toLocaleString(undefined, {
+    const formatted = new Date(window.resetsAt).toLocaleString(i18n.language, {
       month: "short",
       day: "numeric",
       hour: "numeric",
       minute: "2-digit",
       timeZoneName: "short",
     });
-    return `Resets ${formatted}`;
+    return translate("area.costs-budgets-1.claude-subscription-panel.resets", { time: formatted });
   }
   return null;
 }
@@ -56,6 +57,7 @@ export function ClaudeSubscriptionPanel({
   source = null,
   error = null,
 }: ClaudeSubscriptionPanelProps) {
+  const { t } = useTranslation();
   const ordered = orderedWindows(windows);
 
   return (
@@ -63,10 +65,10 @@ export function ClaudeSubscriptionPanel({
       <div className="flex items-start justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
           <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-            Anthropic subscription
+            {t("area.costs-budgets-1.claude-subscription-panel.title")}
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
-            Live Claude quota windows.
+            {t("area.costs-budgets-1.claude-subscription-panel.subtitle")}
           </div>
         </div>
         {source ? (
@@ -120,7 +122,7 @@ export function ClaudeSubscriptionPanel({
                 </div>
                 {window.usedPercent != null ? (
                   <div className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
-                    {window.usedPercent}% used
+                    {t("area.costs-budgets-1.claude-subscription-panel.percentUsed", { percent: window.usedPercent })}
                   </div>
                 ) : null}
               </div>

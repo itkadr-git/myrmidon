@@ -10,8 +10,8 @@
 // failure of one company is logged and does not stop the others; a tick whose
 // previous run is still going is skipped instead of stacking.
 
-import type { Db } from "@paperclipai/db";
-import { baselineMetricSnapshots, companies } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { baselineMetricSnapshots, companies } from "@myrmidon/db";
 import { isNotNull } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { computeBaselineMetrics, type BaselineMetricsResponse } from "./service.js";

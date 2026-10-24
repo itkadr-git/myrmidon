@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { BudgetLimitView } from "@paperclipai/shared";
+import type { BudgetLimitView } from "@myrmidon/shared";
 import { resolveEffectiveBudgetLimit } from "./store.js";
 
 const limit = (level: BudgetLimitView["level"], ref: string, amountCents: number): BudgetLimitView => ({
