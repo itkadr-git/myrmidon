@@ -47,6 +47,7 @@ type Draft = {
   inbound: Partial<TelegramNotifySettings["inbound"]>;
   escalations: Partial<TelegramNotifySettings["escalations"]>;
   proactivity: Partial<TelegramNotifySettings["proactivity"]>;
+  deploys: Partial<TelegramNotifySettings["deploys"]>;
 };
 
 const EMPTY_DRAFT: Draft = {
@@ -55,6 +56,7 @@ const EMPTY_DRAFT: Draft = {
   inbound: {},
   escalations: {},
   proactivity: {},
+  deploys: {},
 };
 
 /** Machine values look machine-made: chat/topic ids and field paths stay monospace. */
@@ -441,6 +443,40 @@ export function Ui2TelegramNotifySettings() {
               value={effective("proactivity", "rarelyMaxPerDay")}
               disabled={effective("proactivity", "mode") !== "rarely"}
               onChange={(event) => setField("proactivity", "rarelyMaxPerDay", Number(event.target.value))}
+            />
+          </label>
+        </div>
+      </Ui2Section>
+
+      <Ui2Section title={t("ui2.settings.tgNotify.deploys.title")} footer={t("ui2.settings.tgNotify.deploys.hint")}>
+        {sectionHead("deploys", effective("deploys", "enabled"), t("ui2.settings.tgNotify.deploys.title"))}
+        <div className="ui2-tn-fields flex flex-col gap-3">
+          <label className="ui2-tn-field flex flex-wrap items-center justify-between gap-3">
+            <span className="ui2-tn-field-name text-sm">{t("ui2.settings.tgNotify.deploys.enabled")}</span>
+            <input
+              type="checkbox"
+              checked={effective("deploys", "enabled")}
+              onChange={(event) => setField("deploys", "enabled", event.target.checked)}
+            />
+          </label>
+          <label className="ui2-tn-field flex flex-wrap items-center justify-between gap-3">
+            <span className="ui2-tn-field-name text-sm">{t("ui2.settings.tgNotify.deploys.chatId")}</span>
+            <input
+              type="text"
+              className="ui2-tn-text-input w-48 rounded-md border border-input bg-background px-2 py-1 font-mono text-sm"
+              value={effective("deploys", "chatId") ?? ""}
+              placeholder="—"
+              onChange={(event) => setField("deploys", "chatId", event.target.value === "" ? null : event.target.value)}
+            />
+          </label>
+          <label className="ui2-tn-field flex flex-wrap items-center justify-between gap-3">
+            <span className="ui2-tn-field-name text-sm">{t("ui2.settings.tgNotify.deploys.topicId")}</span>
+            <input
+              type="text"
+              className="ui2-tn-text-input w-48 rounded-md border border-input bg-background px-2 py-1 font-mono text-sm"
+              value={effective("deploys", "topicId") ?? ""}
+              placeholder="—"
+              onChange={(event) => setField("deploys", "topicId", event.target.value === "" ? null : event.target.value)}
             />
           </label>
         </div>
