@@ -92,7 +92,7 @@ describe("InstanceSecretSettingsPanel", () => {
     render();
     await flush();
 
-    const select = container.querySelector<HTMLSelectElement>(`#secret-setting-select-${NAME}`)!;
+    const select = container.querySelector<HTMLSelectElement>(`[id="secret-setting-select-${NAME}"]`)!;
     expect([...select.options].map((option) => option.value)).toEqual(["", "s-1", "s-2"]);
     const save = container.querySelector<HTMLButtonElement>(`[data-testid="secret-setting-save-${NAME}"]`)!;
     expect(save.disabled).toBe(true);
@@ -116,7 +116,7 @@ describe("InstanceSecretSettingsPanel", () => {
     await flush();
 
     expect(container.querySelector(`[data-testid="secret-setting-source-${NAME}"]`)!.textContent).toContain("first");
-    const select = container.querySelector<HTMLSelectElement>(`#secret-setting-select-${NAME}`)!;
+    const select = container.querySelector<HTMLSelectElement>(`[id="secret-setting-select-${NAME}"]`)!;
     flushSync(() => {
       select.value = "s-2";
       select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -151,7 +151,7 @@ describe("InstanceSecretSettingsPanel", () => {
     mockApi.setRef.mockRejectedValue(new Error("leaky-server-message-value"));
     render();
     await flush();
-    const select = container.querySelector<HTMLSelectElement>(`#secret-setting-select-${NAME}`)!;
+    const select = container.querySelector<HTMLSelectElement>(`[id="secret-setting-select-${NAME}"]`)!;
     flushSync(() => {
       select.value = "s-1";
       select.dispatchEvent(new Event("change", { bubbles: true }));
