@@ -133,10 +133,13 @@ function makeDeps(overrides: {
 }
 
 function app(deps: ReturnType<typeof makeDeps>, actor: unknown) {
+  const scopedActor = actor && typeof actor === "object"
+    ? { ...(actor as Record<string, unknown>), companyIds: [COMPANY_ID] }
+    : actor;
   const server = express();
   server.use(express.json());
   server.use((req, _res, next) => {
-    (req as unknown as { actor: unknown }).actor = actor;
+    (req as unknown as { actor: unknown }).actor = scopedActor;
     next();
   });
   server.use("/api", knowledgeRoutes(deps));
