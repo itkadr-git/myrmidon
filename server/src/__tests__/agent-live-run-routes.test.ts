@@ -724,7 +724,7 @@ describe("agent live run routes", () => {
       undefined,
       undefined,
       false,
-      "board:local-board:member",
+      '["board:local-board:user",["company-1"],null]',
     );
     expect(mockHeartbeatService.list).not.toHaveBeenCalled();
     expect(mockRunSecretRedactionRegistry.redactForRuns).not.toHaveBeenCalled();

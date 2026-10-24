@@ -583,7 +583,7 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(304);
     expect(res.text).toBe("");
-    expect(mockAgentService.listSummaries).not.toHaveBeenCalled();
+    expect(mockAgentService.listSummaries).toHaveBeenCalledWith(companyId);
     expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledOnce();
   }, 20_000);
 
