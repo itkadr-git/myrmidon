@@ -1,0 +1,23 @@
+# E2.7 auth, handoff, telemetry and bootstrap credentials (OPE-9040)
+
+Basis: main after the shared resolver (#1730) plus this PR. Source-only review; no environment or production value was read, rotated or changed.
+
+Decision (ADM, 24.10, on behalf of the owner; question 268d4ec3): secrets the board needs BEFORE it can reach the secret store, or to decrypt it, or to authenticate a caller before any actor/RBAC context exists, are bootstrap: environment (or mounted file) only, never moved into the database, never registered as instance secret settings. Everything else (telemetry tokens, external API secrets) goes through the resolver per the contract: scope, then emergency env override, then bound ref. The registry test guards this: no bootstrap name can be registered.
+
+Tests: `server/src/myrmidon/secret-settings/consumers.myrmidon.test.ts` (per registered name: missing ref, denied consumer, change, revoke/inactive, env priority, no value in status/plan/errors; feedback upload wiring).
+
+| E1 name | Evidence | Disposition |
+|---|---|---|
+| `MYRMIDON_FEEDBACK_EXPORT_BACKEND_TOKEN`, `MYRMIDON_TELEMETRY_BACKEND_TOKEN` | `config.ts:174-177` (one field, feedback then telemetry), `services/feedback-share-client.ts` | Value, resolver. One unified setting `feedback_export.backend_token` (consumer `feedback-export`); the config contract (one token for both URL aliases, feedback name first) is kept, not split. Env from either name wins; otherwise the ref is resolved per upload. Env override documented as `MYRMIDON_FEEDBACK_EXPORT_BACKEND_TOKEN` (alias `MYRMIDON_TELEMETRY_BACKEND_TOKEN` keeps working through config). |
+| `MYRMIDON_CLOUD_ONEDRIVE_CLIENT_SECRET`, `MYRMIDON_CLOUD_GOOGLE_DRIVE_CLIENT_SECRET`, `MYRMIDON_CLOUD_YANDEX_DISK_CLIENT_SECRET` | built dynamically in `cloud-connector/oauth.ts`; documented in SETTINGS.md | Covered by E2.5 (#1742): settings `cloud-oauth.<provider>.client-secret`, consumer `cloud-connector.oauth`. Not registered a second time here; see the E2.5 section of the matrix. |
+| `MYRMIDON_GITHUB_TOKEN` | `services/git-credentials.ts:35` | Store-backed already: the name is not read from env; `GITHUB_TOKEN`, `GH_TOKEN`, `PAPERCLIP_GITHUB_TOKEN` are company-secret names probed through the secrets service. Not registered. |
+| `BETTER_AUTH_SECRET`, `MYRMIDON_AGENT_JWT_SECRET` | `agent-auth-jwt.ts:41` | Bootstrap, env only. Signs and verifies sessions and agent run tokens on every request, before any actor exists; rebinding would invalidate all of them. Threat model: server-only, never returned or logged (masked), provisioned by the installer/deploy as env or mounted file. |
+| `MYRMIDON_WORKSPACE_HANDOFF_SECRET` | `auth/workspace-login-handoff.ts:47,213` | Bootstrap, env only. Root secret from which the per-workspace handoff key and readiness token are derived; a store cannot hold the root that derives the keys opening it. |
+| `MYRMIDON_WORKSPACE_HANDOFF_KEY`, `MYRMIDON_WORKSPACE_READINESS_TOKEN` | `auth/workspace-login-handoff.ts:46,48,230-236`, `routes/health.ts` | Bootstrap, derived. Derived from the root secret and injected into the managed workspace by the runtime at provisioning; verified at login handoff before any session exists. Not operator-set, not stored. |
+| `MYRMIDON_CLOUD_TENANT_SERVER_TOKEN` | `middleware/auth.ts:601` | Bootstrap, env only. The shared secret that lets the cloud control plane assert user identity headers; checked in the auth middleware before an actor exists (constant-time compare). Putting it in the database would let anything able to write the database mint identities. |
+| `MYRMIDON_DEV_SERVER_STATUS_TOKEN` | `routes/health.ts:67` | Bootstrap, env only. Supervisor-to-server shared secret on the health route, answered before auth; used when the database may be down. |
+| `VERCEL_OIDC_TOKEN` | `services/vercel-connect.ts:88,127` | Platform-injected, env only. Short-lived workload token written by Vercel into the process environment; only its presence is checked here (the E1 note that it is unused is stale: it is read). Not operator-set, nothing to bind. |
+| `MYRMIDON_INSTALL_DATABASE_URL` | `scripts/myrmidon/install/install.sh:85,535`, SETTINGS.md | Installer input (shell), not a server setting. It supplies the database the board needs to start, so it is bootstrap by definition; the installer validates the scheme and writes it to the deploy env. |
+| `MYRMIDON_TRACING_TOKEN_FILE` | `scripts/myrmidon/deploy/tracing-check.sh:62`, `deploy.sh:844` | Deploy-script path to a token file (a pointer, not a value), read by the shell check, not by the server. Env/file only. |
+
+No values were migrated; the dry-run `migration-plan` lists the new names with presence flags only.

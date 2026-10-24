@@ -10,6 +10,7 @@ import { validate } from "../../middleware/validate.js";
 import { assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { secretService } from "../../services/secrets.js";
 import { createInstanceSecretSettingService } from "./wiring.js";
+import { installInstanceSecretResolver } from "./runtime.js"; // myrmidon(SETTINGS-UI E2.6)
 import type { InstanceSecretSettingRegistry } from "./registry.js";
 
 const migrateBodySchema = z
@@ -24,6 +25,7 @@ export function instanceSecretSettingsRoutes(
 ) {
   const router = Router();
   const svc = createInstanceSecretSettingService(db, registry, env);
+  if (!registry) installInstanceSecretResolver(svc); // application consumers resolve through the default registry
   const secrets = secretService(db);
 
   async function audit(
