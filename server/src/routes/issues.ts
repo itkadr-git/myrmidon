@@ -72,6 +72,7 @@ import {
   issueRelations,
   issueRecoveryActions,
   issueThreadInteractions,
+  labels,
   issues as issueRows,
   issueWorkProducts,
   pipelineCaseIssueLinks,
@@ -81,6 +82,7 @@ import {
   projectWorkspaces,
 } from "@myrmidon/db";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
+import { normalizeLabels, requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -414,6 +416,8 @@ import {
 import * as handoffCas from "../myrmidon/handoff-cas.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+// Statuses in which a non-engineer may hold a code issue (review, finished).
+const ENGINEER_GATE_EXEMPT_STATUSES = new Set(["in_review", "done", "cancelled"]);
 // myrmidon(STALE-BLOCK): updateIssueSchema now carries a superRefine; zod
 // requires .safeExtend() on refined objects. interrupt was already optional
 // in the shared schema, so the refine is preserved via superRefine here.
@@ -3729,6 +3733,69 @@ export function issueRoutes(
   const documentAnnotationsSvc = documentAnnotationService(db);
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
+  // Gate for code issues (OPE-7776, Q1): an agent that is not an engineer cannot
+  // take an issue that requires one. Humans are never refused, and neither are
+  // issues in review or finished (a reviewer/manager legitimately holds those).
+  // The database-derived signals are fail-open and logged: an unreadable
+  // signal must not turn into a new silent stall (S2 recovery is the backstop).
+  async function assertEngineerForCodeIssue(input: {
+    companyId: string;
+    issue: (typeof issueRows.$inferSelect & { labels?: unknown }) | null;
+    status: string | null | undefined;
+    assigneeAgentId: string | null | undefined;
+    projectId: string | null | undefined;
+    labelIds?: readonly string[];
+    casteKey?: string | null;
+    harnessKind?: string | null;
+    executionWorkspacePreference?: string | null;
+  }): Promise<void> {
+    if (!input.assigneeAgentId) return;
+    if (input.status && ENGINEER_GATE_EXEMPT_STATUSES.has(input.status)) return;
+    const agent = await agentsSvc.getById(input.assigneeAgentId);
+    if (agent?.role === "engineer") return;
+    let issueLabelNames = normalizeLabels(input.issue?.labels);
+    let casteKey = input.casteKey ?? null;
+    let projectDefaultCasteKey: string | null = null;
+    try {
+      if (input.labelIds !== undefined) {
+        issueLabelNames = input.labelIds.length === 0
+          ? []
+          : await db
+              .select({ name: labels.name })
+              .from(labels)
+              .where(and(eq(labels.companyId, input.companyId), inArray(labels.id, [...input.labelIds])))
+              .then((rows) => rows.map((row) => row.name));
+      }
+      // Only explicit signals count: the issue's own caste, else its project's
+      // default. The company-wide default caste (seeded as engineer) is NOT a
+      // signal, otherwise every plain issue would look like a code issue.
+      if (!casteKey) casteKey = input.issue?.casteKey ?? null;
+      if (!casteKey && input.projectId) {
+        projectDefaultCasteKey = (await projectsSvc.getById(input.projectId))?.defaultCasteKey ?? null;
+      }
+    } catch (err) {
+      logger.warn(
+        { err, companyId: input.companyId, issueId: input.issue?.id ?? null },
+        "engineer gate: signal lookup failed, treating signal as absent (fail-open)",
+      );
+    }
+    if (
+      requiresEngineer({
+        labels: issueLabelNames,
+        casteKey,
+        projectDefaultCasteKey,
+        harnessKind: input.harnessKind ?? input.issue?.harnessKind ?? null,
+        executionWorkspacePreference:
+          input.executionWorkspacePreference ?? input.issue?.executionWorkspacePreference ?? null,
+      })
+    ) {
+      throw unprocessable("This issue requires an engineer", {
+        code: "issue_requires_engineer",
+        issueId: input.issue?.id ?? null,
+        assigneeAgentId: input.assigneeAgentId,
+      });
+    }
+  }
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
   const questionResponseDeliveries = questionResponseDeliveryService(db, {
     heartbeat,
@@ -12325,6 +12392,20 @@ export function issueRoutes(
           rawCreateBody.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
+      await assertEngineerForCodeIssue({
+        companyId,
+        issue: null,
+        status: typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo",
+        assigneeAgentId: normalizedAssigneeAgentId,
+        projectId: typeof rawCreateBody.projectId === "string" ? rawCreateBody.projectId : null,
+        labelIds: Array.isArray(rawCreateBody.labelIds) ? (rawCreateBody.labelIds as string[]) : undefined,
+        casteKey: typeof rawCreateBody.casteKey === "string" ? rawCreateBody.casteKey : null,
+        harnessKind: typeof rawCreateBody.harnessKind === "string" ? rawCreateBody.harnessKind : null,
+        executionWorkspacePreference:
+          typeof rawCreateBody.executionWorkspacePreference === "string"
+            ? rawCreateBody.executionWorkspacePreference
+            : null,
+      });
       await assertNoAgentDelegationCycle({
         actorType: req.actor.type,
         parentIssueId:
@@ -13484,6 +13565,32 @@ export function issueRoutes(
           req.body.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
+      const requestedAssigneeAgentId =
+        normalizedAssigneeAgentId === undefined
+          ? existing.assigneeAgentId
+          : normalizedAssigneeAgentId;
+      // Only a change of assignee is gated. A non-engineer who already holds the
+      // issue must still be able to move it (blocked, in_progress, todo, labels):
+      // refusing that would be a new silent stall (fail-open, Q1).
+      if (
+        normalizedAssigneeAgentId !== undefined &&
+        normalizedAssigneeAgentId !== existing.assigneeAgentId
+      ) {
+        await assertEngineerForCodeIssue({
+          companyId: existing.companyId,
+          issue: existing,
+          status: typeof req.body.status === "string" ? req.body.status : existing.status,
+          assigneeAgentId: requestedAssigneeAgentId,
+          projectId: existing.projectId,
+          labelIds: Array.isArray(req.body.labelIds) ? (req.body.labelIds as string[]) : undefined,
+          casteKey: typeof req.body.casteKey === "string" ? req.body.casteKey : null,
+          harnessKind: typeof req.body.harnessKind === "string" ? req.body.harnessKind : null,
+          executionWorkspacePreference:
+            typeof req.body.executionWorkspacePreference === "string"
+              ? req.body.executionWorkspacePreference
+              : null,
+        });
+      }
       const titleOrDescriptionChanged =
         req.body.title !== undefined || req.body.description !== undefined;
       const existingRelations = Array.isArray(req.body.blockedByIssueIds)
@@ -13600,10 +13707,6 @@ export function issueRoutes(
         existing.companyId,
         updateFields.executionWorkspaceSettings?.environmentId,
       );
-      const requestedAssigneeAgentId =
-        normalizedAssigneeAgentId === undefined
-          ? existing.assigneeAgentId
-          : normalizedAssigneeAgentId;
       const explicitMoveToTodoRequested =
         reopenRequested || resumeRequested === true;
       const recoveryRelevantSourceMutationRequested =
