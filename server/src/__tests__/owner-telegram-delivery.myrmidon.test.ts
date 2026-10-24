@@ -745,7 +745,8 @@ describeEmbeddedPostgres(
     // The filter consumes the interaction's vendor-computed audience fields:
     // a card reaches the owner's DM only when it is addressed to a human
     // (effectiveResolverPolicy "human_only", or addresseeUserId = the task
-    // owner). Agent-addressed and purely operational cards stay board-only.
+    // owner). Agent-addressed and purely operational interactions stay
+    // board-only in owner_decisions_only; mode all broadens the audience only.
     describe("owner-DM audience filter (1.6.5)", () => {
       beforeEach(async () => {
         await instanceSettingsService(db).updateGeneral({
@@ -896,7 +897,7 @@ describeEmbeddedPostgres(
         }
       });
 
-      it('mode "all" restores the pre-filter behaviour for operational cards', async () => {
+      it('mode "all" publishes operational cards as text without actions', async () => {
         const fixture = await seedFixture();
         await instanceSettingsService(db).updateGeneral({
           [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "all" },
@@ -911,6 +912,11 @@ describeEmbeddedPostgres(
         );
         expect(publications).toHaveLength(1);
         expect(publications[0]!.endpointId).toBe(fixture.endpointId);
+        const payload = publications[0]!.payload as SafeChatPublicationPayload;
+        expect(payload.actions).toEqual([]);
+        expect(payload.text).toContain("Proceed with the deploy?");
+        expect(payload.text).not.toContain("callback_data");
+        expect(payload.text).not.toContain("reply_markup");
 
         await instanceSettingsService(db).updateGeneral({
           [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
