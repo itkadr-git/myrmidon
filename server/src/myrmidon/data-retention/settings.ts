@@ -23,7 +23,7 @@ import {
   type DataRetentionLastRun,
   type DataRetentionSettings,
   type DataRetentionSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
 export type DataRetentionSettingsService = Pick<

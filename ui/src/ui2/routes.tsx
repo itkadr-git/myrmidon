@@ -14,21 +14,32 @@ import { Ui2I18nProvider } from "./i18n/Ui2I18n";
 import { Ui2Decisions } from "./screens/decisions/Ui2Decisions";
 import { Ui2Costs } from "./screens/costs/Ui2Costs";
 import { Ui2AgentOverviewPage } from "./screens/agent-overview/Ui2AgentOverviewPage";
+import { Ui2AgentsFleetPage } from "./screens/agent-overview/Ui2AgentsFleetPage";
 import { Ui2RunsSettings } from "./screens/settings/runs-queue/Ui2RunsSettings";
 import { Ui2SystemSettings } from "./screens/settings/system/Ui2SystemSettings";
 import { Ui2LanguageSettings } from "./screens/settings/language/Ui2LanguageSettings";
 // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — a real ui2 screen, not
 // a placeholder (see screens/CommanderChatScreen.tsx).
 import { CommanderChatScreen } from "./screens/CommanderChatScreen";
+import { Ui2Fleet } from "./screens/fleet/Ui2Fleet";
+// myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): the knowledge module's own screens — the
+// reader of the knowledge store and the regulations of Autonomy.
+import { Ui2Knowledge } from "./screens/knowledge/Ui2Knowledge";
+import { Ui2Regulations } from "./screens/knowledge/Ui2Regulations";
 
 export type Ui2ScreenKey =
   | "decisions"
   | "costs"
   | "agent-overview"
+  | "agents-fleet"
   | "settings-runs-queue"
   | "settings-system"
   | "settings-language"
-  | "commander-chat";
+  | "commander-chat"
+  | "fleet"
+  | "knowledge"
+  | "knowledge-page"
+  | "settings-autonomy-regulations";
 
 export interface Ui2RouteEntry {
   key: Ui2ScreenKey;
@@ -54,6 +65,13 @@ function ui2Screen(element: ReactNode): ReactNode {
 
 export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
   {
+    key: "fleet",
+    path: "fleet",
+    titleKey: "ui2.screens.fleet",
+    element: ui2Screen(<Ui2Fleet />),
+    legacyPath: "/agents/all",
+  },
+  {
     key: "decisions",
     path: "decisions",
     titleKey: "ui2.screens.decisions",
@@ -73,6 +91,13 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     titleKey: "ui2.screens.agentOverview",
     element: ui2Screen(<Ui2AgentOverviewPage />),
     legacyPath: "/agents/:agentId",
+  },
+  {
+    key: "agents-fleet",
+    path: "agents",
+    titleKey: "ui2.screens.agents",
+    element: ui2Screen(<Ui2AgentsFleetPage />),
+    legacyPath: "/agents",
   },
   {
     key: "settings-runs-queue",
@@ -104,6 +129,33 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     titleKey: "ui2.screens.commanderChat",
     element: <CommanderChatScreen />,
     legacyPath: "/board-chat",
+  },
+  // myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): the knowledge screen and its deep link
+  // into one page (§3.9: the tree, the page, the sources, the revisions). The
+  // wiki paths live under /wiki/* in the knowledge store; the legacy surface
+  // stays the plugin-free reader until parity.
+  {
+    key: "knowledge",
+    path: "knowledge",
+    titleKey: "ui2.screens.knowledge",
+    element: ui2Screen(<Ui2Knowledge />),
+    legacyPath: "/wiki",
+  },
+  {
+    key: "knowledge-page",
+    path: "knowledge/:spaceKey/:slug",
+    titleKey: "ui2.screens.knowledge",
+    element: ui2Screen(<Ui2Knowledge />),
+    legacyPath: "/wiki/:spaceKey/:slug",
+  },
+  // The regulations of Autonomy: the same screen the matrix tab carries, so a
+  // person approves a regulation without the plugin.
+  {
+    key: "settings-autonomy-regulations",
+    path: "company/settings/autonomy/regulations",
+    titleKey: "ui2.screens.regulations",
+    element: ui2Screen(<Ui2Regulations />),
+    legacyPath: "/company/settings",
   },
 ];
 

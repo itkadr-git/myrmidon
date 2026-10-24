@@ -27,7 +27,7 @@ import {
   startEmbeddedPostgresTestDatabase,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   installTeamsFileConsentHook,
   restoreTeamsFileConsentBinding,

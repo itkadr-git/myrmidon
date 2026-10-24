@@ -12,7 +12,7 @@ import {
   resolveDefaultStorageDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type EnvSource = "env" | "config" | "file" | "default" | "missing";
 

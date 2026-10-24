@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
 
 // Bundles the remote-lane mock state and every mocked execution-target
 // function behind one hoisted object, so the `vi.mock` factory below (which
@@ -47,7 +47,7 @@ const {
   prepareRuntimeMock,
 } = mocks;
 
-vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
+vi.mock("@myrmidon/adapter-utils/execution-target", () => ({
   adapterExecutionTargetIsRemote: () => mocks.state.isRemote,
   adapterExecutionTargetRemoteCwd: (_target: unknown, cwd: string) =>
     mocks.state.isRemote ? "/remote/workspace" : cwd,

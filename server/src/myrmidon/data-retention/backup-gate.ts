@@ -20,10 +20,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import {
-  expandHomePrefix,
-  resolveDefaultBackupDir,
+  resolveDatabaseBackupDir,
   resolvePaperclipConfigPathForInstance,
-} from "@paperclipai/shared/home-paths";
+} from "@myrmidon/shared/home-paths";
 
 /** The gate asks for a backup younger than this. */
 export const DATA_RETENTION_BACKUP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -54,11 +53,7 @@ function readConfig(configPath: string): PartialBackupConfig | null {
  */
 export function resolveDataRetentionBackupDir(input: { homeDir?: string } = {}): string {
   const config = readConfig(resolvePaperclipConfigPathForInstance(input));
-  const raw = config?.database?.backup?.dir;
-  if (typeof raw === "string" && raw.trim().length > 0) {
-    return path.resolve(expandHomePrefix(raw.trim()));
-  }
-  return resolveDefaultBackupDir(input);
+  return resolveDatabaseBackupDir({ homeDir: input.homeDir, config });
 }
 
 /** Backup filename extensions the gate accepts. */

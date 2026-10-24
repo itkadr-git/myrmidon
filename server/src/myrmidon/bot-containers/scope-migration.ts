@@ -29,7 +29,7 @@ import {
   type ScopeMigrationConflict,
   type ScopeMigrationStep,
   type ScopeRoots,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** The host operations the migration needs; tests inject an in-memory one. */
 export interface ScopeMigrationHost {

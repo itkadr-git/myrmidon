@@ -2,12 +2,13 @@ import { isAcknowledgedNativeStop } from "../../../services/acknowledged-native-
 // myrmidon(1.6.1 OPE-3983): the native-failure block carries the recovery-liveness reasonRef.
 import { recoveryLivenessDescriptor } from "../../../myrmidon/stale-block/event-keys.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
+import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../../../myrmidon/maintenance/domain.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { runContextPersistenceFields } from "@paperclipai/db";
-import { extractIssueReferenceIdentifiers } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { runContextPersistenceFields } from "@myrmidon/db";
+import { extractIssueReferenceIdentifiers } from "@myrmidon/shared";
 import {
   activityLog,
   agentWakeupRequests,
@@ -19,7 +20,7 @@ import {
   issueRelations,
   issues,
   nativeRunFinalizations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { legacyExecutionNeedsReconciliation } from "../../../services/legacy-execution-recovery.js";
 import {
@@ -209,6 +210,12 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         ))
         .returning({ id: issues.id });
       return Boolean(claimed);
+    },
+    async releaseIssueExecutionLease({ companyId, issueId, runId }): Promise<void> {
+      await tx
+        .update(issues)
+        .set({ executionRunId: null })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId), eq(issues.executionRunId, runId)));
     },
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
       const agent = await tx
@@ -734,6 +741,9 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
 }
 
 async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow, issue: IssueRow, now: Date): Promise<boolean> {
+  // Maintenance owns an explicit successor retry. Treating the expected stop
+  // as an unknown native execution creates a reconciliation hold instead.
+  if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   const applies =
     run.runtimeMode === "native" &&
     ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status) &&
@@ -1072,7 +1082,9 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           throw new Error(`wake-queue: run ${input.runId} was not found while releasing issue execution`);
         }
         const runSnapshot = toRunSnapshot(run);
-        const contextIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+        const contextIssueId = run.nativeIssueId ??
+          readNonEmptyString(parseObject(run.contextSnapshot).issueId) ??
+          readNonEmptyString(parseObject(run.contextSnapshot).taskId);
 
         // Lock the context issue (if any) and every issue that still references this
         // run, in id order, so two concurrent finalizations can never deadlock on
@@ -1156,28 +1168,22 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           issueStatus: issueRow?.status ?? "",
           hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
           assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
-          legacyExecutionNeedsReconciliation: legacyExecutionNeedsReconciliation(run),
+          legacyExecutionNeedsReconciliation:
+            !input.ignoreUnrecordedReconciliation && legacyExecutionNeedsReconciliation(run),
           // An operator stop never promotes old queued work by itself. The
           // next explicit wake adopts those messages atomically when it
           // queues a run.
           executionCancellationAcknowledged:
             run.status === "cancelled" &&
             (parseObject(run.resultJson?.executionCancellation).state === "acknowledged" || isAcknowledgedNativeStop(run)) &&
-            !interruptedQueue,
+            !interruptedQueue &&
+            !input.deferredWakesPostdateRun,
         };
         const preDrain = decidePreDrain(preDrainFacts);
 
         const releaseOutcome = preDrain.kind === "released" ? {
           outcome: { kind: "released" } as const, postCommitEffects: [], run: runSnapshot,
         } : null;
-
-        const releasedSiblingOutcome = () => releasedSiblingIssue &&
-          releasedSiblingIssue.status !== "done" && releasedSiblingIssue.status !== "cancelled"
-          ? {
-              outcome: { kind: "released" } as const, postCommitEffects: [], run: runSnapshot,
-              releasedSiblingIssue: toIssueSnapshot(releasedSiblingIssue),
-            }
-          : null;
 
         // decidePreDrain only returns "blocked" or "proceed" when the issue row is present.
         if (!issueRow) {
@@ -1201,8 +1207,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         }
 
         if (preDrain.kind === "blocked") {
-          const siblingOutcome = releasedSiblingOutcome();
-          if (siblingOutcome) return siblingOutcome;
           return {
             outcome: {
               kind: "blocked",

@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import type { AdapterExecutionTarget } from "@myrmidon/adapter-utils/execution-target";
+import { runChildProcess } from "@myrmidon/adapter-utils/server-utils";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { execute } from "./execute.js";
 
@@ -35,9 +35,9 @@ const {
   return { setPrepareCursorSandboxCommand };
 });
 
-vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
-    "@paperclipai/adapter-utils/execution-target",
+vi.mock("@myrmidon/adapter-utils/execution-target", async () => {
+  const actual = await vi.importActual<typeof import("@myrmidon/adapter-utils/execution-target")>(
+    "@myrmidon/adapter-utils/execution-target",
   );
   return {
     ...actual,

@@ -120,6 +120,19 @@ export type ReleaseIssueExecutionInput = {
   runId: string;
   now: Date;
   suppressImmediateRecovery?: boolean;
+  /**
+   * Set by the stranded-wake sweep only when every deferred wake of the issue
+   * was requested after the finishing run ended. An acknowledged operator Stop
+   * must not promote work queued before it, but input that arrived after the
+   * Stop is new work and is not covered by it (OPE-8268).
+   */
+  deferredWakesPostdateRun?: boolean;
+  /**
+   * Set by the stranded-wake sweep: a failed or cancelled legacy run that has
+   * no recorded execution hold does not by itself stop the drain. A recorded
+   * hold still does, through the execution-blocker gate in the lock adapter.
+   */
+  ignoreUnrecordedReconciliation?: boolean;
 };
 
 type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts"]>>;
@@ -148,6 +161,7 @@ async function runReleaseDrain(
   if (locked.primaryReleaseOnly && !siblingIssue) {
     return { outcome: { kind: "released" }, postCommitEffects };
   }
+  let drainsPrimary = true;
   if (siblingIssue && shouldDrainSibling) {
     const claimed = await ports.transaction.claimIssueExecutionLease({
       companyId: run.companyId, issueId: siblingIssue.id, runId: run.id,
@@ -155,10 +169,27 @@ async function runReleaseDrain(
     if (!claimed) {
       return { outcome: { kind: "released" }, postCommitEffects };
     }
-    const sibling = await ports.transaction.findIssue({ companyId: run.companyId, issueId: siblingIssue.id });
+    // A sibling is only worth holding the lease for when it has a deferred
+    // wake to drain. Otherwise hand the lease back so the issue stays released
+    // (no orphan execution_run_id, no spurious recovery block) and fall
+    // through to the primary issue's own drain.
+    const siblingWake = await ports.transaction.findNextDeferredWake({
+      companyId: run.companyId, issueId: siblingIssue.id,
+    });
+    const sibling = siblingWake
+      ? await ports.transaction.findIssue({ companyId: run.companyId, issueId: siblingIssue.id })
+      : null;
     if (sibling && sibling.status !== "done" && sibling.status !== "cancelled") {
       issue = sibling;
+      drainsPrimary = false;
+    } else {
+      await ports.transaction.releaseIssueExecutionLease({
+        companyId: run.companyId, issueId: siblingIssue.id, runId: run.id,
+      });
     }
+  }
+  if (drainsPrimary && locked.primaryReleaseOnly) {
+    return { outcome: { kind: "released" }, postCommitEffects };
   }
 
   // Each `continue` path either excludes a pending handoff receipt from
@@ -974,7 +1005,11 @@ export function createReleaseIssueExecution(deps: {
     input: ReleaseIssueExecutionInput,
   ): Promise<{ outcome: ReleaseOutcome; postCommitEffects: PostCommitEffect[] }> {
     const result = await deps.issueLock.withIssueExecutionLock(
-      { companyId: input.companyId, runId: input.runId, now: input.now },
+      {
+        companyId: input.companyId, runId: input.runId, now: input.now,
+        ...(input.deferredWakesPostdateRun ? { deferredWakesPostdateRun: true } : {}),
+        ...(input.ignoreUnrecordedReconciliation ? { ignoreUnrecordedReconciliation: true } : {}),
+      },
       (locked, ports) => runReleaseDrain(locked, ports, input),
     );
 

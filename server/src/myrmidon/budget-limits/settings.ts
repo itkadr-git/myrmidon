@@ -15,7 +15,7 @@ import {
   resolveBudgetLimitsSignalOnly,
   type BudgetLimitsSettings,
   type ResolvedBudgetLimitsSignalOnly,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
 export type BudgetLimitsSettingsService = Pick<

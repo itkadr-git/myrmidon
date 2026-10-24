@@ -12,10 +12,12 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Agent, AttentionItem, DecisionOption } from "@paperclipai/shared";
+import type { Agent, AttentionItem, DecisionOption } from "@myrmidon/shared";
 import type { Decision } from "@/api/decisions";
 import { decisionsApi } from "@/api/decisions";
 import { attentionApi } from "@/api/attention";
+import { attentionBadgeCount } from "@/lib/attention";
+import { useNavigate } from "@/lib/router";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
@@ -77,8 +79,11 @@ export function Ui2Decisions() {
     return map;
   }, [agentsQuery.data]);
 
+  // The queue lists approvals and interactions as links into their context.
+  // Open decisions are not repeated here: they are the action cards below
+  // (decide / dismiss), and are counted in the header via deskBadgeCount.
   const waitingItems = useMemo(() => (attentionQuery.data?.items ?? []).filter((item) =>
-    item.sourceKind === "approval" || item.sourceKind === "decision" || item.sourceKind === "issue_thread_interaction",
+    item.sourceKind === "approval" || item.sourceKind === "issue_thread_interaction",
   ), [attentionQuery.data]);
 
   const decisions = useMemo(() => {
@@ -94,6 +99,8 @@ export function Ui2Decisions() {
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
   };
+
+  const navigate = useNavigate();
 
   const decideMutation = useMutation({
     mutationFn: (input: { decisionId: string; optionId: string; values: Record<string, string> }) =>
@@ -132,11 +139,14 @@ export function Ui2Decisions() {
     );
   }
 
-  const totalOpen = waitingItems.length;
+  const totalOpen = (openQuery.data ?? []).length;
+  // Same number as the shell chip: the server-side desk badge of the feed.
+  const queueCount = attentionBadgeCount(attentionQuery.data);
+  const nothingWaiting = waitingItems.length === 0 && totalOpen === 0;
 
   const openAttentionItem = (item: AttentionItem) => {
     const href = item.relatedIssue?.href ?? item.subject.href;
-    if (href) window.location.assign(href);
+    if (href) navigate(href);
   };
 
   return (
@@ -144,12 +154,12 @@ export function Ui2Decisions() {
       <section className="ui2-decisions-waiting" aria-label={t("ui2.decisions.waiting.title")}>
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold">{t("ui2.decisions.waiting.title")}</h2>
-          <span className="text-xs text-muted-foreground">{t("ui2.decisions.queue.count", { count: totalOpen })}</span>
+          <span className="text-xs text-muted-foreground">{t("ui2.decisions.queue.count", { count: queueCount })}</span>
         </div>
-        {waitingItems.length === 0 ? (
+        {nothingWaiting ? (
           <Ui2EmptyStateView title={t("ui2.decisions.waiting.empty.title")} body={t("ui2.decisions.waiting.empty.body")} variant="done" />
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-2" data-testid="ui2-decisions-waiting-list">
             {waitingItems.map((item) => <WaitingItem key={item.id} item={item} onOpen={() => openAttentionItem(item)} />)}
           </div>
         )}
@@ -191,13 +201,7 @@ export function Ui2Decisions() {
       </div>
 
       {decisions.length === 0 ? (
-        filter === "all" ? (
-          <Ui2EmptyStateView
-            variant="done"
-            title={t("ui2.decisions.empty.title")}
-            body={t("ui2.decisions.empty.body")}
-          />
-        ) : (
+        filter === "all" ? null : (
           <Ui2EmptyStateView
             variant="filtered"
             title={t("ui2.decisions.empty.filtered.title")}

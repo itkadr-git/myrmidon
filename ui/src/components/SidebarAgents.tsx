@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "@/i18n";
+import type { TFunction } from "i18next";
 import { Link, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -43,6 +45,13 @@ import {
   type AgentSidebarSortMode,
   writeAgentSortMode,
 } from "../lib/agent-order";
+import {
+  buildAgentForest,
+  getAgentTreeCollapsedStorageKey,
+  readAgentTreeCollapsed,
+  writeAgentTreeCollapsed,
+} from "../lib/agent-tree";
+import { SidebarAgentTreeRows } from "./SidebarAgentTree";
 import { AgentIcon } from "./AgentIconPicker";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -57,7 +66,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@myrmidon/shared";
 
 /**
  * When no agent is running, the sidebar falls back to showing at most this many
@@ -66,10 +75,11 @@ import type { Agent } from "@paperclipai/shared";
 const RECENT_AGENT_LIMIT = 3;
 const LIVE_AGENT_LINGER_MS = 120_000;
 
-const AGENT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
-  { value: "top", label: "Top" },
-  { value: "alphabetical", label: "Alphabetical" },
-  { value: "recent", label: "Recent" },
+const agentSortChoices = (t: TFunction): SidebarSectionRadioChoice[] => [
+  { value: "tree", label: t("area.shell-sidebar-layout-2.sidebar-agents.sortTree") },
+  { value: "top", label: t("area.shell-sidebar-layout-2.sidebar-agents.sortTop") },
+  { value: "alphabetical", label: t("area.shell-sidebar-layout-2.sidebar-agents.sortAlphabetical") },
+  { value: "recent", label: t("area.shell-sidebar-layout-2.sidebar-agents.sortRecent") },
 ];
 
 function agentTimestamp(agent: Agent, field: "lastHeartbeatAt" | "updatedAt" | "createdAt"): number {
@@ -80,7 +90,7 @@ function agentTimestamp(agent: Agent, field: "lastHeartbeatAt" | "updatedAt" | "
 }
 
 function sortAgents(agents: Agent[], sortMode: AgentSidebarSortMode): Agent[] {
-  if (sortMode === "top") return agents;
+  if (sortMode === "top" || sortMode === "tree") return agents;
   const sorted = [...agents];
   if (sortMode === "alphabetical") {
     sorted.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
@@ -105,7 +115,9 @@ function sortAgents(agents: Agent[], sortMode: AgentSidebarSortMode): Agent[] {
 const AGENT_STAR_ROW_REVEAL =
   "opacity-0 transition-opacity group-hover/agent:opacity-100 group-focus-within/agent:opacity-100";
 
-function SidebarAgentItem({
+// myrmidon(AGENTS-TREE): exported so the tree wrapper (SidebarAgentTree.tsx)
+// and the roster tree reuse the exact same row chrome.
+export function SidebarAgentItem({
   activeAgentId,
   activeTab,
   agent,
@@ -138,6 +150,7 @@ function SidebarAgentItem({
   onToggleStar?: (agent: Agent, starred: boolean) => void;
   starPending?: boolean;
 }) {
+  const { t } = useTranslation();
   const routeRef = agentRouteRef(agent);
   const href = activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent);
   const editHref = `${agentUrl(agent)}/configuration`;
@@ -145,19 +158,19 @@ function SidebarAgentItem({
   const isPaused = agent.status === "paused";
   const isBudgetPaused = isPaused && agent.pauseReason === "budget";
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
-  const pauseResumeLabel = isPaused ? "Resume agent" : "Pause agent";
+  const pauseResumeLabel = isPaused ? t("area.shell-sidebar-layout-2.sidebar-agents.resumeAgent") : t("area.shell-sidebar-layout-2.sidebar-agents.pauseAgent");
   const pauseResumeDisabled = disabled || agent.status === "pending_approval" || isBudgetPaused || (isPaused && hasInvalidOrgChain);
   const pauseResumeDisabledLabel = disabled
-    ? "Updating..."
+    ? t("area.shell-sidebar-layout-2.sidebar-agents.updating")
     : isBudgetPaused
-      ? "Budget paused"
+      ? t("area.shell-sidebar-layout-2.sidebar-agents.budgetPaused")
       : isPaused && hasInvalidOrgChain
-        ? "Invalid org chain"
+        ? t("area.shell-sidebar-layout-2.sidebar-agents.invalidOrgChain")
       : pauseResumeLabel;
   const showBuiltInLifecycle = builtInStatus === "needs_setup" || builtInStatus === "pending_approval";
   const trailingLabel = [
-    showBuiltInLifecycle ? `Built-in agent ${builtInStatus.replace(/_/g, " ")}` : null,
-    hasInvalidOrgChain ? "Invalid reporting chain" : null,
+    showBuiltInLifecycle ? (builtInStatus === "needs_setup" ? t("area.shell-sidebar-layout-2.sidebar-agents.builtInNeedsSetup") : t("area.shell-sidebar-layout-2.sidebar-agents.builtInPendingApproval")) : null,
+    hasInvalidOrgChain ? t("common.invalidReportingChain") : null,
   ].filter(Boolean).join(", ") || undefined;
 
   // C11 (DECISION-SHEET.md): the row itself is a SidebarNavItem, so agent rows
@@ -181,14 +194,14 @@ function SidebarAgentItem({
           <span className="ml-1 flex shrink-0 items-center gap-1">
             {showBuiltInLifecycle ? <BuiltInLifecycleChip status={builtInStatus} compact /> : null}
             {hasInvalidOrgChain ? (
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label={t("common.invalidReportingChain")} />
             ) : null}
           </span>
         ) : undefined
       }
       trailingLabel={trailingLabel}
       liveAccessory={
-        agent.pauseReason === "budget" ? <BudgetSidebarMarker title="Agent paused by budget" /> : undefined
+        agent.pauseReason === "budget" ? <BudgetSidebarMarker title={t("area.shell-sidebar-layout-2.sidebar-agents.pausedByBudgetMarker")} /> : undefined
       }
     />
   );
@@ -228,7 +241,7 @@ function SidebarAgentItem({
                 ? "opacity-100"
                 : "pointer-events-none opacity-0 group-hover/agent:pointer-events-auto group-hover/agent:opacity-100 group-focus-within/agent:pointer-events-auto group-focus-within/agent:opacity-100",
             )}
-            aria-label={`Open actions for ${agent.name}`}
+            aria-label={t("area.shell-sidebar-layout-2.sidebar-agents.openActions", { name: agent.name })}
           >
             <MoreHorizontal className="h-3.5 w-3.5" />
           </Button>
@@ -248,7 +261,7 @@ function SidebarAgentItem({
                 ) : (
                   <Star className={cn("size-4", starred && "fill-amber-500 text-amber-500")} />
                 )}
-                <span>{starred ? "Remove from starred" : "Star agent"}</span>
+                <span>{starred ? t("area.shell-sidebar-layout-2.sidebar-agents.removeFromStarred") : t("area.shell-sidebar-layout-2.sidebar-agents.starAgent")}</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
             </>
@@ -261,7 +274,7 @@ function SidebarAgentItem({
               }}
             >
               <Pencil className="size-4" />
-              <span>Edit agent</span>
+              <span>{t("area.shell-sidebar-layout-2.sidebar-agents.editAgent")}</span>
             </Link>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -271,7 +284,7 @@ function SidebarAgentItem({
               onPauseResume(agent, isPaused ? "resume" : "pause");
             }}
             disabled={pauseResumeDisabled}
-            title={isBudgetPaused ? "Agent was paused by budget limits" : undefined}
+            title={isBudgetPaused ? t("area.shell-sidebar-layout-2.sidebar-agents.pausedByBudgetLimits") : undefined}
           >
             {isPaused ? <PlayCircle className="size-4" /> : <PauseCircle className="size-4" />}
             <span>{pauseResumeDisabledLabel}</span>
@@ -285,7 +298,7 @@ function SidebarAgentItem({
             disabled={leaving}
           >
             {leaving ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <LogOut className="size-4" />}
-            <span>{leaving ? "Leaving..." : "Leave agent"}</span>
+            <span>{leaving ? t("area.shell-sidebar-layout-2.sidebar-agents.leaving") : t("area.shell-sidebar-layout-2.sidebar-agents.leaveAgent")}</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -294,6 +307,7 @@ function SidebarAgentItem({
 }
 
 export function SidebarAgents({ streamlined = false }: { streamlined?: boolean } = {}) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(true);
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(() => new Set());
   const [liveLingerVersion, setLiveLingerVersion] = useState(0);
@@ -390,6 +404,21 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     if (!sortModeStorageKey) return "top";
     return readAgentSortMode(sortModeStorageKey);
   });
+  // myrmidon(AGENTS-TREE): per-user persisted collapse state, stored as the
+  // set of collapsed node ids (default = first level expanded).
+  const treeCollapsedStorageKey = useMemo(() => {
+    if (!selectedCompanyId) return null;
+    return getAgentTreeCollapsedStorageKey(selectedCompanyId, currentUserId);
+  }, [currentUserId, selectedCompanyId]);
+  const [treeCollapsed, setTreeCollapsed] = useState<Set<string>>(() => {
+    if (!treeCollapsedStorageKey) return new Set();
+    return readAgentTreeCollapsed(treeCollapsedStorageKey);
+  });
+  useEffect(() => {
+    setTreeCollapsed(
+      treeCollapsedStorageKey ? readAgentTreeCollapsed(treeCollapsedStorageKey) : new Set(),
+    );
+  }, [treeCollapsedStorageKey]);
   const { orderedAgents } = useAgentOrder({
     agents: visibleAgents,
     companyId: selectedCompanyId,
@@ -399,6 +428,8 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     () => sortAgents(orderedAgents, sortMode),
     [orderedAgents, sortMode],
   );
+  // myrmidon(AGENTS-TREE): the hierarchy forest used by the "Tree" sort mode.
+  const agentForest = useMemo(() => buildAgentForest(sortedAgents), [sortedAgents]);
   const sortedAgentIdSet = useMemo(
     () => new Set(sortedAgents.map((agent: Agent) => agent.id)),
     [sortedAgents],
@@ -433,7 +464,9 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     });
   }, [liveCountByAgent, liveLingerVersion, sortedAgents]);
   const hasActiveAgents = runningAgents.length > 0;
-  const displayedAgents = !streamlined
+  // myrmidon(AGENTS-TREE): tree mode always renders the full hierarchy — the
+  // active/recent subset is a flat-list concept and would hide structure.
+  const displayedAgents = !streamlined || sortMode === "tree"
     ? sortedAgents
     : hasActiveAgents
       ? runningAgents
@@ -503,7 +536,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
   const persistSortMode = useCallback(
     (value: string) => {
       const nextSortMode: AgentSidebarSortMode =
-        value === "alphabetical" || value === "recent" ? value : "top";
+        value === "alphabetical" || value === "recent" || value === "tree" ? value : "top";
       setSortMode(nextSortMode);
       if (sortModeStorageKey) {
         writeAgentSortMode(sortModeStorageKey, nextSortMode);
@@ -537,14 +570,14 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentRouteRef(agent)) }),
       ]);
       pushToast({
-        title: action === "pause" ? "Agent paused" : "Agent resumed",
+        title: action === "pause" ? t("area.shell-sidebar-layout-2.sidebar-agents.agentPaused") : t("area.shell-sidebar-layout-2.sidebar-agents.agentResumed"),
         body: agent.name,
         tone: "success",
       });
     },
     onError: (error, { agent, action }) => {
       pushToast({
-        title: action === "pause" ? "Could not pause agent" : "Could not resume agent",
+        title: action === "pause" ? t("area.shell-sidebar-layout-2.sidebar-agents.couldNotPause") : t("area.shell-sidebar-layout-2.sidebar-agents.couldNotResume"),
         body: error instanceof Error ? error.message : agent.name,
         tone: "error",
       });
@@ -608,6 +641,20 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     [displayedAgents, starredAgentIdSet],
   );
 
+  // myrmidon(AGENTS-TREE): toggle one node and persist the collapsed set.
+  const toggleTreeNode = useCallback(
+    (agentId: string) => {
+      setTreeCollapsed((current) => {
+        const next = new Set(current);
+        if (next.has(agentId)) next.delete(agentId);
+        else next.add(agentId);
+        if (treeCollapsedStorageKey) writeAgentTreeCollapsed(treeCollapsedStorageKey, next);
+        return next;
+      });
+    },
+    [treeCollapsedStorageKey],
+  );
+
   const renderAgentRow = (agent: Agent, isStarredRow: boolean) => (
     <SidebarAgentItem
       key={agent.id}
@@ -631,27 +678,39 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
 
   return (
     <SidebarSection
-      label="Agents"
+      label={t("area.shell-sidebar-layout-2.sidebar-agents.title")}
       collapsible={{ open, onOpenChange: setOpen }}
       headerAction={{
-        ariaLabel: "New agent",
+        ariaLabel: t("area.shell-sidebar-layout-2.sidebar-agents.newAgent"),
         icon: Plus,
         onClick: openNewAgent,
       }}
       menu={{
-        ariaLabel: "Agents section actions",
+        ariaLabel: t("area.shell-sidebar-layout-2.sidebar-agents.sectionActions"),
         actions: [
-          { type: "item", label: "Browse agents", icon: Users, href: "/agents/all" },
+          { type: "item", label: t("area.shell-sidebar-layout-2.sidebar-agents.browseAgents"), icon: Users, href: "/agents/all" },
           { type: "separator" },
         ],
-        radioLabel: "Agent sort",
-        radioChoices: AGENT_SORT_CHOICES,
+        radioLabel: t("area.shell-sidebar-layout-2.sidebar-agents.sortLabel"),
+        radioChoices: agentSortChoices(t),
         radioValue: sortMode,
         onRadioValueChange: persistSortMode,
       }}
     >
-      {starredAgents.map((agent: Agent) => renderAgentRow(agent, true))}
-      {dedupedDisplayedAgents.map((agent: Agent) => renderAgentRow(agent, false))}
+      {sortMode === "tree" ? (
+        <SidebarAgentTreeSection
+          forest={agentForest}
+          collapsed={treeCollapsed}
+          onToggleNode={toggleTreeNode}
+          renderRow={(agent) => renderAgentRow(agent, false)}
+          rail={rail}
+        />
+      ) : (
+        <>
+          {starredAgents.map((agent: Agent) => renderAgentRow(agent, true))}
+          {dedupedDisplayedAgents.map((agent: Agent) => renderAgentRow(agent, false))}
+        </>
+      )}
       {showSeeAllLink && (() => {
         // Deliberately NOT a SidebarNavItem: this is a quiet muted affordance
         // (plain Link) that must not adopt nav-row active-route highlighting.
@@ -659,25 +718,77 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
           <Link
             to="/agents/all"
             state={SIDEBAR_SCROLL_RESET_STATE}
-            aria-label={rail ? "See all agents" : undefined}
+            aria-label={rail ? t("area.shell-sidebar-layout-2.sidebar-agents.seeAll") : undefined}
             onClick={() => {
               if (isMobile) setSidebarOpen(false);
             }}
             className="flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
           >
             <Users className="shrink-0 h-4 w-4" />
-            <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>See all agents</span>
+            <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>{t("area.shell-sidebar-layout-2.sidebar-agents.seeAll")}</span>
           </Link>
         );
         return rail ? (
           <Tooltip>
             <TooltipTrigger asChild>{seeAllLink}</TooltipTrigger>
-            <TooltipContent side="right">See all agents</TooltipContent>
+            <TooltipContent side="right">{t("area.shell-sidebar-layout-2.sidebar-agents.seeAll")}</TooltipContent>
           </Tooltip>
         ) : (
           seeAllLink
         );
       })()}
     </SidebarSection>
+  );
+}
+
+// myrmidon(AGENTS-TREE): the sidebar's tree body — rooted hierarchy, the
+// flat rootless agents, and the dedicated "No manager" orphan group.
+function SidebarAgentTreeSection({
+  forest,
+  collapsed,
+  onToggleNode,
+  renderRow,
+  rail,
+}: {
+  forest: ReturnType<typeof buildAgentForest>;
+  collapsed: Set<string>;
+  onToggleNode: (agentId: string) => void;
+  renderRow: (agent: Agent) => ReactNode;
+  rail: boolean;
+}) {
+  // myrmidon(AGENTS-TREE): i18n labels (agentsTree namespace, ru translated).
+  const { t } = useTranslation();
+  const treeLabels = {
+    expandNode: (name: string) => t("agentsTree.expandNode", { name }),
+    collapseNode: (name: string) => t("agentsTree.collapseNode", { name }),
+    agentsCount: (count: number) => t("agentsTree.agentsCount", { count }),
+    runningCount: (count: number) => t("agentsTree.runningCount", { count }),
+  };
+  return (
+    <div data-slot="agent-tree">
+      <SidebarAgentTreeRows
+        nodes={forest.roots}
+        renderRow={renderRow}
+        collapsed={collapsed}
+        onToggleNode={onToggleNode}
+        rail={rail}
+        labels={treeLabels}
+      />
+      {forest.orphans.length > 0 && (
+        <div data-slot="agent-tree-orphans">
+          <p className="mx-2 mt-2 px-2 text-(length:--text-nano) font-semibold uppercase tracking-wide text-muted-foreground/80">
+            {t("agentsTree.noManager")}
+          </p>
+          <SidebarAgentTreeRows
+            nodes={forest.orphans}
+            renderRow={renderRow}
+            collapsed={collapsed}
+            onToggleNode={onToggleNode}
+            rail={rail}
+            labels={treeLabels}
+          />
+        </div>
+      )}
+    </div>
   );
 }

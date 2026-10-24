@@ -42,7 +42,7 @@ import {
   toolApplications,
   toolConnectionInstalls,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { errorHandler } from "../middleware/index.js";
 import { runtimeConnectionIntentRoutes } from "../routes/connection-intents.js";
 import { createRuntimeToolsToken } from "../runtime-tools-token.js";
@@ -71,7 +71,7 @@ import {
   type GitHubAppEntry,
   type GitHubSharedIdentitySettings,
 } from "../myrmidon/github-shared-identity/settings.js";
-import { DEFAULT_GITHUB_APP_PERMISSIONS, githubAppTokenPermissionsFor } from "../myrmidon/github-shared-identity/app-token.js";
+import { DEFAULT_GITHUB_APP_PERMISSIONS, githubAppTokenPermissionsFor, mintGitHubAppInstallationToken } from "../myrmidon/github-shared-identity/app-token.js";
 
 const DEDICATED_TOKEN = "test-dedicated-token-not-a-secret";
 
@@ -360,6 +360,32 @@ const support = await getEmbeddedPostgresTestSupport();
     return connectionId;
   }
 
+  it("reuses installation tokens until five minutes before expiry", async () => {
+    resetGitHubAppTokenCacheForTests();
+    const start = Date.now();
+    let issueCount = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const href = String(input);
+      if (href.endsWith("/installation")) return new Response(JSON.stringify({ id: 5001 }), { status: 200 });
+      if (href.endsWith("/access_tokens")) {
+        issueCount += 1;
+        return new Response(JSON.stringify({ token: `cache-token-${issueCount}`, expires_at: new Date(start + 60 * 60_000).toISOString() }), { status: 200 });
+      }
+      throw new Error(`unexpected GitHub request: ${href}`);
+    });
+    const input = { appId: "101", privateKeyPem: KEY_A.privatePem, installationId: null, repository: "owner-a/repo-a", fetchImpl, now: () => start };
+
+    const issued = await mintGitHubAppInstallationToken(input);
+    const reused = await mintGitHubAppInstallationToken(input);
+    expect(issued.reused).toBe(false);
+    expect(reused).toMatchObject({ token: issued.token, reused: true });
+    expect(issueCount).toBe(1);
+
+    const refreshed = await mintGitHubAppInstallationToken({ ...input, now: () => start + 56 * 60_000 });
+    expect(refreshed.reused).toBe(false);
+    expect(issueCount).toBe(2);
+  });
+
   it("mints a single-repository installation token on the board, with the agent as author, audited without the token", async () => {
     const input = await seed();
     const secretId = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-a", repos: ["owner-a/repo-a"] });
@@ -412,10 +438,13 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(text).not.toContain("PRIVATE KEY");
     }
 
-    // A second operation reuses the cached token without another GitHub call.
+    // A second operation reuses the cached token without another GitHub call
+    // or a duplicate issuance activity row.
     github.calls = [];
     expect((await resolveGitHubOperationCredentials(db, { ...input, repository: "owner-a/repo-a" })).env.GH_TOKEN).toBe(token);
     expect(github.calls).toEqual([]);
+    const repeatedActivity = await db.select().from(activityLog).where(eq(activityLog.companyId, input.companyId));
+    expect(repeatedActivity.filter((row) => row.action === "myrmidon.github_app.issued")).toHaveLength(1);
   });
 
   it("separates products: product A under App A, product B under App B, neither absent, both an error", async () => {

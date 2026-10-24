@@ -20,7 +20,7 @@
 // recomputed within one pass after a restart; nothing is persisted (the same
 // "computed on the fly" shape as the stale-block cards).
 
-import type { AttentionSeverity } from "@paperclipai/shared";
+import type { AttentionSeverity } from "@myrmidon/shared";
 
 export type ReviewRoutingSignalKind = "no_reviewer" | "review_overdue" | "no_steward";
 

@@ -6,7 +6,7 @@
 // (`api`). Every gate on background work in the server reads this module — the
 // code must not grow a scattering of `if (someRoleFlag)` checks.
 //
-// The role is resolved from `PAPERCLIP_PROCESS_ROLE` (values `all|worker|api`,
+// The role is resolved from `MYRMIDON_PROCESS_ROLE` (legacy alias: `PAPERCLIP_PROCESS_ROLE`; values `all|worker|api`,
 // default `all`) once per process, so a running process never changes role.
 //
 // - `all`    — default, byte-for-byte today's behavior: HTTP on the configured
@@ -24,8 +24,10 @@
 // unchanged behavior) and reports itself as invalid, so the caller logs it
 // loudly at startup.
 
+import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
+
 /** Environment variable that overrides the process role. */
-export const PROCESS_ROLE_ENV = "PAPERCLIP_PROCESS_ROLE";
+export const PROCESS_ROLE_ENV = "MYRMIDON_PROCESS_ROLE";
 
 /** The accepted values of {@link PROCESS_ROLE_ENV}. */
 export const PROCESS_ROLE_VALUES = ["all", "worker", "api"] as const;
@@ -97,7 +99,7 @@ export interface ResolvedProcessRole {
  * caller can warn instead of starting a process with an undefined role.
  */
 export function resolveProcessRole(
-  raw: string | null | undefined = process.env[PROCESS_ROLE_ENV],
+  raw: string | null | undefined = readProductEnv("PROCESS_ROLE"),
 ): ResolvedProcessRole {
   const trimmed = typeof raw === "string" ? raw.trim().toLowerCase() : "";
   if (trimmed.length === 0) {
@@ -126,7 +128,9 @@ export function processRoleProfileFor(role: ProcessRole): Omit<ProcessRoleProfil
         executesRuns: false,
         migrations: "await",
         runsBackups: false,
-        listen: { host: PROCESS_ROLE_API_HOST, port: PROCESS_ROLE_API_PORT, reusePort: true },
+        // Keep the configured board port; only the socket sharing is role-specific.
+        // Hard-coding 3100 would make PORT ineffective for split deployments.
+        listen: { host: PROCESS_ROLE_API_HOST, port: null, reusePort: true },
         loopbackListen: null,
       };
     case "worker":
@@ -165,7 +169,7 @@ export function processRoleProfileFor(role: ProcessRole): Omit<ProcessRoleProfil
 export function processRole(
   env: NodeJS.ProcessEnv = process.env,
 ): ProcessRoleProfile & { resolvedFrom: NodeJS.ProcessEnv } {
-  const resolved = resolveProcessRole(env[PROCESS_ROLE_ENV]);
+  const resolved = resolveProcessRole(readProductEnvFrom(env, "PROCESS_ROLE"));
   return {
     ...processRoleProfileFor(resolved.role),
     source: resolved.source,

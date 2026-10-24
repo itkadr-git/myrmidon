@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { PRODUCT_NAME } from "@paperclipai/shared";
+import { PRODUCT_NAME } from "@myrmidon/shared";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 

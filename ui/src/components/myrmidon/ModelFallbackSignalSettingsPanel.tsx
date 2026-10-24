@@ -22,11 +22,12 @@ import {
   MAX_FALLBACK_SIGNAL_WINDOW_SEC,
   type FallbackSignalSettingKey,
   type FallbackSignalSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { i18n, useTranslation } from "@/i18n";
 import {
   describeFallbackSignalSource,
   modelFallbackSignalSettingsApi,
@@ -45,25 +46,22 @@ const BOUNDS: Record<NumericKey, { min: number; max: number | null }> = {
   intervalSec: { min: MIN_FALLBACK_SIGNAL_INTERVAL_SEC, max: MAX_FALLBACK_SIGNAL_INTERVAL_SEC },
 };
 
-const LABELS: Record<FallbackSignalSettingKey, string> = {
-  enabled: "Signal on",
-  thresholdPct: "Fallback share, %",
-  minCalls: "Minimum calls in the window",
-  windowSec: "Window, seconds",
-  intervalSec: "Sweep period, seconds",
-};
+// Functions, not module constants: the texts follow the interface language.
+const getLabels = (): Record<FallbackSignalSettingKey, string> => ({
+  enabled: i18n.t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.labels.enabled"),
+  thresholdPct: i18n.t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.labels.thresholdPct"),
+  minCalls: i18n.t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.labels.minCalls"),
+  windowSec: i18n.t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.labels.windowSec"),
+  intervalSec: i18n.t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.labels.intervalSec"),
+});
 
-const HINTS: Record<FallbackSignalSettingKey, string> = {
-  enabled:
-    "Master switch. Off by default: the sweep only signals when you arm it.",
-  thresholdPct:
-    "Share of calls made on fallback models that arms the signal, percent.",
-  minCalls:
-    "Calls the window must hold before the share is trusted — a short window never signals.",
-  windowSec: "How far back the share is counted, seconds.",
-  intervalSec:
-    "How often the sweep runs, seconds. A tick whose previous pass is still running is skipped, not queued; changing this re-schedules the loop.",
-};
+const getHints = (): Record<FallbackSignalSettingKey, string> => ({
+  enabled: i18n.t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.hints.enabled"),
+  thresholdPct: i18n.t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.hints.thresholdPct"),
+  minCalls: i18n.t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.hints.minCalls"),
+  windowSec: i18n.t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.hints.windowSec"),
+  intervalSec: i18n.t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.hints.intervalSec"),
+});
 
 interface DraftParse {
   patch: FallbackSignalSettingsPatch | null;
@@ -93,8 +91,8 @@ export function parseFallbackSignalDraft(draft: {
     if (!Number.isSafeInteger(value) || value < min || (max !== null && value > max)) {
       errors[key] =
         max === null
-          ? `Enter a whole number of ${min} or more`
-          : `Enter a whole number from ${min} to ${max}`;
+          ? i18n.t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.errors.minOnly", { min })
+          : i18n.t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.errors.range", { min, max });
       continue;
     }
     patch[key] = value;
@@ -124,6 +122,9 @@ export function ModelFallbackSignalSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
+  const LABELS = getLabels();
+  const HINTS = getHints();
   const [draft, setDraft] = useState<ReturnType<typeof toDraft> | null>(null);
 
   const fields = draft ?? (view ? toDraft(view.settings) : null);
@@ -134,13 +135,10 @@ export function ModelFallbackSignalSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Model fallback signal</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          When an agent keeps landing on a fallback model, the board signals it
-          so the operator can fix the routing. Every value applies on the next
-          sweep without a restart; each field shows whether the value in force
-          was saved here, pinned by the environment or left at the default.
+          {t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.description")}
         </p>
       </div>
 
@@ -202,18 +200,19 @@ export function ModelFallbackSignalSettingsPanelView({
                 if (parsed.patch) onSave(parsed.patch);
               }}
             >
-              {pending ? "Saving..." : "Save model fallback signal settings"}
+              {pending ? t("area.settings-models-runtime-1.shared.saving") : t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.saveButton")}
             </Button>
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading model fallback settings...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function ModelFallbackSignalSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -226,7 +225,7 @@ export function ModelFallbackSignalSettingsPanel() {
     onMutate: () => setError(null),
     onError: (err) =>
       setError(
-        err instanceof Error ? err.message : "Saving the model fallback settings failed.",
+        err instanceof Error ? err.message : t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.saveFailed"),
       ),
     onSuccess: async () => {
       setError(null);
@@ -241,7 +240,7 @@ export function ModelFallbackSignalSettingsPanel() {
       <div className="text-sm text-destructive">
         {query.error instanceof Error
           ? query.error.message
-          : "Failed to load model fallback settings."}
+          : t("area.settings-models-runtime-1.model-fallback-signal-settings-panel.loadFailed")}
       </div>
     );
   }

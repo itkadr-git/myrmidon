@@ -30,6 +30,22 @@ vi.mock("@/api/decisions", () => ({
 const mockAttentionApi = vi.hoisted(() => ({ list: vi.fn() }));
 vi.mock("@/api/attention", () => ({ attentionApi: mockAttentionApi }));
 
+const mockNavigate = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/router", () => ({ useNavigate: () => mockNavigate }));
+
+function attentionItem(sourceKind: string, id: string, title: string, href: string | null) {
+  return {
+    id,
+    companyId: "company-1",
+    sourceKind,
+    subject: { kind: sourceKind, id, companyId: "company-1", title, identifier: null, status: "open", href },
+    whyNow: "waiting",
+    originAgentName: "agent-a",
+    relatedIssue: null,
+    createdAt: minutesAgo(125),
+  };
+}
+
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
@@ -136,17 +152,14 @@ describe("myrmidon(UI2) Ui2Decisions screen parity", () => {
     mockDecisionsApi.decide.mockResolvedValue({});
     mockDecisionsApi.dismiss.mockResolvedValue({});
     mockAttentionApi.list.mockResolvedValue({
-      items: [{
-        id: "decision-1",
-        companyId: "company-1",
-        sourceKind: "decision",
-        subject: { kind: "decision", id: "decision-1", companyId: "company-1", title: "Raise the soft limit for the day", identifier: null, status: "open", href: null },
-        whyNow: "A decision is waiting",
-        originAgentName: "agent-a",
-        relatedIssue: null,
-        createdAt: minutesAgo(125),
-      }],
-      totalCount: 1,
+      items: [
+        attentionItem("approval", "approval-1", "Approve the deploy", "/OPE/approvals/approval-1"),
+        attentionItem("issue_thread_interaction", "interaction-1", "Which branch?", "/OPE/issues/OPE-7"),
+        attentionItem("decision", "decision-1", "Raise the soft limit for the day", "/OPE/decisions?decisionId=decision-1"),
+        attentionItem("failure", "failure-1", "A failed run", null),
+      ],
+      totalCount: 4,
+      deskBadgeCount: 3,
     });
     mockAgentsApi.list.mockResolvedValue([
       { id: "agent-1", companyId: "company-1", name: "agent-a", status: "active" },
@@ -250,6 +263,48 @@ async function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> = undefined;
   flushSync(() => {
     result = callback();
+  
+  it("renders the waiting queue with item types and no duplicate of open decisions", async () => {
+    await renderScreen();
+
+    const rows = [...container.querySelectorAll(".ui2-decisions-waiting-item")];
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("Approval"),
+      expect.stringContaining("Interaction"),
+    ]);
+    expect(rows[0]?.textContent).toContain("Approve the deploy");
+    expect(rows[1]?.textContent).toContain("Which branch?");
+    // The open decision appears once, as the action card, not as a queue row.
+    expect(container.textContent?.match(/Raise the soft limit for the day/g)?.length).toBe(1);
+    expect(container.querySelectorAll(".ui2-decision-card-title").length).toBe(1);
   });
+
+  it("shows the same count as the shell chip (deskBadgeCount of the feed)", async () => {
+    await renderScreen();
+
+    const section = container.querySelector(".ui2-decisions-waiting");
+    expect(section?.textContent).toContain("3 waiting");
+  });
+
+  it("navigates through the router when a queue item is clicked", async () => {
+    await renderScreen();
+
+    const row = container.querySelector<HTMLButtonElement>(".ui2-decisions-waiting-item");
+    await act(async () => {
+      row?.click();
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/OPE/approvals/approval-1");
+  });
+
+  it("shows the empty state when nothing waits", async () => {
+    mockDecisionsApi.list.mockResolvedValue([]);
+    mockAttentionApi.list.mockResolvedValue({ items: [], totalCount: 0, deskBadgeCount: 0 });
+    await renderScreen();
+
+    expect(container.querySelector(".ui2-decisions-waiting-item")).toBeNull();
+    expect(container.textContent).toContain("Nothing is waiting");
+    expect(container.textContent).toContain("0 waiting");
+  });
+});
   await result;
 }

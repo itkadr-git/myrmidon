@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Copy, Check, Loader2 } from "lucide-react";
 
+import { useTranslation } from "@/i18n";
+
 import { Button } from "./ui/button";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
@@ -89,12 +91,13 @@ export function OnboardingLoginCard({
   loading?: boolean;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   if (loading) {
     return (
       <div
         className="flex min-h-(--sz-108px) items-center justify-center rounded-xl bg-muted/40"
         role="status"
-        aria-label="Preparing the sign-in"
+        aria-label={t("area.apps-connections-1.adapter-login-chrome.preparing")}
       >
         <Loader2 className="size-4 animate-spin text-muted-foreground" />
       </div>
@@ -226,6 +229,7 @@ export function OnboardingLoginCodeRow({
 }) {
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { t } = useTranslation();
   const autoCopiedRef = useRef(false);
 
   useEffect(
@@ -304,13 +308,13 @@ export function OnboardingLoginCodeRow({
             animate={{ opacity: 1, y: 0, transition: COPIED_REVEAL }}
             exit={{ opacity: 0, transition: COPIED_REVEAL }}
           >
-            Copied!
+            {t("area.apps-connections-1.adapter-login-chrome.copied")}
           </motion.span>
         )}
       </AnimatePresence>
       <LoginCardCopyButton
         value={code}
-        label="Copy the code"
+        label={t("area.apps-connections-1.adapter-login-chrome.copyCode")}
         onCopied={() => {
           // No wait here. A press is a direct action, and delaying its
           // acknowledgement would read as the button having missed.
@@ -360,8 +364,8 @@ export function OnboardingCardField({
   onSubmit,
   onPaste,
   disabled,
-  label = "Authorization code",
-  placeholder = "Paste authorization code here",
+  label,
+  placeholder,
   masked = false,
   autoFocus = false,
 }: {
@@ -389,15 +393,16 @@ export function OnboardingCardField({
    */
   autoFocus?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <input
       // eslint-disable-next-line jsx-a11y/no-autofocus -- see the prop's note
       autoFocus={autoFocus}
-      aria-label={label}
+      aria-label={label ?? t("area.apps-connections-1.adapter-login-chrome.authCodeLabel")}
       type={masked ? "password" : "text"}
       autoComplete="off"
       spellCheck={false}
-      placeholder={placeholder}
+      placeholder={placeholder ?? t("area.apps-connections-1.adapter-login-chrome.authCodePlaceholder")}
       value={value}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}
@@ -427,6 +432,7 @@ export function ProviderSubscriptionCard({
   loading?: boolean;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <OnboardingLoginCard
       loading={loading}
@@ -438,11 +444,12 @@ export function ProviderSubscriptionCard({
             rel="noreferrer noopener"
             className="underline underline-offset-2 hover:text-foreground"
           >
-            Sign in to {providerName}
+            {t("area.apps-connections-1.adapter-login-chrome.signInTo", { provider: providerName })}
           </a>
+          {" "}
           {mode === "submitted_code"
-            ? " then come back and enter authorization code"
-            : " by providing the authorization code below"}
+            ? t("area.apps-connections-1.adapter-login-chrome.thenEnterCode")
+            : t("area.apps-connections-1.adapter-login-chrome.provideCodeBelow")}
         </>
       }
     >
@@ -457,11 +464,12 @@ export function ProviderApiKeyCard({
 }: Omit<Parameters<typeof OnboardingCardField>[0], "masked" | "label"> & {
   providerName: string;
 }) {
+  const { t } = useTranslation();
   return (
     <OnboardingLoginCard
-      instruction={`Provide your ${providerName} API key to connect`}
+      instruction={t("area.apps-connections-1.adapter-login-chrome.apiKeyInstruction", { provider: providerName })}
     >
-      <OnboardingCardField {...field} label="API key" masked />
+      <OnboardingCardField {...field} label={t("area.apps-connections-1.adapter-login-chrome.apiKeyLabel")} masked />
     </OnboardingLoginCard>
   );
 }
@@ -471,25 +479,26 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
   adapterType: string;
   login?: { isolated?: boolean; command?: string; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
 }) {
+  const { t } = useTranslation();
   const [showCommand, setShowCommand] = useState(false);
   const provider = adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
   const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local");
   const command = isolated ? login?.command : "claude auth login";
-  if (login?.preparing) return <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Checking local {provider} sign-in…</p>;
+  if (login?.preparing) return <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{t("area.apps-connections-1.adapter-login-chrome.localChecking", { provider })}</p>;
   const ready = login?.status === "ready";
   return <div className="min-w-0 max-w-full space-y-3 text-sm text-muted-foreground">
     {ready ? <>
-      <p role="status" className="flex items-center gap-2 text-foreground"><Check className="size-4 shrink-0 text-(--status-task-icon-done)" />{provider} is signed in. Click Connect to use this account.</p>
-      {!showCommand && <button type="button" className="underline underline-offset-4" onClick={() => setShowCommand(true)}>Use a different account</button>}
-    </> : <p>{isolated ? `Sign in to ${provider} for this connection on the machine running Myrmidon. Your existing terminal login stays separate.` : `Connect uses your local ${provider} account on the machine running Myrmidon.`}</p>}
+      <p role="status" className="flex items-center gap-2 text-foreground"><Check className="size-4 shrink-0 text-(--status-task-icon-done)" />{t("area.apps-connections-1.adapter-login-chrome.localSignedIn", { provider })}</p>
+      {!showCommand && <button type="button" className="underline underline-offset-4" onClick={() => setShowCommand(true)}>{t("area.apps-connections-1.adapter-login-chrome.useDifferentAccount")}</button>}
+    </> : <p>{isolated ? t("area.apps-connections-1.adapter-login-chrome.localIsolated", { provider }) : t("area.apps-connections-1.adapter-login-chrome.localShared", { provider })}</p>}
     {(!ready || showCommand) && !login?.error && <>
-      <p>Run this in a terminal on that machine and finish signing in in your browser. We’ll check automatically when you return.</p>
+      <p>{t("area.apps-connections-1.adapter-login-chrome.localRunCommand")}</p>
       {command && <div className="flex min-w-0 max-w-full items-start gap-2 rounded-md border bg-muted p-3 text-foreground">
         <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs"><code>{command}</code></pre>
-        <LoginCardCopyButton value={command} label="Copy sign-in command" />
+        <LoginCardCopyButton value={command} label={t("area.apps-connections-1.adapter-login-chrome.copyCommand")} />
       </div>}
     </>}
     {login?.error && <p role="alert">{login.error}</p>}
-    {login && !login.preparing && (isolated || login.error) && <button type="button" className="underline underline-offset-4" onClick={login.retry}>{isolated ? "Start sign-in again" : "Check again"}</button>}
+    {login && !login.preparing && (isolated || login.error) && <button type="button" className="underline underline-offset-4" onClick={login.retry}>{isolated ? t("area.apps-connections-1.adapter-login-chrome.startAgain") : t("area.apps-connections-1.adapter-login-chrome.checkAgain")}</button>}
   </div>;
 }
