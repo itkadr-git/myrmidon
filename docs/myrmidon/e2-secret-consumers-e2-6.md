@@ -1,41 +1,34 @@
-# E2.6 application secret consumer inventory (OPE-9039)
+# E2.6 application secret consumers (OPE-9039)
 
-Audit basis: source on main `bf496ae5493081a6df3f2118745b6756c232e35c` (shared resolver PR #1730). This is a source-only review; no environment values or production secret values were read. The E2.1 resolver is instance-setting scoped. It must not be applied to process-wide configuration, agent credentials, or one-way signing material without an explicit scope/security design. `MYRMIDON_DECISION_SIGNING_SECRET` and `MYRMIDON_TOOL_ACTION_SIGNING_SECRET` are registered by `server/src/myrmidon/secret-masking.ts` under aliases `PAPERCLIP_DECISION_SIGNING_SECRET` and `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET`; the E1-named variables are not directly read there.
+Basis: source on main after the shared resolver (PR #1730, `e5a3cbda4`) and the code in this PR. Source-only review; no environment or production secret values were read or changed.
 
-Status vocabulary:
-- Existing secret-store path: source already resolves a named secret; still needs explicit UI/binding and the OPE-9034 slice-2 picker unless stated otherwise.
-- Process env: current consumer reads process configuration. No safe scoped ref integration is present in this slice.
-- Decision required: semantics are one-way key material or existing `_REF`; do not migrate by treating it as an ordinary credential setting.
+Key finding of the per-name review: most `MYRMIDON_*_KEY_SECRET` variables do not hold a credential. They hold the NAME of a company secret, which the consumer resolves server-side through the existing secrets service (`readKey` / `secrets.getByKey` + `resolveSecretValue`). They are selectors (non-secret pointers into the standard store), already store-backed, and are not registered as instance secret settings. Registering them would put a pointer behind a pointer.
 
-| E1 name | Current source / evidence | Current disposition | E2.6 integration status |
-|---|---|---|---|
-| `MYRMIDON_ACCESS_HUB_SSH_ADMIN_KEY_SECRET` | `server/src/myrmidon/access-hub/routes.ts` (`ACCESS_HUB_SSH_ADMIN_KEY_SECRET_ENV`) | Process env | Gap: access-hub runtime reads env; needs explicit instance binding and admin picker. |
-| `MYRMIDON_ALERTS_WEBHOOK_TOKEN_REF` | `server/src/myrmidon/monitoring/alerts/token.ts`; `token.myrmidon.test.ts`; `routes.ts` | Existing `_REF` token-ref contract | Gap: retain ref semantics; do not wrap as another plaintext binding. Verify target picker and server-side scope. |
-| `MYRMIDON_BROWSER_BRIDGE_PEPPER` | `server/src/myrmidon/browser-bridge/index.ts` | Process env; random per-start fallback and fail-closed pairing behavior documented inline | Decision required: process-wide HMAC pepper; rotation affects existing pairings. Not an ordinary setting. |
-| `MYRMIDON_BROWSER_CONSOLE_TOKEN` | `server/src/myrmidon/browser-console/screen-console-client.ts` | Process env | Gap: privileged node bearer credential, currently paired with host configuration. Needs scope/UI design. |
-| `MYRMIDON_CTO_CHAT_KEY_SECRET` | `server/src/myrmidon/cto-chat/settings.ts`; `agent-chat-bridge/commands/plan.myrmidon.test.ts` | Process env | Gap: server consumer; needs explicit binding, masking and missing/denied/rotation tests. |
-| `MYRMIDON_DEBATE_KEY_SECRET` | `server/src/myrmidon/debates/gateway.ts`; `gateway.myrmidon.test.ts` | Process env | Gap: gateway provider credential. |
-| `MYRMIDON_DECISION_SIGNING_SECRET` | alias only in `server/src/myrmidon/secret-masking.ts` (`PAPERCLIP_DECISION_SIGNING_SECRET`) | E1 name is not directly consumed in main source | Decision required: signing key is integrity-critical and should not be rebound without rotation/verification design. |
-| `MYRMIDON_DISTILL_KEY_SECRET` | `server/src/myrmidon/distill/settings.ts`; `distill-domain.test.ts`, `flags-killswitch.myrmidon.test.ts` | Process env | Gap: distill provider credential. |
-| `MYRMIDON_EVALS_API_KEY` | `server/src/myrmidon/scent/queue.ts`; `scent/routes.ts` | Process env | Gap: external eval API consumer. |
-| `MYRMIDON_EVALS_KEY_SECRET` | `server/src/myrmidon/debates/gateway.ts`; evals routes/judge/index tests and code | Process env | Gap: eval provider credential. |
-| `MYRMIDON_EVALS_LANGFUSE_KEY` | `server/src/myrmidon/evals/langfuse.ts` | Process env | Gap: Langfuse integration. |
-| `MYRMIDON_FORAGING_KEY_SECRET` | `server/src/myrmidon/foraging/domain.ts`; `reader.myrmidon.test.ts`, `settings.myrmidon.test.ts` | Process env | Gap: foraging provider credential. |
-| `MYRMIDON_LITELLM_ADMIN_KEY_SECRET` | `server/src/myrmidon/litellm-budget-sync/routes.ts`, `sweep.ts`; `litellm-sync`, provider wiring and related tests | Process env | Gap: shared admin credential used across modules; coordinate its binding/consumer boundary before wiring. |
-| `MYRMIDON_LITELLM_KEY_SECRET` | `server/src/myrmidon/litellm-costs/litellm-costs.ts`, `attention.ts`, `litellm-fallback-signal/sweep.ts`, `tracing-health/probes.ts`; tests | Process env | Gap: shared LiteLLM consumer across cost, fallback and tracing modules; define one scope and consumer set. |
-| `MYRMIDON_METRICS_TOKEN` | `server/src/myrmidon/monitoring/metrics/routes.ts` (`resolveMetricsToken`) | Emergency process env fallback | Existing env precedence is after secret-name lookup; acceptance test/evidence exists in module tests. |
-| `MYRMIDON_METRICS_TOKEN_SECRET` | `server/src/myrmidon/monitoring/metrics/routes.ts` (`resolveMetricsToken`); metrics tests | Existing company-secret name lookup; server-side value read | Existing secret-store path. Gap: settings UI/binding and formal scoped consumer integration. |
-| `MYRMIDON_OCR_KEY_SECRET` | `server/src/myrmidon/ocr/index.ts`, `settings.ts`; `runtime.myrmidon.test.ts` | Process env | Gap: OCR provider credential. |
-| `MYRMIDON_SCENT_KEY_SECRET` | `server/src/myrmidon/scent/queue.ts` | Process env | Gap: scent provider credential. |
-| `MYRMIDON_STACK_GITHUB_TOKEN` | `server/src/myrmidon/stack-registry/settings.ts`, `releases.ts`; `stack-check.myrmidon.test.ts` | Process env | Gap: GitHub API token. |
-| `MYRMIDON_STT_DEEPGRAM_KEY_SECRET` | `server/src/myrmidon/stt/backend-deepgram.ts`, `settings.ts` | Process env | Gap: Deepgram credential; share STT binding contract with generic STT key. |
-| `MYRMIDON_STT_KEY_SECRET` | `server/src/myrmidon/stt/settings.ts` | Process env | Gap: generic STT provider credential. |
-| `MYRMIDON_TOOL_ACTION_SIGNING_SECRET` | alias only in `server/src/myrmidon/secret-masking.ts` (`PAPERCLIP_TOOL_ACTION_SIGNING_SECRET`); tool guard tests | E1 name is not directly consumed in main source | Decision required: action-signing integrity key; preserve alias semantics and design rotation. |
-| `MYRMIDON_TRACING_CLICKHOUSE_PASSWORD` | `server/src/myrmidon/tracing-health/probes.ts`; `routes.myrmidon.test.ts` | Process env | Gap: tracing probe DB credential; avoid exposing connection details in status/errors. |
-| `MYRMIDON_ZABBIX_TOKEN_REF` | `server/src/myrmidon/maintenance/zabbix.ts`; `zabbix.test.ts` | Existing `_REF` (`env:`/`file:`) resolver | The E1 note that direct use was not found is stale: current main has direct consumer and test. Do not duplicate as ordinary secret value; secret-store reference and scope/UI need reconciliation. |
+Value-carrying variables are registered in `server/src/myrmidon/secret-settings/registry.ts` and read through `resolveOptionalInstanceSecret` (`secret-settings/runtime.ts`): consumer scope, then the emergency env override (set and non-empty wins), then the bound ref. A missing ref reads as null (the optional integration stays off); a denied, inactive or revoked ref fails closed (null) and is logged by error code only. The ref is picked in the existing instance secret-settings API and the OPE-9034 picker (#1736); the dry-run `migration-plan` lists the new names without values.
 
-## Acceptance gap
+Tests: `server/src/myrmidon/secret-settings/consumers.myrmidon.test.ts` (per registered name: missing ref, denied consumer, change, revoke/inactive, env priority, no value in status/plan/errors; tracing and browser-console wiring).
 
-This inventory does not claim implementation of secret-ref bindings for the process-env entries. Most are process configuration loaded outside an authenticated request; a server-side resolver needs an explicit instance/process scope, consumer id, reload behavior, masking registration, failure mode, and rotation impact. Browser bridge pepper and signing keys additionally affect authentication/integrity and require an approved rotation design. Existing alert, metrics and Zabbix reference mechanisms must be reconciled rather than duplicated. The UI picker dependency is the OPE-9034 slice 2 noted in the assignment.
+| E1 name | Evidence | Disposition |
+|---|---|---|
+| `MYRMIDON_STACK_GITHUB_TOKEN` | `stack-registry/settings.ts`, `check.ts` | Value. Registered `stack.github_token`, consumer `stack-registry`; `checkStackReleases` resolves per run. Env is the emergency override. |
+| `MYRMIDON_TRACING_CLICKHOUSE_PASSWORD` | `tracing-health/probes.ts` (`withClickhousePassword`), `routes.ts`, `attention-sweep.ts` | Value. Registered `tracing.clickhouse_password`, consumer `tracing-health`; resolved per check, env wins. |
+| `MYRMIDON_BROWSER_CONSOLE_TOKEN` | `browser-console/screen-console-client.ts` (`lazyScreenConsoleClient`), `wiring.ts` | Value. Registered `browser_console.node_token`, consumer `browser-console`; resolved per call, so change/revoke apply without restart. Unconfigured answers 503. |
+| `MYRMIDON_ACCESS_HUB_SSH_ADMIN_KEY_SECRET` | `access-hub/routes.ts:311-316` | Selector: NAME of a company secret, resolved through the secrets service. Store-backed, not registered. |
+| `MYRMIDON_CTO_CHAT_KEY_SECRET` | `cto-chat/settings.ts:67` | Selector (secret name). Store-backed. |
+| `MYRMIDON_DEBATE_KEY_SECRET` | `debates/gateway.ts:37` | Selector (secret name, falls back to the evals name). Store-backed. |
+| `MYRMIDON_DISTILL_KEY_SECRET` | `distill/settings.ts:121` | Selector (secret name). Store-backed. |
+| `MYRMIDON_EVALS_KEY_SECRET` | `evals/judge.ts:88`, `debates/gateway.ts:24` | Selector (secret name). Store-backed. |
+| `MYRMIDON_EVALS_API_KEY` | `scent/queue.ts:75`, `scent/routes.ts:49` | Not an env read: it is the default company-secret NAME used when `MYRMIDON_SCENT_KEY_SECRET` is unset. Store-backed. |
+| `MYRMIDON_SCENT_KEY_SECRET` | `scent/queue.ts:36` | Selector (secret name). Store-backed. |
+| `MYRMIDON_FORAGING_KEY_SECRET` | `foraging/settings.ts:65`, `reader.ts:107` | Selector (secret name). Store-backed. |
+| `MYRMIDON_OCR_KEY_SECRET` | `ocr/settings.ts:76` | Selector (secret name). Store-backed. |
+| `MYRMIDON_STT_KEY_SECRET`, `MYRMIDON_STT_DEEPGRAM_KEY_SECRET` | `stt/settings.ts:108-119` | Selectors (secret names; Deepgram falls back to the generic one). Store-backed. |
+| `MYRMIDON_LITELLM_KEY_SECRET` | `litellm-costs/litellm-costs.ts:93`, `tracing-health/probes.ts:62` | Selector (secret name). Store-backed. |
+| `MYRMIDON_LITELLM_ADMIN_KEY_SECRET` | `litellm-budget-sync/sweep.ts:51`, `routes.ts:54` | Selector (secret name). Store-backed. |
+| `MYRMIDON_METRICS_TOKEN_SECRET`, `MYRMIDON_METRICS_TOKEN` | `monitoring/metrics/routes.ts` (`resolveMetricsToken`) | Already the target contract: secret-name lookup through the store, plain env only as the emergency fallback. Not duplicated. |
+| `MYRMIDON_EVALS_LANGFUSE_KEY` | `evals/langfuse.ts:15,28` | Non-secret: the code documents it as a static Langfuse PUBLIC key (basic-auth user part, empty password). An identifier, not a credential; not moved. |
+| `MYRMIDON_ALERTS_WEBHOOK_TOKEN_REF`, `MYRMIDON_ZABBIX_TOKEN_REF` | `monitoring/alerts/token.ts`, `maintenance/zabbix.ts` (`env:<NAME>` / `file:<path>`) | Pointers, not values; the referent is a deployment env var or a mounted file (Docker secret). Zabbix has a live consumer and test (the E1 note that none was found is stale). Kept: file-mounted secrets are the preferred deployment form; a `secret:` scheme is a follow-up, not needed for the release. |
+| `MYRMIDON_BROWSER_BRIDGE_PEPPER` | `browser-bridge/index.ts:100` | Bootstrap, env only. Process-wide HMAC pepper read at module start; rotation invalidates every pairing, and it is needed before any request/DB context. Unset gives a random per-start pepper and a fail-closed pairing (documented inline). Threat model: it is derived key material, never returned; env or file mount only. Not registered. |
+| `MYRMIDON_DECISION_SIGNING_SECRET`, `MYRMIDON_TOOL_ACTION_SIGNING_SECRET` | `secret-masking.ts:28-29`, `services/decision-signing.ts`, `services/tool-content-guards.ts`, `worktree-config.ts` | Bootstrap, env (or generated key file) only. Integrity keys: anyone who can write the store could mint signatures if the key lived beside the data it protects, and a rebind would invalidate stored signatures. Read before the store is available. Masked in logs (aliases `PAPERCLIP_*`). Not registered. |
 
-No values were migrated, read from runtime environments, or changed. No production configuration was touched.
+Not claimed: no value was migrated, rotated or read; no production configuration was touched.
