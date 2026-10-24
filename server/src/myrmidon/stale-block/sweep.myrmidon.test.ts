@@ -492,6 +492,22 @@ describeEmbeddedPostgres("stale block sweep", () => {
     );
   });
 
+  it("OPE-9078: live events are queued for after commit, not published inline", async () => {
+    await seed({ blockerStatus: "done", withRelation: true });
+    const queued: unknown[][] = [];
+    const { sweep } = sweepWith({
+      logActivity: vi.fn(async (_entry, _dbOrTx, postCommitPublications) => {
+        queued.push(postCommitPublications as unknown[]);
+      }),
+    });
+    const result = await sweep.sweep();
+    expect(result).toMatchObject({ unblocked: 1, failed: 0 });
+    expect(queued).toHaveLength(2);
+    for (const list of queued) expect(Array.isArray(list)).toBe(true);
+    // Both calls share one deferred-publication list (published after commit).
+    expect(queued[0]).toBe(queued[1]);
+  });
+
   it("P2: the sweep-written issue.updated row parses as a left_blocked event for BLOCKED-LOOP", async () => {
     const seeded = await seed({ blockerStatus: "done", withRelation: true });
     const { injected, sweep } = sweepWith();
