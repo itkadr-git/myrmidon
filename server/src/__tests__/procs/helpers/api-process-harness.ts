@@ -23,6 +23,8 @@ const HARNESS_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HARNESS_DIR, "..", "..", "..", "..", "..");
 /** The production entry both processes run. */
 export const SERVER_ENTRY = path.join(REPO_ROOT, "server", "src", "index.ts");
+/** The standalone worker entry (PROCS-1.5 ч.H). */
+export const WORKER_ENTRY = path.join(REPO_ROOT, "server", "src", "worker.ts");
 
 /** Readiness budget: a cold tsx boot of the whole server graph is slow on CI. */
 export const READY_TIMEOUT_MS = 180_000;
@@ -177,6 +179,8 @@ export type StartApiProcessOptions = {
   port?: number;
   /** Readiness budget override. */
   readyTimeoutMs?: number;
+  /** Entry point override (worker.ts for the standalone worker). */
+  entry?: string;
 };
 
 /** Spawns one `api` process and waits until it answers `/api/health` with 200.
@@ -194,7 +198,7 @@ export async function startApiProcess(
     connectionString: options.connectionString,
   });
 
-  const child = spawn(process.execPath, [resolveTsxCli(), SERVER_ENTRY], {
+  const child = spawn(process.execPath, [resolveTsxCli(), options.entry ?? SERVER_ENTRY], {
     cwd: REPO_ROOT,
     env: childEnv({ home, port, connectionString: options.connectionString, role }),
     stdio: ["ignore", "pipe", "pipe"],
