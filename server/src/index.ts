@@ -2951,7 +2951,7 @@ async function startServerWithDatabaseTeardown(
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
   ) => {
-    logger.info({ signal }, "myrmidon(OPE-9107): shutdown started");
+    logger.info({ signal, pid: process.pid }, "myrmidon(OPE-9107): shutdown started");
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
     if (executionControlInterval) clearInterval(executionControlInterval);

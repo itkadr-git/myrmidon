@@ -169,7 +169,7 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
     // The second signal goes out only once the worker has logged the start of
     // its shutdown, straight from the stdout/stderr stream (no fixed sleep):
     // by then the first shutdown is running and the second one must join it.
-    const shutdownStarted = new Promise<void>((resolve, reject) => {
+    const shutdownStarted = new Promise<number>((resolve, reject) => {
       let seen = "";
       const timer = setTimeout(
         () => reject(new Error(`no "shutdown started" line from the worker:\n${worker!.output()}`)),
@@ -177,18 +177,21 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
       );
       const onData = (chunk: Buffer) => {
         seen = `${seen}${chunk.toString("utf8")}`.slice(-2_000);
-        if (!seen.includes("myrmidon(OPE-9107): shutdown started")) return;
+        const match = /shutdown started[^{]*\{[^}]*"pid":(\d+)/.exec(seen);
+        if (!match) return;
         clearTimeout(timer);
         worker!.child.stdout?.off("data", onData);
         worker!.child.stderr?.off("data", onData);
-        resolve();
+        resolve(Number(match[1]));
       };
       worker!.child.stdout?.on("data", onData);
       worker!.child.stderr?.on("data", onData);
     });
     worker!.child.kill("SIGTERM");
-    await shutdownStarted;
-    worker!.child.kill("SIGTERM");
+    // The child handle is the tsx launcher; the second signal must reach the
+    // board runtime itself, whose pid the log line carries.
+    const runtimePid = await shutdownStarted;
+    process.kill(runtimePid, "SIGTERM");
     const duringDrain = await Promise.all(
       Array.from({ length: 4 }, async () => await requestApi(api!.baseUrl, "/api/health")),
     );
