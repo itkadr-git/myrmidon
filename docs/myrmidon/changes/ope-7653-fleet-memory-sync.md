@@ -1,5 +1,5 @@
 ---
-settings-section: Bot containers (G-series, the 28.09 "option B" plan)
+settings-section: Track 5 — operations
 ---
 
 <!-- bot/OPE-7653 — 1.6.6 C-MEM: journal and nightly lane of the site memory sync -->
