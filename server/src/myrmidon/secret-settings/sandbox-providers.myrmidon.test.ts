@@ -178,3 +178,40 @@ describe("buildPluginWorkerEnv with instance secret refs", () => {
     expect(env).not.toHaveProperty("E2B_API_KEY");
   });
 });
+
+describe("runner ACPX Codex auth JSON setting", () => {
+  const name = "runner.acpx_codex_auth_json";
+  const row = INSTANCE_SECRET_SETTINGS.find((e) => e.name === name)!;
+  const reg = () => new InstanceSecretSettingRegistry([row]);
+  const store = (): InstanceSecretSettingStore => {
+    let b: InstanceSecretBinding | null = null;
+    return {
+      getBinding: async () => b,
+      resolveValue: async () => REF_VALUE,
+      describeSecret: async () => ({ name: "codex", status: "active", companyId: COMPANY }),
+      setBinding: async (_n, id) => (b = { companyId: COMPANY, secretId: id }),
+      clearBinding: async () => ((b = null), true),
+    };
+  };
+
+  it("is registered with the env name the runner reads, for the runner environment only", () => {
+    expect(row.envOverride).toBe("PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET");
+    expect(row.consumers).toEqual(["runner-environment"]);
+  });
+
+  it("missing, ref, env priority, denied, revoke", async () => {
+    const mk = (env: NodeJS.ProcessEnv = {}) =>
+      createInstanceSecretSettingResolver({ registry: reg(), store: store(), env });
+    const ctx = { consumerId: "runner-environment" };
+    await expect(mk().resolve(name, ctx)).rejects.toMatchObject({ details: { code: "setting_ref_missing" } });
+    const r = mk();
+    await r.setRef(name, SECRET);
+    expect((await r.resolve(name, ctx)).value).toBe(REF_VALUE);
+    await expect(r.resolve(name, { consumerId: "plugin-worker:e2b" })).rejects.toMatchObject({ status: 403 });
+    await r.clearRef(name);
+    await expect(r.resolve(name, ctx)).rejects.toMatchObject({ details: { code: "setting_ref_missing" } });
+    const e = mk({ PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: ENV_VALUE });
+    await e.setRef(name, SECRET);
+    expect(await e.resolve(name, ctx)).toEqual({ source: "env", value: ENV_VALUE });
+  });
+});

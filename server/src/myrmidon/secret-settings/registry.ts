@@ -58,6 +58,15 @@ export class InstanceSecretSettingRegistry {
 /** Consumer parts append their entries here. Empty until the first consumer lands. */
 export const INSTANCE_SECRET_SETTINGS: readonly InstanceSecretSettingDescriptor[] = [
   ...SANDBOX_PROVIDER_REGISTRY_ENTRIES, // E2.8 (OPE-9041)
+  {
+    // E2.8: no server code supplies this value today (the runner only reads it from the
+    // per-run environment, codex-credentials.ts:256), so the row gives the host one
+    // scoped, ref-backed source for the runner environment builder.
+    name: "runner.acpx_codex_auth_json",
+    envOverride: "PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET",
+    description: "Managed Codex auth JSON handed to the ACPX runner environment (MYRMIDON_ alias of the same name).",
+    consumers: ["runner-environment"],
+  },
 ];
 
 export const defaultInstanceSecretSettingRegistry = new InstanceSecretSettingRegistry(
