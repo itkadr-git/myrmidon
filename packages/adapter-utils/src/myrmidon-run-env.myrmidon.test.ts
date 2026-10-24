@@ -47,11 +47,11 @@ const SERVER_ENV: NodeJS.ProcessEnv = {
 describe("myrmidon(S2) run environment", () => {
   beforeEach(() => {
     resetReportedDroppedRunEnvNames();
-    applyMyrmidonRunEnvAllow([]);
+    applyMyrmidonRunEnvAllow(undefined);
     vi.spyOn(console, "debug").mockImplementation(() => undefined);
   });
   afterEach(() => {
-    applyMyrmidonRunEnvAllow([]);
+    applyMyrmidonRunEnvAllow(undefined);
     vi.restoreAllMocks();
     delete process.env.MYRMIDON_RUN_ENV_ALLOW;
   });
@@ -110,7 +110,7 @@ describe("myrmidon(S2) run environment", () => {
     applyMyrmidonRunEnvAllow(["SOME_UNRELATED_SERVER_VAR"]);
     const env = buildMyrmidonRunEnv({ processEnv: SERVER_ENV });
     expect(env.SOME_UNRELATED_SERVER_VAR).toBe("value");
-    applyMyrmidonRunEnvAllow([]);
+    applyMyrmidonRunEnvAllow(undefined);
     expect(buildMyrmidonRunEnv({ processEnv: SERVER_ENV })).not.toHaveProperty("SOME_UNRELATED_SERVER_VAR");
   });
 
