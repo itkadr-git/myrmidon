@@ -7,7 +7,7 @@ import { Ui2EmptyState, Ui2ErrorNote, Ui2Loading, Ui2Page, Ui2Section, Ui2Tile, 
 export function Ui2SystemScreen() {
   const { t } = useUi2I18n();
   const healthQuery = useQuery({ queryKey: ["ui2", "system", "health"], queryFn: healthApi.get, staleTime: 30_000 });
-  const deployQuery = useQuery({ queryKey: deployJobsQueryKey, queryFn: deployJobsApi.get, staleTime: 30_000 });
+  const deployQuery = useQuery({ queryKey: deployJobsQueryKey, queryFn: () => deployJobsApi.get(), staleTime: 30_000 });
   const health = healthQuery.data;
   if (healthQuery.isLoading || deployQuery.isLoading) return <Ui2Page title={t("ui2.system.title")}><Ui2Loading label={t("ui2.common.loading")} /></Ui2Page>;
   if (healthQuery.isError || deployQuery.isError) return <Ui2Page title={t("ui2.system.title")}><Ui2ErrorNote message={t("ui2.common.error")} retryLabel={t("ui2.common.retry")} onRetry={() => { void healthQuery.refetch(); void deployQuery.refetch(); }} /></Ui2Page>;

@@ -157,6 +157,7 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
   {
     key: "settings-autonomy-regulations",
     path: "company/settings/autonomy/regulations",
+    titleKey: "ui2.screens.knowledge",
     element: ui2Screen(<Ui2Regulations />),
     legacyPath: "/company/settings",
   },
