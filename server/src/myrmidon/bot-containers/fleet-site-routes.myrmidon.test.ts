@@ -15,8 +15,24 @@ import type { FleetSite, FleetSiteInsert } from "./site-registry.js";
 const COMPANY_A = "22222222-2222-4222-8222-222222222222";
 const COMPANY_B = "33333333-3333-4333-8333-333333333333";
 
-const memberOfA = { type: "board", source: "session", userId: "user-a", isInstanceAdmin: false, companyIds: [COMPANY_A] };
-const memberOfB = { type: "board", source: "session", userId: "user-b", isInstanceAdmin: false, companyIds: [COMPANY_B] };
+function board(userId: string, companyId: string, role: string | null, isInstanceAdmin = false) {
+  return {
+    type: "board",
+    source: "session",
+    userId,
+    isInstanceAdmin,
+    companyIds: role ? [companyId] : [],
+    memberships: role ? [{ companyId, membershipRole: role, status: "active" }] : [],
+  };
+}
+const actors: Record<string, unknown> = {
+  admin: board("user-a", COMPANY_A, "admin"),
+  owner: board("user-o", COMPANY_A, "owner"),
+  member: board("user-m", COMPANY_A, "member"),
+  viewer: board("user-v", COMPANY_A, "viewer"),
+  other: board("user-b", COMPANY_B, "admin"),
+  instance: { ...board("user-i", COMPANY_A, null, true), companyIds: [] },
+};
 const agentActor = { type: "agent", source: "agent_key", agentId: "a", companyId: COMPANY_A, keyId: "k" };
 
 let pki: TestPkiArtifacts;
@@ -27,7 +43,10 @@ afterAll(() => {
   if (pki) cleanupTestPki(pki);
 });
 
-function harness(secrets: string[] = ["fleetd-myr-vm1-token", "fleetd-myr-vm1-client-cert", "fleetd-myr-vm1-client-key"]) {
+function harness(
+  secrets: string[] = ["fleetd-myr-vm1-token", "fleetd-myr-vm1-client-cert", "fleetd-myr-vm1-client-key"],
+  opts: { bots?: number; secretValues?: Record<string, string> } = {},
+) {
   const rows: FleetSite[] = [];
   const createSite = vi.fn(async (input: FleetSiteInsert) => {
     const row = {
@@ -53,12 +72,14 @@ function harness(secrets: string[] = ["fleetd-myr-vm1-token", "fleetd-myr-vm1-cl
       rows.splice(i, 1);
       return true;
     }),
+    countBotsOnSite: vi.fn(async () => opts.bots ?? 0),
+    readSecret: vi.fn(async (_companyId: string, name: string) => opts.secretValues?.[name] ?? null),
     secretExists: vi.fn(async (_companyId: string, name: string) => secrets.includes(name)),
   };
   const app = express();
   app.use((req, _res, next) => {
     const who = req.headers["x-test-actor"];
-    (req as unknown as { actor: unknown }).actor = who === "b" ? memberOfB : who === "agent" ? agentActor : memberOfA;
+    (req as unknown as { actor: unknown }).actor = who === "agent" ? agentActor : actors[typeof who === "string" ? who : "admin"];
     next();
   });
   app.use(express.json());
@@ -159,12 +180,56 @@ describe("fleet site enroll routes", () => {
     await request(app).post(path).send(body()).expect(201);
     const list = await request(app).get(path).expect(200);
     expect(list.body.sites).toHaveLength(1);
-    await request(app).get(path).set("x-test-actor", "b").expect(403);
-    await request(app).post(path).set("x-test-actor", "b").send(body({ name: "x" })).expect(403);
-    await request(app).delete(`${path}/myr-vm1`).set("x-test-actor", "b").expect(403);
+    await request(app).get(path).set("x-test-actor", "other").expect(403);
+    await request(app).post(path).set("x-test-actor", "other").send(body({ name: "x" })).expect(403);
+    await request(app).delete(`${path}/myr-vm1`).set("x-test-actor", "other").expect(403);
     await request(app).get(path).set("x-test-actor", "agent").expect(403);
-    await request(app).delete(`${path}/myr-vm1`).expect(200);
+    await request(app).delete(`${path}/myr-vm1`).expect(204);
     await request(app).delete(`${path}/myr-vm1`).expect(404);
+  });
+
+  it("lets company members and viewers read, but not write", async () => {
+    const { app, deps } = harness();
+    await request(app).post(path).send(body()).expect(201);
+    for (const who of ["member", "viewer"]) {
+      await request(app).get(path).set("x-test-actor", who).expect(200);
+      await request(app).post(path).set("x-test-actor", who).send(body({ name: "x" })).expect(403);
+      await request(app).delete(`${path}/myr-vm1`).set("x-test-actor", who).expect(403);
+    }
+    await request(app).post(path).set("x-test-actor", "agent").send(body({ name: "x" })).expect(403);
+    await request(app).delete(`${path}/myr-vm1`).set("x-test-actor", "agent").expect(403);
+    expect(deps.createSite).toHaveBeenCalledTimes(1);
+    expect(deps.deleteSite).not.toHaveBeenCalled();
+  });
+
+  it("lets a company owner, company admin and instance admin enroll and delete", async () => {
+    for (const who of ["admin", "owner", "instance"]) {
+      const { app } = harness();
+      await request(app).post(path).set("x-test-actor", who).send(body()).expect(201);
+      await request(app).delete(`${path}/myr-vm1`).set("x-test-actor", who).expect(204);
+    }
+  });
+
+  it("refuses to delete a site that still hosts bots", async () => {
+    const { app, deps } = harness(undefined, { bots: 2 });
+    await request(app).post(path).send(body()).expect(201);
+    const res = await request(app).delete(`${path}/myr-vm1`).expect(409);
+    expect(JSON.stringify(res.body)).toContain("2 bot");
+    expect(deps.deleteSite).not.toHaveBeenCalled();
+  });
+
+  it("checks the pinned CA fingerprint and that the client certificate is signed by the CA", async () => {
+    const fp = inspectCaCert(pki.caCert).fingerprint;
+    const withSecrets = (cert: string) =>
+      harness(undefined, { secretValues: { "fleetd-myr-vm1-client-cert": cert, "fleetd-myr-vm1-client-key": pki.clientKey } });
+    const ok = withSecrets(pki.clientCert);
+    await request(ok.app).post(path).send(body({ caFingerprint: fp.toUpperCase().match(/../g)!.join(":") })).expect(201);
+    const badPin = withSecrets(pki.clientCert);
+    await request(badPin.app).post(path).send(body({ caFingerprint: "00".repeat(32) })).expect(400);
+    const foreign = withSecrets(pki.foreignClientCert);
+    const res = await request(foreign.app).post(path).send(body()).expect(400);
+    expect(JSON.stringify(res.body)).toContain("not signed by caCert");
+    expect(foreign.deps.createSite).not.toHaveBeenCalled();
   });
 });
 

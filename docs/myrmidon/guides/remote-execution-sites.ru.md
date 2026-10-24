@@ -388,7 +388,7 @@ curl -s --cacert ca.crt --cert client.crt --key client.key \
    jq -Rs '{name:"fleetd-myr-vm1-client", value:.}' < client.pem \
      | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
    ```
-2. Зарегистрируйте площадку (только операторы доски):
+2. Зарегистрируйте площадку (только владелец/администратор компании или администратор экземпляра; viewer, обычные участники и агенты получают `403`). Необязательно добавьте `caFingerprint` (sha256 от `ca.crt`, `openssl x509 -in ca.crt -noout -fingerprint -sha256`), чтобы закрепить CA:
    ```bash
    jq -n --rawfile ca ca.crt '{
      name: "myr-vm1",
@@ -407,7 +407,7 @@ curl -s --cacert ca.crt --cert client.crt --key client.key \
    }' | curl -sf -X POST "$BOARD/api/companies/$COMPANY/fleet/sites" \
         -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
    ```
-   Запрос отклоняется с `400`, если адрес не вида `https://host[:port]`, CA не PEM-сертификат, названного секрета нет в компании, диапазон портов перевёрнут или `maxBots` больше числа портов; с `409`, если имя занято. `GET /api/companies/$COMPANY/fleet/sites` показывает площадки (ссылки и отпечаток CA, значений секретов нет); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` удаляет площадку. Доска подхватывает её за 30 секунд, рестарт не нужен.
+   Запрос отклоняется с `400`, если закреплённый отпечаток не совпал с `caCert`, клиентский сертификат в названном секрете не подписан `caCert`, адрес не вида `https://host[:port]`, CA не PEM-сертификат, названного секрета нет в компании, диапазон портов перевёрнут или `maxBots` больше числа портов; с `409`, если имя занято. `GET /api/companies/$COMPANY/fleet/sites` показывает площадки (ссылки и отпечаток CA, значений секретов нет); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` (только администраторы) удаляет площадку с ответом `204`, а пока на ней есть боты (`container.host`), отвечает `409`. Доска не подключается к площадке, у которой сохранённый CA перестал совпадать с отпечатком, записанным при регистрации. Доска подхватывает её за 30 секунд, рестарт не нужен.
 3. Диапазон портов шлюза в профиле дублирует `fleetd.json` для справки; авторитетен `fleetd.json`.
 
 ---

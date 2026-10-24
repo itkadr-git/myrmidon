@@ -413,7 +413,7 @@ Sites are registered through the board API, no database edits. `MYRMIDON_FLEET_H
    jq -Rs '{name:"fleetd-myr-vm1-client", value:.}' < client.pem \
      | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
    ```
-2. Enroll the site (board operators only):
+2. Enroll the site (company owner/admin or instance admin only; viewers, members and agents get `403`). Optionally add `caFingerprint` (sha256 of `ca.crt`, `openssl x509 -in ca.crt -noout -fingerprint -sha256`) to pin the CA:
    ```bash
    jq -n --rawfile ca ca.crt '{
      name: "myr-vm1",
@@ -432,7 +432,7 @@ Sites are registered through the board API, no database edits. `MYRMIDON_FLEET_H
    }' | curl -sf -X POST "$BOARD/api/companies/$COMPANY/fleet/sites" \
         -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
    ```
-   The request is rejected with `400` when the URL is not `https://host[:port]`, the CA is not a PEM certificate, a named secret does not exist in the company, the port range is inverted or `maxBots` exceeds the number of ports; with `409` when the name is taken. `GET /api/companies/$COMPANY/fleet/sites` lists sites (references and the CA fingerprint, never secret values); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` removes one. The board picks the site up within 30 seconds, no restart.
+   The request is rejected with `400` when the pinned fingerprint does not match `caCert`, the client certificate in the named secret is not signed by `caCert`, the URL is not `https://host[:port]`, the CA is not a PEM certificate, a named secret does not exist in the company, the port range is inverted or `maxBots` exceeds the number of ports; with `409` when the name is taken. `GET /api/companies/$COMPANY/fleet/sites` lists sites (references and the CA fingerprint, never secret values); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` (admins only) removes one with `204`, or answers `409` while bots (`container.host`) still sit on the site. The board refuses to connect to a site whose stored CA no longer matches the fingerprint recorded at enroll. The board picks the site up within 30 seconds, no restart.
 3. The gateway port range in the profile mirrors `fleetd.json` for the operator's reference; `fleetd.json` is authoritative.
 
 ---
