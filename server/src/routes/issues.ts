@@ -49,6 +49,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
+import { withDefaultEscalationChain } from "../services/review-escalation-chain.js";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import {
@@ -9827,7 +9828,8 @@ export function issueRoutes(
               lockedIssue.executionPolicy ?? null,
             );
             const transition = applyIssueExecutionPolicyTransition({
-              issue: lockedIssue,
+              // myrmidon(OPE-9031): senior escalation chain for the round limit.
+              issue: await withDefaultEscalationChain(tx as unknown as Db, lockedIssue, executionPolicy),
               policy: executionPolicy,
               previousPolicy: executionPolicy,
               requestedStatus: sourceIssueStatus,
@@ -13837,7 +13839,8 @@ export function issueRoutes(
       );
 
       const transition = applyIssueExecutionPolicyTransition({
-        issue: existing,
+        // myrmidon(OPE-9031): senior escalation chain for the round limit.
+        issue: await withDefaultEscalationChain(db, existing, nextExecutionPolicy),
         policy: nextExecutionPolicy,
         previousPolicy: previousExecutionPolicy,
         requestedStatus:
