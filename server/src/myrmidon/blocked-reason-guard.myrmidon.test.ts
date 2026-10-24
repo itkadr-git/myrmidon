@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { activityLog, agents, companies, createDb, issueRelations, issues } from "@myrmidon/db";
@@ -15,6 +16,22 @@ import {
   hasBlockedReason,
   isAutoUnblockCandidate,
 } from "./blocked-reason-guard.js";
+
+describe("native failure paths name the reason", () => {
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+  it("native-session-executor terminal failure projection carries an unblockDescriptor", () => {
+    const src = read("../services/native-runtime/native-session-executor.ts");
+    const at = src.indexOf("status: recoveryProjection.issueStatus");
+    expect(at).toBeGreaterThan(0);
+    expect(src.slice(at, at + 900)).toContain("unblockDescriptor: recoveryLivenessDescriptor(");
+  });
+  it("native-run-finalizer workspace_permanent_failure block carries an unblockDescriptor", () => {
+    const src = read("../services/native-runtime/native-run-finalizer.ts");
+    const at = src.indexOf('status: workspacePermanentFailure ? "blocked" : "in_review"');
+    expect(at).toBeGreaterThan(0);
+    expect(src.slice(at, at + 900)).toContain("unblockDescriptor: recoveryLivenessDescriptor(");
+  });
+});
 
 describe("hasBlockedReason", () => {
   it("rejects a task with no blocker, reason or descriptor", () => {
@@ -217,5 +234,29 @@ describePg("issueService blocked-reason guard", () => {
     await svc.update(blocker, { status: "done" });
     const [row] = await db.select().from(issues).where(eq(issues.id, dependent));
     expect(row!.status).toBe("blocked");
+  });
+
+  it("a cancelled last blocker also returns the dependent to todo", async () => {
+    const { mk } = await seed();
+    const blocker = await mk(1, "in_progress");
+    const dependent = await mk(2, "blocked");
+    await svc.update(dependent, { blockedByIssueIds: [blocker] });
+    await svc.update(blocker, { status: "cancelled" });
+    const [row] = await db.select().from(issues).where(eq(issues.id, dependent));
+    expect(row!.status).toBe("todo");
+  });
+
+  it("create in blocked needs a reason too", async () => {
+    const { companyId, mk } = await seed();
+    await expectReasonRefusal(svc.create(companyId, { title: "No reason", status: "blocked" } as never));
+    const blocker = await mk(1, "in_progress");
+    const withBlocker = await svc.create(companyId, { title: "With blocker", status: "blocked", blockedByIssueIds: [blocker] } as never);
+    expect(withBlocker.status).toBe("blocked");
+    const withDescriptor = await svc.create(companyId, {
+      title: "With descriptor",
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Decide" },
+    } as never);
+    expect(withDescriptor.status).toBe("blocked");
   });
 });

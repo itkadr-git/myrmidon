@@ -2689,7 +2689,7 @@ async function listUnresolvedBlockerDetails(
 }
 
 /**
- * myrmidon(BLOCKED-REASON): when a blocker reaches `done`, every dependent that
+ * myrmidon(BLOCKED-REASON): when a blocker reaches `done` or `cancelled`, every dependent that
  * is in blocked, has an executor, has no other open blocker and states no
  * reason (no blockReason, no unblockDescriptor) is returned to `todo` in the
  * same transaction. Dependents with a stated reason keep it: its owner decides.
@@ -2715,14 +2715,24 @@ async function returnReasonlessDependentsToTodo(
     .then((rows: Array<{ dependent: typeof issues.$inferSelect }>) => rows.map((row) => row.dependent));
   const eligible = candidates.filter((row) => isAutoUnblockCandidate(row));
   if (eligible.length === 0) return [];
-  const readiness = await listIssueDependencyReadinessMap(
-    tx,
-    doneBlocker.companyId,
-    eligible.map((row) => row.id),
-  );
+  // A cancelled blocker is closed here too: it can never finish, so holding the
+  // dependent on it would leave a reasonless block.
+  const openRows: Array<{ dependentId: string }> = await tx
+    .select({ dependentId: issueRelations.relatedIssueId })
+    .from(issueRelations)
+    .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+    .where(
+      and(
+        eq(issueRelations.companyId, doneBlocker.companyId),
+        eq(issueRelations.type, "blocks"),
+        inArray(issueRelations.relatedIssueId, eligible.map((row) => row.id)),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ),
+    );
+  const stillHeld = new Set(openRows.map((row) => row.dependentId));
   const returned: string[] = [];
   for (const row of eligible) {
-    if ((readiness.get(row.id)?.unresolvedBlockerIssueIds.length ?? 0) > 0) continue;
+    if (stillHeld.has(row.id)) continue;
     const now = new Date();
     const [moved] = await tx
       .update(issues)
@@ -9695,6 +9705,20 @@ export function issueService(db: Db) {
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
       }
+      // myrmidon(BLOCKED-REASON): a task is created in blocked only with a
+      // reason, the same rule as a transition into blocked on update.
+      if (data.status === "blocked") {
+        const openBlockers = await listUnresolvedBlockerIssueIds(
+          dbOrTx,
+          companyId,
+          blockedByIssueIds ?? [],
+        );
+        assertBlockedHasReason({
+          openBlockerCount: openBlockers.length,
+          blockerMetadata: (data as { blockerMetadata?: unknown }).blockerMetadata,
+          unblockDescriptor: (data as { unblockDescriptor?: unknown }).unblockDescriptor,
+        });
+      }
       if (
         data.status === "in_progress" &&
         !data.assigneeAgentId &&
@@ -11168,7 +11192,7 @@ export function issueService(db: Db) {
           }
           // myrmidon(BLOCKED-REASON): the last open blocker just closed; a
           // dependent held by nothing else must not stay in blocked.
-          if (updated.status === "done") {
+          if (updated.status === "done" || updated.status === "cancelled") {
             await returnReasonlessDependentsToTodo(tx, updated);
           }
           // A status-card generation task that goes done/cancelled/blocked stops

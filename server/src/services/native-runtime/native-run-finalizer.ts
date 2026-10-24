@@ -1,4 +1,5 @@
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
+import { recoveryLivenessDescriptor } from "../../myrmidon/stale-block/event-keys.js";
 import { conversationNativeDecision, isConversation } from "../agent-conversations.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
@@ -436,13 +437,22 @@ async function recordRetryableFailure(input: {
         tx,
       );
     } else if (exhausted) {
+      const workspacePermanentFailure =
+        input.permanent && input.failureScope === "workspace";
       await issueService(tx as unknown as Db).update(
         input.coordinator.issueId,
         {
-          status:
-            input.permanent && input.failureScope === "workspace"
-              ? "blocked"
-              : "in_review",
+          status: workspacePermanentFailure ? "blocked" : "in_review",
+          // myrmidon(BLOCKED-REASON): workspace_permanent_failure needs a named
+          // reason or the guard refuses the block and rolls the failure back.
+          ...(workspacePermanentFailure
+            ? {
+                unblockDescriptor: recoveryLivenessDescriptor(
+                  input.coordinator.issueId,
+                  "The workspace failed permanently: repair or replace the workspace, then move the task out of blocked.",
+                ),
+              }
+            : {}),
         },
         tx,
       );
