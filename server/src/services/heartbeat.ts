@@ -28269,19 +28269,21 @@ export function heartbeatService(
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
-    const result = await enqueueWakeupInner(agentId, opts, executionWaitRequestId);
-    const key = opts.idempotencyKey;
-    if (typeof key === "string" && key.startsWith("issue-review-admission:")) {
-      try {
-        await closeUnservedReviewAdmission(agentId, key);
-      } catch (err) {
-        logger.warn(
-          { err: err instanceof Error ? err.message : String(err), agentId },
-          "enqueueWakeup: could not close unserved review-admission record",
-        );
+    try {
+      return await enqueueWakeupInner(agentId, opts, executionWaitRequestId);
+    } finally {
+      const key = opts.idempotencyKey;
+      if (typeof key === "string" && key.startsWith("issue-review-admission:")) {
+        try {
+          await closeUnservedReviewAdmission(agentId, key);
+        } catch (err) {
+          logger.warn(
+            { err: err instanceof Error ? err.message : String(err), agentId },
+            "enqueueWakeup: could not close unserved review-admission record",
+          );
+        }
       }
     }
-    return result;
   }
 
   async function enqueueWakeupInner(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {

@@ -562,9 +562,12 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
         idempotencyKey: `issue-review-admission:${issue}:${agentId}`,
         contextSnapshot: { issueId: issue, wakeReason: "execution_review_requested" },
       });
-    expect(await wake(closedIssueId)).toBeNull();
     const liveRun = await wake(liveIssueId);
     expect(liveRun).not.toBeNull();
+    // The agent stops being invokable: the next admission wake is refused
+    // (skipped row + conflict), so it makes no run.
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    await expect(wake(closedIssueId)).rejects.toThrow();
 
     const load = (id: string) =>
       db
