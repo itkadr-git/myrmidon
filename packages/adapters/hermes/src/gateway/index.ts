@@ -1,4 +1,4 @@
-import type { AdapterSessionManagement, ServerAdapterModule } from "@paperclipai/adapter-utils";
+import type { AdapterSessionManagement, ServerAdapterModule } from "@myrmidon/adapter-utils";
 import { ADAPTER_LABEL, ADAPTER_TYPE } from "./shared/constants.js";
 import { execute, getConfigSchema, sessionCodec, stopGatewayRunForBoard, testEnvironment } from "./server/index.js";
 

@@ -6,6 +6,7 @@ import { authApi } from "@/api/auth";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link, useSearchParams } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 
 const providerNames: Record<ChatProvider, string> = {
   slack: "Slack",
@@ -18,6 +19,7 @@ const providerNames: Record<ChatProvider, string> = {
 };
 
 export function ChatIdentityConfirm() {
+  const { t } = useTranslation();
   const [params] = useSearchParams();
   const token = params.get("token") ?? "";
   const [confirmed, setConfirmed] = useState(false);
@@ -40,10 +42,11 @@ export function ChatIdentityConfirm() {
   if (token.length < 32 || preview.isError) {
     return (
       <main className="mx-auto max-w-lg space-y-4 px-6 py-12">
-        <h1 className="text-xl font-bold">This identity link is unavailable</h1>
+        <h1 className="text-xl font-bold">
+          {t("area.apps-chat-email.chat-identity-confirm.unavailableTitle")}
+        </h1>
         <p className="text-sm text-muted-foreground">
-          The link is invalid, expired, already used, or belongs to another
-          Myrmidon organization.
+          {t("area.apps-chat-email.chat-identity-confirm.unavailableBody")}
         </p>
       </main>
     );
@@ -52,7 +55,7 @@ export function ChatIdentityConfirm() {
     return (
       <main className="flex items-center justify-center gap-2 px-6 py-12 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
-        Checking identity link…
+        {t("area.apps-chat-email.chat-identity-confirm.checking")}
       </main>
     );
   }
@@ -61,23 +64,25 @@ export function ChatIdentityConfirm() {
     session.data?.user.name?.trim() ||
     session.data?.user.email?.trim() ||
     session.data?.user.id ||
-    "the signed-in account";
+    t("area.apps-chat-email.chat-identity-confirm.signedInAccountFallback");
   if (confirmed) {
     return (
       <main className="mx-auto max-w-lg space-y-5 px-6 py-12">
         <CheckCircle2 className="h-8 w-8" />
         <div>
-          <h1 className="text-xl font-bold">Identity linked</h1>
+          <h1 className="text-xl font-bold">{t("area.apps-chat-email.chat-identity-confirm.linkedTitle")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Future messages from {identity.externalLabel} use your current
-            Myrmidon permissions in {identity.companyName}.
+            {t("area.apps-chat-email.chat-identity-confirm.linkedBody", {
+              label: identity.externalLabel,
+              company: identity.companyName,
+            })}
           </p>
         </div>
         <Button asChild>
           <Link
             to={`/${identity.companyPrefix}/apps/chat/${identity.endpointId}/access`}
           >
-            Return to connection
+            {t("area.apps-chat-email.chat-identity-confirm.returnToConnection")}
           </Link>
         </Button>
       </main>
@@ -87,46 +92,48 @@ export function ChatIdentityConfirm() {
     <main className="mx-auto max-w-lg space-y-6 px-6 py-12">
       <div>
         <p className="text-sm text-muted-foreground">{identity.companyName}</p>
-        <h1 className="mt-1 text-xl font-bold">Link your external identity</h1>
+        <h1 className="mt-1 text-xl font-bold">
+          {t("area.apps-chat-email.chat-identity-confirm.confirmTitle")}
+        </h1>
       </div>
       <dl className="divide-y divide-border border-y border-border">
         <div className="flex items-center justify-between gap-4 py-3">
-          <dt className="text-sm text-muted-foreground">Provider</dt>
+          <dt className="text-sm text-muted-foreground">{t("area.apps-chat-email.chat-identity-confirm.provider")}</dt>
           <dd className="text-sm font-medium">
             {providerNames[identity.provider]}
           </dd>
         </div>
         <div className="flex items-center justify-between gap-4 py-3">
-          <dt className="text-sm text-muted-foreground">External identity</dt>
+          <dt className="text-sm text-muted-foreground">{t("area.apps-chat-email.chat-identity-confirm.externalIdentity")}</dt>
           <dd className="text-right text-sm font-medium">
             {identity.externalLabel}
             {identity.externalDetail ? ` · ${identity.externalDetail}` : ""}
           </dd>
         </div>
         <div className="flex items-center justify-between gap-4 py-3">
-          <dt className="text-sm text-muted-foreground">Myrmidon account</dt>
+          <dt className="text-sm text-muted-foreground">{t("area.apps-chat-email.chat-identity-confirm.account")}</dt>
           <dd className="text-right text-sm font-medium">{paperclipAccount}</dd>
         </div>
         <div className="flex items-center justify-between gap-4 py-3">
-          <dt className="text-sm text-muted-foreground">Agent</dt>
+          <dt className="text-sm text-muted-foreground">{t("area.apps-chat-email.chat-identity-confirm.agent")}</dt>
           <dd className="text-sm font-medium">
-            {identity.botLabel ?? "Myrmidon agent"}
+            {identity.botLabel ?? t("area.apps-chat-email.chat-identity-confirm.agentFallback")}
           </dd>
         </div>
       </dl>
       <p className="text-sm text-muted-foreground">
-        Confirm only if this is your {providerNames[identity.provider]}{" "}
-        identity. Myrmidon will check your current organization membership on
-        every action.
+        {t("area.apps-chat-email.chat-identity-confirm.confirmNote", {
+          provider: providerNames[identity.provider],
+        })}
       </p>
       {confirm.isError && (
         <p className="text-sm text-destructive">
-          This link could not be confirmed. It may have expired or been revoked.
+          {t("area.apps-chat-email.chat-identity-confirm.confirmFailed")}
         </p>
       )}
       <Button disabled={confirm.isPending} onClick={() => confirm.mutate()}>
         {confirm.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-        Confirm identity
+        {t("area.apps-chat-email.chat-identity-confirm.confirm")}
       </Button>
     </main>
   );

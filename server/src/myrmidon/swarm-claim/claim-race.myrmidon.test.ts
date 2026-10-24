@@ -13,7 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
-import { agents, companies, createDb, issueClaims, issues, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, issueClaims, issues, type Db } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -79,6 +79,7 @@ function claimInput(agentId: string, now: Date) {
     agentId,
     role: "engineer",
     runId: null,
+    origin: "auto_match" as const,
     claimedAt: now,
     heartbeatAt: now,
     expiresAt: new Date(now.getTime() + 60 * 60 * 1000),

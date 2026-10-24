@@ -25,11 +25,11 @@ import {
   issues,
   labels,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   DEFAULT_PHEROMONE_DYNAMICS,
   orderSwarmQueueCandidates,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

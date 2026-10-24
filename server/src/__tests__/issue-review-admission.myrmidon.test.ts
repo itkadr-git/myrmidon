@@ -7,7 +7,7 @@ import {
   agents,
   agentWakeupRequests,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   describeEmbeddedPostgres,
   resetCompanyIssueFixtures,

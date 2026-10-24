@@ -5,7 +5,7 @@ import type {
   FileTreeBadge,
   FileTreeProps,
   IssuesListProps,
-} from "@paperclipai/plugin-sdk/ui";
+} from "@myrmidon/plugin-sdk/ui";
 
 // ---------------------------------------------------------------------------
 // Bridge mocks. The real SDK runtime hooks read from a global registry; we

@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { executionWorkspaces, issues, projects, projectWorkspaces } from "@myrmidon/db";
 import type {
   NormalizedWorkspaceFileAvailabilityQuery,
   ResolvedWorkspaceResource,
@@ -16,7 +16,7 @@ import type {
   WorkspaceFilePreviewKind,
   WorkspaceFileSelector,
   WorkspaceFileWorkspaceKind,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { HttpError, notFound, unprocessable } from "../errors.js";
 import {
   isWorkspaceGitScanError,

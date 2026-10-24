@@ -1,0 +1,343 @@
+{
+  "area": {
+    "adapters-plugins-2": {
+      "adapter-manager": {
+        "row": {
+          "sourceExternal": "External",
+          "sourceBuiltin": "Built-in",
+          "installedFromLocalPath": "Installed from local path",
+          "installedFromNpm": "Installed from npm",
+          "overridesBuiltin": "Overrides built-in",
+          "overriddenBy": "Overridden by {{name}}",
+          "hiddenFromMenus": "Hidden from menus",
+          "models_one": "{{count}} model",
+          "models_other": "{{count}} models",
+          "reinstallTitle": "Reinstall adapter (pull latest from npm)",
+          "reloadTitle": "Reload adapter (hot-swap)",
+          "showInAgentMenus": "Show in agent menus",
+          "hideFromAgentMenus": "Hide from agent menus",
+          "removeTitle": "Remove adapter"
+        },
+        "reinstall": {
+          "title": "Reinstall Adapter",
+          "description": "This will pull the latest version of <strong>{{name}}</strong> from npm and hot-swap the running adapter module. Existing agents will use the new version on their next run.",
+          "package": "Package",
+          "current": "Current",
+          "unknown": "unknown",
+          "latestOnNpm": "Latest on npm",
+          "checking": "checking...",
+          "unavailable": "unavailable",
+          "upToDate": "Already on the latest version.",
+          "reinstalling": "Reinstalling...",
+          "confirm": "Reinstall"
+        },
+        "breadcrumbOrganization": "Organization",
+        "breadcrumbSettings": "Settings",
+        "breadcrumbAdapters": "Adapters",
+        "toast": {
+          "installed": "Adapter installed",
+          "installedBody": "Type \"{{type}}\" registered successfully.",
+          "installedBodyVersion": "Type \"{{type}}\" registered successfully. (v{{version}})",
+          "installFailed": "Install failed",
+          "removed": "Adapter removed",
+          "removalFailed": "Removal failed",
+          "toggleFailed": "Toggle failed",
+          "overrideToggleFailed": "Override toggle failed",
+          "reloaded": "Adapter reloaded",
+          "reloadedBody": "Type \"{{type}}\" reloaded.",
+          "reloadedBodyVersion": "Type \"{{type}}\" reloaded. (v{{version}})",
+          "reloadFailed": "Reload failed",
+          "reinstalled": "Adapter reinstalled",
+          "reinstalledBody": "Type \"{{type}}\" updated from npm.",
+          "reinstalledBodyVersion": "Type \"{{type}}\" updated from npm. (v{{version}})",
+          "reinstallFailed": "Reinstall failed"
+        },
+        "loading": "Loading adapters...",
+        "title": "Adapters",
+        "alpha": "Alpha",
+        "install": {
+          "button": "Install Adapter",
+          "title": "Install External Adapter",
+          "description": "Add an adapter from npm or a local path. The adapter package must export <code>createServerAdapter()</code>.",
+          "npmPackage": "npm package",
+          "localPath": "Local path",
+          "pathLabel": "Path to adapter package",
+          "pathPlaceholder": "/mnt/e/Projects/my-adapter  or  E:\\Projects\\my-adapter",
+          "pathHint": "Accepts Linux, WSL, and Windows paths. Windows paths are auto-converted.",
+          "packageNameLabel": "Package Name",
+          "packageNamePlaceholder": "my-myrmidon-adapter",
+          "versionLabel": "Version (optional)",
+          "versionPlaceholder": "latest",
+          "installing": "Installing...",
+          "confirm": "Install"
+        },
+        "alphaNotice": {
+          "title": "External adapters are alpha.",
+          "body": "The adapter plugin system is under active development. APIs and storage format may change. Use the power icon to hide adapters from agent menus without removing them."
+        },
+        "externalHeading": "External Adapters",
+        "externalEmptyTitle": "No external adapters installed",
+        "externalEmptyHint": "Install an adapter package to extend model support.",
+        "pauseOverride": "Pause external override",
+        "resumeOverride": "Resume external override",
+        "overridePaused": "Override paused",
+        "builtinHeading": "Built-in Adapters",
+        "builtinEmpty": "No built-in adapters found.",
+        "remove": {
+          "title": "Remove Adapter",
+          "description": "Are you sure you want to remove the <strong>{{type}}</strong> adapter? It will be unregistered and removed from the adapter store. This action cannot be undone.",
+          "descriptionWithPackage": "Are you sure you want to remove the <strong>{{type}}</strong> adapter? It will be unregistered and removed from the adapter store. npm packages will be cleaned up from disk. This action cannot be undone."
+        }
+      },
+      "plugin-manager": {
+        "errorSummaryFallback": "Plugin entered an error state without a stored error message.",
+        "experimental": "Experimental",
+        "breadcrumbOrganization": "Organization",
+        "breadcrumbSettings": "Settings",
+        "breadcrumbPlugins": "Plugins",
+        "toast": {
+          "installed": "Plugin installed successfully",
+          "installFailed": "Failed to install plugin",
+          "uninstalled": "Plugin uninstalled successfully",
+          "uninstallFailed": "Failed to uninstall plugin",
+          "upgraded": "Plugin upgraded successfully",
+          "enabled": "Plugin enabled",
+          "enableFailed": "Failed to enable plugin",
+          "disabled": "Plugin disabled",
+          "disableFailed": "Failed to disable plugin"
+        },
+        "loading": "Loading plugins...",
+        "loadFailed": "Failed to load plugins.",
+        "title": "Plugin Manager",
+        "install": {
+          "button": "Install Plugin",
+          "title": "Install Plugin",
+          "description": "Enter the npm package name of the plugin you wish to install.",
+          "packageNameLabel": "npm Package Name",
+          "packageNamePlaceholder": "@myrmidon/plugin-example",
+          "installing": "Installing...",
+          "confirm": "Install"
+        },
+        "alphaNotice": {
+          "title": "Plugins are alpha.",
+          "body": "The plugin runtime and API surface are still changing. Expect breaking changes while this feature settles."
+        },
+        "available": {
+          "heading": "Available Plugins",
+          "bundled": "Bundled",
+          "loading": "Loading bundled plugins...",
+          "loadFailed": "Failed to load bundled plugins.",
+          "empty": "No bundled plugins were found in this checkout.",
+          "notInstalled": "Not installed",
+          "building": "Building plugin...",
+          "openSettings": "Open Settings",
+          "review": "Review"
+        },
+        "tagFirstParty": "First-party",
+        "tagExample": "Example",
+        "enable": "Enable",
+        "disable": "Disable",
+        "installed": {
+          "heading": "Installed Plugins",
+          "emptyTitle": "No plugins installed",
+          "emptyHint": "Install a plugin to extend functionality.",
+          "noDescription": "No description provided.",
+          "pluginError": "Plugin error",
+          "viewFullError": "View full error",
+          "upgrade": "Upgrade",
+          "configure": "Configure"
+        },
+        "upgradeDialog": {
+          "title": "Approve additional plugin capabilities?",
+          "description": "This upgrade requests additional capabilities. Review them before approving and upgrading.",
+          "upgrading": "Upgrading...",
+          "confirm": "Approve and upgrade"
+        },
+        "uninstall": {
+          "title": "Uninstall Plugin",
+          "description": "Are you sure you want to uninstall <strong>{{name}}</strong>? This action cannot be undone.",
+          "uninstalling": "Uninstalling...",
+          "confirm": "Uninstall"
+        },
+        "errorDialog": {
+          "title": "Error Details",
+          "description": "{{name}} hit an error state.",
+          "pluginFallback": "Plugin",
+          "whatErrored": "What errored",
+          "noSummary": "No error summary available.",
+          "fullOutput": "Full error output",
+          "noStoredMessage": "No stored error message."
+        }
+      },
+      "plugin-settings": {
+        "breadcrumbOrganization": "Organization",
+        "breadcrumbSettings": "Settings",
+        "breadcrumbPlugins": "Plugins",
+        "breadcrumbPluginDetails": "Plugin Details",
+        "loading": "Loading plugin details...",
+        "noDescription": "No description provided.",
+        "yes": "Yes",
+        "no": "No",
+        "tabs": {
+          "configuration": "Configuration",
+          "status": "Status"
+        },
+        "about": {
+          "heading": "About",
+          "description": "Description",
+          "author": "Author",
+          "categories": "Categories"
+        },
+        "settings": {
+          "heading": "Settings",
+          "none": "This plugin does not require any settings."
+        },
+        "environments": {
+          "title": "Configure this plugin from Settings → Environments.",
+          "description": "{{name}} registers environment runtime settings there so the execution target stays instance-scoped while secret bindings still resolve through the selected organization context.",
+          "thisPlugin": "This plugin",
+          "open": "Open Environments"
+        },
+        "dashboard": {
+          "title": "Runtime Dashboard",
+          "description": "Worker process, scheduled jobs, and webhook deliveries",
+          "workerHeading": "Worker Process",
+          "status": "Status",
+          "pid": "PID",
+          "uptime": "Uptime",
+          "pendingRpcs": "Pending RPCs",
+          "crashes": "Crashes",
+          "crashCounts": "{{consecutive}} consecutive / {{total}} total",
+          "lastCrash": "Last Crash",
+          "noWorker": "No worker process registered.",
+          "jobRunsHeading": "Recent Job Runs",
+          "noJobRuns": "No job runs recorded yet.",
+          "webhooksHeading": "Recent Webhook Deliveries",
+          "noWebhooks": "No webhook deliveries recorded yet.",
+          "lastChecked": "Last checked: {{time}}",
+          "unavailable": "Runtime diagnostics are unavailable right now."
+        },
+        "logs": {
+          "title": "Recent Logs",
+          "description_one": "Last {{count}} log entry",
+          "description_other": "Last {{count}} log entries"
+        },
+        "health": {
+          "title": "Health Status",
+          "checking": "Checking health...",
+          "overall": "Overall",
+          "lifecycle": "Lifecycle",
+          "runsWhenReady": "Health checks run once the plugin is ready."
+        },
+        "details": {
+          "title": "Details",
+          "pluginId": "Plugin ID",
+          "pluginKey": "Plugin Key",
+          "npmPackage": "NPM Package",
+          "version": "Version"
+        },
+        "permissions": {
+          "title": "Permissions",
+          "none": "No special permissions requested."
+        },
+        "localFolders": {
+          "selectOrganization": "Select an organization to configure this plugin's local folders.",
+          "heading": "Local folders",
+          "loadFailed": "Failed to load local folder settings.",
+          "loading": "Loading local folders..."
+        },
+        "folderRow": {
+          "saved": "Local folder saved.",
+          "savedNeedsAttention": "Local folder saved, but validation still needs attention.",
+          "saveFailed": "Failed to save local folder.",
+          "pathRequired": "Local folder path is required.",
+          "pathMustBeAbsolute": "Local folder must be a full absolute path.",
+          "healthy": "Healthy",
+          "needsAttention": "Needs attention",
+          "readWrite": "Read/write",
+          "readOnly": "Read only",
+          "configured": "Configured",
+          "readable": "Readable",
+          "writable": "Writable",
+          "notRequested": "Not requested",
+          "configuredPath": "Configured path",
+          "pathLabel": "Local folder path",
+          "pathPlaceholder": "/absolute/path/to/folder",
+          "problems": "Validation problems"
+        },
+        "requirements": {
+          "requiredDirectories": "Required directories",
+          "missingDirectories": "Missing directories",
+          "requiredFiles": "Required files",
+          "missingFiles": "Missing files",
+          "notInspected": "Not inspected",
+          "missingCount": "{{count}} missing",
+          "present": "Present",
+          "noneDeclared": "None declared.",
+          "rootNotInspected": "Configured root was not inspected."
+        },
+        "configForm": {
+          "selectOrgToSave": "Select an organization before saving plugin configuration.",
+          "saved": "Configuration saved.",
+          "saveFailed": "Failed to save configuration.",
+          "selectOrgToTest": "Select an organization before testing plugin configuration.",
+          "testPassed": "Configuration test passed.",
+          "testFailed": "Configuration test failed.",
+          "loading": "Loading configuration...",
+          "saving": "Saving...",
+          "save": "Save Configuration",
+          "testing": "Testing...",
+          "test": "Test Configuration"
+        },
+        "format": {
+          "uptimeSeconds": "{{s}}s",
+          "uptimeMinutes": "{{m}}m {{s}}s",
+          "uptimeHours": "{{h}}h {{m}}m",
+          "uptimeDays": "{{d}}d {{h}}h",
+          "durationMs": "{{value}}ms",
+          "durationSeconds": "{{value}}s",
+          "durationMinutes": "{{value}}m",
+          "justNow": "just now",
+          "secondsAgo": "{{n}}s ago",
+          "minutesAgo": "{{n}}m ago",
+          "hoursAgo": "{{n}}h ago",
+          "daysAgo": "{{n}}d ago"
+        }
+      },
+      "opencode-local-config-fields": {
+        "instructionsFileLabel": "Agent instructions file",
+        "instructionsFileHint": "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.",
+        "instructionsFilePlaceholder": "/absolute/path/to/AGENTS.md",
+        "skipPermissions": "Skip permissions"
+      },
+      "pi-local-config-fields": {
+        "instructionsFileLabel": "Agent instructions file",
+        "instructionsFileHint": "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.",
+        "instructionsFilePlaceholder": "/absolute/path/to/AGENTS.md"
+      },
+      "process-config-fields": {
+        "commandLabel": "Command",
+        "commandPlaceholder": "e.g. node, python",
+        "argsLabel": "Args (comma-separated)",
+        "argsPlaceholder": "e.g. script.js, --flag"
+      },
+      "runtime-json-fields": {
+        "runtimeServicesLabel": "Runtime services JSON",
+        "payloadTemplateLabel": "Payload template JSON"
+      },
+      "missing-plugin-tab-placeholder": {
+        "unavailable": "Workspace plugin tab is not available."
+      },
+      "launchers": {
+        "unknownError": "Unknown error",
+        "unavailable": "Plugin launchers unavailable: {{message}}"
+      },
+      "plugin-page": {
+        "breadcrumbPlugins": "Plugins",
+        "selectOrganization": "Select an organization to view this page.",
+        "duplicateRoute": "Multiple plugins declare the route <code>{{route}}</code>. Use the plugin-id route until the conflict is resolved.",
+        "back": "Back"
+      }
+    }
+  }
+}

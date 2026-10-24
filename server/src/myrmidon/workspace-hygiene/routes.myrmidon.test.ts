@@ -7,12 +7,12 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   WORKSPACE_HYGIENE_METADATA_KEY,
   WORKSPACE_HYGIENE_UPDATED_ACTION,
   type WorkspaceHygieneLimits,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { workspaceHygieneRoutes } from "./routes.js";
 import { workspaceHygieneService, type WorkspaceHygieneServiceDeps } from "./service.js";

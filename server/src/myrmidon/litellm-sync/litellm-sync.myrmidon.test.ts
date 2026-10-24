@@ -14,7 +14,7 @@
 import { describe, it, expect, beforeEach, vi, type Mocked } from "vitest";
 import { createLitellmSyncService } from "./service.js";
 import type { LitellmSyncPort } from "./port.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 
 /**
  * A scripted fake of the drizzle query builder: every `select()` call takes the

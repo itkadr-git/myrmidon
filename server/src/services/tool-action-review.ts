@@ -6,7 +6,7 @@ import {
   toolInvocations,
   toolActionDeliveries,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { conflict, forbidden, notFound } from "../errors.js";
 import { assertIssueThreadInteractionResolverAudience } from "./issue-thread-interaction-resolution.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";

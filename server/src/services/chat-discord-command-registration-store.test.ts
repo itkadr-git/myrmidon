@@ -20,7 +20,7 @@ import {
   startEmbeddedPostgresTestDatabase,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   discordPaperclipCommandDefinition,
   priorCloseCopyDefinition,

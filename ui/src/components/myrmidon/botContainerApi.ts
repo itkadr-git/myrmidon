@@ -26,6 +26,15 @@ export type BotImageTracking =
 export interface BotContainerStatus {
   /** The instance switch for bot containers is on. */
   enabled: boolean;
+  /** Per-agent idle-stop policy; absent on older servers. */
+  idleStopMode?: "on_demand" | "always_on";
+  /** Durable idle-stop runtime state; absent on older servers. */
+  idleStopRuntime?: {
+    /** Stopped by IDLE-STOP and waiting for the next run. */
+    idleStopped: boolean;
+    lastStoppedAt: string | null;
+    lastStartedAt: string | null;
+  } | null;
   /** The instance has a container runtime wired. */
   runtimeConfigured: boolean;
   /** The SAVED card is an enabled, complete container config. */
@@ -53,6 +62,10 @@ export interface BotContainerStatus {
   gatewayConcurrencyNote: string | null;
   /** The gateway limits runs below the board's limit (unmanaged gateway, recently 429). */
   gatewayConcurrencyWarning: string | null;
+  /** myrmidon(L6-PROFILE-UPDATE-STARVATION): when a card change is waiting for
+   *  the agent's busy runs to drain (open maintenance window), the ISO time the
+   *  window opened; null when nothing is pending. */
+  profileUpdatePendingSince: string | null;
 }
 
 export type BotContainerApplyOutcome =

@@ -11,9 +11,9 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS } from "@myrmidon/shared";
 import { autonomyApi, autonomyQueryKey } from "@/components/myrmidon/autonomy/autonomyApi";
-import type { AutonomyRegulation } from "@paperclipai/shared";
+import type { AutonomyRegulation } from "@myrmidon/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { Link } from "@/lib/router";
 import { useUi2I18n } from "../../i18n/Ui2I18n";

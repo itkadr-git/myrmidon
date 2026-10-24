@@ -10,7 +10,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb, modelProviderModels, modelProviders } from "@paperclipai/db";
+import { companies, createDb, modelProviderModels, modelProviders } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -51,15 +51,22 @@ function fakeSecrets(): ModelProviderSecretStoreDeps & { store: Map<string, stri
 
 function fakeCatalog(): ModelProviderCatalogPort & {
   calls: Array<{ baseUrl: string; apiKey: string }>;
+  probes: Array<{ baseUrl: string; apiKey: string; model: string }>;
 } {
   const calls: Array<{ baseUrl: string; apiKey: string }> = [];
+  const probes: Array<{ baseUrl: string; apiKey: string; model: string }> = [];
   return {
     calls,
+    probes,
     async listModels({ baseUrl, apiKey }) {
       calls.push({ baseUrl, apiKey });
       if (apiKey === "bad-key") throw new ProviderAuthError("the provider answered 401");
       if (apiKey === ROTATED_VALUE) return { models: ["model-x", "model-y", "model-z"] };
       return { models: ["model-a", "model-b"] };
+    },
+    async probeToolCall(input) {
+      probes.push(input);
+      if (input.apiKey === "probe-fail") throw new Error("tool calls are disabled");
     },
   };
 }
@@ -108,7 +115,7 @@ describeEmbeddedPostgres("myrmidon(1.6.1 MODEL-PROVIDERS) service over the datab
     const removeProvider = service.removeProvider.bind(service);
     (service as Record<string, unknown>).removeProvider = (input: Parameters<typeof removeProvider>[0]) =>
       removeProvider({ ...input, activity: record });
-    return { service, secrets: secrets.store, catalog, activity };
+    return { service, secrets: secrets.store, catalog, probes: catalog.probes, activity };
   }
 
   async function makeCompany(): Promise<string> {
@@ -234,6 +241,24 @@ describeEmbeddedPostgres("myrmidon(1.6.1 MODEL-PROVIDERS) service over the datab
     expect(modelA.enabled).toBe(true);
   });
 
+  it("persists tool-call compatibility probe results", async () => {
+    companyId = await makeCompany();
+    const { service, secrets, probes } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "probe", key: KEY_VALUE, baseUrl: null },
+    });
+    const compatible = await service.checkToolCallCompatibility({ companyId, providerId: created.id });
+    expect(compatible.toolCallCompatible).toBe(true);
+    expect(probes[0]?.model).toBe("gpt-4o-mini");
+    expect(probes[0]?.apiKey).toBe(KEY_VALUE);
+    expect(JSON.stringify(compatible)).not.toContain(KEY_VALUE);
+    secrets.set(created.credentialSecretName!, "probe-fail");
+    const failed = await service.checkToolCallCompatibility({ companyId, providerId: created.id });
+    expect(failed.toolCallCompatible).toBe(false);
+    expect(failed.toolCallCheckError).toBe("tool calls are disabled");
+  });
+
   it("reports hasKey false when the secret is gone and never leaks the value", async () => {
     companyId = await makeCompany();
     const { service, secrets } = makeService();
@@ -254,6 +279,12 @@ describeEmbeddedPostgres("myrmidon(1.6.1 MODEL-PROVIDERS) service over the datab
         "hasKey",
         "credentialSecretName",
         "free",
+        "expiresAt",
+        "packageName",
+        "rpmLimit",
+        "toolCallCompatible",
+        "toolCallCheckedAt",
+        "toolCallCheckError",
         "keyValidatedAt",
         "createdAt",
         "updatedAt",

@@ -12,7 +12,7 @@
 // one company has the channel enabled (the per-company early return).
 
 import { eq } from "drizzle-orm";
-import { companies, type Db } from "@paperclipai/db";
+import { companies, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { attentionService } from "../../services/attention.js";
 import {

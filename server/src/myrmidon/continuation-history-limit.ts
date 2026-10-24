@@ -1,5 +1,5 @@
-import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
-import { LONG_TASK_CONTEXT_DEFAULT_HISTORY_CHARS } from "@paperclipai/shared";
+import type { ExecutionContinuationEnvelope } from "@myrmidon/shared";
+import { LONG_TASK_CONTEXT_DEFAULT_HISTORY_CHARS } from "@myrmidon/shared";
 import { issueThreadReference } from "./long-task-context/domain.js";
 
 /**

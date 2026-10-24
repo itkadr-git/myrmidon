@@ -1,0 +1,13 @@
+# myrmidon(OPE-8950): area settings-integrations
+components/myrmidon/AgentExchangeFeedScreen.tsx
+components/myrmidon/AgentExchangeFeedSettingsPanel.tsx
+components/myrmidon/AgentExchangeSettingsPanel.tsx
+components/myrmidon/ChannelSettingsPanel.tsx
+components/myrmidon/ConnectorPanel.tsx
+components/myrmidon/IssueFilesDrawer.tsx
+components/myrmidon/IssueFilesPanel.tsx
+components/myrmidon/LanguageToggle.tsx
+components/myrmidon/browsers/BrowserScreenPanel.tsx
+components/myrmidon/browsers/BrowsersSettingsPage.tsx
+components/myrmidon/clouds/CloudsSettingsPage.tsx
+components/myrmidon/owner-delivery/OwnerDeliveryScreen.tsx

@@ -6,9 +6,9 @@ import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../../../myrmidon/maintenance/
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { runContextPersistenceFields } from "@paperclipai/db";
-import { extractIssueReferenceIdentifiers } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { runContextPersistenceFields } from "@myrmidon/db";
+import { extractIssueReferenceIdentifiers } from "@myrmidon/shared";
 import {
   activityLog,
   agentWakeupRequests,
@@ -20,7 +20,7 @@ import {
   issueRelations,
   issues,
   nativeRunFinalizations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { legacyExecutionNeedsReconciliation } from "../../../services/legacy-execution-recovery.js";
 import {
@@ -1166,14 +1166,16 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           issueStatus: issueRow?.status ?? "",
           hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
           assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
-          legacyExecutionNeedsReconciliation: legacyExecutionNeedsReconciliation(run),
+          legacyExecutionNeedsReconciliation:
+            !input.ignoreUnrecordedReconciliation && legacyExecutionNeedsReconciliation(run),
           // An operator stop never promotes old queued work by itself. The
           // next explicit wake adopts those messages atomically when it
           // queues a run.
           executionCancellationAcknowledged:
             run.status === "cancelled" &&
             (parseObject(run.resultJson?.executionCancellation).state === "acknowledged" || isAcknowledgedNativeStop(run)) &&
-            !interruptedQueue,
+            !interruptedQueue &&
+            !input.deferredWakesPostdateRun,
         };
         const preDrain = decidePreDrain(preDrainFacts);
 

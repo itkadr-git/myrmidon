@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { Request } from "express";
-import { AUTONOMY_SAFE_DEFAULTS } from "@paperclipai/shared";
+import { AUTONOMY_SAFE_DEFAULTS } from "@myrmidon/shared";
 import {
   AUTONOMY_FORBIDDEN_CODE,
   autonomyGate,

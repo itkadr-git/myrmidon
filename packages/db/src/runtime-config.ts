@@ -5,8 +5,8 @@ import {
   resolveDefaultEmbeddedPostgresDir,
   resolvePaperclipConfigPathForInstance,
   resolvePaperclipEnvPathForConfig,
-} from "@paperclipai/shared/home-paths";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+} from "@myrmidon/shared/home-paths";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const CONFIG_BASENAME = "config.json";
 

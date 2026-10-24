@@ -330,6 +330,12 @@ export const wsReportActionSchema = z.object({
 });
 export type WsReportAction = z.infer<typeof wsReportActionSchema>;
 
+/** Stable bot-disk gauges emitted with each report. */
+export const wsDiskReportMetricsSchema = z.object({
+  copies_without_assignee: z.number().int().nonnegative(),
+});
+export type WsDiskReportMetrics = z.infer<typeof wsDiskReportMetricsSchema>;
+
 /** Why a copy does not match the registry/desired state. */
 export const wsForeignSignSchema = z.enum([
   "promisor",
@@ -369,6 +375,7 @@ export const wsDiskReportSchema = z.object({
   actions: z.array(wsReportActionSchema),
   foreign: z.array(wsReportForeignSchema),
   foreignUid: wsReportForeignUidSchema.nullable().optional(),
+  metrics: wsDiskReportMetricsSchema.optional(),
 });
 export type WsDiskReport = z.infer<typeof wsDiskReportSchema>;
 
@@ -466,8 +473,8 @@ export type RunWorkspaceField = z.infer<typeof runWorkspaceFieldSchema>;
  * What the gateway does with the field before starting the model:
  * `myr-ws open <key> <repo> [--base <baseRef>] --json`, then the run starts
  * with `MYRMIDON_TASK_WORKSPACE=/workspace/<key>` and that directory as cwd.
- * Exit codes 3/4/5 never fail the run silently: it starts in `/scratch` with a
- * warning event instead.
+ * Any open failure (exit codes 3/4/5, any other code, timeout, bad output) never fails
+ * the run: it starts in `/scratch` with a warning event instead (OPE-8946).
  */
 export const RUN_WORKSPACE_FALLBACK_DIR = "/scratch";
 

@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 // readRawUsageTotals is not exported; pin its contract through the exported
 // surface it feeds instead: parse + arithmetic over a usageJson-shaped value,
 // mirroring exactly what the function reads (raw*/plain token keys only).
-import { asNumber, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { asNumber, parseObject } from "@myrmidon/adapter-utils/server-utils";
 
 function readRawUsageTotalsLike(usageJson: unknown) {
   // Mirrors services/heartbeat.ts readRawUsageTotals: reads only the token

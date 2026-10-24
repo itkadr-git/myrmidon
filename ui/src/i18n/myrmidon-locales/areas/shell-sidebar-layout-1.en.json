@@ -1,0 +1,94 @@
+{
+  "area": {
+    "shell-sidebar-layout-1": {
+      "breadcrumb-bar": {
+        "openSidebar": "Open sidebar",
+        "hideProperties": "Hide properties",
+        "showProperties": "Show properties"
+      },
+      "layout": {
+        "skipToMain": "Skip to Main Content",
+        "closeSidebar": "Close sidebar"
+      },
+      "company-switcher": {
+        "selectOrganization": "Select organization",
+        "organizations": "Organizations",
+        "loadFailed": "Couldn't load organizations",
+        "tryAgain": "Try again",
+        "none": "No organizations",
+        "settings": "Settings",
+        "manage": "Manage Organizations"
+      },
+      "company-settings-sidebar": {
+        "title": "Settings",
+        "backToApp": "Back to app",
+        "general": "General",
+        "profile": "Profile",
+        "members": "Members",
+        "users": "Users",
+        "invites": "Invites",
+        "secrets": "Secrets",
+        "channelAllowlist": "Channel allowlist",
+        "accessHub": "Access hub",
+        "soon": "soon",
+        "environments": "Environments",
+        "access": "Access",
+        "boardApiKeys": "Board API keys",
+        "heartbeats": "Heartbeats",
+        "export": "Export",
+        "import": "Import",
+        "experimental": "Experimental",
+        "features": "Features",
+        "plugins": "Plugins",
+        "adapters": "Adapters",
+        "company": "Company"
+      },
+      "sidebar": {
+        "newTask": "New Task",
+        "search": "Search",
+        "dashboard": "Dashboard",
+        "inbox": "Inbox",
+        "unread": "unread",
+        "decisions": "Decisions",
+        "decisionsBadge": "decisions",
+        "status": "Status",
+        "beta": "beta",
+        "conferenceRoom": "Conference Room",
+        "work": "Work",
+        "tasks": "Tasks",
+        "cases": "Cases",
+        "routines": "Routines",
+        "pipelines": "Pipelines",
+        "goals": "Goals",
+        "artifacts": "Artifacts",
+        "skills": "Skills",
+        "workspaces": "Workspaces",
+        "projects": "Projects",
+        "company": "Company",
+        "org": "Org",
+        "connectors": "Connectors",
+        "timeline": "Timeline",
+        "costs": "Costs",
+        "activity": "Activity",
+        "stack": "Stack",
+        "settings": "Settings"
+      },
+      "sidebar-account-menu": {
+        "board": "Board",
+        "signedIn": "Signed in",
+        "localBoard": "Local workspace board",
+        "openMenu": "Open account menu",
+        "viewProfile": "View profile",
+        "viewProfileDescription": "Open your activity, task, and usage ledger.",
+        "editProfile": "Edit profile",
+        "editProfileDescription": "Update your display name and avatar.",
+        "documentation": "Documentation",
+        "documentationDescription": "Open Myrmidon docs in a new tab.",
+        "signingOut": "Signing out...",
+        "signOut": "Sign out",
+        "signOutDescription": "End this browser session.",
+        "shareFeedback": "Share feedback"
+      }
+    }
+  }
+}

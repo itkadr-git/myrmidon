@@ -32,7 +32,7 @@ import {
   listAvailableModelProviderTypes,
   patchModelProviderSchema,
   setModelProviderModelsSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { z, type ZodType } from "zod";
 import { badRequest, HttpError } from "../../errors.js";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
