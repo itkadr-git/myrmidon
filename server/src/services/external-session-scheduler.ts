@@ -49,9 +49,9 @@ export class ExternalSessionScheduler {
 
     return new Promise<T>((resolve, reject) => {
       const queue = this.queues.get(credentialId) ?? [];
-      const entry: QueueEntry<unknown> = {
+      const entry = {
         credentialId, run, resolve, reject, runId: options.runId, signal: options.signal,
-      };
+      } as QueueEntry<unknown>;
       if (options.signal) {
         entry.onAbort = () => {
           const pending = this.queues.get(credentialId);
