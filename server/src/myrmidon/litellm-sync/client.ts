@@ -2,7 +2,7 @@
 //
 // myrmidon(1.6.1 MODEL-PROVIDERS B): LiteLLM admin API client.
 //
-// Calls LiteLLM's /model/new, /model/delete, /model/info endpoints using the
+// Calls LiteLLM's /model/new, /model/update, /model/delete, /model/info endpoints using the
 // admin key. Never sends credential values - only secret name references.
 
 import { unprocessable } from "../../errors.js";
@@ -55,6 +55,25 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
       await callLiteLLM("/model/new", payload);
     },
 
+    async updateDeployment(input) {
+      await callLiteLLM("/model/update", {
+        model_name: input.litellmModelName,
+        litellm_params: {
+          model: input.litellmModelName,
+          provider: input.providerType,
+          api_base: input.baseUrl || undefined,
+          // Pass the secret name reference, not the value
+          api_key: `secrets/${input.credentialSecretName}`,
+          ...input.additionalConfig,
+        },
+        model_info: { id: input.modelId },
+      });
+    },
+
+    async deleteDeployment(modelId) {
+      await callLiteLLM("/model/delete", { id: modelId });
+    },
+
     async unregisterModel(litellmModelName) {
       const payload = {
         model_names: [litellmModelName],
@@ -82,6 +101,7 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
       const models = Array.isArray(data?.data) ? data.data : [];
       
       return models.map((model: any) => ({
+        ...(typeof model.model_info?.id === "string" ? { modelId: model.model_info.id } : {}),
         litellmModelName: model.model_name || model.id,
         providerType: model.litellm_params?.provider || "",
         baseUrl: model.litellm_params?.api_base || null,
