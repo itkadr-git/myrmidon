@@ -6084,7 +6084,6 @@ export function recoveryService(
           latestRun,
           recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
           successfulRunHandoffEvidence: handoffEvidence,
-          rerouteToSharedQueue: true,
           scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
           scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
         });
