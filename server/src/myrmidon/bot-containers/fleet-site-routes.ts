@@ -248,7 +248,7 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
     let ca: ReturnType<typeof generateSiteCa>;
     if (existingCa) {
       ca = existingCa;
-            const caCertificate = new X509Certificate(ca.cert);
+      const caCertificate = new X509Certificate(ca.cert);
       if (!caCertificate.checkPrivateKey(createPrivateKey(ca.key))) throw conflict("The company site CA secret is malformed");
     } else {
       ca = generateSiteCa();
