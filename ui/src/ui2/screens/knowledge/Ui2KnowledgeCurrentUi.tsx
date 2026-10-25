@@ -21,7 +21,7 @@ export function Ui2KnowledgeCurrentUi() {
   const locale = isUi2Locale(language) ? language : UI2_DEFAULT_LOCALE;
 
   useEffect(() => {
-    setBreadcrumbs([{ label: t("nav.knowledge") }]);
+    setBreadcrumbs([{ label: t("ui2.nav.knowledge") }]);
   }, [setBreadcrumbs, t]);
 
   return (

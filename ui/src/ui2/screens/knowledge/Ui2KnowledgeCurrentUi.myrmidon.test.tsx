@@ -146,7 +146,7 @@ describe("Ui2KnowledgeCurrentUi (current UI, OPE-9222)", () => {
     expect(text).toContain("Other page");
     expect(text).toContain("Знания");
     expect(http.get).toHaveBeenCalledWith(expect.stringContaining("/myrmidon/companies/c-1/knowledge/items"));
-    expect(breadcrumbs.setBreadcrumbs).toHaveBeenCalledWith([{ label: "nav.knowledge" }]);
+    expect(breadcrumbs.setBreadcrumbs).toHaveBeenCalledWith([{ label: "ui2.nav.knowledge" }]);
   });
 
   it("opens a page at /wiki/:spaceKey/:slug with its body and backlinks", async () => {

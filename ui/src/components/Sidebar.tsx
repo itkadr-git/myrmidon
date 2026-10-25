@@ -209,7 +209,7 @@ export function Sidebar({ children }: { children?: ReactNode }) {
           ) : null}
           <SidebarNavItem to="/routines" label={t("nav.routines")} icon={Repeat} />
           <SidebarNavItem to="/artifacts" label={t("nav.artifacts")} icon={Package} />
-          <SidebarNavItem to="/wiki" label={t("nav.knowledge")} icon={BookOpen} /> {/* myrmidon(OPE-9222) */}
+          <SidebarNavItem to="/wiki" label={t("ui2.nav.knowledge")} icon={BookOpen} /> {/* myrmidon(OPE-9222) */}
           {showCases ? (
             <SidebarNavItem to="/cases" label={t("nav.cases")} icon={Layers} textBadge="beta" />
           ) : null}
