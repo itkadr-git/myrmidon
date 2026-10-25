@@ -130,6 +130,7 @@ describe("buildRecoveryDedupeKey", () => {
     const first = buildRecoveryDedupeKey(base);
     const second = buildRecoveryDedupeKey(base);
     expect(first).toBe(second);
-    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    // 4×32-bit hex lanes: fixed-length opaque identity, no time component.
+    expect(first).toMatch(/^[0-9a-f]{32}$/);
   });
 });
