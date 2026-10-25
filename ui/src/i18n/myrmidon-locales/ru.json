@@ -1657,9 +1657,9 @@
       "license-issuer-page": "Выпуск лицензий"
     },
     "myrmidon_chatgpt-pool": {
-      "_plugin": "Подписки ChatGPT",
-      "chatgpt-pool-sidebar": "Подписки ChatGPT",
-      "chatgpt-pool-page": "Подписки ChatGPT"
+      "_plugin": "Подписки",
+      "chatgpt-pool-sidebar": "Подписки",
+      "chatgpt-pool-page": "Подписки"
     }
   }
 }
