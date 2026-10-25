@@ -9,7 +9,7 @@ import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmid
 import { UI2_PHONE_TABS } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
 import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
-import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { useCompany } from "@/context/CompanyContext";
 
 function PhoneTab({
@@ -132,8 +132,7 @@ export function Ui2PhoneTabBar() {
   const attentionCount = useUi2AttentionCount();
   const { selectedCompany } = useCompany();
   const { slots: pluginSlots } = usePluginSlots({ slotTypes: ["sidebar"], companyId: selectedCompany?.id });
-  const { launchers } = usePluginLaunchers({ placementZones: ["sidebar"], companyId: selectedCompany?.id, enabled: !!selectedCompany?.id });
-  const hasPlugins = pluginSlots.length > 0 || launchers.length > 0;
+  const hasPlugins = pluginSlots.length > 0;
 
   return (
     <div

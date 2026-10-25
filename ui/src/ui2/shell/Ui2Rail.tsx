@@ -152,18 +152,22 @@ export function Ui2Rail() {
             ))}
           </div>
         ))}
-        {hasPlugins ? <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <div style={{ fontSize: "var(--myr-text-nano)", fontWeight: 700, color: "var(--myr-ink-muted)", padding: "6px 10px" }}>{t("ui2.nav.group.plugins", { defaultValue: "Plugins" })}</div>
-          {pluginSlots.map((slot) => <PluginSlotMount key={`${slot.pluginKey}:${slot.id}`} slot={slot} context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }} />)}
-          {selectedCompany ? (
-            <PluginLauncherOutlet
-              placementZones={["sidebar"]}
-              context={{ companyId: selectedCompany.id, companyPrefix: selectedCompany.issuePrefix }}
-              className="flex flex-col gap-0.5"
-              itemClassName="text-(length:--text-compact) font-medium"
-            />
-          ) : null}
-        </div> : null}
+        {hasPlugins ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <div style={{ fontSize: "var(--myr-text-nano)", fontWeight: 700, color: "var(--myr-ink-muted)", padding: "6px 10px" }}>{t("ui2.nav.group.plugins", { defaultValue: "Plugins" })}</div>
+            {pluginSlots.map((slot) => (
+              <PluginSlotMount key={`${slot.pluginKey}:${slot.id}`} slot={slot} context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }} />
+            ))}
+            {selectedCompany ? (
+              <PluginLauncherOutlet
+                placementZones={["sidebar"]}
+                context={{ companyId: selectedCompany.id, companyPrefix: selectedCompany.issuePrefix }}
+                className="flex flex-col gap-0.5"
+                itemClassName="text-(length:--text-compact) font-medium"
+              />
+            ) : null}
+          </div>
+        ) : null}
       </nav>
 
       <div
