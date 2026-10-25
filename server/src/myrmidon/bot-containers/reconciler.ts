@@ -320,7 +320,10 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
     }
     // Hashes come only from the applied-state marker; none there means nothing
     // verified applied, which classifies as "restart", never "none".
-    const changeClass = classifyProfileChange({ restartHash: status.restartHash, filesHash: status.filesHash }, profile);
+    const changeClass = classifyProfileChange(
+      { restartHash: status.restartHash, filesHash: status.filesHash, maxConcurrentRuns: status.maxConcurrentRuns },
+      profile,
+    );
 
     if (status.state === "stopped") {
       const applyDrift = async () => {

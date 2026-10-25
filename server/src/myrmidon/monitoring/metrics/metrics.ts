@@ -49,6 +49,12 @@ import {
   type ChannelBridgeFallbackSample,
   type ChannelBridgeFallbackSource,
 } from "../../channel-connectors/bridge/fallback-counters.js";
+import {
+  resolveSingletonProxySource,
+  type SingletonProxySample,
+  type SingletonProxySource,
+} from "../../singleton-proxy/counters.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
+import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-containers/fleet-site-metrics.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
 
 // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors —
@@ -113,6 +119,9 @@ export const METRIC_FAMILIES = [
   // spends the CPU and issues the DB statements (design OPE-5394 §1 П2).
   "myrmidon_board_db_queries_total",
   "myrmidon_board_lane_busy_seconds_total",
+  // myrmidon(1.6.6 PROCS-1.5 / OPE-5412): single routes forwarded by an api
+  // process to the worker, per route group and outcome.
+  "myrmidon_board_singleton_proxy_total",
 
   // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback chain of the bridge seam — how
   // often the channel adapter did not answer and the direct path took the call
@@ -130,6 +139,13 @@ export const METRIC_FAMILIES = [
   "myrmidon_run_scratch_removed_bytes_total",
   "myrmidon_run_scratch_remaining_dirs",
   "myrmidon_run_scratch_remaining_bytes",
+
+  // myrmidon(1.6.6 REMOTE-SITES-T4): the remote sites — probe result and age per site, the runs
+  // requeued after a site was lost, and the failover moves by result (design remote-sites-v2 7.1).
+  "myrmidon_fleet_site_reachable",
+  "myrmidon_fleet_site_last_seen_seconds",
+  "myrmidon_fleet_exec_retries_total",
+  "myrmidon_fleet_moves_total",
 
   // myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of both shadow legs (part
   // A) read from corpus_shadow_log inside the latency window. With the
@@ -186,6 +202,12 @@ export interface MetricsSnapshotFields {
    * included, so a missing series can only mean an unwired counter.
    */
   adapterFallbacks?: ChannelBridgeFallbackSample[] | null;
+  /**
+   * myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy counters of
+   * this process (in-process, no DB). null renders HELP/TYPE with no samples; a
+   * present sample renders every route x outcome, zeros included.
+   */
+  singletonProxy?: SingletonProxySample[] | null;
 
   /**
    * myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of this process by path,
@@ -201,6 +223,12 @@ export interface MetricsSnapshotFields {
    * process. null renders HELP/TYPE with no samples.
    */
   runScratch?: HeartbeatRunScratchMetrics | null;
+
+  /**
+   * myrmidon(1.6.6 REMOTE-SITES-T4): the remote-site gauges and counters of this
+   * process (in-process, no DB). null renders HELP/TYPE with no samples.
+   */
+  fleetSites?: FleetSiteMetricsSample | null;
 
   /**
    * myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of the two shadow legs in
@@ -269,6 +297,8 @@ export interface MetricsCollectorDeps {
    * fake, so no test depends on another test's fallbacks.
    */
   adapterFallbacks?: ChannelBridgeFallbackSource | null;
+  /** myrmidon(1.6.6 PROCS-1.5 / OPE-5412): where the proxy counters come from; tests inject a fake. */
+  singletonProxy?: SingletonProxySource | null;
 
   /**
    * myrmidon(1.6.6 CONNECTOR-IN): where the ingress half comes from. Production
@@ -279,6 +309,9 @@ export interface MetricsCollectorDeps {
 
   /** myrmidon(1.6.6 TMP-HYGIENE): where the run scratch volume comes from; tests inject a fake. */
   runScratch?: (() => HeartbeatRunScratchMetrics) | null;
+
+  /** myrmidon(1.6.6 REMOTE-SITES-T4): where the remote-site metrics come from; tests inject a fake. */
+  fleetSites?: (() => FleetSiteMetricsSample) | null;
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
@@ -558,6 +591,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback counters of the bridge seam
   // ride the same guarded scrape. The registry cannot throw; the guard is here
   // for the seam, the way it is for the lanes.
+  const singletonProxySample = await guarded(
+    "myrmidon_board_singleton_proxy_total",
+    () => Promise.resolve().then(resolveSingletonProxySource(deps.singletonProxy)),
+    null as SingletonProxySample[] | null,
+  );
   const fallbackSample = await guarded(
     "myrmidon_adapter_fallback_total",
     () => Promise.resolve().then(resolveChannelBridgeFallbackSource(deps.adapterFallbacks)),
@@ -578,6 +616,13 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     "myrmidon_run_scratch_removed_dirs_total|myrmidon_run_scratch_removed_bytes_total|myrmidon_run_scratch_remaining_dirs|myrmidon_run_scratch_remaining_bytes",
     () => Promise.resolve().then(() => (deps.runScratch ?? heartbeatRunScratchMetrics)()),
     null as HeartbeatRunScratchMetrics | null,
+  );
+
+  // myrmidon(1.6.6 REMOTE-SITES-T4): the remote-site state rides the same guarded scrape.
+  const fleetSites = await guarded(
+    "myrmidon_fleet_site_reachable|myrmidon_fleet_site_last_seen_seconds|myrmidon_fleet_exec_retries_total|myrmidon_fleet_moves_total",
+    () => Promise.resolve().then(() => (deps.fleetSites ?? readFleetSiteMetrics)()),
+    null as FleetSiteMetricsSample | null,
   );
 
   return {
@@ -601,10 +646,13 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       lanes: laneSample,
 
       adapterFallbacks: fallbackSample,
+      singletonProxy: singletonProxySample,
 
       chatIngress,
 
       runScratch,
+
+      fleetSites,
     },
     errors,
     now,
@@ -958,6 +1006,24 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     ),
   );
 
+  // myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy. Every route
+  // group x outcome renders even at zero — on a single-process board the whole
+  // family is zero, and a missing series would hide an unwired counter.
+  const proxyRows = snapshot.singletonProxy ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_singleton_proxy_total",
+      "Single-process routes an api process forwarded to the worker, per route group and outcome (proxied or unavailable), cumulative since boot.",
+      "counter",
+      proxyRows
+        ? proxyRows.map(
+            (row) =>
+              `myrmidon_board_singleton_proxy_total{${R},route="${escapeLabelValue(row.route)}",outcome="${escapeLabelValue(row.outcome)}"} ${formatSampleValue(row.count)}`,
+          )
+        : [],
+    ),
+  );
+
   // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback chain of the bridge seam. Both
   // reasons render even at zero — "the adapter never fell back" is exactly what
   // an operator looks for after a rollout, and a missing series would hide an
@@ -1029,6 +1095,42 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     "Bytes held by marked heartbeat run scratch directories after the last janitor sweep.",
     "gauge",
     scratch ? scratch.remainingBytes : null,
+  );
+
+  // myrmidon(1.6.6 REMOTE-SITES-T4): the remote sites. A site renders from its first probe on;
+  // every move result renders at zero too.
+  const fleet = snapshot.fleetSites ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_fleet_site_reachable",
+      "1 when the last health probe of the remote site answered, 0 when it did not.",
+      "gauge",
+      fleet ? fleet.sites.map((row) => `myrmidon_fleet_site_reachable{site="${escapeLabelValue(row.site)}"} ${row.reachable}`) : [],
+    ),
+    familyBlock(
+      "myrmidon_fleet_site_last_seen_seconds",
+      "Seconds since the remote site last answered a health probe (absent while it has never answered).",
+      "gauge",
+      fleet
+        ? fleet.sites.flatMap((row) =>
+            row.lastSeenSeconds === null
+              ? []
+              : [`myrmidon_fleet_site_last_seen_seconds{site="${escapeLabelValue(row.site)}"} ${formatSampleValue(row.lastSeenSeconds)}`],
+          )
+        : [],
+    ),
+    familyBlock(
+      "myrmidon_fleet_exec_retries_total",
+      "Runs of a lost remote site finalized as site_lost and requeued, per site, cumulative since boot.",
+      "counter",
+      fleet ? fleet.retriesTotal.map((row) => `myrmidon_fleet_exec_retries_total{site="${escapeLabelValue(row.site)}"} ${formatSampleValue(row.count)}`) : [],
+    ),
+    familyBlock(
+      "myrmidon_fleet_moves_total",
+      "Failover moves of bots off a lost remote site by result, cumulative since boot.",
+      "counter",
+      fleet ? fleet.movesTotal.map((row) => `myrmidon_fleet_moves_total{result="${escapeLabelValue(row.result)}"} ${formatSampleValue(row.count)}`) : [],
+    ),
   );
 
   return `${blocks.join("\n\n")}\n`;

@@ -24,8 +24,10 @@
 import { Router, type Request } from "express";
 import { badRequest, notFound } from "../../errors.js";
 import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "../../routes/authz.js";
+import type { CasteSensitivity } from "../knowledge/rules.js";
+import { assertRuleWriteGrade, builtinCasteSensitivity } from "../rule-grade.js";
 import type { RegulationActor } from "./types.js";
-import type { WikiRegulationService } from "./service.js";
+import { normalizeRegulationRoles, type WikiRegulationService } from "./service.js";
 import type { RegulationPageRecord } from "./types.js";
 
 export interface WikiRegulationActivityEntry {
@@ -40,6 +42,11 @@ export interface WikiRegulationRoutesDeps {
   service: WikiRegulationService;
   /** Writes the mutation into the company activity log. Optional: tests pass none. */
   recordActivity?: (entry: WikiRegulationActivityEntry) => Promise<void>;
+  /**
+   * The company's caste directory (which castes are sensitive), for the
+   * approver gate. Optional: without it the built-in sensitive castes apply.
+   */
+  casteSensitivity?: (companyId: string) => Promise<CasteSensitivity>;
 }
 
 /** The actor of the request in the shape the wiki records revisions with. */
@@ -104,6 +111,11 @@ function readBody(req: Request): Record<string, unknown> {
 export function wikiRegulationRoutes(deps: WikiRegulationRoutesDeps) {
   const router = Router();
   const { service, recordActivity } = deps;
+  const sensitivityOf = deps.casteSensitivity ?? builtinCasteSensitivity;
+
+  /** K-3: the shared rule-write grade check (see ../rule-grade.ts). */
+  const assertApproverGrade = (req: Request, companyId: string, ...roleSets: ReadonlyArray<readonly string[]>) =>
+    assertRuleWriteGrade(req, companyId, sensitivityOf, ...roleSets);
   const base = "/myrmidon/companies/:companyId/wiki-regulations";
 
   /**
@@ -144,6 +156,16 @@ export function wikiRegulationRoutes(deps: WikiRegulationRoutesDeps) {
     const body = readBody(req);
     const slug = slugOf(req);
     const changeSummary = readString(body, "changeSummary", false) ?? null;
+    const requestedRoles = readRoles(body);
+    // A delivered rule keeps its roles unless the actor's grade covers both the
+    // old and the new set: re-roling it would change who it binds (and who
+    // must approve it) without an approval.
+    const existing = await service.get(companyId, slug);
+    if (existing && existing.revisions.some((revision) => revision.status === "approved") && requestedRoles) {
+      const next = normalizeRegulationRoles(requestedRoles);
+      const same = next.length === existing.roles.length && next.every((role, i) => role === [...existing.roles].sort()[i]);
+      if (!same) await assertApproverGrade(req, companyId, existing.roles, next);
+    }
     const page = await service.save(companyId, {
       slug,
       title: readString(body, "title", true) as string,
@@ -165,7 +187,11 @@ export function wikiRegulationRoutes(deps: WikiRegulationRoutesDeps) {
   router.post(`${base}/*slug/approve`, async (req, res) => {
     assertBoard(req);
     const companyId = companyIdOf(req);
-    const page = await service.approve(companyId, slugOf(req), actorOf(req));
+    const slug = slugOf(req);
+    const current = await service.get(companyId, slug);
+    if (!current) throw notFound(`Regulation not found: ${slug}`);
+    await assertApproverGrade(req, companyId, current.roles);
+    const page = await service.approve(companyId, slug, actorOf(req));
     await recordActivity?.({
       companyId,
       action: "wiki.regulation_approved",
@@ -187,6 +213,7 @@ export function wikiRegulationRoutes(deps: WikiRegulationRoutesDeps) {
     }
     const before = await service.get(companyId, slug);
     if (!before) throw notFound(`Regulation not found: ${slug}`);
+    await assertApproverGrade(req, companyId, before.roles);
     const page = await service.rollback(companyId, slug, revisionNumber, actorOf(req));
     await recordActivity?.({
       companyId,

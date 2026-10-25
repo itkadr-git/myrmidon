@@ -34,6 +34,21 @@ export const activityLog = pgTable(
     ),
     runIdIdx: index("activity_log_run_id_idx").on(table.runId),
     entityIdx: index("activity_log_entity_type_id_idx").on(table.entityType, table.entityId),
+    // myrmidon(DB-CARE / 1.6.6 DEFECT): the feature health pass reads the
+    // newest activity row of one action per company
+    // (server/src/myrmidon/features/ports.ts, activity.latest: chat-holds'
+    // issue.execution_recovery_settled and swarm-claim's claimed lines), and
+    // no index carried "action" — on 1.15M rows every pass was a table-wide
+    // filter (rc.15: /api/health at 10-20 s, pg at 267% CPU). The composite
+    // resolves the (company, action) slice and walks created_at DESC, so
+    // max(created_at) reads one entry and stops; the details->>'continuation'
+    // residual only runs on that slice. See migration
+    // 0415_activity_log_company_action_created_idx.
+    companyActionCreatedIdx: index("activity_log_company_action_created_idx").on(
+      table.companyId,
+      table.action,
+      table.createdAt.desc(),
+    ),
     // myrmidon(DB-CARE): the attention feed resolves the issues whose assignee
     // left one agent by reading the audit rows' previous-assignee payload
     // (server/src/services/attention.ts, details->'_previous'). Persisted from

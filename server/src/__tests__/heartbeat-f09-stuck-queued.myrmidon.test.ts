@@ -466,6 +466,173 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     expect(stored?.errorCode).toBe("queued_run_issue_not_startable");
   }, 30_000);
 
+  it("myrmidon(1.6.6 OPE-8998): a started run closes the served review-admission records of its agent and issue", async () => {
+    pinAdmission({ maxConcurrentRuns: 0 });
+    applyRunPrioritySettings(readRunPriorityFromEnv({}));
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Reviewer", role: "engineer" });
+    const issueId = await seedIssue(companyId, {
+      title: "Review me",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+    const otherIssueId = await seedIssue(companyId, {
+      title: "Other work",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+    const admission = (issue: string) =>
+      db
+        .insert(agentWakeupRequests)
+        .values({
+          companyId,
+          agentId,
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "execution_review_requested",
+          payload: { issueId: issue },
+          status: "queued",
+          requestedByActorType: "user",
+          requestedByActorId: null,
+          idempotencyKey: `issue-review-admission:${issue}:${agentId}`,
+          createdAt: new Date(Date.now() - 1_000),
+        })
+        .returning()
+        .then((rows) => rows[0]!);
+    const served = await admission(issueId);
+    const unrelated = await admission(otherIssueId);
+
+    await wakeAndQueue(agentId, issueId);
+    pinAdmission({ maxConcurrentRuns: 1 });
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const statusOf = (id: string) =>
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, id))
+        .then((rows) => rows[0]?.status);
+    expect(await statusOf(served.id)).toBe("coalesced");
+    expect(await statusOf(unrelated.id)).toBe("queued");
+  }, 30_000);
+
+  it("myrmidon(1.6.6 OPE-8998): a review-admission wake leaves no seed queued without a run", async () => {
+    pinAdmission({ maxConcurrentRuns: 0 });
+    applyRunPrioritySettings(readRunPriorityFromEnv({}));
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Reviewer", role: "engineer" });
+    const closedIssueId = await seedIssue(companyId, {
+      title: "Already closed",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "done",
+    });
+    const liveIssueId = await seedIssue(companyId, {
+      title: "Review me",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+    const seed = (issue: string) =>
+      db
+        .insert(agentWakeupRequests)
+        .values({
+          companyId,
+          agentId,
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "execution_review_requested",
+          payload: { issueId: issue },
+          status: "queued",
+          requestedByActorType: "user",
+          requestedByActorId: null,
+          idempotencyKey: `issue-review-admission:${issue}:${agentId}`,
+        })
+        .returning()
+        .then((rows) => rows[0]!);
+    const closedSeed = await seed(closedIssueId);
+    const liveSeed = await seed(liveIssueId);
+    const wake = (issue: string) =>
+      heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "execution_review_requested",
+        payload: { issueId: issue },
+        idempotencyKey: `issue-review-admission:${issue}:${agentId}`,
+        contextSnapshot: { issueId: issue, wakeReason: "execution_review_requested" },
+      });
+    const liveRun = await wake(liveIssueId);
+    expect(liveRun).not.toBeNull();
+    // The agent stops being invokable: the next admission wake is refused
+    // (skipped row + conflict), so it makes no run.
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    await expect(wake(closedIssueId)).rejects.toThrow();
+
+    const load = (id: string) =>
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, id))
+        .then((rows) => rows[0]!);
+    const closed = await load(closedSeed.id);
+    expect(closed.status).toBe("coalesced");
+    expect(closed.finishedAt).not.toBeNull();
+    const live = await load(liveSeed.id);
+    // The wake that made a run either reused the seed as its own request
+    // (queued, bound to the run) or its seed was closed as coalesced; it is
+    // never left queued without a run.
+    if (live.status === "queued") expect(live.runId).toBe(liveRun!.id);
+    else expect(live.status).toBe("coalesced");
+  }, 30_000);
+
+  it("myrmidon(1.6.6 OPE-8998): a run terminalized on lease release (interrupted) closes its wake request", async () => {
+    pinAdmission({ maxConcurrentRuns: 0 });
+    applyRunPrioritySettings(readRunPriorityFromEnv({}));
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Orphan", role: "engineer" });
+    const issueId = await seedIssue(companyId, {
+      title: "Orphaned run",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+    const run = await wakeAndQueue(agentId, issueId);
+    const wakeupRequestId = run.wakeupRequestId!;
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "running", startedAt: new Date(Date.now() - 60 * MINUTE_MS) })
+      .where(eq(heartbeatRuns.id, run.id));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "claimed", claimedAt: new Date(Date.now() - 60 * MINUTE_MS) })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    // terminalizeRunOnLeaseRelease writes the terminal run status through
+    // setRunStatusFromLive and, before OPE-8998, never touched the wake
+    // request, so it stayed `claimed` behind the interrupted run. Without
+    // closeWakeupOfTerminalRun this test fails on the wake.status assertion.
+    const running = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run.id))
+      .then((rows) => rows[0]!);
+    await heartbeat.terminalizeRunOnLeaseRelease(running);
+
+    const storedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run.id))
+      .then((rows) => rows[0]!);
+    expect(storedRun.status).toBe("interrupted");
+    const wake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0]!);
+    expect(wake.status).toBe("failed");
+    expect(wake.finishedAt).not.toBeNull();
+  }, 30_000);
+
   it("keeps a queued run on a hidden todo startable (Summarizer pattern)", async () => {
     // Hidden todos are the supported summary-slot / status-card pattern: the
     // Summarizer is woken through the regular queue on a hidden todo, so the
