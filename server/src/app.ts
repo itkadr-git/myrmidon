@@ -1,3 +1,136 @@
+import {
+  aboutRoutes,
+  accessHubRoutes,
+  agentInstructionsRevisionsRoutes,
+  bindModelProviderPluginLifecycle,
+  boardLoadApp,
+  boardLoadLaneTagMiddleware,
+  boardLoadRequestMiddleware,
+  botWorkspacePressureFromPartition,
+  channelAllowlistRoutes,
+  channelAllowlistService,
+  chatReconcileMinimumSpacingMs,
+  createCasteDirectoryReader,
+  createChatReconciliationWorkGates,
+  createInstanceSecretSettingService,
+  createPoolChatHttpTransport,
+  createReconcileInterval,
+  createTelegramVoiceSttWiring,
+  datastoreCareRetentionRoutes,
+  getChatReconcileFallbackIntervalMs,
+  getIdleStopService,
+  hostDiskRuntime,
+  idleStopSettingsRoutes,
+  installIdProviderFor,
+  installInstanceSecretResolver,
+  installedClosedModules,
+  instanceSecretSettingsRoutes,
+  licensingInstallIdRoutes,
+  licensingRoutes,
+  modelFallbackSignalRoutes,
+  myrmidonAgentExchangeFeedRoutes,
+  myrmidonAgentExchangeRoutes,
+  myrmidonAgentMemoryRoutes,
+  myrmidonAgentMemorySettingsRoutes,
+  myrmidonAlertRecoveryRoutes,
+  myrmidonAttentionFeedRoutes,
+  myrmidonAutonomyRoutes,
+  myrmidonBaselineRoutes,
+  myrmidonBehaviorSettingsRoutes,
+  myrmidonBoardProcessRegistryRoutes,
+  myrmidonBotCanaryRoutes,
+  myrmidonBotContainerRoutes,
+  myrmidonBotDiskLifecycleRoutes,
+  myrmidonBotDiskPhysicalRoutes,
+  myrmidonBotDiskQuotaRoutes,
+  myrmidonBotDiskReportRoutes,
+  myrmidonBotEgressRoutes,
+  myrmidonBotImageRolloutRoutes,
+  myrmidonBotLspRoutes,
+  myrmidonBotScopeRoutes,
+  myrmidonBotWorkspacesRoutes,
+  myrmidonBridgeLanguageRoutes,
+  myrmidonBrowserBridgePublicRoutes,
+  myrmidonBrowserBridgeRoutes,
+  myrmidonBrowserConsoleRoutes,
+  myrmidonBudgetEnforcementRoutes,
+  myrmidonBudgetLimitsRoutes,
+  myrmidonCasteRoutes,
+  myrmidonChannelSettingsRoutes,
+  myrmidonCloudConnectorRoutes,
+  myrmidonCorpusMcpRoutes,
+  myrmidonCorpusRoutes,
+  myrmidonCtoChatRoutes,
+  myrmidonDataRetentionRoutes,
+  myrmidonDatastoreCareRoutes,
+  myrmidonDebateRoutes,
+  myrmidonDeployJobsRoutes,
+  myrmidonEmergencyStopRoutes,
+  myrmidonEvalsRoutes,
+  myrmidonFeaturesRoutes,
+  myrmidonFleetConsoleRoutes,
+  myrmidonFleetMoveRoutes,
+  myrmidonFleetSiteManageRoutes,
+  myrmidonFleetSiteRoutes,
+  myrmidonForagingIdleGateRoutes,
+  myrmidonForagingPassRoutes,
+  myrmidonForagingRoutes,
+  myrmidonGitHubSharedIdentityRoutes,
+  myrmidonGuardrailsRoutes,
+  myrmidonHostDiskRoutes,
+  myrmidonKnowledgeMcpRoutes,
+  myrmidonKnowledgeRoutes,
+  myrmidonLitellmBudgetSyncRoutes,
+  myrmidonLitellmCostsRoutes,
+  myrmidonLitellmKeysRoutes,
+  myrmidonLitellmWorkersRoutes,
+  myrmidonMaintenanceRoutes,
+  myrmidonMetricsApp,
+  myrmidonModelMenuRoutes,
+  myrmidonModelProviderRoutes,
+  myrmidonMonitoringAlertsRoutes,
+  myrmidonMonitoringDashboardRoutes,
+  myrmidonMonitoringLinkRoutes,
+  myrmidonOcrRoutes,
+  myrmidonOwnerDeliveryRoutes,
+  myrmidonParallelHelpersRoutes,
+  myrmidonPauseGuardRoutes,
+  myrmidonProcessReadinessRoutes,
+  myrmidonProcessesRouter,
+  myrmidonPromptBudgetAdviceRoutes,
+  myrmidonPromptBudgetRoutes,
+  myrmidonReplayBlockedRoutes,
+  myrmidonRunPriorityRoutes,
+  myrmidonRunStallRoutes,
+  myrmidonRuntimeLimitsRoutes,
+  myrmidonScentRoutes,
+  myrmidonSkillLifecycleRoutes,
+  myrmidonStackRegistryRoutes,
+  myrmidonSttRoutes,
+  myrmidonSwarmSupervisorRoutes,
+  myrmidonTeamLivenessRoutes,
+  myrmidonTelegramDmProgressRoutes,
+  myrmidonTelegramNotifyRoutes,
+  myrmidonToolPolicyCacheRoutes,
+  myrmidonTracingHealthRoutes,
+  myrmidonUsersAdminRoutes,
+  myrmidonVoiceMeetingProtocolRoutes,
+  myrmidonWakeTaskGuardRoutes,
+  myrmidonWikiCortexRoutes,
+  myrmidonWipLimitRoutes,
+  myrmidonWorkspaceHygieneRoutes,
+  pluginEntitlementRoutes,
+  poolChatRoutes,
+  projectTokenQuotaRoutes,
+  resolveCorpusPorts,
+  reviewReworkRoutes,
+  reviewRoutingRoutes,
+  singletonProxyMiddleware,
+  siteHealthRoutes,
+  swarmClaimApp,
+  sweepTelegramNotifyProactivity,
+  ui2LanguageRoutes,
+} from "./myrmidon/app-plugin.js";
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
 import { projectToolRoutes } from "./routes/project-tools.js";
 import { emailChannelService } from "./services/email-channels.js";
@@ -87,7 +220,6 @@ import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { attentionRoutes } from "./routes/attention.js";
-import { singletonProxyMiddleware, type SingletonProxyOptions } from "./myrmidon/singleton-proxy/index.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
 import { decisionQueueRoutes } from "./routes/decision-queues.js";
@@ -100,155 +232,33 @@ import { serverVersion } from "./version.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
-import { instanceSecretSettingsRoutes } from "./myrmidon/secret-settings/routes.js"; // myrmidon(SETTINGS-UI E2.1)
-import { installInstanceSecretResolver } from "./myrmidon/secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.2)
-import { createInstanceSecretSettingService } from "./myrmidon/secret-settings/wiring.js"; // myrmidon(SETTINGS-UI E2.2)
-import { myrmidonMaintenanceRoutes } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
-import { datastoreCareRetentionRoutes } from "./myrmidon/datastore-care/index.js"; // myrmidon(1.6.5-DBC1)
-import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
-import { myrmidonRuntimeLimitsRoutes } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
-import { myrmidonRunStallRoutes } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL-SETTINGS)
-import { myrmidonCorpusRoutes, resolveCorpusPorts } from "./myrmidon/corpus/index.js"; // myrmidon(1.6.6 CORPUS-2.0 ч.C)
-import { myrmidonProcessesRouter } from "./myrmidon/processes/index.js"; // myrmidon(PROCS-1.1)
 // myrmidon(PAUSE-GUARD): GET/PATCH the forgotten-pause guard settings
-import { myrmidonPauseGuardRoutes } from "./myrmidon/pause-guard/index.js";
-import { myrmidonRunPriorityRoutes } from "./myrmidon/run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
-import { myrmidonBudgetEnforcementRoutes } from "./myrmidon/budget-enforcement/index.js"; // myrmidon(1.7-BUDGET-CONFIG-B)
-import { myrmidonBehaviorSettingsRoutes } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
-import { myrmidonTelegramDmProgressRoutes } from "./myrmidon/telegram-dm-progress/index.js"; // myrmidon(DM-PROGRESS)
 // myrmidon(1.6.5-TG-LOCALE-C): GET/PATCH the instance-wide bridge language
-import { myrmidonBridgeLanguageRoutes } from "./myrmidon/bridge-language/index.js";
-import { myrmidonChannelSettingsRoutes } from "./myrmidon/channel-settings/index.js"; // myrmidon(1.7-SETTINGS-TO-UI)
-import { myrmidonUsersAdminRoutes } from "./myrmidon/users-admin-a/index.js"; // myrmidon(OPE-8985)
-import { channelAllowlistRoutes } from "./myrmidon/channel-allowlist/routes.js"; // myrmidon(CA-A)
-import { channelAllowlistService } from "./myrmidon/channel-allowlist/service.js"; // myrmidon(CA-A)
 
-import { myrmidonParallelHelpersRoutes } from "./myrmidon/parallel-helpers/index.js"; // myrmidon(PARALLEL-HELPERS)
-import { myrmidonTeamLivenessRoutes } from "./myrmidon/team-liveness/index.js"; // myrmidon(TEAM-LIVENESS-SETTINGS)
-import { myrmidonBotLspRoutes } from "./myrmidon/bot-lsp/index.js"; // myrmidon(BOT-LSP-DEFAULTS)
-import { myrmidonFeaturesRoutes } from "./myrmidon/features/index.js"; // myrmidon(FEATURES)
-import { myrmidonReplayBlockedRoutes } from "./myrmidon/replay-blocked/index.js"; // myrmidon(N1)
-import { aboutRoutes } from "./myrmidon/about/routes.js"; // myrmidon(ABOUT)
-import { licensingRoutes } from "./myrmidon/licensing/routes.js"; // myrmidon(LICENSING)
-import { installIdProviderFor } from "./myrmidon/licensing/install-id.js"; // myrmidon(OPE-8836)
-import { installedClosedModules } from "./myrmidon/licensing/installed-modules.js"; // myrmidon(LICENSING)
-import { myrmidonBotContainerRoutes } from "./myrmidon/bot-containers/routes-wiring.js"; // myrmidon(W2b)
-import { myrmidonBrowserConsoleRoutes } from "./myrmidon/browser-console/wiring.js"; // myrmidon(BROWSER-CONSOLE)
-import { myrmidonLitellmCostsRoutes } from "./myrmidon/litellm-costs/routes.js"; // myrmidon(M2-A)
-import { myrmidonLitellmKeysRoutes } from "./myrmidon/litellm-keys/routes.js"; // myrmidon(M2-B)
 // myrmidon(1.6.1 MODEL-PROVIDERS A): company model-provider registry, secrets, settings API
-import { myrmidonModelProviderRoutes } from "./myrmidon/model-providers/wiring.js";
-import { bindModelProviderPluginLifecycle } from "./myrmidon/model-providers/plugin-lifecycle.js"; // myrmidon(1.6.6 OPE-7198)
-import { myrmidonAgentExchangeRoutes } from "./myrmidon/agent-exchange/wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 // myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms and
 // the «to skill» action that registers a room outcome as a skill candidate.
-import { myrmidonAgentExchangeFeedRoutes } from "./myrmidon/agent-exchange/feed-wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-B)
-import { myrmidonBaselineRoutes } from "./myrmidon/baseline/routes.js"; // myrmidon(1.6-BASELINE)
-import { myrmidonBotEgressRoutes } from "./myrmidon/bot-containers/egress-wiring.js"; // myrmidon(EGRESS-B)
-import { myrmidonBotCanaryRoutes } from "./myrmidon/bot-containers/canary-index.js"; // myrmidon(R5-B)
-import { myrmidonWorkspaceHygieneRoutes } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 // myrmidon(BOT-DISK E): host disk usage threshold and signal
-import { hostDiskRuntime, myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
-import { myrmidonModelMenuRoutes } from "./myrmidon/model-menu/index.js"; // myrmidon(1.6.6 MODEL-MENU B)
-import { myrmidonAttentionFeedRoutes } from "./myrmidon/attention-feed/index.js"; // myrmidon(1.6.6 SETTINGS-UI C-4)
-import { myrmidonAlertRecoveryRoutes } from "./myrmidon/monitoring/alert-recovery/index.js"; // myrmidon(1.6.6-MONITORING-D)
-import { myrmidonDatastoreCareRoutes } from "./myrmidon/datastore-care/index.js"; // myrmidon(DBC-4)
-import { myrmidonDataRetentionRoutes } from "./myrmidon/data-retention/index.js"; // myrmidon(1.6.5-DB-RETENTION)
-import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
-import { idleStopSettingsRoutes } from "./myrmidon/idle-stop-settings-routes.js"; // myrmidon(OPE-7898)
-import { getIdleStopService } from "./myrmidon/idle-stop-startup.js"; // myrmidon(OPE-7898)
 // myrmidon(1.6.6-SETTINGS-UI-B): the read side of the lifecycle screen (the C5
 // relay + the stored C4 reports) and the bot-side C4 report POST.
-import { myrmidonBotDiskPhysicalRoutes } from "./myrmidon/bot-containers/bot-disk-physical-routes.js";
-import { myrmidonBotDiskReportRoutes } from "./myrmidon/bot-containers/bot-disk-report-routes.js";
-import { myrmidonBotScopeRoutes } from "./myrmidon/bot-containers/scope-wiring.js"; // myrmidon(BOT-DISK-F)
-import { botWorkspacePressureFromPartition } from "./myrmidon/bot-containers/bot-workspaces-pressure.js"; // myrmidon(1.6.5-BOT-DISK-H4a)
-import { myrmidonBotWorkspacesRoutes } from "./myrmidon/bot-containers/bot-workspaces-routes.js"; // myrmidon(1.6.5-BOT-DISK-H4a)
 
 // myrmidon(1.7-BUDGET-CONFIG A): per-level spend limits, journal and usage
-import { myrmidonBudgetLimitsRoutes } from "./myrmidon/budget-limits/index.js";
-import { myrmidonBotDiskQuotaRoutes } from "./myrmidon/bot-containers/bot-disk-quota-routes.js"; // myrmidon(1.6.1-BOT-DISK-C)
-import { myrmidonBotImageRolloutRoutes } from "./myrmidon/bot-containers/bot-image-rollout-routes.js"; // myrmidon(BOT-ROLLOUT)
-import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
-import { boardLoadApp, boardLoadLaneTagMiddleware, boardLoadRequestMiddleware } from "./myrmidon/monitoring/board-load/index.js"; // myrmidon(1.6.6 PROCS-0.3A)
-import { myrmidonMonitoringAlertsRoutes } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
-import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
-import { createCasteDirectoryReader } from "./myrmidon/castes/directory.js"; // myrmidon(1.6.5 OPE-6608)
 // myrmidon(EMERGENCY-STOP): immediate stop of the runs a draining pause left running
-import { myrmidonEmergencyStopRoutes } from "./myrmidon/emergency-stop.js";
-import { myrmidonWakeTaskGuardRoutes } from "./myrmidon/wake-task-guard-routes.js"; // myrmidon(1.6.5 F-26 T5)
-import { myrmidonStackRegistryRoutes } from "./myrmidon/stack-registry/index.js"; // myrmidon(SUA)
-import { myrmidonWipLimitRoutes } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
-import { projectTokenQuotaRoutes } from "./myrmidon/project-token-quota/index.js"; // myrmidon(1.6.6 QUOTA-V2)
-import { myrmidonPromptBudgetRoutes } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
-import { modelFallbackSignalRoutes } from "./myrmidon/litellm-fallback-signal/routes.js"; // myrmidon(BOT-RUNTIME-TUNING D2)
-import { myrmidonOwnerDeliveryRoutes } from "./myrmidon/owner-delivery/index.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
-import { reviewRoutingRoutes } from "./myrmidon/review-routing/routes.js"; // myrmidon(REVIEW-ROUTING)
-import { reviewReworkRoutes } from "./myrmidon/review-rework/routes.js"; // myrmidon(REVIEW-REWORK)
 // myrmidon(PLUGIN-ENTITLEMENT C): instance-level plugin entitlement keys
-import { pluginEntitlementRoutes } from "./myrmidon/plugin-entitlement/index.js";
-import { licensingInstallIdRoutes } from "./myrmidon/licensing-install-id/routes.js";
-import { myrmidonLitellmBudgetSyncRoutes } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
-import { myrmidonLitellmWorkersRoutes } from "./myrmidon/litellm-workers/routes.js"; // myrmidon(1.6.5 LITELLM-WORKERS A)
-import { agentInstructionsRevisionsRoutes } from "./myrmidon/agent-instructions-revisions/index.js"; // myrmidon(H2)
-import { myrmidonFleetConsoleRoutes } from "./myrmidon/fleet-console/index.js"; // myrmidon(SC1)
-import { myrmidonFleetSiteRoutes } from "./myrmidon/bot-containers/fleet-site-wiring.js"; // myrmidon(1.6.6 OPE-8999)
-import { myrmidonFleetSiteManageRoutes } from "./myrmidon/bot-containers/fleet-site-manage-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T8)
-import { myrmidonFleetMoveRoutes } from "./myrmidon/bot-containers/fleet-move-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
-import { siteHealthRoutes } from "./myrmidon/bot-containers/site-health-routes.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
-import { myrmidonPromptBudgetAdviceRoutes } from "./myrmidon/prompt-budget-advice/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET C)
-import { myrmidonMonitoringLinkRoutes } from "./myrmidon/monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
-import { myrmidonMonitoringDashboardRoutes } from "./myrmidon/monitoring/dashboard/index.js"; // myrmidon(1.6.6 MONITORING C)
-import { myrmidonCloudConnectorRoutes } from "./myrmidon/cloud-connector/index.js"; // myrmidon(CLOUD-CONNECTOR)
-import { myrmidonBoardProcessRegistryRoutes } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
-import { poolChatRoutes } from "./myrmidon/pool-chat/routes.js";
-import { createPoolChatHttpTransport } from "./myrmidon/pool-chat/transports.js";
-import type { PoolChatTransportResolver } from "./myrmidon/pool-chat/service.js";
 import { secretService } from "./services/secrets.js";
-import { myrmidonAutonomyRoutes } from "./myrmidon/autonomy/index.js"; // myrmidon(1.6-AUTONOMY)
-import { myrmidonKnowledgeRoutes, myrmidonKnowledgeMcpRoutes } from "./myrmidon/knowledge/index.js"; // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2)
 // myrmidon(1.6-TG-PROACTIVITY-E): head-bot proactivity gate/bundling sweep
 // myrmidon(1.6.6 CH-CONNECTOR-D): the proactivity sweep is reached through the bridge seam.
-import { sweepTelegramNotifyProactivity } from "./myrmidon/channel-connectors/bridge/notify-sweep.js";
-import { accessHubRoutes } from "./myrmidon/access-hub/routes.js"; // myrmidon(SEC1)
-import { ui2LanguageRoutes } from "./myrmidon/ui2-language/routes.js"; // myrmidon(UI2-I18N)
-import { myrmidonForagingRoutes, myrmidonForagingIdleGateRoutes, myrmidonForagingPassRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE, 1.6.3-FORAGING-IDLE-GATE)
-import { myrmidonAgentMemoryRoutes, myrmidonAgentMemorySettingsRoutes } from "./myrmidon/agent-memory/index.js"; // myrmidon(MEMORY-UI)
-import { myrmidonToolPolicyCacheRoutes } from "./myrmidon/tool-policy-cache/index.js"; // myrmidon(DB-PERF-C-P4)
 // myrmidon(1.6-SKILL-LIFE): company skill lifecycle (candidate/verified/deprecated, rollback)
-import { myrmidonSkillLifecycleRoutes } from "./myrmidon/skill-lifecycle/index.js";
-import {
-  myrmidonBrowserBridgePublicRoutes,
-  myrmidonBrowserBridgeRoutes,
-} from "./myrmidon/browser-bridge/index.js"; // myrmidon(EXTCASE-B)
 // myrmidon(EXT-CASE-OCR): the OCR path (PDF -> text in the bot's workspace)
-import { myrmidonOcrRoutes } from "./myrmidon/ocr/index.js";
 // myrmidon(1.6.6-CORPUS-D): the corpus MCP endpoint (`corpus_*` for bots)
-import { myrmidonCorpusMcpRoutes } from "./myrmidon/corpus/index.js";
-import { myrmidonSttRoutes } from "./myrmidon/stt/index.js"; // myrmidon(1.6.1 VOICE-STT A1)
-import { myrmidonGitHubSharedIdentityRoutes } from "./myrmidon/github-shared-identity/index.js"; // myrmidon(GITHUB-SHARED-IDENTITY)
 
-import { createTelegramVoiceSttWiring } from "./myrmidon/channel-connectors/bridge/voice-stt.js"; // myrmidon(1.6.5 VOICE-STT A) myrmidon(1.6.6 CH-CONNECTOR-D)
-import { myrmidonVoiceMeetingProtocolRoutes } from "./myrmidon/voice-meeting-protocol/index.js"; // myrmidon(1.6.5 VOICE-STT B)
-import { myrmidonEvalsRoutes } from "./myrmidon/evals/index.js"; // myrmidon(1.6-EVALS)
-import { myrmidonDebateRoutes } from "./myrmidon/debates/index.js"; // myrmidon(1.7-DEBATE-ASYM-A)
-import { myrmidonScentRoutes } from "./myrmidon/scent/index.js"; // myrmidon(1.6.5 F-26 T10 SCENT)
 // myrmidon(TRACING-HEALTH): LLM tracing health check (GET /api/myrmidon/tracing/health)
-import { myrmidonTracingHealthRoutes } from "./myrmidon/tracing-health/index.js"; // myrmidon(TRACING-HEALTH)
 // myrmidon(1.6-WIKI): company regulations as wiki pages (statuses, revisions, rollback, resolver)
-import { myrmidonWikiCortexRoutes } from "./myrmidon/wiki-cortex/wiring.js";
 // myrmidon(1.6-CTO-CHAT-B): the board chat planner (owner text -> proposed epic).
-import { myrmidonCtoChatRoutes } from "./myrmidon/cto-chat/index.js";
 // myrmidon(1.6-SWARM-CLAIM-B): the lead's supervisor surface over the role queues
-import { myrmidonSwarmSupervisorRoutes } from "./myrmidon/swarm-claim-supervisor/index.js"; // myrmidon(1.6-SWARM-CLAIM-B)
 // myrmidon(1.6.6 PROCS-1.5): per-process readiness and the balancer's /healthz
-import {
-  myrmidonProcessReadinessRoutes,
-  type ProcessSupervisorReadinessSource,
-} from "./myrmidon/process-readiness/index.js";
 // myrmidon(TG-NOTIFY-A): the telegramNotify settings core (contract, GET/PATCH, changelog)
 // myrmidon(1.6.6 CH-CONNECTOR-D): the notify track is reached through the bridge seam.
-import { myrmidonTelegramNotifyRoutes } from "./myrmidon/channel-connectors/bridge/notify.js";
 import { instanceSettingsService } from "./services/instance-settings.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
@@ -301,17 +311,8 @@ import { chatChannelService } from "./services/chat-channels.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { enqueueChatRunMilestones } from "./services/chat-run-publications.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
-import {
-  chatReconcileMinimumSpacingMs,
-  getChatReconcileFallbackIntervalMs,
-  createReconcileInterval,
-} from "./myrmidon/chat-reconciliation/reconcile-interval.js";
 // myrmidon(DB-PERF-C-P5): cheap per-lane work gates for the chat
 // reconciliation coordinator. See docs/myrmidon/DIVERGENCE.md.
-import {
-  createChatReconciliationWorkGates,
-  type ChatReconciliationWorkGates,
-} from "./myrmidon/chat-reconciliation/work-gates.js";
 import {
   createCoalescedAsyncTrigger,
   isChatPublicationCommitSignal,
@@ -341,10 +342,10 @@ import { apiCompression } from "./middleware/api-compression.js";
 import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 // myrmidon(CUSTOM-CASTES): company caste directory — table, seed, CRUD API
-import { myrmidonCasteRoutes } from "./myrmidon/castes/wiring.js";
 // myrmidon(1.6-GRD): guardrail event journal for the flag-only output detectors
-import { myrmidonGuardrailsRoutes } from "./myrmidon/guardrails/index.js"; // myrmidon(1.6-GRD)
 
+type SingletonProxyOptions = import("./myrmidon/singleton-proxy/index.js").SingletonProxyOptions;
+type PoolChatTransportResolver = import("./myrmidon/pool-chat/service.js").PoolChatTransportResolver;
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
 const VITE_DEV_ASSET_PREFIXES = [

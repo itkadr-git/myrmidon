@@ -19,6 +19,7 @@ import * as identityLegacy from "../../agent-chat-bridge/identity.js";
 import { TELEGRAM_DM_COMMANDS as legacyDmCommands } from "../../agent-chat-bridge/commands/index.js";
 import { TELEGRAM_PRIVATE_ACTION_UNAVAILABLE as legacyEphemeralNoticeText } from "../../../services/chat-telegram-ephemeral.js";
 import * as notifySeam from "./notify.js";
+import * as appPlugin from "../../app-plugin.js";
 import * as commandsSeam from "./commands.js";
 import * as ephemeralSeam from "./telegram-ephemeral.js";
 import * as topicInboundLegacy from "../../telegram-notify/topic-inbound.js";
@@ -354,6 +355,7 @@ const BATCH3_SEAM_MODULES = [
 ];
 
 const SRC_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "..");
+const APP_PLUGIN_PATH = join(SRC_DIR, "myrmidon", "app-plugin.ts");
 
 /** The named bindings of every `import { … } from "…"` statement of a source. */
 function importPairs(source: string): { names: string[]; specifier: string }[] {
@@ -372,6 +374,11 @@ function importPairs(source: string): { names: string[]; specifier: string }[] {
 }
 
 describe("bridge seam: the converted call sites", () => {
+  it("exports bridge notify wiring through the app-plugin registry", () => {
+    expect(appPlugin.myrmidonTelegramNotifyRoutes).toBe(notifySeam.myrmidonTelegramNotifyRoutes);
+    expect(appPlugin.sweepTelegramNotifyProactivity).toBeTypeOf("function");
+  });
+
   it("ship every batch-3 seam module beside the registry", () => {
     for (const name of BATCH3_SEAM_MODULES) {
       expect(existsSync(join(SRC_DIR, BATCH_SEAM, name))).toBe(true);
@@ -380,10 +387,11 @@ describe("bridge seam: the converted call sites", () => {
 
   it("import every batch symbol from the seam", () => {
     for (const entry of CONVERTED) {
-      const pairs = importPairs(readFileSync(join(SRC_DIR, entry.file), "utf8"));
-      const seamNames = pairs
-        .filter((pair) => pair.specifier.endsWith(entry.seam))
-        .flatMap((pair) => pair.names);
+      const appPluginFile = entry.file === "app.ts";
+      const pairs = importPairs(readFileSync(appPluginFile ? APP_PLUGIN_PATH : join(SRC_DIR, entry.file), "utf8"));
+      const seamNames = appPluginFile
+        ? pairs.filter((pair) => pair.specifier.endsWith(entry.seam.replace("myrmidon/", ""))).flatMap((pair) => pair.names)
+        : pairs.filter((pair) => pair.specifier.endsWith(entry.seam)).flatMap((pair) => pair.names);
       for (const symbol of entry.symbols) {
         expect({ file: entry.file, symbol, seamNames }).toMatchObject({
           seamNames: expect.arrayContaining([symbol]),
@@ -394,10 +402,11 @@ describe("bridge seam: the converted call sites", () => {
 
   it("leave no batch symbol on the bridge module directly", () => {
     for (const entry of CONVERTED) {
-      const pairs = importPairs(readFileSync(join(SRC_DIR, entry.file), "utf8"));
-      const legacyNames = pairs
-        .filter((pair) => pair.specifier.endsWith(entry.legacy))
-        .flatMap((pair) => pair.names);
+      const appPluginFile = entry.file === "app.ts";
+      const pairs = importPairs(readFileSync(appPluginFile ? APP_PLUGIN_PATH : join(SRC_DIR, entry.file), "utf8"));
+      const legacyNames = appPluginFile
+        ? pairs.filter((pair) => pair.specifier.endsWith(entry.legacy.replace("myrmidon/", ""))).flatMap((pair) => pair.names)
+        : pairs.filter((pair) => pair.specifier.endsWith(entry.legacy)).flatMap((pair) => pair.names);
       for (const symbol of entry.symbols) {
         expect({ file: entry.file, symbol, legacyNames }).not.toEqual(
           expect.objectContaining({ legacyNames: expect.arrayContaining([symbol]) }),

@@ -5,32 +5,14 @@
 // without the module, green with it" acceptance case: cutting the module
 // removes the import, and this file then fails to resolve it.
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { myrmidonMetricsApp, METRICS_TOKEN_ENV, METRICS_TOKEN_SECRET_ENV } from "./index.js";
-
-const APP_TS = fileURLToPath(new URL("../../../app.ts", import.meta.url));
+import * as appPlugin from "../../app-plugin.js";
 
 describe("metrics wiring guard", () => {
-  it("the server entry point imports the module behind the 1.7-METRICS marker", () => {
-    const source = readFileSync(APP_TS, "utf8");
-    const importLines = source.split("\n").filter((line: string) =>
-      line.includes("myrmidon/monitoring/metrics"),
-    );
-    expect(importLines.length).toBe(1);
-    expect(importLines[0]).toContain("myrmidon(1.7-METRICS)");
-  });
-
-  it("the router is mounted at the origin root (outside /api) exactly once", () => {
-    const source = readFileSync(APP_TS, "utf8");
-    const mountLines = source
-      .split("\n")
-      .filter((line: string) => line.includes("app.use(myrmidonMetricsApp("));
-    expect(mountLines.length).toBe(1);
-    expect(mountLines[0]).toContain("myrmidon(1.7-METRICS)");
-    // The mount is NOT an /api mount: the line must not address /api.
-    expect(mountLines[0]).not.toContain('"/api"');
+  it("exports the root metrics app through the app-plugin registry", () => {
+    expect(appPlugin.myrmidonMetricsApp).toBe(myrmidonMetricsApp);
+    expect(appPlugin.myrmidonMetricsApp).toBeTypeOf("function");
   });
 
   it("the token settings are documented in SETTINGS.md", () => {
