@@ -128,24 +128,37 @@ describeDatabase("swarm expiry race under load", () => {
         leaseExpiresAt: new Date(now.getTime() - 60_000),
       });
       const explicitAt = new Date(now.getTime() + index + 1);
-      const sweepExpiry = async () => {
-        await releaseClaim(db, { claimId: claim.id, reason: "lease_expired", now });
-        return clearExpiredAssignee(db, {
+      const sweepExpiry = async () => Promise.all([
+        releaseClaim(db, { claimId: claim.id, reason: "lease_expired", now }),
+        clearExpiredAssignee(db, {
           companyId,
           issueId: claim.issueId,
           agentId: claim.agentId,
           claimId: claim.id,
           now,
-        });
-      };
+        }),
+      ]);
 
-      const [cleared] = await Promise.all([
+      await db.insert(issueClaims).values({
+        id: randomUUID(),
+        companyId,
+        issueId: claim.issueId,
+        agentId: explicitlyAssignedId,
+        runId: randomUUID(),
+        origin: "explicit",
+        role: "engineer",
+        claimedAt: explicitAt,
+        heartbeatAt: explicitAt,
+        expiresAt: new Date(explicitAt.getTime() + 60_000),
+      });
+
+      const [clearResults] = await Promise.all([
         sweepExpiry(),
         db.update(issues)
           .set({ assigneeAgentId: explicitAgentId, updatedAt: explicitAt })
           .where(eq(issues.id, claim.issueId)),
       ]);
-      return { claim, explicitAgentId, cleared };
+      return { claim, explicitAgentId, cleared: clearResults[1] };
     }));
 
     const finalRows = await db
