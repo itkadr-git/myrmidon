@@ -37,7 +37,7 @@ case "$1" in
           cat <<'EOF'
 {"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:amd64","platform":{"architecture":"amd64","os":"linux"}},{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:attestation","platform":{"architecture":"unknown","os":"unknown"}}]}
 EOF
-        elif [ -f "$SANDBOX/unknown-manifest" ]; then echo '{"Layers":[{"size":"unknown"}]}' ; else echo '{"Layers":[{"size":2097152},{"size":4194304}]}' ; fi ;;
+        elif [ -f "$SANDBOX/unknown-manifest" ]; then echo '{"Layers":[{"size":"unknown"}]}' ; elif [ -f "$SANDBOX/big-image" ]; then echo '{"Config":{"size":1048576},"Layers":[{"size":7516192768},{"size":6442450944}]}' ; else echo '{"Layers":[{"size":2097152},{"size":4194304}]}' ; fi ;;
       *) echo '{"Labels":{}}' ;;
     esac
     exit 0 ;;
@@ -45,7 +45,7 @@ esac
 exit 0
 `;
 
-function fixture({ freeGb, localImage = "", unknownManifest = false, indexManifest = false } = {}) {
+function fixture({ freeGb, localImage = "", unknownManifest = false, indexManifest = false, bigImage = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "deploy-disk-precheck-"));
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin);
@@ -55,14 +55,15 @@ function fixture({ freeGb, localImage = "", unknownManifest = false, indexManife
   if (localImage) fs.writeFileSync(path.join(dir, "local-image"), localImage);
   if (unknownManifest) fs.writeFileSync(path.join(dir, "unknown-manifest"), "1");
   if (indexManifest) fs.writeFileSync(path.join(dir, "index-manifest"), "1");
+  if (bigImage) fs.writeFileSync(path.join(dir, "big-image"), "1");
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   return { dir, bin };
 }
 
-function run(sb, imageRefs, reserveGb = 5) {
+function run(sb, imageRefs, reserveGb = 5, minGb = 1) {
   const refs = imageRefs.map((ref) => JSON.stringify(ref)).join(" ");
   const script = ["set -euo pipefail", `source ${LIB}`, "DRY_RUN=0", `MYRMIDON_DEPLOY_IMAGE_REFS=(${refs})`, `MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB=${reserveGb}`, "deploy_disk_precheck /var/lib/docker"].join("\n");
-  const result = spawnSync("bash", ["-c", script], { env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, BASH_ENV: "", MYRMIDON_DEPLOY_MIN_FREE_GB: "1" }, encoding: "utf8" });
+  const result = spawnSync("bash", ["-c", script], { env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, BASH_ENV: "", MYRMIDON_DEPLOY_MIN_FREE_GB: String(minGb) }, encoding: "utf8" });
   return { code: result.status, out: `${result.stdout}${result.stderr}`, calls: fs.readFileSync(path.join(sb.dir, "calls.log"), "utf8") };
 }
 
@@ -71,10 +72,22 @@ describe("deploy_disk_precheck", () => {
     const sb = fixture({ freeGb: 5 });
     const result = run(sb, ["registry.example/app@sha256:abc"]);
     assert.notEqual(result.code, 0, result.out);
-    assert.match(result.out, /disk precheck.*[0-9]+ GiB free|NOT started/);
+    assert.match(result.out, /5 GiB free; requires 7 GiB including image layers and DB dump reserve/);
     assert.match(result.out, /cleanup/i);
     assert.doesNotMatch(result.calls, /docker pull/);
     assert.doesNotMatch(result.calls, /docker run/);
+    assert.match(result.calls, /buildx imagetools inspect/);
+  });
+
+  it("refuses because of image size alone when free space covers min+reserve (incident 15.10 shape)", () => {
+    // 25 GiB free, min 15 GiB, reserve 1 GiB: min+reserve (16) passes at 25,
+    // but the missing release image needs ~13 GiB, so 25 < 29 and the deploy
+    // is refused because of the image size itself — the 15.10 incident shape.
+    const sb = fixture({ freeGb: 25, bigImage: true });
+    const result = run(sb, ["registry.example/app@sha256:abc"], 1, 15);
+    assert.notEqual(result.code, 0, result.out);
+    assert.match(result.out, /25 GiB free; requires 29 GiB including image layers and DB dump reserve/);
+    assert.doesNotMatch(result.calls, /docker pull/);
     assert.match(result.calls, /buildx imagetools inspect/);
   });
 

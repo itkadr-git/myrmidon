@@ -1697,7 +1697,7 @@ registry_image_size_bytes() {
 }
 
 deploy_disk_precheck() {
-  local where="$1" min_gb="${MYRMIDON_DEPLOY_MIN_FREE_GB:-15}" free_kb required_kb image_ref image_size image_json local_ref local_manifest local_size
+  local where="$1" min_gb="${MYRMIDON_DEPLOY_MIN_FREE_GB:-15}" free_kb required_kb image_ref image_size
   local -a image_refs=()
   # shellcheck disable=SC2153  # Set by deploy.sh before the precheck.
   if declare -p MYRMIDON_DEPLOY_IMAGE_REFS >/dev/null 2>&1; then image_refs=("${MYRMIDON_DEPLOY_IMAGE_REFS[@]}"); fi
@@ -1708,23 +1708,30 @@ deploy_disk_precheck() {
     log "disk precheck ($where): MYRMIDON_DEPLOY_MIN_FREE_GB=0, the check is off"
     return 0
   fi
-  [[ "$free_kb" =~ ^[0-9]+$ ]] || die "cannot determine free space on /var/lib/docker; refusing deploy before pull, dump, or maintenance"
-  required_kb=$(( (min_gb + MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB) * 1024 * 1024 ))
+  if ! [[ "$free_kb" =~ ^[0-9]+$ ]]; then
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+      log "WARNING: disk precheck ($where): cannot determine free space on /var/lib/docker; continuing dry run without the check"
+      return 0
+    fi
+    die "cannot determine free space on /var/lib/docker; refusing deploy before pull, dump, or maintenance"
+  fi
+  # The DB dump reserve applies only to callers that declare release image refs
+  # (deploy.sh). bot-image-rollout.sh and rollout-component.sh call the precheck
+  # without MYRMIDON_DEPLOY_IMAGE_REFS and must keep the plain min-free
+  # threshold: no dump happens there and no image size is added.
+  local reserve_gb=0
+  if ((${#image_refs[@]} > 0)); then reserve_gb="${MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB:-5}"; fi
+  required_kb=$(( (min_gb + reserve_gb) * 1024 * 1024 ))
   for image_ref in "${image_refs[@]}"; do
     [[ -n "$image_ref" ]] || continue
     [[ "$image_ref" == *@sha256:* ]] || die "disk precheck requires immutable image digest: $image_ref"
-    local_ref="${image_ref##*/}"
-    if docker image inspect "$image_ref" >/dev/null 2>&1; then
+    if docker image inspect "$image_ref" >/dev/null 2>&1 || docker image inspect "${image_ref#*@}" >/dev/null 2>&1; then
+      # The digest is already local (under this ref or a bare digest): the pull
+      # reuses the local layers, so no additional layer space is required.
       log "disk precheck: image already local, no additional layer space: $image_ref"
       continue
     fi
-    if docker image inspect "${image_ref#*@}" >/dev/null 2>&1; then
-      local_manifest="$(docker image inspect --format '{{json .RootFS.Layers}}' "${image_ref#*@}" 2>/dev/null)" || local_manifest=""
-      local_size="$(jq -er 'if type == "array" and length > 0 then length else error("no local layers") end' <<<"$local_manifest")" || die "cannot determine local image layer count for $image_ref; refusing deploy before pull, dump, or maintenance"
-      image_size="$(registry_image_size_bytes "$image_ref")" || { [[ "${DRY_RUN:-0}" == "1" ]] && { log "WARNING: disk precheck: cannot determine registry image size for $image_ref; continuing dry run without image estimate"; continue; }; die "cannot determine registry layer sizes for $image_ref; refusing deploy before pull, dump, or maintenance"; }
-    else
-      image_size="$(registry_image_size_bytes "$image_ref")" || { [[ "${DRY_RUN:-0}" == "1" ]] && { log "WARNING: disk precheck: cannot determine registry image size for $image_ref; continuing dry run without image estimate"; continue; }; die "cannot determine registry layer sizes for $image_ref; refusing deploy before pull, dump, or maintenance"; }
-    fi
+    image_size="$(registry_image_size_bytes "$image_ref")" || { [[ "${DRY_RUN:-0}" == "1" ]] && { log "WARNING: disk precheck: cannot determine registry image size for $image_ref; continuing dry run without image estimate"; continue; }; die "cannot determine registry layer sizes for $image_ref; refusing deploy before pull, dump, or maintenance"; }
     required_kb=$((required_kb + (image_size + 1023) / 1024))
   done
   if [[ "$DRY_RUN" == "1" ]]; then

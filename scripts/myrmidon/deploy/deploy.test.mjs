@@ -476,6 +476,27 @@ describe("deploy.sh", () => {
     assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
   });
 
+  it("disk precheck skips a release image when its bare digest is already local", () => {
+    const sb = sandbox();
+    const imageRef = `${CI_IMAGE}@${NEW}`;
+    fs.writeFileSync(path.join(sb.dir, "local-images"), `${NEW}\n`);
+    const script = [
+      'set -euo pipefail',
+      `source ${path.join(HERE, "lib.sh")}`,
+      "DRY_RUN=0",
+      `MYRMIDON_DEPLOY_IMAGE_REFS=(\"${imageRef}\")`,
+      "MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB=1",
+      "MYRMIDON_DEPLOY_MIN_FREE_GB=1",
+      "deploy_disk_precheck /var/lib/docker",
+    ].join("\n");
+    const result = spawnSync("bash", ["-c", script], {
+      env: { ...process.env, BASH_ENV: "", PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    assert.doesNotMatch(calls(sb), /buildx imagetools inspect/);
+  });
+
   it("pre-checks the components before the pull and the database dump", () => {
     const sb = sandbox({ composeConfigFails: true });
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);

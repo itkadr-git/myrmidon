@@ -48,16 +48,21 @@ case "$1" in
       ls)
         repo=""
         for a in "$@"; do
-          case "$a" in image|ls|--*) continue ;; esac
-          repo="$a"
-          break
+          # the repository is the first bare argument after the ls subcommand
+          case "$a" in
+            image|ls|--*) continue ;;
+          esac
+          repo="$a"; break
         done
         short=$(basename "$repo")
         cat "$SANDBOX/images-$short.txt" 2>/dev/null
         exit 0 ;;
       rm)
         for a in "$@"; do
-          case "$a" in image|rm) continue ;; esac
+          case "$a" in
+            image|rm) continue ;;
+          esac
+          # refuse to remove an image a container uses (docker would)
           if [ -f "$SANDBOX/used-images.txt" ] && grep -qF "$a" "$SANDBOX/used-images.txt"; then
             echo "Error: conflict: unable to remove repository reference (must force) - container is using its referenced image" >&2
             exit 1
@@ -68,10 +73,8 @@ case "$1" in
     esac
     exit 0 ;;
   system)
-    if [ "$2" = "df" ]; then
-      echo "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE"
-      echo "Images          8         3         33GB      20GB"
-    fi
+    echo "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE"
+    echo "Images          8         3         33GB      20GB"
     exit 0 ;;
   buildx)
     case "$*" in
@@ -255,10 +258,9 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     const sb = sandbox({ freeGb: 4 });
     const { code, out } = runHelper(sb, "deploy_disk_precheck test-place");
     assert.notEqual(code, 0, out);
-    assert.match(out, /4 GiB free; requires 20 GiB including image layers and DB dump reserve/);
+    assert.match(out, /4 GiB free; requires 15 GiB including image layers and DB dump reserve/);
     assert.match(out, /refusing before pull, DB dump, or maintenance; cleanup candidates:/);
     assert.doesNotMatch(calls(sb), /docker pull|dump|maintenance/);
-    assert.match(calls(sb), /docker system df/);
     // the candidates are printed, the deploy refused
     assert.match(calls(sb), /docker system df/);
   });
@@ -267,14 +269,14 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     const sb = sandbox({ freeGb: 42 });
     const { code, out } = runHelper(sb, "deploy_disk_precheck test-place");
     assert.equal(code, 0, out);
-    assert.match(out, /42 GiB free; requires 20 GiB including image layers and DB dump reserve/);
+    assert.match(out, /42 GiB free; requires 15 GiB including image layers and DB dump reserve/);
   });
 
   it("honours MYRMIDON_DEPLOY_MIN_FREE_GB and 0 switches the check off", () => {
     const tight = sandbox({ freeGb: 9 });
     const low = runHelper(tight, "deploy_disk_precheck test-place", { configExtra: "MYRMIDON_DEPLOY_MIN_FREE_GB=10" });
     assert.notEqual(low.code, 0, low.out);
-    assert.match(low.out, /9 GiB free; requires 15 GiB including image layers and DB dump reserve/);
+    assert.match(low.out, /9 GiB free; requires 10 GiB including image layers and DB dump reserve/);
 
     const off = sandbox({ freeGb: 1 });
     const offRun = runHelper(off, "deploy_disk_precheck test-place", { configExtra: "MYRMIDON_DEPLOY_MIN_FREE_GB=0" });
@@ -286,7 +288,7 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     const sb = sandbox({ freeGb: 4 });
     const { code, out } = runHelper(sb, "deploy_disk_precheck test-place", { dryRun: true });
     assert.equal(code, 0, out);
-    assert.match(out, /dry run; requires 20 GiB including image layers and DB dump reserve .*free: 4 GiB/);
+    assert.match(out, /dry run; requires 15 GiB including image layers and DB dump reserve .*free: 4 GiB/);
   });
 });
 
