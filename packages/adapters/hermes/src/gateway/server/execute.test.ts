@@ -616,6 +616,40 @@ describe("execute", () => {
     expect("workspace" in (await runAndReadBody(invalid))).toBe(false);
   });
 
+  it("takes the repository and the branch from the task's pull request, the project is only the fallback (OPE-7967)", async () => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "OPE-7967" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/itkadr-git/myrmidon", repoRef: "main" };
+    ctx.context.paperclipPullRequest = { repo: "itkadr-git/myrmidon-deploy", number: 82, headRef: "refs/heads/fix/ope-7967" };
+    ctx.context.paperclipBotDiskDefaultRepo = "itkadr-git/other";
+    const body = await runAndReadBody(ctx);
+    // the project's repoRef belongs to the project's repository, so it is not sent for the PR's one
+    expect(body.workspace).toEqual({ key: "OPE-7967", repo: "itkadr-git/myrmidon-deploy", branch: "fix/ope-7967" });
+    expect(runWorkspaceFieldSchema.safeParse(body.workspace).success).toBe(true);
+  });
+
+  it("keeps the project's baseRef when the pull request is in the project's repository, and sends the branch", async () => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets", repoRef: "main" };
+    ctx.context.paperclipPullRequest = { repo: "acme/widgets", headRef: "feature/x" };
+    expect((await runAndReadBody(ctx)).workspace).toEqual({ ...fixture, branch: "feature/x" });
+  });
+
+  it("uses the pull request repository without a branch when its head ref is missing or invalid, and ignores an invalid repo", async () => {
+    for (const headRef of [undefined, "", "bad ref^", "--upload-pack=x", "a..b"]) {
+      const ctx = makeCtx(wsBaseConfig);
+      ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+      ctx.context.paperclipPullRequest = { repo: "acme/pr-repo", ...(headRef === undefined ? {} : { headRef }) };
+      expect((await runAndReadBody(ctx)).workspace).toEqual({ key: "ABC-101", repo: "acme/pr-repo" });
+    }
+    const bad = makeCtx(wsBaseConfig);
+    bad.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    bad.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets", repoRef: "main" };
+    bad.context.paperclipPullRequest = { repo: "not a repo", headRef: "feature/x" };
+    expect((await runAndReadBody(bad)).workspace).toEqual(fixture);
+  });
+
   it("drops an invalid baseRef instead of sending a body the gateway would reject", async () => {
     const ctx = makeCtx(wsBaseConfig);
     ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };

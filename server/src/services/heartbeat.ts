@@ -1,5 +1,6 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
 import { blockerOpenSql } from "../myrmidon/blocker-resolved.js";
+import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
 import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
 import { resolveRunnerAcpxCodexAuthEnv } from "../myrmidon/secret-settings/runner-environment.js";
 import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
@@ -24262,6 +24263,13 @@ export function heartbeatService(
           .catch(() => undefined);
         if (defaultRepo) context.paperclipBotDiskDefaultRepo = defaultRepo;
         else delete context.paperclipBotDiskDefaultRepo;
+      }
+      // myrmidon(MYR-WS-RECOVER): the task's own pull request (repository and head branch) for
+      // the gateway's `workspace` field; the project's repository is only the fallback.
+      {
+        const pullRequest = issueRef?.id ? await loadRunPullRequest(db, issueRef.id).catch(() => null) : null;
+        if (pullRequest) context.paperclipPullRequest = pullRequest;
+        else delete context.paperclipPullRequest;
       }
       // Emit exactly one requested-vs-synced observability line for the referenced-project set. A run
       // with no referenced project stays silent, so this adds no noise to the anchor-only default. The
