@@ -22,14 +22,14 @@ const patterns: Array<{ entity: EntityType; re: RegExp; score: number; valid?: (
   { entity: "inn", re: /(?<!\d)\d{10}(?!\d)|(?<!\d)\d{12}(?!\d)/g, score: 0.92, valid: inn },
   { entity: "snils", re: /(?<!\d)\d{3}-?\d{3}-?\d{3} ?\d{2}(?!\d)/g, score: 0.85, valid: snils },
   { entity: "passport", re: /(?<!\d)\d{4}\s?\d{6}(?!\d)/g, score: 0.62 },
-  { entity: "bic", re: /(?<!\d)\d{9}(?!\d)/g, score: 0.5 },
+  { entity: "bic", re: /(?<![\dA-ZА-ЯЁ])\d{9}(?!\d)/g, score: 0.5 },
   { entity: "bank_account", re: /(?<!\d)4\d{19}(?!\d)/g, score: 0.62 },
   { entity: "correspondent_account", re: /(?<!\d)3\d{19}(?!\d)/g, score: 0.62 },
   // Numeric KPP values are indistinguishable from BICs without a label.
   { entity: "kpp", re: /(?:(?:КПП|KPP)\s*[:№-]?\s*)(?<!\d)\d{9}(?!\d)|(?:(?:КПП|KPP)\s*[:№-]?\s*)(?<![\dA-ZА-ЯЁ])[0-9]{4}[A-ZА-ЯЁ]{2}[0-9]{3}(?![\dA-ZА-ЯЁ])/giu, score: 0.75 },
   { entity: "ogrn", re: /(?<!\d)\d{13}(?!\d)/g, score: 0.92, valid: ogrn },
   { entity: "ogrnip", re: /(?<!\d)\d{15}(?!\d)/g, score: 0.92, valid: ogrnip },
-  { entity: "person_name", re: /\b[А-ЯЁ][а-яё]{1,30}\s+[А-ЯЁ][а-яё]{1,30}(?:\s+[А-ЯЁ][а-яё]{1,30})?\b/g, score: 0.45 },
+  { entity: "person_name", re: /(?<![\p{L}\p{M}])[А-ЯЁ][а-яё]{1,30}\s+[А-ЯЁ][а-яё]{1,30}(?:\s+[А-ЯЁ][а-яё]{1,30})?(?![\p{L}\p{M}])/gu, score: 0.45 },
 ];
 
 function digits(v: string): string { return v.replace(/\D/g, ""); }
@@ -60,6 +60,7 @@ export function detectEntities(text: string, dictionary?: DictionaryMatcher): En
       const value = m[0];
       if (rule.valid && !rule.valid(value)) continue;
       const start = m.index!;
+      if (rule.entity === "bic" && /(?:КПП|KPP)\s*[:№-]?\s*$/iu.test(text.slice(0, start))) continue;
       result.push({ entity: rule.entity, value, score: rule.score, start, end: start + value.length });
     }
   }

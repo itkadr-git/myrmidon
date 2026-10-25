@@ -63,9 +63,25 @@ describe("entity recognizer", () => {
     expect(bankAccountMatchesBic("40817810899910004312", "044525226")).toBe(false);
   });
 
-  it("does not classify a BIC as KPP", () => {
-    expect(matches("044525225", "kpp")).toHaveLength(0);
-    expect(matches("КПП: 770101001", "kpp")).toHaveLength(1);
+  it("does not classify labelled KPP as BIC for every supported separator", () => {
+    for (const value of ["КПП: 770101001", "КПП :   770101001", "КПП - 770101001", "КПП № 770101001", "КПП    770101001", "KPP : 770101001"]) {
+      expect(matches(value, "kpp"), value).toHaveLength(1);
+      expect(matches(value, "bic"), value).toHaveLength(0);
+    }
+  });
+
+  it("detects BIC labels without swallowing the following digits", () => {
+    expect(matches("БИК:044525225", "bic")).toHaveLength(1);
+    expect(matches("БИК 044525225", "bic")).toHaveLength(1);
+    expect(matches("044525225", "bic")).toHaveLength(1);
+    expect(matches("КПП 770101001, БИК:044525225", "bic")).toHaveLength(1);
+  });
+
+  it("matches Cyrillic names with Unicode-aware boundaries", () => {
+    expect(matches("Иванов Иван Иванович", "person_name")).toHaveLength(1);
+    expect(matches("Имя: Иванов Иван Иванович, клиент", "person_name")).toHaveLength(1);
+    expect(matches("СуперИванов Иван Иванович", "person_name")).toHaveLength(1);
+    expect(matches("ИвановXYZ Иван", "person_name")).toHaveLength(0);
   });
 
   it("distinguishes settlement and correspondent accounts by prefix", () => {
