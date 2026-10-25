@@ -150,7 +150,7 @@ describe("PluginPage", () => {
       enabled: true,
     });
     expect(mockPluginsApi.listUiContributions).toHaveBeenCalled();
-    expect(container.textContent).toContain("Wiki");
+    expect(container.querySelector('[data-testid="plugin-slot-mount"]')?.textContent).toBe("Wiki");
     await act(async () => root.unmount());
   });
 
