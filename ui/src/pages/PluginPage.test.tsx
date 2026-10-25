@@ -156,6 +156,7 @@ describe("PluginPage", () => {
       enabled: true,
     });
     expect(mockPluginsApi.listUiContributions).toHaveBeenCalled();
+    expect(container.textContent).toContain("Wiki");
     await act(async () => root.unmount());
   });
 
