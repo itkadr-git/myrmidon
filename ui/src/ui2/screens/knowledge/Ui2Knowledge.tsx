@@ -630,9 +630,9 @@ export function Ui2Knowledge({ basePath }: { basePath?: string } = {}) {
         <Ui2EmptyStateView title={t("ui2.knowledge.tree.empty")} variant="done" />
       ) : (
         <div className="ui2-knowledge-layout flex flex-col gap-4 md:flex-row">
-          <div className="ui2-knowledge-tree-pane md:w-72 md:shrink-0">
+          <div className="ui2-knowledge-tree-pane md:sticky md:top-0 md:w-72 md:shrink-0 md:self-start">
           <Ui2Section title={t("ui2.knowledge.tree.aria")}>
-            <div className="ui2-knowledge-tree-scroll max-h-[40dvh] overflow-y-auto md:max-h-[calc(100dvh-16rem)]" data-testid="knowledge-tree-scroll">
+            <div className="ui2-knowledge-tree-scroll max-h-[40dvh] overflow-y-auto md:max-h-[calc(100dvh-24rem)]" data-testid="knowledge-tree-scroll">
             <ul className="ui2-knowledge-tree flex flex-col gap-0.5" aria-label={t("ui2.knowledge.tree.aria")}>
               {tree.map((node) => (
                 <TreeBranch
