@@ -45,17 +45,14 @@ export function buildEscalationChain(input: {
   }
 
   const queue = { serviceQueue: policy.fallbackQueue } as const;
-  const queueKey = recipientKey(queue);
-  if (!seen.has(queueKey)) {
+  const queueIndex = chain.findIndex((step) =>
+    isQueueRecipient(step.recipient) && step.recipient.serviceQueue === policy.fallbackQueue,
+  );
+  if (queueIndex >= 0 && queueIndex < chain.length - 1) {
+    const [queueStep] = chain.splice(queueIndex, 1);
+    if (queueStep) chain.push({ ...queueStep, afterMinutes: startAt + chain.length });
+  } else if (queueIndex < 0) {
     chain.push({ recipient: queue, afterMinutes: startAt + chain.length });
-  } else {
-    const queueIndex = chain.findIndex((step) =>
-      isQueueRecipient(step.recipient) && step.recipient.serviceQueue === policy.fallbackQueue,
-    );
-    if (queueIndex >= 0 && queueIndex < chain.length - 1) {
-      const [queueStep] = chain.splice(queueIndex, 1);
-      if (queueStep) chain.push({ ...queueStep, afterMinutes: startAt + chain.length });
-    }
   }
 
   return chain;
