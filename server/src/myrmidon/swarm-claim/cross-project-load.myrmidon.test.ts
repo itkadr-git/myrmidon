@@ -163,6 +163,7 @@ describeDatabase("swarm cross-project claim load", () => {
     }
     expect(assigned).toHaveLength(100);
     expect(claimed).toHaveLength(100);
-    expect(passes.filter(Boolean)).toHaveLength(20);
+    expect(passes.filter(Boolean)).toHaveLength(100);
+    expect(passes.at(-1)).toBeNull();
   }, 120_000);
 });
