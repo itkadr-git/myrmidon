@@ -32,7 +32,7 @@ import { readFileSync } from "node:fs";
 
 const runWorkspaceFieldSchema = {
   safeParse(value: unknown): { success: boolean } {
-    const v = value as { key?: unknown; repo?: unknown; baseRef?: unknown } | null;
+    const v = value as { key?: unknown; repo?: unknown; baseRef?: unknown; branch?: unknown } | null;
     const ok =
       !!v && typeof v === "object" &&
       typeof v.key === "string" && /^[A-Z][A-Z0-9]*-[0-9]+$/.test(v.key) &&
@@ -40,7 +40,10 @@ const runWorkspaceFieldSchema = {
       (v.baseRef === undefined ||
         (typeof v.baseRef === "string" && v.baseRef.length >= 1 && v.baseRef.length <= 200 &&
           /^[^\s~^:?*[\]\\]+$/.test(v.baseRef))) &&
-      Object.keys(v).every((k) => ["key", "repo", "baseRef"].includes(k));
+      (v.branch === undefined ||
+        (typeof v.branch === "string" && v.branch.length >= 1 && v.branch.length <= 200 &&
+          /^[^\s~^:?*[\]\\]+$/.test(v.branch))) &&
+      Object.keys(v).every((k) => ["key", "repo", "baseRef", "branch"].includes(k));
     return { success: ok };
   },
   parse(value: unknown): unknown {
@@ -636,13 +639,17 @@ describe("execute", () => {
     expect((await runAndReadBody(ctx)).workspace).toEqual({ ...fixture, branch: "feature/x" });
   });
 
-  it("uses the pull request repository without a branch when its head ref is missing or invalid, and ignores an invalid repo", async () => {
-    for (const headRef of [undefined, "", "bad ref^", "--upload-pack=x", "a..b"]) {
+  it.each([undefined, "", "bad ref^", "--upload-pack=x", "a..b"])(
+    "uses the pull request repository without a branch when its head ref is %j",
+    async (headRef) => {
       const ctx = makeCtx(wsBaseConfig);
       ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
       ctx.context.paperclipPullRequest = { repo: "acme/pr-repo", ...(headRef === undefined ? {} : { headRef }) };
       expect((await runAndReadBody(ctx)).workspace).toEqual({ key: "ABC-101", repo: "acme/pr-repo" });
-    }
+    },
+  );
+
+  it("ignores a pull request with an invalid repository", async () => {
     const bad = makeCtx(wsBaseConfig);
     bad.context.paperclipWake = { issue: { identifier: "ABC-101" } };
     bad.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets", repoRef: "main" };
