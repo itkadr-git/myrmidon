@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { ExternalSessionScheduler } from "./external-session-scheduler.js";
+import { readFileSync } from "node:fs";
+import {
+  ExternalSessionScheduler,
+  externalSessionCredentialKey,
+  externalSessionScheduler,
+  scheduleExternalSessionRun,
+} from "./external-session-scheduler.js";
 
 function deferred() {
   let resolve!: () => void;
@@ -43,6 +49,123 @@ describe("ExternalSessionScheduler", () => {
     third.resolve();
     await expect(thirdResult).resolves.toBe("third");
     expect(scheduler.snapshot()).toEqual({ activeByCredential: {}, queuedByCredential: {} });
+  });
+
+  it("removes an aborted queued run without dispatching it", async () => {
+    const scheduler = new ExternalSessionScheduler({ concurrencyPerCredential: 1 });
+    const firstGate = deferred();
+    const first = scheduler.schedule("account-a", () => firstGate.promise);
+    const controller = new AbortController();
+    const queuedRun = vi.fn(async () => "must-not-run");
+    const queued = scheduler.schedule("account-a", queuedRun, {
+      runId: "queued-run",
+      signal: controller.signal,
+    });
+
+    await vi.waitFor(() => expect(scheduler.snapshot().queuedByCredential["account-a"]).toBe(1));
+    controller.abort(new Error("cancelled"));
+    await expect(queued).rejects.toThrow("cancelled");
+    expect(scheduler.cancel("queued-run")).toBe(false);
+    expect(scheduler.snapshot()).toEqual({
+      activeByCredential: { "account-a": 1 },
+      queuedByCredential: {},
+    });
+
+    firstGate.resolve();
+    await expect(first).resolves.toBeUndefined();
+    expect(queuedRun).not.toHaveBeenCalled();
+  });
+
+  it("cancels queued work directly by run id", async () => {
+    const scheduler = new ExternalSessionScheduler({ concurrencyPerCredential: 1 });
+    const gate = deferred();
+    const active = scheduler.schedule("account-a", () => gate.promise);
+    const queued = scheduler.schedule("account-a", async () => "no", { runId: "cancel-me" });
+
+    await vi.waitFor(() => expect(scheduler.cancel("cancel-me")).toBe(true));
+    await expect(queued).rejects.toThrow("Run cancelled");
+    gate.resolve();
+    await expect(active).resolves.toBeUndefined();
+  });
+
+  it("shares one process-wide scheduler: heartbeat.ts never constructs its own", () => {
+    const source = readFileSync(new URL("./heartbeat.ts", import.meta.url), "utf8");
+    expect(source).not.toMatch(/new\s+ExternalSessionScheduler\s*\(/);
+    expect(source).toContain("scheduleExternalSessionRun(");
+    // Stop reaches a run queued behind the limit only through the shared scheduler.
+    expect(source).toContain("externalSessionScheduler.cancel(run.id");
+  });
+
+  it("limits sessions across callers through the shared scheduler", async () => {
+    const scope = { companyId: "company-shared", connectionId: "account-shared" };
+    const firstGate = deferred();
+    const started: string[] = [];
+    // Two independent "service instances" hit the same exported scheduler.
+    const first = scheduleExternalSessionRun(scope, async () => {
+      started.push("first");
+      await firstGate.promise;
+    });
+    const second = scheduleExternalSessionRun(scope, async () => {
+      started.push("second");
+    });
+    const other = scheduleExternalSessionRun({ companyId: "company-shared", connectionId: "other-account" }, async () => {
+      started.push("other");
+    });
+
+    await vi.waitFor(() => expect(externalSessionScheduler.snapshot().queuedByCredential[externalSessionCredentialKey(scope)]).toBe(1));
+    await other;
+    expect(started).toEqual(["first", "other"]);
+    firstGate.resolve();
+    await Promise.all([first, second]);
+    expect(started).toEqual(["first", "other", "second"]);
+  });
+
+  it("keys the limit by company and connection, not by grant", async () => {
+    const base = { companyId: "company-1", connectionId: "account-1" };
+    expect(externalSessionCredentialKey({ ...base })).toBe("company-1:account-1");
+    // Another company with the same connection id is a different credential.
+    expect(externalSessionCredentialKey({ ...base, companyId: "company-2" })).not.toBe(externalSessionCredentialKey(base));
+
+    const scheduler = new ExternalSessionScheduler({ concurrencyPerCredential: 1 });
+    const gate = deferred();
+    const started: string[] = [];
+    // The grant is not part of the scope: two grants of one account share the limit.
+    const grantA = scheduleExternalSessionRun(base, async () => { started.push("grant-a"); await gate.promise; }, {}, scheduler);
+    const grantB = scheduleExternalSessionRun(base, async () => { started.push("grant-b"); }, {}, scheduler);
+    await vi.waitFor(() => expect(scheduler.snapshot().queuedByCredential["company-1:account-1"]).toBe(1));
+    expect(started).toEqual(["grant-a"]);
+    gate.resolve();
+    await Promise.all([grantA, grantB]);
+    expect(started).toEqual(["grant-a", "grant-b"]);
+  });
+
+  it("wires queued-run cancellation by run id and by signal through the helper", async () => {
+    const scheduler = new ExternalSessionScheduler({ concurrencyPerCredential: 1 });
+    const scope = { companyId: "company-1", connectionId: "account-1" };
+    const gate = deferred();
+    const active = scheduleExternalSessionRun(scope, () => gate.promise, {}, scheduler);
+    const byId = scheduleExternalSessionRun(scope, async () => "no", { runId: "run-by-id" }, scheduler);
+    const controller = new AbortController();
+    const bySignal = scheduleExternalSessionRun(scope, async () => "no", { runId: "run-by-signal", signal: controller.signal }, scheduler);
+    await vi.waitFor(() => expect(scheduler.snapshot().queuedByCredential["company-1:account-1"]).toBe(2));
+
+    expect(scheduler.cancel("run-by-id", new Error("stopped"))).toBe(true);
+    await expect(byId).rejects.toThrow("stopped");
+    controller.abort(new Error("aborted"));
+    await expect(bySignal).rejects.toThrow("aborted");
+    expect(scheduler.snapshot().queuedByCredential).toEqual({});
+    gate.resolve();
+    await active;
+  });
+
+  it("does not cancel a run that already holds the slot", async () => {
+    const scheduler = new ExternalSessionScheduler({ concurrencyPerCredential: 1 });
+    const gate = deferred();
+    const running = scheduler.schedule("account-a", async () => { await gate.promise; return "done"; }, { runId: "running" });
+    await vi.waitFor(() => expect(scheduler.snapshot().activeByCredential["account-a"]).toBe(1));
+    expect(scheduler.cancel("running")).toBe(false);
+    gate.resolve();
+    await expect(running).resolves.toBe("done");
   });
 
   it("continues draining after a session rejects", async () => {
