@@ -356,7 +356,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     expect(wakeup.mock.calls[0]?.[1].idempotencyKey).toContain(headSha);
     expect(wakeup.mock.calls[0]?.[1].payload).not.toHaveProperty("accessToken");
     const [product] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
-    expect(product?.metadata).toMatchObject({ activeCi: { status: "in_progress", headSha } });
+    expect(product?.metadata).toMatchObject({ activeCi: null });
     await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
     currentTime = new Date(currentTime.getTime() + 5_000);
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 0, duplicate: 2, failed: 0 });

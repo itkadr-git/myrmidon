@@ -261,7 +261,7 @@ export function githubConnectionEventService(
 
   async function applyCiCompletionEvent(companyId: string, event: LeasedEvent) {
     if (event.event !== "workflow_run" && event.event !== "check_suite") return;
-    const payload = normalizeLeasedPayload(event);
+    const payload = event.payload;
     const status = stringValue(payload.status);
     const conclusion = stringValue(payload.conclusion);
     if (!status || !["queued", "in_progress", "completed"].includes(status)) return;
@@ -283,7 +283,8 @@ export function githubConnectionEventService(
     for (const product of products) {
       const metadata = record(product.metadata);
       const productRepository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
-      const productNumber = positiveInteger(metadata.number) ?? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]);
+      const productNumber = positiveInteger(metadata.number)
+        ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
       if (productRepository?.toLowerCase() !== repository.toLowerCase() || productNumber !== pullRequestNumber) continue;
       await db.update(issueWorkProducts).set({
         metadata: { ...metadata, activeCi: active ? { repository, number: pullRequestNumber, headSha, runId, status, observedAt: currentTime.toISOString() } : null },
@@ -304,7 +305,8 @@ export function githubConnectionEventService(
     const matching = completionProducts.find(({ product }: { product: typeof issueWorkProducts.$inferSelect }) => {
       const metadata = record(product.metadata);
       const repo = stringValue(metadata.repo) ?? stringValue(metadata.repository);
-      const number = positiveInteger(metadata.number) ?? Number(product.externalId);
+      const number = positiveInteger(metadata.number)
+        ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
       return repo?.toLowerCase() === repository.toLowerCase() && number === pullRequestNumber;
     });
     if (!matching?.issue.assigneeAgentId) return;
