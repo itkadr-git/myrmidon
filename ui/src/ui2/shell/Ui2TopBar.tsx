@@ -9,6 +9,7 @@ import { useTranslation } from "@/i18n";
 import { useCompany } from "@/context/CompanyContext";
 import { cn } from "@/lib/utils";
 import { useUi2StatusStrip } from "../useUi2Status";
+import { LanguageSwitch } from "../i18n/LanguageSwitch";
 import { Ui2CommanderPalette } from "./Ui2CommanderPalette";
 
 function formatMoney(cents: number, language: string): string {
@@ -205,6 +206,7 @@ export function Ui2TopBar() {
         ) : null}
       </div>
 
+      <div style={{ marginLeft: "auto" }}><LanguageSwitch compact /></div>
       {paletteOpen ? <Ui2CommanderPalette onClose={() => setPaletteOpen(false)} /> : null}
     </header>
   );

@@ -5,6 +5,7 @@
 // ui2 shell for any /company/settings/* route under the flag.
 import { NavLink } from "@/lib/router";
 import { useTranslation } from "@/i18n";
+import { useUi2I18n } from "../i18n/Ui2I18n";
 
 export const UI2_SETTINGS_SECTIONS = [
   { key: "general", path: "/company/settings" },
@@ -17,9 +18,11 @@ export const UI2_SETTINGS_SECTIONS = [
   { key: "guards", path: "/company/settings/guards" },
   { key: "castes", path: "/company/settings/castes" },
   { key: "system", path: "/company/settings/system" },
+  { key: "language", path: "/company/settings/language" },
 ] as const;
 
 export function Ui2SettingsSidebar() {
+  const { t: tUi2 } = useUi2I18n();
   const { t } = useTranslation();
   return (
     <nav
@@ -53,7 +56,7 @@ export function Ui2SettingsSidebar() {
             textDecoration: "none",
           })}
         >
-          {t(`ui2.settings.${section.key}`)}
+          {section.key === "language" ? tUi2("ui2.settings.language.title") : t(`ui2.settings.${section.key}`)}
         </NavLink>
       ))}
     </nav>

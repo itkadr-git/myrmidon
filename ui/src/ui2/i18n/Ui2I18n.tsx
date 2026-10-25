@@ -11,6 +11,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -49,7 +50,7 @@ export function readAppLanguage(): Ui2Locale | null {
 /** Read the stored locale without crashing on private-mode/quota failures. */
 export function readStoredLocale(): Ui2Locale | null {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(STORAGE_KEY) ?? window.localStorage.getItem(APP_LANGUAGE_STORAGE_KEY);
     return isUi2Locale(raw) ? raw : null;
   } catch {
     return null;
@@ -79,10 +80,21 @@ export function Ui2I18nProvider({
   children: ReactNode;
   initialLocale?: Ui2Locale;
 }) {
-  const [locale, setLocaleState] = useState<Ui2Locale>(initialLocale);
+  const [locale, setLocaleState] = useState<Ui2Locale>(() => readStoredLocale() ?? initialLocale);
+
+  useEffect(() => {
+    const syncLocale = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEY && event.key !== APP_LANGUAGE_STORAGE_KEY) return;
+      const next = isUi2Locale(event.newValue) ? event.newValue : null;
+      if (next) setLocaleState(next);
+    };
+    window.addEventListener("storage", syncLocale);
+    return () => window.removeEventListener("storage", syncLocale);
+  }, []);
 
   const setLocale = useCallback((next: Ui2Locale) => {
     persistLocale(next);
+    try { window.localStorage.setItem(APP_LANGUAGE_STORAGE_KEY, next); } catch { /* session choice still applies */ }
     setLocaleState(next);
   }, []);
 

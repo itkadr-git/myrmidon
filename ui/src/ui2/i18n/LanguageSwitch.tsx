@@ -13,11 +13,7 @@
 
 import { UI2_LOCALES, type Ui2Locale } from "./locales";
 import { useUi2I18n } from "./Ui2I18n";
-
-const LOCALE_SELF_NAMES: Record<Ui2Locale, string> = {
-  en: "English",
-  ru: "Русский",
-};
+import { setAppLanguage } from "@/i18n/myrmidon-i18n";
 
 export function LanguageSwitch({ compact = false }: { compact?: boolean }) {
   const { t, locale, setLocale } = useUi2I18n();
@@ -36,9 +32,13 @@ export function LanguageSwitch({ compact = false }: { compact?: boolean }) {
             className={`ui2-language-switch-option rounded-md border px-3 py-1 text-xs ${
               selected ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:bg-accent"
             }`}
-            onClick={() => setLocale(candidate)}
+            onClick={() => {
+              setLocale(candidate);
+              void setAppLanguage(candidate);
+              document.querySelector(".myr-ui2")?.setAttribute("lang", candidate);
+            }}
           >
-            {LOCALE_SELF_NAMES[candidate]}
+            {candidate === "ru" ? t("ui2.settings.language.ru") : t("ui2.settings.language.en")}
             {compact ? null : <span className="sr-only">{t("ui2.settings.language.title")}</span>}
           </button>
         );
