@@ -40,6 +40,7 @@ import {
 import { readStackCheckIntervalSec } from "./settings.js";
 import { resolveOptionalInstanceSecret } from "../secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.6)
 import { readStackDocument, writeStackDocument } from "./store.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export const STACK_CHECK_PER_PAGE = 30;
 
@@ -215,7 +216,7 @@ export function startStackCheckSweep(db: Db, options: StackCheckOptions = {}): (
         running = false;
       });
   };
-  const timer = setInterval(run, intervalSec * 1000);
+  const timer = backgroundInterval(run, intervalSec * 1000);
   timer.unref?.();
   run();
   return () => clearInterval(timer);
