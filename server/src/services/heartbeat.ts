@@ -25669,15 +25669,13 @@ export function heartbeatService(
                 localAgentJwtScope,
               )
             : null;
-        if (
-          nativeRuntimeResolution.kind === "legacy" &&
-          adapter.supportsLocalAgentJwt &&
-          !authToken
-        ) {
-          throw new ConfigurationIncompleteFailure(
-            `Cannot issue PAPERCLIP_API_KEY for adapter ${agent.adapterType}; refusing to start run without a valid run token`,
-            { code: "local_agent_jwt_unavailable" },
-          );
+        if (nativeRuntimeResolution.kind === "legacy" && adapter.supportsLocalAgentJwt) {
+          if (!authToken) {
+            throw new ConfigurationIncompleteFailure(
+              `Cannot issue PAPERCLIP_API_KEY for adapter ${agent.adapterType}; refusing to start run without a valid run token`,
+              { code: "local_agent_jwt_unavailable" },
+            );
+          }
         }
         let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
         const inspectFinalizeWorkspaceBranch = async () => {
@@ -26095,6 +26093,7 @@ export function heartbeatService(
                           executionWorkspace.cwd,
                         ),
                         ...runnerAcpxCodexAuthEnv,
+                        ...(authToken ? { PAPERCLIP_API_KEY: authToken } : {}),
                         ...(nativeGitHubBridge
                           ? {
                               PAPERCLIP_GITHUB_BROKER_URL:

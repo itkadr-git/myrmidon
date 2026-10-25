@@ -6,6 +6,7 @@ import {
   isConfigurationIncompleteFailure,
 } from "../services/heartbeat.ts";
 
+
 describe("agent local JWT", () => {
   const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
   const betterAuthSecretEnv = "BETTER_AUTH_SECRET";
@@ -91,6 +92,14 @@ describe("agent local JWT", () => {
         ),
       ),
     ).toBe(true);
+  });
+
+  it("makes the local run token available to native runner environment", () => {
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    const runnerEnvironment = {
+      PAPERCLIP_API_KEY: token!,
+    };
+    expect(runnerEnvironment.PAPERCLIP_API_KEY).toBe(token);
   });
 
   it("returns null when secret is missing", () => {
