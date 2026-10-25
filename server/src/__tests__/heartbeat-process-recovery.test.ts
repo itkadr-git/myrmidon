@@ -942,18 +942,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "CodexCoder",
-      role: "engineer",
-      status: "idle",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-      reportsTo: admAgentId,
-    });
     if (admAgentId) {
       await db.insert(agents).values({
         id: admAgentId,
@@ -967,6 +955,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         permissions: {},
       });
     }
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+      reportsTo: admAgentId,
+    });
 
     await db.insert(agentWakeupRequests).values({
       id: wakeupRequestId,
