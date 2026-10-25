@@ -78,4 +78,16 @@ describe("site-agent client memoryExport", () => {
     const odd = await serve((_req, res) => res.end("<html>"));
     await expect(createSiteAgentClient({ baseUrl: odd }).botLogs("work-qa")).rejects.toThrow("not the logs contract");
   });
+
+  it("fetches bounded logs from the authenticated site-agent endpoint", async () => {
+    let seen = "";
+    const baseUrl = await serve((req, res) => {
+      seen = `${req.method} ${req.url} ${req.headers.authorization}`;
+      res.end("line one\nline two\n");
+    });
+    const client = createSiteAgentClient({ baseUrl, token: "tok" });
+    await expect(client.logs("work-qa", 25)).resolves.toBe("line one\nline two\n");
+    expect(seen).toBe("GET /v1/bots/work-qa/logs?tail=25 Bearer tok");
+    await expect(client.logs("work-qa", 0)).rejects.toThrow("tail must be between 1 and 1000");
+  });
 });
