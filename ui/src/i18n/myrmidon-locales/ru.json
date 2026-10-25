@@ -31,7 +31,8 @@
     "decisionsBadge": "решений",
     "quality": "Качество",
     "swarmSupervisor": "Надзор за роем",
-    "foraging": "Фуражирование"
+    "foraging": "Фуражирование",
+    "knowledge": "Знания"
   },
   "common": {
     "cancel": "Отмена",

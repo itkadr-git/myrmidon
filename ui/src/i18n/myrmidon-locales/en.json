@@ -31,7 +31,8 @@
     "decisionsBadge": "decisions",
     "quality": "Quality",
     "swarmSupervisor": "Swarm supervisor",
-    "foraging": "Foraging"
+    "foraging": "Foraging",
+    "knowledge": "Knowledge"
   },
   "common": {
     "cancel": "Cancel",

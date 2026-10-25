@@ -16,6 +16,8 @@ import {
   knowledgeApproverLabelKey,
   knowledgeDiffChangeCount,
   knowledgeHref,
+  knowledgeBodyToMarkdown,
+  resolveKnowledgeMarkdownHref,
   knowledgeLinkLabel,
   knowledgeSourceLink,
   knowledgeStatusTone,
@@ -120,6 +122,10 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) [[…]] links", () => {
     });
     expect(knowledgeHref({ spaceKey: "wiki", slug: "a b", anchor: null })).toBe(
       "/knowledge/wiki/a%20b",
+    );
+    // OPE-9222: the current interface mounts the same screen at /wiki.
+    expect(knowledgeHref({ spaceKey: "ops", slug: "a b", anchor: "x" }, "/wiki")).toBe(
+      "/wiki/ops/a%20b#x",
     );
   });
 });
@@ -232,5 +238,32 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) write gate (A / O)", () => {
     expect(knowledgeStatusTone("approved")).toBe("ok");
     expect(knowledgeStatusTone("draft")).toBe("warning");
     expect(knowledgeStatusTone("archived")).toBe("muted");
+  });
+});
+describe("OPE-5957 markdown body", () => {
+  it("rewrites [[wiki]] links to markdown links on the screen's routes and keeps code intact", () => {
+    const md = knowledgeBodyToMarkdown(
+      parseKnowledgeBody("# Backups\nSee [[servers/vm-core|vm-core]] and `[[not]]`.\n"),
+      "infra",
+      "/wiki",
+    );
+    expect(md).toBe("# Backups\nSee [vm-core](/wiki/servers/vm-core) and `[[not]]`.\n");
+  });
+
+  it("resolves relative .md links against the folder of the page", () => {
+    expect(resolveKnowledgeMarkdownHref("../servers/vm-core.md", "infra/backups")).toEqual({
+      spaceKey: "infra/servers",
+      slug: "vm-core",
+      anchor: null,
+    });
+    expect(resolveKnowledgeMarkdownHref("other.md#top", "ops")).toEqual({
+      spaceKey: "ops",
+      slug: "other",
+      anchor: "top",
+    });
+    expect(resolveKnowledgeMarkdownHref("https://example.com/a.md", "ops")).toBeNull();
+    expect(resolveKnowledgeMarkdownHref("#x", "ops")).toBeNull();
+    expect(resolveKnowledgeMarkdownHref("../../../x.md", "ops")).toBeNull();
+    expect(resolveKnowledgeMarkdownHref("file.pdf", "ops")).toBeNull();
   });
 });
