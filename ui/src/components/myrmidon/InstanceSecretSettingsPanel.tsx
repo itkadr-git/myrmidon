@@ -47,7 +47,13 @@ export function InstanceSecretSettingsPanel() {
       </p>
       {data.settings.map((setting) => (
         <div key={setting.name} className="space-y-2" data-testid={`secret-setting-${setting.name}`}>
-          <div className="text-sm font-medium">{setting.description}</div>
+          <div className="text-sm font-medium">
+            {setting.name.startsWith("tool-oauth.") && setting.name !== "tool-oauth.client-secret"
+              ? t("area.secret-settings.instance-secret-settings-panel.toolOauthProvider", {
+                  provider: setting.name.slice("tool-oauth.".length, -".client-secret".length).replace(/_/g, " "),
+                })
+              : setting.description}
+          </div>
           <div className="font-mono text-xs text-muted-foreground">{setting.name}</div>
           <div className="text-sm" data-testid={`secret-setting-source-${setting.name}`}>
             {t(`area.secret-settings.instance-secret-settings-panel.source.${setting.effectiveSource}`)}

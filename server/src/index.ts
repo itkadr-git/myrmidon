@@ -13,7 +13,7 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./se
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./services/execution-control-deadline.js";
-import { laneInterval, recordLaneDbQuery } from "./myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A): load lanes
+import { backgroundInterval, laneInterval, recordLaneDbQuery } from "./myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A): load lanes
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
@@ -214,6 +214,7 @@ import {
   CORPUS_PARSE_SWEEP_INTERVAL_MS,
   corpusService,
   createCorpusParseWorker,
+  configureCorpusAdapters,
   resolveCorpusPorts,
 } from "./myrmidon/corpus/index.js";
 import {
@@ -1220,6 +1221,7 @@ async function startServerWithDatabaseTeardown(
     logger.info("myrmidon(PROCS-1.2): process supervisor wired on the worker");
   }
   await startProcessesSettings(db as any, processSupervisor);
+  configureCorpusAdapters(db as any, config);
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -2843,7 +2845,7 @@ async function startServerWithDatabaseTeardown(
       "Automatic database backups enabled",
     );
     if (!backupCatchUp.enabled) // myrmidon(P11)
-    setInterval(() => {
+    backgroundInterval(() => {
       // myrmidon(PROCS-1.7, design OPE-5394 §5.1): the backup is leader-only
       // work; with the multi-process mode on, the api processes skip it.
       if (!leaderLeaseManager.isLeader("backup")) return;

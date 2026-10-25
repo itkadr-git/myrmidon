@@ -22,6 +22,7 @@ export const agents = pgTable(
     role: text("role").notNull().default("general"),
     title: text("title"),
     icon: text("icon"),
+    appearance: jsonb("appearance"),
     status: text("status").notNull().default("idle"),
     reportsTo: uuid("reports_to").references((): AnyPgColumn => agents.id),
     capabilities: text("capabilities"),

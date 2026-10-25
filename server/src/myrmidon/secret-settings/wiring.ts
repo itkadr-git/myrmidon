@@ -5,8 +5,9 @@
 
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
-import { companySecretBindings } from "@myrmidon/db";
+import { companySecretBindings, companySecrets, toolConnections } from "@myrmidon/db";
 import { secretService } from "../../services/secrets.js";
+import { persistedOauthMetadataUrl, toolOauthProviderForConnection } from "../../services/tool-oauth-provider.js";
 import { registerSecretValues } from "../secret-masking.js";
 import {
   createInstanceSecretSettingResolver,
@@ -15,6 +16,7 @@ import {
 import {
   defaultInstanceSecretSettingRegistry,
   type InstanceSecretSettingRegistry,
+  toolOauthProviderSecretSettingName,
 } from "./registry.js";
 
 export const INSTANCE_SECRET_SETTING_TARGET_TYPE = "system" as const;
@@ -67,6 +69,18 @@ export function createDbInstanceSecretSettingStore(db: Db): InstanceSecretSettin
       });
       return created.id;
     },
+    async findSecretByName(companyId, name) {
+      const row = await db
+        .select({ id: companySecrets.id, description: companySecrets.description })
+        .from(companySecrets)
+        .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.name, name)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row ? { id: row.id, description: row.description ?? null } : null;
+    },
+    async deleteSecret(secretId) {
+      await secrets.remove(secretId);
+    },
     async setBinding(name, secretId) {
       const [ref] = await secrets.replaceSecretRefsForInstanceTarget(
         {
@@ -95,10 +109,31 @@ export function createInstanceSecretSettingService(
   registry: InstanceSecretSettingRegistry = defaultInstanceSecretSettingRegistry,
   env?: NodeJS.ProcessEnv,
 ) {
-  return createInstanceSecretSettingResolver({
+  const resolver = createInstanceSecretSettingResolver({
     registry,
     env,
     store: createDbInstanceSecretSettingStore(db),
     registerForRedaction: (value) => registerSecretValues({ v: value }, ["v"]),
   });
+  return {
+    ...resolver,
+    async list() {
+      const connections = await db
+        .select({ config: toolConnections.config })
+        .from(toolConnections)
+        .where(and(eq(toolConnections.authKind, "oauth"), eq(toolConnections.connectionPurpose, "tool")));
+      const names = new Set<string>();
+      for (const connection of connections) {
+        let provider: string;
+        try {
+          provider = toolOauthProviderForConnection(connection, persistedOauthMetadataUrl(connection));
+        } catch {
+          continue; // an unusable endpoint cannot sign in either
+        }
+        const name = toolOauthProviderSecretSettingName(provider);
+        if (name) names.add(name);
+      }
+      return resolver.list([...names]);
+    },
+  };
 }

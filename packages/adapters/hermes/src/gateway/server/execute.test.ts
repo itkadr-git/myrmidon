@@ -32,7 +32,7 @@ import { readFileSync } from "node:fs";
 
 const runWorkspaceFieldSchema = {
   safeParse(value: unknown): { success: boolean } {
-    const v = value as { key?: unknown; repo?: unknown; baseRef?: unknown } | null;
+    const v = value as { key?: unknown; repo?: unknown; baseRef?: unknown; branch?: unknown } | null;
     const ok =
       !!v && typeof v === "object" &&
       typeof v.key === "string" && /^[A-Z][A-Z0-9]*-[0-9]+$/.test(v.key) &&
@@ -40,7 +40,10 @@ const runWorkspaceFieldSchema = {
       (v.baseRef === undefined ||
         (typeof v.baseRef === "string" && v.baseRef.length >= 1 && v.baseRef.length <= 200 &&
           /^[^\s~^:?*[\]\\]+$/.test(v.baseRef))) &&
-      Object.keys(v).every((k) => ["key", "repo", "baseRef"].includes(k));
+      (v.branch === undefined ||
+        (typeof v.branch === "string" && v.branch.length >= 1 && v.branch.length <= 200 &&
+          /^[^\s~^:?*[\]\\]+$/.test(v.branch))) &&
+      Object.keys(v).every((k) => ["key", "repo", "baseRef", "branch"].includes(k));
     return { success: ok };
   },
   parse(value: unknown): unknown {
@@ -614,6 +617,44 @@ describe("execute", () => {
     invalid.context.paperclipWake = { issue: { identifier: "ABC-101" } };
     invalid.context.paperclipBotDiskDefaultRepo = "not a repo";
     expect("workspace" in (await runAndReadBody(invalid))).toBe(false);
+  });
+
+  it("takes the repository and the branch from the task's pull request, the project is only the fallback (OPE-7967)", async () => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "OPE-7967" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/itkadr-git/myrmidon", repoRef: "main" };
+    ctx.context.paperclipPullRequest = { repo: "itkadr-git/myrmidon-deploy", number: 82, headRef: "refs/heads/fix/ope-7967" };
+    ctx.context.paperclipBotDiskDefaultRepo = "itkadr-git/other";
+    const body = await runAndReadBody(ctx);
+    // the project's repoRef belongs to the project's repository, so it is not sent for the PR's one
+    expect(body.workspace).toEqual({ key: "OPE-7967", repo: "itkadr-git/myrmidon-deploy", branch: "fix/ope-7967" });
+    expect(runWorkspaceFieldSchema.safeParse(body.workspace).success).toBe(true);
+  });
+
+  it("keeps the project's baseRef when the pull request is in the project's repository, and sends the branch", async () => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets", repoRef: "main" };
+    ctx.context.paperclipPullRequest = { repo: "acme/widgets", headRef: "feature/x" };
+    expect((await runAndReadBody(ctx)).workspace).toEqual({ ...fixture, branch: "feature/x" });
+  });
+
+  it.each([undefined, "", "bad ref^", "--upload-pack=x", "a..b"])(
+    "uses the pull request repository without a branch when its head ref is %j",
+    async (headRef) => {
+      const ctx = makeCtx(wsBaseConfig);
+      ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+      ctx.context.paperclipPullRequest = { repo: "acme/pr-repo", ...(headRef === undefined ? {} : { headRef }) };
+      expect((await runAndReadBody(ctx)).workspace).toEqual({ key: "ABC-101", repo: "acme/pr-repo" });
+    },
+  );
+
+  it("ignores a pull request with an invalid repository", async () => {
+    const bad = makeCtx(wsBaseConfig);
+    bad.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    bad.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets", repoRef: "main" };
+    bad.context.paperclipPullRequest = { repo: "not a repo", headRef: "feature/x" };
+    expect((await runAndReadBody(bad)).workspace).toEqual(fixture);
   });
 
   it("drops an invalid baseRef instead of sending a body the gateway would reject", async () => {

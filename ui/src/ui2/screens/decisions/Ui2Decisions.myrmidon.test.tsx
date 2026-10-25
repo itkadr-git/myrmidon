@@ -27,6 +27,29 @@ vi.mock("@/api/decisions", () => ({
   decisionsApi: mockDecisionsApi,
 }));
 
+const mockAttentionApi = vi.hoisted(() => ({ list: vi.fn() }));
+vi.mock("@/api/attention", () => ({ attentionApi: mockAttentionApi }));
+
+const mockApprovalsApi = vi.hoisted(() => ({ approve: vi.fn(), reject: vi.fn() }));
+vi.mock("@/api/approvals", () => ({ approvalsApi: mockApprovalsApi }));
+
+const mockNavigate = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/router", () => ({ useNavigate: () => mockNavigate }));
+
+function attentionItem(sourceKind: string, id: string, title: string, href: string | null) {
+  return {
+    id,
+    companyId: "company-1",
+    sourceKind,
+    subject: { kind: sourceKind, id, companyId: "company-1", title, identifier: null, status: "open", href },
+    inlineResolvable: true,
+    whyNow: "waiting",
+    originAgentName: "agent-a",
+    relatedIssue: null,
+    createdAt: minutesAgo(125),
+  };
+}
+
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
@@ -132,6 +155,18 @@ describe("myrmidon(UI2) Ui2Decisions screen parity", () => {
     mockDecisionsApi.list.mockResolvedValue([decisionFixture()]);
     mockDecisionsApi.decide.mockResolvedValue({});
     mockDecisionsApi.dismiss.mockResolvedValue({});
+    mockApprovalsApi.approve.mockResolvedValue({});
+    mockApprovalsApi.reject.mockResolvedValue({});
+    mockAttentionApi.list.mockResolvedValue({
+      items: [
+        attentionItem("approval", "approval-1", "Approve the deploy", "/OPE/approvals/approval-1"),
+        attentionItem("issue_thread_interaction", "interaction-1", "Which branch?", "/OPE/issues/OPE-7"),
+        attentionItem("decision", "decision-1", "Raise the soft limit for the day", "/OPE/decisions?decisionId=decision-1"),
+        attentionItem("failure", "failure-1", "A failed run", null),
+      ],
+      totalCount: 4,
+      deskBadgeCount: 3,
+    });
     mockAgentsApi.list.mockResolvedValue([
       { id: "agent-1", companyId: "company-1", name: "agent-a", status: "active" },
     ]);
@@ -227,6 +262,71 @@ describe("myrmidon(UI2) Ui2Decisions screen parity", () => {
     const cacheKey = queryKeys.decisions.list("company-1", "open");
     const cached = queryClient.getQueryData(cacheKey);
     expect(cached).toEqual([decisionFixture()]);
+  });
+
+  it("renders one queue with a typed row per approval, decision and interaction", async () => {
+    await renderScreen();
+
+    const rows = [...container.querySelectorAll(".ui2-decisions-waiting-item")];
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("Approval"),
+      expect.stringContaining("Interaction"),
+      expect.stringContaining("Decision"),
+    ]);
+    expect(rows[0]?.textContent).toContain("Approve the deploy");
+    expect(rows[1]?.textContent).toContain("Which branch?");
+    expect(rows[2]?.textContent).toContain("Raise the soft limit for the day");
+    // Non-queue kinds (failure) are not listed.
+    expect(container.textContent).not.toContain("A failed run");
+    // The action card for the open decision stays below the queue.
+    expect(container.querySelectorAll(".ui2-decision-card-title").length).toBe(1);
+  });
+
+  it("shows a counter equal to the number of queue rows", async () => {
+    await renderScreen();
+
+    const rows = container.querySelectorAll(".ui2-decisions-waiting-item");
+    expect(rows.length).toBe(3);
+    const section = container.querySelector(".ui2-decisions-waiting");
+    expect(section?.textContent).toContain("3 waiting");
+  });
+
+  it("approves and rejects an approval in place", async () => {
+    await renderScreen();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".ui2-waiting-approve")?.click();
+    });
+    await flushReact();
+    expect(mockApprovalsApi.approve).toHaveBeenCalledWith("approval-1");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".ui2-waiting-reject")?.click();
+    });
+    await flushReact();
+    expect(mockApprovalsApi.reject).toHaveBeenCalledWith("approval-1");
+    // Only approvals carry the actions.
+    expect(container.querySelectorAll(".ui2-waiting-approve").length).toBe(1);
+  });
+
+  it("navigates through the router when a queue item is clicked", async () => {
+    await renderScreen();
+
+    const row = container.querySelector<HTMLButtonElement>(".ui2-decisions-waiting-open");
+    await act(async () => {
+      row?.click();
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/OPE/approvals/approval-1");
+  });
+
+  it("shows the empty state when nothing waits", async () => {
+    mockDecisionsApi.list.mockResolvedValue([]);
+    mockAttentionApi.list.mockResolvedValue({ items: [], totalCount: 0, deskBadgeCount: 0 });
+    await renderScreen();
+
+    expect(container.querySelector(".ui2-decisions-waiting-item")).toBeNull();
+    expect(container.textContent).toContain("Nothing is waiting");
+    expect(container.textContent).toContain("0 waiting");
   });
 });
 

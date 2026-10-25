@@ -28,7 +28,7 @@ const PROVIDER_NAME = "tool-oauth.slack.client-secret";
 
 function make(env: NodeJS.ProcessEnv = {}, registry = defaultInstanceSecretSettingRegistry) {
   const bindings = new Map<string, InstanceSecretBinding>();
-  const secrets = new Map<string, { name: string; status: string; value: string }>([
+  const secrets = new Map<string, { name: string; status: string; value: string; description?: string }>([
     [S_PROVIDER, { name: "slack", status: "active", value: "provider-ref-value" }],
     [S_INSTANCE, { name: "shared", status: "active", value: "instance-ref-value" }],
     [S_OTHER, { name: "rotated", status: "active", value: "rotated-ref-value" }],
@@ -53,8 +53,17 @@ function make(env: NodeJS.ProcessEnv = {}, registry = defaultInstanceSecretSetti
     },
     async createSecret(input) {
       const id = `created-${secrets.size + 1}`;
-      secrets.set(id, { name: input.name, status: "active", value: input.value });
+      secrets.set(id, { name: input.name, status: "active", value: input.value, description: input.description });
       return id;
+    },
+    async findSecretByName(_companyId, name) {
+      for (const [id, secret] of secrets) {
+        if (secret.name === name) return { id, description: secret.description ?? null };
+      }
+      return null;
+    },
+    async deleteSecret(secretId) {
+      secrets.delete(secretId);
     },
     async setBinding(name, secretId) {
       const binding = { companyId: COMPANY, secretId };

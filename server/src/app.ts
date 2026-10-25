@@ -170,7 +170,7 @@ import { myrmidonBudgetLimitsRoutes } from "./myrmidon/budget-limits/index.js";
 import { myrmidonBotDiskQuotaRoutes } from "./myrmidon/bot-containers/bot-disk-quota-routes.js"; // myrmidon(1.6.1-BOT-DISK-C)
 import { myrmidonBotImageRolloutRoutes } from "./myrmidon/bot-containers/bot-image-rollout-routes.js"; // myrmidon(BOT-ROLLOUT)
 import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
-import { boardLoadApp, boardLoadRequestMiddleware } from "./myrmidon/monitoring/board-load/index.js"; // myrmidon(1.6.6 PROCS-0.3A)
+import { boardLoadApp, boardLoadLaneTagMiddleware, boardLoadRequestMiddleware } from "./myrmidon/monitoring/board-load/index.js"; // myrmidon(1.6.6 PROCS-0.3A)
 import { myrmidonMonitoringAlertsRoutes } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
 import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
 import { createCasteDirectoryReader } from "./myrmidon/castes/directory.js"; // myrmidon(1.6.5 OPE-6608)
@@ -193,6 +193,7 @@ import { myrmidonLitellmWorkersRoutes } from "./myrmidon/litellm-workers/routes.
 import { agentInstructionsRevisionsRoutes } from "./myrmidon/agent-instructions-revisions/index.js"; // myrmidon(H2)
 import { myrmidonFleetConsoleRoutes } from "./myrmidon/fleet-console/index.js"; // myrmidon(SC1)
 import { myrmidonFleetSiteRoutes } from "./myrmidon/bot-containers/fleet-site-wiring.js"; // myrmidon(1.6.6 OPE-8999)
+import { myrmidonFleetSiteManageRoutes } from "./myrmidon/bot-containers/fleet-site-manage-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T8)
 import { myrmidonFleetMoveRoutes } from "./myrmidon/bot-containers/fleet-move-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
 import { siteHealthRoutes } from "./myrmidon/bot-containers/site-health-routes.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { myrmidonPromptBudgetAdviceRoutes } from "./myrmidon/prompt-budget-advice/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET C)
@@ -807,6 +808,11 @@ export async function createApp(
   // request body is streamed through unread. Absent in the single process.
   if (opts.singletonProxy) app.use(singletonProxyMiddleware(opts.singletonProxy));
 
+  // myrmidon(1.6.6 OPE-9058): the http_route lane is attached before every
+  // other middleware — the actor / run-identity lookups and the provider
+  // webhook ingress run ahead of the /api router and were `untagged`.
+  app.use(boardLoadLaneTagMiddleware());
+
   app.use(
     COMPANY_IMPORT_API_PATH,
     express.json({
@@ -1197,6 +1203,7 @@ export async function createApp(
   api.use(myrmidonFleetMoveRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T5)
   api.use(myrmidonFleetSiteRoutes(db)); // myrmidon(1.6.6 OPE-8999): enroll / list / delete execution sites
   api.use(siteHealthRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T4): site health badges
+  api.use(myrmidonFleetSiteManageRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T8): fleet screen API (overview, site bots, drain/resume, restart/stop, logs)
   api.use(myrmidonCloudConnectorRoutes(db)); // myrmidon(CLOUD-CONNECTOR)
   api.use(myrmidonPromptBudgetAdviceRoutes(db)); // myrmidon(1.6.3 PROMPT-BUDGET C): prompt-budget advice and deep analysis
   api.use(myrmidonMonitoringLinkRoutes(db)); // myrmidon(1.6.6 MONITORING E): link liveness feed and the link pulse endpoint

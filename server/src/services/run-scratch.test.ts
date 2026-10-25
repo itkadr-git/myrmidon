@@ -50,6 +50,7 @@ describe("heartbeat run scratch cleanup", () => {
     cleanupDirs.add(dir);
     const scratch: HeartbeatRunScratch = {
       dir,
+      runDir: path.join(dir, "run-dir"),
       markerPath: path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER),
       metadata: {
         version: 1,
@@ -172,10 +173,40 @@ describe("heartbeat run scratch cleanup", () => {
     expect(result.env.PAPERCLIP_RUN_SCRATCH_DIR).toBe(scratch.dir);
     expect(result.env.PAPERCLIP_TASK_SCRATCH_DIR).toBe(scratch.dir);
     expect(result.env.PAPERCLIP_SCRATCH_DIR).toBe(scratch.dir);
+    expect(result.env.PAPERCLIP_RUN_DIR).toBe(scratch.runDir);
+    expect(result.env.CHROME_USER_DATA_DIR).toBe(scratch.runDir);
     expect(result.env.PAPERCLIP_TMPDIR).toBe(scratch.dir);
     expect(result.env.TMPDIR).toBeUndefined();
     expect(result.env.TEMP).toBe(scratch.dir);
     expect(result.env.TMP).toBe(scratch.dir);
     expect(result.tempKeysApplied).toEqual(["TEMP", "TMP"]);
+  });
+
+  it("prepares run-dir inside scratch directory and configures browser profile env", async () => {
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-1",
+    }));
+
+    expect(scratch.runDir).toBe(path.join(scratch.dir, "run-dir"));
+    const stats = await fs.stat(scratch.runDir);
+    expect(stats.isDirectory()).toBe(true);
+
+    const result = buildHeartbeatRunScratchEnv({}, scratch);
+    expect(result.env.PAPERCLIP_RUN_DIR).toBe(scratch.runDir);
+    expect(result.env.CHROME_USER_DATA_DIR).toBe(scratch.runDir);
+  });
+
+  it("preserves explicitly configured CHROME_USER_DATA_DIR", async () => {
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-1",
+    }));
+
+    const result = buildHeartbeatRunScratchEnv({ CHROME_USER_DATA_DIR: "/custom/chrome" }, scratch);
+    expect(result.env.CHROME_USER_DATA_DIR).toBeUndefined();
+    expect(result.env.PAPERCLIP_RUN_DIR).toBe(scratch.runDir);
   });
 });

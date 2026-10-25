@@ -25,6 +25,7 @@ export {
   filterAgentsOutsideMaintenance,
   resetMaintenanceGateCaches,
 } from "./gate.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 export { preserveMaintenanceGeneralKey } from "./store.js";
 export { MAINTENANCE_INTERRUPT_ERROR_CODE } from "./domain.js";
 export { maintenanceService } from "./service.js";
@@ -127,7 +128,7 @@ export async function startMaintenanceMode(db: Db): Promise<() => void> {
     // below retries; a failed read here must not stop the server from starting.
     logger.error({ err }, "failed to restore maintenance mode state at startup");
   }
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void service.tick().catch((err) => logger.error({ err }, "maintenance tick failed"));
     // myrmidon(BOT-DISK-A): bot disk lifecycle sweep; re-reads general.botDisk every tick.
     void runBotDiskSweep(db).catch((err) =>
