@@ -5791,7 +5791,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // This suite globally disables L4 retries to exercise vendor recovery.
     // Restore the production retry cap only for this exhausted-policy case.
     vi.stubEnv("MYRMIDON_STRANDED_AUTO_RETRIES_PER_DAY", "2");
-    const fixtureNow = new Date();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const fixtureNow = new Date("2026-03-19T00:10:00.000Z");
+    vi.setSystemTime(fixtureNow);
     const { companyId, agentId, admAgentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
