@@ -42,23 +42,24 @@ export const continuationKeyInputSchema = z
 
 export type ContinuationKeyInput = z.infer<typeof continuationKeyInputSchema>;
 
-/** 2^53 — the exact-integer ceiling of JavaScript numbers. */
-const EXACT_LIMIT = 4503599627370496;
-
 /**
- * Deterministic FNV-1a over UTF-16 code units, folded into the exact-integer
- * range so the digest needs no BigInt. Pure arithmetic on code points: the
- * same input gives the same digest in every runtime.
+ * Dual 32-bit FNV-1a digest using uint32 arithmetic only. This stays exact in
+ * browser runtimes without Node crypto or BigInt support requirements.
  */
-function fnv1a53(value: string): number {
-  const offsetBasis = 0xcbf29ce484222325 % EXACT_LIMIT;
-  const prime = 0x100000001b3 % EXACT_LIMIT;
-  let hash = offsetBasis;
+function fnv1a64(value: string): string {
+  let low = 0x84222325;
+  let high = 0xcbf29ce4;
   for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = (hash * prime) % EXACT_LIMIT;
+    low = (low ^ value.charCodeAt(index)) >>> 0;
+    // FNV prime = 2^40 + 0x1b3; compute its 64-bit product in 32-bit limbs.
+    const lowProduct = low * 0x1b3;
+    const nextLow = lowProduct >>> 0;
+    const carry = Math.floor(lowProduct / 0x100000000);
+    const nextHigh = (high * 0x1b3 + carry + (low << 8)) >>> 0;
+    low = nextLow;
+    high = nextHigh;
   }
-  return hash;
+  return `${high.toString(16).padStart(8, "0")}${low.toString(16).padStart(8, "0")}`;
 }
 
 /**
@@ -73,11 +74,7 @@ function fnv1a53(value: string): number {
 export function buildContinuationKey(input: ContinuationKeyInput): string {
   const { issueId, event, head } = continuationKeyInputSchema.parse(input);
   const canonical = `${issueId.length}:${event.length}:${head.length}:${issueId}\0${event}\0${head}`;
-  const left = fnv1a53(canonical);
-  const right = fnv1a53(`${canonical}#2`);
-  const hex = `${left.toString(16).padStart(13, "0")}${right
-    .toString(16)
-    .padStart(13, "0")}`;
+  const hex = `${fnv1a64(canonical)}${fnv1a64(`${canonical}#2`)}`;
   return `continuation:v1:${hex}`;
 }
 
