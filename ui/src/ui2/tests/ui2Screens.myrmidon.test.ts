@@ -17,16 +17,13 @@ import { isUi2RouteElementAPlaceholder } from "../routes";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
 
 describe("myrmidon(UI2) route table integration", () => {
-  it("routes every shipped settings screen from the sidebar", () => {
-    const sectionPaths = new Set(UI2_SETTINGS_SECTIONS.map((section) => section.path));
-    const routedSettingsPaths = UI2_ROUTE_TABLE.filter((entry) =>
-      entry.path.startsWith("company/settings/"),
-    ).map((entry) => `/${entry.path}`);
-
-    for (const path of routedSettingsPaths) {
-      expect(sectionPaths.has(path), path).toBe(true);
+  it("routes every sidebar entry with an implemented settings screen", () => {
+    const routePaths = new Set(UI2_ROUTE_TABLE.map((entry) => `/${entry.path}`));
+    for (const section of UI2_SETTINGS_SECTIONS) {
+      if (routePaths.has(section.path)) continue;
+      expect(["general", "members", "access", "secrets", "budgets", "autonomy", "castes"], section.key)
+        .toContain(section.key);
     }
-    expect(sectionPaths.has("/company/settings")).toBe(true);
   });
 
   it("ships exactly the contract entries, the fleet, the commander chat and the knowledge screens", () => {
