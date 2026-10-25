@@ -94,8 +94,8 @@ export function KnowledgeMarkdown({
 }
 
 /** react-markdown hands the hast `node` to every component; keep it off the DOM. */
-function stripNode<T extends { node?: unknown }>(props: T): Omit<T, "node"> {
-  const { node: _node, ...rest } = props;
-  void _node;
-  return rest;
+function stripNode(props: object): Record<string, never> {
+  const rest: Record<string, unknown> = { ...props };
+  delete rest.node;
+  return rest as Record<string, never>;
 }

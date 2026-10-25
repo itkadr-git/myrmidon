@@ -7,14 +7,14 @@
 import { useEffect } from "react";
 import { useTranslation } from "@/i18n";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
-import { Ui2I18nProvider } from "@/ui2/i18n/Ui2I18n";
-import { isUi2Locale } from "@/ui2/i18n/Ui2I18n";
-import { UI2_DEFAULT_LOCALE } from "@/ui2/i18n/locales";
-import { Ui2Knowledge } from "@/ui2/screens/knowledge/Ui2Knowledge";
+import { Ui2I18nProvider } from "../../i18n/Ui2I18n";
+import { isUi2Locale } from "../../i18n/Ui2I18n";
+import { UI2_DEFAULT_LOCALE } from "../../i18n/locales";
+import { Ui2Knowledge } from "./Ui2Knowledge";
 
 export const KNOWLEDGE_BASE_PATH = "/wiki";
 
-export function KnowledgeScreen() {
+export function Ui2KnowledgeCurrentUi() {
   const { t, i18n } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const language = (i18n?.language ?? "").slice(0, 2).toLowerCase();

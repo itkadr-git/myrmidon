@@ -2,7 +2,7 @@
 // the real index.css (body is overflow:hidden, as in the app), the real UI2
 // shell; the HTTP API is answered by Playwright (tests/knowledge-screen).
 //   ?screen=ui2     -> Ui2Shell + Ui2Knowledge at /OPE/knowledge/...
-//   ?screen=legacy  -> the current UI's KnowledgeScreen at /OPE/wiki/..., in a
+//   ?screen=legacy  -> the current UI's Ui2KnowledgeCurrentUi at /OPE/wiki/..., in a
 //                      frame that copies the scroll structure of Layout's <main>.
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -12,7 +12,7 @@ import "../index.css";
 import { Ui2Shell } from "../ui2/shell/Ui2Shell";
 import { Ui2I18nProvider } from "../ui2/i18n/Ui2I18n";
 import { Ui2Knowledge } from "../ui2/screens/knowledge/Ui2Knowledge";
-import { KnowledgeScreen } from "../components/myrmidon/knowledge/KnowledgeScreen";
+import { Ui2KnowledgeCurrentUi } from "../ui2/screens/knowledge/Ui2KnowledgeCurrentUi";
 
 const params = new URLSearchParams(window.location.search);
 const screen = params.get("screen") === "legacy" ? "legacy" : "ui2";
@@ -27,8 +27,8 @@ function Legacy() {
           <div className="flex min-h-0 flex-1">
             <main id="main-content" className="min-w-0 flex-1 overflow-auto p-4 md:p-6 [scrollbar-gutter:stable]">
               <Routes>
-                <Route path="/:companyPrefix/wiki" element={<KnowledgeScreen />} />
-                <Route path="/:companyPrefix/wiki/:spaceKey/:slug" element={<KnowledgeScreen />} />
+                <Route path="/:companyPrefix/wiki" element={<Ui2KnowledgeCurrentUi />} />
+                <Route path="/:companyPrefix/wiki/:spaceKey/:slug" element={<Ui2KnowledgeCurrentUi />} />
               </Routes>
             </main>
           </div>

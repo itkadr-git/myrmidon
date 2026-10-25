@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { act } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { KnowledgeScreen } from "./KnowledgeScreen";
+import { Ui2KnowledgeCurrentUi } from "./Ui2KnowledgeCurrentUi";
 
 const http = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 const breadcrumbs = vi.hoisted(() => ({ setBreadcrumbs: vi.fn() }));
@@ -128,8 +128,8 @@ async function render(path: string) {
         <MemoryRouter initialEntries={[path]}>
           <Where />
           <Routes>
-            <Route path="/:companyPrefix/wiki" element={<KnowledgeScreen />} />
-            <Route path="/:companyPrefix/wiki/:spaceKey/:slug" element={<KnowledgeScreen />} />
+            <Route path="/:companyPrefix/wiki" element={<Ui2KnowledgeCurrentUi />} />
+            <Route path="/:companyPrefix/wiki/:spaceKey/:slug" element={<Ui2KnowledgeCurrentUi />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -138,7 +138,7 @@ async function render(path: string) {
   await settle();
 }
 
-describe("KnowledgeScreen (current UI, OPE-9222)", () => {
+describe("Ui2KnowledgeCurrentUi (current UI, OPE-9222)", () => {
   it("lists the pages of the knowledge module at /wiki, in the interface language", async () => {
     await render("/OPE/wiki");
     const text = container.textContent ?? "";

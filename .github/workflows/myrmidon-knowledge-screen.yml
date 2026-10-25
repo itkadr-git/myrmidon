@@ -9,7 +9,7 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - "ui/src/ui2/**"
-      - "ui/src/components/myrmidon/knowledge/**"
+      - "ui/src/ui2/screens/knowledge/**"
       - "ui/src/knowledge-qa/**"
       - "ui/knowledge-qa.html"
       - "ui/vite.knowledge-qa.config.mjs"
