@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { z } from "zod";
 
 export const LEGACY_BLOCKED_IMPORT_RULE_VERSION = "1";
@@ -46,9 +45,6 @@ export type LegacyBlockedClass = z.infer<typeof legacyBlockedClassSchema>;
 export type LegacyBlockedReportRow = z.infer<typeof legacyBlockedReportRowSchema>;
 
 export function createLegacyBlockedImportKey(issueId: string): string {
-  const digest = createHash("sha256")
-    .update(`${LEGACY_BLOCKED_IMPORT_RULE_VERSION}:${issueId}`)
-    .digest("hex");
-  return `legacy-blocked:v${LEGACY_BLOCKED_IMPORT_RULE_VERSION}:${digest}`;
+  return `legacy-blocked:v${LEGACY_BLOCKED_IMPORT_RULE_VERSION}:${issueId}`;
 }
 
