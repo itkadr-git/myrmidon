@@ -1422,6 +1422,7 @@ describe("SkillDeliveryCheckSection", () => {
 
     expect(companySkillsApi.createTestRun).toHaveBeenCalledWith("comp-1", "skill-1", {
       agentId: "agent-1",
+      content: expect.stringMatching(/\S/),
     });
 
     expect(node.textContent).toContain("Delivery verified");

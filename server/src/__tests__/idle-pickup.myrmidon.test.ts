@@ -404,7 +404,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     void issueId;
   });
 
-  it("does not wake a cancelled-blocker dependent (an operator must resolve the relation)", async () => {
+  it("wakes a cancelled-blocker dependent (a cancelled blocker is resolved, OPE-8904)", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId });
     const blockerId = randomUUID();
@@ -425,9 +425,9 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
 
     const result = await idlePickupForAgent(deps, { id: agentId, companyId });
 
-    expect(result.considered).toBe(0);
-    expect(result.woken).toBe(0);
-    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect(result.considered).toBe(1);
+    expect(result.woken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
   });
 
   it("does not wake a container (an issue with an open child)", async () => {

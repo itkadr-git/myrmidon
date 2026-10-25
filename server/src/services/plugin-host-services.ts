@@ -1,4 +1,5 @@
 import type { Db } from "@myrmidon/db";
+import { isBlockerOpen } from "../myrmidon/blocker-resolved.js";
 import {
   activityLog,
   agentTaskSessions as agentTaskSessionsTable,
@@ -2173,7 +2174,7 @@ export function buildHostServices(
           throw new Error(`Issue is not wakeable in status: ${issue.status}`);
         }
         const relations = await issues.getRelationSummaries(issue.id);
-        const unresolvedBlockers = relations.blockedBy.filter((blocker) => blocker.status !== "done");
+        const unresolvedBlockers = relations.blockedBy.filter((blocker) => isBlockerOpen(blocker.status));
         if (unresolvedBlockers.length > 0) {
           throw new Error("Issue is blocked by unresolved blockers");
         }
@@ -2241,7 +2242,7 @@ export function buildHostServices(
             throw new Error(`Issue is not wakeable in status: ${issue.status}`);
           }
           const relations = await issues.getRelationSummaries(issue.id);
-          const unresolvedBlockers = relations.blockedBy.filter((blocker) => blocker.status !== "done");
+          const unresolvedBlockers = relations.blockedBy.filter((blocker) => isBlockerOpen(blocker.status));
           if (unresolvedBlockers.length > 0) {
             throw new Error("Issue is blocked by unresolved blockers");
           }

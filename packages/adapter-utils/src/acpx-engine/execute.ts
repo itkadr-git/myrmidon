@@ -1950,7 +1950,7 @@ async function buildRuntime(input: {
   const resolvedAdapterEnv: Record<string, string> = {};
   const scratch = parseObject(context.paperclipScratch);
   const scratchKeys = scratch.type === "heartbeat_run" && typeof scratch.dir === "string"
-    ? new Set(["PAPERCLIP_RUN_SCRATCH_DIR", "PAPERCLIP_TASK_SCRATCH_DIR", "PAPERCLIP_SCRATCH_DIR", "PAPERCLIP_TMPDIR",
+    ? new Set(["PAPERCLIP_RUN_SCRATCH_DIR", "PAPERCLIP_TASK_SCRATCH_DIR", "PAPERCLIP_SCRATCH_DIR", "PAPERCLIP_RUN_DIR", "PAPERCLIP_TMPDIR",
       ...(Array.isArray(scratch.tempKeysApplied) ? scratch.tempKeysApplied.filter((key): key is string =>
         typeof key === "string" && ["TMPDIR", "TEMP", "TMP"].includes(key)) : [])])
     : new Set<string>();
@@ -1967,7 +1967,7 @@ async function buildRuntime(input: {
     // The server rotates run-owned scratch paths on every wake. Still forward
     // them, but only hash actual adapter settings. User-supplied temp overrides
     // are absent from tempKeysApplied and keep their compatibility protection.
-    if (!scratchKeys.has(key) || value !== scratch.dir) resolvedAdapterEnv[key] = value;
+    if (!scratchKeys.has(key) || (value !== scratch.dir && value !== scratch.runDir)) resolvedAdapterEnv[key] = value;
   }
   if (authToken) writeProductEnv(env, "API_KEY", authToken); // myrmidon(REBRAND-C)
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than

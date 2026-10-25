@@ -234,6 +234,16 @@ model the gateway returns in its response, then the LiteLLM `model_group`
 the request was routed to, then the model configured on the launch. Empty
 strings and the sentinel `unknown` are dropped at each step, so the field is
 either a real model name or absent.
+## Runtime behavior settings (behavior-settings API)
+
+Starting with Myrmidon 1.7 (SETTINGS-TO-UI), runtime behavior settings can be read and modified dynamically without restarting the server:
+- `GET /api/myrmidon/behavior-settings/definitions` — list all setting definitions, scopes, types, and defaults.
+- `GET /api/myrmidon/behavior-settings` (and `?key=:key` or `/key/:key`) — read effective instance settings and sources (`ui`, `env`, `default`).
+- `PATCH /api/myrmidon/behavior-settings` (and `PUT` alias) — update instance-level settings (instance admin only).
+- `GET|PATCH /api/myrmidon/behavior-settings/company/:companyId` — read and update company-scoped settings (company access required).
+
+Scope isolation is strictly enforced: instance endpoints reject company-scoped keys, and company endpoints reject instance-scoped keys with HTTP 400. Full API specification and setting catalog: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md#17--behavior-settings-api-runtime-settings-settings-to-ui).
+
 # Agents page live-run refresh
 
 The Agents page refreshes live-run data every 60 seconds. Use the page's manual refresh when an immediate update is needed.
