@@ -371,6 +371,8 @@ export async function clearExpiredAssignee(
                 eq(issueClaims.origin, "auto_match"),
                 isNotNull(issueClaims.releasedAt),
                 eq(issueClaims.releaseReason, "lease_expired"),
+                // Do not let an expired lease clear an assignment written after its release.
+                sql`${issues.updatedAt} <= ${issueClaims.releasedAt}`,
               ),
             ),
         ),
