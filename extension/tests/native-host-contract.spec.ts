@@ -3,6 +3,7 @@ import {
   isDocumentPayload,
   isSignActionType,
   isSignRequestMessage,
+  isSignResponseMessage,
   SIGN_ACTION_TYPES,
   SIGN_ERROR_CODES,
 } from "../src/native-host-contract";
@@ -72,5 +73,24 @@ describe("native-host-contract (generic, client-free)", () => {
       "middleware_error",
       "cancelled",
     ]);
+  });
+});
+
+describe("sign response validation", () => {
+  it("accepts a success with and without a signature and a known failure", () => {
+    const ok = { type: "sign_result", id: 3, result: { ok: true, hash: "a".repeat(64) } };
+    expect(isSignResponseMessage(ok, 3)).toBe(true);
+    expect(isSignResponseMessage({ ...ok, result: { ...ok.result, signatureBase64: "U0lH" } }, 3)).toBe(true);
+    expect(isSignResponseMessage({ type: "sign_result", id: 3, result: { ok: false, error: "cancelled" } }, 3)).toBe(true);
+  });
+
+  it("rejects a wrong id, a bad hash, an unknown error code and non-objects", () => {
+    const ok = { type: "sign_result", id: 3, result: { ok: true, hash: "a".repeat(64) } };
+    expect(isSignResponseMessage(ok, 4)).toBe(false);
+    expect(isSignResponseMessage({ ...ok, result: { ok: true, hash: "A".repeat(10) } }, 3)).toBe(false);
+    expect(isSignResponseMessage({ ...ok, result: { ok: true, hash: "a".repeat(64), signatureBase64: 5 } }, 3)).toBe(false);
+    expect(isSignResponseMessage({ type: "sign_result", id: 3, result: { ok: false, error: "boom" } }, 3)).toBe(false);
+    expect(isSignResponseMessage(null, 3)).toBe(false);
+    expect(isSignResponseMessage("x", 3)).toBe(false);
   });
 });

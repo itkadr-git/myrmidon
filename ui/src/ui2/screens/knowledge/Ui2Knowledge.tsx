@@ -14,7 +14,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
-import { Link, useParams } from "@/lib/router";
+import { Link, useNavigate, useParams } from "@/lib/router";
 import { useUi2I18n } from "../../i18n/Ui2I18n";
 import type { Ui2MessageKey } from "../../i18n/locales";
 import {
@@ -23,6 +23,7 @@ import {
   Ui2SkeletonRows,
 } from "../../components/ui2StateViews";
 import { Ui2Page, Ui2Section, Ui2StatusDot } from "../../components/ui2Primitives";
+import { KnowledgeMarkdown } from "./KnowledgeMarkdown";
 import { knowledgeApi, knowledgeQueryKeys } from "./knowledgeApi";
 import type { KnowledgeSearchMode } from "./knowledgeApi";
 import {
@@ -32,15 +33,11 @@ import {
   knowledgeApproverLabelKey,
   knowledgeDiffChangeCount,
   knowledgeHref,
-  knowledgeLinkHref,
-  knowledgeLinkLabel,
   knowledgeSourceLink,
   knowledgeStatusTone,
   knowledgeWriteGate,
-  parseKnowledgeBody,
 } from "./knowledgeModel";
 import type {
-  KnowledgeBodySegment,
   KnowledgeDiffLine,
   KnowledgeItemDetail,
   KnowledgeItemSummary,
@@ -77,6 +74,8 @@ function sourceKindKey(kind: string): MessageKey {
       return "ui2.knowledge.source.kind.run";
     case "url":
       return "ui2.knowledge.source.kind.url";
+    case "page":
+      return "ui2.knowledge.source.kind.page";
     default:
       return "ui2.knowledge.source.kind.other";
   }
@@ -102,36 +101,22 @@ function revisionKey(summary: KnowledgeItemSummary): string {
   return `${summary.spaceKey}/${summary.slug}`;
 }
 
-function BodySegments({
-  segments,
-  spaceKey,
+function SourceRow({
+  source,
+  basePath,
+  t,
 }: {
-  segments: KnowledgeBodySegment[];
-  spaceKey: string;
+  source: KnowledgeSourceRef;
+  basePath: string;
+  t: Translate;
 }) {
-  return (
-    <div className="ui2-knowledge-body flex flex-col gap-2 text-sm leading-relaxed whitespace-pre-wrap">
-      {segments.map((segment, index) =>
-        segment.type === "link" ? (
-          <Link
-            key={`link-${index}`}
-            to={knowledgeLinkHref(segment, spaceKey)}
-            className="ui2-knowledge-link text-primary underline underline-offset-2"
-          >
-            {knowledgeLinkLabel(segment)}
-          </Link>
-        ) : (
-          <span key={`text-${index}`} className="ui2-knowledge-text">
-            {segment.text}
-          </span>
-        ),
-      )}
-    </div>
-  );
-}
-
-function SourceRow({ source, t }: { source: KnowledgeSourceRef; t: Translate }) {
-  const link = knowledgeSourceLink(source);
+  const link =
+    source.kind === "page" && source.ref
+      ? ({
+          kind: "internal",
+          to: knowledgeHref({ spaceKey: source.space ?? "", slug: source.ref, anchor: null }, basePath),
+        } as const)
+      : knowledgeSourceLink(source);
   const label = source.label ?? source.ref;
   const kind = t(sourceKindKey(source.kind));
   if (!link) {
@@ -172,8 +157,10 @@ function SourcePanel({
   title,
   sources,
   emptyLabel,
+  basePath,
   t,
 }: {
+  basePath: string;
   title: string;
   sources: KnowledgeSourceRef[] | undefined;
   emptyLabel: string;
@@ -187,7 +174,7 @@ function SourcePanel({
       ) : (
         <ul className="ui2-knowledge-sources flex flex-col gap-1">
           {rows.map((source, index) => (
-            <SourceRow key={`${source.kind}-${source.ref}-${index}`} source={source} t={t} />
+            <SourceRow key={`${source.kind}-${source.ref}-${index}`} source={source} basePath={basePath} t={t} />
           ))}
         </ul>
       )}
@@ -432,13 +419,14 @@ function RevisionsPanel({
 function KnowledgePagePane({
   companyId,
   item,
+  basePath,
   t,
 }: {
   companyId: string;
   item: KnowledgeItemDetail;
+  basePath: string;
   t: Translate;
 }) {
-  const segments = useMemo(() => parseKnowledgeBody(item.body ?? ""), [item.body]);
   const reviewDue = isKnowledgeReviewDue(item);
   return (
     <div className="ui2-knowledge-page flex flex-col gap-4">
@@ -471,18 +459,20 @@ function KnowledgePagePane({
         </div>
       </div>
 
-      <BodySegments segments={segments} spaceKey={item.spaceKey} />
+      <KnowledgeMarkdown body={item.body ?? ""} spaceKey={item.spaceKey} basePath={basePath} />
 
       <SourcePanel
         title={t("ui2.knowledge.sources.title")}
         sources={item.sources}
         emptyLabel={t("ui2.knowledge.sources.empty")}
+        basePath={basePath}
         t={t}
       />
       <SourcePanel
         title={t("ui2.knowledge.backlinks.title")}
         sources={item.backlinks}
         emptyLabel={t("ui2.knowledge.backlinks.empty")}
+        basePath={basePath}
         t={t}
       />
       <RevisionsPanel companyId={companyId} item={item} t={t} />
@@ -496,9 +486,11 @@ function SearchPanel({
   mode,
   onQuery,
   onMode,
+  basePath,
   t,
 }: {
   companyId: string;
+  basePath: string;
   query: string;
   mode: KnowledgeSearchMode;
   onQuery: (value: string) => void;
@@ -554,7 +546,7 @@ function SearchPanel({
               <li key={revisionKey(hit.item)} className="ui2-knowledge-search-hit flex flex-col gap-0.5">
                 <Link
                   className="ui2-knowledge-search-hit-title text-sm text-primary underline underline-offset-2"
-                  to={knowledgeHref({ spaceKey: hit.item.spaceKey, slug: hit.item.slug, anchor: null })}
+                  to={knowledgeHref({ spaceKey: hit.item.spaceKey, slug: hit.item.slug, anchor: null }, basePath)}
                 >
                   {hit.item.title}
                 </Link>
@@ -570,8 +562,16 @@ function SearchPanel({
   );
 }
 
-export function Ui2Knowledge() {
+/**
+ * `basePath` is where the screen is mounted. UI2 keeps the default
+ * (`/knowledge`, selection held in local state); the current interface mounts
+ * the same screen at `/wiki` and passes it, so links, search hits and tree
+ * selection are real routes there (OPE-9222).
+ */
+export function Ui2Knowledge({ basePath }: { basePath?: string } = {}) {
   const { t } = useUi2I18n();
+  const navigate = useNavigate();
+  const linkBase = basePath ?? "/knowledge";
   const { selectedCompanyId } = useCompany();
   const companyId = selectedCompanyId ?? "";
   const params = useParams<{ spaceKey?: string; slug?: string }>();
@@ -610,6 +610,7 @@ export function Ui2Knowledge() {
         mode={mode}
         onQuery={setQuery}
         onMode={setMode}
+        basePath={linkBase}
         t={t}
       />
 
@@ -629,18 +630,25 @@ export function Ui2Knowledge() {
         <Ui2EmptyStateView title={t("ui2.knowledge.tree.empty")} variant="done" />
       ) : (
         <div className="ui2-knowledge-layout flex flex-col gap-4 md:flex-row">
+          <div className="ui2-knowledge-tree-pane md:sticky md:top-0 md:w-72 md:shrink-0 md:self-start">
           <Ui2Section title={t("ui2.knowledge.tree.aria")}>
+            <div className="ui2-knowledge-tree-scroll max-h-[40dvh] overflow-y-auto md:max-h-[calc(100dvh-24rem)]" data-testid="knowledge-tree-scroll">
             <ul className="ui2-knowledge-tree flex flex-col gap-0.5" aria-label={t("ui2.knowledge.tree.aria")}>
               {tree.map((node) => (
                 <TreeBranch
                   key={revisionKey(node.item)}
                   node={node}
                   activeKey={activeKey}
-                  onSelect={(item) => setLocalSelection({ spaceKey: item.spaceKey, slug: item.slug })}
+                  onSelect={(item) => {
+                    if (basePath) navigate(knowledgeHref({ spaceKey: item.spaceKey, slug: item.slug, anchor: null }, basePath));
+                    else setLocalSelection({ spaceKey: item.spaceKey, slug: item.slug });
+                  }}
                 />
               ))}
             </ul>
+            </div>
           </Ui2Section>
+          </div>
 
           <div className="ui2-knowledge-detail flex min-w-0 flex-1 flex-col gap-4">
             {!selection ? (
@@ -658,7 +666,7 @@ export function Ui2Knowledge() {
                 withCache={false}
               />
             ) : itemQuery.data ? (
-              <KnowledgePagePane companyId={companyId} item={itemQuery.data.item} t={t} />
+              <KnowledgePagePane companyId={companyId} item={itemQuery.data.item} basePath={linkBase} t={t} />
             ) : null}
           </div>
         </div>

@@ -155,7 +155,8 @@ describe("myrmidon:migrate pure guards", () => {
     const index = buildVendorOnlyIndex();
     expect(index.tables.get("mcp_oauth_clients")).toBe("v2026.1012.0");
     expect(index.tables.size).toBeGreaterThan(20);
-    expect(index.columns.get("agents.appearance")).toBeDefined();
+    expect(index.columns.has("agents.appearance")).toBe(false);
+    expect(index.columns.has("issues.title_needs_generation")).toBe(false);
     expect(index.columns.get("routine_triggers.archived")).toBeDefined();
     // nothing of the base release is listed as vendor-only
     expect(index.tables.has("agents")).toBe(false);
@@ -165,12 +166,13 @@ describe("myrmidon:migrate pure guards", () => {
   it("excludes features that exist in the target schema from the vendor-only index", () => {
     const targetSchema = {
       tables: new Set(["mcp_oauth_clients", "routine_webhook_test_receipts"]),
-      columns: new Set(["agents.appearance"]),
+      columns: new Set(["agents.appearance", "issues.title_needs_generation"]),
     };
     const index = buildVendorOnlyIndex(undefined, targetSchema);
     expect(index.tables.has("mcp_oauth_clients")).toBe(false);
     expect(index.tables.has("routine_webhook_test_receipts")).toBe(false);
     expect(index.columns.has("agents.appearance")).toBe(false);
+    expect(index.columns.has("issues.title_needs_generation")).toBe(false);
     // Features absent from targetSchema and not dropped remain vendor-only:
     expect(index.tables.get("chat_github_configurations")).toBe("v2026.1001.0");
     expect(index.columns.get("routine_triggers.archived")).toBe("v2026.1001.0");
@@ -183,7 +185,7 @@ describe("myrmidon:migrate pure guards", () => {
     expect(index.droppedColumns?.has("user.keyboard_shortcuts")).toBe(true);
     // Features that were not dropped and are not in target remain vendor-only:
     expect(index.tables.get("chat_github_configurations")).toBe("v2026.1001.0");
-    expect(index.columns.get("agents.appearance")).toBe("v2026.1001.0");
+    expect(index.columns.has("agents.appearance")).toBe(false);
   });
 
   it("loads target schema from our migration tree snapshot", async () => {
@@ -194,7 +196,8 @@ describe("myrmidon:migrate pure guards", () => {
     expect(targetSchema.columns.has("issues.id")).toBe(true);
     // Later vendor-only features are not in current Myrmidon schema:
     expect(targetSchema.tables.has("mcp_oauth_clients")).toBe(false);
-    expect(targetSchema.columns.has("agents.appearance")).toBe(false);
+    expect(targetSchema.columns.has("agents.appearance")).toBe(true);
+    expect(targetSchema.columns.has("issues.title_needs_generation")).toBe(true);
   });
 
   describe("checkCompatibility with features Myrmidon lacks", () => {
@@ -217,21 +220,30 @@ describe("myrmidon:migrate pure guards", () => {
     });
     const index = {
       tables: new Map([["browser_use_runs", "v2026.1012.0"]]),
-      columns: new Map([["agents.appearance", "v2026.1012.0"], ["user.keyboard_shortcuts", "v2026.1001.0"]]),
+      columns: new Map([["agents.appearance", "v2026.1012.0"], ["issues.title_needs_generation", "v2026.1012.0"], ["user.keyboard_shortcuts", "v2026.1001.0"]]),
     };
 
-    it("reports a missing vendor-only table and column as findings, not problems", () => {
+    it("fails closed for approved data columns missing from the target, even when the vendor flag is set", () => {
       const analysis = analysisOf(
-        [table("browser_use_runs", [col("id")]), table("agents", [col("id"), col("appearance")]), table("user", [col("id"), col("keyboard_shortcuts")])],
-        { browser_use_runs: 3, agents: 5, user: 2 },
-        [{ kind: "column", table: "agents", column: "appearance", rows: 4, introducedIn: "v2026.1012.0" }],
+        [table("browser_use_runs", [col("id")]), table("agents", [col("id"), col("appearance")]), table("issues", [col("id"), col("title_needs_generation")]), table("user", [col("id"), col("keyboard_shortcuts")])],
+        { browser_use_runs: 3, agents: 5, issues: 4, user: 2 },
+        [
+          { kind: "column", table: "agents", column: "appearance", rows: 4, introducedIn: "v2026.1012.0" },
+          { kind: "column", table: "issues", column: "title_needs_generation", rows: 3, introducedIn: "v2026.1012.0" },
+        ],
       );
-      const target = new Map([["agents", table("agents", [col("id")])], ["user", table("user", [col("id")])]]);
-      const result = checkCompatibility(analysis, target, index);
-      expect(result.problems).toEqual([]);
+      const target = new Map([
+        ["agents", table("agents", [col("id")])],
+        ["issues", table("issues", [col("id")])],
+        ["user", table("user", [col("id")])],
+      ]);
+      const result = checkCompatibility(analysis, target, index, { acceptVendorOnlyData: true });
+      expect(result.problems).toContain("approved-column-not-preserved:agents.appearance");
+      expect(result.problems).toContain("approved-column-not-preserved:issues.title_needs_generation");
       expect(result.vendorOnly).toEqual([
         { kind: "table", table: "browser_use_runs", rows: 3, introducedIn: "v2026.1012.0" },
         { kind: "column", table: "agents", column: "appearance", rows: 4, introducedIn: "v2026.1012.0" },
+        { kind: "column", table: "issues", column: "title_needs_generation", rows: 3, introducedIn: "v2026.1012.0" },
         { kind: "column", table: "user", column: "keyboard_shortcuts", rows: 2, introducedIn: "v2026.1001.0" },
       ]);
     });
@@ -408,16 +420,19 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     templateUrl = urlFor("vendor_template");
     const db = createDb(templateUrl);
     await migrate(db as never, { migrationsFolder: folder });
+    // Model a newer Paperclip source: it carries the two columns Myrmidon now preserves.
+    await db.execute(sql.raw('alter table "agents" add column if not exists "appearance" jsonb'));
+    await db.execute(sql.raw('alter table "issues" add column if not exists "title_needs_generation" boolean not null default false'));
 
     const envelope = await encryptWithKey(SOURCE_KEY, SECRET_VALUE);
     const seed = async (query: string) => db.execute(sql.raw(query));
     const lit = (v: unknown) => `'${String(v).replaceAll("'", "''")}'`;
     await seed(`insert into companies (id, name, issue_prefix) values (${lit(COMPANY_A)}, 'Alpha', 'ALP'), (${lit(COMPANY_B)}, 'Beta', 'BET')`);
     await seed(
-      `insert into agents (id, company_id, name, adapter_config) values (${lit(AGENT_A)}, ${lit(COMPANY_A)}, 'Agent One', ${lit(JSON.stringify({ token: envelope, keep: 1 }))}::jsonb)`,
+      `insert into agents (id, company_id, name, adapter_config, appearance) values (${lit(AGENT_A)}, ${lit(COMPANY_A)}, 'Agent One', ${lit(JSON.stringify({ token: envelope, keep: 1 }))}::jsonb, '{"theme":{"palette":["ink","amber"]}}'::jsonb)`,
     );
     await seed(`insert into projects (company_id, name) values (${lit(COMPANY_A)}, 'Project One')`);
-    await seed(`insert into issues (id, company_id, title) values (${lit(ISSUE_A)}, ${lit(COMPANY_A)}, 'Issue One')`);
+    await seed(`insert into issues (id, company_id, title, title_needs_generation) values (${lit(ISSUE_A)}, ${lit(COMPANY_A)}, 'Issue One', true)`);
     await seed(`insert into issue_comments (company_id, issue_id, body) values (${lit(COMPANY_A)}, ${lit(ISSUE_A)}, 'Comment One')`);
     await seed(`insert into documents (id, company_id, latest_body) values (${lit(DOC_A)}, ${lit(COMPANY_A)}, 'Doc body')`);
     await seed(`insert into issue_documents (company_id, issue_id, document_id, key) values (${lit(COMPANY_A)}, ${lit(ISSUE_A)}, ${lit(DOC_A)}, 'plan')`);
@@ -544,30 +559,27 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     expect(runResult.status).toBe("ok");
     expect(runResult.phases).toContain("data");
 
-    // 2. Now test with a fresh fixture containing data in a feature that is TRULY absent from the target schema (e.g. agents.appearance)
+    // 2. Now test with a fresh fixture containing data in a feature that is TRULY absent from the target schema (e.g. an unknown vendor-only column)
     const f2 = await fixture();
     await scalar(f2.sourceUrl, 'alter table "user" add column if not exists "keyboard_shortcuts" jsonb');
     await scalar(
       f2.sourceUrl,
       "insert into \"user\" (id, name, email, created_at, updated_at, keyboard_shortcuts) values ('88888888-8888-4888-8888-888888888888', 'Shortcuts User', 'sc@test.local', now(), now(), '{\"ctrl_k\": true}')",
     );
-    await scalar(f2.sourceUrl, 'alter table "agents" add column if not exists "appearance" jsonb');
-    await scalar(f2.sourceUrl, "update \"agents\" set \"appearance\" = '{\"theme\": \"dark\"}'::jsonb");
 
-    // Production precheck dry run detects the truly vendor-only feature and requires the flag
+    // Dropped vendor column: its data is not needed, so no flag is required
     const dry2 = (await runMigration({ ...f2.options, dryRun: true })) as Record<string, any>;
     expect(dry2.status).toBe("ok");
-    expect(dry2.vendorOnlyData.requiresFlag).toBe(true);
-    expect(dry2.vendorOnlyData.withData).toMatchObject([{ table: "agents", column: "appearance" }]);
-    expect(dry2.vendorOnlyData.withData.some((c: any) => c.column === "keyboard_shortcuts")).toBe(false);
+    expect(dry2.vendorOnlyData.requiresFlag).toBe(false);
+    expect((await runMigration(f2.options) as Record<string, any>).status).toBe("ok");
 
-    // Real run without --accept-vendor-only-data refuses before any target write
-    await expect(runMigration(f2.options)).rejects.toThrow(/accept-vendor-only-data/);
-    await expectZeroWrites(f2);
-
-    // Real run with --accept-vendor-only-data succeeds
-    const runWithFlag = (await runMigration({ ...f2.options, acceptVendorOnlyData: true })) as Record<string, any>;
-    expect(runWithFlag.status).toBe("ok");
+    // A column unknown to the vendor index that holds data is refused before any target write
+    const f3 = await fixture();
+    await scalar(f3.sourceUrl, 'alter table "agents" add column if not exists "legacy_appearance" jsonb');
+    await scalar(f3.sourceUrl, "update \"agents\" set \"legacy_appearance\" = '{\"theme\": \"dark\"}'::jsonb");
+    await expect(runMigration(f3.options)).rejects.toThrow(/column-missing-in-target:agents\.legacy_appearance/);
+    // The schema is applied before the compatibility check; no data may be copied.
+    expect(await scalar(f3.targetUrl, "select count(*) from companies")).toBe("0");
   }, T * 2);
 
   it("rejects unsupported source histories before any target write", async () => {
@@ -607,6 +619,8 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     // facts read straight from the target
     expect(await scalar(f.targetUrl, "select count(*) from companies")).toBe("2");
     expect(await scalar(f.targetUrl, `select title from issues where id = '${ISSUE_A}'`)).toBe("Issue One");
+    expect(await scalar(f.targetUrl, `select appearance::text from agents where id = '${AGENT_A}'`)).toBe('{"theme": {"palette": ["ink", "amber"]}}');
+    expect(await scalar(f.targetUrl, `select title_needs_generation from issues where id = '${ISSUE_A}'`)).toBe("true");
     expect(await scalar(f.targetUrl, `select count(*) from issue_documents where issue_id = '${ISSUE_A}'`)).toBe("1");
     const material = JSON.parse(await scalar(f.targetUrl, "select material::text from company_secret_versions"));
     expect(await plaintextHash(TARGET_KEY, material)).toBe(sha256Hex(SECRET_VALUE));
