@@ -5824,7 +5824,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         companyId,
         agentId,
         invocationSource: "automation" as const,
-        status: "queued" as const,
+        status: "failed" as const,
         createdAt: new Date(Date.now() - 3_000 - index * 1_000),
         contextSnapshot: {
           issueId,
