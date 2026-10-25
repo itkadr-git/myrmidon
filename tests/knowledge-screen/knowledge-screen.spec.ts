@@ -52,7 +52,7 @@ const sections = Array.from(
 const body = `# Бэкапы\n\nСмотри [vm-core](../servers/vm-core.md) и [[infra/item-01]].\n\n${sections}\n${LAST_LINE}\n`;
 
 async function mockApi(page: Page) {
-  await page.route("**/api/**", async (route) => {
+  await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
     const url = new URL(route.request().url());
     const pathname = decodeURIComponent(url.pathname);
     const json = (data: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(data) });
