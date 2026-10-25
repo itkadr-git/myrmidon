@@ -5787,8 +5787,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
-    // This case verifies vendor recovery-action persistence, not L4 policy.
-    vi.stubEnv("MYRMIDON_STRANDED_AUTOPOLICY_ENABLED", "false");
     const { companyId, agentId, admAgentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
@@ -5816,6 +5814,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
       })
       .where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values(
+      Array.from({ length: 2 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation" as const,
+        status: "queued" as const,
+        createdAt: new Date(Date.now() - (index + 1) * 1000),
+        contextSnapshot: {
+          issueId,
+          source: "myrmidon.stranded_autopolicy_retry",
+        },
+      })),
+    );
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
