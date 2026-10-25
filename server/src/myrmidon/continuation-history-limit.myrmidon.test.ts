@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ExecutionContinuationEnvelope } from "@myrmidon/shared";
 import {
+  DEFAULT_CONTINUATION_ENVELOPE_BYTES,
   DEFAULT_CONTINUATION_HISTORY_CHARS,
   DEFAULT_CONTINUATION_HISTORY_LIMIT,
   DEFAULT_CONTINUATION_MESSAGE_MAX_CHARS,
   limitExecutionContinuationHistory,
+  readContinuationEnvelopeBytes,
   readContinuationHistoryChars,
   readContinuationHistoryLimit,
   readContinuationMessageMaxChars,
@@ -311,5 +313,96 @@ describe("continuation message character budget (DB-CARE DBC-3)", () => {
     ).toBe(true);
     expect(entryCapped.historyCharTruncation).toBeUndefined();
     expect(entryCapped.historyTruncation?.messages?.kept).toBe(30);
+  });
+});
+
+describe("limitExecutionContinuationHistory: serialized envelope byte ceiling (OPE-2321)", () => {
+  const envelopeBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
+
+  it("defaults to 96 KiB and reads its env override; 0 disables it", () => {
+    expect(DEFAULT_CONTINUATION_ENVELOPE_BYTES).toBe(96 * 1024);
+    expect(readContinuationEnvelopeBytes({})).toBe(96 * 1024);
+    expect(readContinuationEnvelopeBytes({ MYRMIDON_CONTINUATION_ENVELOPE_BYTES: "0" })).toBe(0);
+    expect(readContinuationEnvelopeBytes({ MYRMIDON_CONTINUATION_ENVELOPE_BYTES: " 16384 " })).toBe(16384);
+    expect(readContinuationEnvelopeBytes({ MYRMIDON_CONTINUATION_ENVELOPE_BYTES: "-5" })).toBe(96 * 1024);
+    expect(readContinuationEnvelopeBytes({ MYRMIDON_CONTINUATION_ENVELOPE_BYTES: "big" })).toBe(96 * 1024);
+  });
+
+  it("leaves a history under the byte ceiling untouched", () => {
+    const input = envelope({ messages: [message("m1"), message("m2", { body: "история" })] });
+    const limited = limitExecutionContinuationHistory(input, 10, 0, 0, 0, 0, 96 * 1024);
+    expect(limited).toBe(input);
+    expect(limited.messagesTruncated).toBeUndefined();
+  });
+
+  it("acceptance: 20 comments of 5 KiB each serialize under 128 KiB with direction preserved", () => {
+    // Entry cap and character budgets are deliberately disabled (0) so only the
+    // byte ceiling bounds the envelope — the acceptance shape of OPE-2321.
+    const pinnedOrigin = "origin-comment";
+    const messages = [
+      message("user-first", { authorType: "user", body: "Исходный запрос задачи" }),
+      ...Array.from({ length: 20 }, (_, i) =>
+        message(`bulk-${i}`, { body: "данные".repeat(1_024) /* 5 KiB of 2-byte chars */ }),
+      ),
+      message("user-latest", { authorType: "user", body: "Последний запрос исполнителя" }),
+    ];
+    const input = envelope({ messages, originCommentIds: [pinnedOrigin] });
+    input.messages.unshift(message(pinnedOrigin, { authorType: "agent", body: "поручение" }));
+
+    const limited = limitExecutionContinuationHistory(input, 0, 0, 0, 0, 0, 96 * 1024);
+    const serialized = envelopeBytes(limited);
+    expect(serialized).toBeLessThanOrEqual(128 * 1024);
+    expect(limited.messagesTruncated).toBeDefined();
+    // Direction survives: origin comment, first and latest user request stay.
+    const ids = limited.messages.map((entry) => entry.id);
+    expect(ids).toContain(pinnedOrigin);
+    expect(ids).toContain("user-first");
+    expect(ids).toContain("user-latest");
+    // The pins keep their bodies: direction is never reduced to a reference.
+    const pins = limited.messages.filter((entry) => ids.includes(entry.id) && [pinnedOrigin, "user-first", "user-latest"].includes(entry.id));
+    expect(pins.every((entry) => entry.body.length > 0)).toBe(true);
+    expect(limited.messagesTruncated!.afterBytes).toBeLessThanOrEqual(96 * 1024);
+    expect(limited.truncationNotice).toContain("byte envelope ceiling");
+  });
+
+  it("trims multi-byte history that fits the character budget but not the byte ceiling", () => {
+    // 20k Cyrillic chars pass the 24k character budget yet weigh ~40k bytes;
+    // a 32 KiB ceiling forces the byte pass to act.
+    const messages = [
+      message("user-first", { authorType: "user", body: "запрос" }),
+      ...Array.from({ length: 4 }, (_, i) => message(`cyr-${i}`, { body: "ж".repeat(6_000) })),
+      message("user-latest", { authorType: "user", body: "ответ" }),
+    ];
+    const limited = limitExecutionContinuationHistory(envelope({ messages }), 30, 24_000, 8_000, 32_000, 8_000, 32 * 1024);
+    expect(envelopeBytes(limited)).toBeLessThanOrEqual(32 * 1024);
+    expect(limited.messagesTruncated).toBeDefined();
+    const ids = limited.messages.map((entry) => entry.id);
+    expect(ids).toContain("user-first");
+    expect(ids).toContain("user-latest");
+  });
+
+  it("resume delta messages stay capped after the byte pass", () => {
+    const messages = [
+      message("user-first", { authorType: "user", body: "запрос" }),
+      ...Array.from({ length: 8 }, (_, i) => message(`d-${i}`, { body: "я".repeat(8_000) })),
+    ];
+    const input = envelope({
+      messages,
+      resumeDelta: { baseRunId: "run-1", messages: [...messages] },
+    });
+    const limited = limitExecutionContinuationHistory(input, 0, 0, 0, 0, 0, 24 * 1024);
+    const serialized = envelopeBytes(limited);
+    expect(serialized).toBeLessThanOrEqual(128 * 1024);
+    expect(envelopeBytes(limited.resumeDelta?.messages)).toBeLessThanOrEqual(24 * 1024);
+    // Every non-pinned delta body became a reference or was dropped.
+    const deltaIds = new Set((limited.resumeDelta?.messages ?? []).map((entry) => entry.id));
+    const d0 = limited.messages.find((entry) => entry.id === "d-0");
+    expect(d0?.bodyOmitted === true || !deltaIds.has("d-0")).toBe(true);
+  });
+
+  it("short histories keep working through the former path unchanged", () => {
+    const input = envelope({ messages: [message("m1"), message("m2")] });
+    // All budgets on defaults: the envelope is tiny and nothing changes.
+    expect(limitExecutionContinuationHistory(input)).toBe(input);
   });
 });
