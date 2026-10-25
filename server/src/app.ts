@@ -891,10 +891,11 @@ export async function createApp(
     // which the split wiring fills in while booting.
     myrmidonProcessReadinessRoutes(db, { processSupervisor: opts.processSupervisor ?? null }),
   );
-  app.use("/api", skillGitRecordRoutes({
-    gitRecord: configuredGitSkillRecord(),
-    secret: process.env.MYRMIDON_SKILL_GIT_WEBHOOK_SECRET,
-  }));
+  // myrmidon(OPE-9408): the signed git-record ingress is mounted ONCE, early,
+  // right after the JSON parser with verify:captureRawBody (see the mount
+  // above httpLogger) — the HMAC must see the exact request bytes and the
+  // webhook must not pass board actor auth. A second mount here would both
+  // re-run capture and put a provider-authenticated route behind actorMiddleware.
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
