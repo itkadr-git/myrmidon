@@ -14081,14 +14081,35 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
-      if (
-        enteringBlocked &&
-        req.actor.type === "agent" &&
-        blockerMetadataRaw == null
-      ) {
-        res.status(422).json({ error: "Entering blocked requires blockerMetadata" });
+      if (enteringBlocked && blockerMetadataRaw == null) {
+        const missingFields = [
+          "blockReason",
+          "owner",
+          "nextCheckAt",
+          "timeoutAt",
+          "escalationPolicy",
+          "blockedByIssueIds or externalRef",
+        ];
+        res.status(422).json({
+          error: "Entering blocked requires complete blockerMetadata",
+          missingFields,
+        });
         return;
       }
+      if (
+        enteringBlocked &&
+        !blockerMetadataRaw.blockedByIssueIds?.length &&
+        !blockerMetadataRaw.externalRef &&
+        !updateFields.blockedByIssueIds?.length &&
+        !(typeof req.body?.unblockDescriptor?.reasonRef === "object" && req.body.unblockDescriptor.reasonRef !== null)
+      ) {
+        res.status(422).json({
+          error: "Entering blocked requires a blocker reference in blockerMetadata",
+          missingFields: ["blockedByIssueIds or externalRef"],
+        });
+        return;
+      }
+
       // myrmidon(BLOCKED-GUARD P0.6): typed blocker metadata describes the current block only;
       // a transition out of blocked without new metadata clears it, so no stale reason survives.
       const leavingBlocked =

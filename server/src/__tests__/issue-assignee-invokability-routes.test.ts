@@ -348,7 +348,23 @@ describe("issue assignee invokability guard", () => {
       mockIssueService.getById.mockResolvedValue(existing);
       mockIssueService.update.mockResolvedValue({ ...existing, status });
 
-      const res = await request(createApp(boardActor())).patch(`/api/issues/${existing.id}`).send({ status });
+      const res = await request(createApp(boardActor()))
+        .patch(`/api/issues/${existing.id}`)
+        .send({
+          status,
+          ...(status === "blocked"
+            ? {
+                blockerMetadata: {
+                  blockReason: "dependency",
+                  owner: { agentId: NON_ENGINEER_AGENT_ID },
+                  externalRef: "test-dependency",
+                  nextCheckAt: "2026-08-04T18:00:00.000Z",
+                  timeoutAt: "2026-08-10T18:00:00.000Z",
+                  escalationPolicy: "notify_owner",
+                },
+              }
+            : {}),
+        });
 
       // The gate must not interfere: a status move by the current holder is never
       // refused as "requires an engineer" (other validators may still apply).

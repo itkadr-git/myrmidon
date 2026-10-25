@@ -145,6 +145,14 @@ describe("issue validators", () => {
     expect(
       // myrmidon(STALE-BLOCK): blocked updates need a reasonRef in the descriptor.
       updateIssueSchema.parse({
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000002" },
+          externalRef: "structured-unblock-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
         status: "blocked",
         unblockDescriptor: {
           owner: { agentId: "00000000-0000-4000-8000-000000000001" },
@@ -182,7 +190,17 @@ describe("issue validators", () => {
   });
 
   it("validates typed blocker metadata", () => {
-    const valid = {
+    const valid: {
+      status: string;
+      blockerMetadata: {
+        blockReason: string;
+        owner: { agentId: string } | { userId: string };
+        blockedByIssueIds: string[];
+        nextCheckAt: string;
+        timeoutAt: string;
+        escalationPolicy: string;
+      };
+    } = {
       status: "blocked",
       blockerMetadata: {
         blockReason: "dependency",
@@ -193,7 +211,8 @@ describe("issue validators", () => {
         escalationPolicy: "notify_owner",
       },
     };
-    expect(updateIssueSchema.safeParse(valid).success).toBe(true);
+    const parsed = updateIssueSchema.safeParse(valid);
+    expect(parsed.success, JSON.stringify(parsed.success ? null : parsed.error.issues)).toBe(true);
     for (const field of ["blockReason", "owner", "nextCheckAt", "timeoutAt", "escalationPolicy"]) {
       const metadata = { ...valid.blockerMetadata } as Record<string, unknown>;
       delete metadata[field];
@@ -220,35 +239,74 @@ describe("issue validators", () => {
       blockerMetadata: { ...valid.blockerMetadata, owner: { userId: "00000000-0000-4000-8000-000000000002" } },
     }).success).toBe(true);
   });
-  it("requires typed blocker metadata when transitioning into blocked", () => {
-    const result = updateIssueSchema.safeParse({ status: "blocked" });
-    expect(result.success).toBe(false);
+  it("does not apply transition-only blocker requirements in the shared payload schema", () => {
+    expect(updateIssueSchema.safeParse({ status: "blocked" }).success).toBe(true);
   });
 
-  it("preserves legacy blocked reason validation", () => {
-    expect(updateIssueSchema.safeParse({
+  it("rejects incomplete typed blocker metadata", () => {
+    const result = updateIssueSchema.safeParse({
       status: "blocked",
-      blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"],
-    }).success).toBe(true);
-    expect(updateIssueSchema.safeParse({
-      status: "blocked",
-      unblockDescriptor: {
-        owner: "board",
-        action: "Review the finding",
-        reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { agentId: "00000000-0000-4000-8000-000000000001" },
       },
-    }).success).toBe(true);
+      blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const missing = result.error.issues.map((issue) => issue.path.join("."));
+      expect(missing).toEqual(expect.arrayContaining(["blockerMetadata.nextCheckAt", "blockerMetadata.timeoutAt", "blockerMetadata.escalationPolicy"]));
+    }
   });
 
-  it("rejects legacy descriptors without a reason reference", () => {
+  it("leaves transition-only blocker completeness to the route guard", () => {
+    // Route-level guard (PATCH /issues/:id) returns 422 with missingFields;
+    // the shared schema stays permissive so service-layer callers are unaffected.
+    expect(
+      updateIssueSchema.safeParse({
+        status: "blocked",
+        blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("keeps accepting payloads that rely on route-level typed metadata enforcement", () => {
+    // Both payloads are schema-valid; the route guard rejects them with 422
+    // until complete blockerMetadata is present (P1.10).
+    for (const patch of [
+      { status: "blocked", blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"] },
+      {
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Review the finding",
+          reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
+        },
+      },
+    ]) {
+      expect(updateIssueSchema.safeParse(patch).success).toBe(true);
+    }
+  });
+
+  it("still rejects malformed unblockDescriptor objects", () => {
+    // reasonRef completeness for blocked transitions is route-enforced (422 +
+    // missingFields); the schema keeps rejecting structurally invalid descriptors.
     expect(updateIssueSchema.safeParse({
       status: "blocked",
-      unblockDescriptor: { owner: "board", action: "Review" },
+      unblockDescriptor: { owner: "board" },
     }).success).toBe(false);
   });
 
   it("preserves legacy descriptor reason validation", () => {
     expect(updateIssueSchema.safeParse({
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { userId: "00000000-0000-4000-8000-000000000002" },
+        externalRef: "legacy-test",
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
+      },
       status: "blocked",
       unblockDescriptor: {
         owner: "board",
@@ -264,6 +322,14 @@ describe("issue validators", () => {
 
   it("validates legacy descriptor reason variants", () => {
     expect(updateIssueSchema.safeParse({
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { userId: "00000000-0000-4000-8000-000000000002" },
+        externalRef: "legacy-test",
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
+      },
       status: "blocked",
       unblockDescriptor: {
         owner: "board",
