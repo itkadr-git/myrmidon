@@ -10,6 +10,7 @@ import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   PluginSlotMount,
+  usePluginSlots,
   resolveRouteSidebarSlot,
   type ResolvedPluginSlot,
 } from "@/plugins/slots";
@@ -60,6 +61,7 @@ export function PluginPage() {
     queryFn: () => pluginsApi.listUiContributions(),
     enabled: !!resolvedCompanyId && (!!pluginId || !!pluginRoutePath),
   });
+  usePluginSlots({ slotTypes: ["page"], companyId: resolvedCompanyId, enabled: !!resolvedCompanyId && (!!pluginId || !!pluginRoutePath) });
 
   const pageSlot = useMemo(() => {
     if (!contributions) return null;
