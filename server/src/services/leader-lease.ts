@@ -28,6 +28,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, or, lt, sql } from "drizzle-orm";
 import { boardLeases } from "@myrmidon/db";
 import type { Db } from "@myrmidon/db";
+import { backgroundInterval } from "../myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 
 /** The named leases of the board (design §5.1). */
@@ -226,7 +227,7 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
       start() {
         if (timer) return;
         void pass();
-        timer = setInterval(() => void pass(), renewIntervalMs);
+        timer = backgroundInterval(() => void pass(), renewIntervalMs);
         if (typeof timer.unref === "function") timer.unref();
       },
       stop() {

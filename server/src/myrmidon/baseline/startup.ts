@@ -16,6 +16,7 @@ import { isNotNull } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { computeBaselineMetrics, type BaselineMetricsResponse } from "./service.js";
 import type { BaselineWindow } from "./metrics.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export const BASELINE_INTERVAL_ENV = "MYRMIDON_BASELINE_INTERVAL_SEC";
 export const BASELINE_WINDOW_DAYS = 14;
@@ -153,7 +154,7 @@ export function startBaselineSnapshots(
     }
   };
 
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void tick();
   }, settings.intervalMs);
   if (typeof timer.unref === "function") timer.unref();

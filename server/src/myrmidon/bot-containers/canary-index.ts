@@ -17,6 +17,7 @@ import { botCanaryService, type BotCanaryRuntimePort, type BotCanaryService } fr
 import { readBotCanarySettings } from "./canary-settings.js";
 import { getBotContainerRuntime } from "./routes-wiring.js";
 import { apiServerKeySecretName } from "./profile-ports.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 /**
  * The runtime port over the registered bot container runtime (startup.ts
@@ -110,7 +111,7 @@ export function startBotCanary(db: Db, opts: { env?: NodeJS.ProcessEnv; deps?: P
   const settings = readBotCanarySettings(env);
   if (!settings.enabled) return () => undefined;
   const service = botCanaryService(db, { ...canaryServiceDeps(db), ...(opts.deps ?? {}) });
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void service.tick().catch((err) => logger.error({ err }, "bot canary tick failed"));
   }, settings.tickMs);
   timer.unref?.();

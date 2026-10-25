@@ -10,6 +10,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BOARD_LANES,
+  backgroundInterval,
   currentLane,
   enterLane,
   enterLaneIfUntagged,
@@ -42,6 +43,7 @@ describe("board load lanes", () => {
       "chat_reconcile",
       "bot_reconcile",
       "run_supervision",
+      "background_sweep",
       // The residue, not a lane the board schedules: work outside every lane
       // is reported here instead of being spread over the lanes.
       "untagged",
@@ -172,5 +174,52 @@ describe("board load lanes", () => {
     // spread over the lanes, so the lane totals still add up to the process.
     expect(sample.find((row) => row.lane === "untagged")?.dbQueries).toBe(1);
     expect(sample.filter((row) => row.lane !== "untagged").every((row) => row.dbQueries === 0)).toBe(true);
+  });
+
+  it("runs a background sweep pass in the background_sweep lane, not in the residue (OPE-9058)", async () => {
+    vi.useFakeTimers();
+    try {
+      const seen: Array<ReturnType<typeof currentLane>> = [];
+      // The timer is armed outside every lane, like a startup sweep.
+      expect(currentLane()).toBeNull();
+      const timer = backgroundInterval(async () => {
+        seen.push(currentLane());
+        await Promise.resolve();
+        seen.push(currentLane());
+        recordLaneDbQuery();
+      }, 1_000);
+      timer.unref?.();
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      clearInterval(timer);
+
+      expect(seen).toEqual(["background_sweep", "background_sweep", "background_sweep", "background_sweep"]);
+      expect(laneRow("background_sweep").dbQueries).toBe(2);
+      expect(laneRow("background_sweep").executions).toBe(2);
+      expect(laneRow("untagged").dbQueries).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets the early request tag attribute the middleware ahead of the api router to http_route (OPE-9058)", async () => {
+    const { boardRequestLaneTagMiddleware } = await import("./request-load.js");
+    const tag = boardRequestLaneTagMiddleware();
+    let during: ReturnType<typeof currentLane> = null;
+    await new Promise<void>((resolve) => {
+      tag({} as never, {} as never, () => {
+        // like actorMiddleware: a DB lookup behind an await, then next()
+        void Promise.resolve().then(() => {
+          during = currentLane();
+          recordLaneDbQuery();
+          resolve();
+        });
+      });
+    });
+    expect(during).toBe("http_route");
+    expect(laneRow("http_route").dbQueries).toBe(1);
+    // it tags only: the journal and the execution count stay with the api router
+    expect(laneRow("http_route").executions).toBe(0);
+    expect(laneRow("untagged").dbQueries).toBe(0);
   });
 });
