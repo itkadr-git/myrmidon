@@ -145,8 +145,8 @@ describeDatabase("swarm claim capture under the race", () => {
   }, 30_000);
 
   it("does not clear a newer explicit re-assignment when an old lease expires", async () => {
-    const claimedAt = new Date();
-    const releasedAt = new Date(claimedAt.getTime() + 60 * 60 * 1000);
+    const claimedAt = new Date(Date.now() - 60 * 60 * 1000);
+    const releasedAt = new Date(Date.now() - 1);
     const claim = await insertClaim(db, {
       ...claimInput(agentOne, claimedAt),
       expiresAt: releasedAt,
