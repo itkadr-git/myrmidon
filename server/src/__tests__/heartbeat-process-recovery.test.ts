@@ -5832,6 +5832,44 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual(
       [],
     );
+    const strandedRecoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(strandedRecoveryActions).toHaveLength(1);
+    expect(strandedRecoveryActions[0]).toMatchObject({
+      kind: "missing_disposition",
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      ownerType: "board",
+      ownerAgentId: null,
+      status: "active",
+    });
+    const dispositionWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, "issue_unblock_requested"),
+        ),
+      );
+    expect(dispositionWakeups).toHaveLength(0);
+    const recoveryLivenessEvents = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((events) => events.filter((event) => event.action.startsWith("recovery.liveness:")));
+    expect(recoveryLivenessEvents).toHaveLength(0);
+    const issueAfterRecovery = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueAfterRecovery?.unblockDescriptor).not.toMatchObject({
+      eventKey: `recovery.liveness:${issueId}`,
+      owner: { agentId: null },
+    });
 
     const comments = await db
       .select()
