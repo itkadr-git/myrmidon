@@ -64,7 +64,7 @@ class FakeSession implements BridgeSession {
   readonly extVersion = "0.1.0";
   readonly connectedAt = 0;
   closed = 0;
-  readonly requests: Array<{ method: string; timeoutMs: number }> = [];
+  readonly requests: Array<{ method: string; params: unknown; timeoutMs: number }> = [];
 
   constructor(
     readonly deviceId: string,
@@ -76,7 +76,7 @@ class FakeSession implements BridgeSession {
   }
 
   async request(method: Parameters<BridgeSession["request"]>[0], params: unknown, timeoutMs: number) {
-    this.requests.push({ method, timeoutMs });
+    this.requests.push({ method, params, timeoutMs });
     return this.behavior(method, params);
   }
 
@@ -552,6 +552,16 @@ describe("browser bridge: signing policy", () => {
     expect(harnessed.session.requests.at(-1)?.timeoutMs).toBe(BRIDGE_CONFIRMATION_TIMEOUT_MS);
     expect(result.confirmation).toBe("confirmed");
     expect(harnessed.journal.at(-1)?.details).toMatchObject({ confirmation: "confirmed" });
+  });
+
+  it("tells the extension the policy decision, whatever the bot asked for", async () => {
+    const manual = harness({ signing: { enabled: true, mode: "manual", types: [] }, behavior: SIGNED });
+    await runSign(manual, { ...SIGN_PARAMS, confirmation: "none" });
+    expect(manual.session.requests.at(-1)?.params).toMatchObject({ confirmation: "human" });
+
+    const auto = harness({ behavior: SIGNED });
+    await runSign(auto, { ...SIGN_PARAMS, confirmation: "human" });
+    expect(auto.session.requests.at(-1)?.params).toMatchObject({ confirmation: "none" });
   });
 
   it("applies the per-type mode only to the listed action types", async () => {

@@ -240,5 +240,11 @@ export const heartbeatRuns = pgTable(
     // which no other index serves. Persisted from the production database, see
     // migration 0308_db_care_audit_indexes.
     updatedAtIdx: index("heartbeat_runs_updated_at_idx").on(table.updatedAt),
+    // myrmidon(SWARM-B): the matcher reads the provider-quota failures of the
+    // candidate agents on every match. Such rows are a sliver of the table, so a
+    // partial index keeps that read off the week of ordinary runs.
+    providerQuotaIdx: index("heartbeat_runs_provider_quota_idx")
+      .on(table.companyId, table.agentId, table.createdAt)
+      .where(sql`${table.errorCode} = 'provider_quota'`),
   }),
 );

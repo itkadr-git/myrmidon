@@ -13,7 +13,22 @@ export interface SiteAgentClientConfig {
   agent?: https.Agent | http.Agent;
 }
 
-export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentClient {
+/** The site-agent client plus the memory export (C-MEM), which no move uses. */
+export interface SiteAgentMemoryClient extends SiteAgentClient {
+  /** POST /v1/memory/export: the hindsight transfer archive (zip) of the site's work-memory bank. */
+  memoryExport(botKey: string): Promise<Buffer>;
+  /** GET /v1/bots/{botKey}/logs: the tail of the bot container's log, already redacted by the site-agent. */
+  botLogs(botKey: string): Promise<string>;
+}
+
+/** fleetd caps the export at 64 MiB; a longer answer is not an archive of ours. */
+const MAX_MEMORY_EXPORT_BYTES = 80 * 1024 * 1024;
+const MEMORY_EXPORT_TIMEOUT_MS = 3 * 60_000;
+/** The site-agent returns at most 1 MiB of log; a longer answer is not a log of ours. */
+const MAX_BOT_LOGS_BYTES = 2 * 1024 * 1024;
+const BOT_LOGS_TIMEOUT_MS = 35_000;
+
+export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentMemoryClient {
   const url = new URL(config.baseUrl);
   const isHttps = url.protocol === "https:";
   const client = isHttps ? https : http;
@@ -27,6 +42,95 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentC
   }
 
   return {
+    async botLogs(botKey: string): Promise<string> {
+      return new Promise<string>((resolve, reject) => {
+        const req = client.request(
+          {
+            protocol: url.protocol,
+            hostname: url.hostname,
+            port: url.port ? Number(url.port) : isHttps ? 443 : 80,
+            path: `/v1/bots/${encodeURIComponent(botKey)}/logs`,
+            method: "GET",
+            headers: { ...baseHeaders(), Accept: "application/json" },
+            agent: config.agent,
+          },
+          (res) => {
+            const chunks: Buffer[] = [];
+            let size = 0;
+            res.on("data", (chunk: Buffer) => {
+              size += chunk.length;
+              if (size > MAX_BOT_LOGS_BYTES) {
+                req.destroy(new Error("Site-agent bot log is larger than the allowed size"));
+                return;
+              }
+              chunks.push(chunk);
+            });
+            res.on("error", reject);
+            res.on("aborted", () => reject(new Error(`Site-agent logs ${botKey} broke off`)));
+            res.on("end", () => {
+              const text = Buffer.concat(chunks).toString("utf8");
+              if (res.statusCode && res.statusCode >= 400) {
+                reject(new Error(`Site-agent logs ${botKey} failed with ${res.statusCode}: ${text.slice(0, 300)}`));
+                return;
+              }
+              try {
+                const parsed = JSON.parse(text) as { logs?: unknown };
+                resolve(typeof parsed.logs === "string" ? parsed.logs : "");
+              } catch {
+                reject(new Error(`Site-agent logs ${botKey}: the answer is not the logs contract`));
+              }
+            });
+          },
+        );
+        req.setTimeout(BOT_LOGS_TIMEOUT_MS, () => req.destroy(new Error("Site-agent logs timed out")));
+        req.on("error", reject);
+        req.end();
+      });
+    },
+
+    async memoryExport(botKey: string): Promise<Buffer> {
+      return new Promise<Buffer>((resolve, reject) => {
+        const body = Buffer.from(JSON.stringify({ botKey }));
+        const req = client.request(
+          {
+            protocol: url.protocol,
+            hostname: url.hostname,
+            port: url.port ? Number(url.port) : isHttps ? 443 : 80,
+            path: "/v1/memory/export",
+            method: "POST",
+            headers: { ...baseHeaders(), "Content-Type": "application/json", "Content-Length": String(body.length), Accept: "application/zip" },
+            agent: config.agent,
+          },
+          (res) => {
+            const chunks: Buffer[] = [];
+            let size = 0;
+            res.on("data", (chunk: Buffer) => {
+              size += chunk.length;
+              if (size > MAX_MEMORY_EXPORT_BYTES) {
+                req.destroy(new Error("Site-agent memory export is larger than the allowed size"));
+                return;
+              }
+              chunks.push(chunk);
+            });
+            // A response that broke off must fail, never pass for a short archive.
+            res.on("error", reject);
+            res.on("aborted", () => reject(new Error(`Site-agent memory export ${botKey} broke off`)));
+            res.on("end", () => {
+              const data = Buffer.concat(chunks);
+              if (res.statusCode && res.statusCode >= 400) {
+                reject(new Error(`Site-agent memory export ${botKey} failed with ${res.statusCode}: ${data.toString("utf8").slice(0, 300)}`));
+                return;
+              }
+              resolve(data);
+            });
+          },
+        );
+        req.setTimeout(MEMORY_EXPORT_TIMEOUT_MS, () => req.destroy(new Error("Site-agent memory export timed out")));
+        req.on("error", reject);
+        req.end(body);
+      });
+    },
+
     async snapshot(botKey: string): Promise<Readable> {
       return new Promise<Readable>((resolve, reject) => {
         const path = `/v1/bots/${encodeURIComponent(botKey)}/snapshot`;

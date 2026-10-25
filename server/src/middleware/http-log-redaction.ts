@@ -23,6 +23,9 @@ export const HTTP_LOG_REDACT_PATHS = [
   'req.headers["x-paperclip-tool-gateway-token"]',
   'req.headers["x-openclaw-token"]',
   'req.headers["x-openclaw-auth"]',
+  // The run-scoped GitHub broker capability (30-day lifetime) sent by the gh
+  // wrapper and the git credential helper on every credential request.
+  'req.headers["x-paperclip-github-capability"]',
   // Telegram's optional webhook verification header is a reusable bearer
   // secret sent on every provider callback.
   'req.headers["x-telegram-bot-api-secret-token"]',

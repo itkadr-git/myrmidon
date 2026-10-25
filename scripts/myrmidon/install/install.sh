@@ -380,6 +380,7 @@ resolve_release() {
   fi
 
   MANIFEST="$(mktemp)"
+  trap 'rm -f "${MANIFEST:-}"' EXIT INT TERM
   fetch "$manifest_url" "$MANIFEST" \
     || die "cannot download the release manifest $manifest_url (check the network and the repository name)"
 
@@ -401,6 +402,7 @@ resolve_release() {
   BOARD_DIGEST="$(jq -r '.components.board.digest // ""' "$MANIFEST")"
   DOCKERGATE_DIGEST="$(jq -r '.components.dockergate.digest // ""' "$MANIFEST")"
   BOT_DIGEST="$(jq -r '.components.hermes.digest // .components["hermes-dev"].digest // ""' "$MANIFEST")"
+  rm -f "$MANIFEST"
 
   [[ -n "$BOARD_REPOSITORY" ]] || BOARD_REPOSITORY="ghcr.io/itkadr-git/myrmidon"
   [[ -n "$DOCKERGATE_REPOSITORY" ]] || DOCKERGATE_REPOSITORY="ghcr.io/itkadr-git/myrmidon-dockergate"

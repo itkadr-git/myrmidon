@@ -1,4 +1,8 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
+import { blockerOpenSql } from "../myrmidon/blocker-resolved.js";
+import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
+import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
+import { resolveRunnerAcpxCodexAuthEnv } from "../myrmidon/secret-settings/runner-environment.js";
 import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
 // myrmidon(1.6.6 RUN-RETRY-POLICY): classification/backoff/attempt limit of a
 // failed run's retry; the schedule this file queues records itself with
@@ -62,7 +66,11 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
 import { connectionIntentService } from "./connection-intents.js";
+import { externalSessionScheduler, scheduleExternalSessionRun } from "./external-session-scheduler.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
+import { listAdapterModels } from "../adapters/registry.js";
+import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/router.js";
+import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { aiConnectionBindingSchema, type AiConnectionBinding } from "@myrmidon/shared";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
 // settings against the environment, plus the per-agent card switch, so the three
@@ -471,6 +479,7 @@ import {
   settleLiveRunnerGoalBeforeInterrupt,
 } from "./runner-goals.js";
 import { resolveChatRunPresentationAuthorizationReason } from "./chat-run-publications.js";
+import { requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
 import { projectService } from "./projects.js";
 import {
   getProjectTokenQuotaBlock,
@@ -12818,6 +12827,41 @@ export function heartbeatService(
     void reportRunFailure(db, updated);
   }
 
+  // myrmidon(1.6.6 OPE-8998): a wake request ends with its run. Terminal
+  // statuses were written by many paths (reaper, lease release, deadline,
+  // adapter failure), and the ones that skipped the request left it `claimed`
+  // behind a failed/interrupted run (prod: 438 such rows), where idle pickup
+  // read it as work in flight. Every run status write goes through
+  // setRunStatus / setRunStatusFromLive, so the request is closed here, right
+  // after the run row, and only while it is still queued or claimed.
+  async function closeWakeupOfTerminalRun(run: typeof heartbeatRuns.$inferSelect) {
+    if (!run.wakeupRequestId || !isHeartbeatRunTerminalStatus(run.status)) return;
+    const wakeStatus =
+      run.status === "succeeded" ? "completed" : run.status === "cancelled" ? "cancelled" : "failed";
+    const now = new Date();
+    try {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: wakeStatus,
+          finishedAt: now,
+          updatedAt: now,
+          ...(wakeStatus === "failed" ? { error: run.error ?? `run ${run.status}` } : {}),
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.id, run.wakeupRequestId),
+            inArray(agentWakeupRequests.status, ["queued", "claimed"]),
+          ),
+        );
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), runId: run.id },
+        "could not close the wake request of a terminal run",
+      );
+    }
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -12880,6 +12924,7 @@ export function heartbeatService(
       });
       publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
+      await closeWakeupOfTerminalRun(updated);
     }
 
     return updated;
@@ -12973,6 +13018,7 @@ export function heartbeatService(
       });
       publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
+      await closeWakeupOfTerminalRun(updated);
       return { run: updated, updated: true as const };
     }
 
@@ -13550,7 +13596,7 @@ export function heartbeatService(
                 from issues blocker
                 where blocker.id = ${issueRelations.issueId}
                   and blocker.company_id = ${issue.companyId}
-                  and blocker.status not in ('done', 'cancelled')
+                  and ${blockerOpenSql('blocker.status')}
                   and blocker.hidden_at is null
               )`,
               ),
@@ -22918,12 +22964,23 @@ export function heartbeatService(
         }
         runScopedAiBinding = { ...aiBinding };
       }
-      const runAdapterConfig: Record<string, unknown> = {
+      let runAdapterConfig: Record<string, unknown> = {
         ...executionRunConfig,
         ...(typeof externalSession.model === "string"
           ? { model: externalSession.model }
           : {}),
       };
+      if (readBuiltInAgentMarker(agent.metadata)?.key === "admin-assistant") {
+        const availableModels = agent.adapterType
+          ? await listAdapterModels(agent.adapterType)
+          : [];
+        runAdapterConfig = resolveAdminAssistantAdapterConfig({
+          adapterConfig: runAdapterConfig,
+          metadata: agent.metadata,
+          context,
+          availableModels: availableModels.map((model) => model.id),
+        });
+      }
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           managedAiCredentials: Boolean(runScopedAiBinding),
@@ -24030,6 +24087,7 @@ export function heartbeatService(
           context.paperclipScratch = {
             type: "heartbeat_run",
             dir: runScratch.dir,
+            runDir: runScratch.runDir,
             cleanupPolicy: "terminal_run",
             marker: HEARTBEAT_RUN_SCRATCH_MARKER,
             tempKeysApplied: scratchEnv.tempKeysApplied,
@@ -24206,6 +24264,13 @@ export function heartbeatService(
           .catch(() => undefined);
         if (defaultRepo) context.paperclipBotDiskDefaultRepo = defaultRepo;
         else delete context.paperclipBotDiskDefaultRepo;
+      }
+      // myrmidon(MYR-WS-RECOVER): the task's own pull request (repository and head branch) for
+      // the gateway's `workspace` field; the project's repository is only the fallback.
+      {
+        const pullRequest = issueRef?.id ? await loadRunPullRequest(db, issueRef.id).catch(() => null) : null;
+        if (pullRequest) context.paperclipPullRequest = pullRequest;
+        else delete context.paperclipPullRequest;
       }
       // Emit exactly one requested-vs-synced observability line for the referenced-project set. A run
       // with no referenced project stays silent, so this adds no noise to the anchor-only default. The
@@ -25882,6 +25947,19 @@ export function heartbeatService(
               }
             }
             const nativeMcpServer = nativeMcpServers[0] ?? null;
+            // myrmidon(E2.8): instance secret-ref for the ACPX Codex auth, resolved server-side.
+            const runnerAcpxCodexAuthEnv = await resolveRunnerAcpxCodexAuthEnv(
+              createInstanceSecretSettingService(db),
+              {
+                existing: buildNativeProviderEnvironment(
+                  adapterEnv,
+                  process.env,
+                  executionWorkspace.cwd,
+                ),
+                managedCredentialFile: Boolean(managedAiRuntime),
+              },
+              logger,
+            );
             let sessionGoalControl = parseNativeSessionGoalControl(
               context.runnerGoalControl,
             );
@@ -26021,6 +26099,7 @@ export function heartbeatService(
                           process.env,
                           executionWorkspace.cwd,
                         ),
+                        ...runnerAcpxCodexAuthEnv,
                         ...(nativeGitHubBridge
                           ? {
                               PAPERCLIP_GITHUB_BROKER_URL:
@@ -26182,8 +26261,8 @@ export function heartbeatService(
             if (managedMcpConfig) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
             }
-            const guardedDispatch =
-              await dispatchResolvedInteractionContinuationWithAtomicGate(
+            const dispatch = () =>
+              dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {
                   legacyAdapterEntered = true;
                   return adapter.execute({
@@ -26278,6 +26357,21 @@ export function heartbeatService(
                   });
                 },
               );
+            const guardedDispatch = typeof externalSession.connectionId === "string" && externalSession.connectionId
+              ? await scheduleExternalSessionRun(
+                  { companyId: run.companyId, connectionId: externalSession.connectionId },
+                  async () => {
+                    const latestRun = await getRun(run.id);
+                    if (executionControl.controller.signal.aborted || latestRun?.status !== "running") {
+                      throw new Error("External session run cancelled before dispatch");
+                    }
+                    const guarded = await dispatch();
+                    if (guarded.dispatched) await guarded.resultPromise;
+                    return guarded;
+                  },
+                  { runId: run.id, signal: executionControl.controller.signal },
+                )
+              : await dispatch();
             if (!guardedDispatch.dispatched) return;
             adapterResult = await guardedDispatch.resultPromise;
           }
@@ -28243,7 +28337,49 @@ export function heartbeatService(
     }
   }
 
+  // myrmidon(1.6.6 OPE-8998): the review-admission record written in the
+  // in_review transaction (insertReviewAdmissionWakeup) is the seed of the
+  // post-commit wake with the same idempotency key. When that wake becomes a
+  // run it reuses the record; when it is deferred (issue lock held), skipped
+  // or coalesced, the outcome is recorded on a separate row and the seed stayed
+  // `queued` without a run forever (prod 24.10: 9 of them, reviewers never
+  // started, idle pickup read each as a wake in flight). The intent lives on in
+  // the outcome row, so the seed is closed here.
+  async function closeUnservedReviewAdmission(agentId: string, idempotencyKey: string) {
+    const now = new Date();
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "coalesced", finishedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+          eq(agentWakeupRequests.status, "queued"),
+          isNull(agentWakeupRequests.runId),
+          sql`not exists (select 1 from ${heartbeatRuns} hr where hr.wakeup_request_id = ${agentWakeupRequests.id})`,
+        ),
+      );
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
+    try {
+      return await enqueueWakeupInner(agentId, opts, executionWaitRequestId);
+    } finally {
+      const key = opts.idempotencyKey;
+      if (typeof key === "string" && key.startsWith("issue-review-admission:")) {
+        try {
+          await closeUnservedReviewAdmission(agentId, key);
+        } catch (err) {
+          logger.warn(
+            { err: err instanceof Error ? err.message : String(err), agentId },
+            "enqueueWakeup: could not close unserved review-admission record",
+          );
+        }
+      }
+    }
+  }
+
+  async function enqueueWakeupInner(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
@@ -29188,6 +29324,8 @@ export function heartbeatService(
               status: issues.status,
               statusVersion: issues.statusVersion,
               projectId: issues.projectId,
+              casteKey: issues.casteKey,
+              harnessKind: issues.harnessKind,
               projectWorkspaceId: issues.projectWorkspaceId,
               executionWorkspaceId: issues.executionWorkspaceId,
               executionWorkspacePreference: issues.executionWorkspacePreference,
@@ -30016,6 +30154,55 @@ export function heartbeatService(
                 hasResolvablePriorSessionWorkspace,
               })
             ) {
+              // Only the issue's own caste / project default count; the company
+              // default caste is not a code signal (it would requeue every issue).
+              const effectiveLabels = (
+                await tx
+                  .select({ name: labels.name })
+                  .from(issueLabels)
+                  .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+                  .where(eq(issueLabels.issueId, issue.id))
+              ).map((row) => row.name);
+              const projectDefaultCasteKey = issue.projectId
+                ? await tx
+                    .select({ defaultCasteKey: projects.defaultCasteKey })
+                    .from(projects)
+                    .where(eq(projects.id, issue.projectId))
+                    .then((rows) => rows[0]?.defaultCasteKey ?? null)
+                : null;
+              if (requiresEngineer({
+                labels: effectiveLabels,
+                casteKey: issue.casteKey,
+                projectDefaultCasteKey,
+                harnessKind: issue.harnessKind,
+                executionWorkspacePreference: issue.executionWorkspacePreference,
+              })) {
+                const requeued = await issuesSvc.update(issue.id, {
+                  status: "todo",
+                  assigneeAgentId: null,
+                  assigneeUserId: null,
+                  checkoutRunId: null,
+                  executionRunId: null,
+                  executionAgentNameKey: null,
+                  executionLockedAt: null,
+                  actorAgentId: null,
+                  actorUserId: null,
+                  companyGuard: issue.companyId,
+                }, tx);
+                if (!requeued) throw new Error("Engineer workspace recovery could not update the issue");
+                await logActivity(tx as unknown as Db, {
+                  companyId: issue.companyId,
+                  actorType: "system",
+                  actorId: "system",
+                  agentId,
+                  runId: null,
+                  action: "issue.engineer_workspace_requeued",
+                  entityType: "issue",
+                  entityId: issue.id,
+                  details: { reason: WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE },
+                });
+                return { kind: "skipped" as const };
+              }
               const now = new Date();
               const issueLabel = formatIssueIdentifierLink(
                 issue.identifier,
@@ -31590,7 +31777,7 @@ export function heartbeatService(
                   parseObject(current?.resultJson),
                 )
               : {};
-          return await setRunStatusFromLive(
+          const cancelledRun = await setRunStatusFromLive(
             run.id,
             "cancelled",
             pendingNativeRetry
@@ -31648,6 +31835,10 @@ export function heartbeatService(
                 : {}),
             },
           );
+          // A run still queued behind the external-session limit has no registered
+          // adapter control, so Stop reaches it only through the shared scheduler.
+          externalSessionScheduler.cancel(run.id, new Error(reason));
+          return cancelledRun;
         } catch (error) {
           if (processCancellationSettlement) {
             processCancellationSettlement.failed = true;

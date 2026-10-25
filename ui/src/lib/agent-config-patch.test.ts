@@ -92,6 +92,32 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("keeps the digest-pinned container image when a non-image field or a container limit changes (OPE-8916)", () => {
+    const pinned = `ghcr.io/example/hermes@sha256:${"c".repeat(64)}`;
+    const agent = makeAgent();
+    agent.adapterType = "hermes_gateway";
+    agent.adapterConfig = {
+      note: "old",
+      container: { enabled: true, image: pinned, memoryMb: 2048, cpus: 1, pidsLimit: 512 },
+    };
+
+    const other = buildAgentUpdatePatch(agent, makeOverlay({ adapterConfig: { note: "new" } }));
+    const otherContainer = (other.adapterConfig as Record<string, unknown>).container as Record<string, unknown>;
+    expect(otherContainer.image).toBe(pinned);
+    expect(JSON.stringify(other)).not.toContain(":latest");
+
+    const limit = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        adapterConfig: { container: { enabled: true, image: pinned, memoryMb: 4096, cpus: 1, pidsLimit: 512 } },
+      }),
+    );
+    const limitContainer = (limit.adapterConfig as Record<string, unknown>).container as Record<string, unknown>;
+    expect(limitContainer.image).toBe(pinned);
+    expect(limitContainer.memoryMb).toBe(4096);
+    expect(JSON.stringify(limit)).not.toContain(":latest");
+  });
+
   it("writes max-turn continuation policy under runtimeConfig.heartbeat", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),

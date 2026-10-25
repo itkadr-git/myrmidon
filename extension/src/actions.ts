@@ -18,6 +18,7 @@
 
 import { BROWSER_DOWNLOAD_MAX_BYTES, BROWSER_BRIDGE_ERROR_CODES, EXTENSION_CAPABILITIES, type BrowserBridgeMethod } from "./protocol";
 import { isUrlAllowedByAllowlist } from "./allowlist";
+import { isHelperActionType, type SignHelperPort, type SignatureStash } from "./sign";
 
 export interface TabHandle {
   tabId: number;
@@ -95,10 +96,21 @@ export interface ActionContext {
   capabilities: readonly string[];
 }
 
+/** What `browser.sign` needs beyond the tab and the page: the local helper. */
+export interface SignPorts {
+  helper: SignHelperPort;
+  /** Keeps the produced signature on this PC for the page; optional. */
+  stash?: SignatureStash;
+  /** SHA-256 of base64 bytes, hex. Defaults to WebCrypto; tests inject their own. */
+  sha256Hex?(base64: string): Promise<string>;
+}
+
 export interface ActionPorts {
   tabs: BrowserTabPort;
   content: ContentScriptPort;
   confirm?: ConfirmationPort;
+  /** Absent in a build without the signing helper: `browser.sign` then fails closed. */
+  sign?: SignPorts;
 }
 
 /** Identity of the gateway request that is being executed. */
@@ -112,6 +124,10 @@ export interface ActionParams {
   value?: string;
   /** "human" marks a step a person on this PC must confirm (part D). */
   confirmation?: "none" | "human";
+  /** `browser.sign`: workspace reference of the document (journal and prompt only). */
+  documentRef?: string;
+  /** `browser.sign`: one of the helper's action types. */
+  actionType?: string;
 }
 
 export type ActionOutcome =
@@ -130,6 +146,7 @@ const METHOD_CAPABILITY: Record<BrowserBridgeMethod, string> = {
   "browser.fill": "fill",
   "browser.download": "download",
   "browser.screenshot": "screenshot",
+  "browser.sign": "sign",
 };
 
 /**
@@ -140,6 +157,22 @@ export function checkActionLocally(method: BrowserBridgeMethod, params: ActionPa
   const capability = METHOD_CAPABILITY[method];
   if (!context.capabilities.includes(capability)) {
     return { ok: false, code: BROWSER_BRIDGE_ERROR_CODES.capabilityUnsupported, message: `capability "${capability}" is not implemented by this extension build` };
+  }
+  if (method === "browser.sign") {
+    if (typeof params.documentRef !== "string" || params.documentRef === "") {
+      return { ok: false, code: BROWSER_BRIDGE_ERROR_CODES.invalidParams, message: "browser.sign requires \"documentRef\"" };
+    }
+    if (!isHelperActionType(params.actionType)) {
+      return { ok: false, code: BROWSER_BRIDGE_ERROR_CODES.invalidParams, message: "browser.sign requires an \"actionType\" the signing helper supports" };
+    }
+    // The document is fetched in the page session: the extension cannot read
+    // the bot's workspace, so the platform url of the document is required.
+    if (typeof params.url !== "string" || params.url === "") {
+      return { ok: false, code: BROWSER_BRIDGE_ERROR_CODES.invalidParams, message: "browser.sign requires \"url\" of the document on the allowlisted site" };
+    }
+    if (!isUrlAllowedByAllowlist(params.url, context.allowlist)) {
+      return { ok: false, code: BROWSER_BRIDGE_ERROR_CODES.domainNotAllowed, message: "the url is outside the bridge allowlist" };
+    }
   }
   if (method === "browser.open" || method === "browser.download") {
     if (typeof params.url !== "string" || params.url === "") {
@@ -164,6 +197,9 @@ export function checkActionLocally(method: BrowserBridgeMethod, params: ActionPa
 
 /** One line a person can read: what is about to happen on their PC. */
 export function describeAction(method: BrowserBridgeMethod, params: ActionParams): string {
+  if (method === "browser.sign") {
+    return `${method} → ${params.documentRef ?? "document"} (${params.actionType ?? "sign"})`;
+  }
   const where = params.target ?? params.url ?? "the active page";
   return `${method} → ${where}`;
 }
@@ -263,6 +299,9 @@ export async function executeAction(
           },
         };
       }
+      case "browser.sign": {
+        return await executeSign(params, context, ports);
+      }
       case "browser.screenshot": {
         const png = await ports.tabs.captureVisibleTab();
         return { ok: true, result: { screenshot: png } };
@@ -305,4 +344,59 @@ async function askPerson(
     return { ok: false, code: BROWSER_BRIDGE_ERROR_CODES.confirmationNotGranted, message: "the person did not confirm the action" };
   }
   return "confirmed";
+}
+
+async function defaultSha256Hex(base64: string): Promise<string> {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * `browser.sign`: fetch the document in the page session, have the local helper
+ * sign it, report status and digest. Auto or manual is decided before this
+ * point: in manual mode the gateway marks the step `confirmation: "human"` and
+ * `executeAction` has already asked the person. The signature itself never
+ * enters the result; it waits in the stash on this PC.
+ */
+async function executeSign(params: ActionParams, context: ActionContext, ports: ActionPorts): Promise<ActionOutcome> {
+  const sign = ports.sign;
+  if (!sign) {
+    return { ok: false, code: BROWSER_BRIDGE_ERROR_CODES.internalError, message: "this build has no signing helper port" };
+  }
+  const tab = await ports.tabs.queryActiveTab();
+  if (!isUrlAllowedByAllowlist(tab.url, context.allowlist)) {
+    return { ok: false, code: BROWSER_BRIDGE_ERROR_CODES.domainNotAllowed, message: "the active tab is outside the bridge allowlist" };
+  }
+  const file = await ports.content.downloadFile(tab.tabId, params.url ?? "");
+  if (file.byteLength > BROWSER_DOWNLOAD_MAX_BYTES) {
+    return {
+      ok: false,
+      code: BROWSER_BRIDGE_ERROR_CODES.downloadTooLarge,
+      message: `the document exceeds ${BROWSER_DOWNLOAD_MAX_BYTES} bytes`,
+      data: { bytes: file.byteLength, limit: BROWSER_DOWNLOAD_MAX_BYTES },
+    };
+  }
+  const sha256Hex = sign.sha256Hex ?? defaultSha256Hex;
+  const outcome = await sign.helper.sign({
+    actionType: params.actionType as never,
+    documentRef: params.documentRef ?? "",
+    bytesBase64: file.base64,
+  });
+  if (outcome.ok) {
+    if (outcome.signatureBase64) sign.stash?.put(outcome.hash, outcome.signatureBase64);
+    return { ok: true, result: { status: "signed", documentHash: outcome.hash } };
+  }
+  if (outcome.error === "cancelled") {
+    // The person (or the emergency switch of the helper) declined at the CSP.
+    return { ok: true, result: { status: "refused", documentHash: await sha256Hex(file.base64) } };
+  }
+  return {
+    ok: false,
+    code: BROWSER_BRIDGE_ERROR_CODES.internalError,
+    message: `signing failed: ${outcome.error}`,
+    data: { helperError: outcome.error },
+  };
 }

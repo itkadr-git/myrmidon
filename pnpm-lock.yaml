@@ -1033,6 +1033,9 @@ importers:
       '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils
+      '@myrmidon/corpus':
+        specifier: workspace:*
+        version: link:../packages/corpus
       '@myrmidon/db':
         specifier: workspace:*
         version: link:../packages/db

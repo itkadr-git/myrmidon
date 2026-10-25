@@ -30,7 +30,7 @@ describe("company routes", () => {
     expect([...boardRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
   });
 
-  it.each(["swarm-claim", "foraging", "quality", "status", "cases", "pipelines", "stack"])(
+  it.each(["swarm-claim", "foraging", "quality", "status", "cases", "pipelines", "stack", "wiki"])(
     "scopes the Myrmidon %s menu route to the current company",
     (root) => {
       const pathname = `/${root}`;

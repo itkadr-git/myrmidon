@@ -37,8 +37,10 @@ import {
   readReleaseList,
   type StackFetchJson,
 } from "./releases.js";
-import { readStackCheckIntervalSec, readStackGithubToken } from "./settings.js";
+import { readStackCheckIntervalSec } from "./settings.js";
+import { resolveOptionalInstanceSecret } from "../secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.6)
 import { readStackDocument, writeStackDocument } from "./store.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export const STACK_CHECK_PER_PAGE = 30;
 
@@ -175,7 +177,11 @@ async function checkComponent(
  */
 export async function checkStackReleases(db: Db, options: StackCheckOptions = {}): Promise<StackDocument> {
   const checkedAt = (options.now ?? (() => new Date()))().toISOString();
-  const port = options.fetchJson ?? githubJsonPort({ token: readStackGithubToken() ?? undefined });
+  const port =
+    options.fetchJson ??
+    githubJsonPort({
+      token: (await resolveOptionalInstanceSecret("stack.github_token", "stack-registry")) ?? undefined,
+    });
   const stored = await readStackDocument(db);
   const base = stored.components.length > 0 ? stored : seedStackDocument();
   const opts = { perPage: options.perPage ?? STACK_CHECK_PER_PAGE, noteLimit: options.noteLimit };
@@ -218,7 +224,7 @@ export function startStackCheckSweep(db: Db, options: StackCheckOptions = {}): (
         running = false;
       });
   };
-  const timer = setInterval(run, intervalSec * 1000);
+  const timer = backgroundInterval(run, intervalSec * 1000);
   timer.unref?.();
   const stopCurrentSweep = () => clearInterval(timer);
   currentSweepStop = stopCurrentSweep;
