@@ -948,6 +948,20 @@ function buildBotLsp(
   const resolved = resolveBotLsp(role, card, settings);
   const block = botLspHermesBlock(resolved.mode, settings);
   if (!block) return undefined;
+  const tsserverMemoryMb = block.servers?.typescript?.initialization_options.maxTsServerMemory;
+  if (tsserverMemoryMb !== undefined) {
+    const container = asRecord(card.container);
+    const containerMemoryMb =
+      container.enabled === true && typeof container.memoryMb === "number" && Number.isFinite(container.memoryMb)
+        ? container.memoryMb
+        : 1024;
+    const reserveMb = Math.ceil(containerMemoryMb * 0.6);
+    if (tsserverMemoryMb > containerMemoryMb - reserveMb) {
+      throw new BotProfileInputError(
+        `LSP startup refused: tsserver heap ${tsserverMemoryMb} MB exceeds the ${containerMemoryMb} MB container budget after reserving ${reserveMb} MB for Hermes and botd`,
+      );
+    }
+  }
   return {
     enabled: block.enabled,
     ...(block.idleTimeout !== undefined ? { idleTimeout: block.idleTimeout } : {}),

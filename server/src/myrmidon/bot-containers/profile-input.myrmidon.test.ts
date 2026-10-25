@@ -1111,6 +1111,41 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
     expect(yaml).toContain("disableAutomaticTypingAcquisition: true");
   });
 
+  it("refuses limited LSP startup when the configured heap exceeds the card container budget", () => {
+    expect(() =>
+      buildHermesProfileInput(
+        source({
+          role: "engineer",
+          adapterConfig: { container: { enabled: true, memoryMb: 768 } },
+          botLspSettings: {
+            codingRoles: ["engineer"],
+            idleTimeoutSeconds: 120,
+            tsserverMemoryMb: 308,
+            excludeRoots: ["**/node_modules/**", "**/dist/**"],
+          },
+        }),
+        settings(),
+      ),
+    ).toThrow("LSP startup refused: tsserver heap 308 MB exceeds the 768 MB container budget after reserving 461 MB");
+  });
+
+  it("allows heap at the 40% container-memory boundary", () => {
+    const { input } = buildHermesProfileInput(
+      source({
+        role: "engineer",
+        adapterConfig: { container: { enabled: true, memoryMb: 768 } },
+        botLspSettings: {
+          codingRoles: ["engineer"],
+          idleTimeoutSeconds: 120,
+          tsserverMemoryMb: 307,
+          excludeRoots: ["**/node_modules/**", "**/dist/**"],
+        },
+      }),
+      settings(),
+    );
+    expect(input.lsp?.servers?.typescript?.initialization_options.maxTsServerMemory).toBe(307);
+  });
+
   it("turns language servers off for a role that does not write code, and for no role", () => {
     expect(buildHermesProfileInput(source({ role: "general" }), settings()).input.lsp).toEqual({ enabled: false });
     expect(buildHermesProfileInput(source(), settings()).input.lsp).toEqual({ enabled: false });
@@ -1138,6 +1173,7 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
     const { input } = buildHermesProfileInput(
       source({
         role: "dev-lead",
+        adapterConfig: { container: { enabled: true, memoryMb: 5120 } },
         botLspSettings: { codingRoles: ["dev-lead"], idleTimeoutSeconds: 300, tsserverMemoryMb: 2048, excludeRoots: ["/srv/big"] },
       }),
       settings(),
