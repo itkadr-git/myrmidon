@@ -101,7 +101,7 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) [[…]] links", () => {
     expect(link?.raw).toBe("[[guide#top|the guide]]");
     expect(knowledgeLinkLabel(link!)).toBe("the guide");
     expect(link && knowledgeHref(resolveKnowledgeLinkTarget(link.target, "wiki", link.anchor)))
-      .toBe("/wiki/wiki/guide#top");
+      .toBe("/knowledge/wiki/guide#top");
   });
 
   it("keeps code spans, fences and escaped brackets inert (§3.2)", () => {
@@ -121,7 +121,7 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) [[…]] links", () => {
       anchor: null,
     });
     expect(knowledgeHref({ spaceKey: "wiki", slug: "a b", anchor: null })).toBe(
-      "/wiki/wiki/a%20b",
+      "/knowledge/wiki/a%20b",
     );
     // OPE-9222: the current interface mounts the same screen at /wiki.
     expect(knowledgeHref({ spaceKey: "ops", slug: "a b", anchor: "x" }, "/wiki")).toBe(
