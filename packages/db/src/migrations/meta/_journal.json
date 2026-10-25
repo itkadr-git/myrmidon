@@ -2487,6 +2487,13 @@
       "when": 1792399116000,
       "tag": "0417_heartbeat_runs_provider_quota_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 418,
+      "version": "7",
+      "when": 1792402716000,
+      "tag": "0418_preserve_migration_columns",
+      "breakpoints": true
     }
   ]
 }
