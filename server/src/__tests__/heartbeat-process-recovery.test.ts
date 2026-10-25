@@ -5787,6 +5787,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
+    // This suite globally disables L4 retries to exercise vendor recovery.
+    // Restore the production retry cap only for this exhausted-policy case.
+    vi.stubEnv("MYRMIDON_STRANDED_AUTO_RETRIES_PER_DAY", "2");
     const { companyId, agentId, admAgentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
