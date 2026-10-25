@@ -12,6 +12,7 @@ import { UI2_NAV_GROUPS, type Ui2NavItem } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
 import { useKnowledgeAvailable } from "../useKnowledgeAvailable"; // myrmidon(K-4)
 import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 
 function RailItem({ item, active, badge }: { item: Ui2NavItem; active: boolean; badge?: number }) {
   const { t } = useTranslation();
@@ -153,6 +154,12 @@ export function Ui2Rail() {
           <div style={{ fontSize: "var(--myr-text-nano)", fontWeight: 700, color: "var(--myr-ink-muted)", padding: "6px 10px" }}>{t("ui2.nav.group.plugins", { defaultValue: "Plugins" })}</div>
           {pluginSlots.map((slot) => <PluginSlotMount key={`${slot.pluginKey}:${slot.id}`} slot={slot} context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }} />)}
         </div> : null}
+        {selectedCompany ? <PluginLauncherOutlet
+          placementZones={["sidebar"]}
+          context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }}
+          className="flex flex-col gap-0.5"
+          itemClassName="text-(length:--text-compact) font-medium"
+        /> : null}
       </nav>
 
       <div

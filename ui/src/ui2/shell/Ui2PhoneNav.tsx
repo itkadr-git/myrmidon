@@ -8,6 +8,8 @@ import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_PHONE_TABS } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
+import { useCompany } from "@/context/CompanyContext";
 
 function PhoneTab({
   to,
@@ -127,8 +129,10 @@ export function Ui2PhoneTabBar() {
   const { t } = useTranslation();
   const location = useLocation();
   const attentionCount = useUi2AttentionCount();
+  const { selectedCompany } = useCompany();
 
   return (
+    <div>
     <nav
       className="myr-ui2__phone-tabbar"
       style={{
@@ -154,5 +158,12 @@ export function Ui2PhoneTabBar() {
         );
       })}
     </nav>
+    {selectedCompany ? <PluginLauncherOutlet
+      placementZones={["sidebar"]}
+      context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }}
+      className="flex flex-wrap justify-center gap-1"
+      itemClassName="text-(length:--text-nano)"
+    /> : null}
+    </div>
   );
 }
