@@ -24,6 +24,7 @@ import {
   type BotLspSettingsPatch,
   type EffectiveBotLspSettings,
 } from "@myrmidon/shared";
+import { badRequest } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 
@@ -159,7 +160,7 @@ export function botLspService(db: Db, overrides: Partial<BotLspServiceDeps> = {}
         const before = asStored(general.botLsp);
         const next = mergeBotLspSettings(before, patch);
         if (next.tsserverMemoryMb !== undefined && next.tsserverMemoryMb > BOT_LSP_MAX_TSSERVER_MEMORY_MB) {
-          throw Object.assign(new Error(`tsserverMemoryMb must be below ${BOT_LSP_CONTAINER_MEMORY_MB - BOT_LSP_CONTAINER_RESERVE_MB} MB (container memory minus Hermes/botd reserve)`), { status: 400 });
+          throw badRequest(`tsserverMemoryMb must be below ${BOT_LSP_CONTAINER_MEMORY_MB - BOT_LSP_CONTAINER_RESERVE_MB} MB (container memory minus Hermes/botd reserve)`);
         }
         const changedKeys = FIELDS.filter(
           (key) => JSON.stringify(before[key] ?? null) !== JSON.stringify(next[key] ?? null),
