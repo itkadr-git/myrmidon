@@ -203,7 +203,7 @@
           "applying": "Applying…",
           "confirm_one": "Confirm: set {{count}} worker",
           "confirm_other": "Confirm: set {{count}} workers",
-          "description": "How many LiteLLM gateway processes handle requests. Changing the count is done without a restart (the master signals its workers), so the gateway keeps serving while it applies.",
+          "description": "How many LiteLLM gateway processes handle requests. The count changes with a planned restart of the gateway.",
           "limits": "Max by CPU: {{cpu}} · Max by memory: {{memory}}",
           "loading": "Loading gateway worker state…",
           "notEnabled": "LiteLLM worker control is not enabled on this instance.",

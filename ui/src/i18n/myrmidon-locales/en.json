@@ -1294,7 +1294,10 @@
   "litellmWorkers": {
     "unknown": "unknown",
     "runningNow": "Running now: {{value}}",
-    "statusUnknown": "Running now is unknown: the gateway did not report its pool size."
+    "statusUnknown": "Running now is unknown: the gateway did not report its pool size.",
+    "restartWarning": "Applying restarts the gateway: requests are dropped for a short time (about a minute). Run it in the planned window.",
+    "restartNotConfigured": "The restart command is not configured on this instance: the target is saved, but the gateway has to be restarted by an operator.",
+    "notConfirmed": "Not confirmed: {{reason}}"
   },
   "attentionFeed": {
     "title": "Attention feed",
