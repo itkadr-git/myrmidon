@@ -30,6 +30,22 @@ export function isUi2Locale(value: unknown): value is Ui2Locale {
   return typeof value === "string" && (UI2_LOCALES as readonly string[]).includes(value);
 }
 
+const APP_LANGUAGE_STORAGE_KEY = "myrmidon:ui-language";
+
+/**
+ * The language chosen for the whole interface (`myrmidon:ui-language`). The
+ * ui2 screens used to start in English whatever the owner had picked, because
+ * they only looked at their own key; the app-wide choice is the fallback when ui2 has none of its own.
+ */
+export function readAppLanguage(): Ui2Locale | null {
+  try {
+    const raw = window.localStorage.getItem(APP_LANGUAGE_STORAGE_KEY);
+    return isUi2Locale(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Read the stored locale without crashing on private-mode/quota failures. */
 export function readStoredLocale(): Ui2Locale | null {
   try {
@@ -58,7 +74,7 @@ const Ui2I18nContext = createContext<Ui2I18nContextValue | null>(null);
 
 export function Ui2I18nProvider({
   children,
-  initialLocale = readStoredLocale() ?? UI2_DEFAULT_LOCALE,
+  initialLocale = readStoredLocale() ?? readAppLanguage() ?? UI2_DEFAULT_LOCALE,
 }: {
   children: ReactNode;
   initialLocale?: Ui2Locale;
