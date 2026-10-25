@@ -15,7 +15,7 @@ const labels: Record<(typeof statuses)[number], string> = {
 };
 const bot = (overrides: Partial<RemoteBotRow> = {}): RemoteBotRow => ({
   botKey: "bot-1", agent: "work-qa", state: "running", image: `img@sha256:${"a".repeat(64)}`, drift: false, driftFields: [],
-  apiBaseUrl: "http://10.10.0.110:18701", pinned: false, ...overrides,
+  apiBaseUrl: "http://192.0.2.20:18701", pinned: false, ...overrides,
 });
 const site = (status: RemoteSiteRow["status"] = "reachable", overrides: Partial<RemoteSiteRow> = {}): RemoteSiteRow => ({
   name: `site-${status}`, status, registryStatus: status === "draining" ? "draining" : "active", autoDrained: false,

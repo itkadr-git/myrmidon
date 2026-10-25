@@ -75,7 +75,7 @@ export function buildEnrollBody(
   if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(name)) return { ok: false, field: "name", problem: "name" };
   const url = form.url.trim();
   if (!url) return { ok: false, field: "url", problem: "required" };
-  if (!/^https:\/\/[^/\s]+$/i.test(url)) return { ok: false, field: "url", problem: "url" };
+  if (!/^https:\/\/[^/\s]+\/?$/i.test(url)) return { ok: false, field: "url", problem: "url" };
   for (const field of ["tokenSecret", "caCert", "clientCertSecretKey"] as const) {
     if (!form[field].trim()) return { ok: false, field, problem: "required" };
   }

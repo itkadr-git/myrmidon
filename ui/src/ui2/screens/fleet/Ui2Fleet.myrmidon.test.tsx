@@ -140,7 +140,7 @@ describe("myrmidon(UI2) Ui2Fleet screen parity", () => {
       ...overrides,
     };
   }
-  const botRow = { botKey: "bot-1", agentName: "work-qa", state: "running", image: "img@sha256:aa", drift: true, driftFields: ["HostConfig.Binds"], apiBaseUrl: "http://10.10.0.110:18701", gatewayPort: 18701, pinned: false };
+  const botRow = { botKey: "bot-1", agentName: "work-qa", state: "running", image: "img@sha256:aa", drift: true, driftFields: ["HostConfig.Binds"], apiBaseUrl: "http://192.0.2.20:18701", gatewayPort: 18701, pinned: false };
 
   function buttonByText(text: string): HTMLButtonElement {
     const found = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === text);

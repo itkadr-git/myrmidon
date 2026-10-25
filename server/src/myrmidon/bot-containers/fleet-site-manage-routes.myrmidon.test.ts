@@ -58,7 +58,7 @@ function harness(rows: FleetSite[] = [site()], card: BotCardView | null = { comp
     markOperatorState: vi.fn(async (_siteId: string) => {}),
     siteLoad: vi.fn(async () => ({ bots: 2, cpus: 2, memoryMb: 2048, driftCount: 1 })),
     listSiteBots: vi.fn(async () => [
-      { botKey: BOT, agentName: "work-qa", state: "running", image: "img@sha256:aa", drift: true, driftFields: ["HostConfig.Binds"], apiBaseUrl: "http://10.10.0.110:18701", gatewayPort: 18701, pinned: false },
+      { botKey: BOT, agentName: "work-qa", state: "running", image: "img@sha256:aa", drift: true, driftFields: ["HostConfig.Binds"], apiBaseUrl: "http://192.0.2.20:18701", gatewayPort: 18701, pinned: false },
     ]),
     botCard: vi.fn(async () => card),
     actOnBot: vi.fn(async (_botKey: string, _action: string) => {}),

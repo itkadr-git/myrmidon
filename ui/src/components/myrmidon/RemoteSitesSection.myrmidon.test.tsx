@@ -24,7 +24,7 @@ const overview = (overrides: Partial<FleetSiteOverview> = {}): FleetSiteOverview
   capacity: { cpus: { used: 2, total: 8 }, memoryMb: { used: 2048, total: 32768 }, bots: { used: 2, total: 13 } },
   botCount: 2, driftCount: 0, enrolledAt: "2026-10-20T00:00:00.000Z", ...overrides,
 });
-const botApi = { botKey: "bot-1", agentName: "work-qa", state: "running", image: "img@sha256:aa", drift: false, driftFields: [], apiBaseUrl: "http://10.10.0.110:18701", gatewayPort: 18701, pinned: false };
+const botApi = { botKey: "bot-1", agentName: "work-qa", state: "running", image: "img@sha256:aa", drift: false, driftFields: [], apiBaseUrl: "http://192.0.2.20:18701", gatewayPort: 18701, pinned: false };
 
 let container: HTMLDivElement; let root: Root; let queryClient: QueryClient;
 async function flush() { for (let i = 0; i < 6; i += 1) { await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); } }
