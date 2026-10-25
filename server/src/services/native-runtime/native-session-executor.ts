@@ -1,4 +1,5 @@
 import { readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
+import { buildNativeFailureBlockedPatch } from "../../myrmidon/native-failure-block.js";
 import { copyBackCodexAuth } from "@myrmidon/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
@@ -8417,9 +8418,20 @@ async function executePaperclipNativeSessionWithinScope(
             failureTask.checkoutRunId === input.execution.binding.runId);
         let failureBlockStatusVersion: number | undefined;
         if (stillOwnsTask && recoveryProjection.issueStatus) {
+          // myrmidon(BLOCKED-REASON): a terminal-failure block names its reason
+          // and goes to a senior agent (executor's manager -> project lead ->
+          // adm); a reasonless block would be refused with 422 and roll back
+          // the whole failure handling.
           const projected = await issueService(tx as unknown as Db).update(
             input.execution.binding.issueId,
-            { status: recoveryProjection.issueStatus },
+            recoveryProjection.issueStatus === "blocked"
+              ? await buildNativeFailureBlockedPatch(tx as unknown as Db, {
+                  issueId: input.execution.binding.issueId,
+                  companyId: input.execution.binding.companyId,
+                  action:
+                    "Inspect the native session failure and its recovery action, restore a live execution path or record the manual resolution, then move the task out of blocked.",
+                })
+              : { status: recoveryProjection.issueStatus },
             tx,
           );
           if (projected?.status === "blocked") failureBlockStatusVersion = projected.statusVersion;

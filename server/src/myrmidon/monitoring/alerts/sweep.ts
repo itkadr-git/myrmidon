@@ -8,6 +8,7 @@
 import type { Db } from "@myrmidon/db";
 import { logger } from "../../../middleware/logger.js";
 import { createDbAlertDedupStore } from "./store.js";
+import { backgroundInterval } from "../board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export const ALERTS_SWEEP_INTERVAL_SEC_ENV = "MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC";
 export const ALERTS_RETENTION_DAYS_ENV = "MYRMIDON_ALERTS_RETENTION_DAYS";
@@ -50,7 +51,7 @@ export function startAlertsSweep(
   stopAlertsSweep();
   if (settings.intervalMs <= 0) return () => {};
 
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void (async () => {
       try {
         const removed = await store.sweepClosedOlderThan(now(), settings.retentionMs);

@@ -38,6 +38,7 @@ import {
   countRejections,
   gatewayRequestCount,
   readTracingHealthSettings,
+  withClickhousePassword,
   type TracingHealthSettings,
 } from "./probes.js";
 
@@ -147,7 +148,7 @@ export function tracingHealthRoutes(db: Db, deps: TracingHealthRoutesDeps) {
 
   router.get("/myrmidon/tracing/health", async (_req, res) => {
     assertBoardOrgAccess(_req);
-    const current = settings();
+    const current = await withClickhousePassword(settings(), deps.env ?? process.env);
     if (!current.enabled) {
       const now = deps.now();
       res.status(503).json(disabledReport(now, current.windowMs));

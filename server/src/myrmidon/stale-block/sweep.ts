@@ -81,7 +81,7 @@ const STALE_BLOCK_TX_WARN_MS = 2_000;
 export interface StaleBlockSweepDeps {
   db: Db;
   /** Reads whether an event/gate key is still set for the company; injected so tests never touch gates. */
-  isEventStillSet: (companyId: string, eventKey: string) => Promise<boolean>;
+  isEventStillSet: (companyId: string, eventKey: string, dbOrTx?: Db) => Promise<boolean>;
   /** Maintenance gate; defaults to the instance-wide check when provided by the wiring. */
   isUnderMaintenance?: (db: Db) => Promise<boolean>;
   logActivity?: (input: {
@@ -93,7 +93,7 @@ export interface StaleBlockSweepDeps {
     entityId: string;
     issueId: string;
     details: Record<string, unknown>;
-  }, dbOrTx?: Db) => Promise<void>;
+  }, dbOrTx?: Db, postCommitPublications?: ActivityPublication[]) => Promise<void>;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
 }
@@ -245,7 +245,7 @@ async function judgeReasons(input: {
         ? (statuses.has(reason.issueId) ? statuses.get(reason.issueId)! : null)
         : null,
       eventStillSet: reason.kind === "event" && reason.eventKey !== null
-        ? await deps.isEventStillSet(row.companyId, reason.eventKey)
+        ? await deps.isEventStillSet(row.companyId, reason.eventKey, db)
         : false,
       now,
     };
@@ -376,7 +376,7 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
             status: { from: "blocked", to: effectiveTargetStatus },
           },
         },
-      }, tx as unknown as Db);
+      }, tx as unknown as Db, publications);
       await deps.logActivity?.({
         companyId: locked.companyId,
         actorType: "system",
@@ -396,7 +396,7 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
           })),
           commentId: comment.id,
         },
-      }, tx as unknown as Db);
+      }, tx as unknown as Db, publications);
       void svc;
       return true;
     });

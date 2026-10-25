@@ -30,6 +30,10 @@ needs one. It is an independent product maintained as a fork of
 - [Connectors and tools](Connectors-and-tools) — the browser bridge, MCP
   connectors, cloud storage and Microsoft 365, media and OCR, GitHub.
 
+## Corpus
+
+- [Corpus server integration](../myrmidon/changes/ope-7844-corpus-integration.md) — configuration and end-to-end verification.
+
 ## Getting started
 
 - [System requirements](System-requirements) — supported OS and
