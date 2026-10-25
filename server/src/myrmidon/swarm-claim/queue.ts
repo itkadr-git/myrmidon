@@ -15,9 +15,11 @@
 // open children, tasks mid-decomposition — copied from `idle-pickup.ts` rather
 // than re-derived, so "ready" means one thing on both paths.
 
+import { blockerOpenSql } from "../blocker-resolved.js";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@myrmidon/db";
 import {
+  swarmRoleFromLabels,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_DEFAULT_UNASSIGNED_ROLE,
   type SwarmQueueCandidate,
@@ -93,6 +95,22 @@ export function unassignedTaskRoutedToRole(role: string) {
   return sql`(case when ${effectiveCaste} is not null then ${effectiveCaste} = ${wantedKey} else ${labelRoute} end)`;
 }
 
+/** JS twin of the SQL routing rule above, for issue mutation validation. */
+export function unassignedTaskRoutedToRoleByLabels(role: string, labels: readonly string[]): boolean {
+  const effectiveRole = swarmRoleFromLabels(labels) ?? "general";
+  return effectiveRole === role.trim().toLowerCase();
+}
+
+export function engineerCasteRequired(
+  taskCasteKey: string | null | undefined,
+  projectDefaultCasteKey: string | null | undefined,
+  roleLabels: readonly string[],
+): boolean {
+  const casteKey = taskCasteKey?.trim() || projectDefaultCasteKey?.trim();
+  if (casteKey) return casteKey.toLowerCase() === "engineer";
+  return unassignedTaskRoutedToRoleByLabels("engineer", roleLabels);
+}
+
 /**
  * The candidate rows of one role's queue. With `agentId` the assigned part is
  * that agent's own todo only (a task assigned to a peer is the peer's, not
@@ -157,7 +175,7 @@ export function roleQueueRows(
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status <> 'done'
+            and ${blockerOpenSql('blocker.status')}
         )`,
         // Not a container: an issue with an open child is a plan, the children are the work.
         sql`not exists (
@@ -278,7 +296,7 @@ export async function listUnassignedQueue(
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status <> 'done'
+            and ${blockerOpenSql('blocker.status')}
         )`,
         sql`not exists (
           select 1

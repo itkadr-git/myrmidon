@@ -91,7 +91,7 @@ function fakeDriver(
     async writeProfile(_botKey, compiled) {
       calls.push("writeProfile");
       maybeFail("writeProfile");
-      current = { ...current, restartHash: compiled.restartHash, filesHash: compiled.filesHash };
+      current = { ...current, restartHash: compiled.restartHash, filesHash: compiled.filesHash, maxConcurrentRuns: compiled.maxConcurrentRuns };
     },
     async start() {
       calls.push("start");
@@ -782,13 +782,42 @@ describe("reconcileBot", () => {
       expect(outcome).toEqual({ kind: "applied_restart" });
       expect(detailsOf(activity, "stopped bot container brought up")).toMatchObject({
         drifted: true,
-        // See the drift-recreate case below: a limit-bearing profile against a
-        // marker that reports no limit classifies as the files class.
-        changeClass: "files",
-        trigger: "stopped:drift:files",
+        // The marker reports the same limit as the profile: nothing to write.
+        changeClass: "none",
+        trigger: "stopped:drift:none",
         appliedFilesHash: "files-1",
         appliedMaxConcurrentRuns: 3,
       });
+    });
+
+    // OPE-9057: the pass used to hand classifyProfileChange only the two hashes,
+    // so a marker that DID report the limit still looked like "not reported" and
+    // every bot was rewritten ("profile files applied without restart") each pass.
+    it("running, hashes and limit all match the marker: nothing is written, however many passes run", async () => {
+      const applied = profile({ maxConcurrentRuns: 3 });
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied), maxConcurrentRuns: 3 });
+      const activity = fakeActivity();
+      for (let pass = 0; pass < 3; pass += 1) {
+        const outcome = await run(driver, fakeMaintenance([0]), {
+          activity,
+          compile: async () => profile({ maxConcurrentRuns: 3 }),
+        });
+        expect(outcome).toEqual({ kind: "unchanged" });
+      }
+      expect(driver.calls).not.toContain("writeProfile");
+      expect(driver.calls).not.toContain("restart");
+      expect(activity.entries.map((entry) => entry.message)).not.toContain("bot container profile files applied without restart");
+    });
+
+    it("running, marker predates the limit: healed once as a files-class write, without restart", async () => {
+      const applied = profile({ maxConcurrentRuns: 3 });
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied) });
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        compile: async () => profile({ maxConcurrentRuns: 3 }),
+      });
+      expect(outcome).toEqual({ kind: "applied_files" });
+      expect(driver.calls).toContain("writeProfile");
+      expect(driver.calls).not.toContain("restart");
     });
 
     it("files without restart: the write names the new files hash and running:nodrift:files", async () => {
@@ -854,10 +883,10 @@ describe("reconcileBot", () => {
       });
       expect(outcome).toEqual({ kind: "applied_restart" });
       expect(detailsOf(activity, "unhealthy bot container restarted")).toMatchObject({
-        changeClass: "files",
+        changeClass: "none",
         previousState: "unhealthy",
         maintenanceReason: "bot container health recovery (agent-a)",
-        trigger: "unhealthy:nodrift:files",
+        trigger: "unhealthy:nodrift:none",
         appliedFilesHash: "files-1",
         appliedMaxConcurrentRuns: 3,
       });
@@ -879,13 +908,11 @@ describe("reconcileBot", () => {
         detailsOf(activity, "bot container recreated for a template change (image, resource limits or network)"),
       ).toMatchObject({
         drifted: true,
-        // The pass hands classifyProfileChange only the two hashes it read, so a
-        // marker that reports no limit classifies as "files" — the heal
-        // described in types.ts. The trigger reports the class actually computed.
-        changeClass: "files",
+        // Hashes and limit all match the marker: the class is "none".
+        changeClass: "none",
         previousState: "running",
         maintenanceReason: "bot container template update (agent-a)",
-        trigger: "running:drift:files",
+        trigger: "running:drift:none",
         appliedFilesHash: "files-1",
         appliedMaxConcurrentRuns: 3,
       });
@@ -918,6 +945,31 @@ describe("reconcileBot", () => {
       const details = detailsOf(activity, "bot container created and profile applied");
       expect(details).not.toHaveProperty("appliedMaxConcurrentRuns");
       expect(details).toMatchObject({ appliedFilesHash: "files-1", trigger: "missing:new" });
+    });
+
+    it("does not rewrite unchanged profile files across three passes when the marker reports the concurrency limit", async () => {
+      const applied = profile({ maxConcurrentRuns: 3 });
+      const driver = fakeDriver({
+        botKey: "agent-a",
+        state: "running",
+        ...hashesOf(applied),
+        maxConcurrentRuns: 3,
+      });
+      for (let pass = 0; pass < 3; pass += 1) {
+        const outcome = await run(driver, fakeMaintenance([0]), {
+          compile: async () => profile({ maxConcurrentRuns: 3 }),
+        });
+        expect(outcome).toEqual({ kind: "unchanged" });
+      }
+      expect(driver.calls).not.toContain("writeProfile");
+    });
+
+    it("heals a marker without a concurrency limit once, then does not rewrite again", async () => {
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", restartHash: "restart-1", filesHash: "files-1" });
+      const compile = async () => profile({ maxConcurrentRuns: 3 });
+      expect(await run(driver, fakeMaintenance([0]), { compile })).toEqual({ kind: "applied_files" });
+      expect(await run(driver, fakeMaintenance([0]), { compile })).toEqual({ kind: "unchanged" });
+      expect(driver.calls.filter((call) => call === "writeProfile")).toHaveLength(1);
     });
   });
 
