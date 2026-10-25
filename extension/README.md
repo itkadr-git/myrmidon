@@ -75,6 +75,10 @@ it into the `confirmation` param of the step: `human` shows the confirmation
 window and the helper is not called until the person confirms; `none` signs at
 once. A bot cannot override it.
 
+The manifest carries a public `key`, so the extension id is the same in every
+folder and browser profile: `ighfclbbknfjkhfhejhegaabllbdkiln`. The native host
+allows exactly this id. The private key is kept outside the repository.
+
 A device paired before this build stored its capabilities without `sign`: pair
 it again to get the capability.
 

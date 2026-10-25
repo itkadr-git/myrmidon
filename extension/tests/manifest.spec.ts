@@ -12,6 +12,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(readFileSync(resolve(here, "../manifest.json"), "utf8"));
 
 describe("manifest.json", () => {
+  it("pins the extension id with a public key (the native host allows exactly this id)", async () => {
+    const { createHash } = await import("node:crypto");
+    expect(manifest.key).toMatch(/^[A-Za-z0-9+/]+=*$/);
+    const digest = createHash("sha256").update(Buffer.from(manifest.key, "base64")).digest("hex").slice(0, 32);
+    const id = [...digest].map((c) => String.fromCharCode("a".charCodeAt(0) + parseInt(c, 16))).join("");
+    expect(id).toBe("ighfclbbknfjkhfhejhegaabllbdkiln");
+  });
+
   it("is a Manifest V3 extension", () => {
     expect(manifest.manifest_version).toBe(3);
   });
