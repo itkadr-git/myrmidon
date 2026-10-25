@@ -31,6 +31,26 @@ export const SWARM_QUOTA_MAX_HOLD_MS = 7 * 24 * 60 * 60 * 1000;
 export const SWARM_INDIVIDUAL_QUOTA_TEXT = "individual quota";
 export const SWARM_INDIVIDUAL_QUOTA_RE = new RegExp(SWARM_INDIVIDUAL_QUOTA_TEXT, "i");
 
+/** Facts loaded by the caller using the shared blocker/hold predicates. */
+export interface IssueReadinessFacts {
+  hasOpenBlocker: boolean;
+  onHold: boolean;
+  hasProjectOrCaste: boolean;
+  assignmentCompatible: boolean;
+}
+
+export type IssueNotReadyReason = "open_blocker" | "on_hold" | "missing_project_or_caste" | "incompatible_assignment";
+export type IssueReadiness = { ready: true; reason: null } | { ready: false; reason: IssueNotReadyReason };
+
+/** Pure decision function; callers obtain blocker and hold facts from shared predicates. */
+export function isIssueReady(facts: IssueReadinessFacts): IssueReadiness {
+  if (facts.hasOpenBlocker) return { ready: false, reason: "open_blocker" };
+  if (facts.onHold) return { ready: false, reason: "on_hold" };
+  if (!facts.hasProjectOrCaste) return { ready: false, reason: "missing_project_or_caste" };
+  if (!facts.assignmentCompatible) return { ready: false, reason: "incompatible_assignment" };
+  return { ready: true, reason: null };
+}
+
 /** Open load: distinct task ids across assignments and live leases. */
 export function openLoadOf(
   assignedIssueIds: Iterable<string>,
