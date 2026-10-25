@@ -129,6 +129,11 @@ function toHttpError(err: unknown): unknown {
   return err;
 }
 
+function itemIdOrSlug(req: Request): string {
+  const raw = req.params.idOrSlug;
+  return Array.isArray(raw) ? raw.join("/") : (raw as string | undefined) ?? "";
+}
+
 // ---------------------------------------------------------------------------
 // The router
 // ---------------------------------------------------------------------------
@@ -156,6 +161,27 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       agentId: info.actorType === "agent" ? (info.agentId ?? null) : null,
       label: `${info.actorType}:${info.actorId ?? "unknown"}`,
     };
+  }
+
+  function assertApproverAuthority(req: Request, companyId: string, approverKind: string | null): void {
+    const actor = req.actor;
+    if (actor.type !== "board") {
+      throw forbidden("Only a board user may approve a rule.", { code: "approver_authority_required" });
+    }
+    if (approverKind === null) {
+      throw forbidden("This user has no active approver membership in the company.", { code: "approver_authority_required" });
+    }
+    const membership = actor.memberships?.find((entry) => entry.companyId === companyId && entry.status === "active");
+    const authorized = approverKind === "owner"
+      ? actor.source === "local_implicit" || membership?.membershipRole === "owner"
+      : approverKind === "adm" || approverKind === "admin"
+        ? actor.isInstanceAdmin === true || membership?.membershipRole === "admin"
+        : approverKind === "operator"
+          ? membership?.membershipRole === "operator" || membership?.membershipRole === "member"
+          : false;
+    if (!authorized) {
+      throw forbidden(`This user is not authorized to approve as ${approverKind}.`, { code: "approver_authority_required" });
+    }
   }
 
   /** Gate 2: an agent caller needs a tool grant; a board user passes. */
@@ -280,9 +306,9 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
    * shared grade check (../rule-grade.ts). Notes and other kinds are not
    * graded here.
    */
-  async function assertRuleGrade(req: Request, companyId: string, item: { kind: string; roles?: readonly string[] | null }) {
-    if (item.kind !== "rule") return;
-    await assertRuleWriteGrade(req, companyId, deps.casteSensitivity ?? builtinCasteSensitivity, item.roles ?? []);
+  async function assertRuleGrade(req: Request, companyId: string, item: { kind: string; roles?: readonly string[] | null }): Promise<string | null> {
+    if (item.kind !== "rule") return null;
+    return assertRuleWriteGrade(req, companyId, deps.casteSensitivity ?? builtinCasteSensitivity, item.roles ?? []);
   }
 
   // --------------------------------------------------------------- reads
@@ -322,7 +348,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     await assertKnowledgeToolAccess(req, "knowledge_read");
     const mod = deps.moduleFor(companyId);
     try {
-      res.json({ revisions: await mod.listRevisions(req.params.idOrSlug as string) });
+      res.json({ revisions: await mod.listRevisions(itemIdOrSlug(req)) });
     } catch (err) {
       throw toHttpError(err);
     }
@@ -335,7 +361,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       await assertKnowledgeToolAccess(req, "knowledge_read");
       const mod = deps.moduleFor(companyId);
       try {
-        res.json({ revision: await mod.getRevision(req.params.idOrSlug as string, req.params.revisionId as string) });
+        res.json({ revision: await mod.getRevision(itemIdOrSlug(req), req.params.revisionId as string) });
       } catch (err) {
         throw toHttpError(err);
       }
@@ -347,7 +373,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     await assertKnowledgeToolAccess(req, "knowledge_backlinks");
     const mod = deps.moduleFor(companyId);
     try {
-      res.json({ backlinks: await mod.backlinks(req.params.idOrSlug as string) });
+      res.json({ backlinks: await mod.backlinks(itemIdOrSlug(req)) });
     } catch (err) {
       throw toHttpError(err);
     }
@@ -361,8 +387,9 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     await assertKnowledgeToolAccess(req, "knowledge_read");
     const mod = deps.moduleFor(companyId);
     try {
-      const item = await mod.get(req.params.idOrSlug as string);
-      if (!item) throw notFound(`No knowledge item ${JSON.stringify(req.params.idOrSlug)} in this company.`);
+      const idOrSlug = itemIdOrSlug(req);
+      const item = await mod.get(idOrSlug);
+      if (!item) throw notFound(`No knowledge item ${JSON.stringify(idOrSlug)} in this company.`);
       res.json({ item });
     } catch (err) {
       throw toHttpError(err);
@@ -442,7 +469,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const actor = actorOf(req);
       try {
         const revision = await mod.draft(
-          req.params.idOrSlug as string,
+          itemIdOrSlug(req),
           {
             content: req.body.content,
             changeSummary: req.body.changeSummary ?? null,
@@ -464,7 +491,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     const actor = actorOf(req);
     const revisionId = typeof req.body?.revisionId === "string" ? req.body.revisionId : undefined;
     try {
-      res.json({ item: await mod.submit(req.params.idOrSlug as string, { actorType: actor.actorType, actorId: actor.actorId }, revisionId) });
+      res.json({ item: await mod.submit(itemIdOrSlug(req), { actorType: actor.actorType, actorId: actor.actorId }, revisionId) });
     } catch (err) {
       throw toHttpError(err);
     }
@@ -480,10 +507,10 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const actor = actorOf(req);
       const revisionId = typeof req.body?.revisionId === "string" ? req.body.revisionId : undefined;
       try {
-        const item = await loadItemForMutation(mod, req.params.idOrSlug as string);
+        const item = await loadItemForMutation(mod, itemIdOrSlug(req));
         await assertPublishAllowed(req, companyId, item, revisionId ?? null);
         await assertRuleGrade(req, companyId, item);
-        res.json({ item: await mod.publish(req.params.idOrSlug as string, { actorType: actor.actorType, actorId: actor.actorId }, revisionId) });
+        res.json({ item: await mod.publish(itemIdOrSlug(req), { actorType: actor.actorType, actorId: actor.actorId }, revisionId) });
       } catch (err) {
         throw toHttpError(err);
       }
@@ -499,28 +526,27 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const actor = actorOf(req);
       const revisionId = typeof req.body?.revisionId === "string" ? req.body.revisionId : undefined;
       try {
-        const item = await loadItemForMutation(mod, req.params.idOrSlug as string);
-        // Gate 4b runs BEFORE the tool-grant gateway: a `rule` approval by an
-        // agent is forbidden outright (тест П4), whatever grants, matrix or
-        // the agent's own instructions say. Loading the item is the only way
-        // to see its kind; the load itself needs no grant.
+        const item = await loadItemForMutation(mod, itemIdOrSlug(req));
         assertRuleApproveAllowed(req, item.kind);
         await assertKnowledgeToolAccess(req, "rule_approve");
-        // §3.4 / K-3: the approver's grade comes from the actor's membership
-        // (never from the request body); S4 compares it against the item's
-        // approverKind and a caller without the matching grade is refused by
-        // the domain gate (403).
         const approverKindInput = approverKindFromRequest(req, companyId);
-        await assertRuleGrade(req, companyId, item);
-        if (approverKindInput === null) {
-          throw forbidden("approving needs an operator, admin or owner membership of the company", {
+        const checkedActorGrade = item.kind === "rule"
+          ? await assertRuleGrade(req, companyId, item)
+          : null;
+        const approverKind = item.kind === "rule"
+          ? (checkedActorGrade === "admin" ? "adm" : checkedActorGrade)
+          : approverKindInput;
+        assertApproverAuthority(req, companyId, approverKind);
+        if (item.approverKind != null && approverKind !== item.approverKind) {
+          throw forbidden("The actor's membership grade does not match the rule approver grade.", {
             code: "approver_kind_mismatch",
           });
         }
+
         res.json({
           item: await mod.approve(
-            req.params.idOrSlug as string,
-            { actorType: actor.actorType, actorId: actor.actorId, kind: approverKindInput },
+            itemIdOrSlug(req),
+            { actorType: actor.actorType, actorId: actor.actorId, kind: approverKind },
             { revisionId },
           ),
         });
@@ -539,12 +565,12 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const mod = deps.moduleFor(companyId);
       const actor = actorOf(req);
       try {
-        const item = await loadItemForMutation(mod, req.params.idOrSlug as string);
+        const item = await loadItemForMutation(mod, itemIdOrSlug(req));
         await assertPublishAllowed(req, companyId, item, req.body.toRevisionId);
         await assertRuleGrade(req, companyId, item);
         res.json({
           item: await mod.rollback(
-            req.params.idOrSlug as string,
+            itemIdOrSlug(req),
             { actorType: actor.actorType, actorId: actor.actorId },
             { targetRevisionId: req.body.toRevisionId },
           ),
@@ -563,11 +589,11 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     try {
       // Archiving takes a page out of what agents read: same gates as publish
       // (autonomy matrix + the agent-never-touches-a-rule bar).
-      const item = await loadItemForMutation(mod, req.params.idOrSlug as string);
+      const item = await loadItemForMutation(mod, itemIdOrSlug(req));
       assertRuleApproveAllowed(req, item.kind);
       await assertPublishAllowed(req, companyId, item, null);
       await assertRuleGrade(req, companyId, item);
-      res.json({ item: await mod.archive(req.params.idOrSlug as string, { actorType: actor.actorType, actorId: actor.actorId }) });
+      res.json({ item: await mod.archive(itemIdOrSlug(req), { actorType: actor.actorType, actorId: actor.actorId }) });
     } catch (err) {
       throw toHttpError(err);
     }
@@ -582,13 +608,13 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const mod = deps.moduleFor(companyId);
       const actor = actorOf(req);
       try {
-        const current = await loadItemForMutation(mod, req.params.idOrSlug as string);
+        const current = await loadItemForMutation(mod, itemIdOrSlug(req));
         assertRuleApproveAllowed(req, current.kind);
         await assertPublishAllowed(req, companyId, current, null);
         await assertRuleGrade(req, companyId, current);
         res.json({
           item: await mod.supersede(
-            req.params.idOrSlug as string,
+            itemIdOrSlug(req),
             { actorType: actor.actorType, actorId: actor.actorId },
             { bySlug: req.body.replacementSlug },
           ),

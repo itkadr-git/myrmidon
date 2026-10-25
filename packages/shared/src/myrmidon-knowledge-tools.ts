@@ -84,6 +84,7 @@ export type KnowledgePublishInput = z.infer<typeof knowledgePublishSchema>;
 export const knowledgeApproveSchema = z.object({
   revisionId: z.string().min(1).max(200).optional(),
   comment: z.string().max(2000).optional(),
+  approverKind: z.enum(["adm", "owner"]).optional(),
 });
 export type KnowledgeApproveInput = z.infer<typeof knowledgeApproveSchema>;
 
