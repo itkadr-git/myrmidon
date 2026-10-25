@@ -13,6 +13,10 @@ export interface EscalationChainPolicy {
 
 export type ProjectEscalationRoles = Partial<Record<EscalationRole, InteractionRecipient | null>>;
 
+function isQueueRecipient(recipient: InteractionRecipient): recipient is { serviceQueue: string } {
+  return "serviceQueue" in recipient;
+}
+
 /** Build a deterministic escalation chain, keeping the service queue as its terminal owner. */
 export function buildEscalationChain(input: {
   routeType: InteractionRouteType | "code_review";
@@ -45,8 +49,8 @@ export function buildEscalationChain(input: {
   if (!seen.has(queueKey)) {
     chain.push({ recipient: queue, afterMinutes: startAt + chain.length });
   } else {
-    const queueIndex = chain.findIndex(
-      (step) => "serviceQueue" in step.recipient && step.recipient.serviceQueue === policy.fallbackQueue,
+    const queueIndex = chain.findIndex((step) =>
+      isQueueRecipient(step.recipient) && step.recipient.serviceQueue === policy.fallbackQueue,
     );
     if (queueIndex >= 0 && queueIndex < chain.length - 1) {
       const [queueStep] = chain.splice(queueIndex, 1);

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildEscalationChain } from "./build-chain.js";
+import { buildEscalationChain, type EscalationChainPolicy } from "./build-chain.js";
 
 const policy = {
-  participantRoles: ["lead", "architect", "secondary_reviewer"] as const,
+  participantRoles: ["lead", "architect", "secondary_reviewer"],
   fallbackQueue: "review-recovery",
-};
+} satisfies EscalationChainPolicy;
 const agent = (agentId: string) => ({ agentId });
 
 describe("buildEscalationChain", () => {
