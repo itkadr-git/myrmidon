@@ -1143,7 +1143,9 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
       }),
       settings(),
     );
-    expect(input.lsp?.servers?.typescript?.initialization_options.maxTsServerMemory).toBe(307);
+    expect(input.lsp?.servers).toMatchObject({
+      typescript: { initialization_options: { maxTsServerMemory: 307 } },
+    });
   });
 
   it("turns language servers off for a role that does not write code, and for no role", () => {
