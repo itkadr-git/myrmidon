@@ -11,6 +11,7 @@ export interface SiteAgentClientConfig {
   baseUrl: string;
   token?: string;
   agent?: https.Agent | http.Agent;
+  requireMtls?: boolean;
 }
 
 /** The site-agent client plus the memory export (C-MEM), which no move uses. */
@@ -19,6 +20,7 @@ export interface SiteAgentMemoryClient extends SiteAgentClient {
   memoryExport(botKey: string): Promise<Buffer>;
   /** GET /v1/bots/{botKey}/logs: the tail of the bot container's log, already redacted by the site-agent. */
   botLogs(botKey: string): Promise<string>;
+  logs(botKey: string, tail?: number): Promise<string>;
 }
 
 /** fleetd caps the export at 64 MiB; a longer answer is not an archive of ours. */
@@ -31,6 +33,9 @@ const BOT_LOGS_TIMEOUT_MS = 35_000;
 export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentMemoryClient {
   const url = new URL(config.baseUrl);
   const isHttps = url.protocol === "https:";
+  if (config.requireMtls && (!isHttps || !config.agent)) {
+    throw new Error("site-agent mTLS requires an HTTPS URL and a registered client certificate transport");
+  }
   const client = isHttps ? https : http;
 
   function baseHeaders(): Record<string, string> {
@@ -39,6 +44,10 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
       headers.Authorization = `Bearer ${config.token}`;
     }
     return headers;
+  }
+
+  function request(options: https.RequestOptions, callback: (res: http.IncomingMessage) => void) {
+    return client.request({ ...options, agent: config.agent }, callback);
   }
 
   return {
@@ -91,7 +100,7 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
     async memoryExport(botKey: string): Promise<Buffer> {
       return new Promise<Buffer>((resolve, reject) => {
         const body = Buffer.from(JSON.stringify({ botKey }));
-        const req = client.request(
+        const req = request(
           {
             protocol: url.protocol,
             hostname: url.hostname,
@@ -99,7 +108,6 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
             path: "/v1/memory/export",
             method: "POST",
             headers: { ...baseHeaders(), "Content-Type": "application/json", "Content-Length": String(body.length), Accept: "application/zip" },
-            agent: config.agent,
           },
           (res) => {
             const chunks: Buffer[] = [];
@@ -134,7 +142,7 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
     async snapshot(botKey: string): Promise<Readable> {
       return new Promise<Readable>((resolve, reject) => {
         const path = `/v1/bots/${encodeURIComponent(botKey)}/snapshot`;
-        const req = client.request(
+        const req = request(
           {
             protocol: url.protocol,
             hostname: url.hostname,
@@ -145,7 +153,6 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
               ...baseHeaders(),
               Accept: "application/x-tar+zstd, application/octet-stream",
             },
-            agent: config.agent,
           },
           (res) => {
             if (res.statusCode && res.statusCode >= 400) {
@@ -175,7 +182,7 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
     async restore(botKey: string, stream: Readable): Promise<void> {
       return new Promise<void>((resolve, reject) => {
         const path = `/v1/bots/${encodeURIComponent(botKey)}/restore`;
-        const req = client.request(
+        const req = request(
           {
             protocol: url.protocol,
             hostname: url.hostname,
@@ -186,7 +193,6 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
               ...baseHeaders(),
               "Content-Type": "application/x-tar+zstd",
             },
-            agent: config.agent,
           },
           (res) => {
             if (res.statusCode && res.statusCode >= 400) {
@@ -215,7 +221,7 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
     async quarantine(botKey: string): Promise<void> {
       return new Promise<void>((resolve, reject) => {
         const path = `/v1/bots/${encodeURIComponent(botKey)}/quarantine`;
-        const req = client.request(
+        const req = request(
           {
             protocol: url.protocol,
             hostname: url.hostname,
@@ -223,7 +229,6 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
             path,
             method: "POST",
             headers: baseHeaders(),
-            agent: config.agent,
           },
           (res) => {
             if (res.statusCode && res.statusCode >= 400) {
@@ -240,6 +245,70 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
           },
         );
 
+        req.on("error", reject);
+        req.end();
+      });
+    },
+
+    async botLogs(botKey: string): Promise<string> {
+      return new Promise<string>((resolve, reject) => {
+        const req = request(
+          {
+            protocol: url.protocol,
+            hostname: url.hostname,
+            port: url.port ? Number(url.port) : isHttps ? 443 : 80,
+            path: `/v1/bots/${encodeURIComponent(botKey)}/logs`,
+            method: "GET",
+            headers: { ...baseHeaders(), Accept: "application/json" },
+          },
+          (res) => {
+            const chunks: Buffer[] = [];
+            let size = 0;
+            res.on("data", (chunk: Buffer) => {
+              size += chunk.length;
+              if (size > MAX_BOT_LOGS_BYTES) {
+                req.destroy(new Error("Site-agent bot log is larger than the allowed size"));
+                return;
+              }
+              chunks.push(chunk);
+            });
+            res.on("error", reject);
+            res.on("aborted", () => reject(new Error(`Site-agent logs ${botKey} broke off`)));
+            res.on("end", () => {
+              const text = Buffer.concat(chunks).toString("utf8");
+              if (res.statusCode && res.statusCode >= 400) {
+                reject(new Error(`Site-agent logs ${botKey} failed with ${res.statusCode}: ${text.slice(0, 300)}`));
+                return;
+              }
+              try {
+                const parsed = JSON.parse(text) as { logs?: unknown };
+                resolve(typeof parsed.logs === "string" ? parsed.logs : "");
+              } catch {
+                reject(new Error(`Site-agent logs ${botKey}: the answer is not the logs contract`));
+              }
+            });
+          },
+        );
+        req.setTimeout(BOT_LOGS_TIMEOUT_MS, () => req.destroy(new Error("Site-agent logs timed out")));
+        req.on("error", reject);
+        req.end();
+      });
+    },
+
+    async logs(botKey: string, tail = 100): Promise<string> {
+      if (!Number.isInteger(tail) || tail < 1 || tail > 1000) throw new Error("site-agent logs tail must be between 1 and 1000");
+      return new Promise<string>((resolve, reject) => {
+        const path = `/v1/bots/${encodeURIComponent(botKey)}/logs?tail=${tail}`;
+        const req = request({ protocol: url.protocol, hostname: url.hostname, port: url.port ? Number(url.port) : isHttps ? 443 : 80, path, method: "GET", headers: { ...baseHeaders(), Accept: "text/plain" } }, (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk: Buffer) => chunks.push(chunk));
+          res.on("error", reject);
+          res.on("end", () => {
+            const text = Buffer.concat(chunks).toString("utf8");
+            if (res.statusCode && res.statusCode >= 400) reject(new Error(`Site-agent logs ${botKey} failed with ${res.statusCode}: ${text.slice(0, 300)}`));
+            else resolve(text);
+          });
+        });
         req.on("error", reject);
         req.end();
       });

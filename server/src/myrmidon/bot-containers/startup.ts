@@ -52,6 +52,8 @@ import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import {
   createFleetClientManager,
+  setActiveFleetClientManager,
+  getActiveFleetClientManager,
   bootstrapFleetSitesFromEnv,
   type FleetClientManager,
   type FleetClientManagerDeps,
@@ -203,6 +205,7 @@ export function startBotContainers(
   const started = build(db, env, intervalMs, ports);
   if (!started) return () => {};
   const { runtime, stopSweep, clientManager } = started;
+  setActiveFleetClientManager(clientManager);
   ports.registerRuntime(runtime);
   ports.log.info({ intervalMs, network: runtime.network }, "bot container reconciliation started");
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the collector needs a registered
@@ -226,6 +229,7 @@ export function startBotContainers(
     stopSweep();
     stopCollector?.();
     clientManager.close();
+    if (getActiveFleetClientManager() === clientManager) setActiveFleetClientManager(null);
     stopSiteScheduler?.();
     stopSiteHealth?.();
     // Only clear the registry entry this run put there.

@@ -22,6 +22,15 @@ import { fleetdBotContainerDriver, type FleetdDriverConfig } from "./fleetd-driv
 import { fleetSiteKey, parseFleetHosts, type FleetHostConfig } from "./fleetd-hosts.js";
 
 let fleetRegistryVersion = 1;
+let activeFleetClientManager: FleetClientManager | null = null;
+
+export function setActiveFleetClientManager(manager: FleetClientManager | null): void {
+  activeFleetClientManager = manager;
+}
+
+export function getActiveFleetClientManager(): FleetClientManager | null {
+  return activeFleetClientManager;
+}
 
 export function getFleetRegistryVersion(): number {
   return fleetRegistryVersion;
@@ -332,6 +341,11 @@ export interface FleetSiteTransport {
   baseUrl: string;
   token?: string;
   agent?: https.Agent;
+  caCert?: string;
+  clientCert?: string;
+  clientKey?: string;
+  /** Only true when the registry resolved the CA and both client credentials. */
+  mtls: boolean;
 }
 
 export interface FleetClientManager {
@@ -533,11 +547,12 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
           }
         }
 
-        const fingerprint = createHash("sha256")
+        const existingFingerprint = createHash("sha256")
           .update(JSON.stringify([site.url, token ?? null, site.caCert ?? null, clientCert ?? null, clientKey ?? null]))
           .digest("hex");
-        if (clients.has(key) && clientFingerprints.get(key) === fingerprint) continue;
-
+        if (clients.has(key) && clientFingerprints.get(key) === existingFingerprint) continue;
+        const fingerprint = existingFingerprint;
+        const mtls = site.url.startsWith("https:") && Boolean(site.caCert && clientCert && clientKey);
         let httpsAgent: https.Agent | undefined;
         if (site.url.startsWith("https:") || site.caCert || clientKey || clientCert) {
           httpsAgent = new https.Agent({
@@ -548,6 +563,11 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
           });
         }
 
+        if (!mtls) {
+          httpsAgent?.destroy();
+          logWarn({ companyId: site.companyId, site: site.name }, `fleet site requires HTTPS, CA certificate, client certificate, and client key; client not (re)built`);
+          continue;
+        }
         const driverConfig: FleetdDriverConfig = {
           baseUrl: site.url,
           ...(token ? { token } : {}),
@@ -567,7 +587,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
         // The replaced client's agent is released only after the new one is in.
         const oldAgent = clientAgents.get(key);
         clients.set(key, driver);
-        clientTransports.set(key, { baseUrl: site.url, ...(token ? { token } : {}), ...(httpsAgent ? { agent: httpsAgent } : {}) });
+        clientTransports.set(key, { baseUrl: site.url, ...(token ? { token } : {}), ...(httpsAgent ? { agent: httpsAgent } : {}), ...(site.caCert ? { caCert: site.caCert } : {}), ...(clientCert ? { clientCert } : {}), ...(clientKey ? { clientKey } : {}), mtls });
         clientFingerprints.set(key, fingerprint);
         if (httpsAgent) clientAgents.set(key, httpsAgent);
         else clientAgents.delete(key);

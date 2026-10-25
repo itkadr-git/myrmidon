@@ -195,6 +195,7 @@ import { myrmidonFleetConsoleRoutes } from "./myrmidon/fleet-console/index.js"; 
 import { myrmidonFleetSiteRoutes } from "./myrmidon/bot-containers/fleet-site-wiring.js"; // myrmidon(1.6.6 OPE-8999)
 import { myrmidonFleetSiteManageRoutes } from "./myrmidon/bot-containers/fleet-site-manage-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T8)
 import { myrmidonFleetMoveRoutes } from "./myrmidon/bot-containers/fleet-move-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
+import { getActiveFleetClientManager } from "./myrmidon/bot-containers/site-registry.js";
 import { siteHealthRoutes } from "./myrmidon/bot-containers/site-health-routes.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { myrmidonPromptBudgetAdviceRoutes } from "./myrmidon/prompt-budget-advice/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET C)
 import { myrmidonMonitoringLinkRoutes } from "./myrmidon/monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
@@ -1200,7 +1201,7 @@ export async function createApp(
   api.use(myrmidonLitellmWorkersRoutes(db)); // myrmidon(1.6.5 LITELLM-WORKERS A): LiteLLM worker-process target, live pool size and TTIN/TTOU resize
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
-  api.use(myrmidonFleetMoveRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T5)
+  api.use(myrmidonFleetMoveRoutes(db, getActiveFleetClientManager() ?? undefined)); // myrmidon(1.6.6 REMOTE-SITES-T5)
   api.use(myrmidonFleetSiteRoutes(db)); // myrmidon(1.6.6 OPE-8999): enroll / list / delete execution sites
   api.use(siteHealthRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T4): site health badges
   api.use(myrmidonFleetSiteManageRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T8): fleet screen API (overview, site bots, drain/resume, restart/stop, logs)
