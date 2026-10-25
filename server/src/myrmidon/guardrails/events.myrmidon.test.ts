@@ -359,7 +359,7 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): run-output scan", () => {
     expect(rows.every((row) => (row.snippet?.length ?? 0) <= GUARDRAIL_SNIPPET_MAX_CHARS)).toBe(true);
     expect(rows.every((row) => !row.snippet?.includes("agent-a@example.com"))).toBe(true);
     expect(rows.every((row) => !row.snippet?.includes(`ghp_${"A".repeat(36)}`))).toBe(true);
-    expect(rows.every((row) => row.snippet?.includes("[REDACTED:")).toBe(true);
+    expect(rows.every((row) => row.snippet?.includes("[REDACTED:"))).toBe(true);
   });
 
   it("respects the categories csv from env", async () => {
