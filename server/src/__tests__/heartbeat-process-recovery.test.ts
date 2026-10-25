@@ -5815,6 +5815,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           handoffAttempt: 1,
           maxHandoffAttempts: 1,
         },
+        createdAt: new Date(Date.now() + 60_000),
       })
       .where(eq(heartbeatRuns.id, runId));
     await db.insert(heartbeatRuns).values(
