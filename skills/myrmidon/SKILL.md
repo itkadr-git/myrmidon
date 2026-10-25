@@ -139,7 +139,7 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 
 **Execution-policy review/approval wakes.** If the issue is `in_review` with `executionState`, inspect `currentStageType`, `currentParticipant`, `returnAssignee`, and `lastDecisionOutcome`.
 
-If `currentParticipant` matches you, submit your decision via the normal update route — there is no separate execution-decision endpoint:
+If `currentParticipant` matches you, submit your decision via the normal update route — there is no separate execution-decision endpoint. This applies to escalated reviewers too: record a stage decision with `PATCH /api/issues/{issueId}` and a non-empty `comment`; do not use `POST /api/approvals/{approvalId}/approve`, which resolves board approvals and is board-only.
 
 - Approve: `PATCH /api/issues/{issueId}` with `{ "status": "done", "comment": "Approved: …" }`. If more stages remain, Myrmidon keeps the issue in `in_review` and reassigns it to the next participant automatically.
 - Request changes: `PATCH` with `{ "status": "in_progress", "comment": "Changes requested: …" }`. Myrmidon converts this into a changes-requested decision and reassigns to `returnAssignee`.
