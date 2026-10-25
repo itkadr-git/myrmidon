@@ -369,7 +369,14 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
       const [row] = await db.insert(labels).values({ companyId, name, color: "#888888" }).returning();
       labelIds.set(name, row!.id);
     }
-    const fixtures = [
+    const fixtures: Array<{
+      key: string;
+      casteKey: string | null;
+      projectId: string | null;
+      label: string | null;
+      projectDefault: string | null;
+      harnessKind?: string;
+    }> = [
       { key: "t1 bare", casteKey: null, projectId: null, label: null, projectDefault: null },
       { key: "t2 caste beats label", casteKey: "reviewer", projectId: null, label: "role:qa", projectDefault: null },
       { key: "t3 project default", casteKey: null, projectId: qaProject!.id, label: null, projectDefault: "qa" },
@@ -379,7 +386,7 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
       { key: "t7 own caste beats label", casteKey: "engineer", projectId: null, label: "role:qa", projectDefault: null },
       { key: "t8 needs-engineer overrides caste", casteKey: "qa", projectId: null, label: "needs-engineer", projectDefault: null },
       { key: "t9 skill-test overrides caste", casteKey: "qa", projectId: null, label: null, projectDefault: null, harnessKind: "skill_test" },
-    ] as const;
+    ];
     const ids = new Map<string, string>();
     for (const fixture of fixtures) {
       const id = await seedIssue(companyId, {
