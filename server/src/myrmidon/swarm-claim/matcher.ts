@@ -1289,7 +1289,7 @@ async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<
   for (const product of products) {
     const metadata = product.metadata as Record<string, unknown> | null;
     const repository = typeof metadata?.repository === "string" ? metadata.repository : typeof metadata?.repo === "string" ? metadata.repo : null;
-    const number = typeof metadata?.number === "number" ? metadata.number : Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]);
+    const number = typeof metadata?.number === "number" ? metadata.number : Number(product.externalId?.match(/#pull\/(\d+)$/)?.[1]);
     const ci = metadata?.activeCi && typeof metadata.activeCi === "object" ? metadata.activeCi as Record<string, unknown> : null;
     const ciRepository = typeof ci?.repository === "string" ? ci.repository.toLowerCase() : null;
     const ciNumber = Number(ci?.number);
@@ -1304,7 +1304,7 @@ async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<
     const meta = product.metadata as Record<string, unknown> | null;
     const ci = meta?.activeCi && typeof meta.activeCi === "object" ? meta.activeCi as Record<string, unknown> : null;
     const repository = typeof meta?.repository === "string" ? meta.repository : typeof meta?.repo === "string" ? meta.repo : null;
-    const number = typeof meta?.number === "number" ? meta.number : Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]);
+    const number = typeof meta?.number === "number" ? meta.number : Number(product.externalId?.match(/#pull\/(\d+)$/)?.[1]);
     if (!repository || !Number.isSafeInteger(number) || !ci || (ci.status !== "queued" && ci.status !== "in_progress")) continue;
     const currentPr = current.get(`${repository.toLowerCase()}#${number}`);
     if (!currentPr || currentPr.issueId !== product.issueId) continue;

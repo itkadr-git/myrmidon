@@ -122,12 +122,17 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
     });
   }
   if (event.event === "workflow_run" || event.event === "check_suite") {
+    const workflowPullRequests = record(payload.workflowRun).pullRequests;
+    const workflowPullRequestNumber = Array.isArray(workflowPullRequests) ? positiveInteger(record(workflowPullRequests[0]).number) : null;
+    const checkPullRequests = record(payload.checkSuite).pullRequests;
+    const checkPullRequestNumber = Array.isArray(checkPullRequests) ? positiveInteger(record(checkPullRequests[0]).number) : null;
+    const pullRequest = record(payload.pullRequest);
     return compact({
       ...base,
       action: boundedString(payload.action, 100),
       repository: boundedString(payload.repository, 300),
-      number: positiveInteger(payload.number) ?? positiveInteger(record(payload.workflowRun).pullRequestNumber) ?? (Array.isArray(record(payload.checkSuite).pullRequests) ? positiveInteger(record(record(payload.checkSuite).pullRequests[0]).number) : null),
-      pullRequestNumber: positiveInteger(payload.pullRequestNumber) ?? positiveInteger(record(payload.pullRequest).number) ?? (Array.isArray(record(payload.checkSuite).pullRequests) ? positiveInteger(record(record(payload.checkSuite).pullRequests[0]).number) : null),
+      number: workflowPullRequestNumber ?? checkPullRequestNumber,
+      pullRequestNumber: positiveInteger(pullRequest.number) ?? checkPullRequestNumber,
       headSha: commitSha(payload.headSha),
       conclusion: boundedString(payload.conclusion, 40),
       status: boundedString(payload.status, 40),
@@ -269,8 +274,22 @@ export function githubConnectionEventService(
     const active = status === "queued" || status === "in_progress";
     if (!active && !conclusion) return;
     const currentTime = now();
-    await db.update(issueWorkProducts).set({ metadata: sql`jsonb_set(${issueWorkProducts.metadata}, '{activeCi}', ${JSON.stringify(active ? { repository, number: pullRequestNumber, headSha, runId, status, observedAt: currentTime.toISOString() } : null)}::jsonb)`, updatedAt: currentTime })
-      .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github"), sql`lower(coalesce(${issueWorkProducts.metadata}->>'repository', ${issueWorkProducts.metadata}->>'repo', '')) = lower(${repository})`, sql`coalesce((${issueWorkProducts.metadata}->>'number')::int, nullif(regexp_replace(${issueWorkProducts.externalId}, '^.*#pull/([0-9]+)$', '\\1'), ${issueWorkProducts.externalId})::int) = ${pullRequestNumber}`));
+    const products = await db.select().from(issueWorkProducts)
+      .where(and(
+        eq(issueWorkProducts.companyId, companyId),
+        eq(issueWorkProducts.type, "pull_request"),
+        eq(issueWorkProducts.provider, "github"),
+      ));
+    for (const product of products) {
+      const metadata = record(product.metadata);
+      const productRepository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
+      const productNumber = positiveInteger(metadata.number) ?? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]);
+      if (productRepository?.toLowerCase() !== repository.toLowerCase() || productNumber !== pullRequestNumber) continue;
+      await db.update(issueWorkProducts).set({
+        metadata: { ...metadata, activeCi: active ? { repository, number: pullRequestNumber, headSha, runId, status, observedAt: currentTime.toISOString() } : null },
+        updatedAt: currentTime,
+      }).where(eq(issueWorkProducts.id, product.id));
+    }
 
     if (!options.assignmentWakeup || !conclusion || active) return;
 

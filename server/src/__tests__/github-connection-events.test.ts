@@ -344,7 +344,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     const headSha = "a".repeat(40);
     const events = ["workflow_run", "check_suite"].map((event, i) => ({
       id: `ci-delivery-${i}`, provider: "github" as const, event, action: "completed", installationId: "101", repositoryId: "99", createdAt: "2026-09-04T12:00:00.000Z", bindingIds: [`${grantId}_101`],
-      payload: { repository: "paperclipai/paperclip", number: 123, pullRequestNumber: i === 0 ? 123 : null, status: "completed", conclusion: i === 0 ? null : "failure", headSha, runId: "456", checkSuiteId: "789", accessToken: "must-be-dropped" },
+      payload: { repository: "paperclipai/paperclip", workflowRun: { pullRequests: [{ number: 123 }] }, pullRequest: { number: 123 }, status: i === 0 ? "in_progress" : "completed", conclusion: i === 0 ? null : "failure", headSha, runId: "456", checkSuiteId: "789", accessToken: "must-be-dropped" },
     }));
     const connector = { getCapabilities: vi.fn(async () => ["github.code" as const]), startAuthorization: vi.fn(), claim: vi.fn(), refresh: vi.fn(), revoke: vi.fn(), setWebhookBinding: vi.fn(async () => undefined), leaseEvents: vi.fn(async () => ({ leaseId: randomUUID(), events })), acknowledgeEvents: vi.fn(async () => 2) } as unknown as PaperclipCloudConnector;
     const wakeup = vi.fn(async () => undefined);
