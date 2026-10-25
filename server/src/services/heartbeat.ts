@@ -64,7 +64,7 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
 import { connectionIntentService } from "./connection-intents.js";
-import { ExternalSessionScheduler } from "./external-session-scheduler.js";
+import { externalSessionScheduler } from "./external-session-scheduler.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { listAdapterModels } from "../adapters/registry.js";
 import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/router.js";
@@ -9534,12 +9534,6 @@ export function heartbeatService(
   };
 
   const runLogStore = getRunLogStore();
-  const externalSessionScheduler = new ExternalSessionScheduler({
-    concurrencyPerCredential: Math.max(
-      1,
-      Number.parseInt(process.env.EXTERNAL_SESSION_CONCURRENCY_PER_CREDENTIAL ?? "1", 10) || 1,
-    ),
-  });
   const traceStore = providerTraceStore(db);
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
@@ -26355,12 +26349,17 @@ export function heartbeatService(
               );
             const guardedDispatch = externalSession.connectionId
               ? await externalSessionScheduler.schedule(
-                  `${run.companyId}:${externalSession.connectionId}:${externalSession.grantId}`,
+                  `${run.companyId}:${externalSession.connectionId}`,
                   async () => {
+                    const latestRun = await getRun(run.id);
+                    if (executionControl.controller.signal.aborted || latestRun?.status !== "running") {
+                      throw new Error("External session run cancelled before dispatch");
+                    }
                     const guarded = await dispatch();
                     if (guarded.dispatched) await guarded.resultPromise;
                     return guarded;
                   },
+                  { runId: run.id, signal: executionControl.controller.signal },
                 )
               : await dispatch();
             if (!guardedDispatch.dispatched) return;
