@@ -673,6 +673,25 @@ describe("OPE-9072: escalation chain target and workflow-safe blocked dispositio
     ).toEqual({ kind: "vendor_default", ...exhausted });
   });
 
+  it("successful-run disposition exhaustion never falls through to board", () => {
+    expect(
+      decideStrandedAutoPolicy({
+        ...exhausted,
+        managerAgentId: null,
+        escalationAgentId: null,
+        requireAgentDisposition: true,
+      }),
+    ).toEqual({ kind: "vendor_default", ...exhausted });
+    expect(
+      decideStrandedAutoPolicy({
+        ...exhausted,
+        managerAgentId: null,
+        escalationAgentId: "adm-1",
+        requireAgentDisposition: true,
+      }),
+    ).toEqual({ kind: "disposition_blocked", ownerAgentId: "adm-1", ...exhausted });
+  });
+
   it("retries still come first and a paused assignee keeps the old behaviour", () => {
     expect(
       decideStrandedAutoPolicy({

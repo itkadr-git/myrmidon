@@ -4118,6 +4118,7 @@ export function recoveryService(
         managerAgentId,
         escalationAgentId,
         targetIsAdm,
+        requireAgentDisposition: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON,
         hasExecutionWorkflow: issueHasExistingExecutionWorkflow(input.issue),
         assigneePaused,
       });
@@ -4571,6 +4572,14 @@ export function recoveryService(
           });
           return blockedIssue;
         }
+      }
+      if (
+        autoPolicyDecision.kind === "vendor_default" &&
+        recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+      ) {
+        // A missing escalation agent is not permission to create a board-owned
+        // liveness block for a successful-run disposition handoff.
+        return input.issue;
       }
       // autoPolicyDecision.kind === "vendor_default" falls through as-is.
     }
