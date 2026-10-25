@@ -365,7 +365,7 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
       .returning();
 
     const labelIds = new Map<string, string>();
-    for (const name of ["role:qa", "Role: Docs"]) {
+    for (const name of ["role:qa", "Role: Docs", "needs-engineer"]) {
       const [row] = await db.insert(labels).values({ companyId, name, color: "#888888" }).returning();
       labelIds.set(name, row!.id);
     }
@@ -377,6 +377,8 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
       { key: "t5 legacy spaced label", casteKey: null, projectId: null, label: "Role: Docs", projectDefault: null },
       { key: "t6 project default engineer", casteKey: null, projectId: engProject!.id, label: null, projectDefault: "engineer" },
       { key: "t7 own caste beats label", casteKey: "engineer", projectId: null, label: "role:qa", projectDefault: null },
+      { key: "t8 needs-engineer overrides caste", casteKey: "qa", projectId: null, label: "needs-engineer", projectDefault: null },
+      { key: "t9 skill-test overrides caste", casteKey: "qa", projectId: null, label: null, projectDefault: null, harnessKind: "skill_test" },
     ] as const;
     const ids = new Map<string, string>();
     for (const fixture of fixtures) {
@@ -384,6 +386,7 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
         title: fixture.key,
         casteKey: fixture.casteKey,
         projectId: fixture.projectId,
+        ...(fixture.harnessKind ? { harnessKind: fixture.harnessKind } : {}),
       });
       ids.set(fixture.key, id);
       if (fixture.label) {
@@ -392,7 +395,7 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
     }
 
     const expected: Record<string, string[]> = {
-      engineer: ["t1 bare", "t6 project default engineer", "t7 own caste beats label"],
+      engineer: ["t1 bare", "t6 project default engineer", "t7 own caste beats label", "t8 needs-engineer overrides caste", "t9 skill-test overrides caste"],
       reviewer: ["t2 caste beats label"],
       qa: ["t3 project default", "t4 legacy label"],
       docs: ["t5 legacy spaced label"],
