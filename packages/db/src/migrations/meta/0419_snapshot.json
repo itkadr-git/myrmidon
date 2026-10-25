@@ -1,5 +1,5 @@
 {
-  "id": "96acf5c1-572f-4d41-a991-ef780f75c28b",
+  "id": "9c8b40ec-d0e9-42c3-8de5-27e9b1cc6544",
   "prevId": "5cf242b6-6cb1-458d-b05f-2559b798b7a9",
   "version": "7",
   "dialect": "postgresql",
@@ -57782,8 +57782,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.issue_continuation_keys": {
-      "name": "issue_continuation_keys",
+    "public.legacy_blocked_import": {
+      "name": "legacy_blocked_import",
       "schema": "",
       "columns": {
         "company_id": {
@@ -57792,8 +57792,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "key": {
-          "name": "key",
+        "import_key": {
+          "name": "import_key",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -57804,47 +57804,32 @@
           "primaryKey": false,
           "notNull": true
         },
+        "class": {
+          "name": "class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result_issue_id": {
+          "name": "result_issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
         }
       },
       "indexes": {
-        "issue_continuation_keys_company_key_uq": {
-          "name": "issue_continuation_keys_company_key_uq",
+        "legacy_blocked_import_issue_id_idx": {
+          "name": "legacy_blocked_import_issue_id_idx",
           "columns": [
             {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issue_continuation_keys_expires_at_idx": {
-          "name": "issue_continuation_keys_expires_at_idx",
-          "columns": [
-            {
-              "expression": "expires_at",
+              "expression": "issue_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -57857,11 +57842,11 @@
         }
       },
       "foreignKeys": {
-        "issue_continuation_keys_company_id_companies_id_fk": {
-          "name": "issue_continuation_keys_company_id_companies_id_fk",
-          "tableFrom": "issue_continuation_keys",
+        "legacy_blocked_import_company_id_companies_id_fk": {
+          "name": "legacy_blocked_import_company_id_companies_id_fk",
+          "tableFrom": "legacy_blocked_import",
           "tableTo": "companies",
-          "schemaTo": "public",
+          "schemaTo": "",
           "columnsFrom": [
             "company_id"
           ],
@@ -57871,26 +57856,48 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "issue_continuation_keys_issue_id_issues_id_fk": {
-          "name": "issue_continuation_keys_issue_id_issues_id_fk",
-          "tableFrom": "issue_continuation_keys",
+        "legacy_blocked_import_issue_company_fk": {
+          "name": "legacy_blocked_import_issue_company_fk",
+          "tableFrom": "legacy_blocked_import",
           "tableTo": "issues",
-          "schemaTo": "public",
+          "schemaTo": "",
           "columnsFrom": [
+            "company_id",
             "issue_id"
           ],
           "columnsTo": [
+            "company_id",
             "id"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "legacy_blocked_import_result_issue_id_issues_id_fk": {
+          "name": "legacy_blocked_import_result_issue_id_issues_id_fk",
+          "tableFrom": "legacy_blocked_import",
+          "tableTo": "issues",
+          "schemaTo": "",
+          "columnsFrom": [
+            "result_issue_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
+      "uniqueConstraints": {
+        "legacy_blocked_import_company_import_key_uq": {
+          "name": "legacy_blocked_import_company_import_key_uq",
+          "nullsNotDistinct": false,
+          "columns": [
+            "company_id",
+            "import_key"
+          ]
+        }
+      }
     }
   },
   "enums": {},
