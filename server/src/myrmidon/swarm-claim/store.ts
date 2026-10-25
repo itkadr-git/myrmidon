@@ -371,6 +371,9 @@ export async function clearExpiredAssignee(
                 eq(issueClaims.origin, "auto_match"),
                 isNotNull(issueClaims.releasedAt),
                 eq(issueClaims.releaseReason, "lease_expired"),
+                // A later explicit re-assignment (even to the same agent) is
+                // newer than this lease and must never be cleared by its sweep.
+                sql`${issues.updatedAt} <= ${issueClaims.releasedAt}`,
               ),
             ),
         ),

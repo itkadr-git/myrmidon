@@ -19,7 +19,7 @@ import {
   startEmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { insertClaim } from "./store.js";
+import { clearExpiredAssignee, insertClaim, releaseClaim } from "./store.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 let db: Db;
@@ -142,6 +142,28 @@ describeDatabase("swarm claim capture under the race", () => {
     const afterRelease = await insertClaim(db, claimInput(agentTwo, new Date()));
     expect(afterRelease).not.toBeNull();
     expect(await liveClaimCount()).toBe(1);
+  }, 30_000);
+
+  it("does not clear a newer explicit re-assignment when an old lease expires", async () => {
+    const claimedAt = new Date("2026-10-24T12:00:00.000Z");
+    const releasedAt = new Date("2026-10-24T13:00:00.000Z");
+    const claim = await insertClaim(db, {
+      ...claimInput(agentOne, claimedAt),
+      expiresAt: releasedAt,
+    });
+    expect(claim).not.toBeNull();
+    await db.update(issues).set({ assigneeAgentId: agentOne, updatedAt: claimedAt }).where(eq(issues.id, issueId));
+    expect(await releaseClaim(db, { claimId: claim!.id, reason: "lease_expired", now: releasedAt })).toBe(true);
+
+    // The same agent id does not make a subsequent manual assignment owned by
+    // the old lease. The issue timestamp fences the expiry cleanup.
+    const explicitAt = new Date("2026-10-24T13:00:00.001Z");
+    await db.update(issues).set({ assigneeAgentId: agentOne, updatedAt: explicitAt }).where(eq(issues.id, issueId));
+    await expect(clearExpiredAssignee(db, {
+      companyId, issueId, agentId: agentOne, claimId: claim!.id, now: new Date("2026-10-24T13:01:00.000Z"),
+    })).resolves.toBe(false);
+    const [issue] = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues).where(eq(issues.id, issueId));
+    expect(issue?.assigneeAgentId).toBe(agentOne);
   }, 30_000);
 
   it("maps a unique violation raised by a racing writer to «занято», not to an error", async () => {
