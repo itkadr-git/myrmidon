@@ -4,6 +4,7 @@ import { buildEscalationChain, type EscalationChainPolicy } from "./build-chain.
 const policy = {
   participantRoles: ["lead", "architect", "secondary_reviewer"],
   fallbackQueue: "review-recovery",
+  stepDelayMinutes: 30,
 } satisfies EscalationChainPolicy;
 const agent = (agentId: string) => ({ agentId });
 
@@ -39,7 +40,7 @@ describe("buildEscalationChain", () => {
     expect(chain.map((step) => step.recipient)).toEqual([
       agent("same"), { serviceQueue: "review-recovery" },
     ]);
-    expect(chain.every((step, index) => index === 0 || JSON.stringify(step.recipient) !== JSON.stringify(chain[index - 1]?.recipient))).toBe(true);
+    expect(chain[0]?.recipient).not.toEqual(chain[1]?.recipient);
   });
 
   it("keeps a configured fallback queue terminal and assigns increasing delays", () => {
@@ -51,7 +52,7 @@ describe("buildEscalationChain", () => {
     });
     expect(chain).toEqual([
       { recipient: agent("arch"), afterMinutes: 10 },
-      { recipient: { serviceQueue: "review-recovery" }, afterMinutes: 11 },
+      { recipient: { serviceQueue: "review-recovery" }, afterMinutes: 40 },
     ]);
   });
 });
