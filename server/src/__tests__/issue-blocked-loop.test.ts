@@ -230,6 +230,48 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
     expect(res.body.error).toContain("blockerMetadata");
   });
 
+  it("rejects blocked edges without typed metadata and lists the missing fields", async () => {
+    const s = await seed();
+    await db.insert(issueRelations).values({
+      companyId: s.companyId,
+      issueId: s.issueId,
+      relatedIssueId: s.doneBlockerId,
+      type: "blocks",
+    });
+
+    const res = await request(createApp(boardActor(s.companyId)))
+      .patch(`/api/issues/${s.issueId}`)
+      .send({ status: "blocked", blockedByIssueIds: [s.doneBlockerId] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.missingFields).toEqual([
+      "blockReason",
+      "owner",
+      "nextCheckAt",
+      "timeoutAt",
+      "escalationPolicy",
+      "blockedByIssueIds or externalRef",
+    ]);
+  });
+
+  it("does not require new blocker metadata when editing a legacy blocked issue", async () => {
+    const s = await seed();
+    await db.update(issues).set({ status: "blocked", blockerMetadata: null }).where(eq(issues.id, s.issueId));
+
+    const res = await request(createApp(boardActor(s.companyId)))
+      .patch(`/api/issues/${s.issueId}`)
+      .send({ description: "Unrelated legacy edit" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("blocked");
+    const stored = await db
+      .select({ blockerMetadata: issues.blockerMetadata })
+      .from(issues)
+      .where(eq(issues.id, s.issueId))
+      .then((rows) => rows[0]?.blockerMetadata);
+    expect(stored).toBeNull();
+  });
+
   it("accepts an agent-authored blocked transition with blocker metadata", async () => {
     const s = await seed();
     const res = await agentBlocks(s, {});

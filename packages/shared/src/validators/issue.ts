@@ -889,35 +889,23 @@ function requireBlockedStatusForUnblockDescriptor(
 }
 
 // myrmidon(STALE-BLOCK): a PATCH that transitions an issue into blocked is
-// valid only if it carries a reason reference — a non-empty blockedByIssueIds
-// list or an unblockDescriptor with a reasonRef. The field itself stays
-// optional so pre-rollout blocked records remain valid.
+// valid only if it carries typed blocker metadata. The field stays optional
+// so pre-rollout blocked records remain valid.
 function requireReasonRefForBlockedTransition(
   value: {
     status?: unknown;
-    blockedByIssueIds?: unknown;
     blockerMetadata?: unknown;
-    unblockDescriptor?: { reasonRef?: unknown } | null;
   },
   ctx: z.RefinementCtx,
 ) {
   if (value.status !== "blocked") return;
   if (value.blockerMetadata !== undefined && value.blockerMetadata !== null) return;
-  const hasBlockers =
-    Array.isArray(value.blockedByIssueIds) &&
-    value.blockedByIssueIds.length > 0;
-  const reasonRef = value.unblockDescriptor?.reasonRef;
-  const hasReasonRef =
-    reasonRef != null && typeof reasonRef === "object" &&
-    (reasonRef as { kind?: unknown }).kind !== undefined;
-  if (!hasBlockers && !hasReasonRef) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message:
-        "Entering blocked requires a reason reference: non-empty blockedByIssueIds or unblockDescriptor.reasonRef",
-      path: ["status"],
-    });
-  }
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message:
+      "Entering blocked requires blockerMetadata with blockReason, owner, nextCheckAt, timeoutAt, escalationPolicy, and a blocker reference",
+    path: ["blockerMetadata"],
+  });
 }
 
 const createIssueDuplicateGuardSchema = {

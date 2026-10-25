@@ -14081,12 +14081,18 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
-      if (
-        enteringBlocked &&
-        req.actor.type === "agent" &&
-        blockerMetadataRaw == null
-      ) {
-        res.status(422).json({ error: "Entering blocked requires blockerMetadata" });
+      if (enteringBlocked && blockerMetadataRaw == null) {
+        const missingFields = [
+          "blockReason",
+          "owner",
+          "nextCheckAt",
+          "timeoutAt",
+          "escalationPolicy",
+        ];
+        res.status(422).json({
+          error: "Entering blocked requires complete blockerMetadata",
+          missingFields,
+        });
         return;
       }
       // myrmidon(BLOCKED-GUARD P0.6): typed blocker metadata describes the current block only;
