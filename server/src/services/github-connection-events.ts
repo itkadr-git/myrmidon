@@ -126,8 +126,8 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
       ...base,
       action: boundedString(payload.action, 100),
       repository: boundedString(payload.repository, 300),
-      number: positiveInteger(payload.number),
-      pullRequestNumber: positiveInteger(payload.pullRequestNumber),
+      number: positiveInteger(payload.number) ?? positiveInteger(record(payload.workflowRun).pullRequestNumber) ?? (Array.isArray(record(payload.checkSuite).pullRequests) ? positiveInteger(record(record(payload.checkSuite).pullRequests[0]).number) : null),
+      pullRequestNumber: positiveInteger(payload.pullRequestNumber) ?? positiveInteger(record(payload.pullRequest).number) ?? (Array.isArray(record(payload.checkSuite).pullRequests) ? positiveInteger(record(record(payload.checkSuite).pullRequests[0]).number) : null),
       headSha: commitSha(payload.headSha),
       conclusion: boundedString(payload.conclusion, 40),
       status: boundedString(payload.status, 40),
@@ -255,17 +255,24 @@ export function githubConnectionEventService(
   }
 
   async function applyCiCompletionEvent(companyId: string, event: LeasedEvent) {
-    if (!options.assignmentWakeup || (event.event !== "workflow_run" && event.event !== "check_suite")) return;
+    if (event.event !== "workflow_run" && event.event !== "check_suite") return;
     const payload = normalizeLeasedPayload(event);
     const status = stringValue(payload.status);
     const conclusion = stringValue(payload.conclusion);
-    if (status && status !== "completed") return;
-    if (!conclusion) return;
+    if (!status || !["queued", "in_progress", "completed"].includes(status)) return;
     const repository = stringValue(payload.repository);
-    const pullRequestNumber = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number);
+    const pullRequestNumber = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number) ?? positiveInteger(payload.checkSuitePullRequestNumber);
     const headSha = commitSha(payload.headSha);
     const runId = identifier(payload.runId) ?? identifier(payload.checkSuiteId) ?? event.id;
     if (!repository || !pullRequestNumber || !headSha) return;
+
+    const active = status === "queued" || status === "in_progress";
+    if (!active && !conclusion) return;
+    const currentTime = now();
+    await db.update(issueWorkProducts).set({ metadata: sql`jsonb_set(${issueWorkProducts.metadata}, '{activeCi}', ${JSON.stringify(active ? { repository, number: pullRequestNumber, headSha, runId, status, observedAt: currentTime.toISOString() } : null)}::jsonb)`, updatedAt: currentTime })
+      .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github"), sql`lower(coalesce(${issueWorkProducts.metadata}->>'repository', ${issueWorkProducts.metadata}->>'repo', '')) = lower(${repository})`, sql`coalesce((${issueWorkProducts.metadata}->>'number')::int, nullif(regexp_replace(${issueWorkProducts.externalId}, '^.*#pull/([0-9]+)$', '\\1'), ${issueWorkProducts.externalId})::int) = ${pullRequestNumber}`));
+
+    if (!options.assignmentWakeup || !conclusion || active) return;
 
     const products = await db.select({ product: issueWorkProducts, issue: issues })
       .from(issueWorkProducts)
@@ -335,6 +342,8 @@ export function githubConnectionEventService(
       eq(externalObjects.objectType, "pull_request"),
       sql`lower(${externalObjects.externalId}) = lower(${snapshot.externalId})`,
     ));
+    await db.update(issueWorkProducts).set({ metadata: sql`(${issueWorkProducts.metadata} - 'activeCi') || ${JSON.stringify({ repository: snapshot.repository, number: snapshot.number, headSha: snapshot.data.headSha })}::jsonb`, updatedAt: appliedAt })
+      .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github"), eq(issueWorkProducts.externalId, snapshot.externalId)));
     if (snapshot.merged && event.action === "closed") {
       await issueThreadInteractionService(db, { wakeup: options.wakeup })
         .sweepMergedPullRequestConfirmations([{
