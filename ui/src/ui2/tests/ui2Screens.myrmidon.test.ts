@@ -51,7 +51,13 @@ describe("myrmidon(UI2) route table integration", () => {
       expect(route.path).toBe(path.slice(1));
       expect(route.element).toBeTruthy();
       expect(UI2_NAV_GROUPS.flatMap((group) => group.items).filter((item) => item.to === path)).toHaveLength(1);
-      expect(UI2_PHONE_TABS.filter((item) => item.to === path)).toHaveLength(1);
+      // System and quality are reachable from the phone More drawer, not fixed tabs.
+      if (key === "system" || key === "quality") {
+        expect(UI2_PHONE_TABS.filter((item) => item.to === path)).toHaveLength(0);
+        expect(UI2_NAV_GROUPS.flatMap((group) => group.items).some((item) => item.to === path)).toBe(true);
+      } else {
+        expect(UI2_PHONE_TABS.filter((item) => item.to === path)).toHaveLength(1);
+      }
     }
   });
 
