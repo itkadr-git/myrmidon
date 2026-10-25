@@ -49,6 +49,10 @@ vi.mock("@/i18n", async () => {
   };
 });
 
+vi.mock("../i18n/Ui2I18n", () => ({
+  useUi2I18nOptional: () => null,
+}));
+
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
 }));
