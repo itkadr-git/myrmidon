@@ -170,7 +170,7 @@ import { myrmidonBudgetLimitsRoutes } from "./myrmidon/budget-limits/index.js";
 import { myrmidonBotDiskQuotaRoutes } from "./myrmidon/bot-containers/bot-disk-quota-routes.js"; // myrmidon(1.6.1-BOT-DISK-C)
 import { myrmidonBotImageRolloutRoutes } from "./myrmidon/bot-containers/bot-image-rollout-routes.js"; // myrmidon(BOT-ROLLOUT)
 import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
-import { boardLoadApp, boardLoadRequestMiddleware } from "./myrmidon/monitoring/board-load/index.js"; // myrmidon(1.6.6 PROCS-0.3A)
+import { boardLoadApp, boardLoadLaneTagMiddleware, boardLoadRequestMiddleware } from "./myrmidon/monitoring/board-load/index.js"; // myrmidon(1.6.6 PROCS-0.3A)
 import { myrmidonMonitoringAlertsRoutes } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
 import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
 import { createCasteDirectoryReader } from "./myrmidon/castes/directory.js"; // myrmidon(1.6.5 OPE-6608)
@@ -806,6 +806,11 @@ export async function createApp(
   // workspace-runtime) to the worker. Before the body parsers on purpose — the
   // request body is streamed through unread. Absent in the single process.
   if (opts.singletonProxy) app.use(singletonProxyMiddleware(opts.singletonProxy));
+
+  // myrmidon(1.6.6 OPE-9058): the http_route lane is attached before every
+  // other middleware — the actor / run-identity lookups and the provider
+  // webhook ingress run ahead of the /api router and were `untagged`.
+  app.use(boardLoadLaneTagMiddleware());
 
   app.use(
     COMPANY_IMPORT_API_PATH,
