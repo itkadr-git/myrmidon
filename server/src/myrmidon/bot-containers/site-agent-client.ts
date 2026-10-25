@@ -20,6 +20,8 @@ export interface SiteAgentMemoryClient extends SiteAgentClient {
   memoryExport(botKey: string): Promise<Buffer>;
   /** GET /v1/bots/{botKey}/logs: the tail of the bot container's log, already redacted by the site-agent. */
   logs(botKey: string, tail?: number): Promise<string>;
+  /** Compatibility alias for callers using the older bot log method name. */
+  botLogs(botKey: string): Promise<string>;
 }
 
 /** fleetd caps the export at 64 MiB; a longer answer is not an archive of ours. */
@@ -247,6 +249,10 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
         req.on("error", reject);
         req.end();
       });
+    },
+
+    async botLogs(botKey: string): Promise<string> {
+      return this.logs(botKey);
     },
 
 

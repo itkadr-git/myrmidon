@@ -90,4 +90,14 @@ describe("site-agent client memoryExport", () => {
     expect(seen).toBe("GET /v1/bots/work-qa/logs?tail=25 Bearer tok");
     await expect(client.logs("work-qa", 0)).rejects.toThrow("tail must be between 1 and 1000");
   });
+
+  it("keeps the legacy botLogs call on the bounded logs endpoint", async () => {
+    let seen = "";
+    const baseUrl = await serve((req, res) => {
+      seen = `${req.method} ${req.url}`;
+      res.end("line one\n");
+    });
+    await expect(createSiteAgentClient({ baseUrl, token: "tok" }).botLogs("work-qa")).resolves.toBe("line one\n");
+    expect(seen).toBe("GET /v1/bots/work-qa/logs?tail=100");
+  });
 });
