@@ -1129,7 +1129,9 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
     ).toBe(true);
     // Full = the runtime's defaults: no lsp block at all.
     const yaml = configYaml({ role: "engineer", adapterConfig: { lsp: { mode: "full" } } });
-    expect(yaml).not.toContain("lsp:");
+    expect(yaml).toContain("lsp:\n  enabled: true");
+    expect(yaml).toContain('"**/node_modules/**"');
+    expect(yaml).toContain('"**/dist/**"');
   });
 
   it("follows the instance policy", () => {
