@@ -138,6 +138,14 @@ const kindLabels = (): Record<IssueRecoveryActionKind, string> => ({
   configuration_validation: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.configurationValidation"),
   active_run_watchdog: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.activeRunWatchdog"),
   issue_graph_liveness: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.issueGraphLiveness"),
+  ci_restart: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.ciRestart"),
+  github_access: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.githubAccess"),
+  branch_relay: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.branchRelay"),
+  review_participant_restore: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.reviewParticipantRestore"),
+  workspace_myr_ws: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.workspaceMyrWs"),
+  devbuild: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.devbuild"),
+  disk_space: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.diskSpace"),
+  operator_action: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindLabel.operatorAction"),
 });
 
 const kindHeadlines = (): Record<IssueRecoveryActionKind, string> => ({
@@ -148,6 +156,14 @@ const kindHeadlines = (): Record<IssueRecoveryActionKind, string> => ({
   configuration_validation: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.configurationValidation"),
   active_run_watchdog: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.activeRunWatchdog"),
   issue_graph_liveness: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.issueGraphLiveness"),
+  ci_restart: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.ciRestart"),
+  github_access: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.githubAccess"),
+  branch_relay: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.branchRelay"),
+  review_participant_restore: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.reviewParticipantRestore"),
+  workspace_myr_ws: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.workspaceMyrWs"),
+  devbuild: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.devbuild"),
+  disk_space: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.diskSpace"),
+  operator_action: i18n.t("area.issue-threads-runs-1.issue-recovery-action-card.kindHeadline.operatorAction"),
 });
 
 /** Shared shell for the retry-timing pill so every timing state reads as the same control. */

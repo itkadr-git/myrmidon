@@ -384,6 +384,17 @@ export const ISSUE_RECOVERY_ACTION_KINDS = [
   "configuration_validation",
   "active_run_watchdog",
   "issue_graph_liveness",
+  // myrmidon(1.6.6 RECOVERY-FACTORY P1.7, OPE-9133): the typed kinds of the
+  // recovery factory — infra and operator failures become recovery issues
+  // with a dedupe key instead of naked blocked cards. See recovery-factory.ts.
+  "ci_restart",
+  "github_access",
+  "branch_relay",
+  "review_participant_restore",
+  "workspace_myr_ws",
+  "devbuild",
+  "disk_space",
+  "operator_action",
 ] as const;
 export type IssueRecoveryActionKind = (typeof ISSUE_RECOVERY_ACTION_KINDS)[number];
 
