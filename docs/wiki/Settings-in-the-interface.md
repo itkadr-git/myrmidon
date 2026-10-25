@@ -100,19 +100,14 @@ Agents can split a task across parallel helper subagents
 (`delegate_task`). On the card of a `hermes_gateway` agent, the **Parallel
 helpers** section turns this on and sets the per-agent limit, the helper
 model and an optional per-helper turn budget; **Instance → General →
-"Parallel helpers"** sets the company ceiling (default `10`, hard cap `50`)
-and the per-agent default (`2`), and shows a capacity hint summing the
-resolved limits against the host's build slots. Saving applies on every bot's
+"Parallel helpers"** sets the company ceiling (default `10`). The ceiling has
+no built-in upper limit: values above `50` only show a host-load warning on
+the settings page and are never clamped or rejected (HELPERS-NO-CAP, 1.6.1).
+The per-agent default is `2`; a card set above the ceiling is clamped to it
+at compile time. A capacity hint compares the resolved limits against the
+host's build slots. Saving applies on every bot's
 next reconcile tick, without a restart. Details:
 [parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
-
-## Agent castes (the company role directory)
-
-**Company Settings → Agent castes** — the company's own directory of agent
-roles. It starts from the twelve built-in castes and the owner can create,
-edit, and delete castes; the role on the agent card is a key from this
-directory, and changes are visible to the swarm at once, without a restart
-([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.md)).
 
 ## Backups
 
