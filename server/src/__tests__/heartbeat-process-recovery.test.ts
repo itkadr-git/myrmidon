@@ -924,7 +924,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     monitorNextCheckAt?: Date | null;
     executionState?: Record<string, unknown> | null;
     reportsToAdm?: boolean;
-  }) {
+    now?: Date;
+  }): Promise<{
+    companyId: string;
+    agentId: string;
+    runId: string;
+    wakeupRequestId: string;
+    rootIssueId: string;
+    issueId: string;
+    admAgentId: string | null;
+  }> {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
@@ -932,7 +941,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const rootIssueId = randomUUID();
     const admAgentId = input.reportsToAdm ? randomUUID() : null;
     const issueId = randomUUID();
-    const now = new Date("2026-03-19T00:00:00.000Z");
+    const now = input.now ?? new Date("2026-03-19T00:00:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     await db.insert(companies).values({
@@ -5800,6 +5809,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         runError: "Authorization: Bearer ***",
         reportsToAdm: true,
         executionState: { status: "running" },
+        now: fixtureNow,
       });
     const sourceRunId = randomUUID();
     const correctiveRunCreatedAt = new Date(fixtureNow.getTime() - 1_000);
