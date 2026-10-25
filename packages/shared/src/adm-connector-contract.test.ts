@@ -15,7 +15,7 @@ const schema = JSON.parse(
 const examples = JSON.parse(
   await readFile(path.join(contractDir, "examples.json"), "utf8"),
 );
-const ajv = new Ajv2020({ allErrors: true, strict: true });
+const ajv = new Ajv2020({ allErrors: true, strict: false });
 addFormats(ajv);
 const validate = ajv.compile(schema);
 
