@@ -127,6 +127,17 @@ export function readGatewayKeySettings(env: Record<string, string | undefined>):
 /** Names that mean "let the adapter decide"; never part of a cycle. */
 export const SPECIAL_MODEL_VALUES: readonly string[] = ["default", "auto"];
 
+/**
+ * Model name sent to the gateway when a disable pass leaves an agent key with
+ * ZERO enabled models. LiteLLM's `/key/update` treats `models: []` as
+ * "restrictions removed" (verified live on v1.103.2: the key could then call
+ * every registered model, including ones it never held), so an empty list can
+ * never travel as a disable state. This name is deliberately never registered
+ * as a real deployment, which makes the key deny every model while staying
+ * recoverable the moment a real list is applied again.
+ */
+export const MYRMIDON_DISABLED_MODEL_SENTINEL = "__myrmidon_disabled__";
+
 /** One loop: the models that form it, in walk order. */
 export interface FallbackCycle {
   /** The loop's members, first occurrence to the one that closes it. */

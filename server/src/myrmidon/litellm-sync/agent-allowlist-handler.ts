@@ -22,7 +22,7 @@
 
 import { and, eq } from "drizzle-orm";
 import { agents, modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
-import { agentKeySecretName, readGatewayKeySettings } from "@myrmidon/shared";
+import { agentKeySecretName, MYRMIDON_DISABLED_MODEL_SENTINEL, readGatewayKeySettings } from "@myrmidon/shared";
 import { notFound, unprocessable } from "../../errors.js";
 import { type AgentGatewayKeyDeps } from "../litellm-keys/agent-keys.js";
 
@@ -72,10 +72,19 @@ export async function updateAgentAllowlistsForCompany(
     ...additionalModelNames,
   ])].filter((model) => !removedModelNames.includes(model));
   if (models.length === 0 && !allowEmpty) {
-    // Nothing enabled yet: leave keys unrestricted rather than locking the
-    // fleet out with an empty allowlist.
+    // Nothing enabled yet: leave keys at their current lists rather than
+    // churning them on a pass with nothing to say.
     return skip("no-enabled-models");
   }
+  // LiteLLM (verified live against v1.103.2, isolated instance) treats
+  // /key/update with models:[] as "restrictions removed": the key may call
+  // EVERY registered model, including ones it never held. A disable pass that
+  // removed the last plugin's models must therefore never send an empty
+  // list — it would unlock the whole gateway for every agent key in the
+  // company. A sentinel name that is never registered denies every model
+  // instead (verified live: 403 for held and never-held models alike, and the
+  // key recovers when a real list is applied later).
+  const payloadModels = models.length > 0 ? models : [MYRMIDON_DISABLED_MODEL_SENTINEL];
 
   // The env carries the secret NAME; the gateway needs the VALUE.
   const adminKey = await agentGatewayKeys.readSecretValue(companyId, settings.adminKeySecret);
@@ -106,7 +115,7 @@ export async function updateAgentAllowlistsForCompany(
     }
     attempted += 1;
     try {
-      const applied = await gateway.setKeyAllowedModels({ alias, models });
+      const applied = await gateway.setKeyAllowedModels({ alias, models: payloadModels });
       if (applied) updated += 1;
       else skipped.push(`alias-unknown-to-gateway:${agent.id}`);
     } catch {
@@ -163,6 +172,12 @@ export async function updateAgentGatewayKeyWithAllowlist(
     throw unprocessable("gateway port cannot update key allowlists", { code: "gateway_allowlist_unsupported" });
   }
 
-  const applied = await gateway.setKeyAllowedModels({ alias, models: allowlist.models });
+  const applied = await gateway.setKeyAllowedModels({
+    alias,
+    // Same live-verified hazard as the company pass: models: [] REMOVES the
+    // gateway's restrictions instead of denying everything (LiteLLM v1.103.2),
+    // so an empty request is translated into the unregistered sentinel.
+    models: allowlist.models.length > 0 ? allowlist.models : [MYRMIDON_DISABLED_MODEL_SENTINEL],
+  });
   return { secretName: alias, applied };
 }

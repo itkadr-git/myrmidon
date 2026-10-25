@@ -19,7 +19,7 @@ import {
   updateAgentGatewayKeyWithAllowlist,
 } from "./agent-allowlist-handler.js";
 import type { AgentGatewayKeyDeps, GatewayKeyAdminPort } from "../litellm-keys/agent-keys.js";
-import { agentKeySecretName } from "@myrmidon/shared";
+import { agentKeySecretName, MYRMIDON_DISABLED_MODEL_SENTINEL } from "@myrmidon/shared";
 
 const ENABLED_ENV = {
   MYRMIDON_LITELLM_BASE_URL: "http://gateway.internal:4000",
@@ -126,6 +126,28 @@ describe("updateAgentAllowlistsForCompany", () => {
     expect(result.skipped).toContain("no-enabled-models");
   });
 
+  it("disable-to-zero sends the disabled sentinel, never an empty allowlist", async () => {
+    // Live-verified LiteLLM v1.103.2 semantics: /key/update with models: []
+    // REMOVES restrictions (the key may call every registered model), so a
+    // disable pass that empties a key must send an unregistered sentinel name
+    // instead. Verified on an isolated instance: sentinel -> 403 for both a
+    // previously held and a never-held model; a real list applied afterwards
+    // restores the key. See OPE-7257 CHANGES-3.
+    const gateway = recordingGateway();
+    const db = scriptedDb([MODELS[0], [{ id: "agent-1", name: "Engineer One" }]]);
+    const result = await updateAgentAllowlistsForCompany(
+      db,
+      deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
+      "company-a",
+      [],
+      ["openai/gpt-4o", "anthropic/claude"],
+      true,
+    );
+    const alias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Engineer One" });
+    expect(gateway.calls).toEqual([{ alias, models: [MYRMIDON_DISABLED_MODEL_SENTINEL] }]);
+    expect(result).toMatchObject({ attempted: 1, updated: 1 });
+  });
+
   it("skips the whole pass when key management is not configured", async () => {
     const db = scriptedDb([MODELS[0]]);
     const result = await updateAgentAllowlistsForCompany(
@@ -198,6 +220,20 @@ describe("updateAgentGatewayKeyWithAllowlist", () => {
     expect(result.applied).toBe(true);
     expect(result.secretName).toBe(agentKeySecretName({ agentId: "agent-1", agentSlug: "One" }));
     expect(gateway.calls).toEqual([{ alias: result.secretName, models: ["openai/gpt-4o"] }]);
+  });
+
+  it("translates an empty allowlist to the disabled sentinel (never unlocks)", async () => {
+    const gateway = recordingGateway();
+    const db = scriptedDb([[{ id: "agent-1", name: "One" }]]);
+    const result = await updateAgentGatewayKeyWithAllowlist(
+      deps({ db, gateway: () => gateway }),
+      { agentId: "agent-1", companyId: "company-a" },
+      { models: [] },
+    );
+    expect(result.applied).toBe(true);
+    expect(gateway.calls).toEqual([
+      { alias: result.secretName, models: [MYRMIDON_DISABLED_MODEL_SENTINEL] },
+    ]);
   });
 
   it("throws 404 for an agent outside the company", async () => {
