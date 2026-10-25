@@ -6,10 +6,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../../middleware/index.js";
 import {
   fleetSiteRoutes,
-  inspectCaCert,
   normalizeFleetdUrl,
 } from "./fleet-site-routes.js";
 import { cleanupTestPki, generateEphemeralTestPki, type TestPkiArtifacts } from "./site-agent-pki.js";
+
 import type { FleetSite, FleetSiteInsert } from "./site-registry.js";
 
 const COMPANY_A = "22222222-2222-4222-8222-222222222222";
@@ -44,7 +44,7 @@ afterAll(() => {
 });
 
 function harness(
-  secrets: string[] = ["fleetd-myr-vm1-token", "fleetd-myr-vm1-client-cert", "fleetd-myr-vm1-client-key"],
+  secrets: string[] = ["fleetd-myr-vm1-token", "fleetd-myr-vm1-client-cert", "fleetd-myr-vm1-client-key", "myrmidon-site-ca"],
   opts: { bots?: number; secretValues?: Record<string, string> } = {},
 ) {
   const rows: FleetSite[] = [];
@@ -73,8 +73,15 @@ function harness(
       return true;
     }),
     countBotsOnSite: vi.fn(async () => opts.bots ?? 0),
-    readSecret: vi.fn(async (_companyId: string, name: string) => opts.secretValues?.[name] ?? null),
+    readSiteCa: vi.fn(async () => {
+      const ca = generateSiteCa();
+      return ca;
+    }),
     secretExists: vi.fn(async (_companyId: string, name: string) => secrets.includes(name)),
+    writeSecret: vi.fn(async (_companyId: string, _name: string, _value: string) => undefined),
+    refreshRegistry: vi.fn(),
+    updateSite: vi.fn(async () => undefined),
+    readClientCertificate: vi.fn(async () => null),
   };
   const app = express();
   app.use((req, _res, next) => {
@@ -106,28 +113,20 @@ function body(overrides: Record<string, unknown> = {}) {
 const path = `/companies/${COMPANY_A}/fleet/sites`;
 
 describe("fleet site enroll routes", () => {
-  it("enrolls a site: https url, CA fingerprint, secret references, port range, no secret values", async () => {
+  it("stores only the CA key in a company secret, issues the client cert, and never returns credentials", async () => {
     const { app, deps } = harness();
-    const res = await request(app).post(path).send(body()).expect(201);
-    expect(deps.createSite).toHaveBeenCalledTimes(1);
-    const input = deps.createSite.mock.calls[0]![0];
-    expect(input).toMatchObject({
-      companyId: COMPANY_A,
-      name: "myr-vm1",
-      url: "https://192.0.2.10:9100",
-      tokenSecret: "fleetd-myr-vm1-token",
-      clientCertSecretKey: "fleetd-myr-vm1-client",
-      status: "active",
-      capacity: { maxCpus: 4, maxMemoryMb: 32768, maxBots: 5 },
-      profile: {
-        gatewayPortStart: 18700,
-        gatewayPortEnd: 18759,
-        imageAllowlist: ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
-      },
-    });
-    expect(input.caCertFingerprint).toBe(inspectCaCert(pki.caCert).fingerprint);
-    expect(res.body.site.name).toBe("myr-vm1");
-    expect(JSON.stringify(res.body)).not.toContain("BEGIN");
+    const response = await request(app).post(path).send(body({ caCert: undefined, caFingerprint: undefined, clientCertSecretKey: undefined })).expect(201);
+    const returned = JSON.stringify(response.body);
+    expect(returned).not.toContain("PRIVATE KEY");
+    expect(returned).not.toContain("privateKey");
+    expect(deps.writeSecret).toHaveBeenCalled();
+    expect(deps.createSite.mock.calls[0]![0].clientCertNotAfter).toBeInstanceOf(Date);
+    expect(deps.createSite.mock.calls[0]![0].caCertFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    const siteCaWrite = deps.writeSecret.mock.calls.find((call) => call[1] === "myrmidon-site-ca");
+    expect(siteCaWrite?.[2]).toContain("PRIVATE KEY");
+    const listed = JSON.stringify((await request(app).get(path)).body);
+    expect(listed).not.toContain("PRIVATE KEY");
+    expect(response).not.toContain("PRIVATE KEY");
   });
 
   it("accepts a single combined secret as the client reference", async () => {
@@ -218,40 +217,7 @@ describe("fleet site enroll routes", () => {
     expect(deps.deleteSite).not.toHaveBeenCalled();
   });
 
-  it("checks the pinned CA fingerprint and that the client certificate is signed by the CA", async () => {
-    const fp = inspectCaCert(pki.caCert).fingerprint;
-    const withSecrets = (cert: string) =>
-      harness(undefined, { secretValues: { "fleetd-myr-vm1-client-cert": cert, "fleetd-myr-vm1-client-key": pki.clientKey } });
-    const ok = withSecrets(pki.clientCert);
-    await request(ok.app).post(path).send(body({ caFingerprint: fp.toUpperCase().match(/../g)!.join(":") })).expect(201);
-    const badPin = withSecrets(pki.clientCert);
-    await request(badPin.app).post(path).send(body({ caFingerprint: "00".repeat(32) })).expect(400);
-    const foreign = withSecrets(pki.foreignClientCert);
-    const res = await request(foreign.app).post(path).send(body()).expect(400);
-    expect(JSON.stringify(res.body)).toContain("not signed by caCert");
-    expect(foreign.deps.createSite).not.toHaveBeenCalled();
-  });
 
-  it("stores the end of the client certificate's validity as the key TTL and shows it", async () => {
-    const { app, deps } = harness(undefined, {
-      secretValues: { "fleetd-myr-vm1-client-cert": pki.clientCert, "fleetd-myr-vm1-client-key": pki.clientKey },
-    });
-    const res = await request(app).post(path).send(body()).expect(201);
-    const stored = deps.createSite.mock.calls[0]![0].clientCertNotAfter;
-    expect(stored).toBeInstanceOf(Date);
-    const days = (stored!.getTime() - Date.now()) / 86_400_000;
-    expect(days).toBeGreaterThan(29);
-    expect(days).toBeLessThan(31);
-    expect(res.body.site.clientCertNotAfter).toBe(stored!.toISOString());
-  });
-
-  it("refuses to enroll a site whose client certificate has expired", async () => {
-    const { app, deps } = harness(undefined, {
-      secretValues: { "fleetd-myr-vm1-client-cert": pki.expiredClientCert, "fleetd-myr-vm1-client-key": pki.expiredClientKey },
-    });
-    await request(app).post(path).send(body()).expect(400);
-    expect(deps.createSite).not.toHaveBeenCalled();
-  });
 });
 
 describe("fleet site helpers", () => {

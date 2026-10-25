@@ -1,13 +1,16 @@
 // server/src/myrmidon/bot-containers/fleet-site-wiring.ts
 //
 // myrmidon(1.6.6 OPE-8999): binds the site enroll routes to the registry and company secrets.
+// myrmidon(1.6.6 OPE-9154): the board issues the site client certificate itself: the site-CA
+// key material is generated here, stored only as a company secret, and never returned.
 
+import { X509Certificate, createPrivateKey } from "node:crypto";
 import type { Router } from "express";
 import type { Db } from "@myrmidon/db";
 import { secretService } from "../../services/index.js";
 import { fleetSiteRoutes } from "./fleet-site-routes.js";
 import { siteHealthStore } from "./site-health-store.js";
-import { createFleetSite, deleteFleetSite, getFleetSite, listFleetSites } from "./site-registry.js";
+import { createFleetSite, deleteFleetSite, getFleetSite, listFleetSites, parseTlsCredentials, updateFleetSite, bumpFleetRegistryVersion } from "./site-registry.js";
 
 export function myrmidonFleetSiteRoutes(db: Db): Router {
   const secrets = secretService(db);
@@ -22,6 +25,35 @@ export function myrmidonFleetSiteRoutes(db: Db): Router {
       const secret = await secrets.getByName(companyId, name);
       return secret ? secrets.resolveSecretValue(companyId, secret.id, "latest") : null;
     },
+    readSiteCa: async (companyId) => {
+      const secret = await secrets.getByName(companyId, "myrmidon-site-ca");
+      if (!secret) return null;
+      const raw = await secrets.resolveSecretValue(companyId, secret.id, "latest");
+      if (!raw) throw new Error("Stored site CA secret cannot be resolved");
+      let material: { cert?: unknown; key?: unknown };
+      try { material = JSON.parse(raw) as { cert?: unknown; key?: unknown }; } catch { throw new Error("Stored site CA secret is malformed"); }
+      if (typeof material.cert !== "string" || typeof material.key !== "string") throw new Error("Stored site CA secret is malformed");
+      const cert = new X509Certificate(material.cert);
+      const key = createPrivateKey(material.key);
+      if (!cert.ca || !cert.checkPrivateKey(key)) throw new Error("Stored site CA secret is malformed");
+      return { cert: material.cert, key: material.key };
+    },
     secretExists: async (companyId, name) => Boolean(await secrets.getByName(companyId, name)),
+    writeSecret: async (companyId, name, value) => {
+      const existing = await secrets.getByName(companyId, name);
+      if (existing) await secrets.rotate(existing.id, { value });
+      else await secrets.create(companyId, { name, provider: "local_encrypted", value });
+    },
+    refreshRegistry: () => { bumpFleetRegistryVersion(); },
+    updateSite: async (companyId, name, patch) => {
+      await updateFleetSite(db, companyId, name, patch);
+    },
+    readClientCertificate: async (companyId, name) => {
+      const secret = await secrets.getByName(companyId, name);
+      if (!secret) return null;
+      const raw = await secrets.resolveSecretValue(companyId, secret.id, "latest");
+      return raw ? parseTlsCredentials(raw).cert ?? null : null;
+    },
+
   });
 }
