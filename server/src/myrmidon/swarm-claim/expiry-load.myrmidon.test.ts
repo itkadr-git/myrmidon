@@ -98,6 +98,7 @@ async function runExpirySweep(now: Date) {
     castes: async () => [{ key: "engineer", swarmEligible: true, maxActiveTasks: 3 }],
     intervalMs: 1,
   });
+  sweeper.resetForTest();
   return sweeper.sweep(now);
 }
 
