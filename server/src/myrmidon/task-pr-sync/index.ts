@@ -10,7 +10,7 @@ import type { PullRequestMergeDetailsResolver } from "../../services/github-pull
 import { createTaskPrSyncSweep } from "./sweep.js";
 
 export { shouldSuppressRunForIssue } from "./guard.js";
-export { createTaskPrSyncSweep } from "./sweep.js";
+export { createTaskPrSyncSweep, reconcileClosedIssuePullRequests } from "./sweep.js";
 export { decideTaskPrSync, effectivePullRequestState, settlePendingForProducts } from "./policy.js";
 export { readTaskPrSyncSettings } from "./settings.js";
 
@@ -22,7 +22,7 @@ export function createTaskPrSyncScheduler(input: {
   db: Db;
   track: (work: Promise<unknown>) => void;
   env?: NodeJS.ProcessEnv;
-}): () => void {
+}): (() => void) & { stop: () => void } {
   // The resolver is built on first use, so importing this module does not drag
   // the GitHub credential path into the entry point's static import graph (a
   // vendor startup suite replaces the service layer with partial mocks).
@@ -39,7 +39,9 @@ export function createTaskPrSyncScheduler(input: {
     resolvePullRequestDetails,
     env: input.env,
   });
-  return () => {
+  const pollMs = readTaskPrSyncSettings(input.env).pollMs;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  const run = () => {
     input.track(
       sweep
         .sweep()
@@ -53,4 +55,15 @@ export function createTaskPrSyncScheduler(input: {
         }),
     );
   };
-}
+  const stop = () => {
+    if (!pollTimer) return;
+    clearInterval(pollTimer);
+    pollTimer = null;
+  };
+  const start = () => {
+    if (pollTimer) return;
+    run();
+    pollTimer = setInterval(run, pollMs);
+    pollTimer.unref?.();
+  };
+  return Object.assign(start, { stop });

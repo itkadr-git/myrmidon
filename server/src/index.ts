@@ -199,7 +199,7 @@ import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall 
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
-import { createTaskPrSyncScheduler } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
+import { createTaskPrSyncScheduler, readTaskPrSyncSettings, reconcileClosedIssuePullRequests } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
 import { createStaleBlockScheduler, createRecoveryLivenessEventReader } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import { createOwnerCardTtlScheduler } from "./myrmidon/owner-reply/index.js"; // myrmidon(1.6.5-F21-B)
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
@@ -1604,6 +1604,7 @@ async function startServerWithDatabaseTeardown(
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  let taskPrSyncInterval: ReturnType<typeof setInterval> | null = null;
   let runContextColumnsBackfill: { stop(): void } | null = null; // OPE-5007 П2
 
   // myrmidon(PROCS-1.7, design OPE-5394 §5): the leader lease manager. The
@@ -1650,6 +1651,10 @@ async function startServerWithDatabaseTeardown(
         heartbeatSchedulerInFlight.delete(tracked);
       });
     heartbeatSchedulerInFlight.add(tracked);
+  };
+  const trackTaskPrSyncWork = (work: Promise<unknown>) => {
+    if (heartbeatSchedulerStopped) return;
+    trackHeartbeatSchedulerWork(work);
   };
   const waitForHeartbeatSchedulerIdle = async () => {
     while (heartbeatSchedulerInFlight.size > 0) {
@@ -1862,7 +1867,28 @@ async function startServerWithDatabaseTeardown(
   // the existing resolver, and settles the task (status done, one comment with the
   // PR refs / merge sha / time) once every PR is merged — or returns it to the
   // assignee when a PR was closed without merging.
-  const scheduleTaskPrSyncSweep = createTaskPrSyncScheduler({ db: db as any, track: trackHeartbeatSchedulerWork });
+  const scheduleTaskPrSyncSweep = createTaskPrSyncScheduler({ db: db as any, track: trackTaskPrSyncWork });
+  let lastClosedTaskReconcileAt = 0;
+  if (processRoleProfile.runsBackground) {
+    const runTaskPrSync = () => {
+      if (!leaderLeaseManager.isLeader("scheduler")) return;
+      scheduleTaskPrSyncSweep();
+      const now = Date.now();
+      if (now - lastClosedTaskReconcileAt < 60_000) return;
+      lastClosedTaskReconcileAt = now;
+      trackTaskPrSyncWork(reconcileClosedIssuePullRequests({
+        db: db as any,
+        resolvePullRequestDetails: createPullRequestMergeDetailsResolver(db as any),
+      }).then((result) => {
+        if (result.synced > 0) logger.info(result, "reconciled PR work products on closed tasks");
+      }).catch((err) => {
+        logger.warn({ errorKind: "closed_task_pr_reconcile_failed", errorName: err instanceof Error ? err.name : typeof err }, "closed-task PR reconcile failed");
+      }));
+    };
+    taskPrSyncInterval = setInterval(runTaskPrSync, readTaskPrSyncSettings(process.env).pollMs);
+    taskPrSyncInterval.unref?.();
+    runTaskPrSync();
+  }
   // myrmidon(STALE-BLOCK): the periodic watchdog that lifts dead blocked
   // reasons (a done/cancelled blocker, a passed due date, a cleared gate) off
   // blocked tasks through the ordinary issue update path. Opt-in via
@@ -2600,7 +2626,7 @@ async function startServerWithDatabaseTeardown(
         scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
         schedulePendingInteractionWakeSweep(); // myrmidon(P12)
-        scheduleTaskPrSyncSweep(); // myrmidon(TASK-PR-SYNC)
+        // myrmidon(TASK-PR-SYNC): swept by its own poll timer, not heartbeat ticks.
         scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
         scheduleOwnerCardTtlSweep(); // myrmidon(1.6.5-F21-B)
         scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
@@ -2985,6 +3011,10 @@ async function startServerWithDatabaseTeardown(
     if (heartbeatSchedulerInterval) {
       clearInterval(heartbeatSchedulerInterval);
       heartbeatSchedulerInterval = null;
+    }
+    if (taskPrSyncInterval) {
+      clearInterval(taskPrSyncInterval);
+      taskPrSyncInterval = null;
     }
 
     // myrmidon(PROCS-1.7, design OPE-5394 §5.3): release the leader leases

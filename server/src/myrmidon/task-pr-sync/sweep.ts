@@ -83,8 +83,6 @@ function loadTaskPrSyncServices() {
   return taskPrSyncServices;
 }
 
-/** Statuses the sweep may rewrite; a task in any other status is not a candidate. */
-const CANDIDATE_ISSUE_STATUSES = ["in_progress", "in_review"] as const;
 const TERMINAL_ISSUE_STATUSES: ReadonlySet<string> = new Set(["done", "cancelled"]);
 const ACTIVE_REVIEW_APPROVAL_STATUSES = ["pending", "revision_requested"] as const;
 
@@ -163,6 +161,51 @@ function readMonitorNextCheckAt(policy: unknown): string | null {
   if (!monitor || typeof monitor !== "object" || Array.isArray(monitor)) return null;
   const nextCheckAt = (monitor as Record<string, unknown>).nextCheckAt;
   return typeof nextCheckAt === "string" ? nextCheckAt : null;
+}
+
+
+/** Periodically reconcile every non-terminal issue that has linked PR work products. */
+export async function reconcileClosedIssuePullRequests(input: {
+  db: Db;
+  resolvePullRequestDetails: PullRequestMergeDetailsResolver;
+  limit?: number;
+}): Promise<{ scanned: number; synced: number }> {
+  const candidates = await input.db.select({
+    id: issues.id,
+    companyId: issues.companyId,
+    status: issues.status,
+  }).from(issues).innerJoin(
+    issueWorkProducts,
+    and(eq(issueWorkProducts.issueId, issues.id), eq(issueWorkProducts.type, "pull_request")),
+  ).where(inArray(issues.status, ["done", "cancelled"]));
+  let synced = 0;
+  for (const issue of candidates.slice(0, input.limit ?? 500)) {
+    const products = await input.db.select().from(issueWorkProducts).where(and(
+      eq(issueWorkProducts.issueId, issue.id),
+      eq(issueWorkProducts.type, "pull_request"),
+    ));
+    for (const product of products) {
+      const ref = taskPrReference(product as unknown as IssueWorkProduct);
+      if (!ref) continue;
+      let details: PullRequestMergeDetails;
+      try {
+        details = await input.resolvePullRequestDetails(issue.companyId, ref);
+      } catch {
+        continue;
+      }
+      const state = resolvedPullRequestState(details);
+      if (state !== "merged" && state !== "closed") continue;
+      const metadata = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
+        ? product.metadata as Record<string, unknown>
+        : {};
+      await input.db.update(issueWorkProducts).set({
+        status: state,
+        metadata: { ...metadata, state, draft: false },
+      }).where(eq(issueWorkProducts.id, product.id));
+      synced++;
+    }
+  }
+  return { scanned: candidates.length, synced };
 }
 
 /** Map the resolver's answer to the state the policy understands. */
@@ -472,7 +515,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
             issueWorkProducts,
             and(eq(issueWorkProducts.issueId, issues.id), eq(issueWorkProducts.type, "pull_request")),
           )
-          .where(inArray(issues.status, [...CANDIDATE_ISSUE_STATUSES]))
+          .where(inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]))
           .orderBy(asc(issues.updatedAt))
           .limit(batchMax);
         const issueIds = candidates.map((row) => row.id);
@@ -566,7 +609,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
             result.failed += 1;
             // Constant errorKind only: an exception message can carry a credential.
             logger.warn(
-              { errorKind: "task_pr_sync_issue_failed", issueId: issue.id, errorName: err instanceof Error ? err.name : typeof err },
+              { errorKind: "task_pr_sync_issue_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id },
               "task PR sync failed for one task",
             );
           }

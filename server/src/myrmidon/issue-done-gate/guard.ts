@@ -94,9 +94,19 @@ export async function inspectIssueDonePullRequests(
           };
         }
       }
+      const state = details.workProductState ?? "unknown";
+      if (state === "merged" || state === "closed") {
+        const metadata = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
+          ? product.metadata as Record<string, unknown>
+          : {};
+        await db.update(issueWorkProducts).set({
+          status: state,
+          metadata: { ...metadata, state, draft: false },
+        }).where(and(eq(issueWorkProducts.id, product.id), eq(issueWorkProducts.companyId, companyId)));
+      }
       return {
         product,
-        state: details.workProductState ?? "unknown",
+        state,
         url: product.url,
         ...(details.access === "denied" ? { accessDenied: true as const } : {}),
       };
@@ -104,6 +114,11 @@ export async function inspectIssueDonePullRequests(
       return { product, state: "unknown" as const, url: product.url };
     }
   }));
+  const merged = states.some(({ state }) => state === "merged");
+  const closed = states.filter(({ state }) => state === "closed");
+  if (merged && closed.length > 0) {
+    return states.filter(({ state }) => state !== "closed");
+  }
   return states;
 }
 
