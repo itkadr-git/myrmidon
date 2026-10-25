@@ -14,6 +14,7 @@ import { Ui2Rail } from "./Ui2Rail";
 import { Ui2TopBar } from "./Ui2TopBar";
 import { Ui2SettingsSidebar } from "./Ui2SettingsSidebar";
 import { Ui2PhoneHeader, Ui2PhoneTabBar } from "./Ui2PhoneNav";
+import { PluginLauncherProvider } from "@/plugins/launchers";
 
 function isSettingsPath(pathname: string): boolean {
   const segment = pathname.split("/").filter(Boolean).slice(1)[0]?.toLowerCase();
@@ -21,6 +22,7 @@ function isSettingsPath(pathname: string): boolean {
 }
 
 export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: string }) {
+  usePluginLauncherRuntime();
   const isMobile = useIsMobileViewport();
   const location = useLocation();
   const content = children ?? <Outlet />;
@@ -36,6 +38,7 @@ export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: stri
         style={{ display: "flex", flexDirection: "column", height: "100dvh", overflowY: "auto" }}
         {...rootProps}
       >
+        <PluginLauncherProvider>
         <Ui2PhoneHeader />
         <main style={{ flex: 1, minWidth: 0, paddingBottom: "var(--myr-phone-tabbar-height)" }}>
           {content}
@@ -43,6 +46,7 @@ export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: stri
         <div style={{ position: "fixed", bottom: 0, left: 0, right: 0 }}>
           <Ui2PhoneTabBar />
         </div>
+        </PluginLauncherProvider>
       </div>
     );
   }
@@ -53,6 +57,7 @@ export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: stri
       style={{ display: "flex", height: "100dvh", overflow: "hidden" }}
       {...rootProps}
     >
+      <PluginLauncherProvider>
       <Ui2Rail />
       <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
         <Ui2TopBar />
@@ -64,6 +69,7 @@ export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: stri
           >{content}</main>
         </div>
       </div>
+      </PluginLauncherProvider>
     </div>
   );
 }
