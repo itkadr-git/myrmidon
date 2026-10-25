@@ -178,6 +178,8 @@ export interface HeartbeatRun {
       source?: "personal" | "dedicated" | "app";
       repository?: string;
       reason?: string;
+      reasonCode?: "repository_required";
+      availableRepositories?: string[];
       connectionId?: string;
       grantId?: string;
       authenticationMode?: "managed" | "host" | "anonymous";
