@@ -485,6 +485,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     // A recovery policy can stop before adapter dispatch; do not leak an
     // unused one-shot failure into the next test's otherwise healthy run.
@@ -5790,8 +5791,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // This suite globally disables L4 retries to exercise vendor recovery.
     // Restore the production retry cap only for this exhausted-policy case.
     vi.stubEnv("MYRMIDON_STRANDED_AUTO_RETRIES_PER_DAY", "2");
+    vi.useFakeTimers({ toFake: ["Date"] });
     const fixtureNow = new Date();
-    vi.setSystemTime(fixtureNow);
     const { companyId, agentId, admAgentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
