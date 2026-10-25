@@ -96,7 +96,7 @@ check("removed product-copy allowlist entries are rejected", () => {
   });
   const r = run(dir, ["--gate"]);
   if (r.code !== 1) throw new Error(`expected removed product copy to fail, got ${r.code}:\n${r.stdout}`);
-  if (!/docs\\/architecture\\/README\\.md:1/.test(r.stdout)) {
+  if (!r.stdout.includes("docs/architecture/README.md:1")) {
     throw new Error(`architecture finding not reported:\n${r.stdout}`);
   }
 });
