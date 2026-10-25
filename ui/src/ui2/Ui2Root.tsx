@@ -12,9 +12,9 @@ export function Ui2Root({ children }: { children?: ReactNode }) {
   // Keep the UI2 provider above the shell so navigation chrome shares the locale.
   return (
     <Ui2I18nProvider>
-    <Ui2Shell lang={i18n.language?.toLowerCase().startsWith("ru") ? "ru" : undefined}>
-      {children}
-    </Ui2Shell>
+      <Ui2Shell lang={i18n.language?.toLowerCase().startsWith("ru") ? "ru" : undefined}>
+        {children}
+      </Ui2Shell>
     </Ui2I18nProvider>
   );
 }
