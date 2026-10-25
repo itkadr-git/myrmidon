@@ -9,7 +9,7 @@ divergence-section: Трек 1 — платформа
 - After the debranding, the host only substituted `@myrmidon/plugin-sdk/ui` and
   `/ui/hooks` in plugin UI bundles. Plugins built with `@paperclipai/plugin-sdk/ui` kept
   as an external import (Google AI, ChatGPT, Antigravity, license issuing, LLM Wiki and
-  third-party Paperclip ecosystem plugins) failed to load their sidebar UI. The legacy
+  third-party ecosystem plugins) failed to load their sidebar UI. The legacy
   names are substituted with the same shim again, in both quote styles.
 
 ## changelog-ru
@@ -19,7 +19,7 @@ divergence-section: Трек 1 — платформа
 - После дебрендинга хост подменял в UI-бандлах плагинов только `@myrmidon/plugin-sdk/ui`
   и `/ui/hooks`. Плагины, собранные с внешним импортом `@paperclipai/plugin-sdk/ui`
   (Google AI, ChatGPT, Antigravity, «Выпуск лицензий», LLM Wiki и сторонние плагины
-  экосистемы Paperclip), не загружали интерфейс в сайдбаре. Старые имена снова
+  экосистемы), не загружали интерфейс в сайдбаре. Старые имена снова
   подменяются тем же shim, в обеих формах кавычек.
 
 ## divergence
