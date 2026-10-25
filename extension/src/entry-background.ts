@@ -150,7 +150,7 @@ const confirmPort = createConfirmationPort(confirmations, confirmationUi);
 
 // Signing: the helper is a native messaging host on this PC; the signature
 // waits in this memory-only stash and never goes to the gateway.
-const signHelper = createNativeSignHelper((host, message) => chrome.runtime.sendNativeMessage(host, message));
+const signHelper = createNativeSignHelper((host, message) => chrome.runtime.sendNativeMessage(host, message as object));
 const signatureStash = createSignatureStash();
 
 interface BridgeStatus {
