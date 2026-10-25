@@ -118,3 +118,7 @@ export function useUi2I18n(): Ui2I18nContextValue {
   if (!ctx) throw new Error("useUi2I18n requires a Ui2I18nProvider ancestor");
   return ctx;
 }
+
+export function useUi2I18nOptional(): Ui2I18nContextValue | null {
+  return useContext(Ui2I18nContext);
+}
