@@ -922,12 +922,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     resultJson?: Record<string, unknown> | null;
     monitorNextCheckAt?: Date | null;
     executionState?: Record<string, unknown> | null;
+    reportsToAdm?: boolean;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
     const wakeupRequestId = randomUUID();
     const rootIssueId = randomUUID();
+    const admAgentId = input.reportsToAdm ? randomUUID() : null;
     const issueId = randomUUID();
     const now = new Date("2026-03-19T00:00:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -950,7 +952,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
+      reportsTo: admAgentId,
     });
+    if (admAgentId) {
+      await db.insert(agents).values({
+        id: admAgentId,
+        companyId,
+        name: "adm",
+        role: "admin",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
 
     await db.insert(agentWakeupRequests).values({
       id: wakeupRequestId,
@@ -5776,7 +5792,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         status: "in_progress",
         runStatus: "failed",
         runErrorCode: "adapter_failed",
-        runError: "Authorization: Bearer sk-test-successful-handoff-secret",
+        runError: "Authorization: Bearer ***",
+        reportsToAdm: true,
+        executionState: { status: "running" },
       });
     const sourceRunId = randomUUID();
     await db
@@ -5832,12 +5850,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(sourceIssue?.status).toBe("blocked");
     expect(sourceIssue?.unblockDescriptor).toMatchObject({
-      owner: { agentId },
+      owner: { agentId: admAgentId },
       reasonRef: { kind: "event", eventKey: `stranded.disposition:${issueId}` },
     });
     expect(sourceIssue?.blockerMetadata).toMatchObject({
       blockReason: "recovery",
-      owner: { agentId },
+      owner: { agentId: admAgentId },
       escalationPolicy: "stranded_disposition_chain_v1",
     });
     expect(sourceIssue?.blockerMetadata?.nextCheckAt).toEqual(expect.any(String));
