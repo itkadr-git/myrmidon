@@ -89,10 +89,15 @@ export async function inspectIssueDonePullRequests(
           const replacementDetails = await resolve(companyId, replacement);
           const replacementState = replacementDetails.workProductState ?? "unknown";
           if (replacementState === "merged" || replacementState === "closed") {
-            await db.update(issueWorkProducts).set({
-              status: replacementState,
-              metadata: { ...metadata, state: replacementState, draft: false },
-            }).where(and(eq(issueWorkProducts.id, product.id), eq(issueWorkProducts.companyId, companyId)));
+            try {
+              await db.update(issueWorkProducts).set({
+                status: replacementState,
+                metadata: { ...metadata, state: replacementState, draft: false },
+              }).where(and(eq(issueWorkProducts.id, product.id), eq(issueWorkProducts.companyId, companyId)));
+            } catch {
+              // The persistence refresh is bookkeeping; the gate still acts on
+              // the freshly resolved state.
+            }
           }
           return {
             product,
@@ -106,10 +111,15 @@ export async function inspectIssueDonePullRequests(
         const metadata = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
           ? product.metadata as Record<string, unknown>
           : {};
-        await db.update(issueWorkProducts).set({
-          status: state,
-          metadata: { ...metadata, state, draft: false },
-        }).where(and(eq(issueWorkProducts.id, product.id), eq(issueWorkProducts.companyId, companyId)));
+        try {
+          await db.update(issueWorkProducts).set({
+            status: state,
+            metadata: { ...metadata, state, draft: false },
+          }).where(and(eq(issueWorkProducts.id, product.id), eq(issueWorkProducts.companyId, companyId)));
+        } catch {
+          // The persistence refresh is bookkeeping; the gate still acts on
+          // the freshly resolved state above.
+        }
       }
       return {
         product,

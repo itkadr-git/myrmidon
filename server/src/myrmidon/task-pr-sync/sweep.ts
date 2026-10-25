@@ -179,6 +179,7 @@ export async function reconcileClosedIssuePullRequests(input: {
     issueWorkProducts,
     and(eq(issueWorkProducts.issueId, issues.id), eq(issueWorkProducts.type, "pull_request")),
   ).where(inArray(issues.status, ["done", "cancelled"])).orderBy(asc(issues.updatedAt)).limit(input.limit ?? 500);
+  const { extractGitHubPullRequestReferences } = await loadTaskPrSyncServices();
   let synced = 0;
   for (const issue of candidates.slice(0, input.limit ?? 500)) {
     const products = await input.db.select().from(issueWorkProducts).where(and(
@@ -186,20 +187,25 @@ export async function reconcileClosedIssuePullRequests(input: {
       eq(issueWorkProducts.type, "pull_request"),
     ));
     for (const product of products) {
-      const ref = taskPrReference(product as unknown as IssueWorkProduct);
-      if (!ref) continue;
+      const metadata = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
+        ? product.metadata as Record<string, unknown>
+        : {};
+      const { repo, number } = readPullRequestMetadata({ metadata });
+      const reference = extractGitHubPullRequestReferences([
+        product.url,
+        repo && number ? `${repo}#${number}` : null,
+      ])[0];
+      if (!reference) continue;
       let details: PullRequestMergeDetails;
       try {
-        details = await input.resolvePullRequestDetails(issue.companyId, ref);
+        details = await input.resolvePullRequestDetails(issue.companyId, reference);
       } catch {
         continue;
       }
       const state = resolvedPullRequestState(details);
       if (state !== "merged" && state !== "closed") continue;
-      const metadata = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
-        ? product.metadata as Record<string, unknown>
-        : {};
-      const mergedSha = typeof details.mergeCommitSha === "string" ? details.mergeCommitSha : readLastMergedSha(metadata);
+      const mergedSha = details.headSha ?? readLastMergedSha({ metadata });
+      if (state === product.status && mergedSha === readLastMergedSha({ metadata })) continue;
       await input.db.update(issueWorkProducts).set({
         status: state,
         metadata: { ...metadata, state, draft: false, ...(state === "merged" && mergedSha ? { lastMergedSha: mergedSha } : {}) },
