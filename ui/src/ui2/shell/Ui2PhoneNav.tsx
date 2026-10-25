@@ -9,6 +9,7 @@ import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmid
 import { UI2_PHONE_TABS } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
 import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { useCompany } from "@/context/CompanyContext";
 
 function PhoneTab({
@@ -160,6 +161,11 @@ export function Ui2PhoneTabBar() {
       })}
     </nav>
     {pluginSlots.map((slot) => <PluginSlotMount key={`${slot.pluginKey}:${slot.id}`} slot={slot} context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }} />)}
+    {selectedCompany ? <PluginLauncherOutlet
+      placementZones={["sidebar"]}
+      context={{ companyId: selectedCompany.id, companyPrefix: selectedCompany.issuePrefix }}
+      className="hidden"
+    /> : null}
     </div>
   );
 }
