@@ -1,6 +1,10 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import {
+  ConfigurationIncompleteFailure,
+  isConfigurationIncompleteFailure,
+} from "../services/heartbeat.ts";
 
 describe("agent local JWT", () => {
   const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
@@ -77,6 +81,16 @@ describe("agent local JWT", () => {
 
     const claims = verifyLocalAgentJwt(token!);
     expect(claims?.key_scope).toEqual({ kind: "skill_test", issueId });
+  });
+
+  it("classifies unavailable local run JWTs as non-retryable configuration failures", () => {
+    expect(
+      isConfigurationIncompleteFailure(
+        new ConfigurationIncompleteFailure(
+          "local_agent_jwt_unavailable: cannot issue PAPERCLIP_API_KEY for adapter claude_local",
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("returns null when secret is missing", () => {
