@@ -371,9 +371,15 @@ export async function clearExpiredAssignee(
                 eq(issueClaims.origin, "auto_match"),
                 isNotNull(issueClaims.releasedAt),
                 eq(issueClaims.releaseReason, "lease_expired"),
-                // Assignment updates also touch updatedAt; claim-time comparison fences only
-                // an explicit reassignment made after the old lease was acquired.
-                sql`${issues.updatedAt} <= ${issueClaims.claimedAt}`,
+                // Keep only auto-matcher writes newer than the lease claim from blocking cleanup.
+                sql`(${issues.updatedAt} <= ${issueClaims.claimedAt} OR NOT EXISTS (
+                  SELECT 1 FROM issue_claims AS newer_claim
+                  WHERE newer_claim.issue_id = ${issues.id}
+                    AND newer_claim.company_id = ${issues.companyId}
+                    AND newer_claim.agent_id = ${issues.assigneeAgentId}
+                    AND newer_claim.origin = 'auto_match'
+                    AND newer_claim.claimed_at > ${issueClaims.claimedAt}
+                ))`,
               ),
             ),
         ),
