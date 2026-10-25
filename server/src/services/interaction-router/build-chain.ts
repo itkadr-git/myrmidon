@@ -49,7 +49,7 @@ export function buildEscalationChain(input: {
 
   chain.push({
     recipient: { serviceQueue: policy.fallbackQueue },
-    afterMinutes: startAt + (chain.length + Number(fallbackQueueConfigured)) * policy.stepDelayMinutes,
+    afterMinutes: startAt + (chain.length - Number(fallbackQueueConfigured)) * policy.stepDelayMinutes,
   });
 
   return chain;
