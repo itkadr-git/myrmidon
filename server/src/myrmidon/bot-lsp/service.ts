@@ -114,6 +114,12 @@ export function mergeBotLspSettings(before: BotLspSettings, patch: BotLspSetting
   return next as BotLspSettings;
 }
 
+// Current supported bot containers are capped at 1 GiB. Keep the stored
+// value strictly below the container limit and leave room for Hermes and botd.
+export const BOT_LSP_CONTAINER_MEMORY_MB = 1024;
+export const BOT_LSP_CONTAINER_RESERVE_MB = 640;
+export const BOT_LSP_MAX_TSSERVER_MEMORY_MB = Math.min(409, BOT_LSP_CONTAINER_MEMORY_MB - BOT_LSP_CONTAINER_RESERVE_MB - 1);
+
 export function botLspService(db: Db, overrides: Partial<BotLspServiceDeps> = {}): BotLspService {
   const deps: BotLspServiceDeps = {
     settings: instanceSettingsService(db),
@@ -152,6 +158,9 @@ export function botLspService(db: Db, overrides: Partial<BotLspServiceDeps> = {}
         const general = await deps.settings.getGeneral();
         const before = asStored(general.botLsp);
         const next = mergeBotLspSettings(before, patch);
+        if (next.tsserverMemoryMb !== undefined && next.tsserverMemoryMb > BOT_LSP_MAX_TSSERVER_MEMORY_MB) {
+          throw Object.assign(new Error(`tsserverMemoryMb must be below ${BOT_LSP_CONTAINER_MEMORY_MB - BOT_LSP_CONTAINER_RESERVE_MB} MB (container memory minus Hermes/botd reserve)`), { status: 400 });
+        }
         const changedKeys = FIELDS.filter(
           (key) => JSON.stringify(before[key] ?? null) !== JSON.stringify(next[key] ?? null),
         );

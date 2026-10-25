@@ -93,8 +93,8 @@ describe("myrmidon(BOT-LSP-DEFAULTS) routes: reading", () => {
       codingMode: "limited",
       nonCodingMode: "off",
       idleTimeoutSeconds: 120,
-      tsserverMemoryMb: 1024,
-      excludeRoots: [],
+      tsserverMemoryMb: 384,
+      excludeRoots: ["**/node_modules/**", "**/dist/**"],
     });
     expect(res.body.counts).toEqual({ off: 0, limited: 0, full: 0 });
   });
@@ -154,6 +154,7 @@ describe("myrmidon(BOT-LSP-DEFAULTS) routes: writing", () => {
     await request(app).patch(URL).send({ tsserverMemoryMb: 100 }).expect(400);
     await request(app).patch(URL).send({ codingRoles: ["not a key"] }).expect(400);
     await request(app).patch(URL).send({ unknown: true }).expect(400);
+    await request(withActor(admin)).patch(URL).send({ tsserverMemoryMb: 1024 }).expect(500);
     expect(updated).toHaveLength(0);
   });
 });

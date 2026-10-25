@@ -57,7 +57,10 @@ export const BOT_LSP_IDLE_TIMEOUT_MIN_SECONDS = 30;
 export const BOT_LSP_IDLE_TIMEOUT_MAX_SECONDS = 86_400;
 
 /** tsserver heap cap of the limited mode, MB (`maxTsServerMemory`). */
-export const DEFAULT_BOT_LSP_TSSERVER_MEMORY_MB = 1024;
+// A 1 GiB container shares memory with Hermes and botd. Keep tsserver below
+// 40% of that limit; the runtime admission check may lower this per container.
+export const DEFAULT_BOT_LSP_TSSERVER_MEMORY_MB = 384;
+export const DEFAULT_BOT_LSP_EXCLUDE_ROOTS: readonly string[] = ["**/node_modules/**", "**/dist/**"];
 export const BOT_LSP_TSSERVER_MEMORY_MIN_MB = 256;
 export const BOT_LSP_TSSERVER_MEMORY_MAX_MB = 16_384;
 
@@ -180,7 +183,7 @@ export function effectiveBotLspSettings(settings: BotLspSettings | undefined | n
     tsserverMemoryMb:
       inRange(raw.tsserverMemoryMb, BOT_LSP_TSSERVER_MEMORY_MIN_MB, BOT_LSP_TSSERVER_MEMORY_MAX_MB) ??
       DEFAULT_BOT_LSP_TSSERVER_MEMORY_MB,
-    excludeRoots: cleanList(raw.excludeRoots, () => true) ?? [],
+    excludeRoots: cleanList(raw.excludeRoots, () => true) ?? [...DEFAULT_BOT_LSP_EXCLUDE_ROOTS],
   };
 }
 

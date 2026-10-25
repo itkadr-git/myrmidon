@@ -67,7 +67,7 @@ describe("myrmidon(BOT-LSP-DEFAULTS) effectiveBotLspSettings", () => {
       nonCodingMode: "off",
       idleTimeoutSeconds: 120,
       tsserverMemoryMb: 2048,
-      excludeRoots: [],
+      excludeRoots: ["**/node_modules/**", "**/dist/**"],
     });
   });
 });
@@ -85,7 +85,7 @@ describe("myrmidon(BOT-LSP-DEFAULTS) botLspHermesBlock", () => {
         typescript: {
           initialization_options: {
             disableAutomaticTypingAcquisition: true,
-            maxTsServerMemory: 1024,
+            maxTsServerMemory: 384,
             tsserver: { useSyntaxServer: "never" },
           },
         },
@@ -113,7 +113,7 @@ describe("myrmidon(BOT-LSP-DEFAULTS) schemas", () => {
         codingMode: "limited",
         nonCodingMode: "off",
         idleTimeoutSeconds: 120,
-        tsserverMemoryMb: 1024,
+        tsserverMemoryMb: 384,
         excludeRoots: ["/srv/big"],
       }).success,
     ).toBe(true);
