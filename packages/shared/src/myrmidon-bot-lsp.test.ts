@@ -80,6 +80,7 @@ describe("myrmidon(BOT-LSP-DEFAULTS) botLspHermesBlock", () => {
   it("limited: one tsserver per worktree, no typings acquisition, heap cap, short idle timeout", () => {
     expect(botLspHermesBlock("limited", undefined)).toEqual({
       enabled: true,
+      excludeRoots: ["**/node_modules/**", "**/dist/**"],
       idleTimeout: 120,
       servers: {
         typescript: {
@@ -99,8 +100,11 @@ describe("myrmidon(BOT-LSP-DEFAULTS) botLspHermesBlock", () => {
     expect(block?.servers?.typescript?.initialization_options.maxTsServerMemory).toBe(2048);
   });
 
-  it("full writes nothing unless there are exclusions", () => {
-    expect(botLspHermesBlock("full", undefined)).toBeNull();
+  it("full keeps exclusions when set and applies default exclusions", () => {
+    expect(botLspHermesBlock("full", undefined)).toEqual({
+      enabled: true,
+      excludeRoots: ["**/node_modules/**", "**/dist/**"],
+    });
     expect(botLspHermesBlock("full", { excludeRoots: ["/srv/big"] })).toEqual({ enabled: true, excludeRoots: ["/srv/big"] });
   });
 });
