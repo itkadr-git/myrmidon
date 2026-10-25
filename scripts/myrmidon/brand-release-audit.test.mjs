@@ -78,6 +78,29 @@ check("legal attribution stays green", () => {
   if (r.code !== 0) throw new Error(`expected exit 0, got ${r.code}:\n${r.stdout}`);
 });
 
+check("removed product-copy allowlist entries are rejected", () => {
+  const src = fs.readFileSync(auditPath, "utf8");
+  const suspicious = [
+    "Paperclip, взятого", "vendor name **Paperclip**", "Paperclip не отправляем",
+    "бренд везде paperclip!", "БД Paperclip в бэкап-контуре", "тикеты Paperclip",
+    "БД Paperclip", "Paperclip: sign-up выключен", "Paperclip в бэкап-контуре",
+    "тикеты в Paperclip", "Имя вендора **Paperclip**", "[Paperclip](https://github.com/paperclipai/paperclip)",
+  ];
+  for (const phrase of suspicious) {
+    if (src.includes(JSON.stringify(phrase))) {
+      throw new Error(`product-copy phrase remains allowlisted: ${phrase}`);
+    }
+  }
+  const dir = makeFixture({
+    "docs/architecture/README.md": "Paperclip: sign-up выключен, доступны только оператору.\n",
+  });
+  const r = run(dir, ["--gate"]);
+  if (r.code !== 1) throw new Error(`expected removed product copy to fail, got ${r.code}:\n${r.stdout}`);
+  if (!/docs\\/architecture\\/README\\.md:1/.test(r.stdout)) {
+    throw new Error(`architecture finding not reported:\n${r.stdout}`);
+  }
+});
+
 check("hidden compatibility boundary stays green", () => {
   const dir = makeFixture({
     "docs/deploy/example.md": "Set PAPERCLIP_API_URL and the X-Paperclip-Run-Id header; the container is paperclip-server.\n",
