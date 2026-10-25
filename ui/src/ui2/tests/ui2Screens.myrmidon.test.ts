@@ -19,10 +19,9 @@ import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
 describe("myrmidon(UI2) route table integration", () => {
   it("routes every sidebar entry with an implemented settings screen", () => {
     const routePaths = new Set(UI2_ROUTE_TABLE.map((entry) => `/${entry.path}`));
+    const skeletonSections = new Set(["general", "members", "access", "secrets", "budgets", "autonomy", "castes"]);
     for (const section of UI2_SETTINGS_SECTIONS) {
-      if (routePaths.has(section.path)) continue;
-      expect(["general", "members", "access", "secrets", "budgets", "autonomy", "castes"], section.key)
-        .toContain(section.key);
+      expect(routePaths.has(section.path) || skeletonSections.has(section.key), section.key).toBe(true);
     }
   });
 
