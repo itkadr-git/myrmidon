@@ -2494,6 +2494,13 @@
       "when": 1792402716000,
       "tag": "0418_preserve_migration_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 419,
+      "version": "7",
+      "when": 1792959532858,
+      "tag": "0419_hesitant_caretaker",
+      "breakpoints": true
     }
   ]
 }

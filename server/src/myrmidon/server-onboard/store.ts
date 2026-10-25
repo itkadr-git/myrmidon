@@ -26,6 +26,7 @@ export type OnboardServerRow = {
   protocol: string;
   username: string;
   passwordSecretKey: string | null;
+  keepPassword: boolean;
   role: string;
   onboardState: string;
   hostKeyFingerprint: string | null;
@@ -137,6 +138,7 @@ function toServer(row: ServerRow): OnboardServerRow {
     protocol: row.protocol,
     username: row.username,
     passwordSecretKey: row.passwordSecretKey,
+    keepPassword: row.keepPassword,
     role: row.role,
     onboardState: row.onboardState,
     hostKeyFingerprint: row.hostKeyFingerprint,
@@ -176,7 +178,7 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
       const row = await db
         .select()
         .from(myrmidonFleetOnboardJobs)
-        .where(and(eq(myrmidonFleetOnboardJobs.companyId, companyId), eq(myrmidonFleetOnboardJobs.id, jobId)))
+        .where(eq(myrmidonFleetOnboardJobs.id, jobId))
         .then((rows) => rows[0] ?? null);
       return row ? toJob(row) : null;
     },

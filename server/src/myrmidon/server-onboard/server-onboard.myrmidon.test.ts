@@ -66,7 +66,13 @@ function createMocks() {
     },
     async createJob(input) { return createJob(input); },
     async claimNext(companyId: string) {
-      const job = store.jobs.find((j: any) => j.status === "pending" && j.companyId === companyId);
+      // Mirror the store contract: pending jobs first; a claimed job whose
+      // secrets were already consumed is re-served so the service turns the
+      // duplicate claim into an explicit 409 instead of a silent null.
+      let job = store.jobs.find((j: any) => j.status === "pending" && j.companyId === companyId);
+      if (!job) {
+        job = store.jobs.find((j: any) => j.status === "claimed" && j.companyId === companyId && j.secretConsumed);
+      }
       if (!job) return null;
       job.status = "claimed";
       job.startedAt = new Date().toISOString();
@@ -138,7 +144,7 @@ function createMocks() {
 
   const secretsStore: Record<string, string> = {};
   const mockSecrets = {
-    putSecret: async (companyId: string, name: string, key: string, value: string) => {
+    putSecret: async (companyId: string, name: string, key: string, value: string, _description: string) => {
       secretsStore[name] = value;
       return name;
     },
@@ -164,6 +170,7 @@ function createMocks() {
       accessKeySecretKey: server.accessKeySecretKey,
       hostKeyFingerprint: server.hostKeyFingerprint,
       role: server.role,
+      keepPassword: server.keepPassword ?? false,
     };
   };
 
