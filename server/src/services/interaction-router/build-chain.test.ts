@@ -41,4 +41,17 @@ describe("buildEscalationChain", () => {
     ]);
     expect(chain.every((step, index) => index === 0 || JSON.stringify(step.recipient) !== JSON.stringify(chain[index - 1]?.recipient))).toBe(true);
   });
+
+  it("keeps a configured fallback queue terminal and assigns increasing delays", () => {
+    const chain = buildEscalationChain({
+      routeType: "decision",
+      policy,
+      projectRoles: { lead: { serviceQueue: "review-recovery" }, architect: agent("arch") },
+      startAt: 10,
+    });
+    expect(chain).toEqual([
+      { recipient: agent("arch"), afterMinutes: 10 },
+      { recipient: { serviceQueue: "review-recovery" }, afterMinutes: 11 },
+    ]);
+  });
 });

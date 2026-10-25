@@ -7,7 +7,7 @@ import type {
 export type EscalationRole = "lead" | "architect" | "secondary_reviewer";
 
 export interface EscalationChainPolicy {
-  participantRoles: EscalationRole[];
+  participantRoles: readonly EscalationRole[];
   fallbackQueue: string;
 }
 
@@ -44,12 +44,13 @@ export function buildEscalationChain(input: {
   const queueKey = recipientKey(queue);
   if (!seen.has(queueKey)) {
     chain.push({ recipient: queue, afterMinutes: startAt + chain.length });
-  } else if (chain.at(-1)?.recipient.serviceQueue !== policy.fallbackQueue) {
-    // A configured role may point to the fallback queue; move it to the end.
-    const queueStep = chain.find((step) => step.recipient.serviceQueue === policy.fallbackQueue);
-    if (queueStep) {
-      chain.splice(chain.indexOf(queueStep), 1);
-      chain.push({ ...queueStep, afterMinutes: startAt + chain.length });
+  } else {
+    const queueIndex = chain.findIndex(
+      (step) => "serviceQueue" in step.recipient && step.recipient.serviceQueue === policy.fallbackQueue,
+    );
+    if (queueIndex >= 0 && queueIndex < chain.length - 1) {
+      const [queueStep] = chain.splice(queueIndex, 1);
+      if (queueStep) chain.push({ ...queueStep, afterMinutes: startAt + chain.length });
     }
   }
 
