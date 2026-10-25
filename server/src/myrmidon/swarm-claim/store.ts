@@ -371,9 +371,9 @@ export async function clearExpiredAssignee(
                 eq(issueClaims.origin, "auto_match"),
                 isNotNull(issueClaims.releasedAt),
                 eq(issueClaims.releaseReason, "lease_expired"),
-                // Assignment mutations use IssueService and advance updatedAt; this
-                // lease-driven clear is valid only while that timestamp is unchanged.
-                eq(issues.updatedAt, issueClaims.releasedAt),
+                // The release timestamp is the fence: a later explicit issue update
+                // means this expired claim no longer owns the assignment.
+                sql`${issues.updatedAt} <= ${issueClaims.releasedAt}`,
               ),
             ),
         ),
