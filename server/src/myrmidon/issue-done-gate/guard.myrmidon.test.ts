@@ -155,6 +155,7 @@ describe("issue done pull-request gate", () => {
       issueId,
       resolver({ 12: "closed", 13: "open" }),
     );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrow(oldPr);
     expect(() => assertIssueDonePullRequestsSettled(invalid)).toThrow(oldPr);
   });
 

@@ -67,3 +67,4 @@ export function createTaskPrSyncScheduler(input: {
     pollTimer.unref?.();
   };
   return Object.assign(start, { stop });
+}
