@@ -56,6 +56,13 @@ async function mockApi(page: Page) {
     const url = new URL(route.request().url());
     const pathname = decodeURIComponent(url.pathname);
     const json = (data: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(data) });
+    if (pathname.endsWith("/dashboard")) {
+      return json({
+        agents: { running: 1, active: 2, paused: 0, error: 0 },
+        costs: { monthSpendCents: 0, monthBudgetCents: 0 },
+      });
+    }
+    if (pathname.endsWith("/sidebar-badges")) return json({ inbox: 0, approvals: 0, failedRuns: 0 });
     if (!pathname.includes("/knowledge/")) return json([]);
     if (pathname.endsWith("/knowledge/items")) return json({ items: [longPage, ...treeItems] });
     if (pathname.endsWith("/revisions")) {
@@ -133,6 +140,9 @@ for (const screen of SCREENS) {
       await page.screenshot({ path: path.join(SHOTS, `${screen.id}-${size.width}x${size.height}-bottom.png`) });
 
       // 1b. The tree scrolls on its own down to the last item.
+      await main.evaluate((el) => {
+        el.scrollTop = 0;
+      });
       const tree = page.locator('[data-testid="knowledge-tree-scroll"]');
       const treeMetrics = await tree.evaluate((el) => ({
         scroll: el.scrollHeight,
