@@ -47,4 +47,3 @@ export type LegacyBlockedReportRow = z.infer<typeof legacyBlockedReportRowSchema
 export function createLegacyBlockedImportKey(issueId: string): string {
   return `legacy-blocked:v${LEGACY_BLOCKED_IMPORT_RULE_VERSION}:${issueId}`;
 }
-
