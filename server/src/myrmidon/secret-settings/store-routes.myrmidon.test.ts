@@ -11,14 +11,14 @@ import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, like } from "drizzle-orm";
-import { companies, companySecrets, companySecretBindings, activityLog, createDb, type Db } from "@myrmidon/db";
+import { companies, companySecrets, companySecretBindings, activityLog, createDb, toolApplications, toolConnections, type Db } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { errorHandler } from "../../middleware/index.js";
 import { secretService } from "../../services/secrets.js";
-import { InstanceSecretSettingRegistry } from "./registry.js";
+import { INSTANCE_SECRET_SETTING_FAMILIES, InstanceSecretSettingRegistry } from "./registry.js";
 import { instanceSecretSettingsRoutes } from "./routes.js";
 import { createInstanceSecretSettingService } from "./wiring.js";
 
@@ -38,9 +38,10 @@ describeEmbeddedPostgres("instance secret settings: routes and store on the real
   const previousKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   const keyDir = path.join(os.tmpdir(), `paperclip-secret-settings-${randomUUID()}`);
   const env: NodeJS.ProcessEnv = {};
-  const registry = new InstanceSecretSettingRegistry([
-    { name: NAME, envOverride: ENV_NAME, description: "Test setting", consumers: [CONSUMER] },
-  ]);
+  const registry = new InstanceSecretSettingRegistry(
+    [{ name: NAME, envOverride: ENV_NAME, description: "Test setting", consumers: [CONSUMER] }],
+    INSTANCE_SECRET_SETTING_FAMILIES,
+  );
   let companyId!: string;
   let firstSecretId!: string;
   let secondSecretId!: string;
@@ -132,6 +133,59 @@ describeEmbeddedPostgres("instance secret settings: routes and store on the real
     await expect(resolver().resolve(NAME, { consumerId: CONSUMER })).rejects.toMatchObject({
       details: { code: "setting_ref_missing" },
     });
+  });
+
+  it("lists an OAuth provider discovered from a connected tool application without values", async () => {
+    const application = await db.insert(toolApplications).values({
+      companyId,
+      name: `Acme OAuth ${randomUUID()}`,
+      applicationKey: `acme_oauth_${randomUUID().replace(/-/g, "")}`,
+      type: "mcp_http",
+      status: "active",
+    }).returning().then((rows) => rows[0]!);
+    const provider = String(application.applicationKey);
+    await db.insert(toolConnections).values({
+      companyId,
+      applicationId: application.id,
+      name: "Acme connection",
+      uid: `acme-${randomUUID()}`,
+      transport: "mcp_remote",
+      authKind: "oauth",
+      status: "active",
+      enabled: true,
+      config: { oauth: { provider } },
+    });
+    await db.insert(toolConnections).values({
+      companyId,
+      applicationId: application.id,
+      name: "Host-derived connection",
+      uid: `host-${randomUUID()}`,
+      transport: "mcp_remote",
+      authKind: "oauth",
+      status: "active",
+      enabled: true,
+      config: { url: "https://mcp.Example-Host.io/v1" },
+    });
+    await db.insert(toolConnections).values({
+      companyId,
+      applicationId: application.id,
+      name: "Metadata-derived connection",
+      uid: `meta-${randomUUID()}`,
+      transport: "mcp_remote",
+      authKind: "oauth",
+      status: "active",
+      enabled: true,
+      config: { url: "https://mcp.endpoint-host.io/v1", oauth: { metadataUrl: "https://auth.meta-host.io/.well-known/oauth-authorization-server" } },
+    });
+    const response = await request(admin()).get("/api/instance/secret-settings");
+    expect(response.status).toBe(200);
+    const listed = response.body.settings.map((row: { name: string }) => row.name);
+    expect(listed).toContain(`tool-oauth.${provider}.client-secret`);
+    expect(listed).toContain("tool-oauth.mcp_example_host_io.client-secret");
+    // Same name the sign-in uses: it prefers the persisted metadata URL over the endpoint host.
+    expect(listed).toContain("tool-oauth.auth_meta_host_io.client-secret");
+    expect(listed).not.toContain("tool-oauth.mcp_endpoint_host_io.client-secret");
+    expect(JSON.stringify(response.body)).not.toContain(SECRET_VALUE);
   });
 
   it("refuses a consumer outside the scope even with a valid ref, and an unknown secret", async () => {
