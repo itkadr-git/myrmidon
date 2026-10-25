@@ -38,7 +38,7 @@ vi.mock("@/context/CompanyContext", () => ({
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
   Navigate: () => null,
-  useLocation: () => ({ pathname: "/PAP/plugin/wiki" }),
+  useLocation: () => ({ pathname: "/PAP/plugin/wiki", search: "", hash: "" }),
   useParams: () => mockParams,
 }));
 
