@@ -293,7 +293,7 @@ export function githubConnectionEventService(
 
     if (!options.assignmentWakeup || !conclusion || active) return;
 
-    const products = await db.select({ product: issueWorkProducts, issue: issues })
+    const completionProducts = await db.select({ product: issueWorkProducts, issue: issues })
       .from(issueWorkProducts)
       .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
       .where(and(
@@ -301,7 +301,7 @@ export function githubConnectionEventService(
         eq(issueWorkProducts.type, "pull_request"),
         eq(issueWorkProducts.provider, "github"),
       ));
-    const matching = products.find(({ product }: { product: typeof issueWorkProducts.$inferSelect }) => {
+    const matching = completionProducts.find(({ product }: { product: typeof issueWorkProducts.$inferSelect }) => {
       const metadata = record(product.metadata);
       const repo = stringValue(metadata.repo) ?? stringValue(metadata.repository);
       const number = positiveInteger(metadata.number) ?? Number(product.externalId);
