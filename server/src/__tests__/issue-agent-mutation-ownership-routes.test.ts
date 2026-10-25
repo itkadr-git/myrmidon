@@ -1840,6 +1840,7 @@ describe("agent issue mutation checkout ownership", () => {
     // Keep the transition valid so this assertion isolates owner authorization.
     const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
       status: "blocked",
+      blockedByIssueIds: ["22222222-2222-4222-8222-222222222222"],
       blockerMetadata: {
         blockReason: "dependency",
         owner: { userId: "board-user" },
@@ -1893,6 +1894,7 @@ describe("agent issue mutation checkout ownership", () => {
     };
     const res = await request(await createApp(boardActor())).patch(`/api/issues/${issueId}`).send({
       status: "blocked",
+      blockedByIssueIds: ["22222222-2222-4222-8222-222222222222"],
       blockerMetadata,
       unblockDescriptor,
     });

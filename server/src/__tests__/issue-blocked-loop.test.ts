@@ -228,6 +228,14 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
       .send({ status: "blocked", unblockDescriptor: descriptorFor(s) });
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(res.body.error).toContain("blockerMetadata");
+    expect(res.body.missingFields).toEqual([
+      "blockReason",
+      "owner",
+      "nextCheckAt",
+      "timeoutAt",
+      "escalationPolicy",
+      "blockedByIssueIds or externalRef",
+    ]);
   });
 
   it("rejects blocked edges without typed metadata and lists the missing fields", async () => {
@@ -250,7 +258,6 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
       "nextCheckAt",
       "timeoutAt",
       "escalationPolicy",
-      "blockedByIssueIds or externalRef",
     ]);
   });
 
@@ -391,7 +398,17 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
 
   it("does not limit a board actor", async () => {
     const s = await seed();
-    const body = { unblockDescriptor: descriptorFor(s) };
+    const body = {
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { agentId: s.agentId },
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "agent",
+      },
+      blockedByIssueIds: [s.doneBlockerId],
+      unblockDescriptor: descriptorFor(s),
+    };
     await returnTimes(s, 3, body);
     expect((await agentBlocks(s, body)).status).toBe(422);
 

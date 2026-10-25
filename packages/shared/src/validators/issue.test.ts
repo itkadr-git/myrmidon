@@ -233,6 +233,33 @@ describe("issue validators", () => {
     expect(result.success).toBe(false);
   });
 
+  it("rejects incomplete blocked metadata and identifies missing fields", () => {
+    const result = updateIssueSchema.safeParse({
+      status: "blocked",
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { agentId: "00000000-0000-4000-8000-000000000001" },
+      },
+      blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const missing = result.error.issues.map((issue) => issue.path.join("."));
+      expect(missing).toEqual(expect.arrayContaining(["blockerMetadata.nextCheckAt", "blockerMetadata.timeoutAt", "blockerMetadata.escalationPolicy"]));
+    }
+  });
+
+  it("requires complete blocker metadata for blocked transitions", () => {
+    const result = updateIssueSchema.safeParse({
+      status: "blocked",
+      blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((issue) => issue.message.includes("blockReason, owner, nextCheckAt, timeoutAt, and escalationPolicy"))).toBe(true);
+    }
+  });
+
   it("requires blocker metadata for new blocked transitions, regardless of legacy reason refs", () => {
     for (const patch of [
       { status: "blocked", blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"] },

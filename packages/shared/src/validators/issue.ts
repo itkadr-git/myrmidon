@@ -895,15 +895,25 @@ function requireReasonRefForBlockedTransition(
   value: {
     status?: unknown;
     blockerMetadata?: unknown;
+    blockedByIssueIds?: unknown;
+    unblockDescriptor?: unknown;
   },
   ctx: z.RefinementCtx,
 ) {
   if (value.status !== "blocked") return;
-  if (value.blockerMetadata !== undefined && value.blockerMetadata !== null) return;
+  const hasBlockerMetadata = value.blockerMetadata !== undefined && value.blockerMetadata !== null;
+  const hasBlockerReference =
+    (Array.isArray(value.blockedByIssueIds) && value.blockedByIssueIds.length > 0) ||
+    (value.unblockDescriptor !== null && typeof value.unblockDescriptor === "object" &&
+      "reasonRef" in value.unblockDescriptor);
+  const missingFields = [
+    ...(!hasBlockerMetadata ? ["blockerMetadata with blockReason, owner, nextCheckAt, timeoutAt, and escalationPolicy"] : []),
+    ...(!hasBlockerReference ? ["blockedByIssueIds or unblockDescriptor.reasonRef"] : []),
+  ];
+  if (missingFields.length === 0) return;
   ctx.addIssue({
     code: z.ZodIssueCode.custom,
-    message:
-      "Entering blocked requires blockerMetadata with blockReason, owner, nextCheckAt, timeoutAt, escalationPolicy, and a blocker reference",
+    message: `Entering blocked requires ${missingFields.join(" and ")}`,
     path: ["blockerMetadata"],
   });
 }
