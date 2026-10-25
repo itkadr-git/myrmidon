@@ -142,6 +142,7 @@ describeDatabase("swarm claim capture under the race", () => {
     const afterRelease = await insertClaim(db, claimInput(agentTwo, new Date()));
     expect(afterRelease).not.toBeNull();
     expect(await liveClaimCount()).toBe(1);
+    await releaseClaim(db, { claimId: afterRelease!.id, reason: "run_finished" });
   }, 30_000);
 
   it("does not clear a newer explicit re-assignment when an old lease expires", async () => {
