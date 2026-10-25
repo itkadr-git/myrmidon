@@ -65,7 +65,7 @@ describe("resolveInteractionRecipient", () => {
     expect(() => resolveInteractionRecipient({
       ...base,
       projectRoles: { lead: { type: "agent", agentId: "creator" } },
-    })).toThrow(/creator/);
+    })).toThrow(InteractionRecipientUnresolvedError);
     expect(() => resolveInteractionRecipient({
       ...base,
       routeType: "human_input",
