@@ -148,13 +148,13 @@ describe("myrmidon(BOT-LSP-DEFAULTS) routes: writing", () => {
   });
 
   it("rejects invalid bodies with 400", async () => {
-    const { app, updated } = harness();
+    const { app, withActor, updated } = harness();
     await request(app).patch(URL).send({ codingMode: "sometimes" }).expect(400);
     await request(app).patch(URL).send({ idleTimeoutSeconds: 5 }).expect(400);
     await request(app).patch(URL).send({ tsserverMemoryMb: 100 }).expect(400);
     await request(app).patch(URL).send({ codingRoles: ["not a key"] }).expect(400);
     await request(app).patch(URL).send({ unknown: true }).expect(400);
-    await request(withActor(admin)).patch(URL).send({ tsserverMemoryMb: 1024 }).expect(500);
+    await request(withActor(admin)).patch(URL).send({ tsserverMemoryMb: 1024 }).expect(400);
     expect(updated).toHaveLength(0);
   });
 });
