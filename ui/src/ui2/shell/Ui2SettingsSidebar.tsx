@@ -27,7 +27,7 @@ export function Ui2SettingsSidebar() {
   return (
     <nav
       className="myr-ui2__settings-nav"
-      aria-label={t("ui2.settings.navLabel")}
+      aria-label={tUi2("ui2.settings.navLabel")}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -56,7 +56,7 @@ export function Ui2SettingsSidebar() {
             textDecoration: "none",
           })}
         >
-          {section.key === "language" ? tUi2("ui2.settings.language.title") : t(`ui2.settings.${section.key}`)}
+          {tUi2(`ui2.settings.${section.key}` as never)}
         </NavLink>
       ))}
     </nav>

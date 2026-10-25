@@ -6,13 +6,15 @@
 import type { ReactNode } from "react";
 import { i18n } from "@/i18n";
 import { Ui2Shell } from "./shell/Ui2Shell";
+import { Ui2I18nProvider } from "./i18n/Ui2I18n";
 
 export function Ui2Root({ children }: { children?: ReactNode }) {
-  // UI-0b mounts its provider here (ONE line, first merge wins), e.g.:
-  // <Ui2LanguageProvider><Ui2Shell>{children}</Ui2Shell></Ui2LanguageProvider>
+  // Keep the UI2 provider above the shell so navigation chrome shares the locale.
   return (
+    <Ui2I18nProvider>
     <Ui2Shell lang={i18n.language?.toLowerCase().startsWith("ru") ? "ru" : undefined}>
       {children}
     </Ui2Shell>
+    </Ui2I18nProvider>
   );
 }

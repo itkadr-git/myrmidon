@@ -11,7 +11,7 @@
 // product locales with their native names and the current one marked
 // (aria-checked), so it doubles as the accessible control on phone.
 
-import { UI2_LOCALES, type Ui2Locale } from "./locales";
+import { UI2_LOCALES } from "./locales";
 import { useUi2I18n } from "./Ui2I18n";
 import { setAppLanguage } from "@/i18n/myrmidon-i18n";
 
