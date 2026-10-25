@@ -371,6 +371,12 @@ export async function clearExpiredAssignee(
                 eq(issueClaims.origin, "auto_match"),
                 isNotNull(issueClaims.releasedAt),
                 eq(issueClaims.releaseReason, "lease_expired"),
+                // Compare-and-update fence: the sweep releases and clears at the
+                // same instant, so its release owns the assignment change. When
+                // the clear runs strictly later than the release, an issue row
+                // updated after the release is a newer explicit re-assignment
+                // that outranks the expired lease.
+                sql`(${issueClaims.releasedAt} >= ${input.now.toISOString()}::timestamptz OR ${issues.updatedAt} <= ${issueClaims.releasedAt})`,
               ),
             ),
         ),

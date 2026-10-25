@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Trans } from "react-i18next";
 import { i18n, useTranslation } from "@/i18n";
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PluginRecord } from "@myrmidon/shared";
 import { Link } from "@/lib/router";
@@ -407,9 +408,9 @@ export function PluginManager() {
                       <Link
                         to={`/company/settings/instance/plugins/${plugin.id}`}
                         className="font-medium hover:underline truncate block"
-                        title={plugin.manifestJson.displayName ?? plugin.packageName}
+                        title={pluginLabel(t, plugin.pluginKey, null, plugin.manifestJson.displayName ?? plugin.packageName)} // myrmidon(OPE-9352)
                       >
-                        {plugin.manifestJson.displayName ?? plugin.packageName}
+                        {pluginLabel(t, plugin.pluginKey, null, plugin.manifestJson.displayName ?? plugin.packageName) /* myrmidon(OPE-9352) */}
                       </Link>
                       {bundledByPackageName.has(plugin.packageName) && (
                         <Badge variant="outline">
