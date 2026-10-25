@@ -1,4 +1,6 @@
 ---
+divergence-section: Брендинг
+---
 
 ## changelog-en
 
