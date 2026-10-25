@@ -27,6 +27,7 @@ export function buildEscalationChain(input: {
   const seen = new Set<string>();
   const chain: InteractionEscalationStep[] = [];
   let fallbackQueueConfigured = false;
+  let configuredQueueDelay: number | undefined;
 
   const recipientKey = (recipient: InteractionRecipient): string => {
     if ("agentId" in recipient) return `agent:${recipient.agentId}`;
@@ -38,7 +39,10 @@ export function buildEscalationChain(input: {
     const recipient = projectRoles[role];
     if (!recipient || (routeType === "code_review" && "userId" in recipient)) continue;
     if ("serviceQueue" in recipient) {
-      fallbackQueueConfigured ||= recipient.serviceQueue === policy.fallbackQueue;
+      if (recipient.serviceQueue === policy.fallbackQueue && !fallbackQueueConfigured) {
+        configuredQueueDelay = startAt + chain.length * policy.stepDelayMinutes;
+        fallbackQueueConfigured = true;
+      }
       continue;
     }
     const key = recipientKey(recipient);
@@ -49,7 +53,7 @@ export function buildEscalationChain(input: {
 
   chain.push({
     recipient: { serviceQueue: policy.fallbackQueue },
-    afterMinutes: startAt + (chain.length - Number(fallbackQueueConfigured)) * policy.stepDelayMinutes,
+    afterMinutes: configuredQueueDelay ?? startAt + chain.length * policy.stepDelayMinutes,
   });
 
   return chain;
