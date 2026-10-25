@@ -126,7 +126,7 @@ describeDatabase("swarm expiry race under load", () => {
     if (db) {
       await db.delete(issueClaims).where(inArray(issueClaims.issueId, taskIds));
       await db.delete(issues).where(inArray(issues.id, taskIds));
-        await db.delete(agents).where(eq(agents.companyId, companyId));
+      await db.delete(agents).where(eq(agents.companyId, companyId));
       await db.delete(companies).where(eq(companies.id, companyId));
     }
     await tempDb?.cleanup();
@@ -140,20 +140,18 @@ describeDatabase("swarm expiry race under load", () => {
       .where(and(inArray(issueClaims.issueId, taskIds), isNull(issueClaims.releasedAt)));
     expect(claims).toHaveLength(taskCount);
 
-    const assignmentPromise = Promise.all(claims.map((claim, index) =>
-      db.transaction(async (tx) => {
-        const row = await issueService(tx as unknown as Db).update(claim.issueId, {
-          assigneeAgentId: explicitlyAssignedId,
-          companyGuard: companyId,
-          updatedAt: new Date(now.getTime() + index + 1),
-        });
-        return row;
-      })
-    ));
+    const assignments = claims.map((claim, index) =>
+      db.transaction(async (tx) => issueService(tx as unknown as Db).update(claim.issueId, {
+        assigneeAgentId: explicitlyAssignedId,
+        companyGuard: companyId,
+        updatedAt: new Date(now.getTime() + index + 1),
+      }))
+    );
     const sweepPromise = runExpirySweep(now);
-    const [assignmentResults] = await Promise.all([assignmentPromise, sweepPromise]);
+    const [assignmentResults, sweepResult] = await Promise.all([Promise.all(assignments), sweepPromise]);
     const assignedTaskIds = new Set(assignmentResults.flatMap((result, index) => result ? [claims[index]!.issueId] : []));
     expect(assignmentResults.every((result) => result !== null)).toBe(true);
+    expect(sweepResult.expiredReleased).toBe(taskCount);
 
     const finalRows = await db
       .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
