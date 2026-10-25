@@ -395,6 +395,7 @@ import {
   normalizeMicrosoftTeamsCredentialIds,
   normalizeMicrosoftTeamsExternalPrincipalId,
 } from "./chat-teams-credentials.js";
+import { backgroundInterval } from "../myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 import {
   isTeamsInlineImageContentType,
   prepareTeamsInlineImage,
@@ -3507,7 +3508,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   function startDiscordGatewayLeaseRenewal(
     ownership: DiscordGatewayOwnership,
   ): void {
-    ownership.renewTimer = setInterval(
+    ownership.renewTimer = backgroundInterval(
       () => {
         if (ownership.renewal || ownership.stopping) return;
         void refreshDiscordGatewayOwnership(ownership);
