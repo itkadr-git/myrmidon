@@ -8,14 +8,15 @@
 // contract paths (the vendor routes keep their own shapes), and the legacy
 // paths stay stable so parity comparison stays possible.
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isUi2PhoneTabActive } from "../shell/Ui2PhoneNav";
 import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
 import { UI2_ROUTE_TABLE, isUi2RouteElementAPlaceholder } from "../routes";
 import { UI2_SETTINGS_SECTIONS } from "../shell/Ui2SettingsSidebar";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
-
-
+describe("myrmidon(UI2) route table integration", () => {
   it("routes every settings sidebar entry through UI2 or the company settings route tree", () => {
     const appSource = readFileSync(fileURLToPath(new URL("../../App.tsx", import.meta.url)), "utf8");
     const routeBlock = appSource.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
@@ -61,7 +62,7 @@ import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
     }
   });
 
-  it("renders plugin nav groups in both rail and phone nav when slots or launchers exist", () => {
+  it("renders plugin nav groups in both rail and phone nav when slots exist", () => {
     const rail = readFileSync(fileURLToPath(new URL("../shell/Ui2Rail.tsx", import.meta.url)), "utf8");
     const phone = readFileSync(fileURLToPath(new URL("../shell/Ui2PhoneNav.tsx", import.meta.url)), "utf8");
     for (const source of [rail, phone]) {
