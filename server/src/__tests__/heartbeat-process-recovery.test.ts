@@ -5819,13 +5819,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       })
       .where(eq(heartbeatRuns.id, runId));
     await db.insert(heartbeatRuns).values(
-      Array.from({ length: 2 }, (_, index) => ({
+      Array.from({ length: 2 }, () => ({
         id: randomUUID(),
         companyId,
         agentId,
         invocationSource: "automation" as const,
         status: "succeeded" as const,
-        createdAt: new Date(Date.now() - 3_000 - index * 1_000),
+        createdAt: new Date("2026-03-18T23:59:56.000Z"),
         contextSnapshot: {
           issueId,
           source: "myrmidon.stranded_autopolicy_retry",
