@@ -1,8 +1,8 @@
 /** Maximum number of empty continuations allowed in a three-hour window. */
-export const MAX_EMPTY_CONTINUATIONS_PER_WINDOW = 30;
+export const MAX_EMPTY_CONTINUATIONS_PER_WINDOW = 6;
 /** Three hours, in milliseconds. */
 export const CONTINUATION_WINDOW_MS = 3 * 60 * 60 * 1000;
-/** Minimum average spacing needed to keep the window at or below the cap. */
+/** Delay at the event cap; the first event remains immediate. */
 export const MAX_CONTINUATION_DELAY_MS =
   CONTINUATION_WINDOW_MS / MAX_EMPTY_CONTINUATIONS_PER_WINDOW;
 
@@ -11,7 +11,10 @@ export type ContinuationBackoffInput = {
   windowMs: number;
 };
 
-/** Return a deterministic, monotone delay for the next continuation. */
+/**
+ * Return a monotone delay that spaces events across the rolling-window budget.
+ * The caller applies this delay before creating a continuation.
+ */
 export function nextContinuationDelay({
   recentCount,
   windowMs,
@@ -22,6 +25,6 @@ export function nextContinuationDelay({
   const count = Math.min(Math.floor(recentCount), MAX_EMPTY_CONTINUATIONS_PER_WINDOW);
   return Math.min(
     MAX_CONTINUATION_DELAY_MS,
-    (count / MAX_EMPTY_CONTINUATIONS_PER_WINDOW) * windowMs,
+    (count / MAX_EMPTY_CONTINUATIONS_PER_WINDOW) * Math.min(windowMs, CONTINUATION_WINDOW_MS),
   );
 }
