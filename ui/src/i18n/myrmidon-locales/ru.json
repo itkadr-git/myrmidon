@@ -1644,5 +1644,22 @@
     "journalCreated": "Лимит создан: {{amount}}",
     "journalDeleted": "Лимит удалён: {{amount}}",
     "journalUpdated": "Было {{before}}, стало {{after}}"
+  },
+  "pluginLabels": {
+    "myrmidon_personal-bot": {
+      "_plugin": "Персональный бот",
+      "personal-bot-sidebar": "Персональный бот",
+      "personal-bot-page": "Персональный бот"
+    },
+    "myrmidon_license-issuer": {
+      "_plugin": "Выпуск лицензий",
+      "license-issuer-sidebar": "Выпуск лицензий",
+      "license-issuer-page": "Выпуск лицензий"
+    },
+    "myrmidon_chatgpt-pool": {
+      "_plugin": "Подписки ChatGPT",
+      "chatgpt-pool-sidebar": "Подписки ChatGPT",
+      "chatgpt-pool-page": "Подписки ChatGPT"
+    }
   }
 }
