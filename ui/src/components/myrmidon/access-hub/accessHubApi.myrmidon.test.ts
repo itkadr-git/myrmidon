@@ -4,6 +4,7 @@ import {
   DEFAULT_AUDIT_LIMIT,
   EMPTY_ACCESS_FILTERS,
   accessHubApi,
+  AccessHubDisabledError,
   filterAccessRecords,
   formatAccessMoment,
   grantedAgents,
@@ -64,6 +65,17 @@ describe("access hub API contract", () => {
     expect(apiMock.get).toHaveBeenNthCalledWith(1, "/myrmidon/access-hub/accesses");
     expect(apiMock.get).toHaveBeenNthCalledWith(2, "/myrmidon/access-hub/audit");
     expect(apiMock.get).toHaveBeenNthCalledWith(3, "/myrmidon/access-hub/hosts");
+  });
+
+  it("normalizes the disabled module envelope and marks it unavailable", async () => {
+    apiMock.get.mockResolvedValue({ enabled: false, accesses: [], hosts: [] });
+
+    await expect(accessHubApi.listAccesses()).rejects.toBeInstanceOf(AccessHubDisabledError);
+  });
+
+  it("marks module-disabled response unavailable instead of returning an envelope", async () => {
+    apiMock.get.mockResolvedValue({ enabled: false, accesses: [], hosts: [] });
+    await expect(accessHubApi.listAccesses()).rejects.toBeInstanceOf(AccessHubDisabledError);
   });
 
   it("writes values once, without ever asking for one back", async () => {
