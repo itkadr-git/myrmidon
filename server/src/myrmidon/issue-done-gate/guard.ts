@@ -87,9 +87,16 @@ export async function inspectIssueDonePullRequests(
         const replacement = extractGitHubPullRequestReferences([metadata.replacementPullRequestUrl])[0];
         if (replacement) {
           const replacementDetails = await resolve(companyId, replacement);
+          const replacementState = replacementDetails.workProductState ?? "unknown";
+          if (replacementState === "merged" || replacementState === "closed") {
+            await db.update(issueWorkProducts).set({
+              status: replacementState,
+              metadata: { ...metadata, state: replacementState, draft: false },
+            }).where(and(eq(issueWorkProducts.id, product.id), eq(issueWorkProducts.companyId, companyId)));
+          }
           return {
             product,
-            state: replacementDetails.workProductState === "merged" ? "merged" as const : "closed" as const,
+            state: replacementState === "merged" ? "merged" as const : "closed" as const,
             url: product.url,
           };
         }
