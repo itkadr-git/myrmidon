@@ -17,7 +17,7 @@ function root(rootIssueId: string, dependentCount: number): BlockerRootFanout {
 describe("evaluateRootFanoutAlerts", () => {
   it("alerts for a twenty-dependent root over the default limit of ten", () => {
     expect(DEFAULT_ROOT_FANOUT_LIMIT).toBe(10);
-    expect(evaluateRootFanoutAlerts([root("OPE-8079", 20)])).toEqual([
+    expect(evaluateRootFanoutAlerts([root("OPE-8079", 20)], DEFAULT_ROOT_FANOUT_LIMIT)).toEqual([
       { rootIssueId: "OPE-8079", dependentCount: 20, limit: 10, severity: "warning" },
     ]);
   });

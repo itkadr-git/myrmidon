@@ -12,7 +12,7 @@ export interface RootFanoutAlert {
 /** Return alerts only for roots whose dependent count exceeds the configured limit. */
 export function evaluateRootFanoutAlerts(
   roots: BlockerRootFanout[],
-  limit: number = DEFAULT_ROOT_FANOUT_LIMIT,
+  limit: number,
 ): RootFanoutAlert[] {
   return roots
     .filter(({ dependentCount }) => dependentCount > limit)
