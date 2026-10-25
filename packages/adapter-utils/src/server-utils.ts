@@ -3114,16 +3114,15 @@ export function buildPaperclipEnv(agent: {
       return `[${host}]`;
     return host;
   };
-  const vars: Record<string, string> = {
-    PAPERCLIP_AGENT_ID: agent.id,
-    PAPERCLIP_COMPANY_ID: agent.companyId,
-  };
+  const vars: Record<string, string> = {};
+  writeProductEnv(vars, "AGENT_ID", agent.id);
+  writeProductEnv(vars, "COMPANY_ID", agent.companyId);
   const runtimeHost = resolveHostForUrl(
     readProductEnv("LISTEN_HOST") ?? process.env.HOST ?? "localhost",
   );
   const runtimePort =
     readProductEnv("LISTEN_PORT") ?? process.env.PORT ?? "3100";
-  // An explicit PAPERCLIP_API_URL override must win over the URL derived from
+  // An explicit MYRMIDON_API_URL (or legacy PAPERCLIP_API_URL) override must win over the URL derived from
   // authPublicBaseUrl: the derived URL can be unreachable from inside the
   // runtime container (e.g. when the public base URL is VPN/tailnet-only).
   const apiUrl =
