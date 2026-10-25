@@ -34,6 +34,10 @@ describe("issue continuation keys migration", () => {
     const issueId = randomUUID();
     await sql`INSERT INTO companies (id, name, issue_prefix) VALUES (${companyId}, 'Continuation keys', 'ICK')`;
     await sql`INSERT INTO issues (id, company_id, title, status) VALUES (${issueId}, ${companyId}, 'key owner', 'todo')`;
+    // The embedded test database has already applied 0419; rewind it before
+    // exercising this migration directly, including its idempotent second run.
+    await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${hash}`;
+    await sql`DROP TABLE IF EXISTS issue_continuation_keys`;
     const statements = migration.split("--> statement-breakpoint").filter((s) => s.trim());
     await sql.begin(async (tx) => { for (const statement of statements) await tx.unsafe(statement); });
     await sql.begin(async (tx) => { for (const statement of statements) await tx.unsafe(statement); });
@@ -42,6 +46,5 @@ describe("issue continuation keys migration", () => {
       .rejects.toMatchObject({ code: "23505", constraint_name: "issue_continuation_keys_company_key_uq" });
     await sql`DELETE FROM issues WHERE id = ${issueId}`;
     expect(await sql`SELECT * FROM issue_continuation_keys WHERE issue_id = ${issueId}`).toHaveLength(0);
-    await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${hash}`;
   }, 30_000);
 });
