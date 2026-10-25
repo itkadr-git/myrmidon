@@ -82,9 +82,12 @@ Desktop (viewport width 768 px and up):
   and the "Tell the Commander" entry with a `Ctrl K` hint on it (the shortcut
   itself arrives with the 1.6 chat update; today the palette opens by click),
   and a navy decisions badge next to it.
-- On company settings routes a 10-section settings side panel (General,
-  Members, Access, Secrets, Runs and queue, Budgets, Autonomy, Guardrails,
-  Castes and models, System).
+- On company settings routes a settings side panel with the available sections
+  (General, Members, Access, Secrets, Runs and queue, Budgets, Autonomy,
+  Castes and models, System). Guardrails is temporarily hidden because its
+  screen and route are not implemented yet; it will return when the screen is
+  available. The sidebar contract test checks every displayed path against the
+  App and UI2 route tables.
 
 Mobile (below 768 px): a phone frame — a 56 px header with the logo and
 "Owner · Web" status, and a six-tab bottom bar (Command center / Wait for

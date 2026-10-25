@@ -2,7 +2,11 @@
 
 > Русская версия: [Settings-in-the-interface.ru](Settings-in-the-interface.ru)
 
-Where day-to-day setup happens in the board UI. Sources: the
+Where day-to-day setup happens in the board UI. The UI 2.0 company-settings sidebar
+currently lists General, Members, Access, Secrets, Budgets, Autonomy, and
+Agent castes, alongside the sections implemented in the UI 2.0 route table.
+Guardrails is intentionally not shown: its screen and route are not implemented
+in this release. Sources: the
 [README](https://github.com/itkadr-git/myrmidon/blob/main/README.md)
 configuration section and the operator guides under
 [`docs/myrmidon/guides/`](https://github.com/itkadr-git/myrmidon/tree/main/docs/myrmidon/guides).
