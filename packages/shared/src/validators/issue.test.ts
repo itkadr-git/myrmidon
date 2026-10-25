@@ -145,6 +145,14 @@ describe("issue validators", () => {
     expect(
       // myrmidon(STALE-BLOCK): blocked updates need a reasonRef in the descriptor.
       updateIssueSchema.parse({
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000002" },
+          externalRef: "structured-unblock-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
         status: "blocked",
         unblockDescriptor: {
           owner: { agentId: "00000000-0000-4000-8000-000000000001" },
