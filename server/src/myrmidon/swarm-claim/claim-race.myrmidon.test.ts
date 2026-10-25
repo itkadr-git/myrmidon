@@ -145,8 +145,8 @@ describeDatabase("swarm claim capture under the race", () => {
   }, 30_000);
 
   it("does not clear a newer explicit re-assignment when an old lease expires", async () => {
-    const claimedAt = new Date("2026-10-24T12:00:00.000Z");
-    const releasedAt = new Date("2026-10-24T13:00:00.000Z");
+    const claimedAt = new Date();
+    const releasedAt = new Date(claimedAt.getTime() + 60 * 60 * 1000);
     const claim = await insertClaim(db, {
       ...claimInput(agentOne, claimedAt),
       expiresAt: releasedAt,
@@ -157,10 +157,10 @@ describeDatabase("swarm claim capture under the race", () => {
 
     // The same agent id does not make a subsequent manual assignment owned by
     // the old lease. The issue timestamp fences the expiry cleanup.
-    const explicitAt = new Date("2026-10-24T13:00:00.001Z");
+    const explicitAt = new Date(releasedAt.getTime() + 1);
     await db.update(issues).set({ assigneeAgentId: agentOne, updatedAt: explicitAt }).where(eq(issues.id, issueId));
     await expect(clearExpiredAssignee(db, {
-      companyId, issueId, agentId: agentOne, claimId: claim!.id, now: new Date("2026-10-24T13:01:00.000Z"),
+      companyId, issueId, agentId: agentOne, claimId: claim!.id, now: new Date(explicitAt.getTime() + 60_000),
     })).resolves.toBe(false);
     const [issue] = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues).where(eq(issues.id, issueId));
     expect(issue?.assigneeAgentId).toBe(agentOne);
