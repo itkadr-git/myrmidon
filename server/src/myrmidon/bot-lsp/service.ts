@@ -69,6 +69,8 @@ export interface BotLspServiceDeps {
   logActivity(entry: BotLspAuditEntry): Promise<unknown>;
   /** The container bots whose mode the view reports. Read-only. */
   listBots(): Promise<BotLspAgentCard[]>;
+  /** Container memory limit in MB from the agent's configured container block. */
+  listContainerMemoryMb?(): Promise<number[]>;
 }
 
 export interface BotLspService {
@@ -115,11 +117,12 @@ export function mergeBotLspSettings(before: BotLspSettings, patch: BotLspSetting
   return next as BotLspSettings;
 }
 
-// Current supported bot containers are capped at 1 GiB. Keep the stored
-// value strictly below the container limit and leave room for Hermes and botd.
-export const BOT_LSP_CONTAINER_MEMORY_MB = 1024;
-export const BOT_LSP_CONTAINER_RESERVE_MB = 640;
-export const BOT_LSP_MAX_TSSERVER_MEMORY_MB = Math.min(409, BOT_LSP_CONTAINER_MEMORY_MB - BOT_LSP_CONTAINER_RESERVE_MB - 1);
+// Keep tsserver below 40% of the smallest configured bot container.
+export const BOT_LSP_CONTAINER_RESERVE_RATIO = 0.6;
+
+export function maxTsServerMemoryMb(containerMemoryMb: number): number {
+  return Math.floor(containerMemoryMb * (1 - BOT_LSP_CONTAINER_RESERVE_RATIO));
+}
 
 export function botLspService(db: Db, overrides: Partial<BotLspServiceDeps> = {}): BotLspService {
   const deps: BotLspServiceDeps = {
@@ -159,8 +162,12 @@ export function botLspService(db: Db, overrides: Partial<BotLspServiceDeps> = {}
         const general = await deps.settings.getGeneral();
         const before = asStored(general.botLsp);
         const next = mergeBotLspSettings(before, patch);
-        if (next.tsserverMemoryMb !== undefined && next.tsserverMemoryMb > BOT_LSP_MAX_TSSERVER_MEMORY_MB) {
-          throw badRequest(`tsserverMemoryMb must be below ${BOT_LSP_CONTAINER_MEMORY_MB - BOT_LSP_CONTAINER_RESERVE_MB} MB (container memory minus Hermes/botd reserve)`);
+        if (next.tsserverMemoryMb !== undefined && deps.listContainerMemoryMb) {
+          const limits = await deps.listContainerMemoryMb();
+          const minimum = limits.length > 0 ? Math.min(...limits) : undefined;
+          if (minimum !== undefined && next.tsserverMemoryMb > maxTsServerMemoryMb(minimum)) {
+            throw badRequest(`tsserverMemoryMb must not exceed 40% of the smallest configured bot container (${maxTsServerMemoryMb(minimum)} MB)`);
+          }
         }
         const changedKeys = FIELDS.filter(
           (key) => JSON.stringify(before[key] ?? null) !== JSON.stringify(next[key] ?? null),

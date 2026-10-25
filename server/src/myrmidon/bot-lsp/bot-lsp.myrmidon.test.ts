@@ -15,6 +15,7 @@ import { botLspRoutes } from "./routes.js";
 import {
   BOT_LSP_ACTION,
   botLspService,
+  maxTsServerMemoryMb,
   mergeBotLspSettings,
   type BotLspAgentCard,
   type BotLspServiceDeps,
@@ -39,7 +40,7 @@ const agentActor = {
   keyId: "key-a",
 };
 
-function harness(options: { stored?: unknown; companyIds?: string[]; bots?: BotLspAgentCard[] } = {}) {
+function harness(options: { stored?: unknown; companyIds?: string[]; bots?: BotLspAgentCard[]; containerMemoryMb?: number[] } = {}) {
   const updated: Array<{ botLsp: unknown }> = [];
   const audits: Array<Record<string, unknown>> = [];
   const current = { stored: options.stored as unknown };
@@ -58,6 +59,7 @@ function harness(options: { stored?: unknown; companyIds?: string[]; bots?: BotL
       audits.push(entry as unknown as Record<string, unknown>);
     },
     listBots: async () => options.bots ?? [],
+    listContainerMemoryMb: async () => options.containerMemoryMb ?? [1024],
   };
 
   const withActor = (actor: unknown) => {
@@ -148,7 +150,7 @@ describe("myrmidon(BOT-LSP-DEFAULTS) routes: writing", () => {
   });
 
   it("rejects invalid bodies with 400", async () => {
-    const { app, withActor, updated } = harness();
+    const { app, withActor, updated } = harness({ containerMemoryMb: [1024] });
     await request(app).patch(URL).send({ codingMode: "sometimes" }).expect(400);
     await request(app).patch(URL).send({ idleTimeoutSeconds: 5 }).expect(400);
     await request(app).patch(URL).send({ tsserverMemoryMb: 100 }).expect(400);
@@ -157,9 +159,24 @@ describe("myrmidon(BOT-LSP-DEFAULTS) routes: writing", () => {
     await request(withActor(admin)).patch(URL).send({ tsserverMemoryMb: 1024 }).expect(400);
     expect(updated).toHaveLength(0);
   });
+
+  it("validates the heap against the smallest configured container limit", async () => {
+    const tooLarge = harness({ containerMemoryMb: [2048, 768] });
+    await request(tooLarge.withActor(admin)).patch(URL).send({ tsserverMemoryMb: 308 }).expect(400);
+    expect(tooLarge.updated).toHaveLength(0);
+
+    const fits = harness({ containerMemoryMb: [2048, 768] });
+    await request(fits.withActor(admin)).patch(URL).send({ tsserverMemoryMb: 307 }).expect(200);
+    expect(fits.updated).toHaveLength(1);
+  });
 });
 
 describe("myrmidon(BOT-LSP-DEFAULTS) mergeBotLspSettings", () => {
+  it("reserves 60% of each configured container memory limit", () => {
+    expect(maxTsServerMemoryMb(1024)).toBe(409);
+    expect(maxTsServerMemoryMb(768)).toBe(307);
+  });
+
   it("keeps fields the patch leaves out", () => {
     expect(mergeBotLspSettings({ codingMode: "off", tsserverMemoryMb: 2048 }, { nonCodingMode: "limited" })).toEqual({
       codingMode: "off",
