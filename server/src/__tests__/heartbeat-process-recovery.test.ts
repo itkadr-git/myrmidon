@@ -5824,7 +5824,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         agentId,
         invocationSource: "automation" as const,
         status: "queued" as const,
-        createdAt: new Date(Date.UTC(2026, 2, 18, 23, 59, 59 - index)),
+        createdAt: new Date(Date.now() - index * 1_000),
         contextSnapshot: {
           issueId,
           source: "myrmidon.stranded_autopolicy_retry",
