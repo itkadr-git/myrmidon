@@ -78,6 +78,14 @@ describe("Ui2InstanceSecretSettings", () => {
     expect(container.querySelector(".ui2-section")).toBeNull();
   });
 
+  it("uses the Russian description rather than the server's English fallback", async () => {
+    mockApi.list.mockResolvedValue({ settings: [{ ...unset, name: "bot.disk.dockergate_token", description: "Board-to-dockergate token for the physical bot disk" }] });
+    render();
+    await flush();
+    expect(container.textContent).toContain("Токен доски для доступа к физическому диску бота через dockergate");
+    expect(container.textContent).not.toContain("Board-to-dockergate token");
+  });
+
   it("sets a ref by secret id, then revokes it", async () => {
     mockApi.list.mockResolvedValue({ settings: [unset] });
     mockApi.setRef.mockResolvedValue(bound);

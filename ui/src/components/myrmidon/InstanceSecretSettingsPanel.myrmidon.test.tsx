@@ -86,6 +86,14 @@ describe("InstanceSecretSettingsPanel", () => {
     expect(container.querySelector("[data-testid=instance-secret-settings-panel]")).toBeNull();
   });
 
+  it("uses the Russian description for registered settings", async () => {
+    mockApi.list.mockResolvedValue({ settings: [{ ...unset, name: "bot.disk.dockergate_token", description: "Board-to-dockergate token for the physical bot disk" }] });
+    render();
+    await flush();
+    expect(container.textContent).toContain("Токен доски для доступа к физическому диску бота через dockergate");
+    expect(container.textContent).not.toContain("Board-to-dockergate token");
+  });
+
   it("sets a ref chosen from active secrets only, sending the secret id and nothing else", async () => {
     mockApi.list.mockResolvedValue({ settings: [unset] });
     mockApi.setRef.mockResolvedValue(bound);
