@@ -385,13 +385,25 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
  * Also handles re-exports:
  * - `export { ... } from "react";`
  */
+const PLUGIN_SDK_UI_SPECIFIERS = [
+  "@myrmidon/plugin-sdk/ui",
+  "@myrmidon/plugin-sdk/ui/hooks",
+  "@paperclipai/plugin-sdk/ui",
+  "@paperclipai/plugin-sdk/ui/hooks",
+] as const;
+
 function rewriteBareSpecifiers(source: string): string {
   // Build a mapping of bare specifiers to blob URLs.
   const rewrites: Record<string, string> = {
-    '"@myrmidon/plugin-sdk/ui"': `"${getShimBlobUrl("sdk-ui")}"`,
-    "'@myrmidon/plugin-sdk/ui'": `'${getShimBlobUrl("sdk-ui")}'`,
-    '"@myrmidon/plugin-sdk/ui/hooks"': `"${getShimBlobUrl("sdk-ui")}"`,
-    "'@myrmidon/plugin-sdk/ui/hooks'": `'${getShimBlobUrl("sdk-ui")}'`,
+    // myrmidon(PLUGIN-SDK-ALIAS): plugins built for upstream Paperclip (and
+    // third-party ecosystem plugins) keep `@paperclipai/plugin-sdk/ui` external,
+    // so the legacy names map to the same shim as the `@myrmidon/...` ones.
+    ...Object.fromEntries(
+      PLUGIN_SDK_UI_SPECIFIERS.flatMap((name) => [
+        [`"${name}"`, `"${getShimBlobUrl("sdk-ui")}"`],
+        [`'${name}'`, `'${getShimBlobUrl("sdk-ui")}'`],
+      ]),
+    ),
     '"react/jsx-runtime"': `"${getShimBlobUrl("react/jsx-runtime")}"`,
     "'react/jsx-runtime'": `'${getShimBlobUrl("react/jsx-runtime")}'`,
     '"react-dom/client"': `"${getShimBlobUrl("react-dom/client")}"`,
