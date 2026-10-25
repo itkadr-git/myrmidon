@@ -39,7 +39,7 @@ export function myrmidonBotLspRoutes(db: Db) {
     listContainerMemoryMb: async () =>
       db
         .select({
-          memoryMb: sql<number>`coalesce(case when (${agentsTable.adapterConfig} -> 'container' ->> 'enabled') = 'true' then nullif((${agentsTable.adapterConfig} -> 'container' ->> 'memoryMb'), '')::int end, 1024)`,
+          memoryMb: sql<number | null>`case when (${agentsTable.adapterConfig} -> 'container' ->> 'enabled') = 'true' then coalesce(nullif((${agentsTable.adapterConfig} -> 'container' ->> 'memoryMb'), '')::int, 1024) else null end`,
         })
         .from(agentsTable)
         .where(and(eq(agentsTable.adapterType, HERMES_GATEWAY_ADAPTER_TYPE), ne(agentsTable.status, "terminated")))

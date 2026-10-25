@@ -160,7 +160,7 @@ describe("myrmidon(BOT-LSP-DEFAULTS) routes: writing", () => {
     expect(updated).toHaveLength(0);
   });
 
-  it("validates the heap against the smallest configured container limit", async () => {
+  it("validates the heap against active containers and ignores disabled cards", async () => {
     const tooLarge = harness({ containerMemoryMb: [2048, 768] });
     await request(tooLarge.withActor(admin)).patch(URL).send({ tsserverMemoryMb: 308 }).expect(400);
     expect(tooLarge.updated).toHaveLength(0);
@@ -168,6 +168,9 @@ describe("myrmidon(BOT-LSP-DEFAULTS) routes: writing", () => {
     const fits = harness({ containerMemoryMb: [2048, 768] });
     await request(fits.withActor(admin)).patch(URL).send({ tsserverMemoryMb: 307 }).expect(200);
     expect(fits.updated).toHaveLength(1);
+
+    const disabled = harness({ containerMemoryMb: [] });
+    await request(disabled.withActor(admin)).patch(URL).send({ tsserverMemoryMb: 409 }).expect(200);
   });
 });
 

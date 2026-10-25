@@ -69,8 +69,8 @@ export interface BotLspServiceDeps {
   logActivity(entry: BotLspAuditEntry): Promise<unknown>;
   /** The container bots whose mode the view reports. Read-only. */
   listBots(): Promise<BotLspAgentCard[]>;
-  /** Container memory limit in MB from the agent's configured container block. */
-  listContainerMemoryMb?(): Promise<number[]>;
+  /** Configured container memory (MB) for active containers; null means no active container. */
+  listContainerMemoryMb(): Promise<Array<number | null>>;
 }
 
 export interface BotLspService {
@@ -126,6 +126,7 @@ export function maxTsServerMemoryMb(containerMemoryMb: number): number {
 
 export function botLspService(db: Db, overrides: Partial<BotLspServiceDeps> = {}): BotLspService {
   const deps: BotLspServiceDeps = {
+    listContainerMemoryMb: async () => [],
     settings: instanceSettingsService(db),
     listCompanyIds: () => instanceSettingsService(db).listCompanyIds(),
     logActivity: (entry) => logActivity(db, entry),
@@ -162,11 +163,12 @@ export function botLspService(db: Db, overrides: Partial<BotLspServiceDeps> = {}
         const general = await deps.settings.getGeneral();
         const before = asStored(general.botLsp);
         const next = mergeBotLspSettings(before, patch);
-        if (next.tsserverMemoryMb !== undefined && deps.listContainerMemoryMb) {
+        if (next.tsserverMemoryMb !== undefined) {
           const limits = await deps.listContainerMemoryMb();
-          const minimum = limits.length > 0 ? Math.min(...limits) : undefined;
-          if (minimum !== undefined && next.tsserverMemoryMb > maxTsServerMemoryMb(minimum)) {
-            throw badRequest(`tsserverMemoryMb must not exceed 40% of the smallest configured bot container (${maxTsServerMemoryMb(minimum)} MB)`);
+          const applicable = limits.filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+          const minimum = applicable.length > 0 ? Math.min(...applicable) : 1024;
+          if (next.tsserverMemoryMb > maxTsServerMemoryMb(minimum)) {
+            throw badRequest(`tsserverMemoryMb must not exceed 40% of the smallest configured active bot container (${maxTsServerMemoryMb(minimum)} MB)`);
           }
         }
         const changedKeys = FIELDS.filter(
