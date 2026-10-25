@@ -130,7 +130,7 @@ export function assertIssueDonePullRequestsSettled(states: Awaited<ReturnType<ty
   for (const entry of states) {
     if (entry.state === "superseded" || entry.state === "merged") continue;
     if ("accessDenied" in entry && entry.accessDenied && entry.state === "unknown") noAccess(entry.product, entry.url);
-    block(entry.product, entry.url);
+    if (entry.state !== "merged") block(entry.product, entry.url);
   }
 }
 

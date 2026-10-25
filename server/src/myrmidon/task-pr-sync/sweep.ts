@@ -169,6 +169,7 @@ export async function reconcileClosedIssuePullRequests(input: {
   db: Db;
   resolvePullRequestDetails: PullRequestMergeDetailsResolver;
   limit?: number;
+  now?: Date;
 }): Promise<{ scanned: number; synced: number }> {
   const candidates = await input.db.select({
     id: issues.id,
@@ -177,7 +178,7 @@ export async function reconcileClosedIssuePullRequests(input: {
   }).from(issues).innerJoin(
     issueWorkProducts,
     and(eq(issueWorkProducts.issueId, issues.id), eq(issueWorkProducts.type, "pull_request")),
-  ).where(inArray(issues.status, ["done", "cancelled"]));
+  ).where(inArray(issues.status, ["done", "cancelled"])).orderBy(asc(issues.updatedAt)).limit(input.limit ?? 500);
   let synced = 0;
   for (const issue of candidates.slice(0, input.limit ?? 500)) {
     const products = await input.db.select().from(issueWorkProducts).where(and(
@@ -198,9 +199,11 @@ export async function reconcileClosedIssuePullRequests(input: {
       const metadata = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
         ? product.metadata as Record<string, unknown>
         : {};
+      const mergedSha = typeof details.mergeCommitSha === "string" ? details.mergeCommitSha : readLastMergedSha(metadata);
       await input.db.update(issueWorkProducts).set({
         status: state,
-        metadata: { ...metadata, state, draft: false },
+        metadata: { ...metadata, state, draft: false, ...(state === "merged" && mergedSha ? { lastMergedSha: mergedSha } : {}) },
+        updatedAt: input.now ?? new Date(),
       }).where(eq(issueWorkProducts.id, product.id));
       synced++;
     }
