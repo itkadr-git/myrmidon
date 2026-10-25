@@ -354,6 +354,11 @@ describe("issue assignee invokability guard", () => {
           status,
           ...(status === "blocked"
             ? {
+                unblockDescriptor: {
+                  owner: "board",
+                  action: "Wait for dependency review",
+                  reasonRef: { kind: "event", eventKey: "invokability-test" },
+                },
                 blockerMetadata: {
                   blockReason: "dependency",
                   owner: { agentId: NON_ENGINEER_AGENT_ID },
