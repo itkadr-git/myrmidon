@@ -16,7 +16,6 @@ import {
   Repeat,
   Layers,
   GitBranch,
-  BookOpen,
   Package,
   Settings,
   FolderOpen,
@@ -25,6 +24,7 @@ import {
   GanttChartSquare,
   LayoutGrid,
   Users,
+  BookOpen,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";

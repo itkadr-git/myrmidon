@@ -332,6 +332,12 @@ export function knowledgeSourceLink(source: KnowledgeSourceRef): KnowledgeSource
   if (isHttpUrl(ref)) return { kind: "external", href: ref };
   const kind = (source.kind ?? "").toLowerCase();
   switch (kind) {
+    case "knowledge": {
+      const parts = ref.split("/");
+      const slug = parts.pop();
+      const spaceKey = parts.join("/") || "default";
+      return slug ? { kind: "internal", to: knowledgeHref({ spaceKey, slug, anchor: null }) } : null;
+    }
     case "pr":
     case "pull_request":
     case "pull-request": {

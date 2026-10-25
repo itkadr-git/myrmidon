@@ -164,12 +164,13 @@ export const knowledgeApi = {
     options: { revision?: string | number | null } = {},
   ): Promise<{ item: KnowledgeItemDetail }> => {
     const idOrSlug = slug.includes("/") ? slug : `${spaceKey}/${slug}`;
+    const encoded = encodeURIComponent(idOrSlug);
     const itemResponse = await api.get<KnowledgeItemDetailResponse>(
-      `${base(companyId)}/items/${encodeURIComponent(idOrSlug)}`,
+      `${base(companyId)}/items/${encoded}`,
     );
     const item = itemResponse.item;
     const revisionsResponse = await api.get<{ revisions: KnowledgeRevisionDto[] }>(
-      `${base(companyId)}/items/${encodeURIComponent(idOrSlug)}/revisions`,
+      `${base(companyId)}/items/${encoded}/revisions`,
     );
     const revisions = revisionsResponse.revisions;
     // Backlinks are an extra read: a failure there must not hide the page.
