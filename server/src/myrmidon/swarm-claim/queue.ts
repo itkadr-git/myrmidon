@@ -94,7 +94,10 @@ export function unassignedTaskRoutedToRole(role: string) {
       : hasLabel;
   const engineerRequired = sql`(
     lower(btrim(coalesce(${issues.casteKey}, ''))) = 'engineer'
-    or lower(btrim(coalesce((select nullif(btrim(p.default_caste_key), '') from projects p where p.id = ${issues.projectId}), ''))) = 'engineer'
+    or (
+      lower(btrim(coalesce(${issues.casteKey}, ''))) = ''
+      and lower(btrim(coalesce((select nullif(btrim(p.default_caste_key), '') from projects p where p.id = ${issues.projectId}), ''))) = 'engineer'
+    )
     or ${issues.harnessKind} = 'skill_test'
     or exists (
       select 1 from issue_labels il join labels l on l.id = il.label_id
