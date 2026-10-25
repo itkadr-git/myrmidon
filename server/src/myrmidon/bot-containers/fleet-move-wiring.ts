@@ -17,7 +17,7 @@ import { FleetMoveService, type SiteAgentClient } from "./fleet-move-service.js"
 import { siteStatusIsReachable } from "./site-health-flag.js";
 import { fleetReplicaStoreFromEnv } from "./fleet-replica-store.js";
 import { fleetMoveMaintenance } from "./fleet-move-maintenance.js";
-import { createSiteAgentClient } from "./site-agent-client.js";
+import { createSiteAgentClient, type SiteAgentMemoryClient } from "./site-agent-client.js";
 import { fleetMemorySyncFromEnv } from "./fleet-memory-sync-wiring.js";
 import { forcedSyncBeforeMove } from "./fleet-memory-sync.js";
 import { parseFleetHosts } from "./fleetd-hosts.js";
@@ -46,6 +46,10 @@ export interface FleetMoveContext {
   service: FleetMoveService;
   /** The company that owns the bot (agent), or null when there is no such agent. */
   botCompanyId(botKey: string): Promise<string | null>;
+  /** The container spec the bot's card asks for (limits, image): what the drift check compares with. */
+  botSpec(botKey: string): Promise<BotContainerSpec>;
+  /** The site-agent client of a site, for the company that owns the bot (site-agent calls outside the driver contract). */
+  siteAgentClient(siteName: string, companyId: string): Promise<SiteAgentMemoryClient>;
 }
 
 export function createFleetMoveContext(db: Db): FleetMoveContext {
@@ -142,6 +146,20 @@ export function createFleetMoveContext(db: Db): FleetMoveContext {
     return { url: row.url, token: await readSecretValue(companyId, row.tokenSecret, `site "${siteName}"`) };
   }
 
+  async function botSpec(botKey: string): Promise<BotContainerSpec> {
+    const runtime = requireRuntime();
+    const row = await readAgentRow(botKey);
+    if (!row) throw new Error(`Bot "${botKey}" not found`);
+    const parsed = readBotContainerAgentConfig(
+      row.adapterType,
+      isRecord(row.adapterConfig) ? row.adapterConfig : {},
+      await runtime.readSharedMountSettings?.(),
+      row.id,
+    );
+    if (!parsed.ok) throw new Error(`Bot "${botKey}" has no usable container card: ${parsed.reason}`);
+    return botContainerSpec(botKey, parsed.config, runtime.network);
+  }
+
   // myrmidon(1.6.6 C-MEM): the memory sync right before a live move; null when not configured.
   const memorySync = fleetMemorySyncFromEnv(db, process.env, async (site, botKey) => {
     const { url, token } = await resolveSiteHost(site.name, site.companyId);
@@ -185,19 +203,7 @@ export function createFleetMoveContext(db: Db): FleetMoveContext {
     getAgentCard,
     updateAgentCard,
 
-    async getBotSpec(botKey: string): Promise<BotContainerSpec> {
-      const runtime = requireRuntime();
-      const row = await readAgentRow(botKey);
-      if (!row) throw new Error(`Bot "${botKey}" not found`);
-      const parsed = readBotContainerAgentConfig(
-        row.adapterType,
-        isRecord(row.adapterConfig) ? row.adapterConfig : {},
-        await runtime.readSharedMountSettings?.(),
-        row.id,
-      );
-      if (!parsed.ok) throw new Error(`Bot "${botKey}" has no usable container card: ${parsed.reason}`);
-      return botContainerSpec(botKey, parsed.config, runtime.network);
-    },
+    getBotSpec: botSpec,
 
     async getCompiledProfile(botKey: string): Promise<CompiledProfile> {
       // The profile is compiled from the card as it is now (the card already names the destination).
@@ -216,6 +222,11 @@ export function createFleetMoveContext(db: Db): FleetMoveContext {
   return {
     service,
     botCompanyId,
+    botSpec,
+    async siteAgentClient(siteName: string, companyId: string) {
+      const { url, token } = await resolveSiteHost(siteName, companyId);
+      return createSiteAgentClient({ baseUrl: url, token });
+    },
   };
 }
 

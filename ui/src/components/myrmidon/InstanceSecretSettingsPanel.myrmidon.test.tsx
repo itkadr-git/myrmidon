@@ -108,6 +108,23 @@ describe("InstanceSecretSettingsPanel", () => {
     expect(mockApi.setRef).toHaveBeenCalledWith(NAME, "s-2");
   });
 
+  it("renders a provider-specific setting from the API and saves only its secret id", async () => {
+    const providerName = "tool-oauth.acme_cloud.client-secret";
+    mockApi.list.mockResolvedValue({ settings: [{ ...unset, name: providerName }] });
+    mockApi.setRef.mockResolvedValue({ ...unset, name: providerName, ref: { secretId: "s-2", secretName: "second", status: "active" }, effectiveSource: "secret_ref" });
+    render();
+    await flush();
+    const select = container.querySelector<HTMLSelectElement>(`[id="secret-setting-select-${providerName}"]`)!;
+    flushSync(() => {
+      select.value = "s-2";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    flushSync(() => container.querySelector<HTMLButtonElement>(`[data-testid="secret-setting-save-${providerName}"]`)!.click());
+    await flush();
+    expect(mockApi.setRef).toHaveBeenCalledWith(providerName, "s-2");
+    expect(container.textContent).not.toContain("provider-ref-value");
+  });
+
   it("swaps a bound ref and revokes it", async () => {
     mockApi.list.mockResolvedValue({ settings: [bound] });
     mockApi.setRef.mockResolvedValue({ ...bound, ref: { secretId: "s-2", secretName: "second", status: "active" } });

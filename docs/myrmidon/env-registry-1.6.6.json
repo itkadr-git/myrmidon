@@ -7833,21 +7833,6 @@
       "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
     },
     {
-      "name": "MYRMIDON_LITELLM_WORKERS_CONTAINER",
-      "aliases": [],
-      "in_main_code": true,
-      "in_audit_20261008": false,
-      "in_settings_md": true,
-      "consumer": "packages/shared/src/myrmidon-litellm-workers.ts:43",
-      "classification": "product",
-      "class_basis": "settings-md",
-      "scope": "instance",
-      "ui_or_store": "добавлено после аудита 08.10 или документировано в SETTINGS.md; сопоставление с UI не делалось (env-only до проверки)",
-      "ticket_or_pr": "зонтик OPE-6249; отдельного тикета нет",
-      "decision": "проверить UI/хранилище по полю и при отсутствии завести тикет (не оценивалось аудитом 08.10)",
-      "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
-    },
-    {
       "name": "MYRMIDON_LITELLM_WORKERS_CORES",
       "aliases": [],
       "in_main_code": true,
@@ -7878,17 +7863,32 @@
       "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
     },
     {
-      "name": "MYRMIDON_LITELLM_WORKERS_SIGNAL_COMMAND",
+      "name": "MYRMIDON_LITELLM_WORKERS_RESTART_COMMAND",
       "aliases": [],
       "in_main_code": true,
       "in_audit_20261008": false,
       "in_settings_md": true,
-      "consumer": "server/src/myrmidon/litellm-workers/gateway.ts:17",
+      "consumer": "packages/shared/src/myrmidon-litellm-workers.ts:44",
       "classification": "product",
       "class_basis": "settings-md",
       "scope": "instance",
-      "ui_or_store": "добавлено после аудита 08.10; grep: UI не ссылается на модуль myrmidon/litellm-workers",
-      "ticket_or_pr": "зонтик OPE-6249; отдельного тикета нет",
+      "ui_or_store": "UI нет: команда планового рестарта задаётся окружением экземпляра; карточка воркеров показывает только configured",
+      "ticket_or_pr": "OPE-8899",
+      "decision": "проверить UI/хранилище по полю и при отсутствии завести тикет (не оценивалось аудитом 08.10)",
+      "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
+    },
+    {
+      "name": "MYRMIDON_LITELLM_WORKERS_UNIT_FILE",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "packages/shared/src/myrmidon-litellm-workers.ts:52",
+      "classification": "product",
+      "class_basis": "settings-md",
+      "scope": "instance",
+      "ui_or_store": "UI нет: путь к юниту шлюза, из которого доска читает фактический --num_workers",
+      "ticket_or_pr": "OPE-8899",
       "decision": "проверить UI/хранилище по полю и при отсутствии завести тикет (не оценивалось аудитом 08.10)",
       "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка экземпляра (хранимая настройка либо env-резерв)"
     },
