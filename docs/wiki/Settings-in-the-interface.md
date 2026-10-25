@@ -48,6 +48,20 @@ settings, the server environment or defaults. Changes apply on the next
 admission pass without a server restart. The panel reports when the server
 endpoint is not available instead of implying that a save succeeded.
 
+## Access hub
+
+The access hub is under **Company Settings → Access hub**. Its list endpoints
+return access and host arrays when the module is enabled. When the module is
+disabled, they return HTTP 200 with `enabled: false` and empty arrays. The UI
+shows a "not available yet" notice instead of the access list. This is an
+off-feature state, not an API failure. Check `GET
+/api/myrmidon/access-hub/status` and `MYRMIDON_ACCESS_HUB_ENABLED` to confirm
+whether the module is off. If status says enabled but a list request fails or
+returns malformed data, investigate the API/service fault.
+
+See the full [Access hub operator guide](../myrmidon/guides/access-hub.md) for
+routes and behavior.
+
 ## Per-agent parallelism
 
 ### `hermes_local` isolation
