@@ -12,10 +12,22 @@ import { describe, expect, it } from "vitest";
 import { isUi2PhoneTabActive } from "../shell/Ui2PhoneNav";
 import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
 import { UI2_ROUTE_TABLE } from "../routes";
+import { UI2_SETTINGS_SECTIONS } from "../shell/Ui2SettingsSidebar";
 import { isUi2RouteElementAPlaceholder } from "../routes";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
 
 describe("myrmidon(UI2) route table integration", () => {
+  it("routes every settings sidebar section", () => {
+    const routePaths = new Set(UI2_ROUTE_TABLE.map((entry) => `/${entry.path}`));
+    const legacySettingsPath = "/company/settings";
+    for (const section of UI2_SETTINGS_SECTIONS) {
+      expect(
+        routePaths.has(section.path) || section.path === legacySettingsPath,
+        section.key,
+      ).toBe(true);
+    }
+  });
+
   it("ships exactly the contract entries, the fleet, the commander chat and the knowledge screens", () => {
     expect(UI2_ROUTE_TABLE.map((entry) => entry.key).sort()).toEqual([
       "agent-overview",
