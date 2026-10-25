@@ -50,10 +50,10 @@ export function buildEscalationChain(input: {
   );
   if (queueIndex >= 0 && queueIndex < chain.length - 1) {
     const [queueStep] = chain.splice(queueIndex, 1);
-    if (queueStep) chain.push({ ...queueStep, afterMinutes: startAt + chain.length });
+    if (queueStep) chain.push(queueStep);
   } else if (queueIndex < 0) {
     chain.push({ recipient: queue, afterMinutes: startAt + chain.length });
   }
 
-  return chain;
+  return chain.map((step, index) => ({ ...step, afterMinutes: startAt + index }));
 }
