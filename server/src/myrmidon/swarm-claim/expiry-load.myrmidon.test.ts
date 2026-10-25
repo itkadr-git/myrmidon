@@ -87,7 +87,7 @@ async function runExpirySweep(now: Date) {
         sweepIntervalSec: 1,
         p0Preemption: true,
       },
-    }),
+    }) as never,
   };
   const sweeper = createSwarmClaimSweeper({
     db,
@@ -140,6 +140,7 @@ describeDatabase("swarm expiry race under load", () => {
       .where(and(inArray(issueClaims.issueId, taskIds), isNull(issueClaims.releasedAt)));
     expect(claims).toHaveLength(taskCount);
 
+    const sweepPromise = runExpirySweep(now);
     const assignments = claims.map((claim, index) =>
       db.transaction(async (tx) => issueService(tx as unknown as Db).update(claim.issueId, {
         assigneeAgentId: explicitlyAssignedId,
@@ -147,7 +148,6 @@ describeDatabase("swarm expiry race under load", () => {
         updatedAt: new Date(now.getTime() + index + 1),
       }))
     );
-    const sweepPromise = runExpirySweep(now);
     const [assignmentResults, sweepResult] = await Promise.all([Promise.all(assignments), sweepPromise]);
     const assignedTaskIds = new Set(assignmentResults.flatMap((result, index) => result ? [claims[index]!.issueId] : []));
     expect(assignmentResults.every((result) => result !== null)).toBe(true);
