@@ -4,6 +4,7 @@ import {
   DEFAULT_AUDIT_LIMIT,
   EMPTY_ACCESS_FILTERS,
   accessHubApi,
+  AccessHubDisabledError,
   filterAccessRecords,
   formatAccessMoment,
   grantedAgents,
@@ -64,6 +65,36 @@ describe("access hub API contract", () => {
     expect(apiMock.get).toHaveBeenNthCalledWith(1, "/myrmidon/access-hub/accesses");
     expect(apiMock.get).toHaveBeenNthCalledWith(2, "/myrmidon/access-hub/audit");
     expect(apiMock.get).toHaveBeenNthCalledWith(3, "/myrmidon/access-hub/hosts");
+  });
+
+  it("normalizes disabled envelopes for both list endpoints", async () => {
+    apiMock.get.mockResolvedValueOnce({ enabled: false, accesses: [], hosts: [] });
+    apiMock.get.mockResolvedValueOnce({ enabled: false, hosts: [] });
+
+    await expect(accessHubApi.listAccesses()).rejects.toBeInstanceOf(AccessHubDisabledError);
+    await expect(accessHubApi.listHosts()).rejects.toBeInstanceOf(AccessHubDisabledError);
+  });
+
+  it("extracts enabled list envelopes and preserves bare arrays", async () => {
+    const accesses = [record()];
+    apiMock.get
+      .mockResolvedValueOnce({ enabled: true, accesses })
+      .mockResolvedValueOnce({ hosts: HOSTS })
+      .mockResolvedValueOnce(accesses)
+      .mockResolvedValueOnce(HOSTS);
+
+    await expect(accessHubApi.listAccesses()).resolves.toEqual(accesses);
+    await expect(accessHubApi.listHosts()).resolves.toEqual(HOSTS);
+    await expect(accessHubApi.listAccesses()).resolves.toEqual(accesses);
+    await expect(accessHubApi.listHosts()).resolves.toEqual(HOSTS);
+  });
+
+  it("returns empty lists for malformed envelopes", async () => {
+    apiMock.get.mockResolvedValueOnce({ enabled: true, accesses: "invalid" });
+    apiMock.get.mockResolvedValueOnce({ hosts: null });
+
+    await expect(accessHubApi.listAccesses()).resolves.toEqual([]);
+    await expect(accessHubApi.listHosts()).resolves.toEqual([]);
   });
 
   it("writes values once, without ever asking for one back", async () => {
