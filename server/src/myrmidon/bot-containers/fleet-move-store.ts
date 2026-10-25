@@ -8,7 +8,7 @@ import {
   type Db,
   type FleetMovePhaseLogEntry,
 } from "@myrmidon/db";
-import type { FleetMoveRecord, MovePhase, MovePhaseLogEntry } from "./fleet-move-service.js";
+import { FleetMoveClaimConflict, type FleetMoveRecord, type MovePhase, type MovePhaseLogEntry, type MoveSource } from "./fleet-move-service.js";
 
 type FleetMoveRow = typeof myrmidonFleetMoves.$inferSelect;
 
@@ -19,6 +19,7 @@ function toRecord(row: FleetMoveRow): FleetMoveRecord {
     botKey: row.botKey,
     srcSite: row.srcSite,
     dstSite: row.dstSite,
+    source: row.source === "replica" ? "replica" : "live",
     phase: row.phase as MovePhase,
     phaseLog: (row.phaseLog as MovePhaseLogEntry[]) ?? [],
     startedAt: row.startedAt,
@@ -36,6 +37,7 @@ export interface FleetMoveStore {
     botKey: string;
     srcSite: string;
     dstSite: string;
+    source?: MoveSource;
   }): Promise<FleetMoveRecord>;
   updateMove(
     moveId: string,
@@ -84,6 +86,8 @@ export function fleetMoveStore(db: Db): FleetMoveStore {
         },
       ];
 
+      // The partial unique index myrmidon_fleet_moves_active_bot_uq is the claim: of two inserts
+      // for one bot the database lets exactly one through, the other gets a unique violation.
       const inserted = await db
         .insert(myrmidonFleetMoves)
         .values({
@@ -91,11 +95,14 @@ export function fleetMoveStore(db: Db): FleetMoveStore {
           botKey: params.botKey,
           srcSite: params.srcSite,
           dstSite: params.dstSite,
+          source: params.source ?? "live",
           phase: "init",
           phaseLog: initialLog,
         })
+        .onConflictDoNothing()
         .returning();
 
+      if (!inserted[0]) throw new FleetMoveClaimConflict(params.botKey);
       return toRecord(inserted[0]);
     },
 

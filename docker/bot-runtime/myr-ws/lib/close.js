@@ -23,6 +23,7 @@ const WORKSPACE_ROOT = "/workspace";
 const SCRATCH_ROOT = "/scratch";
 const TASK_BRANCH_PREFIX = "bot/";
 const ENV = { home: "MYRMIDON_WS_HOME", gitReal: "MYRMIDON_GIT_REAL" };
+const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 
 function usage(message) {
@@ -215,11 +216,32 @@ async function closeCopy(request, deps = {}) {
   const { key } = request;
   const force = request.force === true;
   if (typeof key !== "string" || !KEY_RE.test(key) || key.includes("..")) throw usage(`invalid copy key ${JSON.stringify(key)}`);
+  if (request.repo !== undefined && (typeof request.repo !== "string" || !REPO_RE.test(request.repo))) {
+    throw usage(`invalid repository ${JSON.stringify(request.repo)} (expected owner/name)`);
+  }
 
+  // A task may hold copies of several repositories (OPE-8946): without a repository
+  // argument every copy of the key is closed, with one only the copy of that repository.
   const reg = readRegistry(ctx);
-  const matches = reg.entries.filter((e) => e.key === key);
-  const entry = matches.find((e) => e.class === "E") || matches[0];
-  if (!entry) throw new MyrWsError(EXIT.notFound, `no open copy ${key}`);
+  let matches = reg.entries.filter((e) => e.key === key);
+  // A scratch copy that happens to share the name is closed only when no task copy exists.
+  if (matches.some((e) => e.class === "E")) matches = matches.filter((e) => e.class === "E");
+  if (request.repo) matches = matches.filter((e) => e.repo === request.repo);
+  if (matches.length === 0) {
+    throw new MyrWsError(EXIT.notFound, request.repo ? `no open copy ${key} of ${request.repo}` : `no open copy ${key}`);
+  }
+  // The primary directory before the secondary ones.
+  matches.sort((x, y) => x.path.length - y.path.length);
+  if (matches.length === 1) return closeEntry(ctx, matches[0], key, force);
+  const results = [];
+  for (const entry of matches) results.push({ ...(await closeEntry(ctx, entry, key, force)), ...(entry.repo ? { repo: entry.repo } : {}) });
+  const out = { key, removed: results.every((r) => r.removed), archived: results.some((r) => r.archived), copies: results };
+  const archivePath = results.map((r) => r.archivePath).find(Boolean);
+  if (archivePath) out.archivePath = archivePath;
+  return out;
+}
+
+async function closeEntry(ctx, entry, key, force) {
   if (!insideRoots(ctx, entry.path)) {
     throw usage(`registry path ${JSON.stringify(entry.path)} of ${key} is outside ${ctx.workspaceRoot} and ${ctx.scratchRoot}; refusing to remove it`);
   }
@@ -292,9 +314,9 @@ function pruneBaseOf(git, ctx, entry) {
 /** CLI handler: ({ positionals, flags, env }) as lib/cli.js passes it; deps for tests. */
 async function close(ctx, deps = {}) {
   const positionals = (ctx && ctx.positionals) || [];
-  if (positionals.length !== 1) throw usage("usage: myr-ws close <KEY> [--force] [--json]");
+  if (positionals.length < 1 || positionals.length > 2) throw usage("usage: myr-ws close <KEY> [owner/repo] [--force] [--json]");
   const flags = (ctx && ctx.flags) || {};
-  return closeCopy({ key: positionals[0], force: flags.force === true }, { env: ctx && ctx.env, ...deps });
+  return closeCopy({ key: positionals[0], ...(positionals[1] ? { repo: positionals[1] } : {}), force: flags.force === true }, { env: ctx && ctx.env, ...deps });
 }
 
 module.exports = { close, closeCopy, EXIT };

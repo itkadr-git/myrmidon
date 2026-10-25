@@ -87,6 +87,7 @@ import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { attentionRoutes } from "./routes/attention.js";
+import { singletonProxyMiddleware, type SingletonProxyOptions } from "./myrmidon/singleton-proxy/index.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
 import { decisionQueueRoutes } from "./routes/decision-queues.js";
@@ -99,6 +100,9 @@ import { serverVersion } from "./version.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { instanceSecretSettingsRoutes } from "./myrmidon/secret-settings/routes.js"; // myrmidon(SETTINGS-UI E2.1)
+import { installInstanceSecretResolver } from "./myrmidon/secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.2)
+import { createInstanceSecretSettingService } from "./myrmidon/secret-settings/wiring.js"; // myrmidon(SETTINGS-UI E2.2)
 import { myrmidonMaintenanceRoutes } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
 import { datastoreCareRetentionRoutes } from "./myrmidon/datastore-care/index.js"; // myrmidon(1.6.5-DBC1)
 import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
@@ -166,7 +170,7 @@ import { myrmidonBudgetLimitsRoutes } from "./myrmidon/budget-limits/index.js";
 import { myrmidonBotDiskQuotaRoutes } from "./myrmidon/bot-containers/bot-disk-quota-routes.js"; // myrmidon(1.6.1-BOT-DISK-C)
 import { myrmidonBotImageRolloutRoutes } from "./myrmidon/bot-containers/bot-image-rollout-routes.js"; // myrmidon(BOT-ROLLOUT)
 import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
-import { boardLoadApp, boardLoadRequestMiddleware } from "./myrmidon/monitoring/board-load/index.js"; // myrmidon(1.6.6 PROCS-0.3A)
+import { boardLoadApp, boardLoadLaneTagMiddleware, boardLoadRequestMiddleware } from "./myrmidon/monitoring/board-load/index.js"; // myrmidon(1.6.6 PROCS-0.3A)
 import { myrmidonMonitoringAlertsRoutes } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
 import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
 import { createCasteDirectoryReader } from "./myrmidon/castes/directory.js"; // myrmidon(1.6.5 OPE-6608)
@@ -188,7 +192,9 @@ import { myrmidonLitellmBudgetSyncRoutes } from "./myrmidon/litellm-budget-sync/
 import { myrmidonLitellmWorkersRoutes } from "./myrmidon/litellm-workers/routes.js"; // myrmidon(1.6.5 LITELLM-WORKERS A)
 import { agentInstructionsRevisionsRoutes } from "./myrmidon/agent-instructions-revisions/index.js"; // myrmidon(H2)
 import { myrmidonFleetConsoleRoutes } from "./myrmidon/fleet-console/index.js"; // myrmidon(SC1)
+import { myrmidonFleetSiteRoutes } from "./myrmidon/bot-containers/fleet-site-wiring.js"; // myrmidon(1.6.6 OPE-8999)
 import { myrmidonFleetMoveRoutes } from "./myrmidon/bot-containers/fleet-move-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
+import { siteHealthRoutes } from "./myrmidon/bot-containers/site-health-routes.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { myrmidonPromptBudgetAdviceRoutes } from "./myrmidon/prompt-budget-advice/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET C)
 import { myrmidonMonitoringLinkRoutes } from "./myrmidon/monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
 import { myrmidonMonitoringDashboardRoutes } from "./myrmidon/monitoring/dashboard/index.js"; // myrmidon(1.6.6 MONITORING C)
@@ -732,6 +738,12 @@ export async function createApp(
      * `false`; the default keeps every existing caller on today's behavior.
      */
     backgroundWork?: boolean;
+    /**
+     * myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy to the
+     * worker. Passed by the `api` role only; omitted (single process, worker)
+     * the app serves every route itself, as before.
+     */
+    singletonProxy?: SingletonProxyOptions | null;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
@@ -788,6 +800,17 @@ export async function createApp(
   // Default is unset → Express trusts nothing, which is the only safe choice
   // when the server may be reachable without a known reverse proxy in front.
   applyTrustProxy(app, parseTrustProxyEnv(process.env.TRUST_PROXY));
+
+  // myrmidon(1.6.6 PROCS-1.5 / OPE-5412): an api process of a split board
+  // forwards the single routes (attention, plugins, bot-container,
+  // workspace-runtime) to the worker. Before the body parsers on purpose — the
+  // request body is streamed through unread. Absent in the single process.
+  if (opts.singletonProxy) app.use(singletonProxyMiddleware(opts.singletonProxy));
+
+  // myrmidon(1.6.6 OPE-9058): the http_route lane is attached before every
+  // other middleware — the actor / run-identity lookups and the provider
+  // webhook ingress run ahead of the /api router and were `untagged`.
+  app.use(boardLoadLaneTagMiddleware());
 
   app.use(
     COMPANY_IMPORT_API_PATH,
@@ -1096,6 +1119,8 @@ export async function createApp(
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db, { processBus: opts.processBus ?? undefined }));
+  api.use(instanceSecretSettingsRoutes(db)); // myrmidon(SETTINGS-UI E2.1)
+  installInstanceSecretResolver(createInstanceSecretSettingService(db)); // myrmidon(SETTINGS-UI E2.2)
   api.use(myrmidonMaintenanceRoutes(db)); // myrmidon(R3)
   api.use(datastoreCareRetentionRoutes(db)); // myrmidon(1.6.5-DBC1)
   api.use(boardLoadApp(db)); // myrmidon(1.6.6 PROCS-0.3A): lanes, api-load p95, pg_stat_statements, cpu-profile
@@ -1175,6 +1200,8 @@ export async function createApp(
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
   api.use(myrmidonFleetMoveRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T5)
+  api.use(myrmidonFleetSiteRoutes(db)); // myrmidon(1.6.6 OPE-8999): enroll / list / delete execution sites
+  api.use(siteHealthRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T4): site health badges
   api.use(myrmidonCloudConnectorRoutes(db)); // myrmidon(CLOUD-CONNECTOR)
   api.use(myrmidonPromptBudgetAdviceRoutes(db)); // myrmidon(1.6.3 PROMPT-BUDGET C): prompt-budget advice and deep analysis
   api.use(myrmidonMonitoringLinkRoutes(db)); // myrmidon(1.6.6 MONITORING E): link liveness feed and the link pulse endpoint

@@ -855,6 +855,7 @@
         "bindingsUpdated": "Привязки обновлены",
         "browseSkillsFromEveryAvailable": "Просматривайте навыки из всех доступных источников.",
         "deliveryCheckFailedToStart": "Не удалось запустить проверку доставки",
+        "deliveryCheckPrompt": "Проверка доставки: убедись, что этот навык тебе доступен, и коротко ответь его названием.",
         "deliveryCheckStarted": "Проверка доставки запущена",
         "discoveringSkills": "Поиск навыков",
         "errorCreatingSecret": "Ошибка при создании секрета.",

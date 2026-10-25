@@ -23,6 +23,8 @@ const HARNESS_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HARNESS_DIR, "..", "..", "..", "..", "..");
 /** The production entry both processes run. */
 export const SERVER_ENTRY = path.join(REPO_ROOT, "server", "src", "index.ts");
+/** The standalone worker entry (PROCS-1.5 ч.H). */
+export const WORKER_ENTRY = path.join(REPO_ROOT, "server", "src", "worker.ts");
 
 /** Readiness budget: a cold tsx boot of the whole server graph is slow on CI. */
 export const READY_TIMEOUT_MS = 180_000;
@@ -145,6 +147,7 @@ function childEnv(handle: {
   port: number;
   connectionString: string;
   role: string;
+  extraEnv?: NodeJS.ProcessEnv;
 }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of OWNED_ENV_KEYS) delete env[key];
@@ -166,6 +169,7 @@ function childEnv(handle: {
     SERVE_UI: "false",
     PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
     PAPERCLIP_OPEN_ON_LISTEN: "false",
+    ...handle.extraEnv,
   };
 }
 
@@ -177,6 +181,10 @@ export type StartApiProcessOptions = {
   port?: number;
   /** Readiness budget override. */
   readyTimeoutMs?: number;
+  /** Entry point override (worker.ts for the standalone worker). */
+  entry?: string;
+  /** Extra child env (e.g. MYRMIDON_WORKER_PORT, the worker's loopback port). */
+  extraEnv?: NodeJS.ProcessEnv;
 };
 
 /** Spawns one `api` process and waits until it answers `/api/health` with 200.
@@ -194,9 +202,9 @@ export async function startApiProcess(
     connectionString: options.connectionString,
   });
 
-  const child = spawn(process.execPath, [resolveTsxCli(), SERVER_ENTRY], {
+  const child = spawn(process.execPath, [resolveTsxCli(), options.entry ?? SERVER_ENTRY], {
     cwd: REPO_ROOT,
-    env: childEnv({ home, port, connectionString: options.connectionString, role }),
+    env: childEnv({ home, port, connectionString: options.connectionString, role, extraEnv: options.extraEnv }),
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -336,6 +344,7 @@ export async function startApiProcesses(options: {
   /** Bind every API replica to this SO_REUSEPORT port. */
   sharedPort?: number;
   readyTimeoutMs?: number;
+  extraEnv?: NodeJS.ProcessEnv;
 }): Promise<ApiProcessHandle[]> {
   const ports = options.sharedPort !== undefined
     ? Array.from({ length: options.count }, () => options.sharedPort!)
@@ -348,6 +357,7 @@ export async function startApiProcesses(options: {
       port: ports[index],
       role: options.role,
       readyTimeoutMs: options.readyTimeoutMs,
+      extraEnv: options.extraEnv,
     }),
   );
   const results = await Promise.allSettled(starts);

@@ -6198,6 +6198,8 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
         const retired = rotations[0]!;
+        // The rotation snapshot is cloned when rotating run identity, so
+        // the warm run.attached effect must be committed into it under the old run.
         const attachedEvent = retired.committedEvents.find(
           (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
         );

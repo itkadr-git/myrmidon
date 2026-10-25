@@ -213,6 +213,8 @@ import {
   splitRemoteUrlCredential,
 } from "./remote-url-credentials.js";
 import { secretService } from "./secrets.js";
+import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js"; // myrmidon(SETTINGS-UI E2.4)
+import { createToolOauthClientSecretLookup } from "../myrmidon/secret-settings/tool-oauth.js";
 import { agentmailApi } from "./agentmail-api.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import {
@@ -657,6 +659,8 @@ type ToolAccessServiceOptions = {
   paperclipIdGmailConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
+  /** Test seam: lookup of a tool provider's OAuth client secret (env, then bound secret ref). */
+  toolOauthClientSecretLookup?: (provider: string) => Promise<string | null>;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -2944,6 +2948,14 @@ export function toolAccessService(
   options: ToolAccessServiceOptions = {},
 ) {
   const secrets = secretService(db);
+  // myrmidon(SETTINGS-UI E2.4): built lazily so services that never start OAuth pay nothing.
+  let toolOauthSecretLookup = options.toolOauthClientSecretLookup ?? null;
+  function lookupToolOauthClientSecret(provider: string) {
+    toolOauthSecretLookup ??= createToolOauthClientSecretLookup({
+      resolver: createInstanceSecretSettingService(db),
+    });
+    return toolOauthSecretLookup(provider);
+  }
 
   async function resolvedRemoteEndpoint(
     connection: typeof toolConnections.$inferSelect,
@@ -8762,20 +8774,18 @@ export function toolAccessService(
     return `PAPERCLIP_TOOL_OAUTH_${provider.replace(/[^a-z0-9]+/gi, "_").toUpperCase()}_${suffix}`;
   }
 
-  function oauthClientConfig(provider: string) {
+  async function oauthClientConfig(provider: string) {
     const clientIdEnv = oauthEnvName(provider, "CLIENT_ID");
     const clientSecretEnv = oauthEnvName(provider, "CLIENT_SECRET");
+    const clientId =
+      process.env[clientIdEnv] ?? readProductEnv("TOOL_OAUTH_CLIENT_ID") ?? null;
     return {
       clientIdEnv,
       clientSecretEnv,
-      clientId:
-        process.env[clientIdEnv] ??
-        readProductEnv("TOOL_OAUTH_CLIENT_ID") ??
-        null,
-      clientSecret:
-        process.env[clientSecretEnv] ??
-        readProductEnv("TOOL_OAUTH_CLIENT_SECRET") ??
-        null,
+      clientId,
+      // myrmidon(SETTINGS-UI E2.4): emergency env first, then the instance secret ref.
+      // Only looked up for a preconfigured client (a client id exists).
+      clientSecret: clientId ? await lookupToolOauthClientSecret(provider) : null,
     };
   }
 
@@ -8814,7 +8824,7 @@ export function toolAccessService(
     };
   }
 
-  function configuredOAuthClientForConnection(
+  async function configuredOAuthClientForConnection(
     connection: typeof toolConnections.$inferSelect,
     provider: string,
   ) {
@@ -8834,7 +8844,7 @@ export function toolAccessService(
     provider: string,
     actor?: ActorInfo,
   ) {
-    const configured = configuredOAuthClientForConnection(connection, provider);
+    const configured = await configuredOAuthClientForConnection(connection, provider);
     if (configured.clientId) return configured;
     const oauth = oauthConfig(connection);
     const clientId =
@@ -10319,7 +10329,7 @@ export function toolAccessService(
     actor?: ActorInfo;
   }) {
     // 1. A client the deployment preconfigured for this issuer wins outright.
-    const configured = configuredOAuthClientForConnection(
+    const configured = await configuredOAuthClientForConnection(
       input.connection,
       input.endpoints.provider,
     );
@@ -10396,7 +10406,7 @@ export function toolAccessService(
         input.connection.id,
         input.connection.companyId,
       );
-      const latestConfigured = configuredOAuthClientForConnection(
+      const latestConfigured = await configuredOAuthClientForConnection(
         latest,
         input.endpoints.provider,
       );

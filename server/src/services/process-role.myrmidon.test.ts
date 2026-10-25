@@ -138,3 +138,22 @@ describe("processBackgroundWorkPlan", () => {
     expect(worker).toEqual({ ...all, loopbackApi: true });
   });
 });
+
+describe("worker loopback address from the launch map (main-fix T3)", () => {
+  it("the worker listens where the api dials: MYRMIDON_WORKER_HOST/PORT, else 127.0.0.1:3101", () => {
+    expect(processRole({ PAPERCLIP_PROCESS_ROLE: "worker" }).loopbackListen).toEqual({
+      host: "127.0.0.1",
+      port: PROCESS_ROLE_WORKER_PORT,
+    });
+    expect(
+      processRole({ PAPERCLIP_PROCESS_ROLE: "worker", MYRMIDON_WORKER_PORT: "3104", MYRMIDON_WORKER_HOST: "127.0.0.2" })
+        .loopbackListen,
+    ).toEqual({ host: "127.0.0.2", port: 3104 });
+    expect(processRole({ PAPERCLIP_PROCESS_ROLE: "worker", MYRMIDON_WORKER_PORT: "80" }).loopbackListen?.port).toBe(
+      PROCESS_ROLE_WORKER_PORT,
+    );
+    // roles without a loopback listener stay without one, whatever the env says
+    expect(processRole({ PAPERCLIP_PROCESS_ROLE: "api", MYRMIDON_WORKER_PORT: "3104" }).loopbackListen).toBeNull();
+    expect(processRole({ MYRMIDON_WORKER_PORT: "3104" }).loopbackListen).toBeNull();
+  });
+});

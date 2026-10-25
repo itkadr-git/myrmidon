@@ -305,43 +305,67 @@ Every error response follows single-line, secret-safe reason codes:
 
 ## 4. Operator Rollout & Configuration
 
-### 4.1 Prerequisites
+### 4.1 Prerequisites and site PKI
 
-1. **Host requirements**: Dedicated Linux VM (e.g. `myr-vm1`, 16+ cores, 64 GB RAM, XFS filesystem with project quotas enabled at `/srv/myrmidon-xfs`).
-2. **Network**: IPsec tunnel between `vm-core` (`board.internal`) and `myr-vm1` (`fleetd.internal`). No public exposure of port `9100`.
-3. **Certificates & Tokens**: Generate a 64-character random token and store it as a company secret on the board:
+1. **Host requirements**: a dedicated Linux VM with Docker (e.g. `myr-vm1`). Project-quota XFS at `/srv/myrmidon-xfs` is recommended for per-bot disk limits; on ext4 the quotas are simply absent and `volumeRoot` can point at any directory (e.g. `/srv/myrmidon-bots`).
+2. **Network**: the board must reach `fleetd` on its listen address (private LAN or tunnel). Do not publish port `9100` publicly; bind `listen` to the LAN address, not `0.0.0.0`.
+3. **Site PKI (mTLS is mandatory)**: `fleetd` serves HTTPS only, requires a client certificate signed by the site CA, and then checks the bearer token on top. It refuses to start without `siteCA`, `serverCert` and `serverKey`. There is no issuing command in the product; issue the material once per site with `openssl` on a trusted admin host, in a `0700` directory, and never print the key files:
    ```bash
-   TOKEN=$(openssl rand -hex 32)
+   umask 077; mkdir site-myr-vm1 && cd site-myr-vm1
+   # site CA (3 years)
+   openssl ecparam -name prime256v1 -genkey -noout -out ca.key
+   openssl req -x509 -new -key ca.key -sha256 -days 1095 -subj "/CN=myrmidon-site-ca-myr-vm1" -out ca.crt
+   # fleetd server certificate: the SAN must match the host or IP in the enroll `url`
+   openssl ecparam -name prime256v1 -genkey -noout -out server.key
+   openssl req -new -key server.key -subj "/CN=fleetd-myr-vm1" -out server.csr
+   printf "subjectAltName=IP:192.0.2.10\nextendedKeyUsage=serverAuth\n" > server.ext
+   openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -sha256 -extfile server.ext -out server.crt
+   # board client certificate
+   openssl ecparam -name prime256v1 -genkey -noout -out client.key
+   openssl req -new -key client.key -subj "/CN=myrmidon-board" -out client.csr
+   printf "extendedKeyUsage=clientAuth\n" > client.ext
+   openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -sha256 -extfile client.ext -out client.crt
+   # bearer token (fleetd requires at least 32 characters)
+   openssl rand -hex 32 > token
+   cat client.crt client.key > client.pem
+   openssl verify -CAfile ca.crt server.crt client.crt
    ```
+   Server and client certificates live 365 days and the CA 3 years; rotation is manual (re-issue, replace the files on the site, update the secret value). Keep `ca.key` off the site and off the board.
 
 ---
 
 ### 4.2 Site-Agent Configuration (`myr-vm1`)
 
-Create `/etc/myrmidon/fleetd.json` with permissions `0600`:
+Copy `ca.crt`, `server.crt` and `server.key` to `/etc/myrmidon/pki/` (key `0600`) and the `fleetd` binary to `/usr/local/bin/fleetd`. Create `/etc/myrmidon/fleetd.json` with permissions `0600`. The file is read with unknown keys rejected, so use exactly these names:
 
 ```json
 {
   "siteId": "myr-vm1",
   "epoch": 1,
-  "listen": "0.0.0.0:9100",
-  "token": "<TOKEN>",
+  "listen": "192.0.2.10:9100",
+  "token": "<contents of the token file>",
   "upstream": "/var/run/docker.sock",
+  "siteCA": "/etc/myrmidon/pki/ca.crt",
+  "serverCert": "/etc/myrmidon/pki/server.crt",
+  "serverKey": "/etc/myrmidon/pki/server.key",
+  "volumeRoot": "/srv/myrmidon-bots",
+  "network": "myrmidon-bots",
+  "images": ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
+  "boardAddress": "192.0.2.1:3100",
+  "boardExtraHost": "paperclip-server-1:192.0.2.1",
+  "gatewayBindIp": "192.0.2.10",
+  "gatewayPortStart": 18700,
+  "gatewayPortEnd": 18799,
   "bots": [
-    {
-      "botKey": "work-qa",
-      "maxMemoryMb": 4096,
-      "maxCpus": 2.0,
-      "maxPids": 512
-    },
-    {
-      "botKey": "work-finansist",
-      "maxMemoryMb": 4096,
-      "maxCpus": 2.0,
-      "maxPids": 512
-    }
+    { "botKey": "<agent UUID>", "maxMemoryMb": 4096, "maxCpus": 2.0, "maxPids": 512 }
   ]
 }
+```
+
+Notes: the allowlist key is `images` (not `imageAllowlist`) and only `repo@sha256:*` references are accepted, tags are rejected; without `gatewayPortStart`/`gatewayPortEnd` the port allocator fails with `gateway_port_exhausted`, and without `volumeRoot` creating a bot fails with `volume_root_not_configured`; `boardExtraHost` here is a Docker `ExtraHosts` entry in `name:ip` form; `bots[]` must not be empty and is static (adding a bot means editing the file and restarting the unit). Validate before starting:
+
+```bash
+/usr/local/bin/fleetd --check-config --config /etc/myrmidon/fleetd.json
 ```
 
 Create systemd unit `/etc/systemd/system/myrmidon-fleetd.service`:
@@ -370,34 +394,46 @@ systemctl daemon-reload
 systemctl enable --now myrmidon-fleetd
 ```
 
-Verify local health:
+Verify health with the client certificate (without it the TLS handshake is refused; with it but without the token the answer is `401`):
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" http://fleetd.internal:9100/v1/health | jq .
+curl -s --cacert ca.crt --cert client.crt --key client.key \
+  -H "Authorization: Bearer $(cat token)" https://192.0.2.10:9100/v1/health | jq .
 ```
 
 ---
 
-### 4.3 Board Configuration (`vm-core`)
+### 4.3 Board Configuration (`vm-core`): enroll the site
 
-On `vm-core`, configure `MYRMIDON_FLEET_HOSTS` in `/etc/myrmidon/board.env` (or via Company Secrets and Settings):
+Sites are registered through the board API, no database edits. `MYRMIDON_FLEET_HOSTS` is a legacy bootstrap path that accepts only `http://` addresses and cannot carry mTLS material; do not use it for an mTLS site.
 
-```json
-MYRMIDON_FLEET_HOSTS='[
-  {
-    "name": "myr-vm1",
-    "url": "http://fleetd.internal:9100",
-    "tokenSecret": "fleetd-myr-vm1-token",
-    "hindsightUrl": "http://hindsight.internal:8890",
-    "llmBaseUrl": "http://llm.internal:4000",
-    "boardExtraHost": "paperclip-server-1",
-    "volumeRoot": "/srv/myrmidon-xfs/myrmidon-bots",
-    "network": "myrmidon-bots",
-    "imageAllowlist": ["ghcr.io/itkadr-git/myrmidon-bot@sha256:*"]
-  }
-]'
-```
-
-Register the company secret `fleetd-myr-vm1-token` containing the shared secret token.
+1. Store the secrets in the company (values come from the files, they are never part of the enroll request). Either two secrets `fleetd-myr-vm1-token` (the token) and `fleetd-myr-vm1-client` (`client.pem`: certificate and key PEM blocks, or `{"cert":"...","key":"..."}` JSON), or a pair `fleetd-myr-vm1-client-cert` and `fleetd-myr-vm1-client-key`:
+   ```bash
+   jq -Rs '{name:"fleetd-myr-vm1-token", value:.}' < token \
+     | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
+   jq -Rs '{name:"fleetd-myr-vm1-client", value:.}' < client.pem \
+     | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
+   ```
+2. Enroll the site (company owner/admin or instance admin only; viewers, members and agents get `403`). Optionally add `caFingerprint` (sha256 of `ca.crt`, `openssl x509 -in ca.crt -noout -fingerprint -sha256`) to pin the CA:
+   ```bash
+   jq -n --rawfile ca ca.crt '{
+     name: "myr-vm1",
+     url: "https://192.0.2.10:9100",
+     tokenSecret: "fleetd-myr-vm1-token",
+     clientCertSecretKey: "fleetd-myr-vm1-client",
+     caCert: $ca,
+     capacity: { maxCpus: 4, maxMemoryMb: 32768, maxBots: 5 },
+     gatewayPortStart: 18700,
+     gatewayPortEnd: 18799,
+     imageAllowlist: ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
+     hindsightUrl: "http://hindsight.internal:8890",
+     llmBaseUrl: "http://llm.internal:4000",
+     volumeRoot: "/srv/myrmidon-bots",
+     network: "myrmidon-bots"
+   }' | curl -sf -X POST "$BOARD/api/companies/$COMPANY/fleet/sites" \
+        -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
+   ```
+   The request is rejected with `400` when the pinned fingerprint does not match `caCert`, the client certificate in the named secret is not signed by `caCert`, the URL is not `https://host[:port]`, the CA is not a PEM certificate, a named secret does not exist in the company, the port range is inverted or `maxBots` exceeds the number of ports; with `409` when the name is taken. `GET /api/companies/$COMPANY/fleet/sites` lists sites (references and the CA fingerprint, never secret values); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` (admins only) removes one with `204`, or answers `409` while bots (`container.host`) still sit on the site. The board refuses to connect to a site whose stored CA no longer matches the fingerprint recorded at enroll. The board picks the site up within 30 seconds, no restart.
+3. The gateway port range in the profile mirrors `fleetd.json` for the operator's reference; `fleetd.json` is authoritative.
 
 ---
 
@@ -406,7 +442,7 @@ Register the company secret `fleetd-myr-vm1-token` containing the shared secret 
 To migrate bots (e.g. `work-finansist` or `work-qa`) from local or unmanaged manual mode to remote site management without losing sessions, memory, or Telegram webhooks:
 
 1. **Pre-flight verification**:
-   - Check site health: `curl -H "Authorization: Bearer ..." http://fleetd.internal:9100/v1/health`.
+   - Check site health: `curl --cacert ca.crt --cert client.crt --key client.key -H "Authorization: Bearer ..." https://fleetd.internal:9100/v1/health`.
    - Confirm bind volumes exist at `/srv/myrmidon-xfs/myrmidon-bots/<botKey>/{hermes,workspace,scratch}`.
    - Verify image digest is pinned in CI release manifest (`release-components.json`).
 2. **Canary Migration (`work-qa`)**:
@@ -426,3 +462,23 @@ To migrate bots (e.g. `work-finansist` or `work-qa`) from local or unmanaged man
 5. **Rollback Runbook**:
    - If an issue occurs during canary, set `container.host = null` or revert card to manual mode (`container.enabled = false`, `apiBaseUrl = "http://fleetd.internal:18642"`).
    - Data volumes on disk are **never deleted** on rollback.
+
+---
+
+### 4.5 Site Memory (C-MEM): hindsight-work on the site, replica on the board
+
+The work-memory of a site is **primary on the site**: its bots recall and retain on the site's own `hindsight-work`, never over the link to the board. The board keeps a replica in the bank `fleet-work-replica`. If the link breaks, bots keep working on local memory; the replica catches up when it is back.
+
+1. **Bring up the memory service** on the site from the canonical compose `docker/site-memory/docker-compose.yml` (`hs-pg` with pgvector, then `hindsight-work`, bound to `127.0.0.1:8890`). Secrets and settings are not in the file: place `profile/hs-pg.env` and `profile/hindsight-work.env` next to it (examples: `*.env.example` next to the compose; rendering them from the site profile on the board is not automated yet), and the images are pinned by digest in `profile/images.env`. `docker compose up` stops when a pin is missing.
+   ```bash
+   docker compose -f docker-compose.yml --env-file profile/images.env up -d
+   docker compose -f docker-compose.yml ps   # hs-pg healthy, hindsight-work running
+   ```
+2. **Point fleetd at it** with the `memory` object of `fleetd.json`: `{"enabled": true, "url": "http://127.0.0.1:8890", "bank": "<the site's bank>"}`. `POST /v1/memory/recall`, `/v1/memory/retain` and `/v1/memory/export` then work for the bots enrolled on the site.
+3. **Turn the sync on at the board, only after the P5 import of step 5** (it runs inside the site-health lane, `MYRMIDON_SITE_HEALTH=1`): `MYRMIDON_FLEET_MEMORY_SYNC=1`, `MYRMIDON_FLEET_MEMORY_HINDSIGHT_URL=<the board's hindsight>` and, when it needs one, `MYRMIDON_FLEET_MEMORY_HINDSIGHT_TOKEN`. The replica bank must exist (`fleet-work-replica`, or the bank named by `MYRMIDON_FLEET_MEMORY_REPLICA_BANK`).
+4. **What runs**: the lane `myrmidon-memory-sync` copies the site's bank into the replica once a night (after `MYRMIDON_FLEET_MEMORY_SYNC_HOUR_UTC`, 20 by default) with a merge import that skips documents the replica already has; a failed attempt is repeated every 15 minutes until one succeeds. A live bot move runs one more sync right after the source container stops. Every attempt is a row of `myrmidon_fleet_memory_syncs`:
+   ```sql
+   SELECT site_name, kind, status, documents_imported, documents_skipped, error, started_at
+   FROM myrmidon_fleet_memory_syncs ORDER BY started_at DESC LIMIT 20;
+   ```
+5. **Production import of `fleet-work` / `work` (P5) is a separate manual ADM step**, done in the owner's window, and is **not** run automatically at startup, by the compose, or by the sync lane. Order: (a) bring up the compose (step 1) and check `hs-pg` healthy and `hindsight-work` answering; (b) run the P5 import (export of the banks `fleet-work` and `work` on the board's hindsight, `POST .../transfer/export`, then `POST .../transfer/import?mode=restore` into the site's `hindsight-work`); (c) only then set `MYRMIDON_FLEET_MEMORY_SYNC=1`, so that the first nightly sync does not meet an empty site memory.
