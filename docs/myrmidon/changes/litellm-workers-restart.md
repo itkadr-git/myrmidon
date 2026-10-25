@@ -1,5 +1,5 @@
 ---
-
+settings-section: Track 5 — operations
 ---
 
 ## changelog-en
@@ -41,3 +41,23 @@
 - Метрики давали `reachable=false` и HTTP 401: доска отправляла в Bearer ИМЯ секрета и
   обращалась к `/metrics`, который шлюз перенаправляет. Теперь ключ берётся из хранилища
   секретов компании (секрет cost-reader, иначе админский), а запрос идёт на `/metrics/`.
+
+## settings-en
+
+| `MYRMIDON_LITELLM_WORKERS_RESTART_COMMAND` | LITELLM-WORKERS | unset | Command that restarts the gateway with a new pool size; the board runs it when the target changes and then confirms the result itself. Unset: the board only stores the target | A command with a `{workers}` placeholder |
+| `MYRMIDON_LITELLM_WORKERS_UNIT_FILE` | LITELLM-WORKERS | `/etc/systemd/system/litellm-gateway.service` | The gateway unit the board reads (read-only) for the actual `--num_workers` | A path the board can read |
+
+## settings-ru
+
+| `MYRMIDON_LITELLM_WORKERS_RESTART_COMMAND` | LITELLM-WORKERS | не задан | Команда планового рестарта шлюза с новым числом процессов; доска запускает её при смене цели и сама проверяет результат. Не задана: доска только сохраняет цель | Команда с подстановкой `{workers}` |
+| `MYRMIDON_LITELLM_WORKERS_UNIT_FILE` | LITELLM-WORKERS | `/etc/systemd/system/litellm-gateway.service` | Юнит шлюза: из него доска читает фактический `--num_workers` (только чтение) | Путь к файлу, доступному доске на чтение |
+
+## settings-en-replace
+
+| `MYRMIDON_LITELLM_WORKERS_CONTAINER` | LITELLM-WORKERS A | removed | Removed in OPE-8899: no longer read (the pool is not resized by signals) | Not applicable |
+| `MYRMIDON_LITELLM_WORKERS_SIGNAL_COMMAND` | LITELLM-WORKERS A | removed | Removed in OPE-8899: replaced by `MYRMIDON_LITELLM_WORKERS_RESTART_COMMAND` | Not applicable |
+
+## settings-ru-replace
+
+| `MYRMIDON_LITELLM_WORKERS_CONTAINER` | LITELLM-WORKERS A | удалена | Удалена в OPE-8899: больше не читается (число процессов не меняется сигналами) | Не применимо |
+| `MYRMIDON_LITELLM_WORKERS_SIGNAL_COMMAND` | LITELLM-WORKERS A | удалена | Удалена в OPE-8899: заменена на `MYRMIDON_LITELLM_WORKERS_RESTART_COMMAND` | Не применимо |
