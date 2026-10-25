@@ -491,6 +491,13 @@ describe("IssueBlockedNotice", () => {
             priority: "medium",
             assigneeAgentId: "agent-1",
             assigneeUserId: null,
+            blockerMetadata: {
+              blockReason: "dependency",
+              owner: { agentId: "agent-1" },
+              nextCheckAt: "2026-10-25T12:00:00.000Z",
+              timeoutAt: "2026-10-26T12:00:00.000Z",
+              escalationPolicy: "notify_owner",
+            },
           },
         ]}
       />,
