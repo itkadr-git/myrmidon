@@ -503,6 +503,7 @@ import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
   normalizeIssueExecutionPolicy,
+  normalizeStoredIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
 import {
@@ -11632,7 +11633,7 @@ export function heartbeatService(
 
     const scheduledAtIso = claimed.monitorNextCheckAt.toISOString();
     const nextAttemptCount = (claimed.monitorAttemptCount ?? 0) + 1;
-    const policy = normalizeIssueExecutionPolicy(
+    const policy = normalizeStoredIssueExecutionPolicy(
       claimed.executionPolicy ?? null,
     );
     const monitor = policy?.monitor ?? null;

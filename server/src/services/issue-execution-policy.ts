@@ -475,6 +475,21 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   };
 }
 
+/** Normalize persisted policy rows without letting retired modes block issue mutations. */
+export function normalizeStoredIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) {
+    return normalizeIssueExecutionPolicy(input);
+  }
+  const stored = input as Record<string, unknown>;
+  if (stored.mode == null || stored.mode === "normal" || stored.mode === "auto") {
+    return normalizeIssueExecutionPolicy(input);
+  }
+  if (stored.mode !== "sequential") {
+    return normalizeIssueExecutionPolicy(input);
+  }
+  return normalizeIssueExecutionPolicy({ ...stored, mode: "normal" });
+}
+
 export function parseIssueExecutionState(input: unknown): IssueExecutionState | null {
   if (input == null) return null;
   const parsed = issueExecutionStateSchema.safeParse(input);
@@ -1287,7 +1302,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
 function applyMonitorTransition(input: TransitionInput, stagePatch: Record<string, unknown>) {
   const patch: Record<string, unknown> = {};
-  const previousPolicy = input.previousPolicy ?? normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
+  const previousPolicy = input.previousPolicy ?? normalizeStoredIssueExecutionPolicy(input.issue.executionPolicy ?? null);
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentMonitorState = derivePersistedMonitorState({
     issue: input.issue,
