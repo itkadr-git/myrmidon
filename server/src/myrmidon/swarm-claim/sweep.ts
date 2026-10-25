@@ -329,7 +329,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
             issueId: row.issueId,
             agentId: row.agentId,
             claimId: row.id,
-            now,
+            now: new Date(Math.max(now.getTime(), row.claimedAt.getTime())),
           });
           if (expired) {
             await deps.logActivity?.({
