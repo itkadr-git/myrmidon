@@ -46,12 +46,34 @@ HTTP/MCP endpoint that triggers it: the only import sites are
 seed surface. To run the seed, call it from code or a script that has a database
 connection:
 
-```ts
-import { seedKnowledgeBase } from "@myrmidon/server/src/myrmidon/knowledge/index.js";
+Save this example as `scripts/seed-knowledge-base.ts` from the repository root;
+relative imports resolve workspace TypeScript source directly:
 
-const result = await seedKnowledgeBase(db, companyId, nestId);
-// result: { created, skipped, superseded, errors }
+```ts
+import { closeRegisteredClients, createDb } from "../packages/db/src/index.js";
+import { loadConfig } from "../server/src/config.js";
+import { seedKnowledgeBase } from "../server/src/myrmidon/knowledge/index.js";
+
+const [companyId, nestId] = process.argv.slice(2);
+if (!companyId || !nestId) throw new Error("Usage: pnpm exec tsx scripts/seed-knowledge-base.ts <company-id> <nest-id>");
+const databaseUrl =
+  process.env.DATABASE_URL?.trim()
+  || loadConfig().databaseUrl
+  || `postgres://paperclip:paperclip@127.0.0.1:${loadConfig().embeddedPostgresPort}/paperclip`;
+const db = createDb(databaseUrl);
+try {
+  const result = await seedKnowledgeBase(db, companyId, nestId);
+  console.log(JSON.stringify(result, null, 2));
+} finally {
+  await closeRegisteredClients(databaseUrl);
+}
 ```
+
+Run it from the repository root with `pnpm exec tsx
+scripts/seed-knowledge-base.ts <company-id> <nest-id>`. The connection URL comes
+from `DATABASE_URL`, then the app config, or local embedded PostgreSQL if neither
+is set. The script does not create a company or nest; pass existing IDs. The call
+returns `{ created, skipped, superseded, errors }`.
 
 Parameters:
 
@@ -93,22 +115,29 @@ there") instead of duplicating rows. The acceptance test pins this: a second run
 reports `created = 0`, `skipped = first.created`, `errors = []`, and the item
 count is unchanged.
 
-There is **no corpus-wide transaction and no rollback**. Items are created one by
-one, so a mid-run failure (database down, invalid data) leaves the successfully
-created prefix in place. That is by design: re-running is safe — already created
-slugs are skipped and the run resumes where it stopped. Supersede chains already
-in their intended state count as successful skips (`superseded` is not
-re-incremented; the test asserts `second.superseded = 0`).
+**There is no corpus-wide transaction and no rollback.** Items are created one by
+one. A failure during `create()` can leave a successfully created prefix, which
+a rerun can safely skip. However, each `create()` commits its draft before the
+separate `publish()` call. If publication fails, the draft remains with its slug;
+a rerun sees `slug_conflict` and skips it, so it will not publish that item.
 
-After a run, reconcile the counters against the expected totals:
+After an interrupted or failed run, do not infer complete publication from
+`skipped`, `errors`, or the aggregate counters alone. Inspect every seeded slug
+in the target nest and verify its status is `published` with a non-null
+`deliveredRevisionId`. For any remaining draft, publish it manually through the
+normal operator workflow before rerunning the seed. Investigate non-domain
+errors and supersede errors as well; any non-domain error aborts the run. A clean
+counter total does not prove that all items were delivered.
+
+For a run with no publication failures, reconcile the counters against expected
+totals:
 
 - `created + skipped` should equal **50** (46 decisions + 4 product pages) on a
   fresh nest, `skipped = 50` on a re-run.
 - `superseded` should equal **4** on a fresh nest (the four `supersedes` chains),
   `0` on a re-run.
 - `errors` should be empty. A `knowledge_not_found` error names a `supersedes`
-  target that is missing; domain errors on supersede land in `errors` too. Any
-  non-domain error aborts the run.
+  target that is missing; domain errors on supersede land in `errors` too.
 
 ## What the seed does not do
 

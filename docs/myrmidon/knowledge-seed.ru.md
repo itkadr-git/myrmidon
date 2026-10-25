@@ -47,12 +47,35 @@ HTTP/MCP-эндпоинта, запускающего посев, нет: точ
 посева нет. Чтобы выполнить посев, вызовите функцию из кода или скрипта с
 подключением к базе:
 
-```ts
-import { seedKnowledgeBase } from "@myrmidon/server/src/myrmidon/knowledge/index.js";
+Сохраните этот пример как `scripts/seed-knowledge-base.ts` в корне репозитория;
+относительные импорты обращаются напрямую к исходникам TypeScript в workspace:
 
-const result = await seedKnowledgeBase(db, companyId, nestId);
-// result: { created, skipped, superseded, errors }
+```ts
+import { closeRegisteredClients, createDb } from "../packages/db/src/index.js";
+import { loadConfig } from "../server/src/config.js";
+import { seedKnowledgeBase } from "../server/src/myrmidon/knowledge/index.js";
+
+const [companyId, nestId] = process.argv.slice(2);
+if (!companyId || !nestId) throw new Error("Usage: pnpm exec tsx scripts/seed-knowledge-base.ts <company-id> <nest-id>");
+const databaseUrl =
+  process.env.DATABASE_URL?.trim()
+  || loadConfig().databaseUrl
+  || `postgres://paperclip:paperclip@127.0.0.1:${loadConfig().embeddedPostgresPort}/paperclip`;
+const db = createDb(databaseUrl);
+try {
+  const result = await seedKnowledgeBase(db, companyId, nestId);
+  console.log(JSON.stringify(result, null, 2));
+} finally {
+  await closeRegisteredClients(databaseUrl);
+}
 ```
+
+Запускайте из корня репозитория командой `pnpm exec tsx
+scripts/seed-knowledge-base.ts <company-id> <nest-id>`. Параметры подключения
+берутся из `DATABASE_URL`, затем из конфигурации приложения, а при отсутствии
+обоих значений используется локальная embedded PostgreSQL. Скрипт не создаёт
+компанию или гнездо — передайте ID существующих объектов. Вызов возвращает
+`{ created, skipped, superseded, errors }`.
 
 Параметры:
 
@@ -90,27 +113,34 @@ export const SEED_ACTOR: KnowledgeActor = { actorType: "system", actorId: null }
 ## Идемпотентность и частичные отказы
 
 Посев идемпотентен: повторный запуск **пропускает** записи, чей slug уже есть в
-гнезде (доменная ошибка `slug_conflict` от `create()` трактуется как «уже
-есть»), а не дублирует строки. Тест приёмки это закрепляет: второй прогон даёт
+гнезде (доменная ошибка `slug_conflict` от `create()` трактуется как «уже есть»),
+а не дублирует строки. Тест приёмки это закрепляет: второй прогон даёт
 `created = 0`, `skipped = first.created`, `errors = []`, количество записей не
 меняется.
 
-**Общей транзакции на корпус и отката нет.** Записи создаются по одной, поэтому
-сбой посреди прогона (недоступная база, некорректные данные) оставляет на месте
-успешно созданный префикс. Это сделано осознанно: повторный запуск безопасен —
-существующие slug пропускаются, и прогон продолжается с места остановки. Цепочки
-supersedes, уже находящиеся в целевом состоянии, считаются успешным пропуском
-(`superseded` повторно не растёт; тест требует `second.superseded = 0`).
+**Общей транзакции на корпус и отката нет.** Записи создаются по одной. Сбой
+во время `create()` может оставить успешно созданный префикс, который можно
+безопасно пропустить при повторном запуске. Однако каждый вызов `create()`
+фиксирует черновик до отдельного вызова `publish()`. Если публикация завершается
+ошибкой, черновик остаётся со своим slug; повторный запуск получает
+`slug_conflict` и пропускает запись, не публикуя её.
 
-После прогона сверьте счётчики с ожидаемыми суммами:
+После прерванного или неудачного запуска не считайте публикацию полной только
+по `skipped`, `errors` или итоговым счётчикам. Проверьте каждый slug из корпуса
+в целевом гнезде: статус должен быть `published`, а `deliveredRevisionId` —
+ненулевым. Оставшиеся черновики опубликуйте вручную штатным процессом оператора,
+прежде чем повторно запускать посев. Также разберите недоменные ошибки и ошибки
+supersede; любая недоменная ошибка прерывает прогон. Чистые счётчики не
+доказывают, что все записи доставлены.
+
+Если ошибок публикации не было, сверьте счётчики с ожидаемыми суммами:
 
 - `created + skipped` должно равняться **50** (46 решений + 4 product-страницы)
   на свежем гнезде, `skipped = 50` при повторном запуске.
 - `superseded` должно равняться **4** на свежем гнезде (четыре цепочки
   `supersedes`), `0` при повторном запуске.
 - `errors` должен быть пуст. Ошибка `knowledge_not_found` называет отсутствующую
-  цель `supersedes`; доменные ошибки supersede тоже попадают в `errors`. Любая
-  недоменная ошибка прерывает прогон.
+  цель `supersedes`; доменные ошибки supersede тоже попадают в `errors`.
 
 ## Чего посев не делает
 
