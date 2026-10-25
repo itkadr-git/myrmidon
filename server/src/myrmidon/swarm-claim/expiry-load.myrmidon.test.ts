@@ -8,7 +8,7 @@ import {
   startEmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { clearExpiredAssignee, releaseClaim } from "./store.js";
+import { clearExpiredAssignee } from "./store.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = await getEmbeddedPostgresTestSupport();
@@ -117,48 +117,41 @@ describeDatabase("swarm expiry race under load", () => {
 
     const results = await Promise.all(claims.map(async (claim, index) => {
       const explicitAgentId = explicitlyAssignedId;
-      await db.insert(issueClaims).values({
-        id: randomUUID(),
-        companyId,
-        issueId: claim.issueId,
-        agentId: claim.agentId,
-        executionRunId: randomUUID(),
-        claimOrigin: "matcher",
-        claimedAt: new Date(now.getTime() - 120_000),
-        leaseExpiresAt: new Date(now.getTime() - 60_000),
-      });
       const explicitAt = new Date(now.getTime() + index + 1);
-      const sweepExpiry = async () => Promise.all([
-        releaseClaim(db, { claimId: claim.id, reason: "lease_expired", now }),
-        clearExpiredAssignee(db, {
+      const reclaim = async () => {
+        await db.update(issueClaims)
+          .set({ releasedAt: now, releaseReason: "lease_expired" })
+          .where(and(eq(issueClaims.id, claim.id), isNull(issueClaims.releasedAt)));
+        return clearExpiredAssignee(db, {
           companyId,
           issueId: claim.issueId,
           agentId: claim.agentId,
           claimId: claim.id,
           now,
-        }),
-      ]);
+        });
+      };
 
-      await db.insert(issueClaims).values({
-        id: randomUUID(),
-        companyId,
-        issueId: claim.issueId,
-        agentId: explicitlyAssignedId,
-        runId: randomUUID(),
-        origin: "explicit",
-        role: "engineer",
-        claimedAt: explicitAt,
-        heartbeatAt: explicitAt,
-        expiresAt: new Date(explicitAt.getTime() + 60_000),
-      });
-
-      const [clearResults] = await Promise.all([
-        sweepExpiry(),
-        db.update(issues)
-          .set({ assigneeAgentId: explicitAgentId, updatedAt: explicitAt })
-          .where(eq(issues.id, claim.issueId)),
+      const [cleared] = await Promise.all([
+        reclaim(),
+        (async () => {
+          await db.insert(issueClaims).values({
+            id: randomUUID(),
+            companyId,
+            issueId: claim.issueId,
+            agentId: explicitAgentId,
+            runId: randomUUID(),
+            origin: "explicit",
+            role: "engineer",
+            claimedAt: explicitAt,
+            heartbeatAt: explicitAt,
+            expiresAt: new Date(explicitAt.getTime() + 60_000),
+          });
+          await db.update(issues)
+            .set({ assigneeAgentId: explicitAgentId, updatedAt: explicitAt })
+            .where(eq(issues.id, claim.issueId));
+        })(),
       ]);
-      return { claim, explicitAgentId, cleared: clearResults[1] };
+      return { claim, explicitAgentId, cleared };
     }));
 
     const finalRows = await db
