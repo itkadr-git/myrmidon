@@ -3003,3 +3003,15 @@ export * from "./myrmidon-litellm-workers.js";
 // one deterministic key per (issue, event, head) plus the dedupe outcome and
 // metrics surfaces shared by every continuation producer.
 export * from "./continuation-key.js";
+
+export {
+  INTERACTION_ROUTE_TYPES,
+  interactionRecipientSchema,
+  interactionEscalationStepSchema,
+  interactionRoutingInputSchema,
+  type InteractionRouteType,
+  type InteractionRecipient,
+  type InteractionEscalationStep,
+  type InteractionRoutingInput,
+  type InteractionRoutingMetrics,
+} from "./interaction-routing.js";
