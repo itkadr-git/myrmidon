@@ -13,6 +13,7 @@ import { createMemoryHindsightClient } from "../agent-memory/hindsight-client.js
 import { runLessonDistillPass, type LessonDistillPassResult } from "./service.js";
 import { resolveLessonDistillSettings, type LessonDistillSettings } from "./settings.js";
 import { listCompanyIds } from "./raw.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export interface LessonDistillSweepDeps {
   db: Db;
@@ -74,7 +75,7 @@ export function startLessonDistillSweep(deps: LessonDistillSweepDeps): void {
 
   const periodMs = Math.max(5, settings.periodMinutes) * 60 * 1000;
   void tick();
-  sweep.timer = setInterval(() => void tick(), periodMs);
+  sweep.timer = backgroundInterval(() => void tick(), periodMs);
   sweep.timer.unref();
   logger.info({ periodMinutes: settings.periodMinutes }, "lesson-distill: sweep started");
 }
