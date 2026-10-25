@@ -913,7 +913,10 @@ describeEmbeddedPostgres(
         expect(publications).toHaveLength(1);
         expect(publications[0]!.endpointId).toBe(fixture.endpointId);
         const payload = publications[0]!.payload as SafeChatPublicationPayload;
-        expect(payload.actions).toEqual([]);
+        // Text-only projection: no `actions` field at all, no card, and no
+        // keyboard/callback tokens anywhere in the payload text.
+        expect("actions" in payload).toBe(false);
+        expect(payload.card).toBeUndefined();
         expect(payload.text).toContain("Proceed with the deploy?");
         expect(payload.text).not.toContain("callback_data");
         expect(payload.text).not.toContain("reply_markup");
