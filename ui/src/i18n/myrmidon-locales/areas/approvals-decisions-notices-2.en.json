@@ -55,7 +55,8 @@
         "reopenSuppressed_one": "A message won’t restart this task yet — it stays blocked by the linked task until it is done, then it reopens automatically. Comments still notify {{name}} for questions or triage in the meantime.",
         "reopenSuppressed_other": "A message won’t restart this task yet — it stays blocked by the linked tasks until they are done, then it reopens automatically. Comments still notify {{name}} for questions or triage in the meantime.",
         "reopenSuppressedAssignee_one": "A message won’t restart this task yet — it stays blocked by the linked task until it is done, then it reopens automatically. Comments still notify the assignee for questions or triage in the meantime.",
-        "reopenSuppressedAssignee_other": "A message won’t restart this task yet — it stays blocked by the linked tasks until they are done, then it reopens automatically. Comments still notify the assignee for questions or triage in the meantime."
+        "reopenSuppressedAssignee_other": "A message won’t restart this task yet — it stays blocked by the linked tasks until they are done, then it reopens automatically. Comments still notify the assignee for questions or triage in the meantime.",
+        "blockerMetadata": "{{reason}} · owner {{owner}} · next check {{nextCheck}}"
       },
       "issue-write-denial-notice": {
         "whoCanAct": "Who can act:",

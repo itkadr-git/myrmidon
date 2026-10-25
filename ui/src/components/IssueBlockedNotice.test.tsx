@@ -455,6 +455,13 @@ describe("IssueBlockedNotice", () => {
             priority: "medium",
             assigneeAgentId: "agent-1",
             assigneeUserId: null,
+            blockerMetadata: {
+              blockReason: "dependency",
+              owner: { agentId: "agent-1" },
+              nextCheckAt: "2026-10-25T12:00:00.000Z",
+              timeoutAt: "2026-10-26T12:00:00.000Z",
+              escalationPolicy: "notify_owner",
+            },
           },
         ]}
         allBlockers={[
@@ -501,6 +508,10 @@ describe("IssueBlockedNotice", () => {
     expect(stepLinks[0]).toContain("TASK-9");
     expect(stepLinks[1]).toContain("TASK-10");
     expect(stepLinks[2]).toContain("TASK-11");
+    expect(stepLinks[2]).toContain("dependency");
+    expect(stepLinks[2]).toContain("agent-1");
+    expect(node.querySelector('[data-testid="issue-blocker-metadata"]')?.getAttribute("title"))
+      .toContain("2026-10-25T12:00:00.000Z");
 
     const runningStep = node.querySelectorAll('[data-testid="issue-blocked-notice-steps"] a')[2];
     if (!runningStep) throw new Error("Expected a running live-work step.");

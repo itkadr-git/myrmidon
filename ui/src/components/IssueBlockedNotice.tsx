@@ -169,6 +169,27 @@ function WaitingChipLink({
       <span className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-blue-800 dark:text-blue-200">
         {blocker.title}
       </span>
+      {blocker.blockerMetadata ? (
+        <span
+          data-testid="issue-blocker-metadata"
+          className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-muted-foreground"
+          title={t("area.approvals-decisions-notices-2.issue-blocked-notice.blockerMetadata", {
+            reason: blocker.blockerMetadata.blockReason.replace(/_/g, " "),
+            owner: "agentId" in blocker.blockerMetadata.owner
+              ? blocker.blockerMetadata.owner.agentId
+              : blocker.blockerMetadata.owner.userId,
+            nextCheck: blocker.blockerMetadata.nextCheckAt,
+          })}
+        >
+          {t("area.approvals-decisions-notices-2.issue-blocked-notice.blockerMetadata", {
+            reason: blocker.blockerMetadata.blockReason.replace(/_/g, " "),
+            owner: "agentId" in blocker.blockerMetadata.owner
+              ? blocker.blockerMetadata.owner.agentId.slice(0, 8)
+              : blocker.blockerMetadata.owner.userId.slice(0, 8),
+            nextCheck: blocker.blockerMetadata.nextCheckAt,
+          })}
+        </span>
+      ) : null}
       {running ? (
         <span className="ml-0.5 rounded-full bg-blue-500/15 px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide text-blue-700 dark:bg-blue-400/20 dark:text-blue-200">
           {t("area.approvals-decisions-notices-2.issue-blocked-notice.runningBadge")}

@@ -4323,7 +4323,21 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const issueD = randomUUID();
     await db.insert(issues).values([
       { id: issueA, companyId, identifier: "PAP-1", title: "Issue A", status: "blocked", priority: "medium" },
-      { id: issueB, companyId, identifier: "PAP-2", title: "Issue B", status: "blocked", priority: "medium" },
+      {
+        id: issueB,
+        companyId,
+        identifier: "PAP-2",
+        title: "Issue B",
+        status: "blocked",
+        priority: "medium",
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: randomUUID() },
+          nextCheckAt: "2026-10-25T12:00:00.000Z",
+          timeoutAt: "2026-10-26T12:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      },
       { id: issueC, companyId, identifier: "PAP-3", title: "Issue C", status: "blocked", priority: "medium" },
       { id: issueD, companyId, identifier: "PAP-4", title: "Issue D", status: "todo", priority: "high" },
     ]);
@@ -4339,6 +4353,10 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       id: issueB,
       identifier: "PAP-2",
       title: "Issue B",
+      blockerMetadata: {
+        blockReason: "dependency",
+        nextCheckAt: "2026-10-25T12:00:00.000Z",
+      },
       terminalBlockers: [
         expect.objectContaining({
           id: issueD,
