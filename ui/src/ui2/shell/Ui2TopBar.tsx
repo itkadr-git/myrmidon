@@ -6,7 +6,7 @@
 import { useState } from "react";
 import { CircleAlert, ChevronDown, MessagesSquare, Server, Users, Wallet } from "lucide-react";
 import { useTranslation } from "@/i18n";
-import { useUi2I18n } from "../i18n/Ui2I18n";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
 import { useCompany } from "@/context/CompanyContext";
 import { cn } from "@/lib/utils";
 import { useUi2StatusStrip } from "../useUi2Status";
@@ -61,9 +61,11 @@ function StatusChip({
 
 export function Ui2TopBar() {
   const { t: tApp, i18n } = useTranslation();
-  const { t: tUi2 } = useUi2I18n();
-  const t = (key: string, values?: Record<string, string | number>) =>
-    tUi2(key as never, values) !== key ? tUi2(key as never, values) : tApp(key, values);
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const translated = ui2I18n?.t(key as never, values);
+    return translated && translated !== key ? translated : tApp(key, values);
+  };
   const { selectedCompanyId } = useCompany();
   const strip = useUi2StatusStrip(selectedCompanyId);
   const [paletteOpen, setPaletteOpen] = useState(false);
