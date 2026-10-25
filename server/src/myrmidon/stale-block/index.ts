@@ -48,7 +48,7 @@ export {
 export function createStaleBlockScheduler(input: {
   db: Db;
   track: (work: Promise<unknown>) => void;
-  isEventStillSet?: (companyId: string, eventKey: string) => Promise<boolean>;
+  isEventStillSet?: (companyId: string, eventKey: string, dbOrTx?: Db) => Promise<boolean>;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
 }): () => void {
@@ -56,13 +56,15 @@ export function createStaleBlockScheduler(input: {
     db: input.db,
     isEventStillSet: input.isEventStillSet ?? (async () => true),
     isUnderMaintenance: isInstanceUnderMaintenance,
-    logActivity: async (entry, dbOrTx) => {
+    logActivity: async (entry, dbOrTx, postCommitPublications) => {
       // Loaded lazily with the service layer, for the same partial-mock
       // startup-graph reason as the issue service import.
       const { logActivity } = await import("../../services/activity-log.js");
       // OPE-9074: inside the unblock transaction the write must use that
       // transaction, not the root handle (it would wait on our own row lock).
-      await logActivity(dbOrTx ?? input.db, entry);
+      // Inside the unblock transaction the live event is queued and published
+      // by the sweep only after commit (a rollback must not leak it).
+      await logActivity(dbOrTx ?? input.db, entry, postCommitPublications);
     },
     env: input.env,
     now: input.now,
