@@ -308,7 +308,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
           const released = await releaseClaim(deps.db, {
             claimId: row.id,
             reason: SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED,
-            now,
+            now: new Date(Math.max(now.getTime(), row.claimedAt.getTime())),
           });
           if (!released) continue;
           result.expiredReleased += 1;
