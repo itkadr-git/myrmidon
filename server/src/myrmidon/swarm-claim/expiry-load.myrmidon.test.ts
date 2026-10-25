@@ -2,13 +2,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import { agents, companies, createDb, heartbeatRuns, issueClaims, issues, type Db } from "@myrmidon/db";
+import { agents, companies, createDb, issueClaims, issues, type Db } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { issueService } from "../../services/issues.js";
+import { createSwarmClaimSweeper } from "./sweep.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = await getEmbeddedPostgresTestSupport();
@@ -17,7 +18,6 @@ const taskCount = 200;
 const companyId = randomUUID();
 const ownerId = randomUUID();
 const explicitlyAssignedId = randomUUID();
-const explicitRunId = randomUUID();
 const now = new Date();
 let db: Db;
 let tempDb: EmbeddedPostgresTestDatabase | undefined;
@@ -54,12 +54,6 @@ async function seedFixtures() {
       permissions: {},
     },
   ]);
-  await db.insert(heartbeatRuns).values({
-    id: explicitRunId,
-    companyId,
-    agentId: explicitlyAssignedId,
-    status: "running",
-  });
   await db.insert(issues).values(taskIds.map((id, index) => ({
     id,
     companyId,
@@ -81,6 +75,30 @@ async function seedFixtures() {
     heartbeatAt: new Date(now.getTime() - 60_000),
     expiresAt: new Date(now.getTime() - 1_000),
   })));
+}
+
+async function runExpirySweep(now: Date) {
+  const settings = {
+    getGeneral: async () => ({
+      swarmClaim: {
+        enabled: true,
+        leaseTtlSec: 900,
+        maxActiveTasks: 3,
+        sweepIntervalSec: 1,
+        p0Preemption: true,
+      },
+    }),
+  };
+  const sweeper = createSwarmClaimSweeper({
+    db,
+    settings,
+    hostMemoryGate: () => ({ state: "open" }) as never,
+    hostCpuGate: () => ({ state: "open" }) as never,
+    enqueueWakeup: async () => ({ accepted: true }),
+    castes: async () => [{ key: "engineer", swarmEligible: true, maxActiveTasks: 3 }],
+    intervalMs: 1,
+  });
+  return sweeper.sweep(now);
 }
 
 async function activeClaimCounts(): Promise<number[]> {
@@ -108,8 +126,7 @@ describeDatabase("swarm expiry race under load", () => {
     if (db) {
       await db.delete(issueClaims).where(inArray(issueClaims.issueId, taskIds));
       await db.delete(issues).where(inArray(issues.id, taskIds));
-      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, explicitRunId));
-      await db.delete(agents).where(eq(agents.companyId, companyId));
+        await db.delete(agents).where(eq(agents.companyId, companyId));
       await db.delete(companies).where(eq(companies.id, companyId));
     }
     await tempDb?.cleanup();
@@ -118,19 +135,23 @@ describeDatabase("swarm expiry race under load", () => {
   it("preserves every explicit reassignment against an expiry sweep under load", async () => {
     const startedAt = Date.now();
     const claims = await db
-      .select({ issueId: issueClaims.issueId, id: issueClaims.id, agentId: issueClaims.agentId })
+      .select({ issueId: issueClaims.issueId })
       .from(issueClaims)
       .where(and(inArray(issueClaims.issueId, taskIds), isNull(issueClaims.releasedAt)));
     expect(claims).toHaveLength(taskCount);
 
-    const assignments = claims.map((claim, index) =>
-      issueService(db).update(claim.issueId, {
-        assigneeAgentId: explicitlyAssignedId,
-        companyGuard: companyId,
-        updatedAt: new Date(now.getTime() + index + 1),
+    const assignmentPromise = Promise.all(claims.map((claim, index) =>
+      db.transaction(async (tx) => {
+        const row = await issueService(tx as unknown as Db).update(claim.issueId, {
+          assigneeAgentId: explicitlyAssignedId,
+          companyGuard: companyId,
+          updatedAt: new Date(now.getTime() + index + 1),
+        });
+        return row;
       })
-    );
-    const assignmentResults = await Promise.all(assignments);
+    ));
+    const sweepPromise = runExpirySweep(now);
+    const [assignmentResults] = await Promise.all([assignmentPromise, sweepPromise]);
     const assignedTaskIds = new Set(assignmentResults.flatMap((result, index) => result ? [claims[index]!.issueId] : []));
     expect(assignmentResults.every((result) => result !== null)).toBe(true);
 
