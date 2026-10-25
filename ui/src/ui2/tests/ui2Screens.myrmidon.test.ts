@@ -15,6 +15,8 @@ import { UI2_ROUTE_TABLE } from "../routes";
 import { isUi2RouteElementAPlaceholder } from "../routes";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
 import { getReturnFreeReviewRate } from "../screens/quality/Ui2QualityScreen";
+import { applyCompanyPrefix, toCompanyRelativePath } from "@/lib/company-routes";
+import { UI2_LOCALES, ui2Messages } from "../i18n/locales";
 
 describe("myrmidon(UI2) route table integration", () => {
   it("does not label task returns or run counts as run success", () => {
@@ -40,6 +42,30 @@ describe("myrmidon(UI2) route table integration", () => {
       "settings-system",
       "system",
     ]);
+  });
+
+  it("preserves company prefixes for both routes and activates exactly one phone tab", () => {
+    for (const path of ["/system", "/quality"]) {
+      const prefixed = applyCompanyPrefix(path, "ACME");
+      expect(prefixed).toBe(`/ACME${path}`);
+      expect(toCompanyRelativePath(prefixed)).toBe(path);
+      const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, path));
+      expect(active.map((tab) => tab.to)).toEqual(["/agents/all"]);
+    }
+  });
+
+  it("provides translated screen titles and loading, error, and empty states in both locales", () => {
+    expect(UI2_LOCALES).toEqual(["en", "ru"]);
+    for (const locale of UI2_LOCALES) {
+      const messages = ui2Messages[locale];
+      for (const key of [
+        "ui2.system.title", "ui2.system.noDeploys", "ui2.system.empty",
+        "ui2.quality.title", "ui2.quality.empty", "ui2.quality.emptyHint",
+        "ui2.common.loading", "ui2.common.error", "ui2.common.retry",
+      ] as const) {
+        expect(messages[key], `${locale}:${key}`).toBeTruthy();
+      }
+    }
   });
 
   it("keeps the system and quality routes and navigation singular", () => {
