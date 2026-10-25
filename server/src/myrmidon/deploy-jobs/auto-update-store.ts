@@ -8,7 +8,7 @@
 // site there).
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 import { parseAutoUpdateSettings, type AutoUpdateSettings } from "./auto-update.js";
 
 export const AUTO_UPDATE_GENERAL_KEY = "myrmidonAutoUpdate";

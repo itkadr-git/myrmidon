@@ -10,7 +10,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
 import { logActivity } from "../../services/index.js";
 import { autoUpdateRoutes } from "./auto-update-routes.js";

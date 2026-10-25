@@ -40,7 +40,7 @@ import type { TelegramNotifySettings } from "./settings.js";
 import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 /** Convert the route contract's opaque topic identifiers to Telegram numeric IDs. */
-function toJobSettings(settings: import("@paperclipai/shared").TelegramNotifySettings): TelegramNotifySettings {
+function toJobSettings(settings: import("@myrmidon/shared").TelegramNotifySettings): TelegramNotifySettings {
   const topicId = (value: string | null): number | null => {
     if (value === null) return null;
     const parsed = Number(value);

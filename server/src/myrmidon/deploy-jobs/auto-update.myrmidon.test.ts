@@ -10,7 +10,7 @@
 // their own as well, because the screen shows exactly those reasons.
 
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   canaryPlan,
   canaryVerdict,
