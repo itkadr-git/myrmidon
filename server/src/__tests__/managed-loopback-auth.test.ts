@@ -60,7 +60,7 @@ describeEmbeddedPostgres("managed runtime loopback auth cookies", () => {
       deploymentExposure: "private",
       authBaseUrlMode: "explicit",
       authPublicBaseUrl: publicOrigin,
-      authDisableSignUp: false,
+      authDisableSignUp: true,
     } as Config;
     const auth = createBetterAuthInstance(db, config, [publicOrigin, loopbackOrigin]);
     const credentials = {
@@ -69,12 +69,19 @@ describeEmbeddedPostgres("managed runtime loopback auth cookies", () => {
       password: "correct-horse-battery-staple",
     };
 
+    const bootstrapAuth = createBetterAuthInstance(db, { ...config, authDisableSignUp: false } as Config, [publicOrigin, loopbackOrigin]);
+    const bootstrapSignUp = await bootstrapAuth.handler(authRequest(publicOrigin, "/sign-up/email", {
+      method: "POST",
+      body: JSON.stringify(credentials),
+    }));
+    expect(bootstrapSignUp.status).toBe(200);
+    expect(sessionCookie(bootstrapSignUp)).toMatch(/;\s*Secure(?:;|$)/i);
+
     const signUpResponse = await auth.handler(authRequest(publicOrigin, "/sign-up/email", {
       method: "POST",
       body: JSON.stringify(credentials),
     }));
-    expect(signUpResponse.status).toBe(200);
-    expect(sessionCookie(signUpResponse)).toMatch(/;\s*Secure(?:;|$)/i);
+    expect(signUpResponse.status).toBe(403);
 
     const signInResponse = await auth.handler(authRequest(loopbackOrigin, "/sign-in/email", {
       method: "POST",

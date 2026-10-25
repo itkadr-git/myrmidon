@@ -137,6 +137,9 @@ describe("InvitesSection", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Invite a person");
+    expect(container.textContent).toContain("Create a one-time invite link");
+    expect(container.textContent).toContain("the entered email is saved only as invite defaults and is not verified against the acceptor");
+    expect(container.textContent).not.toContain("Create an account for a person");
     expect(container.textContent).not.toContain("Invite an agent");
     expect(container.textContent).not.toContain("Generate agent onboarding prompt");
     expect(container.textContent).toContain("Invite history");

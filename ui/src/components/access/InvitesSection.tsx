@@ -178,7 +178,7 @@ export function InvitesSection() {
   return (
     <div className="max-w-6xl space-y-8">
       <p className="max-w-3xl text-sm text-muted-foreground">
-        Create an account for a person in this organization. New invite links are copied to your clipboard when they are generated.
+        Create a one-time invite link for someone in this organization. Anyone who accepts the link after signing in receives the selected role; the entered email is saved only as invite defaults and is not verified against the acceptor. The link is copied to your clipboard when generated.
       </p>
 
       <section className="space-y-4 rounded-xl border border-border p-5">
