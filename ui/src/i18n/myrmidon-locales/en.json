@@ -1644,5 +1644,22 @@
     "journalCreated": "Limit created: {{amount}}",
     "journalDeleted": "Limit deleted: {{amount}}",
     "journalUpdated": "Was {{before}}, became {{after}}"
+  },
+  "pluginLabels": {
+    "myrmidon_personal-bot": {
+      "_plugin": "Personal bot",
+      "personal-bot-sidebar": "Personal bot",
+      "personal-bot-page": "Personal bot"
+    },
+    "myrmidon_license-issuer": {
+      "_plugin": "License issuing",
+      "license-issuer-sidebar": "License issuing",
+      "license-issuer-page": "License issuing"
+    },
+    "myrmidon_chatgpt-pool": {
+      "_plugin": "ChatGPT subscriptions",
+      "chatgpt-pool-sidebar": "ChatGPT subscriptions",
+      "chatgpt-pool-page": "ChatGPT subscriptions"
+    }
   }
 }
