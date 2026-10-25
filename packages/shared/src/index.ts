@@ -2999,3 +2999,7 @@ export * from "./myrmidon-agent-exchange-feed.js";
 // count — the stored per-company target, the ceilings the container's shape
 // imposes and the gunicorn signal arithmetic behind a resize.
 export * from "./myrmidon-litellm-workers.js";
+// myrmidon(1.6.6 RECOVERY-FACTORY P1.7, OPE-9133): the typed request/result
+// contract of the recovery factory — how CI, GitHub, myr-ws, devbuild, disk and
+// operator failures ask for a recovery issue with a deterministic dedupe key.
+export * from "./recovery-factory.js";
