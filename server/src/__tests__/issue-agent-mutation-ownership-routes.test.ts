@@ -1833,7 +1833,7 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["board", "board"],
-    ["a company user", { userId: "board-user" }],
+    ["a company user", { userId: "00000000-0000-4000-8000-000000000002" }],
   ])("rejects an agent naming %s as unblock owner", async (_label, unblockOwner) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
 
@@ -1843,7 +1843,7 @@ describe("agent issue mutation checkout ownership", () => {
       blockedByIssueIds: ["22222222-2222-4222-8222-222222222222"],
       blockerMetadata: {
         blockReason: "dependency",
-        owner: { userId: "board-user" },
+        owner: { userId: "00000000-0000-4000-8000-000000000002" },
         externalRef: "ownership-route-test",
         nextCheckAt: "2026-10-20T00:00:00.000Z",
         timeoutAt: "2026-10-21T00:00:00.000Z",
@@ -1859,7 +1859,7 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["board", "board"],
-    ["a company user", { userId: "board-user" }],
+    ["a company user", { userId: "00000000-0000-4000-8000-000000000002" }],
   ])("rejects an agent changing an already-blocked issue owner to %s", async (_label, unblockOwner) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
 
@@ -1881,7 +1881,7 @@ describe("agent issue mutation checkout ownership", () => {
 
     const blockerMetadata = {
       blockReason: "dependency",
-      owner: { userId: "board-user" },
+      owner: { userId: "00000000-0000-4000-8000-000000000002" },
       externalRef: "ownership-route-test",
       nextCheckAt: "2026-10-20T00:00:00.000Z",
       timeoutAt: "2026-10-21T00:00:00.000Z",

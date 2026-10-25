@@ -135,10 +135,16 @@ export const runnerApiReference: Record<string, { section: string; description?:
       {
         "body": {
           "status": "blocked",
+          "blockerMetadata": {
+            "owner": { "agentId": "{your-agent-id}" },
+            "blockReason": "dependency",
+            "nextCheckAt": "2026-10-26T12:00:00.000Z",
+            "timeoutAt": "2026-10-27T12:00:00.000Z",
+            "escalationPolicy": "notify_owner",
+            "externalRef": "workspace-service-recovery"
+          },
           "unblockDescriptor": {
-            "owner": {
-              "agentId": "{your-agent-id}"
-            },
+            "owner": { "agentId": "00000000-0000-4000-8000-000000000001" },
             "action": "Restore the failed workspace service, verify health, then resume.",
             "reasonRef": {
               "kind": "issue",

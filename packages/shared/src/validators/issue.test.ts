@@ -190,7 +190,17 @@ describe("issue validators", () => {
   });
 
   it("validates typed blocker metadata", () => {
-    const valid = {
+    const valid: {
+      status: string;
+      blockerMetadata: {
+        blockReason: string;
+        owner: { agentId: string } | { userId: string };
+        blockedByIssueIds: string[];
+        nextCheckAt: string;
+        timeoutAt: string;
+        escalationPolicy: string;
+      };
+    } = {
       status: "blocked",
       blockerMetadata: {
         blockReason: "dependency",
@@ -201,7 +211,8 @@ describe("issue validators", () => {
         escalationPolicy: "notify_owner",
       },
     };
-    expect(updateIssueSchema.safeParse(valid).success).toBe(true);
+    const parsed = updateIssueSchema.safeParse(valid);
+    expect(parsed.success, JSON.stringify(parsed.success ? null : parsed.error.issues)).toBe(true);
     for (const field of ["blockReason", "owner", "nextCheckAt", "timeoutAt", "escalationPolicy"]) {
       const metadata = { ...valid.blockerMetadata } as Record<string, unknown>;
       delete metadata[field];
@@ -228,12 +239,11 @@ describe("issue validators", () => {
       blockerMetadata: { ...valid.blockerMetadata, owner: { userId: "00000000-0000-4000-8000-000000000002" } },
     }).success).toBe(true);
   });
-  it("requires typed blocker metadata when transitioning into blocked", () => {
-    const result = updateIssueSchema.safeParse({ status: "blocked" });
-    expect(result.success).toBe(false);
+  it("does not apply transition-only blocker requirements in the shared payload schema", () => {
+    expect(updateIssueSchema.safeParse({ status: "blocked" }).success).toBe(true);
   });
 
-  it("rejects incomplete blocked metadata and identifies missing fields", () => {
+  it("rejects incomplete typed blocker metadata", () => {
     const result = updateIssueSchema.safeParse({
       status: "blocked",
       blockerMetadata: {
@@ -256,7 +266,9 @@ describe("issue validators", () => {
     });
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.issues.some((issue) => issue.message.includes("blockReason, owner, nextCheckAt, timeoutAt, and escalationPolicy"))).toBe(true);
+      expect(result.error.issues.some((issue) => issue.path.join(".") === "blockerMetadata.nextCheckAt")).toBe(true);
+      expect(result.error.issues.some((issue) => issue.path.join(".") === "blockerMetadata.timeoutAt")).toBe(true);
+      expect(result.error.issues.some((issue) => issue.path.join(".") === "blockerMetadata.escalationPolicy")).toBe(true);
     }
   });
 

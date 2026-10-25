@@ -14099,7 +14099,9 @@ export function issueRoutes(
       if (
         enteringBlocked &&
         !blockerMetadataRaw.blockedByIssueIds?.length &&
-        !blockerMetadataRaw.externalRef
+        !blockerMetadataRaw.externalRef &&
+        !updateFields.blockedByIssueIds?.length &&
+        !(typeof req.body?.unblockDescriptor?.reasonRef === "object" && req.body.unblockDescriptor.reasonRef !== null)
       ) {
         res.status(422).json({
           error: "Entering blocked requires a blocker reference in blockerMetadata",

@@ -888,36 +888,6 @@ function requireBlockedStatusForUnblockDescriptor(
   }
 }
 
-// myrmidon(STALE-BLOCK): a PATCH that transitions an issue into blocked is
-// valid only if it carries typed blocker metadata. The field stays optional
-// so pre-rollout blocked records remain valid.
-function requireReasonRefForBlockedTransition(
-  value: {
-    status?: unknown;
-    blockerMetadata?: unknown;
-    blockedByIssueIds?: unknown;
-    unblockDescriptor?: unknown;
-  },
-  ctx: z.RefinementCtx,
-) {
-  if (value.status !== "blocked") return;
-  const hasBlockerMetadata = value.blockerMetadata !== undefined && value.blockerMetadata !== null;
-  const hasBlockerReference =
-    (Array.isArray(value.blockedByIssueIds) && value.blockedByIssueIds.length > 0) ||
-    (value.unblockDescriptor !== null && typeof value.unblockDescriptor === "object" &&
-      "reasonRef" in value.unblockDescriptor);
-  const missingFields = [
-    ...(!hasBlockerMetadata ? ["blockerMetadata with blockReason, owner, nextCheckAt, timeoutAt, and escalationPolicy"] : []),
-    ...(!hasBlockerReference ? ["blockedByIssueIds or unblockDescriptor.reasonRef"] : []),
-  ];
-  if (missingFields.length === 0) return;
-  ctx.addIssue({
-    code: z.ZodIssueCode.custom,
-    message: `Entering blocked requires ${missingFields.join(" and ")}`,
-    path: ["blockerMetadata"],
-  });
-}
-
 const createIssueDuplicateGuardSchema = {
   initialPlan: z.string().min(1).max(200000).optional().nullable(),
   idempotencyKey: z.string().trim().min(1).max(255).optional().nullable(),
@@ -1058,10 +1028,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     deferWakeForGoal: z.boolean().optional(),
     hiddenAt: z.string().datetime().nullable().optional(),
     blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
-    // myrmidon(STALE-BLOCK): blocked transitions need a reason reference
-    // (issue | event | date) — enforced on PATCH via the refine below.
-  })
-  .superRefine(requireReasonRefForBlockedTransition);
+  });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<
