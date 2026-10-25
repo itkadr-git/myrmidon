@@ -77,11 +77,19 @@ describeEmbeddedPostgres("managed runtime loopback auth cookies", () => {
     expect(bootstrapSignUp.status).toBe(200);
     expect(sessionCookie(bootstrapSignUp)).toMatch(/;\s*Secure(?:;|$)/i);
 
+    // With sign-up disabled, a brand-new address is rejected with 403, while the
+    // already-registered bootstrap user hits the duplicate-email check (400).
+    const strangerResponse = await auth.handler(authRequest(publicOrigin, "/sign-up/email", {
+      method: "POST",
+      body: JSON.stringify({ ...credentials, email: "stranger@example.test" }),
+    }));
+    expect(strangerResponse.status).toBe(403);
+
     const signUpResponse = await auth.handler(authRequest(publicOrigin, "/sign-up/email", {
       method: "POST",
       body: JSON.stringify(credentials),
     }));
-    expect(signUpResponse.status).toBe(403);
+    expect(signUpResponse.status).toBe(400);
 
     const signInResponse = await auth.handler(authRequest(loopbackOrigin, "/sign-in/email", {
       method: "POST",
