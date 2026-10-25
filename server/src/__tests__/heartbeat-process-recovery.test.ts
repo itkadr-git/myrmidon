@@ -5787,6 +5787,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
+    // This case verifies vendor recovery-action persistence, not L4 policy.
+    vi.stubEnv("MYRMIDON_STRANDED_AUTOPOLICY_ENABLED", "false");
     const { companyId, agentId, admAgentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
@@ -5965,6 +5967,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("escalates an exhausted successful handoff run that still leaves no disposition", async () => {
+    // This case verifies vendor recovery-action persistence, not L4 policy.
+    vi.stubEnv("MYRMIDON_STRANDED_AUTOPOLICY_ENABLED", "false");
     const { companyId, agentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
