@@ -67,10 +67,18 @@ export interface BaselineMetricRow {
   costPerTask: BaselineCostPerTask;
 }
 
+export interface BaselineRunSuccess {
+  succeeded: number;
+  failed: number;
+  total: number;
+  rate: number | null;
+}
+
 export interface BaselineMetricsReport {
   window: BaselineWindow;
   generatedAt: string;
   source: BaselineSource;
+  runSuccess: BaselineRunSuccess;
   byProject: BaselineMetricRow[];
   byRole: BaselineMetricRow[];
 }

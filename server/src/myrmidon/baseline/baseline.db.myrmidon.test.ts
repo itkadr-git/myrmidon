@@ -216,23 +216,24 @@ describeEmbeddedPostgres("myrmidon(1.6-BASELINE) live metrics and the snapshot j
     );
 
     // Three runs for task-1 inside the window, one outside it, one for task-2.
-    const runValues: Array<{ issueId: string; at: string; agentId: string }> = [
-      { issueId: t1.id, at: "2026-09-01T02:00:00Z", agentId: engineer.id },
-      { issueId: t1.id, at: "2026-09-01T06:00:00Z", agentId: engineer.id },
-      { issueId: t1.id, at: "2026-09-01T20:00:00Z", agentId: engineer.id },
-      { issueId: t1.id, at: "2026-08-20T00:00:00Z", agentId: engineer.id },
-      { issueId: t2.id, at: "2026-09-05T05:00:00Z", agentId: reviewer.id },
+    const runValues: Array<{ issueId: string; at: string; agentId: string; status: "succeeded" | "failed" }> = [
+      { issueId: t1.id, at: "2026-09-01T02:00:00Z", agentId: engineer.id, status: "succeeded" },
+      { issueId: t1.id, at: "2026-09-01T06:00:00Z", agentId: engineer.id, status: "failed" },
+      { issueId: t1.id, at: "2026-09-01T20:00:00Z", agentId: engineer.id, status: "succeeded" },
+      { issueId: t1.id, at: "2026-08-20T00:00:00Z", agentId: engineer.id, status: "failed" },
+      { issueId: t2.id, at: "2026-09-05T05:00:00Z", agentId: reviewer.id, status: "failed" },
     ];
     await db.insert(heartbeatRuns).values(
-      runValues.map((run) => ({
+      runValues.map((run, index) => ({
         companyId,
         agentId: run.agentId,
         invocationSource: "automation",
         triggerDetail: "system",
-        status: "succeeded",
+        status: run.status,
+        nativeIssueId: index === 4 ? run.issueId : null,
         startedAt: new Date(run.at),
         finishedAt: new Date(new Date(run.at).getTime() + 60_000),
-        contextSnapshot: { issueId: run.issueId },
+        contextSnapshot: index === 4 ? {} : { issueId: run.issueId },
       })),
     );
 
@@ -289,6 +290,7 @@ describeEmbeddedPostgres("myrmidon(1.6-BASELINE) live metrics and the snapshot j
       .map((cause) => ({ cause, hours: 6 }));
     expect(withProject.blockedHours.topCauses).toEqual(expectedCauses);
     expect(withProject.runsPerTask).toEqual({ total: 4, mean: 2 });
+    expect(metrics.runSuccess).toEqual({ succeeded: 2, failed: 2, total: 4, rate: 0.5 });
     expect(withProject.costPerTask).toEqual({ totalCents: 300, meanCents: 150 });
 
     const withoutProject = metrics.byProject.find((group) => group.key === null)!;
@@ -387,6 +389,7 @@ describeEmbeddedPostgres("myrmidon(1.6-BASELINE) live metrics and the snapshot j
       window: { from: "2026-09-01T00:00:00.000Z", to: "2026-09-15T00:00:00.000Z" },
       generatedAt: "2026-09-15T00:00:00.000Z",
       source: { statusLog: "activity_log", costs: "litellm_cost_events" },
+      runSuccess: { succeeded: 0, failed: 0, total: 0, rate: null },
       byProject: [],
       byRole: [
         {

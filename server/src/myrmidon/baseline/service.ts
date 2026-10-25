@@ -29,6 +29,7 @@ export interface BaselineMetricsResponse {
   window: { from: string; to: string };
   generatedAt: string;
   source: { statusLog: string; costs: BaselineCostSource };
+  runSuccess: { succeeded: number; failed: number; total: number; rate: number | null };
   byProject: BaselineGroupMetrics[];
   byRole: BaselineGroupMetrics[];
 }
@@ -126,6 +127,7 @@ export async function computeBaselineMetrics(
     window: { from: window.from.toISOString(), to: window.to.toISOString() },
     generatedAt: now.toISOString(),
     source: { statusLog: "activity_log", costs: source },
+    runSuccess: metrics.runSuccess,
     byProject: metrics.byProject,
     byRole: metrics.byRole,
   };

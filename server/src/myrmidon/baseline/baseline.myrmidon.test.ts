@@ -119,11 +119,11 @@ function seededInput(): BaselineMetricsInput {
     ],
     transitions: [...T1_TRANSITIONS, ...T2_TRANSITIONS, ...T3_TRANSITIONS, ...T4_TRANSITIONS],
     runs: [
-      { issueId: "t1", at: new Date("2026-09-01T02:00:00Z") },
-      { issueId: "t1", at: new Date("2026-09-01T06:00:00Z") },
-      { issueId: "t1", at: new Date("2026-09-01T20:00:00Z") },
-      { issueId: "t1", at: new Date("2026-08-20T00:00:00Z") }, // outside the window
-      { issueId: "t2", at: new Date("2026-09-05T05:00:00Z") },
+      { issueId: "t1", at: new Date("2026-09-01T02:00:00Z"), status: "succeeded" },
+      { issueId: "t1", at: new Date("2026-09-01T06:00:00Z"), status: "failed" },
+      { issueId: "t1", at: new Date("2026-09-01T20:00:00Z"), status: "succeeded" },
+      { issueId: "t1", at: new Date("2026-08-20T00:00:00Z"), status: "failed" }, // outside the window
+      { issueId: "t2", at: new Date("2026-09-05T05:00:00Z"), status: "failed" },
     ],
     costs: [
       { issueId: "t1", cents: 150, at: new Date("2026-09-01T06:00:00Z") },
@@ -220,7 +220,19 @@ describe("myrmidon(1.6-BASELINE) metrics", () => {
   it("counts runs per task inside the window", () => {
     const group = metrics.byProject.find((g) => g.key === PROJECT_A)!;
     expect(group.runsPerTask).toEqual({ total: 4, mean: 2 });
+    expect(metrics.runSuccess).toEqual({ succeeded: 2, failed: 2, total: 4, rate: 0.5 });
     expect(metrics.byRole.find((g) => g.key === "engineer")!.runsPerTask.total).toBe(3);
+  });
+
+  it("reports unknown run success when there are no terminal outcomes", () => {
+    const input = seededInput();
+    input.runs = input.runs.map((run) => ({ ...run, status: "running" }));
+    expect(computeBaselineMetrics(input, WINDOW).runSuccess).toEqual({
+      succeeded: 0,
+      failed: 0,
+      total: 0,
+      rate: null,
+    });
   });
 
   it("joins cost rows by issue inside the window", () => {

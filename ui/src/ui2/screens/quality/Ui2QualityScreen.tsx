@@ -17,6 +17,8 @@ export function Ui2QualityScreen() {
   const query = useQuery({ queryKey: baselineMetricsKey(selectedCompanyId ?? ""), queryFn: () => baselineApi.metrics(selectedCompanyId!), enabled: Boolean(selectedCompanyId), staleTime: 60_000 });
   if (query.isLoading) return <Ui2Page title={t("ui2.quality.title")}><Ui2Loading label={t("ui2.common.loading")} /></Ui2Page>;
   if (query.isError) return <Ui2Page title={t("ui2.quality.title")}><Ui2ErrorNote message={t("ui2.common.error")} retryLabel={t("ui2.common.retry")} onRetry={() => void query.refetch()} /></Ui2Page>;
+  const runRate = query.data?.runSuccess.rate;
+  const runSuccessLabel = runRate == null ? t("ui2.common.unknown") : `${Math.round(runRate * 100)}%`;
   const projects = query.data?.byProject ?? [];
   const total = projects.reduce((sum, row) => sum + row.tasksCompleted, 0);
   const returned = projects.reduce((sum, row) => sum + row.returnRate.returned, 0);
@@ -25,7 +27,7 @@ export function Ui2QualityScreen() {
   return (
     <Ui2Page title={t("ui2.quality.title")} subtitle={t("ui2.quality.subtitle")}>
       {!projects.length ? <Ui2EmptyState title={t("ui2.quality.empty")} body={t("ui2.quality.emptyHint")} /> : <>
-        <Ui2Section title={t("ui2.quality.runsTitle")}><Ui2Tile label={t("ui2.quality.successRate")} value={t("ui2.common.unknown")} /></Ui2Section>
+        <Ui2Section title={t("ui2.quality.runsTitle")}><Ui2Tile label={t("ui2.quality.successRate")} value={runSuccessLabel} /></Ui2Section>
         <Ui2Tiles>
           <Ui2Tile label={t("ui2.quality.completed")} value={String(total)} />
           <Ui2Tile label={t("ui2.quality.reviewed")} value={String(enteredReview)} />
