@@ -921,6 +921,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runError?: string | null;
     resultJson?: Record<string, unknown> | null;
     monitorNextCheckAt?: Date | null;
+    executionState?: Record<string, unknown> | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1042,6 +1043,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         checkoutRunId: input.status === "in_progress" ? runId : null,
         executionRunId: null,
         monitorNextCheckAt: input.monitorNextCheckAt ?? null,
+        executionState: input.executionState ?? null,
         responsibleUserId: "responsible-user",
         issueNumber: input.activePauseHold ? 2 : 1,
         identifier: `${issuePrefix}-${input.activePauseHold ? 2 : 1}`,
@@ -5829,6 +5831,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(sourceIssue?.status).toBe("blocked");
+    expect(sourceIssue?.unblockDescriptor).toMatchObject({
+      owner: { agentId },
+      reasonRef: { kind: "event", eventKey: `stranded.disposition:${issueId}` },
+    });
+    expect(sourceIssue?.blockerMetadata).toMatchObject({
+      blockReason: "recovery",
+      owner: { agentId },
+      escalationPolicy: "stranded_disposition_chain_v1",
+    });
+    expect(sourceIssue?.blockerMetadata?.nextCheckAt).toEqual(expect.any(String));
+    expect(sourceIssue?.blockerMetadata?.timeoutAt).toEqual(expect.any(String));
     const issueAfterRecovery = sourceIssue;
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual(
       [],
@@ -5853,7 +5866,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           eq(agentWakeupRequests.reason, "issue_unblock_requested"),
         ),
       );
-    expect(dispositionWakeups).toHaveLength(0);
+    expect(dispositionWakeups).toHaveLength(1);
+    expect(dispositionWakeups[0]?.payload).toMatchObject({
+      issueId,
+      action: expect.stringContaining("final status"),
+    });
     const recoveryLivenessEvents = await db
       .select()
       .from(activityLog)
@@ -5861,8 +5878,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((events) => events.filter((event) => event.action.startsWith("recovery.liveness:")));
     expect(recoveryLivenessEvents).toHaveLength(0);
     expect(issueAfterRecovery?.status).toBe("blocked");
-    expect(issueAfterRecovery?.unblockDescriptor).toBeNull();
-    expect(issueAfterRecovery?.blockerMetadata).toBeNull();
 
     const comments = await db
       .select()
@@ -5937,6 +5952,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         status: "in_progress",
         runStatus: "succeeded",
         livenessState: "advanced",
+        executionState: { status: "running" },
       });
     const sourceRunId = randomUUID();
     await db
