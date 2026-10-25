@@ -857,8 +857,18 @@ describeEmbeddedPostgres(
     let tempDb: Awaited<
       ReturnType<typeof startEmbeddedPostgresTestDatabase>
     > | null = null;
+    let previousJwtSecret: string | undefined;
 
     beforeAll(async () => {
+      // myrmidon(OPE-9296): background process-adapter runs dispatched by the
+      // routes under test mint local agent JWTs. With the fail-closed token
+      // policy these runs fail setup when no secret is configured, so this
+      // suite sets the same vitest test secret the heartbeat process suites
+      // use; failure-path behavior is covered by the dedicated auth suites.
+      previousJwtSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+      if (previousJwtSecret === undefined) {
+        process.env.MYRMIDON_AGENT_JWT_SECRET = "vitest-agent-jwt-secret";
+      }
       tempDb = await startEmbeddedPostgresTestDatabase(
         "paperclip-low-trust-red-team-routes-",
       );
@@ -901,6 +911,11 @@ describeEmbeddedPostgres(
 
     afterAll(async () => {
       await tempDb?.cleanup();
+      if (previousJwtSecret === undefined) {
+        delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+      } else {
+        process.env.MYRMIDON_AGENT_JWT_SECRET = previousJwtSecret;
+      }
     });
 
     it("fails closed when a low-trust issue or child has no promotion owner", async () => {
