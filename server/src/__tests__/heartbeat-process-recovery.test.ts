@@ -5790,6 +5790,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // This suite globally disables L4 retries to exercise vendor recovery.
     // Restore the production retry cap only for this exhausted-policy case.
     vi.stubEnv("MYRMIDON_STRANDED_AUTO_RETRIES_PER_DAY", "2");
+    const fixtureNow = new Date();
+    vi.setSystemTime(fixtureNow);
     const { companyId, agentId, admAgentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
@@ -5800,7 +5802,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         executionState: { status: "running" },
       });
     const sourceRunId = randomUUID();
-    const correctiveRunCreatedAt = new Date(Date.now() - 1_000);
+    const correctiveRunCreatedAt = new Date(fixtureNow.getTime() - 1_000);
     await db
       .update(heartbeatRuns)
       .set({
@@ -5816,7 +5818,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           handoffAttempt: 1,
           maxHandoffAttempts: 1,
         },
-        createdAt: new Date(Date.now() - 1_000),
+        createdAt: correctiveRunCreatedAt,
       })
       .where(eq(heartbeatRuns.id, runId));
     await db.insert(heartbeatRuns).values(
