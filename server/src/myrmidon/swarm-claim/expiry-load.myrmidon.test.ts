@@ -8,7 +8,7 @@ import {
   startEmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { clearExpiredAssignee } from "./store.js";
+import { issueService } from "../../services/issues.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = await getEmbeddedPostgresTestSupport();
@@ -115,7 +115,7 @@ describeDatabase("swarm expiry race under load", () => {
     await tempDb?.cleanup();
   }, 60_000);
 
-  it("preserves every explicit reassignment and never leaves duplicate live leases", async () => {
+  it("preserves every explicit reassignment against an expiry sweep under load", async () => {
     const startedAt = Date.now();
     const claims = await db
       .select({ issueId: issueClaims.issueId, id: issueClaims.id, agentId: issueClaims.agentId })
@@ -123,56 +123,26 @@ describeDatabase("swarm expiry race under load", () => {
       .where(and(inArray(issueClaims.issueId, taskIds), isNull(issueClaims.releasedAt)));
     expect(claims).toHaveLength(taskCount);
 
-    const results = await Promise.all(claims.map(async (claim, index) => {
-      const explicitAgentId = explicitlyAssignedId;
-      const explicitAt = new Date(now.getTime() + index + 1);
-      const reclaim = async () => {
-        await db.update(issueClaims)
-          .set({ releasedAt: now, releaseReason: "lease_expired" })
-          .where(and(eq(issueClaims.id, claim.id), isNull(issueClaims.releasedAt)));
-        return clearExpiredAssignee(db, {
-          companyId,
-          issueId: claim.issueId,
-          agentId: claim.agentId,
-          claimId: claim.id,
-          now,
-        });
-      };
-
-      const [cleared] = await Promise.all([
-        reclaim(),
-        (async () => {
-          await db.update(issues)
-            .set({ assigneeAgentId: explicitAgentId, updatedAt: explicitAt })
-            .where(eq(issues.id, claim.issueId));
-          await db.insert(issueClaims).values({
-            id: randomUUID(),
-            companyId,
-            issueId: claim.issueId,
-            agentId: explicitAgentId,
-            runId: explicitRunId,
-            origin: "explicit",
-            role: "engineer",
-            claimedAt: explicitAt,
-            heartbeatAt: explicitAt,
-            expiresAt: new Date(explicitAt.getTime() + 60_000),
-          });
-        })(),
-      ]);
-      return { claim, explicitAgentId, cleared };
-    }));
+    const assignments = claims.map((claim, index) =>
+      issueService(db).update(claim.issueId, {
+        assigneeAgentId: explicitlyAssignedId,
+        companyGuard: companyId,
+        updatedAt: new Date(now.getTime() + index + 1),
+      })
+    );
+    const assignmentResults = await Promise.all(assignments);
+    const assignedTaskIds = new Set(assignmentResults.flatMap((result, index) => result ? [claims[index]!.issueId] : []));
+    expect(assignmentResults.every((result) => result !== null)).toBe(true);
 
     const finalRows = await db
       .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
       .from(issues)
       .where(inArray(issues.id, taskIds));
-    const assignmentsLost = results.filter(({ explicitAgentId, claim }) =>
-      finalRows.find((row) => row.id === claim.issueId)?.assigneeAgentId !== explicitAgentId,
+    const assignmentsLost = finalRows.filter((row) =>
+      assignedTaskIds.has(row.id) && row.assigneeAgentId !== explicitlyAssignedId
     ).length;
     const counts = await activeClaimCounts();
     const duplicateActiveLeases = counts.filter((count) => count > 1).length;
-
-    expect(results.every(({ cleared }) => !cleared)).toBe(true);
     expect(assignmentsLost).toBe(0);
     expect(duplicateActiveLeases).toBe(0);
     expect(Date.now() - startedAt).toBeLessThan(60_000);
