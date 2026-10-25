@@ -363,25 +363,31 @@ describe("pluginLifecycleManager.restartWorker", () => {
       expect(mockRegistry.updateStatus).toHaveBeenCalledWith("plugin-1", expect.objectContaining({ status: "disabled" }));
     });
 
-    it("still enables the plugin when the gateway sync fails", async () => {
+    it("fails closed and removes provider models when the gateway sync fails", async () => {
       const remove = vi.fn().mockResolvedValue(undefined);
       const sync = vi.fn().mockRejectedValue(new Error("litellm down"));
       const { lifecycle } = setup(remove, sync);
       mockRegistry.getById.mockResolvedValue({ ...(withModels as object), status: "disabled" });
-      const result = await lifecycle.enable("plugin-1");
+      mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({
+        ...(withModels as object),
+        ...value,
+      }));
+      await expect(lifecycle.enable("plugin-1")).rejects.toThrow("litellm down");
       expect(sync).toHaveBeenCalled();
-      expect(result.status).toBe("ready");
+      expect(remove).toHaveBeenCalledWith("company-1", expect.objectContaining({ id: "plugin-1" }));
+      expect(mockRegistry.updateStatus).toHaveBeenLastCalledWith("plugin-1", expect.objectContaining({ status: "error" }));
     });
 
-    it("keeps gateway models and key allow-lists during reload, error and upgrade_pending", async () => {
+    it("keeps gateway models during reload and upgrade_pending, but cleans them on error", async () => {
       const remove = vi.fn().mockResolvedValue(undefined);
       const { lifecycle, sync } = setup(remove);
       await lifecycle.restartWorker("plugin-1");
       expect(sync).toHaveBeenCalled();
       await lifecycle.markUpgradePending("plugin-1");
+      expect(remove).not.toHaveBeenCalled();
       mockRegistry.getById.mockResolvedValue(withModels);
       await lifecycle.markError("plugin-1", "worker crashed");
-      expect(remove).not.toHaveBeenCalled();
+      expect(remove).toHaveBeenCalledWith("company-1", expect.objectContaining({ id: "plugin-1" }));
     });
 
     it("removes gateway models on uninstall", async () => {
