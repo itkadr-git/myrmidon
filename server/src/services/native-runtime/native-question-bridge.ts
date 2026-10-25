@@ -21,6 +21,7 @@ import { logger } from "../../middleware/logger.js";
 import { unprocessable } from "../../errors.js";
 import { logActivity } from "../activity-log.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { buildInteractionDedupeKey } from "../interaction-router/dedupe-key.js";
 import { questionResponseDeliveryService } from "../question-response-delivery.js";
 import type { NativeRunStoreBinding } from "./native-run-coordinator-store.js";
 
@@ -75,12 +76,17 @@ function requestIdForInteraction(
   if (!interaction.sourceRunId || !payload?.questionSet) return null;
   const key = interaction.idempotencyKey;
   const expectedPrefix = `${QUESTION_KEY_PREFIX}${interaction.sourceRunId}:`;
-  if (!key?.startsWith(expectedPrefix)) return null;
-  const requestId = key.slice(expectedPrefix.length);
-  if (!REQUEST_ID_PATTERN.test(requestId)) return null;
-  return typeof payload.runtimeRequestId === "string" && payload.runtimeRequestId !== requestId
-    ? null
-    : requestId;
+  if (key?.startsWith(expectedPrefix)) {
+    const requestId = key.slice(expectedPrefix.length);
+    if (!REQUEST_ID_PATTERN.test(requestId)) return null;
+    return typeof payload.runtimeRequestId === "string" && payload.runtimeRequestId !== requestId
+      ? null
+      : requestId;
+  }
+  if (typeof payload.runtimeRequestId === "string" && REQUEST_ID_PATTERN.test(payload.runtimeRequestId)) {
+    return payload.runtimeRequestId;
+  }
+  return null;
 }
 
 function uniqueSyntheticOptionId(existing: readonly string[], preferred: string): string {
@@ -233,7 +239,23 @@ export async function projectNativeRuntimeRequest(input: {
     // bounded regex dialect rather than exposing the server to catastrophic backtracking.
     throw new Error("native_runtime_question_pattern_unsupported");
   }
-  const idempotencyKey = `${QUESTION_KEY_PREFIX}${input.binding.runId}:${request.requestId}`;
+  const explicitKey =
+    typeof (request as { idempotencyKey?: unknown }).idempotencyKey === "string" && (request as { idempotencyKey?: string }).idempotencyKey!.trim().length > 0
+      ? (request as { idempotencyKey?: string }).idempotencyKey!.trim()
+      : typeof (input.event as { idempotencyKey?: unknown }).idempotencyKey === "string" && (input.event as { idempotencyKey?: string }).idempotencyKey!.trim().length > 0
+        ? (input.event as { idempotencyKey?: string }).idempotencyKey!.trim()
+        : typeof (record(input.event.payload) as { idempotencyKey?: unknown } | null)?.idempotencyKey === "string" && (record(input.event.payload) as { idempotencyKey?: string }).idempotencyKey!.trim().length > 0
+          ? (record(input.event.payload) as { idempotencyKey?: string }).idempotencyKey!.trim()
+          : null;
+
+  const idempotencyKey = explicitKey ?? buildInteractionDedupeKey({
+    source: (typeof input.event.source === "string" && input.event.source.trim().length > 0)
+      ? input.event.source.trim()
+      : input.event.sourceKind || "runner",
+    sourceEventId: input.event.sourceEventId || request.requestId,
+    issueId: input.binding.issueId,
+    routeType: "human_input",
+  });
   const existing = await input.db.select({ id: issueThreadInteractions.id })
     .from(issueThreadInteractions)
     .where(and(
