@@ -20,6 +20,7 @@ interface QueueEntry<T> {
   onAbort?: () => void;
 }
 
+/** In-process FIFO scheduler. Callers must pass opaque credential IDs, never secrets. */
 export class ExternalSessionScheduler {
   private readonly active = new Map<string, number>();
   private readonly queues = new Map<string, QueueEntry<unknown>[]>();
