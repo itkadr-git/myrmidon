@@ -10,23 +10,31 @@
 import { logger } from "./middleware/logger.js";
 import { startWorkerProcess } from "./myrmidon/worker-process/index.js";
 
-// Signal handlers first: a SIGTERM during the (long) boot recovery must drain
-// the runtime once it is up, not kill the process with the default disposition.
-const starting = startWorkerProcess();
-
-const shutdown = (signal: "SIGINT" | "SIGTERM") => {
-  void starting
-    .then((worker) => worker.close())
-    .then(() => {
-      logger.info({ signal }, "worker-process: shutdown complete");
-      process.exit(0);
-    })
-    .catch((err) => {
-      logger.error({ err, signal }, "worker-process: shutdown failed");
-      process.exit(1);
-    });
+// One SIGINT/SIGTERM handler per process (OPE-9107): `startServer` installs it
+// and its shutdown is idempotent. This entry only covers the boot window: a
+// signal during the (long) boot recovery is remembered and, once the runtime is
+// up, handed to that same shutdown instead of killing the process mid-boot.
+let pending: "SIGINT" | "SIGTERM" | null = null;
+const early = (signal: "SIGINT" | "SIGTERM") => () => {
+  pending ??= signal;
 };
-process.once("SIGINT", () => shutdown("SIGINT"));
-process.once("SIGTERM", () => shutdown("SIGTERM"));
+const onSigint = early("SIGINT");
+const onSigterm = early("SIGTERM");
+process.once("SIGINT", onSigint);
+process.once("SIGTERM", onSigterm);
 
-await starting;
+const worker = await startWorkerProcess();
+process.off("SIGINT", onSigint);
+process.off("SIGTERM", onSigterm);
+
+if (pending) {
+  const signal = pending;
+  try {
+    await worker.close();
+    logger.info({ signal }, "worker-process: shutdown complete");
+    process.exit(0);
+  } catch (err) {
+    logger.error({ err, signal }, "worker-process: shutdown failed");
+    process.exit(1);
+  }
+}

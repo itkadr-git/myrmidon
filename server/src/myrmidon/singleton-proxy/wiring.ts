@@ -6,11 +6,7 @@
 // single-process board — the default — is untouched.
 
 import { resolveProcessesSettings } from "@myrmidon/shared";
-import {
-  PROCESS_ROLE_WORKER_HOST,
-  PROCESS_ROLE_WORKER_PORT,
-  type ProcessRole,
-} from "../../services/process-role.js";
+import { resolveWorkerLoopbackAddress, type ProcessRole } from "../../services/process-role.js";
 import type { SingletonProxyOptions, SingletonProxyTarget } from "./proxy.js";
 
 /** How long a read of the saved setting is reused: a change made in the UI
@@ -21,10 +17,7 @@ export const SINGLETON_PROXY_SETTING_TTL_MS = 2_000;
  * `MYRMIDON_WORKER_HOST` / `MYRMIDON_WORKER_PORT` into every api child; without
  * them (the supervisor fork of PROCS-1.2) it is the worker's loopback listener. */
 export function resolveSingletonProxyTarget(env: NodeJS.ProcessEnv = process.env): SingletonProxyTarget {
-  const host = (env.MYRMIDON_WORKER_HOST ?? "").trim() || PROCESS_ROLE_WORKER_HOST;
-  const rawPort = Number((env.MYRMIDON_WORKER_PORT ?? "").trim());
-  const port = Number.isInteger(rawPort) && rawPort >= 1024 && rawPort <= 65535 ? rawPort : PROCESS_ROLE_WORKER_PORT;
-  return { host, port };
+  return resolveWorkerLoopbackAddress(env);
 }
 
 export function singletonProxyOptionsFor(

@@ -10,8 +10,7 @@
 //   * the worker's registry row is readable through the api process — the
 //     row is the cross-process write→read proof (written by the worker,
 //     served by the api);
-//   * SIGTERM drains the worker cleanly (the heartbeat executor quiesces,
-//     the listener closes) and the api process never notices.
+//   * a double SIGTERM drains the worker once (OPE-9107) and the api never notices;
 
 import fs from "node:fs";
 import os from "node:os";
@@ -146,25 +145,81 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
     expect(body.role).toBe("worker");
   }, 60_000);
 
-  it("scenario 3: SIGTERM drains the worker while the api keeps serving", async () => {
-    const stopPromise = stopApiProcess(worker!, { signal: "SIGTERM", timeoutMs: 60_000 });
+  it("scenario 3: an api process forwards a single route to the worker (OPE-9107)", async () => {
+    // Wait until the worker has finished its boot recovery (scenario 1 does the
+    // same; repeated here so the scenario stands alone).
+    let ready = await requestApi(worker!.baseUrl, "/internal/ready");
+    for (let attempt = 0; ready.status !== 200 && attempt < 240; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      ready = await requestApi(worker!.baseUrl, "/internal/ready");
+    }
+    expect(ready.status).toBe(200);
+    // A single route is answered by the worker: not the proxy's own 503, and the
+    // same status as asking the worker's board app directly.
+    const viaApi = await fetch(new URL("/api/companies/c1/attention", api!.baseUrl));
+    const direct = await fetch(new URL("/api/companies/c1/attention", worker!.baseUrl));
+    expect(viaApi.status, `via api: ${await viaApi.text()}`).not.toBe(503);
+    expect(viaApi.status).toBe(direct.status);
+    // An ordinary route stays local to the api process.
+    expect((await requestApi(api!.baseUrl, "/api/health")).status).toBe(200);
+  }, 240_000);
+
+  it("scenario 4: a double SIGTERM drains the worker once, the api answers 503 + Retry-After for single routes (OPE-9107)", async () => {
+    const exited = new Promise<void>((resolve) => worker!.child.once("exit", () => resolve()));
+    // The second signal goes out only once the worker has logged the start of
+    // its shutdown, straight from the stdout/stderr stream (no fixed sleep):
+    // by then the first shutdown is running and the second one must join it.
+    const shutdownStarted = new Promise<number>((resolve, reject) => {
+      let seen = "";
+      const timer = setTimeout(
+        () => reject(new Error(`no "shutdown started" line from the worker:\n${worker!.output()}`)),
+        60_000,
+      );
+      const onData = (chunk: Buffer) => {
+        seen = `${seen}${chunk.toString("utf8")}`.slice(-2_000);
+        const match = /shutdown started \(runtime pid (\d+)\)/.exec(seen);
+        if (!match) return;
+        clearTimeout(timer);
+        worker!.child.stdout?.off("data", onData);
+        worker!.child.stderr?.off("data", onData);
+        resolve(Number(match[1]));
+      };
+      worker!.child.stdout?.on("data", onData);
+      worker!.child.stderr?.on("data", onData);
+    });
+    worker!.child.kill("SIGTERM");
+    // The child handle is the tsx launcher; the second signal must reach the
+    // board runtime itself, whose pid the log line carries.
+    const runtimePid = await shutdownStarted;
+    process.kill(runtimePid, "SIGTERM");
     const duringDrain = await Promise.all(
       Array.from({ length: 4 }, async () => await requestApi(api!.baseUrl, "/api/health")),
     );
     for (const response of duringDrain) {
       expect(response.status).toBe(200);
     }
-    const stop = await stopPromise;
-    expect(
-      stop.drained,
-      `worker did not leave within its drain budget:\n${worker!.output()}`,
-    ).toBe(true);
-    expect(stop.code).toBe(0);
+    await Promise.race([
+      exited,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`worker did not leave:\n${worker!.output()}`)), 60_000)),
+    ]);
+    // Clean exit (not killed by the second signal) and one shutdown run: the
+    // second signal joined the first.
+    expect(worker!.child.signalCode, worker!.output()).toBeNull();
+    expect(worker!.child.exitCode, worker!.output()).toBe(0);
+    const joined = worker!.output().split("shutdown already in progress; joining it").length - 1;
+    expect(joined, worker!.output()).toBe(1);
+    const started = worker!.output().split("myrmidon(OPE-9107): shutdown started (runtime pid").length - 1;
+    expect(started, worker!.output()).toBe(1);
+    expect(worker!.output()).not.toMatch(/shutdown failed/);
 
     // The worker's port is closed ...
     await expect(requestApi(worker!.baseUrl, "/internal/ready")).rejects.toThrow();
-    // ... while the api still serves the shared database.
-    const health = await requestApi(api!.baseUrl, "/api/health");
-    expect(health.status).toBe(200);
+    // ... a single route on the api process is a 503 with Retry-After, never a
+    // local answer ...
+    const single = await fetch(new URL("/api/companies/c1/attention", api!.baseUrl));
+    expect(single.status).toBe(503);
+    expect(single.headers.get("retry-after")).toBe("2");
+    // ... and the api still serves its own routes from the shared database.
+    expect((await requestApi(api!.baseUrl, "/api/health")).status).toBe(200);
   }, 180_000);
 });

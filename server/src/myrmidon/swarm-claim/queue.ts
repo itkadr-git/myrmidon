@@ -15,6 +15,7 @@
 // open children, tasks mid-decomposition — copied from `idle-pickup.ts` rather
 // than re-derived, so "ready" means one thing on both paths.
 
+import { blockerOpenSql } from "../blocker-resolved.js";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@myrmidon/db";
 import {
@@ -174,7 +175,7 @@ export function roleQueueRows(
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status <> 'done'
+            and ${blockerOpenSql('blocker.status')}
         )`,
         // Not a container: an issue with an open child is a plan, the children are the work.
         sql`not exists (
@@ -295,7 +296,7 @@ export async function listUnassignedQueue(
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status <> 'done'
+            and ${blockerOpenSql('blocker.status')}
         )`,
         sql`not exists (
           select 1
