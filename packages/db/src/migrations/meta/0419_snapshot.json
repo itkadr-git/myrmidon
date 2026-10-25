@@ -57790,22 +57790,19 @@
           "name": "company_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true,
-          "default": ""
+          "notNull": true
         },
         "key": {
           "name": "key",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": ""
+          "notNull": true
         },
         "issue_id": {
           "name": "issue_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true,
-          "default": ""
+          "notNull": true
         },
         "created_at": {
           "name": "created_at",
@@ -57818,8 +57815,7 @@
           "name": "expires_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true,
-          "default": ""
+          "notNull": true
         }
       },
       "indexes": {

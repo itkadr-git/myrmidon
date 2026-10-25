@@ -37,12 +37,12 @@ describe("issue continuation keys migration", () => {
     // The embedded test database has already applied 0419; rewind it before
     // exercising this migration directly, including its idempotent second run.
     await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${hash}`;
-    // The shared migration setup created these indexes; dropping the table
-    // does not remove indexes if they remain attached via a partial cleanup.
-    await sql`DROP INDEX IF EXISTS issue_continuation_keys_company_key_uq`;
-    await sql`DROP INDEX IF EXISTS issue_continuation_keys_expires_at_idx`;
     await sql`DROP TABLE IF EXISTS issue_continuation_keys`;
     const statements = migration.split("--> statement-breakpoint").filter((s) => s.trim());
+    // The test database helper has applied 0419 before returning, so remove
+    // the table after rewinding its history. Then execute it twice as the
+    // idempotency assertion; production CREATE TABLE and indexes use IF NOT EXISTS.
+    await sql`DROP TABLE IF EXISTS issue_continuation_keys CASCADE`;
     await sql.begin(async (tx) => { for (const statement of statements) await tx.unsafe(statement); });
     await sql.begin(async (tx) => { for (const statement of statements) await tx.unsafe(statement); });
     await sql`INSERT INTO issue_continuation_keys (company_id, key, issue_id, expires_at) VALUES (${companyId}, 'same-key', ${issueId}, now() + interval '1 day')`;
