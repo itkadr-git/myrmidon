@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 
-import { createElement } from "react";
+import { createElement, act } from "react";
 import { createRoot } from "react-dom/client";
-import { act } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PluginPage } from "./PluginPage";
