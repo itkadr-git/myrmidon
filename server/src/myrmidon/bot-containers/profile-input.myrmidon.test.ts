@@ -1094,16 +1094,19 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
         typescript: {
           initialization_options: {
             disableAutomaticTypingAcquisition: true,
-            maxTsServerMemory: 1024,
+            maxTsServerMemory: 384,
             tsserver: { useSyntaxServer: "never" },
           },
         },
       },
+      excludeRoots: ["**/node_modules/**", "**/dist/**"],
     });
     const yaml = configYaml({ role: "engineer" });
     expect(yaml).toContain("lsp:");
     expect(yaml).toContain("idle_timeout: 120");
-    expect(yaml).toContain("maxTsServerMemory: 1024");
+    expect(yaml).toContain("maxTsServerMemory: 384");
+    expect(yaml).toContain('"**/node_modules/**"');
+    expect(yaml).toContain('"**/dist/**"');
     expect(yaml).toContain('useSyntaxServer: "never"');
     expect(yaml).toContain("disableAutomaticTypingAcquisition: true");
   });
