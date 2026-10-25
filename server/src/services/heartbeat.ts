@@ -1,4 +1,5 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
+import { blockerOpenSql } from "../myrmidon/blocker-resolved.js";
 import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
 import { resolveRunnerAcpxCodexAuthEnv } from "../myrmidon/secret-settings/runner-environment.js";
 import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
@@ -13594,7 +13595,7 @@ export function heartbeatService(
                 from issues blocker
                 where blocker.id = ${issueRelations.issueId}
                   and blocker.company_id = ${issue.companyId}
-                  and blocker.status not in ('done', 'cancelled')
+                  and ${blockerOpenSql('blocker.status')}
                   and blocker.hidden_at is null
               )`,
               ),

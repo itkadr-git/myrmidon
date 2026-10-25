@@ -16,6 +16,7 @@
 // `processes.singletonProxy` is on (default on). With the setting off, or in
 // the single-process board (role `all`), the middleware is not mounted /
 // passes through and the request is served locally, as before.
+// An unreadable setting with no cached value counts as on (fail-closed).
 //
 // The worker being down is a 503 with Retry-After, never a local fallback: the
 // api process has none of the state these routes need (no plugin workers, no
@@ -55,17 +56,42 @@ const HOP_BY_HOP = new Set([
 
 export const SINGLETON_PROXY_DEFAULT_TIMEOUT_MS = 120_000;
 
-function forwardedHeaders(req: Request): http.OutgoingHttpHeaders {
+/** Names listed in the `Connection` header are hop-by-hop too (RFC 9110
+ * section 7.6.1): `Connection: close, x-foo` removes `x-foo` as well. */
+function connectionTokens(value: string | string[] | undefined): Set<string> {
+  const tokens = new Set<string>();
+  if (value === undefined) return tokens;
+  for (const part of Array.isArray(value) ? value : [value]) {
+    for (const token of part.split(",")) {
+      const name = token.trim().toLowerCase();
+      if (name) tokens.add(name);
+    }
+  }
+  return tokens;
+}
+
+/** Copies headers minus the hop-by-hop set and anything `Connection` names. */
+export function stripHopByHop(
+  source: http.IncomingHttpHeaders,
+): http.OutgoingHttpHeaders {
+  const listed = connectionTokens(source.connection);
   const headers: http.OutgoingHttpHeaders = {};
-  for (const [name, value] of Object.entries(req.headers)) {
-    if (HOP_BY_HOP.has(name) || value === undefined) continue;
+  for (const [name, value] of Object.entries(source)) {
+    if (HOP_BY_HOP.has(name) || listed.has(name) || value === undefined) continue;
     headers[name] = value;
   }
-  const peer = req.socket.remoteAddress;
-  if (peer) {
-    const prior = req.headers["x-forwarded-for"];
-    headers["x-forwarded-for"] = prior ? `${Array.isArray(prior) ? prior.join(", ") : prior}, ${peer}` : peer;
-  }
+  return headers;
+}
+
+function forwardedHeaders(req: Request): http.OutgoingHttpHeaders {
+  const headers = stripHopByHop(req.headers);
+  // The client address as this api process resolves it under its own trust
+  // proxy policy (TRUST_PROXY), not a chain extended by this hop: the worker
+  // sees the api process as its immediate peer, so with the same TRUST_PROXY
+  // its `req.ip` is the client too, and an untrusted caller cannot plant
+  // addresses through its own X-Forwarded-For (OPE-9107).
+  if (req.ip) headers["x-forwarded-for"] = req.ip;
+  else delete headers["x-forwarded-for"];
   return headers;
 }
 
@@ -89,11 +115,14 @@ export function singletonProxyMiddleware(options: SingletonProxyOptions): Reques
     const group = singletonRouteGroup(req.method, req.path.slice("/api".length));
     if (!group) return next();
 
-    let on = false;
+    // Fail closed (OPE-9107): when the setting cannot be read and nothing is
+    // cached, the answer is unknown — forward to the worker (the default is
+    // on), never serve a singleton route locally on an api process.
+    let on = true;
     try {
       on = await options.enabled();
     } catch (err) {
-      logger.warn({ err }, "singleton proxy: setting read failed, serving locally");
+      logger.warn({ err }, "singleton proxy: setting unknown, forwarding to the worker");
     }
     if (!on) return next();
 
@@ -108,11 +137,7 @@ export function singletonProxyMiddleware(options: SingletonProxyOptions): Reques
       },
       (upstreamRes) => {
         recordSingletonProxy(group, "proxied");
-        const headers: http.OutgoingHttpHeaders = {};
-        for (const [name, value] of Object.entries(upstreamRes.headers)) {
-          if (HOP_BY_HOP.has(name) || value === undefined) continue;
-          headers[name] = value;
-        }
+        const headers = stripHopByHop(upstreamRes.headers);
         res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.statusMessage, headers);
         upstreamRes.pipe(res);
         upstreamRes.on("error", () => res.destroy());

@@ -4653,6 +4653,16 @@ export function recoveryService(
       return issuesSvc.update(input.issue.id, {
         status: "blocked",
         blockedByIssueIds: blockerIds,
+        // myrmidon(BLOCKED-REASON): no open blocker means the board-owned
+        // recovery disposition is the reason; name it.
+        ...(blockerIds.length === 0
+          ? {
+              unblockDescriptor: recoveryLivenessDescriptor(
+                input.issue.id,
+                "Inspect the failed run evidence, restore a live execution path or record the manual resolution, then move the issue out of blocked.",
+              ),
+            }
+          : {}),
       });
     }
     if (!recoveryAction) return input.issue;
@@ -4709,6 +4719,16 @@ export function recoveryService(
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
+      // myrmidon(BLOCKED-REASON): without an open blocker the board-owned
+      // recovery action is the reason; name it so the block is never reasonless.
+      ...(blockerIds.length === 0
+        ? {
+            unblockDescriptor: recoveryLivenessDescriptor(
+              input.issue.id,
+              "Inspect the recovery action for this issue, restore a live execution path or record the manual resolution, then move the issue out of blocked.",
+            ),
+          }
+        : {}),
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
