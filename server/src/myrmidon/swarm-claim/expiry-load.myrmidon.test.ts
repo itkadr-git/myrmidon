@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import { agents, companies, createDb, issueClaims, issues, type Db } from "@myrmidon/db";
+import { agents, companies, createDb, heartbeatRuns, issueClaims, issues, type Db } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -17,6 +17,7 @@ const taskCount = 200;
 const companyId = randomUUID();
 const ownerId = randomUUID();
 const explicitlyAssignedId = randomUUID();
+const explicitRunId = randomUUID();
 const now = new Date();
 let db: Db;
 let tempDb: EmbeddedPostgresTestDatabase | undefined;
@@ -53,6 +54,12 @@ async function seedFixtures() {
       permissions: {},
     },
   ]);
+  await db.insert(heartbeatRuns).values({
+    id: explicitRunId,
+    companyId,
+    agentId: explicitlyAssignedId,
+    status: "running",
+  });
   await db.insert(issues).values(taskIds.map((id, index) => ({
     id,
     companyId,
@@ -101,6 +108,7 @@ describeDatabase("swarm expiry race under load", () => {
     if (db) {
       await db.delete(issueClaims).where(inArray(issueClaims.issueId, taskIds));
       await db.delete(issues).where(inArray(issues.id, taskIds));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, explicitRunId));
       await db.delete(agents).where(eq(agents.companyId, companyId));
       await db.delete(companies).where(eq(companies.id, companyId));
     }
@@ -134,21 +142,21 @@ describeDatabase("swarm expiry race under load", () => {
       const [cleared] = await Promise.all([
         reclaim(),
         (async () => {
+          await db.update(issues)
+            .set({ assigneeAgentId: explicitAgentId, updatedAt: explicitAt })
+            .where(eq(issues.id, claim.issueId));
           await db.insert(issueClaims).values({
             id: randomUUID(),
             companyId,
             issueId: claim.issueId,
             agentId: explicitAgentId,
-            runId: randomUUID(),
+            runId: explicitRunId,
             origin: "explicit",
             role: "engineer",
             claimedAt: explicitAt,
             heartbeatAt: explicitAt,
             expiresAt: new Date(explicitAt.getTime() + 60_000),
           });
-          await db.update(issues)
-            .set({ assigneeAgentId: explicitAgentId, updatedAt: explicitAt })
-            .where(eq(issues.id, claim.issueId));
         })(),
       ]);
       return { claim, explicitAgentId, cleared };
