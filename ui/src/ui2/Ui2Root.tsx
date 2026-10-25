@@ -6,16 +6,9 @@
 import type { ReactNode } from "react";
 import { i18n } from "@/i18n";
 import { Ui2Shell } from "./shell/Ui2Shell";
-import { PluginLauncherProvider } from "@/plugins/launchers";
 
 export function Ui2Root({ children }: { children?: ReactNode }) {
   // UI-0b mounts its provider here (ONE line, first merge wins), e.g.:
   // <Ui2LanguageProvider><Ui2Shell>{children}</Ui2Shell></Ui2LanguageProvider>
-  return (
-    <PluginLauncherProvider>
-      <Ui2Shell lang={i18n.language?.toLowerCase().startsWith("ru") ? "ru" : undefined}>
-        {children}
-      </Ui2Shell>
-    </PluginLauncherProvider>
-  );
+  return <Ui2Shell lang={i18n.language?.toLowerCase().startsWith("ru") ? "ru" : undefined}>{children}</Ui2Shell>;
 }

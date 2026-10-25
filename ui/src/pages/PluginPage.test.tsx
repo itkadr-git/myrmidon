@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
+import { createElement } from "react";
 import { createRoot } from "react-dom/client";
+import { act } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PluginPage } from "./PluginPage";
@@ -40,16 +42,30 @@ vi.mock("@/lib/router", () => ({
   useParams: () => mockParams,
 }));
 
+const mockPluginSlots = vi.hoisted(() => ({ usePluginSlots: vi.fn(), slots: [] as unknown[] }));
+const mockPluginLaunchers = vi.hoisted(() => ({ usePluginLaunchers: vi.fn(), launchers: [] as unknown[] }));
+
 vi.mock("@/plugins/slots", async () => {
   const actual = await vi.importActual<typeof import("@/plugins/slots")>("@/plugins/slots");
   return {
     resolveRouteSidebarSlot: actual.resolveRouteSidebarSlot,
-    usePluginSlots: () => ({ slots: [] }),
+    usePluginSlots: (...args: unknown[]) => {
+      mockPluginSlots.usePluginSlots(...args);
+      return { slots: mockPluginSlots.slots };
+    },
     PluginSlotMount: ({ slot }: { slot: { displayName: string } }) => (
       <div data-testid="plugin-slot-mount">{slot.displayName}</div>
     ),
   };
 });
+
+vi.mock("@/plugins/launchers", () => ({
+  PluginLauncherOutlet: () => null,
+  usePluginLaunchers: (...args: unknown[]) => {
+    mockPluginLaunchers.usePluginLaunchers(...args);
+    return { launchers: mockPluginLaunchers.launchers };
+  },
+}));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -116,12 +132,31 @@ describe("PluginPage", () => {
     mockParams.pluginId = undefined;
     mockParams.pluginRoutePath = undefined;
     mockParams["*"] = undefined;
+    mockPluginSlots.usePluginSlots.mockClear();
   });
 
   afterEach(() => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("loads page slots on a cold direct plugin URL", async () => {
+    mockParams.pluginRoutePath = "wiki";
+    const contribution = pageContribution();
+    const pageSlot = { id: "wiki-page", pluginKey: contribution.pluginKey, displayName: "Wiki", type: "page" };
+    mockPluginSlots.slots = [pageSlot];
+    mockPluginsApi.listUiContributions.mockResolvedValue([{ ...contribution, slots: [pageSlot] }]);
+
+    const root = await renderPage(container);
+
+    expect(mockPluginSlots.usePluginSlots).toHaveBeenCalledWith({
+      slotTypes: ["page"],
+      companyId: "company-1",
+      enabled: true,
+    });
+    expect(mockPluginsApi.listUiContributions).toHaveBeenCalled();
+    await act(async () => root.unmount());
   });
 
   it("renders the breadcrumb and Back button on a legacy plugin route (no routeSidebar)", async () => {

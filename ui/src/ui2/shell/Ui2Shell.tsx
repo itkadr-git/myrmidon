@@ -7,6 +7,8 @@
 // the outlet renders the routes. Settings routes get the internal 10-section
 // side panel (screen-map §3.1); the `lang` prop keys the RU display-font
 // switch (UI-0b contract).
+// OPE-9380: PluginLauncherProvider wraps the tree ONCE, in Ui2Root — this
+// component must not nest a second one.
 import type { ReactNode } from "react";
 import { Outlet, useLocation } from "@/lib/router";
 import { useIsMobileViewport } from "../useIsMobileViewport";
@@ -14,7 +16,6 @@ import { Ui2Rail } from "./Ui2Rail";
 import { Ui2TopBar } from "./Ui2TopBar";
 import { Ui2SettingsSidebar } from "./Ui2SettingsSidebar";
 import { Ui2PhoneHeader, Ui2PhoneTabBar } from "./Ui2PhoneNav";
-import { PluginLauncherProvider } from "@/plugins/launchers";
 
 function isSettingsPath(pathname: string): boolean {
   const segment = pathname.split("/").filter(Boolean).slice(1)[0]?.toLowerCase();
@@ -22,14 +23,6 @@ function isSettingsPath(pathname: string): boolean {
 }
 
 export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: string }) {
-  return (
-    <PluginLauncherProvider>
-      <Ui2ShellContent lang={lang}>{children}</Ui2ShellContent>
-    </PluginLauncherProvider>
-  );
-}
-
-function Ui2ShellContent({ children, lang }: { children?: ReactNode; lang?: string }) {
   const isMobile = useIsMobileViewport();
   const location = useLocation();
   const content = children ?? <Outlet />;
@@ -46,7 +39,7 @@ function Ui2ShellContent({ children, lang }: { children?: ReactNode; lang?: stri
         {...rootProps}
       >
         <Ui2PhoneHeader />
-        <main style={{ flex: 1, minWidth: 0, paddingBottom: "var(--myr-phone-tabbar-height)" }}>
+        <main style={{ flex: 1, minWidth: 0, paddingBottom: "calc(var(--myr-phone-tabbar-height) + var(--myr-phone-plugins-height, 0px))" }}>
           {content}
         </main>
         <div style={{ position: "fixed", bottom: 0, left: 0, right: 0 }}>

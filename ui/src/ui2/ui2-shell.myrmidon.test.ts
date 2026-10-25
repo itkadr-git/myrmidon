@@ -116,6 +116,14 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     expect(root.type).toBe((await import("@/plugins/launchers")).PluginLauncherProvider);
   });
 
+  it("does not wrap Ui2Shell in a second PluginLauncherProvider", () => {
+    const rootSource = readFileSync(join(UI_SRC, "ui2", "Ui2Root.tsx"), "utf8");
+    const shellSource = readFileSync(join(UI_SRC, "ui2", "shell", "Ui2Shell.tsx"), "utf8");
+    expect(rootSource.match(/<PluginLauncherProvider/g)).toHaveLength(1);
+    expect(shellSource.match(/<PluginLauncherProvider/g)).toBeNull();
+    expect(shellSource.match(/PluginLauncherProvider/g)).toHaveLength(1); // explanatory comment only
+  });
+
   it("the theme keys the RU display-font switch on [lang=ru] and keeps the wordmark font", () => {
     const css = readFileSync(join(UI_SRC, "ui2", "theme", "tokens.css"), "utf8");
     expect(css).toMatch(/\.myr-ui2\[lang="ru"\]/);

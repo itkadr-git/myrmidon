@@ -9,7 +9,7 @@ import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmid
 import { UI2_PHONE_TABS } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
 import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
-import { PluginLauncherOutlet } from "@/plugins/launchers";
+import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 import { useCompany } from "@/context/CompanyContext";
 
 function PhoneTab({
@@ -132,40 +132,56 @@ export function Ui2PhoneTabBar() {
   const attentionCount = useUi2AttentionCount();
   const { selectedCompany } = useCompany();
   const { slots: pluginSlots } = usePluginSlots({ slotTypes: ["sidebar"], companyId: selectedCompany?.id });
+  const { launchers } = usePluginLaunchers({ placementZones: ["sidebar"], companyId: selectedCompany?.id, enabled: !!selectedCompany?.id });
+  const hasPlugins = pluginSlots.length > 0 || launchers.length > 0;
 
   return (
-    <div>
-    <nav
-      className="myr-ui2__phone-tabbar"
-      style={{
-        height: "var(--myr-phone-tabbar-height)",
-        display: "grid",
-        gridTemplateColumns: `repeat(${UI2_PHONE_TABS.length}, 1fr)`,
-        background: "var(--myr-surface-raised)",
-        borderTop: "1px solid var(--myr-hairline)",
-      }}
-      aria-label={t("ui2.nav.railLabel", { defaultValue: "Main navigation" })}
+    <div
+      className="myr-ui2__phone-navigation"
+      style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "var(--myr-surface-raised)", borderTop: "1px solid var(--myr-hairline)", ["--myr-phone-plugins-height" as string]: hasPlugins ? "112px" : "0px" }}
     >
-      {UI2_PHONE_TABS.map((tab) => {
-        const active = isUi2PhoneTabActive(tab.to, location.pathname);
-        return (
-          <PhoneTab
-            key={tab.labelKey}
-            to={tab.to}
-            icon={tab.icon}
-            label={t(tab.labelKey)}
-            active={active}
-            badge={tab.badge === "attention" ? (attentionCount ?? undefined) : undefined}
-          />
-        );
-      })}
-    </nav>
-    {pluginSlots.map((slot) => <PluginSlotMount key={`${slot.pluginKey}:${slot.id}`} slot={slot} context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }} />)}
-    {selectedCompany ? <PluginLauncherOutlet
-      placementZones={["sidebar"]}
-      context={{ companyId: selectedCompany.id, companyPrefix: selectedCompany.issuePrefix }}
-      className="hidden"
-    /> : null}
+      <nav
+        className="myr-ui2__phone-tabbar"
+        style={{
+          height: "var(--myr-phone-tabbar-height)",
+          display: "grid",
+          gridTemplateColumns: `repeat(${UI2_PHONE_TABS.length}, 1fr)`,
+          background: "var(--myr-surface-raised)",
+          borderTop: "1px solid var(--myr-hairline)",
+        }}
+        aria-label={t("ui2.nav.railLabel", { defaultValue: "Main navigation" })}
+      >
+        {UI2_PHONE_TABS.map((tab) => {
+          const active = isUi2PhoneTabActive(tab.to, location.pathname);
+          return (
+            <PhoneTab
+              key={tab.labelKey}
+              to={tab.to}
+              icon={tab.icon}
+              label={t(tab.labelKey)}
+              active={active}
+              badge={tab.badge === "attention" ? (attentionCount ?? undefined) : undefined}
+            />
+          );
+        })}
+      </nav>
+      {hasPlugins ? (
+        <section aria-label={t("ui2.nav.group.plugins", { defaultValue: "Plugins" })} style={{ borderTop: "1px solid var(--myr-hairline)", padding: "6px 8px", maxHeight: 112, overflowY: "auto" }}>
+          <div style={{ fontSize: "var(--myr-text-nano)", fontWeight: 700, color: "var(--myr-ink-muted)", padding: "2px 4px 6px" }}>
+            {t("ui2.nav.group.plugins", { defaultValue: "Plugins" })}
+          </div>
+          {pluginSlots.map((slot) => (
+            <PluginSlotMount key={`${slot.pluginKey}:${slot.id}`} slot={slot} context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }} />
+          ))}
+          {selectedCompany ? (
+            <PluginLauncherOutlet
+              placementZones={["sidebar"]}
+              context={{ companyId: selectedCompany.id, companyPrefix: selectedCompany.issuePrefix }}
+              itemClassName="myr-ui2__phone-plugin-link"
+            />
+          ) : null}
+        </section>
+      ) : null}
     </div>
   );
 }

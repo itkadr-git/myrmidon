@@ -61,6 +61,7 @@ export function PluginPage() {
     queryFn: () => pluginsApi.listUiContributions(),
     enabled: !!resolvedCompanyId && (!!pluginId || !!pluginRoutePath),
   });
+  // This slot lookup loads the plugin UI module even when a plugin route is opened directly.
   usePluginSlots({ slotTypes: ["page"], companyId: resolvedCompanyId, enabled: !!resolvedCompanyId && (!!pluginId || !!pluginRoutePath) });
 
   const pageSlot = useMemo(() => {
