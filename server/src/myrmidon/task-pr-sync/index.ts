@@ -7,6 +7,7 @@
 import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import type { PullRequestMergeDetailsResolver } from "../../services/github-pull-request-merge.js";
+import { readTaskPrSyncSettings } from "./settings.js";
 import { createTaskPrSyncSweep } from "./sweep.js";
 
 export { shouldSuppressRunForIssue } from "./guard.js";
