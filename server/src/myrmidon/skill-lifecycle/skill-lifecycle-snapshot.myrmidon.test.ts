@@ -57,6 +57,9 @@ function passCache(): SkillLifecycleReadCache & { calls: () => number } {
       const cached = values.get(key);
       if (cached) return cached as Promise<T>;
       calls += 1;
+      // Start the read and register the promise SYNCHRONOUSLY, before any
+      // await: concurrent resolveDelivery calls of the same pass must share
+      // one in-flight read (this is the production cache's contract).
       const started = read();
       values.set(key, started);
       return started;
@@ -82,7 +85,9 @@ describe("myrmidon(OPE-9408): resolveDelivery shared snapshot", () => {
     const cache = passCache();
 
     const deliveries = await Promise.all(AGENTS.map((agentId) => service.resolveDelivery(COMPANY, agentId, cache)));
-    expect(cache.calls()).toBe(1);
+    // Two DISTINCT cached reads per pass: the git/catalogue snapshot and the
+    // company pilot set. Each must be computed exactly once for all agents.
+    expect(cache.calls()).toBe(2);
     expect(listEntries).toHaveBeenCalledTimes(1);
     expect(listSkillsSpy).toHaveBeenCalledTimes(1);
     expect(listRecordsSpy).toHaveBeenCalledTimes(1);
