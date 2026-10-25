@@ -89,8 +89,16 @@ export interface FleetSiteManageDeps {
   botCard(botKey: string): Promise<BotCardView | null>;
   actOnBot(botKey: string, action: SiteBotAction): Promise<void>;
   botLogs(companyId: string, siteName: string, botKey: string): Promise<string>;
+  /**
+   * The end of validity of the client certificate as it is in the company secret NOW (null when the
+   * secret cannot be read as a certificate). The secret is the source of truth: a rotated certificate
+   * lifts the block without anyone editing the site.
+   */
+  readClientCertNotAfter?(site: FleetSite): Promise<Date | null>;
+  /** Writes the freshly read end of validity back to the registry row (best effort, for other readers). */
+  storeClientCertNotAfter?(site: FleetSite, notAfter: Date): Promise<void>;
   now?: () => number;
-  log?: { warn?(fields: Record<string, unknown>, message: string): void };
+  log?: { warn?(fields: Record<string, unknown>, message: string): void; info?(fields: Record<string, unknown>, message: string): void };
 }
 
 export interface SiteOverviewRow extends FleetSiteBadge {
@@ -118,6 +126,37 @@ function certExpired(site: Pick<FleetSite, "clientCertNotAfter">, nowMs: number)
 export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
   const router = Router();
   const nowMs = () => (deps.now ?? Date.now)();
+  /** Last seen expired/valid state per site: the alert is logged when the state changes, not on every poll. */
+  const lastExpired = new Map<string, boolean>();
+
+  function noteCert(site: FleetSite, expired: boolean): void {
+    const before = lastExpired.get(site.id);
+    if (before === expired) return;
+    lastExpired.set(site.id, expired);
+    if (expired) deps.log?.warn?.({ site: site.name }, "remote site client certificate expired");
+    else if (before === true) deps.log?.info?.({ site: site.name }, "remote site client certificate renewed: the block is lifted");
+  }
+
+  /** The site with its key lifetime re-read from the secret; the stored value is the fallback when the secret cannot be read. */
+  async function fresh(site: FleetSite): Promise<FleetSite> {
+    let current = site;
+    if (deps.readClientCertNotAfter) {
+      try {
+        const read = await deps.readClientCertNotAfter(site);
+        if (read) {
+          const stored = site.clientCertNotAfter ? new Date(site.clientCertNotAfter).getTime() : null;
+          if (stored !== read.getTime()) {
+            current = { ...site, clientCertNotAfter: read };
+            await deps.storeClientCertNotAfter?.(site, read).catch(() => {});
+          }
+        }
+      } catch {
+        // keep the stored value
+      }
+    }
+    noteCert(current, certExpired(current, nowMs()));
+    return current;
+  }
 
   function companyFromQuery(req: Request, admin: boolean): string {
     assertBoard(req);
@@ -137,21 +176,17 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
   async function requireSite(companyId: string, name: string): Promise<FleetSite> {
     const site = await deps.getSite(companyId, name);
     if (!site) throw notFound(`Site "${name}" not found`);
-    return site;
+    return fresh(site);
   }
 
   /** The refusal for a site whose client certificate has expired: logged as an alert, answered 409. */
   function refuseExpired(site: FleetSite, what: string): never {
-    deps.log?.warn?.(
-      { site: site.name, clientCertNotAfter: site.clientCertNotAfter ? new Date(site.clientCertNotAfter).toISOString() : null, what },
-      "remote site client certificate expired: the call is refused",
-    );
     throw conflict(`Site "${site.name}": the board's client certificate expired; rotate it before ${what}`);
   }
 
   async function handleOverview(req: Request, res: Response): Promise<void> {
     const companyId = companyFromQuery(req, false);
-    const sites = await deps.listSites(companyId);
+    const sites = await Promise.all((await deps.listSites(companyId)).map((site) => fresh(site)));
     const rows: SiteOverviewRow[] = await Promise.all(
       sites.map(async (site) => {
         const load = await deps.siteLoad(companyId, site.name).catch(() => ({ bots: 0, cpus: 0, memoryMb: 0, driftCount: null }) as SiteLoad);
@@ -162,9 +197,6 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
           health: site.health ?? null,
         });
         const expired = certExpired(site, nowMs());
-        if (expired) {
-          deps.log?.warn?.({ site: site.name }, "remote site client certificate expired");
-        }
         return {
           ...badge,
           url: site.url,
@@ -268,9 +300,9 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
     if (admin) assertCompanyAdmin(req, card.companyId);
     else assertCompanyAccess(req, card.companyId);
     if (!card.host) throw conflict(`Bot "${botKey}" runs on the board host, not on a remote site`);
-    const site = await deps.getSite(card.companyId, card.host);
-    if (!site) throw notFound(`Site "${card.host}" of bot "${botKey}" is not in the registry`);
-    return { botKey, companyId: card.companyId, site };
+    const row = await deps.getSite(card.companyId, card.host);
+    if (!row) throw notFound(`Site "${card.host}" of bot "${botKey}" is not in the registry`);
+    return { botKey, companyId: card.companyId, site: await fresh(row) };
   }
 
   function botAction(action: SiteBotAction) {

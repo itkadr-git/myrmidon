@@ -14,7 +14,9 @@ import { createFleetMoveContext } from "./fleet-move-wiring.js";
 import { fleetSiteManageRoutes, type BotCardView, type SiteBotView, type SiteLoad } from "./fleet-site-manage-routes.js";
 import { getBotContainerRuntime } from "./routes-wiring.js";
 import { siteHealthStore } from "./site-health-store.js";
-import { getFleetSite, listFleetSites, updateFleetSite } from "./site-registry.js";
+import { getFleetSite, listFleetSites, parseTlsCredentials, updateFleetSite } from "./site-registry.js";
+import { X509Certificate } from "node:crypto";
+import { secretService } from "../../services/index.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** How long one bot's answer from its site is waited for on the screen. */
@@ -47,6 +49,7 @@ function positive(value: unknown, fallback: number): number {
 export function myrmidonFleetSiteManageRoutes(db: Db): Router {
   const moves = createFleetMoveContext(db);
   const health = siteHealthStore(db);
+  const secrets = secretService(db);
 
   /** The enabled container bots whose card puts them on `siteName`. */
   async function cardsOnSite(companyId: string, siteName: string) {
@@ -89,6 +92,25 @@ export function myrmidonFleetSiteManageRoutes(db: Db): Router {
     getSite: (companyId, name) => getFleetSite(db, companyId, name),
     updateSite: (companyId, name, patch) => updateFleetSite(db, companyId, name, patch),
     setStatus: (siteId, from, to) => health.setStatus(siteId, from, to),
+
+    // The secret is the source of truth for the key's lifetime (same lookup order as the client manager).
+    async readClientCertNotAfter(site) {
+      const ref = site.clientCertSecretKey;
+      if (!ref) return null;
+      for (const name of [ref, `${ref}-cert`, `${ref}_cert`]) {
+        const secret = await secrets.getByName(site.companyId, name);
+        if (!secret) continue;
+        const raw = await secrets.resolveSecretValue(site.companyId, secret.id, "latest");
+        const cert = raw ? parseTlsCredentials(raw).cert : undefined;
+        if (!cert) continue;
+        const end = new Date(new X509Certificate(cert).validTo);
+        return Number.isNaN(end.getTime()) ? null : end;
+      }
+      return null;
+    },
+    async storeClientCertNotAfter(site, notAfter) {
+      await updateFleetSite(db, site.companyId, site.name, { clientCertNotAfter: notAfter });
+    },
 
     async markOperatorState(siteId) {
       await db

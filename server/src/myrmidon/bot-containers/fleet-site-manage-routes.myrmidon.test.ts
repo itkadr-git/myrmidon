@@ -63,8 +63,10 @@ function harness(rows: FleetSite[] = [site()], card: BotCardView | null = { comp
     botCard: vi.fn(async () => card),
     actOnBot: vi.fn(async (_botKey: string, _action: string) => {}),
     botLogs: vi.fn(async (_companyId: string, _site: string, _botKey: string) => "l1\nl2\nl3\nl4\n"),
+    readClientCertNotAfter: vi.fn(async (_site: FleetSite): Promise<Date | null> => null),
+    storeClientCertNotAfter: vi.fn(async (_site: FleetSite, _notAfter: Date) => {}),
     now: () => NOW,
-    log: { warn: vi.fn() },
+    log: { warn: vi.fn(), info: vi.fn() },
   } satisfies FleetSiteManageDeps;
   const app = express();
   app.use((req, _res, next) => {
@@ -105,6 +107,13 @@ describe("fleet site overview", () => {
     const res = await request(app).get(`/myrmidon/fleet/sites/overview${q}`).expect(200);
     expect(res.body.sites[0].certExpired).toBe(true);
     expect(deps.log.warn).toHaveBeenCalled();
+  });
+
+  it("logs the expired key once when the state changes, not on every poll", async () => {
+    const { app, deps } = harness([site({ clientCertNotAfter: new Date(NOW - 1000) })]);
+    for (let i = 0; i < 3; i += 1) await request(app).get(`/myrmidon/fleet/sites/overview${q}`).expect(200);
+    await request(app).post(`/myrmidon/fleet/bots/${BOT}/restart`).expect(409);
+    expect(deps.log.warn).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the row when the load cannot be read", async () => {
@@ -189,6 +198,33 @@ describe("fleet site bots, patch, drain and resume", () => {
     await request(app).post(`/myrmidon/fleet/sites/myr-vm1/drain${q}`).set("x-test-actor", "member").expect(403);
     await request(app).post(`/myrmidon/fleet/sites/myr-vm1/resume${q}`).set("x-test-actor", "other").expect(403);
     expect(deps.setStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("rotating the client certificate", () => {
+  it("lifts the block: expired site -> secret rotated -> restart, logs and resume work without editing the site", async () => {
+    const { app, deps } = harness([site({ status: "draining", clientCertNotAfter: new Date(NOW - 1000) })]);
+    await request(app).post(`/myrmidon/fleet/bots/${BOT}/restart`).expect(409);
+    await request(app).get(`/myrmidon/fleet/bots/${BOT}/logs`).expect(409);
+    await request(app).post(`/myrmidon/fleet/sites/myr-vm1/resume${q}`).expect(409);
+    const rotated = new Date(NOW + 30 * 86_400_000);
+    deps.readClientCertNotAfter.mockResolvedValue(rotated);
+    await request(app).post(`/myrmidon/fleet/bots/${BOT}/restart`).expect(200);
+    await request(app).get(`/myrmidon/fleet/bots/${BOT}/logs`).expect(200);
+    await request(app).post(`/myrmidon/fleet/sites/myr-vm1/resume${q}`).expect(200);
+    expect(deps.storeClientCertNotAfter).toHaveBeenCalledWith(expect.objectContaining({ name: "myr-vm1" }), rotated);
+    expect(deps.log.info).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the renewed lifetime in the overview, and keeps the stored value when the secret cannot be read", async () => {
+    const { app, deps } = harness([site({ clientCertNotAfter: new Date(NOW - 1000) })]);
+    deps.readClientCertNotAfter.mockResolvedValueOnce(new Date(NOW + 5 * 86_400_000));
+    const ok = await request(app).get(`/myrmidon/fleet/sites/overview${q}`).expect(200);
+    expect(ok.body.sites[0]).toMatchObject({ certExpired: false, clientCertNotAfter: new Date(NOW + 5 * 86_400_000).toISOString() });
+    const other = harness([site({ clientCertNotAfter: new Date(NOW - 1000) })]);
+    other.deps.readClientCertNotAfter.mockRejectedValueOnce(new Error("secret store down"));
+    const kept = await request(other.app).get(`/myrmidon/fleet/sites/overview${q}`).expect(200);
+    expect(kept.body.sites[0].certExpired).toBe(true);
   });
 });
 
