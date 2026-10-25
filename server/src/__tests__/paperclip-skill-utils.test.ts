@@ -273,11 +273,12 @@ describe("paperclip skill utils", () => {
     expect(skillBody).toContain("Generated Artifacts and Work Products");
     expect(skillBody).toContain("references/artifacts.md");
     expect(skillBody).not.toContain("/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments");
+    expect(skillBody).not.toContain("/api/companies/$MYRMIDON_COMPANY_ID/issues/$MYRMIDON_TASK_ID/attachments");
     expect(referenceBody).toContain("Generated Artifacts and Work Products");
     expect(referenceBody).toContain("scripts/paperclip-upload-artifact.sh");
     expect(referenceBody).toContain("POST");
-    expect(referenceBody).toContain("/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments");
-    expect(referenceBody).toContain("/api/issues/$PAPERCLIP_TASK_ID/work-products");
+    expect(referenceBody).toContain("/api/companies/$MYRMIDON_COMPANY_ID/issues/$MYRMIDON_TASK_ID/attachments");
+    expect(referenceBody).toContain("/api/issues/$MYRMIDON_TASK_ID/work-products");
     expect(referenceBody).toContain('--chat-comment "Here is the requested image."');
     expect(referenceBody).toContain("not proof of external");
     expect(referenceBody).toContain("--retry-unknown-upload");
