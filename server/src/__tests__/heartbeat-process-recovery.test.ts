@@ -1078,7 +1078,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
     }
 
-    return { companyId, agentId, runId, wakeupRequestId, issueId, rootIssueId };
+    return { companyId, agentId, admAgentId, runId, wakeupRequestId, issueId, rootIssueId };
   }
 
   async function bindChatConversation(input: {
@@ -5787,7 +5787,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
-    const { companyId, agentId, runId, issueId } =
+    const { companyId, agentId, admAgentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
         runStatus: "failed",
