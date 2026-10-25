@@ -97,8 +97,11 @@ describe("site-registry — createFleetClientManager", () => {
         id: "site-2",
         companyId: "company-1",
         name: "local-fleet",
-        url: "http://127.0.0.1:9100",
+        url: "https://127.0.0.1:9100",
         tokenSecret: "local-token",
+        caCert: "-----BEGIN CERTIFICATE-----\nFAKE LOCAL CA\n-----END CERTIFICATE-----",
+        clientCert: "-----BEGIN CERTIFICATE-----\nFAKE LOCAL CLIENT\n-----END CERTIFICATE-----",
+        clientCertSecretKey: "local-fleet-client-key",
         status: "active",
         capacity: { maxCpus: 4, maxMemoryMb: 16384 },
         profile: {},
@@ -131,6 +134,7 @@ describe("site-registry — createFleetClientManager", () => {
       "myr-vm1-client-key": "fake-client-key",
       "myr-vm1-client-cert": "fake-client-cert",
       "local-token": "local-token-val-456",
+      "local-fleet-client-key": "-----BEGIN PRIVATE KEY-----\nFAKE LOCAL KEY\n-----END PRIVATE KEY-----",
     };
 
     const createdConfigs: FleetdDriverConfig[] = [];
@@ -162,10 +166,10 @@ describe("site-registry — createFleetClientManager", () => {
     expect(agentOptions.key).toContain("fake-client-key");
     expect(agentOptions.rejectUnauthorized).toBe(true);
 
-    const httpConfig = createdConfigs.find((c) => c.baseUrl === "http://127.0.0.1:9100");
-    expect(httpConfig).toBeDefined();
-    expect(httpConfig!.token).toBe("local-token-val-456");
-    expect(httpConfig!.httpsAgent).toBeUndefined();
+    const localConfig = createdConfigs.find((c) => c.baseUrl === "https://127.0.0.1:9100");
+    expect(localConfig).toBeDefined();
+    expect(localConfig!.token).toBe("local-token-val-456");
+    expect(localConfig!.httpsAgent).toBeDefined();
 
     manager.close();
     expect(manager.getClients().size).toBe(0);
@@ -359,6 +363,9 @@ describe("site-registry — hot-reload and client lifecycle", () => {
       name: "myr-vm1",
       url: "https://myr-vm1.example.test:9443",
       tokenSecret: "tok",
+      caCert: "-----BEGIN CERTIFICATE-----\nFAKE CA\n-----END CERTIFICATE-----",
+      clientCert: "-----BEGIN CERTIFICATE-----\nFAKE CLIENT CERT\n-----END CERTIFICATE-----",
+      clientCertSecretKey: "client-key",
       status: "active",
       capacity: { maxCpus: 2, maxMemoryMb: 8192 },
       profile: {},
@@ -374,7 +381,7 @@ describe("site-registry — hot-reload and client lifecycle", () => {
     const fakeDb = { select: () => ({ from }) } as any;
     const manager = createFleetClientManager({
       db: fakeDb,
-      readCompanySecret: async () => "tok-1",
+      readCompanySecret: async (companyId, name) => name === "client-key" ? "fake-client-key" : `secret:${companyId}:${name}`,
       createDriver: (c) => fakeDriver(c.baseUrl),
       refreshTtlMs: 60_000,
     });
@@ -396,7 +403,7 @@ describe("site-registry — hot-reload and client lifecycle", () => {
     const from = vi.fn(() => Promise.resolve([mkSite()]));
     const manager = createFleetClientManager({
       db: { select: () => ({ from }) } as any,
-      readCompanySecret: async () => "tok-1",
+      readCompanySecret: async (companyId, name) => name === "client-key" ? "fake-client-key" : `secret:${companyId}:${name}`,
       createDriver: (c) => fakeDriver(c.baseUrl),
       refreshTtlMs: 30_000,
       now: () => t,
@@ -414,7 +421,7 @@ describe("site-registry — hot-reload and client lifecycle", () => {
     const created: FleetdDriverConfig[] = [];
     const manager = createFleetClientManager({
       db: { select: () => ({ from: () => Promise.resolve([mkSite()]) }) } as any,
-      readCompanySecret: async () => value,
+      readCompanySecret: async (_companyId, name) => name === "client-key" ? "fake-client-key" : value,
       createDriver: (c) => {
         created.push(c);
         return fakeDriver(c.baseUrl);
@@ -457,7 +464,7 @@ describe("site-registry — hot-reload and client lifecycle", () => {
     const created: FleetdDriverConfig[] = [];
     const manager = createFleetClientManager({
       db: { select: () => ({ from: () => Promise.resolve(sites) }) } as any,
-      readCompanySecret: async () => "tok-1",
+      readCompanySecret: async (_companyId, name) => name === "client-key" ? "fake-client-key" : "tok-1",
       createDriver: (c) => {
         created.push(c);
         return fakeDriver(c.baseUrl);

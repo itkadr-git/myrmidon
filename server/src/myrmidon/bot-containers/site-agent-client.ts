@@ -19,7 +19,6 @@ export interface SiteAgentMemoryClient extends SiteAgentClient {
   /** POST /v1/memory/export: the hindsight transfer archive (zip) of the site's work-memory bank. */
   memoryExport(botKey: string): Promise<Buffer>;
   /** GET /v1/bots/{botKey}/logs: the tail of the bot container's log, already redacted by the site-agent. */
-  botLogs(botKey: string): Promise<string>;
   logs(botKey: string, tail?: number): Promise<string>;
 }
 
@@ -51,52 +50,6 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
   }
 
   return {
-    async botLogs(botKey: string): Promise<string> {
-      return new Promise<string>((resolve, reject) => {
-        const req = client.request(
-          {
-            protocol: url.protocol,
-            hostname: url.hostname,
-            port: url.port ? Number(url.port) : isHttps ? 443 : 80,
-            path: `/v1/bots/${encodeURIComponent(botKey)}/logs`,
-            method: "GET",
-            headers: { ...baseHeaders(), Accept: "application/json" },
-            agent: config.agent,
-          },
-          (res) => {
-            const chunks: Buffer[] = [];
-            let size = 0;
-            res.on("data", (chunk: Buffer) => {
-              size += chunk.length;
-              if (size > MAX_BOT_LOGS_BYTES) {
-                req.destroy(new Error("Site-agent bot log is larger than the allowed size"));
-                return;
-              }
-              chunks.push(chunk);
-            });
-            res.on("error", reject);
-            res.on("aborted", () => reject(new Error(`Site-agent logs ${botKey} broke off`)));
-            res.on("end", () => {
-              const text = Buffer.concat(chunks).toString("utf8");
-              if (res.statusCode && res.statusCode >= 400) {
-                reject(new Error(`Site-agent logs ${botKey} failed with ${res.statusCode}: ${text.slice(0, 300)}`));
-                return;
-              }
-              try {
-                const parsed = JSON.parse(text) as { logs?: unknown };
-                resolve(typeof parsed.logs === "string" ? parsed.logs : "");
-              } catch {
-                reject(new Error(`Site-agent logs ${botKey}: the answer is not the logs contract`));
-              }
-            });
-          },
-        );
-        req.setTimeout(BOT_LOGS_TIMEOUT_MS, () => req.destroy(new Error("Site-agent logs timed out")));
-        req.on("error", reject);
-        req.end();
-      });
-    },
-
     async memoryExport(botKey: string): Promise<Buffer> {
       return new Promise<Buffer>((resolve, reject) => {
         const body = Buffer.from(JSON.stringify({ botKey }));
@@ -250,16 +203,17 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
       });
     },
 
-    async botLogs(botKey: string): Promise<string> {
+    async logs(botKey: string, tail = 100): Promise<string> {
+      if (!Number.isInteger(tail) || tail < 1 || tail > 1000) throw new Error("Site-agent logs tail must be between 1 and 1000");
       return new Promise<string>((resolve, reject) => {
         const req = request(
           {
             protocol: url.protocol,
             hostname: url.hostname,
             port: url.port ? Number(url.port) : isHttps ? 443 : 80,
-            path: `/v1/bots/${encodeURIComponent(botKey)}/logs`,
+            path: `/v1/bots/${encodeURIComponent(botKey)}/logs?tail=${tail}`,
             method: "GET",
-            headers: { ...baseHeaders(), Accept: "application/json" },
+            headers: { ...baseHeaders(), Accept: "text/plain" },
           },
           (res) => {
             const chunks: Buffer[] = [];
@@ -295,23 +249,6 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
       });
     },
 
-    async logs(botKey: string, tail = 100): Promise<string> {
-      if (!Number.isInteger(tail) || tail < 1 || tail > 1000) throw new Error("site-agent logs tail must be between 1 and 1000");
-      return new Promise<string>((resolve, reject) => {
-        const path = `/v1/bots/${encodeURIComponent(botKey)}/logs?tail=${tail}`;
-        const req = request({ protocol: url.protocol, hostname: url.hostname, port: url.port ? Number(url.port) : isHttps ? 443 : 80, path, method: "GET", headers: { ...baseHeaders(), Accept: "text/plain" } }, (res) => {
-          const chunks: Buffer[] = [];
-          res.on("data", (chunk: Buffer) => chunks.push(chunk));
-          res.on("error", reject);
-          res.on("end", () => {
-            const text = Buffer.concat(chunks).toString("utf8");
-            if (res.statusCode && res.statusCode >= 400) reject(new Error(`Site-agent logs ${botKey} failed with ${res.statusCode}: ${text.slice(0, 300)}`));
-            else resolve(text);
-          });
-        });
-        req.on("error", reject);
-        req.end();
-      });
-    },
+
   };
 }

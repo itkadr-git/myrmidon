@@ -62,7 +62,7 @@ describe("site-agent client memoryExport", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ logs: "line 1\nline 2\n" }));
     });
-    const logs = await createSiteAgentClient({ baseUrl, token: "tok" }).botLogs("work-qa");
+    const logs = await createSiteAgentClient({ baseUrl, token: "tok" }).logs("work-qa");
     expect(logs).toBe("line 1\nline 2\n");
     expect(seen).toEqual({ method: "GET", url: "/v1/bots/work-qa/logs", auth: "Bearer tok" });
   });

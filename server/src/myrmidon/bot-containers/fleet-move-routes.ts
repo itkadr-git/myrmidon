@@ -25,7 +25,7 @@ export interface FleetMoveRoutesDeps {
   service: Pick<FleetMoveService, "startMove" | "getLatestMove">;
   /** The company that owns the bot, or null when there is no such bot. */
   botCompanyId: (botKey: string) => Promise<string | null>;
-  getSiteLogs?: (siteName: string, companyId: string, botKey: string, tail?: number) => Promise<string>;
+  getSiteLogs: (siteName: string, companyId: string, botKey: string, tail?: number) => Promise<string>;
 }
 
 export function fleetMoveRoutes(deps: FleetMoveRoutesDeps): Router {

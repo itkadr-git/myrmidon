@@ -553,6 +553,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
         if (clients.has(key) && clientFingerprints.get(key) === existingFingerprint) continue;
         const fingerprint = existingFingerprint;
         const mtls = site.url.startsWith("https:") && Boolean(site.caCert && clientCert && clientKey);
+        const requiresMtls = site.url.startsWith("https:") || Boolean(site.caCert || clientCert || clientKey);
         let httpsAgent: https.Agent | undefined;
         if (site.url.startsWith("https:") || site.caCert || clientKey || clientCert) {
           httpsAgent = new https.Agent({
@@ -563,7 +564,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
           });
         }
 
-        if (!mtls) {
+        if (requiresMtls && !mtls) {
           httpsAgent?.destroy();
           logWarn({ companyId: site.companyId, site: site.name }, `fleet site requires HTTPS, CA certificate, client certificate, and client key; client not (re)built`);
           continue;

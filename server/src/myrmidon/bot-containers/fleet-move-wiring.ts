@@ -51,7 +51,6 @@ export interface FleetMoveContext {
   botSpec(botKey: string): Promise<BotContainerSpec>;
   /** The site-agent client of a site, for the company that owns the bot (site-agent calls outside the driver contract). */
   siteAgentClient(siteName: string, companyId: string): Promise<SiteAgentMemoryClient>;
-  getSiteLogs(siteName: string, companyId: string, botKey: string, tail?: number): Promise<string>;
 }
 
 export function createFleetMoveContext(db: Db, clientManager?: FleetClientManager): FleetMoveContext {
@@ -181,11 +180,6 @@ export function createFleetMoveContext(db: Db, clientManager?: FleetClientManage
       return createSiteAgentClient({ baseUrl: transport.baseUrl, token: transport.token, agent: transport.agent, requireMtls: true });
     },
 
-    async getSiteLogs(siteName: string, companyId: string, botKey: string, tail = 100): Promise<string> {
-      const transport = await resolveSiteHost(siteName, companyId);
-      const client = createSiteAgentClient({ baseUrl: transport.baseUrl, token: transport.token, agent: transport.agent, requireMtls: true });
-      return client.logs(botKey, tail);
-    },
 
     async getSiteUrl(siteName: string, companyId: string): Promise<string> {
       return (await resolveSiteHost(siteName, companyId)).baseUrl;
@@ -229,5 +223,5 @@ export function createFleetMoveContext(db: Db, clientManager?: FleetClientManage
 
 export function myrmidonFleetMoveRoutes(db: Db, clientManager?: FleetClientManager): Router {
   const ctx = createFleetMoveContext(db, clientManager);
-  return fleetMoveRoutes({ service: ctx.service, botCompanyId: ctx.botCompanyId, getSiteLogs: (site, companyId, botKey, tail) => ctx.getSiteLogs(site, companyId, botKey, tail) });
+  return fleetMoveRoutes({ service: ctx.service, botCompanyId: ctx.botCompanyId, getSiteLogs: (site, companyId, botKey, tail) => ctx.siteAgentClient(site, companyId).then((client) => client.logs(botKey, tail)) });
 }
