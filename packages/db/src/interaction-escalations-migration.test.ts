@@ -35,11 +35,7 @@ describeEmbedded("interaction escalation migration", () => {
     await sql`INSERT INTO "issue_thread_interactions" ("id", "company_id", "issue_id", "kind", "payload") VALUES (${interactionId}, ${companyId}, ${issueId}, 'ask_user_questions', '{}')`;
 
     await applyPendingMigrations(database.connectionString);
-    await sql.begin(async (tx: postgres.TransactionSql) => {
-      for (const statement of migrationSql.split("--> statement-breakpoint")) {
-        if (statement.trim()) await tx.unsafe(statement);
-      }
-    });
+    await applyPendingMigrations(database.connectionString);
     await sql`INSERT INTO "interaction_escalations" ("company_id", "interaction_id", "level", "from_recipient", "to_recipient", "reason") VALUES (${companyId}, ${interactionId}, 1, '{}', '{}', 'timeout')`;
     await expect(
       sql`INSERT INTO "interaction_escalations" ("company_id", "interaction_id", "level", "from_recipient", "to_recipient", "reason") VALUES (${companyId}, ${interactionId}, 1, '{}', '{}', 'duplicate')`,
