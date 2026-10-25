@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { ExternalSessionScheduler } from "./external-session-scheduler.js";
+import { ExternalSessionScheduler, externalSessionScheduler } from "./external-session-scheduler.js";
+import { heartbeatService } from "./heartbeat.js";
 
 function deferred() {
   let resolve!: () => void;
@@ -83,22 +84,30 @@ describe("ExternalSessionScheduler", () => {
   });
 
   it("shares one production scheduler across heartbeat service instances", async () => {
-    const { heartbeatService, externalSessionScheduler } = await import("./heartbeat.js");
-    const firstService = heartbeatService({} as never);
-    const secondService = heartbeatService({} as never);
-    const one = deferred();
-    const anotherAccount = deferred();
-    const first = externalSessionScheduler.schedule("company:account", () => one.promise);
-    const second = externalSessionScheduler.schedule("company:account", async () => "blocked");
-    const independent = externalSessionScheduler.schedule("company:other", () => anotherAccount.promise);
+    heartbeatService({} as never);
+    heartbeatService({} as never);
+    const scheduler = externalSessionScheduler;
+    const firstGate = deferred();
+    const started: string[] = [];
+    const first = scheduler.schedule("company:account", async () => {
+      started.push("first");
+      await firstGate.promise;
+      return "first";
+    });
+    const second = scheduler.schedule("company:account", async () => {
+      started.push("second");
+      return "second";
+    });
+    const independent = scheduler.schedule("company:other", async () => {
+      started.push("independent");
+      return "other-account";
+    });
 
-    await vi.waitFor(() => expect(externalSessionScheduler.snapshot().queuedByCredential["company:account"]).toBe(1));
-    expect(firstService).toBeDefined();
-    expect(secondService).toBeDefined();
-    expect(externalSessionScheduler.snapshot().activeByCredential["company:other"]).toBe(1);
-    one.resolve();
-    anotherAccount.resolve();
+    await vi.waitFor(() => expect(scheduler.snapshot().queuedByCredential["company:account"]).toBe(1));
+    expect(started).toEqual(["first", "independent"]);
+    firstGate.resolve();
     await Promise.all([first, second, independent]);
+    expect(started).toEqual(["first", "independent", "second"]);
   });
 
   it("continues draining after a session rejects", async () => {
