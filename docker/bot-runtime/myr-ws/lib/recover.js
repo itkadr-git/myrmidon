@@ -207,6 +207,8 @@ function recoverCopy(ctx, git, dir, opts) {
   }
 
   // 1. Interrupted operations: abort them, in order.
+  // Unresolved stages are the symptom of an operation in progress: report them on their own only when nothing explains them.
+  const reported = halfWay.some((p) => p.kind !== "unmerged_paths") ? halfWay.filter((p) => p.kind !== "unmerged_paths") : halfWay;
   if (halfWay.length > 0) {
     for (const p of halfWay) {
       if (p.abort) git(dir, p.abort, { allowFail: true, env: IDENTITY });
@@ -223,10 +225,10 @@ function recoverCopy(ctx, git, dir, opts) {
       const target = state.branch || expectedBranch;
       if (!target) throw new MyrWsError(1, `${key}: copy is stuck (${describeProblems(leftover)}), saved to ${recoveryRef}; no branch to recreate it on`);
       recreateWorktree(ctx, git, dir, target, commonDir);
-      for (const p of halfWay) recovered.push({ problem: p.kind, action: "recreated", detail: `abort did not clean the copy; recreated on ${target}` });
+      for (const p of reported) recovered.push({ problem: p.kind, action: "recreated", detail: `abort did not clean the copy; recreated on ${target}` });
       branch = target;
     } else {
-      for (const p of halfWay) recovered.push({ problem: p.kind, action: "aborted", detail: p.abort ? `git ${p.abort.join(" ")}` : "reset --merge" });
+      for (const p of reported) recovered.push({ problem: p.kind, action: "aborted", detail: p.abort ? `git ${p.abort.join(" ")}` : "reset --merge" });
     }
   }
 
