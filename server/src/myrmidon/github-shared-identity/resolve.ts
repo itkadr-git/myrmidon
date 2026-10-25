@@ -8,7 +8,10 @@
 // win). The decision is re-made on every request from the stored rules, the
 // agent's current role and the repository the caller names:
 //
-//   - no repository, or no App entry matches     -> not_applicable (broker keeps "absent")
+//   - no repository, but an entry serves the agent -> repository_required (broker: "absent"
+//                                                     with the reason code and the allowed patterns)
+//   - no repository and nothing serves the agent,
+//     or no App entry matches                     -> not_applicable (broker keeps "absent")
 //   - two or more App entries match              -> ambiguous      (broker: unavailable)
 //   - the key secret / GitHub fails              -> error          (broker: unavailable)
 //   - otherwise                                  -> issued (a token for that one repository)
@@ -24,7 +27,7 @@ import { agents, companySecrets, type Db } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import type { GitCredential } from "../../services/git-credentials.js";
 import { readGitHubSharedIdentitySettings } from "./store.js";
-import { agentCommitIdentity, githubAppsFor, githubPatsFor, normalizeGitHubRepository } from "./settings.js";
+import { agentCommitIdentity, appEntryAllowsAgent, githubAppsFor, githubPatsFor, normalizeGitHubRepository } from "./settings.js";
 import { GitHubAppTokenError, mintGitHubAppInstallationToken } from "./app-token.js";
 
 /** The secret-store surface this module needs (a subset of secretService). */
@@ -50,6 +53,7 @@ export type GitHubAppSecretsDeps = {
 
 export type GitHubAppResolution =
   | { kind: "not_applicable" }
+  | { kind: "repository_required"; repositories: string[] }
   | { kind: "ambiguous"; repository: string; entries: string[] }
   | { kind: "error"; repository: string; entryId: string; name: string; reason: string }
   | {
@@ -61,6 +65,28 @@ export type GitHubAppResolution =
       expiresAt: string;
       credential: GitCredential;
     };
+
+/** Most patterns named back to a caller that did not say which repository it targets. */
+export const MAX_REPOSITORY_HINTS = 50;
+
+/**
+ * The repository patterns (`owner/repo`, `owner/*`) of the PAT and App entries
+ * that may serve this agent. Configuration, not secrets: the agent's own
+ * allow-list, never other agents' entries and never key or token material.
+ */
+function servedRepositoryPatterns(
+  settings: Awaited<ReturnType<typeof readGitHubSharedIdentitySettings>>,
+  agent: { id: string; name: string; role: string },
+): string[] {
+  const patterns = new Set<string>();
+  for (const entry of settings.pats) {
+    if (entry.agentIds.includes(agent.id)) for (const pattern of entry.allowedRepos) patterns.add(pattern);
+  }
+  for (const entry of settings.apps) {
+    if (appEntryAllowsAgent(entry, agent)) for (const pattern of entry.allowedRepos) patterns.add(pattern);
+  }
+  return [...patterns].sort().slice(0, MAX_REPOSITORY_HINTS);
+}
 
 async function journal(
   db: Db,
@@ -104,8 +130,17 @@ export async function resolveGitHubAppCredential(
   },
 ): Promise<GitHubAppResolution> {
   const repository = normalizeGitHubRepository(input.repository);
-  if (!repository) return { kind: "not_applicable" };
   const settings = await readGitHubSharedIdentitySettings(db, input.companyId);
+  if (!repository) {
+    if (!settings.enabled) return { kind: "not_applicable" };
+    const [caller] = await db
+      .select({ id: agents.id, name: agents.name, role: agents.role })
+      .from(agents)
+      .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)));
+    if (!caller) return { kind: "not_applicable" };
+    const repositories = servedRepositoryPatterns(settings, caller);
+    return repositories.length > 0 ? { kind: "repository_required", repositories } : { kind: "not_applicable" };
+  }
   if (!settings.enabled) return { kind: "not_applicable" };
   const [agent] = await db
     .select({ id: agents.id, name: agents.name, role: agents.role })
