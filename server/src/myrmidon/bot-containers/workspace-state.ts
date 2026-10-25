@@ -5,7 +5,7 @@
 // (`closing`). This file is the whole rule and nothing else: no database, no
 // clock, no network, so the table of cases is a plain unit test.
 
-import type { WsDesiredPrState, WsDesiredWorkspaceState } from "@paperclipai/shared";
+import type { WsDesiredPrState, WsDesiredWorkspaceState } from "@myrmidon/shared";
 
 /** Statuses after which the task needs no copy. */
 export const WORKSPACE_TERMINAL_ISSUE_STATUSES: ReadonlySet<string> = new Set(["done", "cancelled"]);

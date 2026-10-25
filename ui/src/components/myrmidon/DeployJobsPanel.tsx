@@ -15,6 +15,8 @@ import { Rocket } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Trans } from "react-i18next";
+import { i18n, useTranslation } from "@/i18n";
 import {
   deployJobsApi,
   deployJobsQueryKey,
@@ -33,6 +35,8 @@ export function DeployJobsPanelView({
   onAbort,
   pending,
   error,
+  filterValues,
+  onFilterChange,
 }: {
   state: DeployJobState | null | undefined;
   preview: DeployImagePreview | null;
@@ -41,8 +45,20 @@ export function DeployJobsPanelView({
   onAbort: (job: DeployJobView) => void;
   pending: boolean;
   error: string | null;
+  filterValues?: { mode?: string; status?: string; outcome?: string };
+  onFilterChange?: (filters: { mode?: string; status?: string; outcome?: string }) => void;
 }) {
+  const { t } = useTranslation();
   const [reference, setReference] = useState("");
+  const [localFilters, setLocalFilters] = useState({ mode: "", status: "", outcome: "" });
+  const modeFilter = filterValues?.mode ?? localFilters.mode;
+  const statusFilter = filterValues?.status ?? localFilters.status;
+  const outcomeFilter = filterValues?.outcome ?? localFilters.outcome;
+  const setFilter = (name: "mode" | "status" | "outcome", value: string) => {
+    const next = { ...localFilters, [name]: value };
+    setLocalFilters(next);
+    onFilterChange?.({ mode: next.mode || undefined, status: next.status || undefined, outcome: next.outcome || undefined });
+  };
   const [confirmStart, setConfirmStart] = useState(false);
   const problem = digestProblemClient(reference);
   const job = state?.job ?? null;
@@ -53,14 +69,10 @@ export function DeployJobsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Rocket className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Board update</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-bots-host-1.deploy-jobs-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Deploy a new image of this board from its digest. Only images built by CI from main or a myr-v* tag are
-          accepted; the check cannot be skipped. The deploy pauses the board (maintenance), switches the image, checks
-          health and resumes; when the health check fails the board rolls back to the previous image automatically and
-          resumes on it (a failed rollback keeps the board paused for the operator). Auto-update without a confirmation
-          is off until the release scenario has run on the staging stand.
+          {t("area.settings-bots-host-1.deploy-jobs-panel.intro")}
         </p>
       </div>
 
@@ -70,14 +82,14 @@ export function DeployJobsPanelView({
         </div>
       ) : null}
 
-      {job ? <DeployJobCard job={job} onAbort={onAbort} pending={pending} /> : <p className="text-sm text-muted-foreground">No deploy has run yet.</p>}
+      {job ? <DeployJobCard job={job} onAbort={onAbort} pending={pending} /> : <p className="text-sm text-muted-foreground">{t("area.settings-bots-host-1.deploy-jobs-panel.noDeploy")}</p>}
 
       <div className="grid gap-3 md:grid-cols-2">
         <div className="space-y-1 md:col-span-2">
-          <Label htmlFor="myrmidon-deploy-digest">Image digest</Label>
+          <Label htmlFor="myrmidon-deploy-digest">{t("area.settings-bots-host-1.deploy-jobs-panel.digestLabel")}</Label>
           <Input
             id="myrmidon-deploy-digest"
-            placeholder="sha256:<64 hex> or ghcr.io/itkadr-git/myrmidon@sha256:<64 hex>"
+            placeholder={t("area.settings-bots-host-1.deploy-jobs-panel.digestPlaceholder")}
             value={reference}
             onChange={(event) => {
               setReference(event.target.value);
@@ -88,36 +100,71 @@ export function DeployJobsPanelView({
         </div>
         <div className="flex flex-wrap gap-2 md:col-span-2">
           <Button size="sm" variant="outline" disabled={!canStart} onClick={() => onPreview(reference.trim())}>
-            Verify image
+            {t("area.settings-bots-host-1.deploy-jobs-panel.verify")}
           </Button>
           {confirmStart ? (
             <Button size="sm" variant="destructive" disabled={!canStart} onClick={() => { setConfirmStart(false); onStart(reference.trim()); }}>
-              Confirm deploy
+              {t("area.settings-bots-host-1.deploy-jobs-panel.confirmDeploy")}
             </Button>
           ) : (
             <Button size="sm" disabled={!canStart} onClick={() => setConfirmStart(true)}>
-              Deploy
+              {t("area.settings-bots-host-1.deploy-jobs-panel.deploy")}
             </Button>
           )}
           {confirmStart ? (
             <Button size="sm" variant="outline" onClick={() => setConfirmStart(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
           ) : null}
         </div>
         {preview ? <PreviewCard preview={preview} /> : null}
       </div>
 
-      {state?.history?.length ? (
+      {state?.history ? (
         <details className="text-sm">
-          <summary className="cursor-pointer text-muted-foreground">Previous deploys ({state.history.length})</summary>
+          <summary className="cursor-pointer text-muted-foreground">{t("area.settings-bots-host-1.deploy-jobs-panel.previous", { count: state.history.length })}</summary>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <select aria-label={t("area.settings-bots-host-1.deploy-jobs-panel.modeAria")} value={modeFilter} onChange={(event) => setFilter("mode", event.target.value)}>
+              <option value="">{t("area.settings-bots-host-1.deploy-jobs-panel.allModes")}</option>
+              <option value="manual">{t("area.settings-bots-host-1.deploy-jobs-panel.modeManual")}</option>
+              <option value="auto">{t("area.settings-bots-host-1.deploy-jobs-panel.modeAuto")}</option>
+              <option value="canary">{t("area.settings-bots-host-1.deploy-jobs-panel.modeCanary")}</option>
+            </select>
+            <select aria-label={t("area.settings-bots-host-1.deploy-jobs-panel.statusAria")} value={statusFilter} onChange={(event) => setFilter("status", event.target.value)}>
+              <option value="">{t("area.settings-bots-host-1.deploy-jobs-panel.allStatuses")}</option>
+              <option value="succeeded">{t("area.settings-bots-host-1.deploy-jobs-panel.statusSucceeded")}</option>
+              <option value="auto_rolled_back">{t("area.settings-bots-host-1.deploy-jobs-panel.statusAutoRolledBack")}</option>
+              <option value="failed_rollback">{t("area.settings-bots-host-1.deploy-jobs-panel.statusFailedRollback")}</option>
+              <option value="failed_health">{t("area.settings-bots-host-1.deploy-jobs-panel.statusFailedHealth")}</option>
+              <option value="aborted">{t("area.settings-bots-host-1.deploy-jobs-panel.statusAborted")}</option>
+              <option value="failed_verification">{t("area.settings-bots-host-1.deploy-jobs-panel.statusFailedVerification")}</option>
+              <option value="maintenance_failed">{t("area.settings-bots-host-1.deploy-jobs-panel.statusMaintenanceFailed")}</option>
+            </select>
+            <select aria-label={t("area.settings-bots-host-1.deploy-jobs-panel.outcomeAria")} value={outcomeFilter} onChange={(event) => setFilter("outcome", event.target.value)}>
+              <option value="">{t("area.settings-bots-host-1.deploy-jobs-panel.allOutcomes")}</option>
+              <option value="succeeded">{t("area.settings-bots-host-1.deploy-jobs-panel.outcomeSucceeded")}</option>
+              <option value="rollback">{t("area.settings-bots-host-1.deploy-jobs-panel.outcomeRollback")}</option>
+              <option value="aborted">{t("area.settings-bots-host-1.deploy-jobs-panel.outcomeAborted")}</option>
+            </select>
+          </div>
           <ul className="mt-2 space-y-1">
-            {state.history.map((entry) => (
+            {state.history.filter((entry) => (!modeFilter || entry.mode === modeFilter) && (!statusFilter || entry.status === statusFilter) && (!outcomeFilter || (outcomeFilter === "rollback" ? entry.status.includes("rollback") : entry.status === outcomeFilter))).map((entry) => (
               <li key={entry.id} className="text-muted-foreground">
-                {new Date(entry.createdAt).toLocaleString()} — {describeDeployStatus(entry.status)} — {entry.digest.slice(0, 19)}…
-                {entry.failureReason ? ` — ${entry.failureReason}` : ""}
+                {[
+                  new Date(entry.createdAt).toLocaleString(i18n.language),
+                  entry.mode,
+                  describeDeployStatus(entry.status),
+                  `${entry.digest.slice(0, 19)}…`,
+                  entry.version ? t("area.settings-bots-host-1.deploy-jobs-panel.historyVersion", { version: entry.version }) : null,
+                  entry.commit ? t("area.settings-bots-host-1.deploy-jobs-panel.historyCommit", { commit: entry.commit.slice(0, 12) }) : null,
+                  entry.window || null,
+                  entry.failureReason || null,
+                ]
+                  .filter((part) => part !== null)
+                  .join(" — ")}
               </li>
             ))}
+            {!state.history.length ? <li className="text-muted-foreground">{t("area.settings-bots-host-1.deploy-jobs-panel.noHistory")}</li> : null}
           </ul>
         </details>
       ) : null}
@@ -126,6 +173,7 @@ export function DeployJobsPanelView({
 }
 
 function PreviewCard({ preview }: { preview: DeployImagePreview }) {
+  const { t } = useTranslation();
   return (
     <div
       className="rounded-md border border-border px-3 py-2 text-sm md:col-span-2"
@@ -133,16 +181,21 @@ function PreviewCard({ preview }: { preview: DeployImagePreview }) {
     >
       {preview.ok ? (
         <div>
-          CI image verified: commit <code>{preview.commit?.slice(0, 12)}</code>, version {preview.version ?? "<none>"}
+          <Trans
+            i18nKey="area.settings-bots-host-1.deploy-jobs-panel.previewOk"
+            values={{ commit: preview.commit?.slice(0, 12), version: preview.version ?? t("area.settings-bots-host-1.deploy-jobs-panel.previewNoVersion") }}
+            components={[<code key="commit" />]}
+          />
         </div>
       ) : (
-        <div className="text-destructive">Refused: {preview.reason}</div>
+        <div className="text-destructive">{t("area.settings-bots-host-1.deploy-jobs-panel.previewRefused", { reason: preview.reason })}</div>
       )}
     </div>
   );
 }
 
 function DeployJobCard({ job, onAbort, pending }: { job: DeployJobView; onAbort: (job: DeployJobView) => void; pending: boolean }) {
+  const { t } = useTranslation();
   const [confirmAbort, setConfirmAbort] = useState(false);
   return (
     <div className="space-y-2 rounded-md border border-border px-3 py-2 text-sm" data-testid="myrmidon-deploy-job">
@@ -153,7 +206,7 @@ function DeployJobCard({ job, onAbort, pending }: { job: DeployJobView; onAbort:
             {job.version ? ` (${job.version})` : ""}
           </div>
           <div className="text-muted-foreground">
-            {job.reason} · started {new Date(job.createdAt).toLocaleString()} · {job.steps.length} step(s)
+            {[job.reason, t("area.settings-bots-host-1.deploy-jobs-panel.started", { date: new Date(job.createdAt).toLocaleString(i18n.language) }), t("area.settings-bots-host-1.deploy-jobs-panel.steps", { count: job.steps.length })].join(" · ")}
           </div>
         </div>
         {job.abortable ? (
@@ -168,15 +221,15 @@ function DeployJobCard({ job, onAbort, pending }: { job: DeployJobView; onAbort:
                   onAbort(job);
                 }}
               >
-                Confirm abort
+                {t("area.settings-bots-host-1.deploy-jobs-panel.confirmAbort")}
               </Button>
               <Button size="sm" variant="outline" onClick={() => setConfirmAbort(false)}>
-                Cancel
+                {t("common.cancel")}
               </Button>
             </div>
           ) : (
             <Button size="sm" variant="outline" disabled={pending} onClick={() => setConfirmAbort(true)}>
-              Abort
+              {t("area.settings-bots-host-1.deploy-jobs-panel.abort")}
             </Button>
           )
         ) : null}
@@ -186,7 +239,7 @@ function DeployJobCard({ job, onAbort, pending }: { job: DeployJobView; onAbort:
         <ol className="space-y-1 text-muted-foreground">
           {job.steps.slice(-8).map((step, index) => (
             <li key={`${step.at}-${index}`}>
-              {new Date(step.at).toLocaleTimeString()} — {describeDeployStatus(step.status)}: {step.detail}
+              {t("area.settings-bots-host-1.deploy-jobs-panel.stepLine", { time: new Date(step.at).toLocaleTimeString(i18n.language), status: describeDeployStatus(step.status), detail: step.detail })}
             </li>
           ))}
         </ol>
@@ -196,12 +249,14 @@ function DeployJobCard({ job, onAbort, pending }: { job: DeployJobView; onAbort:
 }
 
 export function DeployJobsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<DeployImagePreview | null>(null);
+  const [filters, setFilters] = useState<{ mode?: string; status?: string; outcome?: string }>({});
   const { data } = useQuery({
-    queryKey: deployJobsQueryKey,
-    queryFn: () => deployJobsApi.get(),
+    queryKey: [...deployJobsQueryKey, filters],
+    queryFn: () => deployJobsApi.get(filters),
     refetchInterval: 10_000,
     retry: false,
   });
@@ -209,8 +264,8 @@ export function DeployJobsPanel() {
     await queryClient.invalidateQueries({ queryKey: deployJobsQueryKey });
   };
   const onError = (err: unknown) => {
-    const message = err instanceof Error ? err.message : "Deploy request failed.";
-    setError(message.includes("not enabled") ? "Deploys from the interface are not enabled on this instance." : message);
+    const message = err instanceof Error ? err.message : t("area.settings-bots-host-1.deploy-jobs-panel.requestFailed");
+    setError(message.includes("not enabled") ? t("area.settings-bots-host-1.deploy-jobs-panel.notEnabled") : message);
   };
   const previewMutation = useMutation({
     mutationFn: deployJobsApi.preview,
@@ -244,6 +299,8 @@ export function DeployJobsPanel() {
       onAbort={(job) => abort.mutate(job.id)}
       pending={pending}
       error={error}
+      filterValues={filters}
+      onFilterChange={setFilters}
     />
   );
 }

@@ -16,7 +16,7 @@
 //   manifest.json index of the above
 //
 // Usage (from the repository root, after `pnpm install`):
-//   pnpm --filter @paperclipai/server exec tsx ../tools/dockergate/contract/emit-fixtures.ts <out-dir>
+//   pnpm --filter @myrmidon/server exec tsx ../tools/dockergate/contract/emit-fixtures.ts <out-dir>
 // The checked-in fixtures live in tools/dockergate/contract/testdata; regenerate
 // them with this script whenever the driver surface changes.
 

@@ -8,7 +8,7 @@ import type {
   CatalogTeamImportOptions,
   CatalogTeamSourcePolicy,
   InstalledCatalogTeam,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   addCommonClientOptions,
   apiPath,
@@ -20,7 +20,7 @@ import {
   type ResolvedClientContext,
 } from "./common.js";
 import { ApiRequestError } from "../../client/http.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 interface TeamBrowseOptions extends BaseClientOptions {
   kind?: string;
@@ -405,7 +405,7 @@ async function requestInstallApproval(
     payload: {
       title: `Approve catalog team install: ${trimmedRef}`,
       summary:
-        `A Paperclip CLI agent-run attempted to install catalog team "${trimmedRef}" into company "${ctx.companyId}", ` +
+        `A Myrmidon CLI agent-run attempted to install catalog team "${trimmedRef}" into company "${ctx.companyId}", ` +
         `but the API denied the install with: ${error.message}.`,
       recommendedAction:
         "Approve the catalog team source and rerun the install with a board or agent-creator token, or grant agents:create to the requesting agent and rerun the same command.",

@@ -7,11 +7,12 @@ import {
 } from "@/api/cases";
 import { ImageGalleryModal, type GalleryMediaItem } from "@/components/ImageGalleryModal";
 import { cn } from "@/lib/utils";
+import { i18n, useTranslation } from "@/i18n";
 
 function humanBytes(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  if (size < 1024) return i18n.t("area.pipelines-cases.case-attachments-gallery.sizeBytes", { size });
+  if (size < 1024 * 1024) return i18n.t("area.pipelines-cases.case-attachments-gallery.sizeKilobytes", { size: (size / 1024).toFixed(0) });
+  return i18n.t("area.pipelines-cases.case-attachments-gallery.sizeMegabytes", { size: (size / (1024 * 1024)).toFixed(1) });
 }
 
 /**
@@ -21,6 +22,7 @@ function humanBytes(size: number): string {
  * variation-picker (out of scope).
  */
 export function CaseAttachmentsGallery({ attachments }: { attachments: CaseAttachmentRef[] }) {
+  const { t } = useTranslation();
   const [galleryIndex, setGalleryIndex] = useState<number | null>(null);
 
   // The lightbox only navigates across image attachments.
@@ -36,7 +38,7 @@ export function CaseAttachmentsGallery({ attachments }: { attachments: CaseAttac
   );
 
   if (attachments.length === 0) {
-    return <p className="text-xs text-muted-foreground">No attachments.</p>;
+    return <p className="text-xs text-muted-foreground">{t("area.pipelines-cases.case-attachments-gallery.empty")}</p>;
   }
 
   return (
@@ -44,7 +46,7 @@ export function CaseAttachmentsGallery({ attachments }: { attachments: CaseAttac
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
         {attachments.map((attachment) => {
           const isImage = isImageAttachment(attachment);
-          const filename = attachment.asset.originalFilename ?? "attachment";
+          const filename = attachment.asset.originalFilename ?? t("area.pipelines-cases.case-attachments-gallery.fallbackFilename");
           const imageIdx = isImage ? imageItems.findIndex((i) => i.id === attachment.id) : -1;
           return (
             <button

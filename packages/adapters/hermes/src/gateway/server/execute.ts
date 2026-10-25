@@ -9,16 +9,16 @@ import type {
   PromptBreakdown,
   RuntimeStatusUpdate,
   UsageSummary,
-} from "@paperclipai/adapter-utils";
-import { githubLauncherPayload } from "@paperclipai/adapter-utils/github-launcher";
-import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
-import { classifyInputOverflow } from "@paperclipai/adapter-utils/input-overflow";
+} from "@myrmidon/adapter-utils";
+import { githubLauncherPayload } from "@myrmidon/adapter-utils/github-launcher";
+import { measureSections } from "@myrmidon/adapter-utils/prompt-meter";
+import { classifyInputOverflow } from "@myrmidon/adapter-utils/input-overflow";
 import {
   INPUT_LIMIT_CONFIG_KEY,
   decideInputLimit,
   readInputLimitHint,
   trimTextToChars,
-} from "@paperclipai/adapter-utils/input-limit";
+} from "@myrmidon/adapter-utils/input-limit";
 import {
   asNumber,
   asString,
@@ -28,7 +28,7 @@ import {
   isPaperclipRecoveryWakePayload,
   selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 import {
   ADAPTER_TYPE,
   CREATE_CANCEL_GRACE_MS,
@@ -504,9 +504,9 @@ function buildGitHubBrokerField(
 }
 
 // myrmidon(1.6.5 BOT-DISK-H5a, contract C6): the `workspace` field of a
-// /v1/runs request — `{key, repo, baseRef}` — from which the gateway runs
+// /v1/runs request — `{key, repo, baseRef?, branch?}` — from which the gateway runs
 // `myr-ws open` before the model starts. The shapes mirror
-// `runWorkspaceFieldSchema` of @paperclipai/shared (this package does not
+// `runWorkspaceFieldSchema` of @myrmidon/shared (this package does not
 // depend on it; execute.test.ts checks the output against the real schema).
 // key: the board identifier of the run's issue; repo: `owner/name` derived
 // from the project workspace's repo URL (github.com only: https, ssh:// or scp-like
@@ -547,13 +547,23 @@ function deriveWorkspaceRepoName(repoUrl: string): string | null {
 
 function buildWorkspaceField(
   context: Record<string, unknown>,
-): { key: string; repo: string; baseRef?: string } | undefined {
+): { key: string; repo: string; baseRef?: string; branch?: string } | undefined {
   const wake = parseObject(context.paperclipWake);
   const key = asString(parseObject(wake.issue).identifier, "").trim();
   if (!WS_ISSUE_KEY_RE.test(key)) return undefined;
+  // The task's own pull request decides the repository and the branch: the project is only the
+  // fallback. A PR of one repository on a project bound to another (OPE-7967: PR #82 of
+  // myrmidon-deploy under a project of myrmidon) must open the PR's repository on the PR's
+  // head branch, not the project's repository on `bot/<KEY>`.
+  const pullRequest = parseObject(context.paperclipPullRequest);
+  const prRepoRaw = asString(pullRequest.repo, "").trim();
+  const prRepo = prRepoRaw && WS_REPO_NAME_RE.test(prRepoRaw) ? prRepoRaw : null;
+  const prBranchRaw = asString(pullRequest.headRef, "").trim().replace(/^refs\/heads\//, "");
+  const prBranch = prRepo && prBranchRaw && prBranchRaw.length <= 200 && WS_GIT_REF_RE.test(prBranchRaw) && !prBranchRaw.startsWith("-") && !prBranchRaw.includes("..") ? prBranchRaw : "";
   const workspace = parseObject(context.paperclipWorkspace);
   const repoUrl = asString(workspace.repoUrl, "").trim();
-  let repo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  const projectRepo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  let repo = prRepo ?? projectRepo;
   let usedDefault = false;
   if (!repo) {
     const fallback = asString(context.paperclipBotDiskDefaultRepo, "").trim();
@@ -563,12 +573,13 @@ function buildWorkspaceField(
     }
   }
   if (!repo) return undefined;
-  // The ref belongs to the project workspace's own repository, not to the fallback one.
-  const baseRef = usedDefault ? "" : asString(workspace.repoRef, "").trim();
+  // The ref belongs to the project workspace's own repository, not to the PR's or the fallback one.
+  const baseRef = usedDefault || repo !== projectRepo ? "" : asString(workspace.repoRef, "").trim();
   return {
     key,
     repo,
     ...(baseRef && baseRef.length <= 200 && WS_GIT_REF_RE.test(baseRef) ? { baseRef } : {}),
+    ...(prBranch ? { branch: prBranch } : {}),
   };
 }
 
@@ -1505,7 +1516,11 @@ async function stopRun(input: {
       headers: input.headers,
       signal: AbortSignal.timeout(STOP_REQUEST_TIMEOUT_MS),
     });
-    await input.ctx.onLog("stdout", `[hermes-gateway] stop requested for run ${input.runId}\n`);
+    const cancellation = input.ctx.paperclipCancellation?.current;
+    await input.ctx.onLog(
+      "stdout",
+      `[hermes-gateway] stop requested for run ${input.runId} correlationId=${cancellation?.correlationId ?? "unknown"} sender=${cancellation?.source.actor ?? cancellation?.source.code ?? "unknown"}\n`,
+    );
     return asRecord(stopped);
   } catch (err) {
     await input.ctx.onLog("stderr", `[hermes-gateway] stop request failed: ${redactErrorMessage(err, input.redactText)}\n`);
@@ -1525,13 +1540,29 @@ export async function stopGatewayRunForBoard(input: {
   baseUrl: string;
   apiKey: string;
   gatewayRunId: string;
+  cancellation?: {
+    correlationId: string;
+    source: { code: string; endpoint?: string; actor?: string };
+    reason: string;
+  };
 }): Promise<{ stopped: boolean }> {
   const baseUrl = normalizeBaseUrl(input.baseUrl);
   if (!baseUrl) return { stopped: false };
   try {
     await fetchJson(apiUrl(baseUrl, `/v1/runs/${encodeURIComponent(input.gatewayRunId)}/stop`), {
       method: "POST",
-      headers: { Authorization: `Bearer ${input.apiKey}` },
+      headers: {
+        Authorization: `Bearer ${input.apiKey}`,
+        ...(input.cancellation
+          ? {
+              "x-paperclip-correlation-id": input.cancellation.correlationId,
+              "x-paperclip-cancellation-source": input.cancellation.source.code,
+              ...(input.cancellation.source.endpoint ? { "x-paperclip-cancellation-endpoint": input.cancellation.source.endpoint } : {}),
+              ...(input.cancellation.source.actor ? { "x-paperclip-cancellation-actor": input.cancellation.source.actor } : {}),
+              "x-paperclip-cancellation-reason": input.cancellation.reason,
+            }
+          : {}),
+      },
       signal: AbortSignal.timeout(STOP_REQUEST_TIMEOUT_MS),
     });
     return { stopped: true };
@@ -1891,6 +1922,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraHeaders,
     accept: "text/event-stream",
   });
+  const cancellation = ctx.paperclipCancellation?.current;
+  if (cancellation) {
+    runHeaders["X-Paperclip-Cancellation-Id"] = cancellation.correlationId;
+    runHeaders["X-Paperclip-Cancellation-Source"] = cancellation.source.code;
+    eventHeaders["X-Paperclip-Cancellation-Id"] = cancellation.correlationId;
+    eventHeaders["X-Paperclip-Cancellation-Source"] = cancellation.source.code;
+  }
   const redactText = createTextRedactor([
     apiKey,
     sessionKey,

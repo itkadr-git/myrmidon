@@ -35,12 +35,13 @@ import {
   companies,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
-import type { Db } from "@paperclipai/db";
+} from "@myrmidon/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { projectSafeChatPublication } from "../../services/chat-publication-projection.js";
 import { readTelegramNotifyDocument, mutateTelegramNotifyDocument } from "./store.js";
 import type { TelegramNotifySettings } from "./settings.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 /** The sweep period: how often the job checks whether the digest time or the
  *  escalation threshold has arrived. One shared interval for both jobs. */
@@ -458,7 +459,7 @@ export function telegramNotifyJobPorts(db: Db): TelegramNotifyJobPorts {
     },
     async enqueuePublication(input) {
       const rows = await db
-        .insert((await import("@paperclipai/db")).chatPublications)
+        .insert((await import("@myrmidon/db")).chatPublications)
         .values({
           companyId: input.companyId,
           endpointId: input.endpointId,
@@ -473,7 +474,7 @@ export function telegramNotifyJobPorts(db: Db): TelegramNotifyJobPorts {
           state: "pending",
         })
         .onConflictDoNothing()
-        .returning({ id: (await import("@paperclipai/db")).chatPublications.id });
+        .returning({ id: (await import("@myrmidon/db")).chatPublications.id });
       return { inserted: rows.length > 0 };
     },
     // Part A is not merged: the settings contract answers the fixed
@@ -522,7 +523,7 @@ export function startTelegramNotifyJobs(
       running = false;
     }
   };
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void tick();
   }, tickMs);
   if (typeof timer.unref === "function") timer.unref();

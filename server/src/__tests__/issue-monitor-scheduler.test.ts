@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@myrmidon/shared";
 import {
   activityLog,
   agentRuntimeState,
@@ -20,7 +20,7 @@ import {
   issueDocuments,
   issues,
   workspaceRuntimeServices,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -140,7 +140,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
   async function seedFixture(input?: {
     agentStatus?: "active" | "paused";
-    issueStatus?: "in_progress" | "in_review";
+    issueStatus?: "in_progress" | "in_review" | "blocked";
     monitorAttemptCount?: number;
     monitor?: Record<string, unknown>;
   }) {
@@ -237,6 +237,25 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
     return { companyId, agentId, issueId, nextCheckAt };
   }
+
+  it("triggers a due monitor for a blocked issue", async () => {
+    const { issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "blocked" });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.tickTimers(nextCheckAt);
+
+    expect(result.enqueued).toBe(1);
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(issue.monitorLastTriggeredAt?.toISOString()).toBe(nextCheckAt.toISOString());
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.reason).toBe("issue_monitor_due");
+    expect(wakeup?.payload).toMatchObject({ issueId, nextCheckAt: nextCheckAt.toISOString() });
+  });
 
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();

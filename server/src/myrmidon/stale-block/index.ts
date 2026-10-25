@@ -1,7 +1,7 @@
 // myrmidon(STALE-BLOCK): entry point — one import, one call site in the
 // server entry (CONVENTIONS.md §12), no separate scheduler loop of its own.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { isInstanceUnderMaintenance } from "../maintenance/gate.js";
 import { createStaleBlockSweep, type StaleBlockSweep } from "./sweep.js";
@@ -48,7 +48,7 @@ export {
 export function createStaleBlockScheduler(input: {
   db: Db;
   track: (work: Promise<unknown>) => void;
-  isEventStillSet?: (companyId: string, eventKey: string) => Promise<boolean>;
+  isEventStillSet?: (companyId: string, eventKey: string, dbOrTx?: Db) => Promise<boolean>;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
 }): () => void {
@@ -56,11 +56,15 @@ export function createStaleBlockScheduler(input: {
     db: input.db,
     isEventStillSet: input.isEventStillSet ?? (async () => true),
     isUnderMaintenance: isInstanceUnderMaintenance,
-    logActivity: async (entry) => {
+    logActivity: async (entry, dbOrTx, postCommitPublications) => {
       // Loaded lazily with the service layer, for the same partial-mock
       // startup-graph reason as the issue service import.
       const { logActivity } = await import("../../services/activity-log.js");
-      await logActivity(input.db, entry);
+      // OPE-9074: inside the unblock transaction the write must use that
+      // transaction, not the root handle (it would wait on our own row lock).
+      // Inside the unblock transaction the live event is queued and published
+      // by the sweep only after commit (a rollback must not leak it).
+      await logActivity(dbOrTx ?? input.db, entry, postCommitPublications);
     },
     env: input.env,
     now: input.now,

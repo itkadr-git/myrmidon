@@ -7,6 +7,7 @@ import { catalogManifest, catalogSkills, resolveCatalogSkillRef } from "./index.
 const EXPECTED_BUNDLED_KEYS = [
   "paperclipai/bundled/docs/doc-maintenance",
   "paperclipai/bundled/paperclip-operations/issue-triage",
+  "paperclipai/bundled/paperclip-operations/knowledge-distill",
   "paperclipai/bundled/paperclip-operations/reflection-coach",
   "paperclipai/bundled/paperclip-operations/status-card-query",
   "paperclipai/bundled/paperclip-operations/summarize-status",
@@ -168,7 +169,7 @@ describe("shipped skills catalog", () => {
 
   it("exposes a stable manifest header for downstream consumers", () => {
     expect(catalogManifest.schemaVersion).toBe(1);
-    expect(catalogManifest.packageName).toBe("@paperclipai/skills-catalog");
+    expect(catalogManifest.packageName).toBe("@myrmidon/skills-catalog");
     expect(catalogSkills.length).toBe(EXPECTED_BUNDLED_KEYS.length + EXPECTED_OPTIONAL_KEYS.length);
   });
 

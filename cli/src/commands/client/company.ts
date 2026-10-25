@@ -12,7 +12,7 @@ import type {
   CompanyPortabilityInclude,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportResult,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   buildAlreadyImportedMessage,
   companyImportTransferApplyPath,
@@ -21,7 +21,7 @@ import {
   COMPANY_IMPORT_TRANSFERS_ROUTE_PATH,
   type CompanyImportTransferCreated,
   type CompanyImportTransferDeclaration,
-} from "@paperclipai/shared/company-import-transfer";
+} from "@myrmidon/shared/company-import-transfer";
 import { getTelemetryClient, trackCompanyImported } from "../../telemetry.js";
 import { ApiRequestError, type PaperclipApiClient } from "../../client/http.js";
 import { openUrl } from "../../client/board-auth.js";
@@ -2023,7 +2023,7 @@ async function createCompanyForContext(ctx: {
   } catch (error) {
     if (isBoardAccessRequiredError(error) || isInstanceAdminRequiredError(error)) {
       throw new Error(
-        "Creating companies requires board/instance-admin authentication. Agent API keys are scoped to one company; use `paperclipai company list --json` or `paperclipai company current --json` to select the scoped company, or rerun create with a board token/login.",
+        "Creating companies requires board/instance-admin authentication. Agent API keys are scoped to one company; use `myrmidon company list --json` or `myrmidon company current --json` to select the scoped company, or rerun create with a board token/login.",
       );
     }
     throw error;

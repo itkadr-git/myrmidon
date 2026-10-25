@@ -98,6 +98,24 @@ export interface SetHostRefsResult {
   hostRefs: string[];
 }
 
+export class AccessHubDisabledError extends Error {
+  constructor() {
+    super("Access hub module is disabled");
+    this.name = "AccessHubDisabledError";
+  }
+}
+
+function normalizeList<T>(response: unknown, key: "accesses" | "hosts"): T[] {
+  if (Array.isArray(response)) return response as T[];
+  if (response && typeof response === "object") {
+    const envelope = response as { enabled?: unknown; [field: string]: unknown };
+    if (envelope.enabled === false) throw new AccessHubDisabledError();
+    const list = envelope[key];
+    if (Array.isArray(list)) return list as T[];
+  }
+  return [];
+}
+
 const BASE = "/myrmidon/access-hub";
 
 export const accessHubQueryKeys = {
@@ -107,7 +125,7 @@ export const accessHubQueryKeys = {
 };
 
 export const accessHubApi = {
-  listAccesses: () => api.get<AccessRecord[]>(`${BASE}/accesses`),
+  listAccesses: async () => normalizeList<AccessRecord>(await api.get<unknown>(`${BASE}/accesses`), "accesses"),
   generateSshKey: (input: GenerateSshInput) =>
     api.post<SshKeyMaterial>(`${BASE}/secrets/generate-ssh`, input),
   saveSecretValue: (input: SaveSecretValueInput) =>
@@ -119,7 +137,7 @@ export const accessHubApi = {
   rotate: (secretId: string, input: RotateInput) =>
     api.post<RotateResult>(`${BASE}/accesses/${secretId}/rotate`, input),
   audit: () => api.get<AccessAuditEntry[]>(`${BASE}/audit`),
-  listHosts: () => api.get<AccessHost[]>(`${BASE}/hosts`),
+  listHosts: async () => normalizeList<AccessHost>(await api.get<unknown>(`${BASE}/hosts`), "hosts"),
   saveHost: (input: { hostId?: string; name: string; note?: string | null }) =>
     api.put<AccessHost>(`${BASE}/hosts`, input),
   // Deployment of a secret to hosts is one set-shaped write (deploy = union,

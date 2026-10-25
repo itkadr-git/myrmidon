@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { composeEnvVars, composeInterpolation } from "./compose-check.mjs";
 
@@ -16,6 +16,27 @@ const INSTALL = path.join(HERE, "install.sh");
 const A = `sha256:${"a".repeat(64)}`;
 const B = `sha256:${"b".repeat(64)}`;
 const C = `sha256:${"c".repeat(64)}`;
+
+const cleanups = new Set();
+
+export function cleanupSandbox(sb) {
+  const dir = typeof sb === "string" ? sb : sb?.dir;
+  if (dir && fs.existsSync(dir)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    cleanups.delete(dir);
+  }
+}
+
+afterEach(() => {
+  for (const dir of cleanups) {
+    try {
+      if (fs.existsSync(dir)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch {}
+  }
+  cleanups.clear();
+});
 
 const FAKE_DOCKER = `#!/usr/bin/env bash
 if [[ "$1" == "compose" ]]; then
@@ -84,7 +105,9 @@ exit 0
 const FAKE_NOOP = "#!/usr/bin/env bash\nexit 0\n";
 
 function sandbox({ tag = "myr-v1.6.6", board = A, up = false, osRelease = null } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-install-test-"));
+  const scratchRoot = process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || os.tmpdir();
+  const dir = fs.mkdtempSync(path.join(scratchRoot, "myrmidon-install-test-"));
+  cleanups.add(dir);
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin);
   for (const [name, body] of [
@@ -103,6 +126,9 @@ function sandbox({ tag = "myr-v1.6.6", board = A, up = false, osRelease = null }
 }
 
 function run(sb, args = [], env = {}) {
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.BASH_ENV;
+  delete cleanEnv.ENV;
   return spawnSync("bash", [INSTALL, "--dir", sb.opt, ...args], {
     cwd: sb.dir,
     encoding: "utf8",
@@ -173,6 +199,25 @@ describe("install.sh", () => {
     const urls = fs.readFileSync(path.join(sb.dir, "curl.log"), "utf8");
     assert.ok(urls.includes("/releases/latest/download/release-components.json"), urls);
     assert.ok(!urls.includes("api.github.com"), `no anonymous API call expected, got: ${urls}`);
+    // The board refuses every Host header it was not told about, the machine's
+    // own address included, so the allow list travels with the install.
+    assert.match(env, /MYRMIDON_ALLOWED_HOSTNAMES=\S+/);
+    assert.match(compose, /PAPERCLIP_ALLOWED_HOSTNAMES: "\$\{MYRMIDON_ALLOWED_HOSTNAMES:?/);
+  });
+
+  it("opens the board by IP and names that address in the allow list", () => {
+    const sb = sandbox();
+    // The address the installer prints has to reach the board on the first
+    // click: a bare hostname only resolves for whoever has DNS for it.
+    const r = run(sb, [], { MYRMIDON_ALLOWED_HOSTS: "board.test,203.0.113.7" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(envFile(sb), /MYRMIDON_ALLOWED_HOSTNAMES=board\.test,203\.0\.113\.7/);
+    assert.match(envFile(sb), /MYRMIDON_PUBLIC_URL=http:\/\/203\.0\.113\.7:3100/);
+    assert.match(r.stdout, /Address:\s+http:\/\/203\.0\.113\.7:3100/);
+    assert.match(
+      fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8"),
+      /PAPERCLIP_ALLOWED_HOSTNAMES: "\$\{MYRMIDON_ALLOWED_HOSTNAMES:?/,
+    );
   });
 
   it("refuses a manifest that does not name a board digest", () => {
@@ -486,6 +531,48 @@ describe("install.sh", () => {
     );
   });
 
+  it("gives the board the one shared license directory, read-write, at the module path", () => {
+    // The antigravity adapter runs inside the board and reads
+    // /etc/myrmidon-license/license.key there; host modules read the same host
+    // file. The licensing screen must write that one file, so the board mounts
+    // the host directory read-write and points MYR_LICENSE_PATH at it.
+    const sb = sandbox();
+    assert.equal(run(sb).status, 0);
+    const env = envFile(sb);
+    assert.match(env, /^MYRMIDON_LICENSE_DIR=\/etc\/myrmidon-license$/m);
+    const compose = fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8");
+    assert.match(compose, /^      MYR_LICENSE_PATH: "\/etc\/myrmidon-license\/license\.key"$/m);
+    assert.match(compose, /^      - \$\{MYRMIDON_LICENSE_DIR:-\/etc\/myrmidon-license\}:\/etc\/myrmidon-license$/m);
+    const { errors, interpolated } = composeInterpolation(compose, composeEnvVars(env));
+    assert.deepEqual(errors, []);
+    assert.ok(interpolated.includes("- /etc/myrmidon-license:/etc/myrmidon-license\n"), "mounted read-write, not :ro");
+
+    const custom = sandbox();
+    assert.equal(run(custom, [], { MYRMIDON_LICENSE_DIR: "/srv/licenses" }).status, 0);
+    assert.match(envFile(custom), /^MYRMIDON_LICENSE_DIR=\/srv\/licenses$/m);
+  });
+
+  it("stops when the license issuing key sits in the license directory", () => {
+    for (const make of [
+      (d) => fs.mkdirSync(path.join(d, "issuer")),
+      (d) => fs.writeFileSync(path.join(d, "signing.pem"), "x"),
+      (d) => fs.writeFileSync(path.join(d, "key_ed25519"), "x"),
+    ]) {
+      const sb = sandbox();
+      const licDir = path.join(sb.dir, "lic");
+      fs.mkdirSync(licDir);
+      make(licDir);
+      const result = run(sb, ["--dry-run"], { MYRMIDON_LICENSE_DIR: licDir });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /ключ выпуска лежит в каталоге лицензии/);
+    }
+    const clean = sandbox();
+    const licDir = path.join(clean.dir, "lic");
+    fs.mkdirSync(licDir);
+    fs.writeFileSync(path.join(licDir, "license.key"), "MYR1.x\n");
+    assert.equal(run(clean, ["--dry-run"], { MYRMIDON_LICENSE_DIR: licDir }).status, 0);
+  });
+
   it("mounts the database volume at the path the PostgreSQL 18 image declares", () => {
     // PG18 keeps the cluster at /var/lib/postgresql/18/docker and the image
     // declares VOLUME /var/lib/postgresql. Mounting .../data would leave the
@@ -526,5 +613,23 @@ describe("install.sh", () => {
     });
     assert.equal(piped.status, 0, piped.stderr);
     assert.match(piped.stdout, /--database-url/);
+  });
+
+  it("sandbox cleanup removes created temporary directories", () => {
+    const sb = sandbox();
+    assert.ok(fs.existsSync(sb.dir), "sandbox directory exists before cleanup");
+    cleanupSandbox(sb);
+    assert.ok(!fs.existsSync(sb.dir), "sandbox directory is removed after cleanup");
+  });
+
+  it("install.sh cleans up temporary manifest file on completion", () => {
+    const sb = sandbox();
+    const tmpRoot = process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || os.tmpdir();
+    const tmpBefore = fs.readdirSync(tmpRoot).filter((f) => f.startsWith("tmp."));
+    const r = run(sb);
+    assert.equal(r.status, 0, r.stderr);
+    const tmpAfter = fs.readdirSync(tmpRoot).filter((f) => f.startsWith("tmp."));
+    const leaked = tmpAfter.filter((f) => !tmpBefore.includes(f));
+    assert.deepEqual(leaked, [], "install.sh must not leave temporary manifest files behind");
   });
 });

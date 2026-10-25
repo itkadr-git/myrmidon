@@ -1,6 +1,6 @@
-import { requiresExecutionReconciliation } from "@paperclipai/shared";
+import { requiresExecutionReconciliation } from "@myrmidon/shared";
 import type { ReactNode } from "react";
-import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
+import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@myrmidon/shared";
 import { Link } from "@/lib/router";
 import { Archive, Flag } from "lucide-react";
 import {
@@ -24,6 +24,7 @@ import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
 import { ReplayBlockedChip } from "./myrmidon/ReplayBlocked"; // myrmidon(N1)
 import { ExternalObjectStatusSummary } from "./ExternalObjectStatusSummary";
 import { Badge } from "@/components/ui/badge";
+import { i18n, useTranslation } from "@/i18n";
 
 export type IssueRowUnreadState = "hidden" | "visible" | "fading";
 export type IssueRowPresentation = "legacy" | "task";
@@ -90,6 +91,7 @@ export function InboxArchiveButton({
   disabled?: boolean;
   compact?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <button
       type="button"
@@ -110,10 +112,10 @@ export function InboxArchiveButton({
         "inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 disabled:pointer-events-none disabled:opacity-30",
         compact ? "h-5 py-0" : "py-1",
       )}
-      aria-label="Archive"
+      aria-label={t("area.issue-threads-runs-1.issue-row.archive")}
     >
       <Archive className="h-3.5 w-3.5" />
-      Archive
+      {t("area.issue-threads-runs-1.issue-row.archive")}
     </button>
   );
 }
@@ -152,6 +154,7 @@ export function IssueRow({
   chevronInGuide = false,
   showDivider = false,
 }: IssueRowProps) {
+  const { t } = useTranslation();
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   // A row participates in the unread system whenever `unreadState` is supplied.
@@ -179,7 +182,7 @@ export function IssueRow({
         "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
         selected ? "hover:bg-muted/80" : "hover:bg-blue-500/20",
       )}
-      aria-label="Mark as read"
+      aria-label={t("common.markAsRead")}
     >
       <span
         className={cn(
@@ -208,10 +211,10 @@ export function IssueRow({
     <Badge variant="outline"
       data-testid="issue-row-parked-blocker"
       className="[&>svg]:size-2.5 ml-1.5 gap-0.5 border-amber-500/60 bg-amber-500/15 text-(length:--text-nano) text-amber-700 dark:text-amber-300"
-      title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
+      title={t("area.issue-threads-runs-1.issue-row.parkedBlockerHint")}
     >
       <Flag className="h-2.5 w-2.5" aria-hidden />
-      Blocked by parked work
+      {t("area.issue-threads-runs-1.issue-row.parkedBlocker")}
     </Badge>
   ) : null;
 
@@ -527,15 +530,15 @@ function renderRecoveryChip(
       data-recovery-kind={action.kind}
       data-recovery-lane={lineage?.lane}
       role="status"
-      aria-label={detail ? `${label} — ${detail}` : label}
+      aria-label={detail ? i18n.t("area.issue-threads-runs-1.issue-row.chipLabelWithDetail", { label, detail }) : label}
       className={cn(
         "shrink-0 gap-0.5 text-(length:--text-nano)",
         tone.className,
         selected ? "!border-muted-foreground !text-muted-foreground" : null,
       )}
       title={detail
-        ? `${label} — ${detail}. Open the source task to act.`
-        : `${label} — open the source task to act.`}
+        ? i18n.t("area.issue-threads-runs-1.issue-row.chipHintWithDetail", { label, detail })
+        : i18n.t("area.issue-threads-runs-1.issue-row.chipHint", { label })}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
       {label}

@@ -57,7 +57,7 @@ def main() -> None:
     field = {"key": "OPE-1", "repo": "acme/widgets", "baseRef": "main"}
     opened = open_task_workspace(field)
     assert opened == {"path": "/workspace/OPE-1", "fallback": False,
-                      "exit_code": 0, "error": ""}
+                      "exit_code": 0, "error": "", "recovered": []}
     with open(record) as fh:
         argv_seen = fh.read().strip()
     assert argv_seen == "open OPE-1 acme/widgets --base main --json", argv_seen
@@ -87,6 +87,35 @@ def main() -> None:
     with open(record) as fh:
         assert fh.read().strip() == "open OPE-2 acme/widgets --json"
 
+    # MYR-WS-RECOVER: a PR branch is passed as --branch; invalid branches are rejected
+    # before any process starts; a repaired copy is reported through ``recovered``.
+    os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
+        tmpdir, code=0,
+        payload={"ok": True, "key": "OPE-7", "path": "/workspace/OPE-7.deploy",
+                 "class": "E", "repo": "acme/deploy", "branch": "fix/x", "reused": True,
+                 "recoveryRef": "refs/myr-ws/recovery/OPE-7",
+                 "recovered": [{"problem": "merge_in_progress", "action": "aborted"}]},
+        record=record)
+    opened = open_task_workspace({"key": "OPE-7", "repo": "acme/deploy", "branch": "fix/x"})
+    with open(record) as fh:
+        assert fh.read().strip() == "open OPE-7 acme/deploy --branch fix/x --json"
+    assert opened["fallback"] is False and opened["path"] == "/workspace/OPE-7.deploy"
+    assert opened["recovered"] == [{"problem": "merge_in_progress", "action": "aborted"}], opened
+    assert _validate_workspace_field(
+        {"key": "A-1", "repo": "a/b", "branch": "fix/x"})["branch"] == "fix/x"
+    for bad_branch in ("", " x", "-x", "a..b", "a b", 5):
+        try:
+            _validate_workspace_field({"key": "A-1", "repo": "a/b", "branch": bad_branch})
+            raise AssertionError(f"accepted malformed branch: {bad_branch!r}")
+        except ValueError:
+            pass
+    os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
+        tmpdir, code=0,
+        payload={"ok": True, "key": "OPE-1", "path": "/workspace/OPE-1",
+                 "class": "E", "repo": "acme/widgets", "branch": "bot/OPE-1",
+                 "base": "origin/main", "reused": False},
+        record=record)
+
     # Contract refusal family 3/4/5: fallback to /scratch with the CLI's error
     # text as the warning (never a silent wrong-directory run, never a raise).
     for code in (3, 4, 5):
@@ -100,16 +129,34 @@ def main() -> None:
         assert opened["exit_code"] == code
         assert f"refusal {code}" in opened["error"]
 
-    # Non-refusal failure (timeout family): a hard RuntimeError, not a silent
-    # fallback — a broken CLI or call shape is operator-visible breakage.
+    # OPE-8946: ANY other open failure (usage exit 2, unknown code, exit 0 without
+    # a path, timeout) also falls back to /scratch with a warning, never raises:
+    # a raise fails the run and drives the agent towards status error.
+    for code in (1, 2, 6, 7):
+        os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
+            tmpdir, code=code,
+            payload={"ok": False, "error": f"broken {code}", "exitCode": code},
+            record=record)
+        opened = open_task_workspace({"key": "OPE-4", "repo": "acme/widgets"})
+        assert opened["fallback"] is True and opened["path"] == "/scratch", (code, opened)
+        assert opened["exit_code"] == code and f"broken {code}" in opened["error"]
     os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
-        tmpdir, code=2, payload={"ok": False, "error": "usage", "exitCode": 2},
-        record=record)
+        tmpdir, code=0, payload={"ok": True}, record=record)
+    opened = open_task_workspace({"key": "OPE-4", "repo": "acme/widgets"})
+    assert opened["fallback"] is True and "without a JSON path" in opened["error"], opened
+    import tools.run_workspace as _rw
+    _orig = _rw.MYR_WS_OPEN_TIMEOUT_SEC
+    _rw.MYR_WS_OPEN_TIMEOUT_SEC = 1
+    slow = os.path.join(tmpdir, "myr-ws-slow")
+    with open(slow, "w") as fh:
+        fh.write("#!/bin/sh\nsleep 5\n")
+    os.chmod(slow, 0o755)
+    os.environ["MYRMIDON_WS_BIN"] = slow
     try:
-        open_task_workspace({"key": "OPE-4", "repo": "acme/widgets"})
-        raise AssertionError("exit 2 must raise, not fall back")
-    except RuntimeError as exc:
-        assert "exit 2" in str(exc)
+        opened = open_task_workspace({"key": "OPE-4", "repo": "acme/widgets"})
+    finally:
+        _rw.MYR_WS_OPEN_TIMEOUT_SEC = _orig
+    assert opened["fallback"] is True and "timed out" in opened["error"], opened
 
     # Missing binary: the contract refusal family covers a host without the CLI
     # too — fall back with a warning rather than fail every run there.

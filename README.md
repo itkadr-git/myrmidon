@@ -6,7 +6,7 @@
 
 [![Latest release](https://img.shields.io/github/v/release/itkadr-git/myrmidon?sort=semver&label=release)](https://github.com/itkadr-git/myrmidon/releases/latest)
 
-[What it is](#what-myrmidon-is) &middot; [Why](#why-myrmidon) &middot; [Quick start](#quick-start--deploy) &middot; [Architecture](#architecture-at-a-glance) &middot; [Configuration](#configuration) &middot; [What it does today](#what-it-does-today) &middot; [The idea](#the-idea-the-ant-colony-model) &middot; [Road to 2.0](#where-we-are-going-the-road-to-20) &middot; [Upgrading](#upgrading)
+[What it is](#what-myrmidon-is) &middot; [Telegram agent addressing](docs/myrmidon/guides/telegram-alias-addressing.md) &middot; [Why](#why-myrmidon) &middot; [Quick start](#quick-start--deploy) &middot; [Architecture](#architecture-at-a-glance) &middot; [Configuration](#configuration) &middot; [What it does today](#what-it-does-today) &middot; [The idea](#the-idea-the-ant-colony-model) &middot; [Road to 2.0](#where-we-are-going-the-road-to-20) &middot; [Upgrading](#upgrading)
 
 English &middot; [Русский](README.ru.md)
 
@@ -224,7 +224,7 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.14 is the current release cand
   ([alibaba-image-connector](docs/myrmidon/guides/alibaba-image-connector.md)).
 - **Cloud storage.** Owner-connected cloud accounts with per-agent folder
   grants; tokens stay in the company secret store
-  ([cloud-files-connector](docs/myrmidon/guides/cloud-files-connector.md)).
+  ([cloud-connector](docs/myrmidon/guides/cloud-connector.md)).
 - **Client connectors (the browser bridge).** A browser extension on a client
   PC dials out to the board; a bot drives that browser, and actions marked for
   human confirmation wait for a person on that PC. Details:

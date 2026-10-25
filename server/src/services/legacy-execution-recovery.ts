@@ -2,7 +2,7 @@ import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issueRecoveryActions, issues, type Db } from "@myrmidon/db";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
@@ -28,7 +28,9 @@ export function legacyExecutionNeedsReconciliation(
     !["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
   )
     return false;
-  if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false; // myrmidon(R3): maintenance interruption, retried after exit
+  // Maintenance interruption explicitly means retry, including after the
+  // bounded retry scheduler's ordinary attempt budget is exhausted.
+  if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   if (run.errorCode === RUN_STALL_ERROR_CODE) return false; // myrmidon(RUN-STALL): stall interruption, the sweep re-opens the task itself
   if (shouldSkipReconciliationForInfraInterrupt(run)) return false; // myrmidon(L1): infrastructure interruption, retried or released, not held
   // myrmidon(CONTINUATION-WAIT-HOLD): a queued continuation cancelled before
@@ -141,7 +143,18 @@ export async function terminalizeLegacyExecution(input: {
           eq(issueRecoveryActions.companyId, run.companyId),
           eq(issueRecoveryActions.sourceIssueId, task.id),
           eq(issueRecoveryActions.status, "resolved"),
-          sql`${issueRecoveryActions.evidence}->'executionReconciliation'->>'runId' = ${run.id}`,
+          // myrmidon(1.6.6 OPE-8988): the automatic settlement
+          // (execution-recovery-resolution, preserve_without_replay_v1) records
+          // the run under `automaticRecovery.runId`, not `executionReconciliation`;
+          // matching only the latter missed it, so every periodic revisit of the
+          // same terminal run opened a fresh action that settled into one more
+          // replay=blocked hold (prod: 1164 actions for one run on one issue).
+          // The source-scoped fingerprint names the run as well.
+          sql`(
+            ${issueRecoveryActions.evidence}->'executionReconciliation'->>'runId' = ${run.id}
+            or ${issueRecoveryActions.evidence}->'automaticRecovery'->>'runId' = ${run.id}
+            or ${issueRecoveryActions.fingerprint} = ${`legacy-execution:${run.id}`}
+          )`,
         )).limit(1);
       if (reconciled) return updated;
       await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({

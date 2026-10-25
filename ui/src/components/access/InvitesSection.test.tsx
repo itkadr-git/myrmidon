@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InvitesSection } from "./InvitesSection";
 import { queryKeys } from "@/lib/queryKeys";
+import { i18n } from "@/i18n";
 
 const listInvitesMock = vi.hoisted(() => vi.fn());
 const createCompanyInviteMock = vi.hoisted(() => vi.fn());
@@ -110,6 +111,10 @@ describe("InvitesSection", () => {
       configurable: true,
       value: { writeText: clipboardWriteTextMock },
     });
+  });
+
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
   });
 
   afterEach(() => {

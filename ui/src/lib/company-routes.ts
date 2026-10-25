@@ -3,7 +3,6 @@ const BOARD_ROUTE_ROOTS = new Set([
   "companies",
   "company",
   "skills",
-  "teams-catalog",
   "org",
   "agents",
   "chats",
@@ -19,7 +18,6 @@ const BOARD_ROUTE_ROOTS = new Set([
   "tools",
   "approvals",
   "costs",
-  "usage",
   "activity",
   "audit",
   "decisions",
@@ -38,6 +36,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "cases",
   "pipelines",
   "stack",
+  "wiki", // myrmidon(OPE-9222): the Knowledge screen
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);

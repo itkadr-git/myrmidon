@@ -7,7 +7,9 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import { Trans } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 
 type Platform = "mac" | "windows" | "linux";
 
@@ -17,33 +19,38 @@ const platforms: { id: Platform; label: string; icon: typeof Apple }[] = [
   { id: "linux", label: "Linux", icon: Terminal },
 ];
 
-const instructions: Record<Platform, { steps: string[]; tip?: string }> = {
-  mac: {
-    steps: [
-      "Open Finder and navigate to the folder.",
-      "Right-click (or Control-click) the folder.",
-      "Hold the Option (⌥) key — \"Copy\" changes to \"Copy as Pathname\".",
-      "Click \"Copy as Pathname\", then paste here.",
-    ],
-    tip: "You can also open Terminal, type cd, drag the folder into the terminal window, and press Enter. Then type pwd to see the full path.",
-  },
-  windows: {
-    steps: [
-      "Open File Explorer and navigate to the folder.",
-      "Click in the address bar at the top — the full path will appear.",
-      "Copy the path, then paste here.",
-    ],
-    tip: "Alternatively, hold Shift and right-click the folder, then select \"Copy as path\".",
-  },
-  linux: {
-    steps: [
-      "Open a terminal and navigate to the directory with cd.",
-      "Run pwd to print the full path.",
-      "Copy the output and paste here.",
-    ],
-    tip: "In most file managers, Ctrl+L reveals the full path in the address bar.",
-  },
-};
+type Translate = ReturnType<typeof useTranslation>["t"];
+
+// Built at render time so the text follows the selected language.
+function buildInstructions(t: Translate): Record<Platform, { steps: string[]; tip?: string }> {
+  return {
+    mac: {
+      steps: [
+        t("area.documents-artifacts-2.path-instructions-modal.mac.step1"),
+        t("area.documents-artifacts-2.path-instructions-modal.mac.step2"),
+        t("area.documents-artifacts-2.path-instructions-modal.mac.step3"),
+        t("area.documents-artifacts-2.path-instructions-modal.mac.step4"),
+      ],
+      tip: t("area.documents-artifacts-2.path-instructions-modal.mac.tip"),
+    },
+    windows: {
+      steps: [
+        t("area.documents-artifacts-2.path-instructions-modal.windows.step1"),
+        t("area.documents-artifacts-2.path-instructions-modal.windows.step2"),
+        t("area.documents-artifacts-2.path-instructions-modal.windows.step3"),
+      ],
+      tip: t("area.documents-artifacts-2.path-instructions-modal.windows.tip"),
+    },
+    linux: {
+      steps: [
+        t("area.documents-artifacts-2.path-instructions-modal.linux.step1"),
+        t("area.documents-artifacts-2.path-instructions-modal.linux.step2"),
+        t("area.documents-artifacts-2.path-instructions-modal.linux.step3"),
+      ],
+      tip: t("area.documents-artifacts-2.path-instructions-modal.linux.tip"),
+    },
+  };
+}
 
 function detectPlatform(): Platform {
   const ua = navigator.userAgent.toLowerCase();
@@ -61,19 +68,21 @@ export function PathInstructionsModal({
   open,
   onOpenChange,
 }: PathInstructionsModalProps) {
+  const { t } = useTranslation();
   const [platform, setPlatform] = useState<Platform>(detectPlatform);
 
-  const current = instructions[platform];
+  const current = buildInstructions(t)[platform];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-base">How to get a full path</DialogTitle>
+          <DialogTitle className="text-base">{t("area.documents-artifacts-2.path-instructions-modal.title")}</DialogTitle>
           <DialogDescription>
-            Paste the absolute path (e.g.{" "}
-            <code className="text-xs bg-muted px-1 py-0.5 rounded">/Users/you/project</code>
-            ) into the input field.
+            <Trans
+              i18nKey="area.documents-artifacts-2.path-instructions-modal.description"
+              components={{ code: <code className="text-xs bg-muted px-1 py-0.5 rounded" /> }}
+            />
           </DialogDescription>
         </DialogHeader>
 
@@ -124,6 +133,7 @@ export function PathInstructionsModal({
  * Drop-in replacement for the old showDirectoryPicker buttons.
  */
 export function ChoosePathButton({ className }: { className?: string }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -135,7 +145,7 @@ export function ChoosePathButton({ className }: { className?: string }) {
         )}
         onClick={() => setOpen(true)}
       >
-        Choose
+        {t("area.documents-artifacts-2.path-instructions-modal.choose")}
       </button>
       <PathInstructionsModal open={open} onOpenChange={setOpen} />
     </>

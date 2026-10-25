@@ -1,4 +1,7 @@
 import { useEffect, useMemo } from "react";
+import { Trans } from "react-i18next";
+import { useTranslation } from "@/i18n";
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 import { Link, Navigate, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
@@ -23,6 +26,7 @@ import { NotFoundPage } from "./NotFound";
  * @see doc/plugins/PLUGIN_SPEC.md §24.4 — Company-Context Plugin Page
  */
 export function PluginPage() {
+  const { t } = useTranslation();
   const params = useParams<{
     companyPrefix?: string;
     pluginId?: string;
@@ -115,14 +119,14 @@ export function PluginPage() {
   useEffect(() => {
     if (!pageSlot) return;
     if (routeSidebarActive) {
-      setBreadcrumbs([{ label: resolveRouteSidebarPageTitle(pageSlot, pluginRouteSplat) }]);
+      setBreadcrumbs([{ label: resolveRouteSidebarPageTitle(pageSlot, pluginRouteSplat, t) }]); // myrmidon(OPE-9352)
       return;
     }
     setBreadcrumbs([
-      { label: "Plugins", href: "/company/settings/instance/plugins" },
-      { label: pageSlot.pluginDisplayName },
+      { label: t("area.adapters-plugins-2.plugin-page.breadcrumbPlugins"), href: "/company/settings/instance/plugins" },
+      { label: pluginLabel(t, pageSlot.pluginKey, null, pageSlot.pluginDisplayName) }, // myrmidon(OPE-9352)
     ]);
-  }, [pageSlot, pluginRouteSplat, setBreadcrumbs, routeSidebarActive]);
+  }, [pageSlot, pluginRouteSplat, setBreadcrumbs, routeSidebarActive, t]);
 
   if (!resolvedCompanyId) {
     if (hasInvalidCompanyPrefix) {
@@ -130,13 +134,13 @@ export function PluginPage() {
     }
     return (
       <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">Select an organization to view this page.</p>
+        <p className="text-sm text-muted-foreground">{t("area.adapters-plugins-2.plugin-page.selectOrganization")}</p>
       </div>
     );
   }
 
   if (!contributions) {
-    return <div className="text-sm text-muted-foreground">Loading…</div>;
+    return <div className="text-sm text-muted-foreground">{t("common.loading")}</div>;
   }
 
   if (!pluginId && pluginRoutePath) {
@@ -146,7 +150,11 @@ export function PluginPage() {
     if (duplicateMatches.length > 1) {
       return (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          Multiple plugins declare the route <code>{pluginRoutePath}</code>. Use the plugin-id route until the conflict is resolved.
+          <Trans
+            i18nKey="area.adapters-plugins-2.plugin-page.duplicateRoute"
+            values={{ route: pluginRoutePath }}
+            components={{ code: <code /> }}
+          />
         </div>
       );
     }
@@ -170,7 +178,7 @@ export function PluginPage() {
           <Button variant="ghost" size="sm" asChild>
             <Link to={companyPrefix ? `/${companyPrefix}/dashboard` : "/dashboard"}>
               <ArrowLeft className="h-4 w-4 mr-1" />
-              Back
+              {t("area.adapters-plugins-2.plugin-page.back")}
             </Link>
           </Button>
         </div>
@@ -185,9 +193,15 @@ export function PluginPage() {
   );
 }
 
-function resolveRouteSidebarPageTitle(pageSlot: ResolvedPluginSlot, routeSplat: string | undefined): string {
+function resolveRouteSidebarPageTitle(
+  pageSlot: ResolvedPluginSlot,
+  routeSplat: string | undefined,
+  t: Parameters<typeof pluginLabel>[0], // myrmidon(OPE-9352)
+): string {
   const title = titleFromRouteSplat(routeSplat);
-  return title ?? pageSlot.displayName ?? pageSlot.pluginDisplayName;
+  return title
+    ?? (pageSlot.displayName ? pluginLabel(t, pageSlot.pluginKey, pageSlot.id, pageSlot.displayName) : null) // myrmidon(OPE-9352)
+    ?? pluginLabel(t, pageSlot.pluginKey, null, pageSlot.pluginDisplayName);
 }
 
 function titleFromRouteSplat(routeSplat: string | undefined): string | null {

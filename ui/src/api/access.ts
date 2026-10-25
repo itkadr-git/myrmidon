@@ -1,4 +1,4 @@
-import type { AgentAdapterType, BoardApiKeyScopeKind, JoinRequest, PermissionKey } from "@paperclipai/shared";
+import type { AgentAdapterType, BoardApiKeyScopeKind, JoinRequest, PermissionKey } from "@myrmidon/shared";
 import { api } from "./client";
 
 export type HumanCompanyRole = "owner" | "admin" | "operator" | "viewer";

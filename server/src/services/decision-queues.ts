@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   approvals,
@@ -16,7 +16,7 @@ import {
   issueWorkProducts,
   issues,
   joinRequests,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   AttentionItem,
   AttentionSourceKind,
@@ -24,7 +24,7 @@ import type {
   DecisionQueueItem,
   DecisionQueueSeedRule,
   DecisionTriage,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { notFound, unprocessable } from "../errors.js";
 // myrmidon(SUB): the stack registry keeps its components in instance settings, not a table
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
@@ -328,6 +328,8 @@ async function sourceIssueId(
     // registry; the source id is the task the sweep unblocked.
     // myrmidon(REVIEW-ROUTING): the review routing signal is also about one task.
     case "review_routing":
+    // myrmidon(OPE-7932): the overdue monitor card is attached to its issue.
+    case "issue_monitor_overdue":
     // myrmidon(1.6.5 BOT-DISK-H4c): the archive card sits on the task.
     case "bot_disk_archive":
     // myrmidon(OPE-6011): the held-task card's subject is the held task.

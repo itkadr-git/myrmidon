@@ -8,7 +8,7 @@
 //
 // Docs: docs/myrmidon/DIVERGENCE.md (track 5), docs/myrmidon/SETTINGS.md.
 
-import type { SecretProvider } from "@paperclipai/shared";
+import type { SecretProvider } from "@myrmidon/shared";
 
 /** Secret kinds the access hub distinguishes. Stored in the existing
  * `company_secrets.providerMetadata` JSON field under the `kind` key. */

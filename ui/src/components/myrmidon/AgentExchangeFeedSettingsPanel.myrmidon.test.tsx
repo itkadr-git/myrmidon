@@ -6,7 +6,7 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ResolvedAgentExchangeFeedSettings } from "@paperclipai/shared";
+import type { ResolvedAgentExchangeFeedSettings } from "@myrmidon/shared";
 import { AgentExchangeFeedSettingsPanelView } from "./AgentExchangeFeedSettingsPanel";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

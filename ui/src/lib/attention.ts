@@ -9,7 +9,7 @@ import type {
   AttentionSeverity,
   AttentionSourceKind,
   AttentionWorkspaceRef,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export type AttentionListOptions = AttentionFeedQuery;
 
@@ -103,6 +103,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   queue_stall: { label: "Queue stall" },
   // myrmidon(1.6.6 OPE-7198): label for the codex_pool_alert attention card.
   codex_pool_alert: { label: "Codex pool alert" },
+  // myrmidon(OPE-7932): label for an overdue issue monitor.
+  issue_monitor_overdue: { label: "Overdue issue monitor" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {

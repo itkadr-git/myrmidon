@@ -2,7 +2,11 @@
 
 > Русская версия: [Settings-in-the-interface.ru](Settings-in-the-interface.ru)
 
-Where day-to-day setup happens in the board UI. Sources: the
+Where day-to-day setup happens in the board UI. The UI 2.0 company-settings sidebar
+currently lists General, Members, Access, Secrets, Budgets, Autonomy, and
+Agent castes, alongside the sections implemented in the UI 2.0 route table.
+Guardrails is intentionally not shown: its screen and route are not implemented
+in this release. Sources: the
 [README](https://github.com/itkadr-git/myrmidon/blob/main/README.md)
 configuration section and the operator guides under
 [`docs/myrmidon/guides/`](https://github.com/itkadr-git/myrmidon/tree/main/docs/myrmidon/guides).
@@ -47,6 +51,20 @@ and queue-aging step/cap. Each field shows whether its value comes from saved
 settings, the server environment or defaults. Changes apply on the next
 admission pass without a server restart. The panel reports when the server
 endpoint is not available instead of implying that a save succeeded.
+
+## Access hub
+
+The access hub is under **Company Settings → Access hub**. Its list endpoints
+return access and host arrays when the module is enabled. When the module is
+disabled, they return HTTP 200 with `enabled: false` and empty arrays. The UI
+shows a "not available yet" notice instead of the access list. This is an
+off-feature state, not an API failure. Check `GET
+/api/myrmidon/access-hub/status` and `MYRMIDON_ACCESS_HUB_ENABLED` to confirm
+whether the module is off. If status says enabled but a list request fails or
+returns malformed data, investigate the API/service fault.
+
+See the full [Access hub operator guide](../myrmidon/guides/access-hub.md) for
+routes and behavior.
 
 ## Per-agent parallelism
 
@@ -174,6 +192,35 @@ environment variable, so the stored row (then the built-in default) is the
 only source; a hand-edited value that is not a whole number within the bounds
 reads as the default — the same fallback the feed itself applies.
 
+- **Run stall detection** — the "Run stall detection" section on Instance →
+  General (since 1.6.5) edits the stalled-run sweep live, without a restart:
+  the sweep interval (`checkIntervalSec`, 15 s – 24 h) and the scan page
+  size (`pageSize`, 1–200). The master switch and the silence threshold are
+  shown read-only with a link to the Team liveness section, which owns them
+  (`runStallEnabled`, `runStallThresholdSec` at
+  `/api/myrmidon/team-liveness`). Each value shows where it came from — the
+  saved settings row (`instance_settings.general.runStall`), the deployment
+  environment (`MYRMIDON_RUN_STALL_*`) or the built-in default. Written by
+  an instance administrator via `GET`/`PATCH` on `/api/myrmidon/run-stall`.
+- **Board process composition** (since 1.6.6) — how many HTTP processes
+  (`api`) and how many scheduler processes (`worker`) the deployment runs,
+  read once at startup from the instance settings key `general.processes`.
+  An absent key means `{ api: 1, worker: 0 }` — the single process, as
+  before; a malformed row refuses startup with the fix in the log. With
+  several processes, the per-process readiness endpoint
+  `GET /internal/ready` and the aggregate `GET /healthz` (200 only when all
+  api processes are ready) report the state to the load balancer.
+- **Long task context** — a task whose history no longer fits the model
+  window is reset automatically instead of failing the run on context
+  compression: a session already past `resetPct` (default 70 %) of the
+  model window is dropped before the next run resumes it, and the launch
+  payload's history is bounded by volume as well as by count. Tuned by
+  `MYRMIDON_LONG_TASK_CONTEXT_*` and `MYRMIDON_CONTINUATION_*` (since 1.6.6)
+  — details in the
+  [long-task-context](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/long-task-context.md)
+  guide and in
+  [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md).
+
 ## Also in the interface
 
 - **Host disk threshold** — Instance → General, "Host disk" (default 85 %);
@@ -205,3 +252,16 @@ model the gateway returns in its response, then the LiteLLM `model_group`
 the request was routed to, then the model configured on the launch. Empty
 strings and the sentinel `unknown` are dropped at each step, so the field is
 either a real model name or absent.
+## Runtime behavior settings (behavior-settings API)
+
+Starting with Myrmidon 1.7 (SETTINGS-TO-UI), runtime behavior settings can be read and modified dynamically without restarting the server:
+- `GET /api/myrmidon/behavior-settings/definitions` — list all setting definitions, scopes, types, and defaults.
+- `GET /api/myrmidon/behavior-settings` (and `?key=:key` or `/key/:key`) — read effective instance settings and sources (`ui`, `env`, `default`).
+- `PATCH /api/myrmidon/behavior-settings` (and `PUT` alias) — update instance-level settings (instance admin only).
+- `GET|PATCH /api/myrmidon/behavior-settings/company/:companyId` — read and update company-scoped settings (company access required).
+
+Scope isolation is strictly enforced: instance endpoints reject company-scoped keys, and company endpoints reject instance-scoped keys with HTTP 400. Full API specification and setting catalog: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md#17--behavior-settings-api-runtime-settings-settings-to-ui).
+
+# Agents page live-run refresh
+
+The Agents page refreshes live-run data every 60 seconds. Use the page's manual refresh when an immediate update is needed.

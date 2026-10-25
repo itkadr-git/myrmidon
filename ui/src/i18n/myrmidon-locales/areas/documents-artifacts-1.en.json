@@ -1,0 +1,169 @@
+{
+  "area": {
+    "documents-artifacts-1": {
+      "artifacts-panel": {
+        "title": "Artifacts",
+        "filterAll": "All",
+        "filterInProgress": "In Progress",
+        "filterForReview": "For Review",
+        "filterCompleted": "Completed",
+        "statusChangesRequested": "Changes Requested",
+        "statusFailed": "Failed",
+        "documentFallbackTitle": "Document",
+        "emptyAll": "Your team's deliverables and plans will appear here as they're produced.",
+        "emptyFiltered": "No artifacts match this filter.",
+        "generating": "Generating...",
+        "loadingDocument": "Loading document...",
+        "documentUnavailable": "Document not available yet.",
+        "documentEmpty": "Document is empty.",
+        "needsReview": "This document needs your review.",
+        "approve": "Approve",
+        "reject": "Reject",
+        "approvedNote": "Approved — hire tasks created",
+        "changesRequestedNote": "Changes requested — CEO is revising"
+      },
+      "document-annotation-layer": {
+        "openThread": "Open annotation thread",
+        "anchorMoved": "Anchor moved — needs review",
+        "selectionActions": "Selection actions",
+        "addCommentOnSelection": "Add comment on selection (⌘⇧M)",
+        "comment": "Comment"
+      },
+      "document-annotation-panel": {
+        "panel": {
+          "commentsOn": "Comments on {{documentKey}} revision {{revision}}",
+          "annotationsFor": "Annotations for {{documentKey}}, revision {{revision}}"
+        },
+        "body": {
+          "revision": "rev {{revision}}",
+          "closePanel": "Close annotation panel",
+          "composerPlaceholder": "Write a comment…",
+          "posting": "Posting…",
+          "comment": "Comment"
+        },
+        "threadCard": {
+          "replyPlaceholder": "Reply…",
+          "reopen": "Reopen",
+          "resolve": "Resolve",
+          "sending": "Sending…",
+          "reply": "Reply",
+          "moreThreadActions": "More thread actions",
+          "copyLink": "Copy link",
+          "commentCount_one": "{{count}} comment",
+          "commentCount_other": "{{count}} comments"
+        },
+        "commentRow": {
+          "agentSuffix": "· agent",
+          "authorAgent": "Agent",
+          "authorBoard": "Board"
+        }
+      },
+      "document-annotation-popover": {
+        "addComment": "Add annotation comment",
+        "thread": "Annotation thread",
+        "composerPlaceholder": "Write a comment…",
+        "posting": "Posting…",
+        "comment": "Comment"
+      },
+      "document-diff-modal": {
+        "actorBoard": "board",
+        "actorAgent": "agent",
+        "actorSystem": "system",
+        "revisionLabel": "rev {{revision}} — {{time}} • {{actor}}",
+        "title": "Diff —",
+        "oldBadge": "Old",
+        "newBadge": "New",
+        "selectRevision": "Select revision",
+        "loadingRevisions": "Loading revisions...",
+        "selectTwo": "Select two revisions to compare.",
+        "sameRevision": "Both sides are the same revision.",
+        "colOld": "Old",
+        "colNew": "New",
+        "colContent": "Content"
+      },
+      "document-frame-header": {
+        "expandDocument": "Expand {{documentKey}} document",
+        "collapseDocument": "Collapse {{documentKey}} document",
+        "revision": "rev {{revision}}",
+        "revisionHistory": "Revision history",
+        "loadingRevisions": "Loading revisions...",
+        "current": "Current",
+        "noRevisions": "No revisions yet",
+        "updated": "updated {{time}}"
+      },
+      "file-viewer-sheet": {
+        "somethingWrong": "Something went wrong.",
+        "denial": {
+          "blockedTitle": "Viewer blocked for this file",
+          "blockedBody": "This file is not available through the viewer because it may contain sensitive data.",
+          "outsideTitle": "Path is outside the workspace",
+          "outsideBody": "The viewer can only open files that live under the issue's workspace.",
+          "archivedTitle": "Workspace is no longer available",
+          "archivedBody": "The isolated worktree for this issue has been cleaned up, so files cannot be previewed.",
+          "remoteTitle": "Remote workspace preview not supported",
+          "remoteBody": "This workspace is hosted remotely and is not available for inline preview yet.",
+          "tooLargeTitle": "File is too large to preview",
+          "tooLargeBody": "This file exceeds the supported preview size.",
+          "unsupportedTitle": "Preview not supported for this file type",
+          "unsupportedBody": "This file does not have a text, image, or video preview available.",
+          "defaultTitle": "Can't preview this file",
+          "defaultBody": "The viewer was unable to load this file."
+        },
+        "metadata": {
+          "line": "Line {{line}}",
+          "lineColumn": "Line {{line}}, Col {{column}}",
+          "loadingDetails": "Loading file details"
+        },
+        "content": {
+          "loaded_one": "File loaded, {{count}} line.",
+          "loaded_other": "File loaded, {{count}} lines.",
+          "imageUnavailable": "Image preview unavailable",
+          "videoUnavailable": "Video preview unavailable",
+          "videoPreview": "Video preview: {{title}}",
+          "unsupported": "Preview not supported for this file type",
+          "contentType": "Content type: {{type}}",
+          "sourceOf": "{{title}} source",
+          "markdownMode": "Markdown preview mode",
+          "showRendered": "Show rendered Markdown",
+          "rendered": "Rendered Markdown",
+          "showRaw": "Show raw Markdown",
+          "raw": "Raw Markdown",
+          "renderedOf": "{{title}} rendered Markdown"
+        },
+        "loading": {
+          "preview": "Loading file preview",
+          "previewLong": "Loading file preview..."
+        },
+        "sheet": {
+          "loadFailed": "Unable to load file.",
+          "loadContentFailed": "Unable to load file content.",
+          "copyFailed": "Copy failed",
+          "contentsUnavailable": "File contents unavailable",
+          "copiedData": "Copied file data",
+          "copiedContents": "Copied contents",
+          "copiedLink": "Copied link",
+          "browseTitle": "Browse workspace",
+          "browseDescription": "Search and preview files from this issue's workspace.",
+          "backToFiles": "Back to files",
+          "download": "Download file",
+          "copiedFileContents": "Copied file contents",
+          "copyFileContents": "Copy file contents",
+          "copiedViewLink": "Copied file view link",
+          "copyViewLink": "Copy link to this file view",
+          "copyLink": "Copy link",
+          "closeViewer": "Close file viewer",
+          "resizeTree": "Resize file tree"
+        },
+        "body": {
+          "notFoundTitle": "File not found",
+          "notFoundBody": "That file was not found in the active workspace.",
+          "tryProject": "Try project workspace",
+          "noWorkspaceTitle": "No workspace available",
+          "noWorkspaceBody": "This issue does not have a workspace that supports preview yet.",
+          "remoteTitle": "Remote workspace preview coming soon",
+          "remoteBody": "This workspace is hosted remotely; inline previews are not supported yet."
+        }
+      }
+    }
+  }
+}

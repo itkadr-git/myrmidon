@@ -12,7 +12,7 @@ import {
   issuePlanDecompositions,
   issueRelations,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 vi.mock("../middleware/logger.js", () => ({
@@ -404,7 +404,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     void issueId;
   });
 
-  it("does not wake a cancelled-blocker dependent (an operator must resolve the relation)", async () => {
+  it("wakes a cancelled-blocker dependent (a cancelled blocker is resolved, OPE-8904)", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId });
     const blockerId = randomUUID();
@@ -425,9 +425,9 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
 
     const result = await idlePickupForAgent(deps, { id: agentId, companyId });
 
-    expect(result.considered).toBe(0);
-    expect(result.woken).toBe(0);
-    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect(result.considered).toBe(1);
+    expect(result.woken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
   });
 
   it("does not wake a container (an issue with an open child)", async () => {
@@ -606,6 +606,75 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(result2.woken).toBe(1);
     expect(result2.issueIds).toEqual([issueA]);
     expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("myrmidon(1.6.6 OPE-8988): an old queued wake no run carries is an orphan and does not cover the issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId });
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "queued",
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(0);
+    expect(result.woken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("myrmidon(1.6.6 OPE-8988): a claimed wake whose run already ended does not cover the issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId });
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "claimed",
+      requestedByActorType: "system",
+      requestedByActorId: null,
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(0);
+    expect(result.woken).toBe(1);
+  });
+
+  it("myrmidon(1.6.6 OPE-8988): an old deferred wake whose issue holds no execution lock does not cover it", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId });
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId },
+      status: "deferred_issue_execution",
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(0);
+    expect(result.woken).toBe(1);
   });
 
   it("a deferred or claimed wake also counts as covering (not only queued)", async () => {

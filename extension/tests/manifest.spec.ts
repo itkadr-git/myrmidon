@@ -12,12 +12,21 @@ const here = dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(readFileSync(resolve(here, "../manifest.json"), "utf8"));
 
 describe("manifest.json", () => {
+  it("pins the extension id with a public key (the native host allows exactly this id)", async () => {
+    const { createHash } = await import("node:crypto");
+    expect(manifest.key).toMatch(/^[A-Za-z0-9+/]+=*$/);
+    const digest = createHash("sha256").update(Buffer.from(manifest.key, "base64")).digest("hex").slice(0, 32);
+    const id = [...digest].map((c) => String.fromCharCode("a".charCodeAt(0) + parseInt(c, 16))).join("");
+    expect(id).toBe("ighfclbbknfjkhfhejhegaabllbdkiln");
+  });
+
   it("is a Manifest V3 extension", () => {
     expect(manifest.manifest_version).toBe(3);
   });
 
   it("requests the minimal permission set (no tabs.onUpdate, no webRequest)", () => {
-    expect([...manifest.permissions].sort()).toEqual(["storage", "tabs"]);
+    // nativeMessaging is the channel to the local signing helper (browser.sign).
+    expect([...manifest.permissions].sort()).toEqual(["nativeMessaging", "storage", "tabs"]);
   });
 
   it("limits host permissions to the outbound bridge socket", () => {
@@ -53,6 +62,7 @@ describe("protocol copy (part B contract mirror)", () => {
     expect(protocol).toContain(`"browser.fill"`);
     expect(protocol).toContain(`"browser.download"`);
     expect(protocol).toContain(`"browser.screenshot"`);
+    expect(protocol).toContain(`"browser.sign"`);
   });
 
   it("keeps the timeouts at the design-note values (30 s / 180 s)", () => {
@@ -66,12 +76,15 @@ describe("protocol copy (part B contract mirror)", () => {
     expect(protocol).toContain("BRIDGE_PROTOCOL_VERSION = 1");
   });
 
-  it("declares the read-only set plus the part D primitives, and never sign", () => {
-    for (const capability of ['"open"', '"read"', '"click"', '"fill"', '"download"', '"screenshot"']) {
+  it("declares the read-only set, the part D primitives and sign", () => {
+    for (const capability of ['"open"', '"read"', '"click"', '"fill"', '"download"', '"screenshot"', '"sign"']) {
       expect(protocol).toContain(capability);
     }
-    // Signing is never automated by the extension: the helper owns the key and
-    // the PIN, so the extension declares no sign capability at all.
-    expect(protocol).not.toContain('"sign"');
+  });
+
+  it("names the native host with characters Chrome allows (no hyphen)", () => {
+    const contract = readFileSync(resolve(here, "../src/native-host-contract.ts"), "utf8");
+    const name = /SIGN_HOST_NAME = "([^"]+)"/.exec(contract)?.[1];
+    expect(name).toMatch(/^[a-z0-9_]+(\.[a-z0-9_]+)+$/);
   });
 });

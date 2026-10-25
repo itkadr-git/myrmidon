@@ -7,12 +7,13 @@
 // accounts appear and clear without anyone viewing the settings page.
 
 import { and, eq, isNotNull } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { modelProviders } from "@paperclipai/db";
-import type { PoolAccountRoleSignal } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { modelProviders } from "@myrmidon/db";
+import type { PoolAccountRoleSignal } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { createDefaultModelProviderService } from "./wiring.js";
 import type { ModelProviderService } from "./service.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export const POOL_SWEEP_INTERVAL_SEC_ENV = "MYRMIDON_POOL_SWEEP_INTERVAL_SEC";
 const DEFAULT_SWEEP_INTERVAL_SEC = 300;
@@ -70,7 +71,7 @@ export function createModelProviderPoolSweeper(
     return { companies: companiesCount, signals: totalSignals };
   }
 
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void sweep().catch((err) => log.error({ err }, "codex pool signals sweep tick failed"));
   }, intervalMs);
   timer.unref?.();

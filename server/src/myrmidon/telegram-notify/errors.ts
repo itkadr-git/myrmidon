@@ -28,8 +28,8 @@
 // messages — the safe direction for an alerting channel.
 
 import { and, eq, sql } from "drizzle-orm";
-import { chatConversations, chatPublications, type Db } from "@paperclipai/db";
-import type { AttentionItem, TelegramErrorsSettings } from "@paperclipai/shared";
+import { chatConversations, chatPublications, type Db } from "@myrmidon/db";
+import type { AttentionItem, TelegramErrorsSettings } from "@myrmidon/shared";
 import { projectSafeChatPublication } from "../../services/chat-publication-projection.js";
 
 /** The telegramNotify `errors` settings area this module consumes (shared contract). */

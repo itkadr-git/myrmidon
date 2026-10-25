@@ -700,4 +700,117 @@ describe("issue activity event routes", () => {
       );
     });
   });
+
+  function makeMonitoredIssue(status: string = "in_progress") {
+    const nextCheckAt = "2026-04-11T12:30:00.000Z";
+    return {
+      ...makeIssue(),
+      status,
+      executionPolicy: normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: { nextCheckAt, notes: "Check deployment", scheduledBy: "assignee" },
+      }),
+      executionState: {
+        status: "idle",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: {
+          status: "scheduled",
+          nextCheckAt,
+          lastTriggeredAt: null,
+          attemptCount: 0,
+          notes: "Check deployment",
+          scheduledBy: "assignee",
+          clearedAt: null,
+          clearReason: null,
+        },
+      },
+      monitorNextCheckAt: new Date(nextCheckAt),
+      monitorAttemptCount: 0,
+      monitorLastTriggeredAt: null,
+      monitorNotes: "Check deployment",
+      monitorScheduledBy: "assignee",
+    };
+  }
+
+  function makeMonitorRouteDbMock() {
+    return {
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({}),
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            orderBy: async () => [],
+          }),
+        }),
+      }),
+    };
+  }
+
+  it("strips monitor clear notice before persistence and posts one system comment", async () => {
+    const issue = makeMonitoredIssue();
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-monitor-clear",
+      body: "Monitor cleared (done).",
+    });
+    let persistedPatch: Record<string, unknown> | undefined;
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      persistedPatch = patch;
+      return issueUpdateWithReceipt(issue, patch);
+    });
+
+    const response = await request(await createApp(makeMonitorRouteDbMock()))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "todo" });
+
+    expect(response.status).toBe(200);
+    expect(persistedPatch).toBeDefined();
+    expect(persistedPatch).not.toHaveProperty("monitorClearNotice");
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issue.id,
+      expect.stringContaining("Monitor cleared"),
+      {},
+      expect.objectContaining({ presentation: expect.objectContaining({ kind: "system_notice" }) }),
+    );
+  });
+
+  it.each(["done", "cancelled"])(
+    "does not post a monitor clear comment when the issue becomes %s",
+    async (status) => {
+      const issue = makeMonitoredIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+        issueUpdateWithReceipt(issue, patch));
+
+      const response = await request(await createApp(makeMonitorRouteDbMock()))
+        .patch(`/api/issues/${issue.id}`)
+        .send({ status });
+
+      expect(response.status).toBe(200);
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    },
+  );
+
+  it("treats a monitor clear comment failure as best effort", async () => {
+    const issue = makeMonitoredIssue();
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockRejectedValue(new Error("comment store unavailable"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      issueUpdateWithReceipt(issue, patch));
+
+    const response = await request(await createApp(makeMonitorRouteDbMock()))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "todo" });
+
+    expect(response.status).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+  });
+
 });

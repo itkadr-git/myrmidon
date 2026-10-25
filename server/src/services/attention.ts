@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, notInArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   agentWakeupRequests,
@@ -29,8 +29,8 @@ import {
   projects,
   projectWorkspaces,
   secretAccessEvents,
-} from "@paperclipai/db";
-import { deriveProjectUrlKey, botDiskQuotaWhyNow } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { deriveProjectUrlKey, botDiskQuotaWhyNow } from "@myrmidon/shared";
 import type {
   AttentionDecisionVerb,
   AttentionFeed,
@@ -50,7 +50,7 @@ import type {
   IssueThreadInteractionEffectiveResolverPolicySource,
   IssueThreadInteractionResolverPolicyProvenance,
   IssueReviewPolicy,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
@@ -87,6 +87,8 @@ import {
 import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2/1.6.5 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+// myrmidon(FEATURES): an enabled feature that stays misconfigured or failing raises one operator card
+import { readFeatureAttentionSignals } from "../myrmidon/features/attention.js";
 // myrmidon(1.6.6 OPE-7198): Codex/ChatGPT pool banned/exhausted role signals
 import { readPoolAccountSignals } from "../myrmidon/model-providers/signals.js";
 // myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
@@ -146,7 +148,7 @@ import { buildWipLimitStatus } from "../myrmidon/wip-limit/status.js";
 import {
   WIP_LIMIT_SETTINGS_KEY,
   normalizeWipLimitSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): the recorded prompt-budget signals.
 import { readPromptBudgetSignals } from "../myrmidon/prompt-budget/signal.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning-spend operator signals.
@@ -155,7 +157,7 @@ import {
   readForagingLimitSignal,
 } from "../myrmidon/foraging/limits.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode shown on the budget card.
-import { resolveBudgetEnforcement } from "@paperclipai/shared";
+import { resolveBudgetEnforcement } from "@myrmidon/shared";
 
 /**
  * myrmidon(TRACING-HEALTH): a stable UUID for the synthetic "LLM tracing"
@@ -177,6 +179,17 @@ import {
   decisionRetentionSyncScheduler,
   type DecisionRetentionSyncSink,
 } from "./decision-retention-sync.js";
+import { createHash as createFeatureSubjectHash } from "node:crypto"; // myrmidon(FEATURES)
+
+/**
+ * myrmidon(FEATURES): a stable uuid-shaped subject id per (company, feature),
+ * for the same reason the tracing card has one: the attention enrichment joins
+ * subject ids against uuid columns.
+ */
+function featureHealthSubjectId(companyId: string, key: string): string {
+  const hex = createFeatureSubjectHash("sha1").update(`${companyId}:${key}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
 
 const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "approval",
@@ -287,6 +300,8 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   secret_off_run_grant_expiring: 18,
   // myrmidon(1.6.6 OPE-7198): pool account alerts are high/medium operational notices.
   codex_pool_alert: 4,
+  // myrmidon(OPE-7932): overdue monitors need operator visibility, below blockers.
+  issue_monitor_overdue: 12,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -2011,6 +2026,60 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
+      const overdueMonitors = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          executionPolicy: issues.executionPolicy,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
+          updatedAt: issues.updatedAt,
+          createdAt: issues.createdAt,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          sql`${issues.monitorNextCheckAt} is not null`,
+          lte(issues.monitorNextCheckAt, new Date(now - 5 * 60_000)),
+          sql`(${issues.monitorWakeRequestedAt} is null or ${issues.monitorWakeRequestedAt} < ${new Date(now - 5 * 60_000).toISOString()}::timestamptz)`,
+          sql`${issues.status} not in ('done', 'cancelled')`,
+          isNull(issues.assigneeUserId),
+          isNotNull(issues.assigneeAgentId),
+          executionIssueCondition(),
+        ))
+        .orderBy(asc(issues.monitorNextCheckAt), asc(issues.id));
+      const overdueIssueMap = new Map(overdueMonitors.map((issue) => [issue.id, issue]));
+      for (const monitorIssue of overdueMonitors) {
+        const subject = overdueIssueMap.get(monitorIssue.id);
+        if (!subject) continue;
+        const nextCheckAt = monitorIssue.monitorNextCheckAt?.toISOString() ?? "unknown";
+        const dedupKey = `issue-monitor-overdue:${monitorIssue.id}`;
+        add(createItem({
+          companyId,
+          sourceKind: "issue_monitor_overdue",
+          subject: issueSubject(prefix, subject),
+          whyNow: `Scheduled monitor was due at ${nextCheckAt}, but no wake was recorded after the 5 minute grace period.`,
+          decisionVerbs: decisionVerbs({ id: "inspect", label: "Inspect", description: "Inspect the monitor and wake history." }),
+          inlineResolvable: false,
+          entryRule: "an open issue monitor is overdue and has no recorded wake claim",
+          exitRule: "the monitor is triggered, cleared, or the issue is closed",
+          dedupKey,
+          severity: "high",
+          activityAt: toIso(monitorIssue.monitorNextCheckAt ?? monitorIssue.updatedAt),
+          createdAt: toIso(monitorIssue.createdAt),
+          updatedAt: toIso(monitorIssue.updatedAt),
+          relatedIssue: null,
+          ...issueContext(subject),
+          detail: genericDetail(`Monitor due ${nextCheckAt}; wake not recorded.`, []),
+        }));
+      }
+
       const reviewRows = await db
         .select({
           id: issues.id,
@@ -2912,7 +2981,7 @@ async function buildAttentionFeedSnapshot(
             companyId,
             title: signal.title ?? "Task",
             identifier: signal.identifier,
-            status: "in_progress",
+            status: signal.targetStatus ?? "in_progress",
             href: signal.identifier ? `/${prefix}/issues/${signal.identifier}` : null,
             metadata: {
               liftedAt: signal.liftedAt,
@@ -3826,6 +3895,47 @@ async function buildAttentionFeedSnapshot(
             }));
           }
         }
+      }
+
+      // myrmidon(FEATURES): a feature that is enabled and has been
+      // misconfigured or failing for over 30 minutes raises ONE card on the
+      // operator desk (the Features page holds the detail). The signals come
+      // from the process-level clock the health pass feeds (features/
+      // attention.ts); the card disappears when the feature is healthy again.
+      for (const feature of readFeatureAttentionSignals()) {
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent",
+            id: featureHealthSubjectId(companyId, feature.key),
+            companyId,
+            title: feature.title,
+            identifier: null,
+            status: feature.status,
+            href: `/${prefix}/company/settings/instance/features`,
+            metadata: { featureHealth: true, featureKey: feature.key, status: feature.status },
+          },
+          whyNow: feature.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the Features page." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "an enabled feature has been misconfigured or failing for more than 30 minutes.",
+          exitRule: "the feature is healthy, off or unknown again, or the row is dismissed.",
+          dedupKey: feature.dedupKey,
+          severity: feature.severity,
+          activityAt: feature.activityAt,
+          createdAt: feature.activityAt,
+          updatedAt: feature.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(feature.whyNow),
+            images: [],
+          },
+        }));
       }
 
       const deduped = new Map<string, AttentionItem>();

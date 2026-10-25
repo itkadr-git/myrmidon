@@ -3,11 +3,11 @@ import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it, vi, afterEach } from "vitest";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
 import {
   GITHUB_LAUNCHER_PAYLOAD_VERSION,
   githubLauncherProgramFiles,
-} from "@paperclipai/adapter-utils/github-launcher";
+} from "@myrmidon/adapter-utils/github-launcher";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import {
@@ -24,7 +24,7 @@ import {
 // see the tool.completed preview-caching test below.
 import { parseHermesStdoutLine } from "../../ui/parse-stdout.js";
 // myrmidon(1.6.5 BOT-DISK-H5a): the C6 contract fixture is the oracle for the
-// workspace body field. This package does not depend on @paperclipai/shared
+// workspace body field. This package does not depend on @myrmidon/shared
 // (and tsc's rootDir forbids importing it by path), so the schema's three
 // field formats are restated in runWorkspaceFieldSchema below; the contract
 // test in packages/shared keeps the fixture and the real schema in lockstep.
@@ -32,7 +32,7 @@ import { readFileSync } from "node:fs";
 
 const runWorkspaceFieldSchema = {
   safeParse(value: unknown): { success: boolean } {
-    const v = value as { key?: unknown; repo?: unknown; baseRef?: unknown } | null;
+    const v = value as { key?: unknown; repo?: unknown; baseRef?: unknown; branch?: unknown } | null;
     const ok =
       !!v && typeof v === "object" &&
       typeof v.key === "string" && /^[A-Z][A-Z0-9]*-[0-9]+$/.test(v.key) &&
@@ -40,7 +40,10 @@ const runWorkspaceFieldSchema = {
       (v.baseRef === undefined ||
         (typeof v.baseRef === "string" && v.baseRef.length >= 1 && v.baseRef.length <= 200 &&
           /^[^\s~^:?*[\]\\]+$/.test(v.baseRef))) &&
-      Object.keys(v).every((k) => ["key", "repo", "baseRef"].includes(k));
+      (v.branch === undefined ||
+        (typeof v.branch === "string" && v.branch.length >= 1 && v.branch.length <= 200 &&
+          /^[^\s~^:?*[\]\\]+$/.test(v.branch))) &&
+      Object.keys(v).every((k) => ["key", "repo", "baseRef", "branch"].includes(k));
     return { success: ok };
   },
   parse(value: unknown): unknown {
@@ -614,6 +617,44 @@ describe("execute", () => {
     invalid.context.paperclipWake = { issue: { identifier: "ABC-101" } };
     invalid.context.paperclipBotDiskDefaultRepo = "not a repo";
     expect("workspace" in (await runAndReadBody(invalid))).toBe(false);
+  });
+
+  it("takes the repository and the branch from the task's pull request, the project is only the fallback (OPE-7967)", async () => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "OPE-7967" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/itkadr-git/myrmidon", repoRef: "main" };
+    ctx.context.paperclipPullRequest = { repo: "itkadr-git/myrmidon-deploy", number: 82, headRef: "refs/heads/fix/ope-7967" };
+    ctx.context.paperclipBotDiskDefaultRepo = "itkadr-git/other";
+    const body = await runAndReadBody(ctx);
+    // the project's repoRef belongs to the project's repository, so it is not sent for the PR's one
+    expect(body.workspace).toEqual({ key: "OPE-7967", repo: "itkadr-git/myrmidon-deploy", branch: "fix/ope-7967" });
+    expect(runWorkspaceFieldSchema.safeParse(body.workspace).success).toBe(true);
+  });
+
+  it("keeps the project's baseRef when the pull request is in the project's repository, and sends the branch", async () => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets", repoRef: "main" };
+    ctx.context.paperclipPullRequest = { repo: "acme/widgets", headRef: "feature/x" };
+    expect((await runAndReadBody(ctx)).workspace).toEqual({ ...fixture, branch: "feature/x" });
+  });
+
+  it.each([undefined, "", "bad ref^", "--upload-pack=x", "a..b"])(
+    "uses the pull request repository without a branch when its head ref is %j",
+    async (headRef) => {
+      const ctx = makeCtx(wsBaseConfig);
+      ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+      ctx.context.paperclipPullRequest = { repo: "acme/pr-repo", ...(headRef === undefined ? {} : { headRef }) };
+      expect((await runAndReadBody(ctx)).workspace).toEqual({ key: "ABC-101", repo: "acme/pr-repo" });
+    },
+  );
+
+  it("ignores a pull request with an invalid repository", async () => {
+    const bad = makeCtx(wsBaseConfig);
+    bad.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    bad.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets", repoRef: "main" };
+    bad.context.paperclipPullRequest = { repo: "not a repo", headRef: "feature/x" };
+    expect((await runAndReadBody(bad)).workspace).toEqual(fixture);
   });
 
   it("drops an invalid baseRef instead of sending a body the gateway would reject", async () => {
@@ -1538,6 +1579,44 @@ describe("execute — operator cancellation (G4)", () => {
       state: "acknowledged",
       forced: false,
     });
+  });
+
+  it("logs the cancellation correlation id and sender when it stops the gateway run", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-cancel-trace", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        controller.abort();
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/stop")) {
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      if (init?.method === "GET") {
+        return new Response(JSON.stringify({ status: "cancelled", last_event: "run.cancelled" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 30 });
+    ctx.signal = controller.signal;
+    ctx.paperclipCancellation = {
+      current: {
+        correlationId: "corr-trace-1",
+        source: { code: "board_operator", endpoint: "POST /api/heartbeat-runs/:runId/cancel", actor: "user-42" },
+        reason: "Cancelled by a board operator",
+      },
+    };
+    ctx.onCancellationReady = vi.fn(async () => undefined);
+
+    await execute(ctx);
+
+    const logText = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line)).join("\n");
+    expect(logText).toContain("stop requested for run run-cancel-trace correlationId=corr-trace-1 sender=user-42");
   });
 
   it("does not claim cancellation acknowledged when the post-stop status check cannot verify termination", async () => {

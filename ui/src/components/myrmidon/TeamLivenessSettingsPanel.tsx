@@ -14,10 +14,11 @@ import type {
   TeamLivenessNumberKey,
   TeamLivenessSettings,
   TeamLivenessSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { i18n, useTranslation } from "@/i18n";
 import {
   describeTeamLivenessSource,
   teamLivenessApi,
@@ -25,44 +26,45 @@ import {
   type TeamLivenessView,
 } from "./teamLivenessApi";
 
-const SWITCHES: Array<{ key: TeamLivenessBooleanKey; label: string; hint: string }> = [
+/** Labels are resolved at call time, not at import, so a language switch applies. */
+const switches = (): Array<{ key: TeamLivenessBooleanKey; label: string; hint: string }> => [
   {
     key: "autoResumeEnabled",
-    label: "Auto-resume an agent left in error",
-    hint: "The board resumes an agent whose run failed, with backoff, instead of leaving it in error until an operator acts.",
+    label: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.autoResumeEnabled.label"),
+    hint: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.autoResumeEnabled.hint"),
   },
   {
     key: "runStallEnabled",
-    label: "Interrupt a run that stops making progress",
-    hint: "A run that records no progress for the stall threshold is interrupted, its task goes back to the queue and its assignee is woken.",
+    label: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.runStallEnabled.label"),
+    hint: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.runStallEnabled.hint"),
   },
   {
     key: "idlePickupEnabled",
-    label: "Wake an idle agent that has ready work",
-    hint: "The board wakes an agent that is idle while a ready task is assigned to it, so the team does not wait for a reassignment by hand.",
+    label: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.idlePickupEnabled.label"),
+    hint: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.idlePickupEnabled.hint"),
   },
 ];
 
-const NUMBERS: Array<{ key: TeamLivenessNumberKey; label: string; hint: string }> = [
+const numbers = (): Array<{ key: TeamLivenessNumberKey; label: string; hint: string }> => [
   {
     key: "runStallThresholdSec",
-    label: "Stall threshold, seconds",
-    hint: "How long a running run may record no progress before it counts as stalled. Default 1200 (20 minutes).",
+    label: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.runStallThresholdSec.label"),
+    hint: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.runStallThresholdSec.hint"),
   },
   {
     key: "idlePickupIntervalSec",
-    label: "Wake pass interval, seconds",
-    hint: "How often the board looks for an idle agent with ready work. Default 30.",
+    label: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.idlePickupIntervalSec.label"),
+    hint: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.idlePickupIntervalSec.hint"),
   },
   {
     key: "idlePickupWakeBudgetPerMin",
-    label: "Wakes per minute, whole company",
-    hint: "The company-wide ceiling on automatic wakes: every wake is a full agent run. Default 5.",
+    label: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.idlePickupWakeBudgetPerMin.label"),
+    hint: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.idlePickupWakeBudgetPerMin.hint"),
   },
   {
     key: "idlePickupWakeBatch",
-    label: "Wakes per pass",
-    hint: "How many of that minute's wakes one pass may spend at once; the rest wait for the next pass. Never above the minute ceiling. Default 5.",
+    label: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.idlePickupWakeBatch.label"),
+    hint: i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.idlePickupWakeBatch.hint"),
   },
 ];
 
@@ -83,17 +85,17 @@ export interface TeamLivenessDraftParse {
 export function parseTeamLivenessDraft(draft: TeamLivenessDraft): TeamLivenessDraftParse {
   const errors: Partial<Record<TeamLivenessNumberKey, string>> = {};
   const patch: TeamLivenessSettingsPatch = {};
-  for (const { key } of SWITCHES) {
+  for (const { key } of switches()) {
     const value = draft.switches[key];
     if (value !== undefined) patch[key] = value;
   }
-  for (const { key } of NUMBERS) {
+  for (const { key } of numbers()) {
     const raw = draft.numbers[key];
     if (raw === undefined) continue;
     const trimmed = raw.trim();
     const value = trimmed === "" ? Number.NaN : Number(trimmed);
     if (!Number.isInteger(value) || value <= 0) {
-      errors[key] = "Enter a whole number greater than zero";
+      errors[key] = i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.wholeNumberError");
       continue;
     }
     patch[key] = value;
@@ -102,7 +104,7 @@ export function parseTeamLivenessDraft(draft: TeamLivenessDraft): TeamLivenessDr
 }
 
 function formatSeconds(value: number): string {
-  return `${value} s`;
+  return i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.seconds", { value });
 }
 
 export function TeamLivenessSettingsPanelView({
@@ -116,6 +118,7 @@ export function TeamLivenessSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<TeamLivenessDraft>({ switches: {}, numbers: {} });
   const { patch, errors } = parseTeamLivenessDraft(draft);
   const dirty =
@@ -131,13 +134,10 @@ export function TeamLivenessSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Activity className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Team liveness</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-models-runtime-2.team-liveness-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          What the board does on its own when a run fails, when a run stops making progress, and when an agent sits idle
-          with ready work. The three sweeps read these values on their next pass: saving takes effect without a restart and
-          without dropping a run in flight. A field you do not change keeps coming from the server environment. An agent
-          card can switch a behaviour off for that one agent.
+          {t("area.settings-models-runtime-2.team-liveness-settings-panel.description")}
         </p>
       </div>
 
@@ -150,7 +150,7 @@ export function TeamLivenessSettingsPanelView({
       {view ? (
         <div className="space-y-4">
           <div className="space-y-3">
-            {SWITCHES.map(({ key, label, hint }) => (
+            {switches().map(({ key, label, hint }) => (
               <label key={key} className="flex items-start gap-3" htmlFor={`team-liveness-${key}`}>
                 <input
                   id={`team-liveness-${key}`}
@@ -179,7 +179,7 @@ export function TeamLivenessSettingsPanelView({
           </div>
 
           <div className="grid gap-3 md:grid-cols-2">
-            {NUMBERS.map(({ key, label, hint }) => (
+            {numbers().map(({ key, label, hint }) => (
               <div key={key} className="space-y-1">
                 <Label htmlFor={`team-liveness-${key}`}>{label}</Label>
                 <Input
@@ -198,7 +198,7 @@ export function TeamLivenessSettingsPanelView({
                     {describeTeamLivenessSource(view.sources[key])}
                   </span>
                   <span className="ml-2" data-testid={`team-liveness-current-${key}`}>
-                    now {formatSeconds(view.settings[key])}
+                    {t("area.settings-models-runtime-2.team-liveness-settings-panel.now", { value: formatSeconds(view.settings[key]) })}
                   </span>
                   {errors[key] ? (
                     <span data-testid={`team-liveness-error-${key}`} className="ml-2 text-destructive">
@@ -220,17 +220,18 @@ export function TeamLivenessSettingsPanelView({
               if (patch) onSave(patch);
             }}
           >
-            {pending ? "Saving..." : "Save team liveness"}
+            {pending ? t("area.settings-models-runtime-2.team-liveness-settings-panel.saving") : t("area.settings-models-runtime-2.team-liveness-settings-panel.save")}
           </Button>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading team liveness settings...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-models-runtime-2.team-liveness-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function TeamLivenessSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -242,7 +243,7 @@ export function TeamLivenessSettingsPanel() {
     mutationFn: teamLivenessApi.update,
     onMutate: () => setError(null),
     onError: (err) =>
-      setError(err instanceof Error ? err.message : "Saving the team liveness settings failed."),
+      setError(err instanceof Error ? err.message : i18n.t("area.settings-models-runtime-2.team-liveness-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: teamLivenessQueryKey });
@@ -254,7 +255,7 @@ export function TeamLivenessSettingsPanel() {
       <div className="text-sm text-destructive">
         {query.error instanceof Error
           ? query.error.message
-          : "Failed to load the team liveness settings."}
+          : t("area.settings-models-runtime-2.team-liveness-settings-panel.loadFailed")}
       </div>
     );
   }

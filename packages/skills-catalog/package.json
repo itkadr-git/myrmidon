@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/skills-catalog",
+  "name": "@myrmidon/skills-catalog",
   "version": "0.3.1",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
@@ -49,7 +49,7 @@
     "validate": "node ../../cli/node_modules/tsx/dist/cli.mjs scripts/validate-catalog.ts"
   },
   "dependencies": {
-    "@paperclipai/shared": "workspace:*"
+    "@myrmidon/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0"

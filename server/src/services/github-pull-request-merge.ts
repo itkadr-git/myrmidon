@@ -1,4 +1,4 @@
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { createGitHubExternalObjectProvider } from "./github-external-object-provider.js";
 
 export type GitHubPullRequestReference = {
@@ -14,6 +14,12 @@ export type PullRequestMergeDetails = {
   state: PullRequestMergeState;
   headRef: string | null;
   headSha: string | null;
+  /**
+   * "denied": the board could not read the PR because it has no access to the
+   * repository (private repo without a token / App, rejected credentials).
+   * `state` is "unknown" then.
+   */
+  access?: "denied";
   workProductState?: "open" | "draft" | "merged" | "closed";
   draft?: boolean;
   baseRef?: string | null;
@@ -86,6 +92,8 @@ function readRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+const DENIED_ERROR_CODES = new Set(["github_auth_required", "github_forbidden", "github_token_unavailable"]);
+
 export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeDetailsResolver {
   const resolver = createGitHubExternalObjectProvider(db).resolvers
     .find((candidate) => candidate.objectType === "pull_request") ?? null;
@@ -99,8 +107,12 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
         sanitizedCanonicalUrl: `https://github.com/${reference.owner}/${reference.repo}/pull/${reference.number}`,
       } as never,
     });
-    if (!result.ok) return { state: "unknown", headRef: null, headSha: null };
+    if (!result.ok) {
+      const denied = DENIED_ERROR_CODES.has(result.errorCode);
+      return { state: "unknown", headRef: null, headSha: null, ...(denied ? { access: "denied" as const } : {}) };
+    }
     const data = readRecord(result.snapshot.data);
+    if (data?.notFound === true) return { state: "unknown", headRef: null, headSha: null, access: "denied" };
     const statusKey = result.snapshot.statusKey;
     const workProductState = statusKey === "open" || statusKey === "draft" || statusKey === "merged" || statusKey === "closed"
       ? statusKey

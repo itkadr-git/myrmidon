@@ -7,7 +7,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessagesSquare } from "lucide-react";
-import type { DebateSettings } from "@paperclipai/shared";
+import type { DebateSettings } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,22 +17,25 @@ import {
   describeDebateSource,
   type DebateSettingsView,
 } from "./debateApi";
+import { CasteDebateSettingsPanel } from "./CasteDebateSettingsPanel";
+import { i18n, useTranslation } from "@/i18n";
 
-const ROLES: Array<{ key: "generator" | "critic" | "judge"; label: string; hint: string }> = [
+// A function, not a module constant: the labels follow the interface language.
+const getRoles = (): Array<{ key: "generator" | "critic" | "judge"; label: string; hint: string }> => [
   {
     key: "generator",
-    label: "Generator model",
-    hint: "The constructive pole: proposes and defends the answer. Free models by default.",
+    label: i18n.t("area.settings-models-runtime-1.debate-settings-panel.roles.generator.label"),
+    hint: i18n.t("area.settings-models-runtime-1.debate-settings-panel.roles.generator.hint"),
   },
   {
     key: "critic",
-    label: "Critic model",
-    hint: "The adversarial pole: hunts errors, penalized for a miss. Must be a different family than the generator.",
+    label: i18n.t("area.settings-models-runtime-1.debate-settings-panel.roles.critic.label"),
+    hint: i18n.t("area.settings-models-runtime-1.debate-settings-panel.roles.critic.hint"),
   },
   {
     key: "judge",
-    label: "Judge model",
-    hint: "Outside the dispute: rules on the transcript. Must be a third family — neither debater's.",
+    label: i18n.t("area.settings-models-runtime-1.debate-settings-panel.roles.judge.label"),
+    hint: i18n.t("area.settings-models-runtime-1.debate-settings-panel.roles.judge.hint"),
   },
 ];
 
@@ -60,6 +63,8 @@ export function DebateSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
+  const roles = getRoles();
   const [draft, setDraft] = useState<Record<string, string> | null>(null);
   const current = draft ?? toDraft(view?.settings ?? null);
   const dirty = draft !== null && view != null && JSON.stringify(draft) !== JSON.stringify(toDraft(view.settings ?? null));
@@ -93,19 +98,16 @@ export function DebateSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <MessagesSquare className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Asymmetric debates</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-models-runtime-1.debate-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          The role models of the debate engine. The generator and the critic must sit in different model families
-          and the judge in a third one — a symmetric configuration is refused by the server. A debate runs at most
-          three rounds, stops on critic agreement or on the token ceiling, and its cost lands on the task. Saving
-          applies at the next run — no server restart.
+          {t("area.settings-models-runtime-1.debate-settings-panel.description")}
         </p>
       </div>
 
       {view && !view.gateway.configured ? (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive" data-testid="debate-gateway-problem">
-          {view.gateway.problem ?? "the debate gateway is not configured"}
+          {view.gateway.problem ?? t("area.settings-models-runtime-1.debate-settings-panel.gatewayNotConfigured")}
         </div>
       ) : null}
 
@@ -118,7 +120,7 @@ export function DebateSettingsPanelView({
       {view ? (
         <div className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-3">
-            {ROLES.map((role) => (
+            {roles.map((role) => (
               <div key={role.key} className="space-y-1.5">
                 <Label htmlFor={`debate-${role.key}`}>{role.label}</Label>
                 <Input
@@ -133,11 +135,11 @@ export function DebateSettingsPanelView({
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label htmlFor="debate-rounds">Rounds (max 3)</Label>
+              <Label htmlFor="debate-rounds">{t("area.settings-models-runtime-1.debate-settings-panel.roundsLabel")}</Label>
               <Input id="debate-rounds" value={current.rounds} onChange={(event) => set("rounds", event.target.value)} inputMode="numeric" placeholder="3" />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="debate-ceiling">Token ceiling</Label>
+              <Label htmlFor="debate-ceiling">{t("area.settings-models-runtime-1.debate-settings-panel.ceilingLabel")}</Label>
               <Input id="debate-ceiling" value={current.tokenCeiling} onChange={(event) => set("tokenCeiling", event.target.value)} inputMode="numeric" placeholder="50000" />
             </div>
           </div>
@@ -150,10 +152,10 @@ export function DebateSettingsPanelView({
                 if (built) onSave(built);
               }}
             >
-              {pending ? "Saving..." : "Save debate configuration"}
+              {pending ? t("area.settings-models-runtime-1.shared.saving") : t("area.settings-models-runtime-1.debate-settings-panel.saveButton")}
             </Button>
             <Button type="button" size="sm" variant="ghost" disabled={pending || view.settings === null} onClick={onClear}>
-              Clear to default
+              {t("area.settings-models-runtime-1.debate-settings-panel.clearButton")}
             </Button>
             <span className="text-xs text-muted-foreground" data-testid="debate-source">
               {describeDebateSource(view.source)}
@@ -161,13 +163,14 @@ export function DebateSettingsPanelView({
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading the debate configuration...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-models-runtime-1.debate-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function DebateSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -178,7 +181,7 @@ export function DebateSettingsPanel() {
   const save = useMutation({
     mutationFn: (settings: DebateSettings) => debateApi.update(settings),
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the debate configuration failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-models-runtime-1.debate-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: debateSettingsQueryKey });
@@ -187,7 +190,7 @@ export function DebateSettingsPanel() {
   const clear = useMutation({
     mutationFn: () => debateApi.update(null),
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Clearing the debate configuration failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-models-runtime-1.debate-settings-panel.clearFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: debateSettingsQueryKey });
@@ -197,20 +200,28 @@ export function DebateSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load the debate configuration."}
+        {query.error instanceof Error ? query.error.message : t("area.settings-models-runtime-1.debate-settings-panel.loadFailed")}
       </div>
     );
   }
 
   return (
-    <DebateSettingsPanelView
-      view={query.data}
-      onSave={(settings) => save.mutate(settings)}
-      onClear={() => clear.mutate()}
-      pending={save.isPending || clear.isPending}
-      // The server refuses a symmetric config with 422 + the exact reason;
-      // show it under the form instead of silently keeping the old value.
-      error={error ?? query.data?.problem ?? null}
-    />
+    <div className="space-y-6">
+      <DebateSettingsPanelView
+        view={query.data}
+        onSave={(settings) => save.mutate(settings)}
+        onClear={() => clear.mutate()}
+        pending={save.isPending || clear.isPending}
+        // The server refuses a symmetric config with 422 + the exact reason;
+        // show it under the form instead of silently keeping the old value.
+        error={error ?? query.data?.problem ?? null}
+      />
+      {/* myrmidon(1.7-DEBATE-ASYM-B): the caste level of the same
+          configuration. It is a sibling of the view — not a part of it — so
+          the view stays free of the query client the caste section needs. */}
+      <div className="border-t border-border pt-4">
+        <CasteDebateSettingsPanel />
+      </div>
+    </div>
   );
 }
