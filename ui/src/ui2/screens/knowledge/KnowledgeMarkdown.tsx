@@ -5,7 +5,7 @@
 // `[[wiki]]` links and relative `*.md` links both land on the screen's routes.
 
 import { useMemo } from "react";
-import Markdown from "react-markdown";
+import Markdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Link } from "@/lib/router";
 import {
@@ -32,7 +32,7 @@ export function KnowledgeMarkdown({
     <div className="ui2-knowledge-body flex flex-col gap-3 text-sm leading-relaxed break-words">
       <Markdown
         remarkPlugins={[remarkGfm]}
-        urlTransform={(url) => (/^\s*javascript:/i.test(url) ? "" : url)}
+        urlTransform={defaultUrlTransform}
         components={{
           h1: (props) => <h1 className="mt-2 text-2xl font-semibold" {...stripNode(props)} />,
           h2: (props) => <h2 className="mt-2 text-xl font-semibold" {...stripNode(props)} />,
