@@ -1,7 +1,6 @@
 // myrmidon(1.6.6 CLAIM-TRANSACTION): seeded PG load of project-scoped claims.
 // A fixed PRNG seed shuffles both agent and task order without making failures
 // depend on ambient randomness.
-import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import {
@@ -41,14 +40,27 @@ function shuffled<T>(items: readonly T[], random: () => number): T[] {
   return result;
 }
 
+function stableUuid(namespace: number, index: number): string {
+  return `${namespace.toString(16).padStart(8, "0")}-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
+}
+
+function seededScenario(seed: number) {
+  const companyId = stableUuid(1, 0);
+  const projectIds = Array.from({ length: 5 }, (_, index) => stableUuid(2, index));
+  const engineerIds = Array.from({ length: 20 }, (_, index) => stableUuid(3, index));
+  const reviewerId = stableUuid(4, 0);
+  const taskIds = Array.from({ length: 100 }, (_, index) => stableUuid(5, index));
+  const random = seededRandom(seed);
+  const order = shuffled(engineerIds, random);
+  const shuffledTasks = shuffled(taskIds, random);
+  const rounds = Array.from({ length: 5 }, () => shuffled(order, random));
+  return { companyId, projectIds, engineerIds, reviewerId, taskIds, order, shuffledTasks, rounds };
+}
+
 describeDatabase("swarm cross-project claim load", () => {
   let db: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  const companyId = randomUUID();
-  const projectIds = Array.from({ length: 5 }, () => randomUUID());
-  const engineerIds = Array.from({ length: 20 }, () => randomUUID());
-  const reviewerId = randomUUID();
-  const taskIds = Array.from({ length: 100 }, () => randomUUID());
+  const { companyId, projectIds, engineerIds, reviewerId, taskIds } = seededScenario(SEED);
   const projectByTask = new Map<string, string>();
   const claimSettings = resolveSwarmClaimSettings({ env: {} }).settings;
 
@@ -85,9 +97,12 @@ describeDatabase("swarm cross-project claim load", () => {
       },
     ]);
     for (let p = 0; p < projectIds.length; p += 1) {
-      await db.insert(projectMemberships).values(engineerIds.slice(p * 4, p * 4 + 4).map((userId) => ({
-        companyId, projectId: projectIds[p]!, userId, state: "joined",
-      })));
+      await db.insert(projectMemberships).values([
+        ...engineerIds.slice(p * 4, p * 4 + 4).map((userId) => ({
+          companyId, projectId: projectIds[p]!, userId, state: "joined",
+        })),
+        ...(p === 0 ? [{ companyId, projectId: projectIds[p]!, userId: reviewerId, state: "joined" }] : []),
+      ]);
     }
     await db.insert(issues).values(taskIds.map((id, index) => {
       const projectId = projectIds[index % projectIds.length]!;
@@ -103,11 +118,10 @@ describeDatabase("swarm cross-project claim load", () => {
     await tempDb?.cleanup();
   }, 60_000);
 
-  it("keeps 100 randomized project tasks within member engineer agents; seed is reproducible", async () => {
-    const random = seededRandom(SEED);
-    const order = shuffled(engineerIds, random);
-    const shuffledTasks = shuffled(taskIds, random);
-    await db.update(issues).set({ priority: "high" }).where(inArray(issues.id, shuffledTasks.slice(0, 35)));
+  it("keeps randomized project claims scoped; seeded fixture and input order repeat exactly", async () => {
+    const scenario = seededScenario(SEED);
+    expect(seededScenario(SEED)).toEqual(scenario);
+    await db.update(issues).set({ priority: "high" }).where(inArray(issues.id, scenario.shuffledTasks.slice(0, 35)));
     const deps = {
       db,
       heartbeat: { wakeup: async () => ({ queued: true }) },
@@ -123,18 +137,27 @@ describeDatabase("swarm cross-project claim load", () => {
       isTaskBudgetBlocked: async () => false,
     } as unknown as SwarmMatcherDeps;
 
+    // The reviewer belongs to project 0 while its engineer tasks remain
+    // available, so null exercises the caste guard rather than an empty queue.
+    const reviewerPass = await matchAgent(deps, reviewerId);
+    expect(reviewerPass).toBeNull();
+    const remainingForReviewer = await db.select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues).where(eq(issues.companyId, companyId));
+    expect(remainingForReviewer).toHaveLength(100);
+    expect(remainingForReviewer.every((row) => row.assigneeAgentId === null)).toBe(true);
+
     const passes: Array<Awaited<ReturnType<typeof matchAgent>>> = [];
     // Each matcher pass claims at most one task. Five seeded rounds exercise
     // all 20 agents repeatedly while keeping DB contention below pool capacity.
     for (let round = 0; round < 5; round += 1) {
-      const roundOrder = shuffled(order, random);
+      const roundOrder = scenario.rounds[round]!;
       for (let offset = 0; offset < roundOrder.length; offset += 4) {
         passes.push(...await Promise.all(
           roundOrder.slice(offset, offset + 4).map((agentId) => matchAgent(deps, agentId)),
         ));
       }
     }
-    passes.push(await matchAgent(deps, reviewerId));
+
     const assigned = await db.select({
       id: issues.id, projectId: issues.projectId, assigneeAgentId: issues.assigneeAgentId,
     }).from(issues).where(eq(issues.companyId, companyId));
@@ -164,6 +187,5 @@ describeDatabase("swarm cross-project claim load", () => {
     expect(assigned).toHaveLength(100);
     expect(claimed).toHaveLength(100);
     expect(passes.filter(Boolean)).toHaveLength(100);
-    expect(passes.at(-1)).toBeNull();
   }, 120_000);
 });
