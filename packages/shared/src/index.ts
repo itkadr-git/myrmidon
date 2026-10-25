@@ -3007,3 +3007,7 @@ export * from "./myrmidon-agent-exchange-feed.js";
 // count — the stored per-company target, the ceilings the container's shape
 // imposes and the gunicorn signal arithmetic behind a resize.
 export * from "./myrmidon-litellm-workers.js";
+// myrmidon(1.6.6 P1.9 CLAIM-TRANSACTION): the continuation dedupe contract —
+// one deterministic key per (issue, event, head) plus the dedupe outcome and
+// metrics surfaces shared by every continuation producer.
+export * from "./continuation-key.js";
