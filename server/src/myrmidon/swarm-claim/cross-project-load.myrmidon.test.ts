@@ -10,7 +10,6 @@ import {
   agents,
   companies,
   createDb,
-  heartbeatRuns,
   issueClaims,
   issues,
   projectMemberships,
@@ -101,17 +100,6 @@ describeDatabase("swarm cross-project claim load", () => {
   }, 60_000);
 
   afterAll(async () => {
-    if (db) {
-      await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
-      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
-      await db.delete(issueClaims).where(eq(issueClaims.companyId, companyId));
-      await db.delete(issues).where(eq(issues.companyId, companyId));
-      await db.delete(projectMemberships).where(eq(projectMemberships.companyId, companyId));
-      await db.delete(projects).where(eq(projects.companyId, companyId));
-      await db.delete(agents).where(eq(agents.companyId, companyId));
-      await db.delete(agentCastes).where(eq(agentCastes.companyId, companyId));
-      await db.delete(companies).where(eq(companies.id, companyId));
-    }
     await tempDb?.cleanup();
   }, 60_000);
 
@@ -135,7 +123,18 @@ describeDatabase("swarm cross-project claim load", () => {
       isTaskBudgetBlocked: async () => false,
     } as unknown as SwarmMatcherDeps;
 
-    const passes = await Promise.all(order.map((agentId) => matchAgent(deps, agentId)));
+    const passes: Array<Awaited<ReturnType<typeof matchAgent>>> = [];
+    // Each matcher pass claims at most one task. Five seeded rounds exercise
+    // all 20 agents repeatedly while keeping DB contention below pool capacity.
+    for (let round = 0; round < 5; round += 1) {
+      const roundOrder = shuffled(order, random);
+      for (let offset = 0; offset < roundOrder.length; offset += 4) {
+        passes.push(...await Promise.all(
+          roundOrder.slice(offset, offset + 4).map((agentId) => matchAgent(deps, agentId)),
+        ));
+      }
+    }
+    passes.push(await matchAgent(deps, reviewerId));
     const assigned = await db.select({
       id: issues.id, projectId: issues.projectId, assigneeAgentId: issues.assigneeAgentId,
     }).from(issues).where(eq(issues.companyId, companyId));
