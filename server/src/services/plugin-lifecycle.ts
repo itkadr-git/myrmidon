@@ -385,14 +385,7 @@ export function pluginLifecycleManager(
   }
 
   async function syncProviderModels(companyId: string, plugin: PluginRecord): Promise<void> {
-    try {
-      await providerModelSync?.sync(companyId, plugin);
-    } catch (err) {
-      log.warn(
-        { pluginId: plugin.id, pluginKey: plugin.pluginKey, companyId, err },
-        "plugin lifecycle: provider model gateway sync failed; plugin stays enabled",
-      );
-    }
+    await providerModelSync?.sync(companyId, plugin);
   }
 
   async function transition(
@@ -413,10 +406,9 @@ export function pluginLifecycleManager(
 
     if (!updated) throw notFound(`Plugin not found after status update: ${pluginId}`);
     const result = updated as PluginRecord;
-    // Provider models are withdrawn only when the plugin is really switched off
-    // (disabled). error / upgrade_pending / reload keep the gateway models and
-    // agent-key allow-lists so agents do not get 403 while the plugin is restarted.
-    if (to === "disabled") await cleanupProviderModels(result);
+    // Failed activation must not leave a selector entry for a model that the
+    // gateway rejected (for example because the company lacks its credential).
+    if (to === "disabled" || to === "error") await cleanupProviderModels(result);
 
     log.info(
       { pluginId, pluginKey: result.pluginKey, from: previousStatus, to },
@@ -480,9 +472,9 @@ export function pluginLifecycleManager(
     if (!supportsRuntimeActivation || !pluginLoaderInstance.hasRuntimeServices()) {
       const models = listPluginProviderModels([plugin]);
       for (const companyId of companyIds) {
+        await syncProviderModels(companyId, plugin);
         if (models.length > 0) replacePluginProviderModels(companyId, pluginId, models);
         else removePluginProviderModels(companyId, pluginId);
-        await syncProviderModels(companyId, plugin);
       }
       return;
     }
@@ -499,9 +491,9 @@ export function pluginLifecycleManager(
     const loadedPlugin = loadResult.plugin as PluginRecord;
     const models = listPluginProviderModels([loadedPlugin]);
     for (const companyId of companyIds) {
+      await syncProviderModels(companyId, loadedPlugin);
       if (models.length > 0) replacePluginProviderModels(companyId, pluginId, models);
       else removePluginProviderModels(companyId, pluginId);
-      await syncProviderModels(companyId, loadedPlugin);
     }
   }
 

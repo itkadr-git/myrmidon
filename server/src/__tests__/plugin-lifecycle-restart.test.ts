@@ -244,6 +244,44 @@ describe("pluginLifecycleManager.restartWorker", () => {
     expect(sync).toHaveBeenCalledTimes(1);
   });
 
+  it("does not publish provider models when gateway sync fails", async () => {
+    const ready = {
+      ...pluginRecord,
+      status: "disabled",
+      manifestJson: {
+        id: "example.plugin", capabilities: [],
+        providerModels: {
+          provider: "example",
+          baseUrl: "https://api.example.com/v1",
+          credentialSecretName: "example-key",
+          models: [{ id: "one" }],
+        },
+      },
+    } as never;
+    const loader = {
+      hasRuntimeServices: vi.fn().mockReturnValue(true),
+      loadSingle: vi.fn().mockResolvedValue({ success: true, plugin: { ...ready, status: "ready" } }),
+      unloadSingle: vi.fn().mockResolvedValue(undefined),
+    } as unknown as PluginLoader;
+    const sync = vi.fn().mockRejectedValue(new Error("company credential missing"));
+    const lifecycle = pluginLifecycleManager({} as never, {
+      loader,
+      providerModelSync: { sync, remove: vi.fn().mockResolvedValue(undefined) },
+    });
+    mockRegistry.getById.mockResolvedValue(ready);
+    mockRegistry.listConfigs.mockResolvedValue([{ companyId: "company-1" }]);
+    mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({
+      ...ready,
+      ...value,
+    }));
+
+    await expect(lifecycle.enable("plugin-1")).rejects.toThrow("company credential missing");
+
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(getPluginProviderModels("company-1")).toEqual([]);
+    expect(mockRegistry.updateStatus).toHaveBeenLastCalledWith("plugin-1", expect.objectContaining({ status: "error" }));
+  });
+
   it("removes only the disabled owner's gateway models when names are shared", async () => {
     const owners = new Set(["plugin-1", "plugin-2"]);
     const removed: string[] = [];
