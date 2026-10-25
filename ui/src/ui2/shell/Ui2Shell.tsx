@@ -14,12 +14,22 @@ import { Ui2Rail } from "./Ui2Rail";
 import { Ui2TopBar } from "./Ui2TopBar";
 import { Ui2SettingsSidebar } from "./Ui2SettingsSidebar";
 import { Ui2PhoneHeader, Ui2PhoneTabBar } from "./Ui2PhoneNav";
+import { PluginLauncherProvider } from "@/plugins/launchers";
+
 function isSettingsPath(pathname: string): boolean {
   const segment = pathname.split("/").filter(Boolean).slice(1)[0]?.toLowerCase();
   return segment === "company";
 }
 
 export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: string }) {
+  return (
+    <PluginLauncherProvider>
+      <Ui2ShellContent lang={lang}>{children}</Ui2ShellContent>
+    </PluginLauncherProvider>
+  );
+}
+
+function Ui2ShellContent({ children, lang }: { children?: ReactNode; lang?: string }) {
   const isMobile = useIsMobileViewport();
   const location = useLocation();
   const content = children ?? <Outlet />;
