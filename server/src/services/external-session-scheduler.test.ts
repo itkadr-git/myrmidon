@@ -45,6 +45,62 @@ describe("ExternalSessionScheduler", () => {
     expect(scheduler.snapshot()).toEqual({ activeByCredential: {}, queuedByCredential: {} });
   });
 
+  it("removes an aborted queued run without dispatching it", async () => {
+    const scheduler = new ExternalSessionScheduler({ concurrencyPerCredential: 1 });
+    const firstGate = deferred();
+    const first = scheduler.schedule("account-a", () => firstGate.promise);
+    const controller = new AbortController();
+    const queuedRun = vi.fn(async () => "must-not-run");
+    const queued = scheduler.schedule("account-a", queuedRun, {
+      runId: "queued-run",
+      signal: controller.signal,
+    });
+
+    await vi.waitFor(() => expect(scheduler.snapshot().queuedByCredential["account-a"]).toBe(1));
+    controller.abort(new Error("cancelled"));
+    await expect(queued).rejects.toThrow("cancelled");
+    expect(scheduler.cancel("queued-run")).toBe(false);
+    expect(scheduler.snapshot()).toEqual({
+      activeByCredential: { "account-a": 1 },
+      queuedByCredential: {},
+    });
+
+    firstGate.resolve();
+    await expect(first).resolves.toBeUndefined();
+    expect(queuedRun).not.toHaveBeenCalled();
+  });
+
+  it("cancels queued work directly by run id", async () => {
+    const scheduler = new ExternalSessionScheduler({ concurrencyPerCredential: 1 });
+    const gate = deferred();
+    const active = scheduler.schedule("account-a", () => gate.promise);
+    const queued = scheduler.schedule("account-a", async () => "no", { runId: "cancel-me" });
+
+    await vi.waitFor(() => expect(scheduler.cancel("cancel-me")).toBe(true));
+    await expect(queued).rejects.toThrow("Run cancelled");
+    gate.resolve();
+    await expect(active).resolves.toBeUndefined();
+  });
+
+  it("shares one production scheduler across heartbeat service instances", async () => {
+    const { heartbeatService, externalSessionScheduler } = await import("./heartbeat.js");
+    const firstService = heartbeatService({} as never);
+    const secondService = heartbeatService({} as never);
+    const one = deferred();
+    const anotherAccount = deferred();
+    const first = externalSessionScheduler.schedule("company:account", () => one.promise);
+    const second = externalSessionScheduler.schedule("company:account", async () => "blocked");
+    const independent = externalSessionScheduler.schedule("company:other", () => anotherAccount.promise);
+
+    await vi.waitFor(() => expect(externalSessionScheduler.snapshot().queuedByCredential["company:account"]).toBe(1));
+    expect(firstService).toBeDefined();
+    expect(secondService).toBeDefined();
+    expect(externalSessionScheduler.snapshot().activeByCredential["company:other"]).toBe(1);
+    one.resolve();
+    anotherAccount.resolve();
+    await Promise.all([first, second, independent]);
+  });
+
   it("continues draining after a session rejects", async () => {
     const scheduler = new ExternalSessionScheduler({ concurrencyPerCredential: 1 });
     const next = vi.fn(async () => "ok");
