@@ -88,6 +88,10 @@ for (const screen of SCREENS) {
         window.localStorage.setItem("myrmidon:ui-language", "ru");
         window.localStorage.removeItem("myrmidon.ui2.locale");
       });
+      page.on("pageerror", (error) => console.log(`[pageerror] ${error.message}`));
+      page.on("console", (message) => {
+        if (message.type() === "error") console.log(`[console.error] ${message.text().slice(0, 400)}`);
+      });
       await mockApi(page);
       await page.goto(`/knowledge-qa.html?screen=${screen.id}&page=infra/long-page`);
 
