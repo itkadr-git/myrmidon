@@ -84,6 +84,7 @@ describe("site-registry — createFleetClientManager", () => {
         name: "myr-vm1",
         url: "https://myr-vm1.example.test:9443",
         tokenSecret: "myr-vm1-token",
+        clientCert: "-----BEGIN CERTIFICATE-----\nFAKE CLIENT CERT\n-----END CERTIFICATE-----",
         caCert: "-----BEGIN CERTIFICATE-----\nFAKE CA\n-----END CERTIFICATE-----",
         clientCertSecretKey: "myr-vm1-client-key",
         status: "active",
@@ -132,9 +133,8 @@ describe("site-registry — createFleetClientManager", () => {
     const secretStore: Record<string, string> = {
       "myr-vm1-token": "secret-token-val-123",
       "myr-vm1-client-key": "fake-client-key",
-      "myr-vm1-client-cert": "fake-client-cert",
       "local-token": "local-token-val-456",
-      "local-fleet-client-key": "-----BEGIN PRIVATE KEY-----\nFAKE LOCAL KEY\n-----END PRIVATE KEY-----",
+      "local-fleet-client-key": "[REDACTED PRIVATE KEY]",
     };
 
     const createdConfigs: FleetdDriverConfig[] = [];
@@ -240,6 +240,7 @@ describe("site-registry — createFleetClientManager", () => {
         url: "https://myr-vm1.example.test:9443",
         clientCert: "row-client-cert",
         clientCertSecretKey: "myr-row-key",
+        caCert: "row-ca-cert",
         status: "active",
         capacity: { maxCpus: 4, maxMemoryMb: 16384 },
         profile: {},
@@ -366,6 +367,7 @@ describe("site-registry — hot-reload and client lifecycle", () => {
       caCert: "-----BEGIN CERTIFICATE-----\nFAKE CA\n-----END CERTIFICATE-----",
       clientCert: "-----BEGIN CERTIFICATE-----\nFAKE CLIENT CERT\n-----END CERTIFICATE-----",
       clientCertSecretKey: "client-key",
+      caCertFingerprint: "a".repeat(64),
       status: "active",
       capacity: { maxCpus: 2, maxMemoryMb: 8192 },
       profile: {},
@@ -556,6 +558,9 @@ describe("site-registry — client map and site status", () => {
     name,
     url,
     tokenSecret: `${name}-token`,
+    clientCert: "TEST CLIENT CERTIFICATE",
+    clientCertSecretKey: `${name}-key`,
+    caCert: "TEST CA CERTIFICATE",
     status,
     capacity: { maxCpus: 2, maxMemoryMb: 4096 },
     profile: {},
@@ -566,27 +571,32 @@ describe("site-registry — client map and site status", () => {
 
   it("keeps active and draining clients, drops quarantined ones, and exposes the transport of each kept client", async () => {
     let sites = [
-      site("up", "active", "http://127.0.0.1:9101"),
-      site("drained", "draining", "http://127.0.0.1:9102"),
-      site("held", "quarantined", "http://127.0.0.1:9103"),
+      site("up", "active", "https://127.0.0.1:9101"),
+      site("drained", "draining", "https://127.0.0.1:9102"),
+      site("held", "quarantined", "https://127.0.0.1:9103"),
     ];
+    const created: FleetdDriverConfig[] = [];
     const manager = createFleetClientManager({
       db: { select: () => ({ from: () => Promise.resolve(sites) }) } as any,
       keepDrainingClients: true,
-      readCompanySecret: async (_c, name) => `value-of-${name}`,
-      createDriver: (config) => fakeDriver(config.baseUrl),
+      readCompanySecret: async (_c, name) => name === "up-key" || name === "drained-key" ? "fake-private-key" : `value-of-${name}`,
+      createDriver: (config) => {
+        created.push(config);
+        return fakeDriver(config.baseUrl);
+      },
     });
 
     const clients = await manager.refresh();
     expect([...clients.keys()].sort()).toEqual([fleetSiteKey("company-1", "drained"), fleetSiteKey("company-1", "up")]);
-    expect(manager.getTransports?.().get(fleetSiteKey("company-1", "drained"))).toEqual({
-      baseUrl: "http://127.0.0.1:9102",
+    expect(manager.getTransports?.().get(fleetSiteKey("company-1", "drained"))).toMatchObject({
+      baseUrl: "https://127.0.0.1:9102",
       token: "value-of-drained-token",
+      mtls: true,
     });
     expect(manager.getTransports?.().has(fleetSiteKey("company-1", "held"))).toBe(false);
 
     // The monitor drains "up" and quarantines "drained": the client map follows the registry.
-    sites = [site("up", "draining", "http://127.0.0.1:9101"), site("drained", "quarantined", "http://127.0.0.1:9102")];
+    sites = [site("up", "draining", "https://127.0.0.1:9101"), site("drained", "quarantined", "https://127.0.0.1:9102")];
     await manager.refresh();
     expect([...manager.getClients().keys()]).toEqual([fleetSiteKey("company-1", "up")]);
     expect(manager.getTransports?.().has(fleetSiteKey("company-1", "drained"))).toBe(false);
@@ -595,10 +605,10 @@ describe("site-registry — client map and site status", () => {
   });
 
   it("without keepDrainingClients (MYRMIDON_SITE_HEALTH off) a draining site loses its client, as before", async () => {
-    const sites = [site("up", "active", "http://127.0.0.1:9101"), site("drained", "draining", "http://127.0.0.1:9102")];
+    const sites = [site("up", "active", "https://127.0.0.1:9101"), site("drained", "draining", "https://127.0.0.1:9102")];
     const manager = createFleetClientManager({
       db: { select: () => ({ from: () => Promise.resolve(sites) }) } as any,
-      readCompanySecret: async (_c, name) => `value-of-${name}`,
+      readCompanySecret: async (_c, name) => name === "up-key" ? "fake-private-key" : `value-of-${name}`,
       createDriver: (config) => fakeDriver(config.baseUrl),
     });
     await manager.refresh();
@@ -635,17 +645,19 @@ describe("site-registry — CA pin and create", () => {
     const { caCertFingerprint } = await import("./site-registry.js");
     const pki = generateEphemeralTestPki();
     try {
+      const cert = pki.clientCert;
+      const key = pki.clientKey;
       const mk = (fingerprint: string) =>
         ({
           id: "s1", companyId: "c", name: "x", url: "https://h:9100", status: "active", tokenSecret: "t",
-          caCert: pki.caCert, caCertFingerprint: fingerprint, capacity: {}, profile: {},
+          caCert: pki.caCert, caCertFingerprint: fingerprint, clientCert: cert, clientCertSecretKey: "cert-key", capacity: {}, profile: {},
           enrolledAt: new Date(), createdAt: new Date(), updatedAt: new Date(),
         }) as unknown as FleetSite;
       for (const [fp, expected] of [[caCertFingerprint(pki.caCert)!, 1], ["0".repeat(64), 0]] as const) {
         const created: FleetdDriverConfig[] = [];
         const manager = createFleetClientManager({
           db: { select: () => ({ from: () => Promise.resolve([mk(fp)]) }) } as any,
-          readCompanySecret: async () => "tok",
+          readCompanySecret: async (_companyId, keyName) => keyName === "t" ? "tok" : keyName === "cert-key" ? key : null,
           createDriver: (c) => {
             created.push(c);
             return fakeDriver(c.baseUrl);
