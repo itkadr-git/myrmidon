@@ -4042,9 +4042,10 @@ export function recoveryService(
     }
     // myrmidon(L4): a successful run that leaves the issue without a
     // disposition resolves by bounded auto-retry, then manager review,
-    // instead of escalating straight to an owner card. Only the last-run-
-    // succeeded causes are in scope; a failed run stays on the vendor path
-    // below (L1's concern). See ../../myrmidon/stranded-autopolicy.ts.
+    // instead of escalating straight to an owner card. An exhausted
+    // successful-run handoff also stays on the agent disposition path if its
+    // corrective attempt failed; unrelated failed-run causes retain L1's
+    // vendor path. See ../../myrmidon/stranded-autopolicy.ts.
     //
     // The `previousStatus`/`issue.status === "in_progress"` check narrows
     // this to the actual "in progress, no disposition" case the spec
@@ -4062,7 +4063,8 @@ export function recoveryService(
     const strandedAutoPolicyLatestRun = input.latestRun;
     if (
       readStrandedAutoPolicyEnabled() &&
-      strandedAutoPolicyLatestRun?.status === "succeeded" &&
+      (strandedAutoPolicyLatestRun?.status === "succeeded" ||
+        recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON) &&
       !input.rerouteToSharedQueue &&
       isStrandedAutoPolicyCause(recoveryCause) &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress") &&
