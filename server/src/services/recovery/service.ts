@@ -4063,7 +4063,8 @@ export function recoveryService(
     const strandedAutoPolicyLatestRun = input.latestRun;
     if (
       readStrandedAutoPolicyEnabled() &&
-      (strandedAutoPolicyLatestRun?.status === "succeeded" ||
+      strandedAutoPolicyLatestRun &&
+      (strandedAutoPolicyLatestRun.status === "succeeded" ||
         recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON) &&
       !input.rerouteToSharedQueue &&
       isStrandedAutoPolicyCause(recoveryCause) &&
