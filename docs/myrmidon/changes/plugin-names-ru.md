@@ -1,5 +1,5 @@
 ---
-divergence-section: 1.6.6 — OPE-9352: русские названия закрытых плагинов в оболочке доски
+divergence-section: Трек 1 — платформа
 ---
 
 ## divergence
