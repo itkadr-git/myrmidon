@@ -1,29 +1,28 @@
 // packages/shared/src/myrmidon-litellm-workers.myrmidon.test.ts
 //
-// myrmidon(1.6.5 LITELLM-WORKERS A): the contract the board and the interface
+// myrmidon(1.6.6 LITELLM-WORKERS restart): the contract the board and the interface
 // share — the ceilings a container shape imposes, the target in force, the
-// TTIN/TTOU arithmetic and the runtime the instance declares.
+// restart command and the runtime the instance declares.
 
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_LITELLM_WORKERS_CONTAINER,
   DEFAULT_LITELLM_WORKERS_CORES,
   DEFAULT_LITELLM_WORKERS_MEMORY_GB,
-  DEFAULT_LITELLM_WORKERS_SIGNAL_COMMAND,
+  DEFAULT_LITELLM_WORKERS_UNIT_FILE,
   LITELLM_WORKERS_BASELINE_ENV,
   LITELLM_WORKERS_COMPANIES_KEY,
-  LITELLM_WORKERS_CONTAINER_ENV,
   LITELLM_WORKERS_CORES_ENV,
   LITELLM_WORKERS_MEMORY_GB_ENV,
-  LITELLM_WORKERS_SIGNAL_COMMAND_ENV,
+  LITELLM_WORKERS_RESTART_COMMAND_ENV,
+  LITELLM_WORKERS_UNIT_FILE_ENV,
   checkLitellmWorkersTarget,
   litellmWorkersCeilings,
   litellmWorkersMaxByCpu,
   litellmWorkersMaxByMemory,
-  litellmWorkersSignalSteps,
+  parseLitellmWorkersFromCommandLine,
   readLitellmWorkersBaseline,
   readLitellmWorkersRuntime,
-  renderLitellmWorkersSignalCommand,
+  renderLitellmWorkersRestartCommand,
   resolveLitellmWorkersTarget,
 } from "./myrmidon-litellm-workers.js";
 
@@ -88,22 +87,22 @@ describe("the target in force", () => {
   });
 });
 
-describe("the signals of a resize", () => {
-  it("adds a worker with TTIN and drops one with TTOU", () => {
-    expect(litellmWorkersSignalSteps(4, 6)).toEqual([{ signal: "TTIN", count: 2 }]);
-    expect(litellmWorkersSignalSteps(6, 4)).toEqual([{ signal: "TTOU", count: 2 }]);
-    expect(litellmWorkersSignalSteps(5, 5)).toEqual([]);
+describe("the restart of a resize", () => {
+  it("fills the target into the command template", () => {
+    expect(renderLitellmWorkersRestartCommand("set-workers {workers} && restart", 3)).toBe("set-workers 3 && restart");
+    expect(renderLitellmWorkersRestartCommand("true", 3)).toBe("true");
   });
 
-  it("answers nothing for a size that is not a number", () => {
-    expect(litellmWorkersSignalSteps(Number.NaN, 5)).toEqual([]);
+  it("reads the pool the launch line declares", () => {
+    expect(parseLitellmWorkersFromCommandLine("    --config /app/config.yaml --port 4000 --num_workers 2")).toBe(2);
+    expect(parseLitellmWorkersFromCommandLine("litellm --num_workers=6")).toBe(6);
+    expect(parseLitellmWorkersFromCommandLine("# --num_workers 9\nlitellm --num_workers 3")).toBe(3);
   });
 
-  it("fills the placeholders of the command template", () => {
-    expect(renderLitellmWorkersSignalCommand("systemctl kill -s {signal} {container}", { signal: "TTIN", container: "litellm" })).toBe(
-      "systemctl kill -s TTIN litellm",
-    );
-    expect(renderLitellmWorkersSignalCommand("true", { signal: "TTOU", container: "x" })).toBe("true");
+  it("answers null when the launch line declares no usable number", () => {
+    expect(parseLitellmWorkersFromCommandLine("litellm --port 4000")).toBeNull();
+    expect(parseLitellmWorkersFromCommandLine("litellm --num_workers 0")).toBeNull();
+    expect(parseLitellmWorkersFromCommandLine("")).toBeNull();
   });
 });
 
@@ -111,9 +110,9 @@ describe("what the instance declares", () => {
   it("reads the production defaults from an empty environment", () => {
     const runtime = readLitellmWorkersRuntime({});
     expect(runtime.host).toEqual({ cores: 6, memoryGb: 12, gbPerWorker: 1.5 });
-    expect(runtime.signal.command).toBe(DEFAULT_LITELLM_WORKERS_SIGNAL_COMMAND);
-    expect(runtime.signal.container).toBe(DEFAULT_LITELLM_WORKERS_CONTAINER);
-    expect(runtime.signal.source).toBe("default");
+    // Nothing is ever restarted by default.
+    expect(runtime.restart.command).toBeNull();
+    expect(runtime.unitFile).toBe(DEFAULT_LITELLM_WORKERS_UNIT_FILE);
     expect(runtime.baseline).toBeNull();
   });
 
@@ -121,13 +120,14 @@ describe("what the instance declares", () => {
     const runtime = readLitellmWorkersRuntime({
       [LITELLM_WORKERS_CORES_ENV]: "4",
       [LITELLM_WORKERS_MEMORY_GB_ENV]: "8",
-      [LITELLM_WORKERS_SIGNAL_COMMAND_ENV]: "docker kill -s {signal} {container}",
-      [LITELLM_WORKERS_CONTAINER_ENV]: "litellm-gateway",
+      [LITELLM_WORKERS_RESTART_COMMAND_ENV]: "set-workers {workers}",
+      [LITELLM_WORKERS_UNIT_FILE_ENV]: "/srv/litellm.service",
       [LITELLM_WORKERS_BASELINE_ENV]: "4",
     });
     expect(runtime.host).toEqual({ cores: 4, memoryGb: 8, gbPerWorker: 1.5 });
     expect(runtime.hostSource).toEqual({ cores: "env", memoryGb: "env" });
-    expect(runtime.signal.source).toBe("env");
+    expect(runtime.restart.command).toBe("set-workers {workers}");
+    expect(runtime.unitFile).toBe("/srv/litellm.service");
     expect(runtime.baseline).toBe(4);
     expect(litellmWorkersCeilings(runtime.host)).toMatchObject({ maxByCpu: 4, maxByMemory: 5, maxTarget: 4, defaultTarget: 3 });
   });
