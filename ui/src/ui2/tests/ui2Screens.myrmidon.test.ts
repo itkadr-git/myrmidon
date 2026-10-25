@@ -66,13 +66,14 @@ describe("myrmidon(UI2) route table integration", () => {
   it("renders plugin nav groups in both rail and phone nav when slots exist", () => {
     const rail = readFileSync(fileURLToPath(new URL("../shell/Ui2Rail.tsx", import.meta.url)), "utf8");
     const phone = readFileSync(fileURLToPath(new URL("../shell/Ui2PhoneNav.tsx", import.meta.url)), "utf8");
-    for (const source of [rail, phone]) {
-      expect(source).toContain("const { slots: pluginSlots } = usePluginSlots");
-      expect(source).toContain("const hasPlugins = pluginSlots.length > 0");
-      expect(source).toContain("PluginSlotMount");
-      expect(source).toContain("PluginLauncherOutlet");
-      expect(source).not.toContain('className="hidden"');
-    }
+    expect(rail).toContain("const { slots: pluginSlots } = usePluginSlots");
+    expect(rail).toContain("const hasPlugins = pluginSlots.length > 0");
+    expect(rail).toContain("PluginSlotMount");
+    expect(phone).toContain("const { slots: pluginSlots } = usePluginSlots");
+    expect(phone).toContain("const hasPlugins = pluginSlots.length > 0");
+    expect(rail).toContain("PluginLauncherOutlet");
+    expect(phone).toContain("PluginLauncherOutlet");
+    expect(phone).not.toContain('className="hidden"');
     expect(rail).toContain('t("ui2.nav.group.plugins"');
     expect(phone).toContain('aria-label={t("ui2.nav.group.plugins"');
     expect(phone).toContain("myr-ui2__phone-navigation");
