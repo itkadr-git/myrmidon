@@ -113,7 +113,7 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     expect(typeof mod.Ui2Root).toBe("function");
     const root = mod.Ui2Root({} as never);
     expect(root).toBeTruthy();
-    expect(root.type).toBe((await import("./shell/Ui2Shell")).Ui2Shell);
+    expect(root.type).toBe((await import("@/plugins/launchers")).PluginLauncherProvider);
   });
 
   it("the theme keys the RU display-font switch on [lang=ru] and keeps the wordmark font", () => {
