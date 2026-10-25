@@ -8,7 +8,7 @@ import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_PHONE_TABS } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
-import { PluginLauncherOutlet } from "@/plugins/launchers";
+import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
 import { useCompany } from "@/context/CompanyContext";
 
 function PhoneTab({
@@ -130,6 +130,7 @@ export function Ui2PhoneTabBar() {
   const location = useLocation();
   const attentionCount = useUi2AttentionCount();
   const { selectedCompany } = useCompany();
+  const { slots: pluginSlots } = usePluginSlots({ slotTypes: ["sidebar"], companyId: selectedCompany?.id });
 
   return (
     <div>
@@ -158,12 +159,7 @@ export function Ui2PhoneTabBar() {
         );
       })}
     </nav>
-    {selectedCompany ? <PluginLauncherOutlet
-      placementZones={["sidebar"]}
-      context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }}
-      className="flex flex-wrap justify-center gap-1"
-      itemClassName="text-(length:--text-nano)"
-    /> : null}
+    {pluginSlots.map((slot) => <PluginSlotMount key={`${slot.pluginKey}:${slot.id}`} slot={slot} context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }} />)}
     </div>
   );
 }
