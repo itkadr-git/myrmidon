@@ -19,7 +19,7 @@ Hermes запускает языковой сервер для каждого gi
 - `off` — `lsp.enabled: false`: ни языкового сервера, ни цикла событий LSP.
 - `limited` — один tsserver на worktree (`tsserver.useSyntaxServer: "never"`), без
   автоматической загрузки typings (`disableAutomaticTypingAcquisition`), потолок кучи
-  `maxTsServerMemory` 1024 МБ, `idle_timeout` 120 с.
+  `maxTsServerMemory` по умолчанию 384 МБ, `idle_timeout` 120 с.
 - `full` — собственные значения Hermes (ничего не пишется).
 
 ## Где менять
@@ -51,7 +51,7 @@ lsp:
     typescript:
       initialization_options:
         disableAutomaticTypingAcquisition: true
-        maxTsServerMemory: 1024
+        maxTsServerMemory: 384
         tsserver:
           useSyntaxServer: "never"
 ```

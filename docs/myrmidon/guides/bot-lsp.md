@@ -18,7 +18,7 @@ language-server mode per bot.
 
 - `off` — `lsp.enabled: false`: no language server, no LSP event loop.
 - `limited` — one tsserver per worktree (`tsserver.useSyntaxServer: "never"`), no automatic
-  typings download (`disableAutomaticTypingAcquisition`), heap cap `maxTsServerMemory` 1024 MB,
+  automatic typings download (`disableAutomaticTypingAcquisition`), heap cap `maxTsServerMemory` 384 MB by default,
   `idle_timeout` 120 s.
 - `full` — Hermes' own defaults (nothing written).
 
@@ -51,7 +51,7 @@ lsp:
     typescript:
       initialization_options:
         disableAutomaticTypingAcquisition: true
-        maxTsServerMemory: 1024
+        maxTsServerMemory: 384
         tsserver:
           useSyntaxServer: "never"
 ```

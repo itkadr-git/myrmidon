@@ -58,7 +58,7 @@ export const BOT_LSP_IDLE_TIMEOUT_MAX_SECONDS = 86_400;
 
 /** tsserver heap cap of the limited mode, MB (`maxTsServerMemory`). */
 // A 1 GiB container shares memory with Hermes and botd. Keep tsserver below
-// 40% of that limit; the runtime admission check may lower this per container.
+// 40% of that limit; runtime-derived per-container sizing is tracked separately.
 export const DEFAULT_BOT_LSP_TSSERVER_MEMORY_MB = 384;
 export const DEFAULT_BOT_LSP_EXCLUDE_ROOTS: readonly string[] = ["**/node_modules/**", "**/dist/**"];
 export const BOT_LSP_TSSERVER_MEMORY_MIN_MB = 256;
