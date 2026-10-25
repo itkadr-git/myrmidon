@@ -77,4 +77,9 @@ describe("Myrmidon sidebar navigation", () => {
     expect(hrefs).toContain("/OPE/swarm-claim");
     expect(hrefs).toContain("/OPE/foraging");
   });
+
+  it("shows the Knowledge item that leads to the wiki screen (OPE-9222)", () => {
+    const markup = renderSidebar();
+    expect(markup).toMatch(/href="\/OPE\/wiki"[^>]*>[\s\S]*?Knowledge/);
+  });
 });

@@ -24,13 +24,16 @@ export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: stri
   const isMobile = useIsMobileViewport();
   const location = useLocation();
   const content = children ?? <Outlet />;
+  // The app pins `body { overflow: hidden }` (index.css), so the document
+  // never scrolls: the shell has to own the scroll container itself, or any
+  // screen taller than the window is cut off (OPE-5957).
   const rootProps = lang ? { lang } : {};
 
   if (isMobile) {
     return (
       <div
         className="myr-ui2"
-        style={{ display: "flex", flexDirection: "column", minHeight: "100dvh" }}
+        style={{ display: "flex", flexDirection: "column", height: "100dvh", overflowY: "auto" }}
         {...rootProps}
       >
         <Ui2PhoneHeader />
@@ -47,15 +50,18 @@ export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: stri
   return (
     <div
       className="myr-ui2"
-      style={{ display: "flex", minHeight: "100dvh" }}
+      style={{ display: "flex", height: "100dvh", overflow: "hidden" }}
       {...rootProps}
     >
       <Ui2Rail />
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
         <Ui2TopBar />
-        <div style={{ flex: 1, minWidth: 0, display: "flex" }}>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex" }}>
           {isSettingsPath(location.pathname) ? <Ui2SettingsSidebar /> : null}
-          <main style={{ flex: 1, minWidth: 0, padding: "var(--myr-space-2)" }}>{content}</main>
+          <main
+            data-testid="ui2-main"
+            style={{ flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto", padding: "var(--myr-space-2)" }}
+          >{content}</main>
         </div>
       </div>
     </div>
