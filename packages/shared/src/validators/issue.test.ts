@@ -225,19 +225,24 @@ describe("issue validators", () => {
     expect(result.success).toBe(false);
   });
 
-  it("preserves legacy blocked reason validation", () => {
-    expect(updateIssueSchema.safeParse({
-      status: "blocked",
-      blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"],
-    }).success).toBe(true);
-    expect(updateIssueSchema.safeParse({
-      status: "blocked",
-      unblockDescriptor: {
-        owner: "board",
-        action: "Review the finding",
-        reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
+  it("requires blocker metadata for new blocked transitions, regardless of legacy reason refs", () => {
+    for (const patch of [
+      { status: "blocked", blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"] },
+      {
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Review the finding",
+          reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
+        },
       },
-    }).success).toBe(true);
+    ]) {
+      const result = updateIssueSchema.safeParse(patch);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues.some((issue) => issue.message.includes("blockerMetadata"))).toBe(true);
+      }
+    }
   });
 
   it("rejects legacy descriptors without a reason reference", () => {
@@ -249,6 +254,14 @@ describe("issue validators", () => {
 
   it("preserves legacy descriptor reason validation", () => {
     expect(updateIssueSchema.safeParse({
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { userId: "00000000-0000-4000-8000-000000000002" },
+        externalRef: "legacy-test",
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
+      },
       status: "blocked",
       unblockDescriptor: {
         owner: "board",
@@ -264,6 +277,14 @@ describe("issue validators", () => {
 
   it("validates legacy descriptor reason variants", () => {
     expect(updateIssueSchema.safeParse({
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { userId: "00000000-0000-4000-8000-000000000002" },
+        externalRef: "legacy-test",
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
+      },
       status: "blocked",
       unblockDescriptor: {
         owner: "board",
