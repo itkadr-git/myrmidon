@@ -1,4 +1,4 @@
-import type { BlockerRootFanout } from "@myrmidon/shared/blocker-graph";
+import type { BlockerRootFanout } from "@myrmidon/shared";
 import { isBlockerOpen } from "../../myrmidon/blocker-resolved.js";
 
 export interface BlockerEdge {
