@@ -119,9 +119,9 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
   it("does not wrap Ui2Shell in a second PluginLauncherProvider", () => {
     const rootSource = readFileSync(join(UI_SRC, "ui2", "Ui2Root.tsx"), "utf8");
     const shellSource = readFileSync(join(UI_SRC, "ui2", "shell", "Ui2Shell.tsx"), "utf8");
-    expect(rootSource.match(/<PluginLauncherProvider/g)).toHaveLength(1);
-    expect(shellSource.match(/<PluginLauncherProvider/g)).toBeNull();
-    expect(shellSource.match(/PluginLauncherProvider/g)).toHaveLength(1); // explanatory comment only
+    expect(rootSource).not.toMatch(/<PluginLauncherProvider\b/);
+    expect(shellSource).not.toMatch(/<PluginLauncherProvider\b/);
+    expect(shellSource).toContain("PluginLauncherProvider wraps the tree ONCE");
   });
 
   it("the theme keys the RU display-font switch on [lang=ru] and keeps the wordmark font", () => {

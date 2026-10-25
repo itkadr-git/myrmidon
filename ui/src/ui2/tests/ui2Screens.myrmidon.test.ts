@@ -16,6 +16,7 @@ import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
 import { UI2_ROUTE_TABLE, isUi2RouteElementAPlaceholder } from "../routes";
 import { UI2_SETTINGS_SECTIONS } from "../shell/Ui2SettingsSidebar";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
+
 describe("myrmidon(UI2) route table integration", () => {
   it("routes every settings sidebar entry through UI2 or the company settings route tree", () => {
     const appSource = readFileSync(fileURLToPath(new URL("../../App.tsx", import.meta.url)), "utf8");
@@ -66,7 +67,8 @@ describe("myrmidon(UI2) route table integration", () => {
     const rail = readFileSync(fileURLToPath(new URL("../shell/Ui2Rail.tsx", import.meta.url)), "utf8");
     const phone = readFileSync(fileURLToPath(new URL("../shell/Ui2PhoneNav.tsx", import.meta.url)), "utf8");
     for (const source of [rail, phone]) {
-      expect(source).toMatch(/hasPlugins\s*=\s*pluginSlots\.length\s*>\s*0/);
+      expect(source).toContain("const { slots: pluginSlots } = usePluginSlots");
+      expect(source).toContain("const hasPlugins = pluginSlots.length > 0");
       expect(source).toContain("PluginSlotMount");
       expect(source).toContain("PluginLauncherOutlet");
       expect(source).not.toContain('className="hidden"');
@@ -74,7 +76,9 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(rail).toContain('t("ui2.nav.group.plugins"');
     expect(phone).toContain('aria-label={t("ui2.nav.group.plugins"');
     expect(phone).toContain("myr-ui2__phone-navigation");
-    expect(readFileSync(fileURLToPath(new URL("../i18n/locales.ts", import.meta.url)), "utf8")).toContain('"ui2.nav.group.plugins": "Плагины"');
+    const locales = readFileSync(fileURLToPath(new URL("../i18n/locales.ts", import.meta.url)), "utf8");
+    expect(locales).toContain('"ui2.nav.group.plugins": "Plugins"');
+    expect(locales).toContain('"ui2.nav.group.plugins": "Плагины"');
   });
 
   it("keeps the agents and servers routes reachable from both desktop and phone navigation", () => {
