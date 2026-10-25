@@ -93,7 +93,7 @@ import {
   swarmQueueOrderBy,
   type SwarmQueueOrderOptions,
 } from "./effective-pheromone.js";
-import { projectMemberAgentIds } from "../project-membership.js";
+import { projectMemberAgentIds, projectScopedClaimGate } from "../project-membership.js";
 import { unassignedTaskRoutedToRole } from "./queue.js";
 import { insertClaim, releaseClaimsForIssue, revertIdleClaimAssignment } from "./store.js";
 
@@ -542,7 +542,16 @@ async function claimTaskForAgent(
       const [row] = await txDb
         .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
         .from(issues)
-        .where(and(eq(issues.id, target.issueId), eq(issues.companyId, companyId)))
+        .where(
+          and(
+            eq(issues.id, target.issueId),
+            eq(issues.companyId, companyId),
+            // Revalidate scope after locking the issue. The pool/membership
+            // reads are advisory; only this predicate protects the write.
+            projectScopedClaimGate(target.agentId),
+            unassignedTaskRoutedToRole(target.role),
+          ),
+        )
         .for("update");
       if (
         !row ||

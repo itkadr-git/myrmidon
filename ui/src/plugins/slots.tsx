@@ -18,6 +18,8 @@
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
  * @see PLUGIN_SPEC.md §19.0.3 — Bundle Serving
  */
+import { useTranslation } from "@/i18n"; // myrmidon(OPE-9352)
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 import {
   Component,
   createElement,
@@ -855,6 +857,7 @@ export function PluginSlotMount({
   className,
   missingBehavior = "hidden",
 }: PluginSlotMountProps) {
+  const { t } = useTranslation(); // myrmidon(OPE-9352)
   usePluginRegistrySubscription();
   const [, forceRerender] = useState(0);
   const component = resolveRegisteredComponent(slot);
@@ -880,7 +883,7 @@ export function PluginSlotMount({
     if (missingBehavior === "hidden") return null;
     return (
       <div className={cn("rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground", className)}>
-        {slot.pluginDisplayName}: {slot.displayName}
+        {pluginLabel(t, slot.pluginKey, null, slot.pluginDisplayName)}: {pluginLabel(t, slot.pluginKey, slot.id, slot.displayName)} {/* myrmidon(OPE-9352) */}
       </div>
     );
   }
