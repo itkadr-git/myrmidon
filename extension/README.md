@@ -8,14 +8,15 @@ screenshot. Part D adds fill/download and human-confirmed signing steps.
 
 ```
 extension/
-  manifest.json          MV3 manifest: storage, tabs, content script
+  manifest.json          MV3 manifest: storage, tabs, nativeMessaging, content script
   src/
     protocol.ts          wire contract mirrored from the gateway (part B)
     allowlist.ts         the local allowlist gate
     state.ts             settings + chrome.storage.local (device id, token)
     jsonrpc.ts           JSON-RPC 2.0 framing
     pairing.ts           pairing-code client (code -> bridge token)
-    actions.ts           read-only browser actions
+    actions.ts           browser actions (read, fill, download, sign)
+    sign.ts              browser.sign: native-messaging client of the local helper
     gateway-client.ts    outbound WSS connection + bridge.hello/ready handshake
     native-host-contract.ts  generic native-messaging contract for local
                           signing hosts (types/validators only; concrete
@@ -53,6 +54,29 @@ node build.mjs          # or: npm run build:tsc
 
 Unpair removes the token. Revoking the device in the bridge panel makes the
 gateway refuse the token (fail-closed) and the connection drops.
+
+## Signing (`browser.sign`)
+
+The extension never holds a key or a PIN. `browser.sign` takes
+`documentRef`, `actionType` (one of `sign`, `sign_and_submit`, `sign_attachment`)
+and `url` (the document on an allowlisted site). The extension fetches the
+document in the page session, sends the bytes to the local signing helper over
+Chrome native messaging (host `com.myrmidon.sign_helper`, permission
+`nativeMessaging`) and reports to the gateway only `{status, documentHash}`.
+The detached signature stays on the PC, in a bounded memory-only stash.
+
+Why a helper of our own and not the CryptoPro Browser plug-in host: the plug-in's
+native host answers only the plug-in's own extension, so another extension
+cannot call it. The helper drives the same CryptoPro components (CAdESCOM) as
+the plug-in does.
+
+Auto or manual is the operator's choice in the bridge panel. The gateway turns
+it into the `confirmation` param of the step: `human` shows the confirmation
+window and the helper is not called until the person confirms; `none` signs at
+once. A bot cannot override it.
+
+A device paired before this build stored its capabilities without `sign`: pair
+it again to get the capability.
 
 ## Security notes
 
