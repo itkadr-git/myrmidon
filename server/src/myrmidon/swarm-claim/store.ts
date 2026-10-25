@@ -376,7 +376,7 @@ export async function clearExpiredAssignee(
                 // the clear runs strictly later than the release, an issue row
                 // updated after the release is a newer explicit re-assignment
                 // that outranks the expired lease.
-                sql`${issueClaims.releasedAt} >= ${input.now} OR ${issues.updatedAt} <= ${issueClaims.releasedAt}`,
+                sql`(${issueClaims.releasedAt} >= ${input.now.toISOString()}::timestamptz OR ${issues.updatedAt} <= ${issueClaims.releasedAt})`,
               ),
             ),
         ),
