@@ -98,16 +98,26 @@ export function buildKnowledgeTree(
   }
 
   const roots: KnowledgeTreeNode[] = [];
-  for (const [key, node] of nodes) {
-    const parentKey = node.item.parentSlug
-      ? treeKey(node.item.spaceKey, node.item.parentSlug)
-      : null;
-    const parent = parentKey ? nodes.get(parentKey) : undefined;
-    if (!parent || parent === node || isDescendant(parent, node, nodes)) {
-      roots.push(node);
-      continue;
+  const itemsBySpace = new Map<string, KnowledgeTreeNode[]>();
+  for (const node of nodes.values()) {
+    const bucket = itemsBySpace.get(node.item.spaceKey) ?? [];
+    bucket.push(node);
+    itemsBySpace.set(node.item.spaceKey, bucket);
+  }
+
+  for (const [spaceKey, spaceItems] of itemsBySpace) {
+    const spaceRoot: KnowledgeTreeNode = {
+      item: { id: `space:${spaceKey}`, spaceKey, slug: "", title: spaceKey, status: "published", revision: 0, updatedAt: "" },
+      depth: 0,
+      children: [],
+    };
+    roots.push(spaceRoot);
+    for (const node of spaceItems) {
+      const parentKey = node.item.parentSlug ? treeKey(spaceKey, node.item.parentSlug) : null;
+      const parent = parentKey ? nodes.get(parentKey) : undefined;
+      if (!parent || parent === node || isDescendant(parent, node, nodes)) spaceRoot.children.push(node);
+      else parent.children.push(node);
     }
-    parent.children.push(node);
   }
 
   const order = (list: KnowledgeTreeNode[], depth: number): void => {

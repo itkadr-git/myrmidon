@@ -218,7 +218,8 @@ function TreeBranch({
 }) {
   const key = revisionKey(node.item);
   const active = key === activeKey;
-  const [expanded, setExpanded] = useState(true);
+  const isSpace = node.item.slug === "";
+  const [expanded, setExpanded] = useState(() => typeof window === "undefined" || window.matchMedia("(min-width: 768px)").matches);
   return (
     <li className="ui2-knowledge-tree-node" data-depth={node.depth}>
       <div className="flex items-center gap-1">
@@ -227,15 +228,21 @@ function TreeBranch({
             {expanded ? "▾" : "▸"}
           </button>
         ) : null}
-        <button
-          type="button"
-          className={`ui2-knowledge-tree-item min-w-0 flex-1 rounded-md px-2 py-1 text-left text-sm hover:bg-accent ${active ? "bg-accent font-medium" : "text-muted-foreground"}`}
-          style={{ paddingLeft: `${8 + node.depth * 12}px` }}
-          aria-current={active ? "page" : undefined}
-          onClick={() => onSelect(node.item)}
-        >
-          {node.item.title}
-        </button>
+        {isSpace ? (
+          <span className="ui2-knowledge-space-label min-w-0 flex-1 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {node.item.title}
+          </span>
+        ) : (
+          <button
+            type="button"
+            className={`ui2-knowledge-tree-item min-w-0 flex-1 rounded-md px-2 py-1 text-left text-sm hover:bg-accent ${active ? "bg-accent font-medium" : "text-muted-foreground"}`}
+            aria-current={active ? "page" : undefined}
+            onClick={() => onSelect(node.item)}
+          >
+            <span>{node.item.title}</span>
+            <span className="ml-2 text-xs text-muted-foreground">{node.item.slug}</span>
+          </button>
+        )}
       </div>
       {node.children.length > 0 && expanded ? (
         <ul className="ui2-knowledge-tree-children flex flex-col gap-0.5">
@@ -467,7 +474,9 @@ function KnowledgePagePane({
         </div>
       </div>
 
-      <KnowledgeMarkdown body={item.body ?? ""} spaceKey={item.spaceKey} basePath={basePath} />
+      <div className="ui2-knowledge-article max-w-[72ch]">
+        <KnowledgeMarkdown body={item.body ?? ""} spaceKey={item.spaceKey} basePath={basePath} />
+      </div>
 
       <SourcePanel
         title={t("ui2.knowledge.sources.title")}
@@ -609,9 +618,10 @@ export function Ui2Knowledge({ basePath }: { basePath?: string } = {}) {
   const tree = useMemo(() => buildKnowledgeTree(listQuery.data?.items ?? []), [listQuery.data]);
 
   const activeKey = selection ? `${selection.spaceKey}/${selection.slug}` : null;
+  const [treeOpen, setTreeOpen] = useState(false);
 
   return (
-    <Ui2Page title={t("ui2.knowledge.title")} subtitle={t("ui2.knowledge.subtitle")}>
+    <Ui2Page className="ui2-knowledge-page !max-w-none" title={t("ui2.knowledge.title")} subtitle={t("ui2.knowledge.subtitle")}>
       <SearchPanel
         companyId={companyId}
         query={query}
@@ -638,7 +648,10 @@ export function Ui2Knowledge({ basePath }: { basePath?: string } = {}) {
         <Ui2EmptyStateView title={t("ui2.knowledge.tree.empty")} variant="done" />
       ) : (
         <div className="ui2-knowledge-layout flex w-full min-w-0 flex-col gap-4 md:flex-row">
-          <div className="ui2-knowledge-tree-pane md:sticky md:top-0 md:w-[clamp(18rem,24vw,30rem)] md:shrink-0 md:resize-x md:overflow-auto md:self-start">
+          <button type="button" className="ui2-knowledge-mobile-tree-toggle rounded-md border border-border px-3 py-2 text-sm md:hidden" aria-expanded={treeOpen} onClick={() => setTreeOpen((open) => !open)}>
+            {t(treeOpen ? "ui2.knowledge.tree.collapse" : "ui2.knowledge.tree.menu")}
+          </button>
+          <div className={`ui2-knowledge-tree-pane md:sticky md:top-0 md:w-[clamp(18rem,24vw,30rem)] md:shrink-0 md:resize-x md:overflow-auto md:self-start ${treeOpen ? "" : "hidden md:block"}`}>
           <Ui2Section title={t("ui2.knowledge.tree.aria")}>
             <div className="ui2-knowledge-tree-scroll max-h-[40dvh] overflow-y-auto md:max-h-[calc(100dvh-24rem)]" data-testid="knowledge-tree-scroll">
             <ul className="ui2-knowledge-tree flex flex-col gap-0.5" aria-label={t("ui2.knowledge.tree.aria")}>
