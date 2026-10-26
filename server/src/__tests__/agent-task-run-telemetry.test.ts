@@ -119,18 +119,19 @@ describe("buildRunTelemetry", () => {
     expect(telemetry.modelCallCountSource).toBe("gateway_count");
   });
 
-  it("does not collapse separate gateway and LiteLLM IDs into a double-counted call", () => {
+  it("uses max count as fallback for independent gateway and LiteLLM ID namespaces", () => {
     const telemetry = buildRunTelemetry({
       ...baseInput,
-      run: {
-        ...baseInput.run,
-        resultJson: { gatewayCallIds: ["same-call"] },
+      wakeup: {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "issue_commented",
+        payload: { gatewayCallIds: ["gw-1", "gw-2"], litellmRequestIds: ["req-1", "req-2", "req-3"] },
       },
-      gatewayCalls: [{ requestId: "same-call", costCents: 2 }, { requestId: "req-2", costCents: 0 }],
+      run: { ...baseInput.run, resultJson: null },
     });
-    expect(telemetry.modelCallCount).toBe(2);
-    expect(telemetry.gatewayCallIds).toEqual(["same-call"]);
-    expect(telemetry.litellmRequestIds).toEqual(["same-call", "req-2"]);
+    expect(telemetry.modelCallCount).toBe(3);
+    expect(telemetry.modelCallCountSource).toBe("inferred_call_ids");
   });
 
   it("prefers immutable wake revision to issue timestamp from later in the run", () => {
@@ -180,9 +181,9 @@ describe("buildRunTelemetry", () => {
     expect(branch.branchCount).toBe(1);
 
     expect(buildRunTelemetry(baseInput).outcomeCategory).toBeNull();
-    expect(buildRunTelemetry({ ...baseInput, workProducts: [{ type: "status" }] }).outcomeCategory).toBe("status");
-    expect(buildRunTelemetry({ ...baseInput, workProducts: [{ type: "comment" }] }).outcomeCategory).toBe("comment_only");
-    expect(buildRunTelemetry({ ...baseInput, workProducts: [{ type: "no_change" }] }).outcomeCategory).toBe("no_change");
+    expect(buildRunTelemetry({ ...baseInput, workProducts: [{ type: "status" }] }).outcomeCategory).toBe("other_work_product");
+    expect(buildRunTelemetry({ ...baseInput, workProducts: [{ type: "comment" }] }).outcomeCategory).toBe("other_work_product");
+    expect(buildRunTelemetry({ ...baseInput, workProducts: [{ type: "no_change" }] }).outcomeCategory).toBe("other_work_product");
     expect(buildRunTelemetry({ ...baseInput, outcomeCategoryOverride: "status" }).outcomeCategory).toBe("status");
     expect(buildRunTelemetry({ ...baseInput, outcomeCategoryOverride: "comment_only" }).outcomeCategory).toBe("comment_only");
     expect(buildRunTelemetry({ ...baseInput, outcomeCategoryOverride: "nothing" }).outcomeCategory).toBe("nothing");
@@ -362,6 +363,12 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
     expect((commentResult.resultJson as any).runTelemetry.outcomeCategory).toBe("comment_only");
 
     await db.delete(issueComments).where(eq(issueComments.createdByRunId, runId));
+    const unfinishedRun = { ...run, startedAt: null, finishedAt: null };
+    await emitAgentTaskRun(db, unfinishedRun);
+    const [unfinishedResult] = await db.select({ resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect((unfinishedResult.resultJson as any).runTelemetry.outcomeCategory).toBeNull();
+
     await emitAgentTaskRun(db, run);
     const [emptyResult] = await db.select({ resultJson: heartbeatRuns.resultJson })
       .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));

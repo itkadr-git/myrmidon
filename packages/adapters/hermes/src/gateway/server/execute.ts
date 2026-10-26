@@ -1480,12 +1480,13 @@ export function mapFinalResultForTest(input: {
   const costUsd = parseCostUsd(payload);
   const payloadCallIds = parseGatewayCallIds(payload);
   const gatewayModelCallCount = parseGatewayCallCount(payload);
-  const modelCallCount = gatewayModelCallCount ?? parseModelCallCount(
+  const explicitCallCount = gatewayModelCallCount ?? parseGatewayCallCount(usage);
+  const modelCallCount = explicitCallCount ?? parseModelCallCount(
     payload,
     payloadCallIds.gatewayCallIds,
     payloadCallIds.litellmRequestIds,
   );
-  const modelCallCountSource = gatewayModelCallCount !== null ? "gateway_count" : "inferred_call_ids";
+  const modelCallCountSource = explicitCallCount !== null ? "gateway_count" : "inferred_call_ids";
   const errorMessage = mapped.errorCode
     ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;

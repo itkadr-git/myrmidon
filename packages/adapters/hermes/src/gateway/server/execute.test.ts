@@ -1368,6 +1368,18 @@ describe("mapFinalResultForTest", () => {
     expect(result.resultJson?.litellmRequestIds).toEqual(["req-a", "req-b"]);
   });
 
+  it("uses explicit count carried in usage when terminal envelope lacks one", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-usage-count",
+        status: "completed",
+        payload: { usage: { model_call_count: 4 }, gateway_call_ids: ["call-a"] },
+      },
+    });
+    expect(result.resultJson?.modelCallCount).toBe(4);
+    expect(result.resultJson?.modelCallCountSource).toBe("gateway_count");
+  });
+
   it("preserves call IDs beyond the previous 100-ID cutoff while marking telemetry truncation", () => {
     const ids = Array.from({ length: 550 }, (_, index) => `call-${index}`);
     const result = mapFinalResultForTest({

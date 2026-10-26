@@ -85,18 +85,15 @@ export function buildRunTelemetry(input: {
   const spendCallIds = input.gatewayCalls.map((call) => readRunEventId(call.requestId)).filter((value): value is string => value !== null);
   const gatewayCallIds = [...new Set(gatewayResultIds)];
   const litellmRequestIds = [...new Set([...litellmResultIds, ...spendCallIds])];
-  const declaredCallCount = readModelCallCount(result);
-  const gatewayReportedCount = readModelCallCount({ modelCallCount: result.gatewayModelCallCount });
+  const reportedCallCount = readModelCallCount(result) ?? readModelCallCount({ modelCallCount: result.gatewayModelCallCount });
+  const explicitCallCount = reportedCallCount ?? readModelCallCount(usage);
   const deduplicatedCallCount =
     gatewayCallIds.length > 0 && litellmRequestIds.length > 0
       ? Math.max(gatewayCallIds.length, litellmRequestIds.length)
       : gatewayCallIds.length + litellmRequestIds.length;
-  const modelCallCount = declaredCallCount ?? gatewayReportedCount
-    ?? (deduplicatedCallCount > 0 ? deduplicatedCallCount : null);
+  const modelCallCount = explicitCallCount ?? (deduplicatedCallCount > 0 ? deduplicatedCallCount : null);
   const modelCallCountSource = readRunDimension(result.modelCallCountSource)
-    ?? (declaredCallCount !== null || gatewayReportedCount !== null
-      ? "gateway_count"
-      : gatewayCallIds.length > 0 ? "gateway_call_ids" : litellmRequestIds.length > 0 ? "litellm_request_ids" : "unknown");
+    ?? (explicitCallCount !== null ? "gateway_count" : deduplicatedCallCount > 0 ? "inferred_call_ids" : "unknown");
   const model = readNonEmptyString(usage.model) ?? readNonEmptyString(result.model);
   const billingType = readNonEmptyString(usage.billingType) ?? readNonEmptyString(usage.billing_type);
   const artifactCount = input.workProducts.filter((product) => product.type === "artifact").length;
@@ -258,6 +255,7 @@ async function buildRunTelemetryForDb(db: Db, run: HeartbeatRun) {
           eq(issueComments.companyId, run.companyId),
           eq(issueComments.issueId, issueId),
           eq(issueComments.createdByRunId, run.id),
+          eq(issueComments.deleted, false),
         )).limit(1)
     : [];
   const fallbackFinished = !!run.startedAt && !!run.finishedAt;

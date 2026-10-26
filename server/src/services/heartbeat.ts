@@ -21565,7 +21565,7 @@ export function heartbeatService(
     if (!resolvedCompanyId) return { created: false };
     const source = opts.source ?? "on_demand";
     const reason = opts.reason ?? null;
-    const payload = opts.payload ? { ...opts.payload } : null;
+    let payload = opts.payload ? { ...opts.payload } : null;
     if (payload) {
       delete payload.queuedCommentInterrupt;
       delete payload.manualUserWake;
