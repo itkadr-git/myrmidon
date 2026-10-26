@@ -12,6 +12,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@myrmidon/db";
+import { type Config, loadConfig } from "./config.js";
 import {
   derivePaperclipViteHmrPort,
   type DeploymentExposure,
@@ -228,7 +229,8 @@ import {
 // myrmidon(EXT-CASE-OCR): the OCR path (PDF -> text in the bot's workspace)
 import { myrmidonOcrRoutes } from "./myrmidon/ocr/index.js";
 // myrmidon(1.6.6-CORPUS-D): the corpus MCP endpoint (`corpus_*` for bots)
-import { myrmidonCorpusMcpRoutes } from "./myrmidon/corpus/index.js";
+import { configureCorpusAdapters, myrmidonCorpusMcpRoutes } from "./myrmidon/corpus/index.js";
+import { createCorpusShadowSearch } from "./myrmidon/corpus/shadow-search.js";
 // myrmidon(1.6.6 ARCH-DATA): read-only architect operational data and MCP endpoint
 import {
   myrmidonArchitectDataMcpRoutes,
@@ -1297,7 +1299,9 @@ export async function createApp(
     trustedLocalStdioRuntimeHost,
   });
   const toolActionDeliveries = toolActionDeliveryService(db, heartbeatService(db, { pluginWorkerManager: workerManager }));
+  configureCorpusAdapters(db, loadConfig());
   const toolGateway = createToolGatewayService(db, {
+    corpusShadowSearch: createCorpusShadowSearch(db),
     onToolActionSettled: (id) => toolActionDeliveries.deliver(id),
     pluginToolDispatcher: toolDispatcher,
     deploymentMode: opts.deploymentMode,
