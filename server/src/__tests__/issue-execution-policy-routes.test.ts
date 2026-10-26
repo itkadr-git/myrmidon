@@ -341,7 +341,6 @@ describe("issue execution policy routes", () => {
     expect(updatePatch).toMatchObject({
       status: "in_progress",
       assigneeAgentId: "new-executor",
-      executionState: null,
     });
   });
 

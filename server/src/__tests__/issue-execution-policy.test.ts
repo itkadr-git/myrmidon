@@ -402,7 +402,7 @@ describe("issue execution policy transitions", () => {
     const policy = twoStagePolicy();
     const reviewStageId = policy.stages[0].id;
 
-    it("reviewer requests changes → returns to executor", () => {
+    it("reviewer requests changes -> returns to executor", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: {
           status: "in_review",
@@ -443,7 +443,7 @@ describe("issue execution policy transitions", () => {
       });
     });
 
-    it("executor re-submits after changes → returns to same review stage", () => {
+    it("executor re-submits after changes -> returns to same review stage", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: {
           status: "in_progress",
