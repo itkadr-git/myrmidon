@@ -1266,6 +1266,53 @@ describe("mapFinalResultForTest", () => {
     expect(result.summary?.endsWith("КОНЕЦ")).toBe(true);
   });
 
+  it("persists only gateway call identifiers and count metadata with usage, not prompt data", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-telemetry",
+        status: "completed",
+        payload: {
+          status: "completed",
+          call_id: "call-456",
+          usage: {
+            litellm_request_ids: ["req-123"],
+            input_tokens: 120,
+            cached_input_tokens: 30,
+            output_tokens: 45,
+          },
+          prompt: "must not be recorded",
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(result.resultJson).toMatchObject({
+      gatewayCallIds: ["call-456", "req-123"],
+      modelCallCount: 2,
+      modelCallCountSource: "gateway_call_ids",
+      usage: { inputTokens: 120, cachedInputTokens: 30, outputTokens: 45 },
+    });
+    expect(JSON.stringify(result.resultJson)).not.toContain("must not be recorded");
+  });
+
+  it("uses explicit gateway model-call count only when call IDs are absent", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-telemetry",
+        status: "completed",
+        payload: { status: "completed", model_call_count: 3, usage: { input_tokens: 1 } },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(result.resultJson?.modelCallCount).toBe(3);
+    expect(result.resultJson?.gatewayCallIds).toEqual([]);
+  });
+
   it("maps failed statuses into adapter errors", () => {
     const result = mapFinalResultForTest({
       terminal: {
