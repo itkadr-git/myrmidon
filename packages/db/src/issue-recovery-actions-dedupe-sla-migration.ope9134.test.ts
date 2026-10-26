@@ -12,7 +12,7 @@ const cleanups: Array<() => Promise<void>> = [];
 const support = await getEmbeddedPostgresTestSupport();
 const d = support.supported ? describe : describe.skip;
 
-const MIGRATION_FILE = "0419_issue_recovery_actions_dedupe_sla.sql";
+const MIGRATION_FILE = "0420_issue_recovery_actions_dedupe_sla.sql";
 const DEDUPE_UNIQUE_INDEX = "issue_recovery_actions_active_dedupe_key_uq";
 const SOURCE_UNIQUE_INDEX = "issue_recovery_actions_active_source_uq";
 const OWNER_SLA_CHECK = "issue_recovery_actions_dedupe_owner_sla_check";
