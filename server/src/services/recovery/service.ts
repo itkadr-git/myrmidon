@@ -4585,8 +4585,19 @@ export function recoveryService(
     if (successfulRunDisposition) {
       // Missing escalation agents, a paused assignee, or disabled auto-policy
       // are not permission to create a board-owned liveness block for a
-      // successful-run disposition handoff.
-      return input.issue;
+      // successful-run disposition handoff. For an exhausted failure, keep
+      // the vendor's cause-keyed board escalation instead of turning every
+      // successful_run_* cause into a silent no-op.
+      if (input.latestRun?.status === "succeeded") return input.issue;
+      if (input.issue.originKind === "stranded_issue_recovery") {
+        return issuesSvc.update(input.issue.id, {
+          status: "blocked",
+          blockedByIssueIds: await existingUnresolvedBlockerIssueIds(
+            input.issue.companyId,
+            input.issue.id,
+          ),
+        });
+      }
     }
 
     const approvedInfraReroute = Boolean(
