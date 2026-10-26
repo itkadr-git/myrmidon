@@ -1,10 +1,8 @@
 import { and, eq, lt } from "drizzle-orm";
-import { issueContinuationKeys } from "@myrmidon/db";
-import type { Db } from "@myrmidon/db";
+import { issueContinuationKeys, type Db } from "@myrmidon/db";
 import { isUniqueViolation } from "../db-errors.js";
 
 export type ContinuationDedupeOutcome = "created" | "deduped";
-type Db = ReturnType<typeof createDb>;
 
 export async function tryClaimContinuationKey(
   db: Db,
@@ -22,7 +20,7 @@ export async function tryClaimContinuationKey(
     })
     .returning({ key: issueContinuationKeys.key })
     .catch((err: unknown) => {
-      if (isUniqueViolation(err, "issue_continuation_keys_company_key_uq")) return [];
+      if (isUniqueViolation(err, "issue_continuation_keys_company_key_uq") || isUniqueViolation(err)) return [];
       throw err;
     });
   return inserted.length ? "created" : "deduped";
@@ -30,12 +28,16 @@ export async function tryClaimContinuationKey(
 
 export async function clearExpiredContinuationKeys(
   db: Db,
-  companyId: string,
+  companyId?: string,
   now = new Date(),
 ): Promise<number> {
+  const conditions = [lt(issueContinuationKeys.expiresAt, now)];
+  if (companyId) {
+    conditions.push(eq(issueContinuationKeys.companyId, companyId));
+  }
   const deleted = await db
     .delete(issueContinuationKeys)
-    .where(and(eq(issueContinuationKeys.companyId, companyId), lt(issueContinuationKeys.expiresAt, now)))
+    .where(and(...conditions))
     .returning({ key: issueContinuationKeys.key });
   return deleted.length;
 }
