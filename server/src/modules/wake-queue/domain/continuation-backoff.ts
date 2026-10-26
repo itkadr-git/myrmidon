@@ -33,5 +33,7 @@ export function nextContinuationDelay({
   const delay = count >= maxContinuations
     ? windowMs
     : (windowMs / maxContinuations) * count;
-  return Math.min(delay, maxDelayMs);
+  // The window wait is a safety requirement when the budget is exhausted;
+  // a scheduler cap must not allow another continuation before a slot expires.
+  return count >= maxContinuations ? delay : Math.min(delay, maxDelayMs);
 }

@@ -50,7 +50,16 @@ describe("nextContinuationDelay", () => {
   it("uses an arbitrary configured window and budget without truncating the window", () => {
     expect(nextContinuationDelay({ recentCount: 2, windowMs: 1_000, maxContinuations: 4, maxDelayMs: 2_000 })).toBe(500);
     expect(nextContinuationDelay({ recentCount: 4, windowMs: 1_000, maxContinuations: 4, maxDelayMs: 2_000 })).toBe(1_000);
-    expect(nextContinuationDelay({ recentCount: 4, windowMs: 10_000, maxContinuations: 4, maxDelayMs: 2_000 })).toBe(2_000);
+    expect(nextContinuationDelay({ recentCount: 4, windowMs: 10_000, maxContinuations: 4, maxDelayMs: 2_000 })).toBe(10_000);
+  });
+
+  it("never caps the mandatory window wait when the continuation budget is exhausted", () => {
+    const windowMs = 10_000;
+    const maxContinuations = 4;
+    const events = simulateWindow(windowMs, maxContinuations + 1);
+
+    expect(nextContinuationDelay({ recentCount: maxContinuations, windowMs, maxContinuations, maxDelayMs: 2_000 })).toBe(windowMs);
+    expect(events[maxContinuations]).toBe(windowMs);
   });
 
   it("returns zero for NaN and negative inputs", () => {
