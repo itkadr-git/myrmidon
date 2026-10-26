@@ -5,7 +5,7 @@
 // partial unique index (one open job per server) is the claim guard.
 
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
-import { myrmidonFleetOnboardJobs, myrmidonFleetServers, type Db } from "@paperclipai/db";
+import { myrmidonFleetOnboardJobs, myrmidonFleetServers, type Db } from "@myrmidon/db";
 import {
   ONBOARD_BOOTSTRAP_VERSION,
   appendStepLog,

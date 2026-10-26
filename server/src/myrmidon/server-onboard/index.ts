@@ -4,7 +4,7 @@
 // secret port and registry lookups through the onboard store itself, so the
 // console and onboarding share one myrmidon_fleet_servers registry.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { onboardRoutes } from "./routes.js";
 import { onboardService, panelSecretPort } from "./service.js";
 import { readFleetOnboardSettings } from "./settings.js";
