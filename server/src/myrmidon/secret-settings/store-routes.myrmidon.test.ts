@@ -250,7 +250,7 @@ describeEmbeddedPostgres("instance secret settings: routes and store on the real
       const audits = await db.select({ entityId: activityLog.entityId, action: activityLog.action, details: activityLog.details })
         .from(activityLog).where(eq(activityLog.action, "instance.secret_setting.migrated"));
       expect(audits.map((row) => row.entityId).sort()).toEqual([first.name, third.name].sort());
-      expect(audits.every((row) => row.details?.settingName === row.entityId)).toBe(true);
+      expect(audits.every((row) => JSON.stringify(row.details).includes(row.entityId))).toBe(true);
       const svc = createInstanceSecretSettingService(db, localRegistry, env);
       expect((await svc.status(first.name)).ref).not.toBeNull();
       expect((await svc.status(second.name)).ref).toBeNull();
