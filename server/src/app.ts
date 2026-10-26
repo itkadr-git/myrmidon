@@ -1285,17 +1285,6 @@ export async function createApp(
   lifecycle.on("plugin.ready", ({ pluginId, pluginKey }) => {
     const readyAt = Date.now();
     pluginReadiness.plugins.set(pluginId, { pluginId, pluginKey, readyAt });
-    logger.info(
-      {
-        pluginId,
-        pluginKey,
-        boardReadyAt: pluginReadiness.boardReadyAt,
-        readyAt,
-        readyAfterBoardReadyMs:
-          pluginReadiness.boardReadyAt === null ? null : readyAt - pluginReadiness.boardReadyAt,
-      },
-      "plugin readiness: ready",
-    );
   });
   const scheduler = createPluginJobScheduler({
     db,
@@ -1390,7 +1379,6 @@ export async function createApp(
       toolDispatcher,
       lifecycleManager: lifecycle,
       onPluginReady: ({ id, pluginKey }) => {
-        if (pluginReadiness.plugins.has(id)) return;
         const readyAt = Date.now();
         pluginReadiness.plugins.set(id, { pluginId: id, pluginKey, readyAt });
         logger.info(
@@ -1405,6 +1393,7 @@ export async function createApp(
           "plugin readiness: ready",
         );
       },
+
       instanceInfo: {
         instanceId: opts.instanceId ?? "default",
         hostVersion: opts.hostVersion ?? "0.0.0",
