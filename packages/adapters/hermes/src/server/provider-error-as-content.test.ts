@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isProviderErrorAsContent, PROVIDER_ERROR_AS_CONTENT_PATTERNS } from "../gateway/server/execute.js";
+import { isProviderErrorAsContent, PROVIDER_ERROR_AS_CONTENT_PATTERNS } from "./execute.js";
 
 describe("provider error responses disguised as content", () => {
   it("recognizes the HTTP-200 overload response", () => {
