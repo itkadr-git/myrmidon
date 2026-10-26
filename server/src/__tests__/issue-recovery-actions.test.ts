@@ -876,6 +876,32 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(payload?.livenessContinuation?.instruction).toContain("Record exactly one of the following");
     });
 
+    it("applies L4 to a successful-run handoff even when the caller requests queue rerouting", async () => {
+      const { companyId, coderId, sourceIssue } = await seedCompany();
+      const enqueueWakeup = fakeRetryWakeEnqueue({ companyId });
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      const updated = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: await succeededRun({ companyId, agentId: coderId }),
+        recoveryCause: "successful_run_missing_state",
+        rerouteToSharedQueue: true,
+      });
+
+      // L4 queues the bounded corrective wake; the legacy vendor escalation
+      // would instead block the issue and create a board-owned recovery action.
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(updated?.status).toBe("in_progress");
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      expect(persisted?.status).toBe("in_progress");
+      const actions = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+      expect(actions).toHaveLength(0);
+    });
+
     it("hands the issue to the direct manager once the daily retry cap is exhausted, end to end", async () => {
       const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
       // Exhaust the default daily cap (2) with two prior tagged retry runs.
