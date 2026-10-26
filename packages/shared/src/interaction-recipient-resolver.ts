@@ -88,7 +88,10 @@ function principalScopeMatches(
   return true;
 }
 
-function principalProjectMembership(principal: InteractionPrincipal | InteractionRecipient, projectId: string): boolean {
+function principalProjectMembership(
+  principal: ScopedInteractionPrincipal | InteractionRecipient,
+  projectId: string,
+): boolean {
   return !(("type" in principal) && principal.type === "agent") || principal.isJoinedMember === true;
 }
 
