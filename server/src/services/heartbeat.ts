@@ -600,7 +600,6 @@ import {
 } from "./recovery/service.js";
 import {
   createRunDispatch,
-  type PostCommitEffect,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
@@ -20612,6 +20611,7 @@ export function heartbeatService(
   };
   const runStartDispatcher = createRunStartDispatcher({
     listQueuedAgents: async ({ cutoff }) => listAgentsWithQueuedRunsAndNoRunningRun(db, { cutoff }),
+    startNextQueuedRunForAgent: (agentId, options) => startNextQueuedRunForAgent(agentId, options),
     listStaleQueuedRuns: async ({ executionCutoff, staleAfterMs }) => {
       const staleRuns = await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId, createdAt: heartbeatRuns.createdAt })
         .from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "queued"), lte(heartbeatRuns.createdAt, new Date(Date.now() - staleAfterMs)), executionCutoff ? gte(heartbeatRuns.createdAt, executionCutoff) : undefined))
@@ -20619,7 +20619,7 @@ export function heartbeatService(
       return staleRuns;
     },
     createCancelStaleQueuedRun: async (run, staleAfterMs) => {
-      const outcome = await createCancelStaleQueuedRun({ writer: runDispatch })({
+      const outcome = await runDispatch.cancelStaleQueuedRun({
         runId: run.id, companyId: run.companyId, expectedStatus: "queued",
         staleAfterMs, now: new Date(),
       });
@@ -20628,7 +20628,7 @@ export function heartbeatService(
       return true;
     },
     wakeAgent: async (agentId, companyId) => {
-      await enqueueWakeup(agentId, { source: "system", reason: "queued_run_stale_timeout", companyId });
+      await enqueueWakeup(agentId, { source: "automation", reason: "queued_run_stale_timeout", companyId });
     },
     loadSettings: () => loadRunDispatchSettings(db),
     readCutoff: () => getWorktreeExecutionCutoff(),

@@ -8,7 +8,6 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
-  activityLog,
   issueThreadInteractions,
   issues,
 } from "@myrmidon/db";

@@ -17,7 +17,7 @@
 //  - routes.ts — the express router: bearer guard + the endpoint.
 //  - index.ts — the app wiring (app.ts mounts that).
 
-import { and, count, eq, gte, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, count, eq, gt, gte, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   agents,
   companies,
