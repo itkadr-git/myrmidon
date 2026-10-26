@@ -16275,12 +16275,20 @@ export function issueRoutes(
                 ))
                 .for("update");
               if (sourceIssue && sourceIssue.status === "blocked") {
-                const remainingBlockers = (sourceIssue.blockedByIssueIds ?? []).filter(
-                  (blockerId) => blockerId !== issue.id,
-                );
+                const remainingBlockers = await tx
+                  .select({ blockerIssueId: issueRelations.issueId })
+                  .from(issueRelations)
+                  .where(and(
+                    eq(issueRelations.companyId, issue.companyId),
+                    eq(issueRelations.relatedIssueId, recoveryAction.sourceIssueId),
+                    eq(issueRelations.type, "blocks"),
+                  ));
+                const blockerIds = remainingBlockers
+                  .map(({ blockerIssueId }) => blockerIssueId)
+                  .filter((blockerId) => blockerId !== issue.id);
                 await svc.update(recoveryAction.sourceIssueId, {
-                  status: remainingBlockers.length ? "blocked" : "todo",
-                  blockedByIssueIds: remainingBlockers,
+                  status: blockerIds.length ? "blocked" : "todo",
+                  blockedByIssueIds: blockerIds,
                   assigneeAgentId: recoveryAction.returnOwnerAgentId,
                   assigneeUserId: null,
                 }, tx);
