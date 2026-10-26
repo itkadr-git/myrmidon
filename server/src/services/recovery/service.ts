@@ -37,10 +37,12 @@ import {
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+  buildContinuationKey,
   requiresExecutionReconciliation,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
 } from "@myrmidon/shared";
+import { tryClaimContinuationKey } from "../continuation-dedupe.js";
 import {
   agents,
   agentTaskSessions,
@@ -1980,7 +1982,9 @@ export function recoveryService(
 
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
+    companyId: string;
     agentId: string;
+    continuationHead?: string;
     reason:
       | "issue_assignment_recovery"
       | "issue_continuation_needed"
@@ -2057,6 +2061,20 @@ export function recoveryService(
       )
         return null;
     }
+    if (input.reason === "issue_continuation_needed") {
+      const claimed = await tryClaimContinuationKey(db, {
+        companyId: input.companyId,
+        issueId: input.issueId,
+        key: buildContinuationKey({
+          issueId: input.issueId,
+          event: "issue_continuation_needed",
+          head: input.continuationHead ?? "unversioned",
+        }),
+        ttl: 24 * 60 * 60 * 1_000,
+      });
+      if (claimed === "deduped") return null;
+    }
+
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -4173,7 +4191,9 @@ export function recoveryService(
         try {
           queued = await enqueueStrandedIssueRecovery({
             issueId: input.issue.id,
+            companyId: input.issue.companyId,
             agentId: assigneeAgentId,
+            continuationHead: latestRun.id,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
             source: STRANDED_AUTO_POLICY_RETRY_SOURCE,
@@ -5731,7 +5751,11 @@ export function recoveryService(
 
           const queued = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
+            companyId: issue.companyId,
             agentId,
+            continuationHead:
+              latestPostResolutionRun?.id ??
+              acceptedContinuationInteraction.id,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
             source: "issue.interaction_continuation_recovery",
@@ -5924,6 +5948,7 @@ export function recoveryService(
         // If participant has a live run somewhere, just enqueue a recovery wake instead of escalating
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId: participantAgentId,
           reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
@@ -6022,6 +6047,7 @@ export function recoveryService(
 
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId,
           reason: "issue_assignment_recovery",
           retryReason: "assignment_recovery",
@@ -6143,7 +6169,9 @@ export function recoveryService(
 
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId,
+          continuationHead: successfulRun.id,
           reason: "issue_continuation_needed",
           retryReason: "issue_continuation_needed",
           source: "issue.productive_terminal_continuation_recovery",
@@ -6266,7 +6294,10 @@ export function recoveryService(
 
       const queued = await enqueueStrandedIssueRecovery({
         issueId: issue.id,
+        companyId: issue.companyId,
         agentId,
+        continuationHead:
+          latestRun?.id ?? issue.checkoutRunId ?? issue.id,
         reason: "issue_continuation_needed",
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",
