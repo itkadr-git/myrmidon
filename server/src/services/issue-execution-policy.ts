@@ -394,7 +394,7 @@ export function setIssueExecutionPolicyMonitorScheduledBy(
 
 export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
   if (input == null) return null;
-  // Accept legacy mode only from persisted rows. Request validators stay strict.
+  // Request schema validates shape first; the accepted legacy mode is normalized here.
   const normalizedInput =
     typeof input === "object" &&
     !Array.isArray(input) &&
