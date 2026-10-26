@@ -32575,9 +32575,23 @@ export function heartbeatService(
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
-        // A timer wake must be bound to the same actionable-task selection used
-        // by idle pickup. Otherwise the agent spends a full model invocation
-        // discovering a task and then fails the P5 source-context checkout gate.
+        const baseline = new Date(
+          agent.lastHeartbeatAt ?? agent.createdAt,
+        ).getTime();
+        const elapsedMs = now.getTime() - baseline;
+        if (elapsedMs < policy.intervalSec * 1000) continue;
+        const timerClaim = await claimDueTimerHeartbeat(
+          agent,
+          now,
+          policy.intervalSec,
+        );
+        if (!timerClaim) continue;
+        checked += 1;
+
+        // Only inspect readiness after this agent's timer is due and claimed.
+        // This avoids a database scan and repeated no-work activity on every
+        // scheduler tick. Keep the candidate set aligned with idle pickup so a
+        // timer wake always carries task source context required by the P5 guard.
         const timerIssue = await findTopReadyIssueForAgent(db, {
           id: agent.id,
           companyId: agent.companyId,
@@ -32595,19 +32609,6 @@ export function heartbeatService(
           });
           continue;
         }
-
-        checked += 1;
-        const baseline = new Date(
-          agent.lastHeartbeatAt ?? agent.createdAt,
-        ).getTime();
-        const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
-        const timerClaim = await claimDueTimerHeartbeat(
-          agent,
-          now,
-          policy.intervalSec,
-        );
-        if (!timerClaim) continue;
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",

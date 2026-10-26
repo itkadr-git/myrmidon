@@ -89,7 +89,7 @@ describeEmbeddedPostgres("skip idle timer heartbeats (M3)", () => {
       status: "active",
       adapterType: "codex_local",
       adapterConfig: {},
-      runtimeConfig: { heartbeat: { enabled: true, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 1, wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
     });
     return { companyId, agentId };
@@ -159,11 +159,23 @@ describeEmbeddedPostgres("skip idle timer heartbeats (M3)", () => {
     await expectCheckoutContext(run[0]!.contextSnapshot, companyId, agentId);
   });
 
-  it("does not bind a timer to blocked work or work with a live run", async () => {
+  it("does not schedule a timer wake when the agent's only assigned task is blocked", async () => {
     const { companyId, agentId } = await seedAgent();
     const blockedId = await seedIssue(companyId, agentId, "todo");
     const blockerId = await seedIssue(companyId, null, "in_progress");
     await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: blockedId, type: "blocks" });
+    await db.update(agents).set({ lastHeartbeatAt: new Date("2000-01-01T00:00:00Z") }).where(eq(agents.id, agentId));
+
+    await heartbeat.tickTimers(new Date());
+
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
+    expect(await wakeRequests(agentId)).toHaveLength(0);
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(eq(activityLog.agentId, agentId)))
+      .toContainEqual({ action: "heartbeat.timer.no_actionable_work" });
+  });
+
+  it("does not schedule a duplicate timer wake when the assigned task already has a live run", async () => {
+    const { companyId, agentId } = await seedAgent();
     const liveId = await seedIssue(companyId, agentId, "in_progress");
     await db.insert(heartbeatRuns).values({
       companyId, agentId, invocationSource: "on_demand", status: "running",
@@ -175,8 +187,21 @@ describeEmbeddedPostgres("skip idle timer heartbeats (M3)", () => {
 
     const runs = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(1);
-    expect(runs[0]?.contextSnapshot).not.toMatchObject({ issueId: blockedId });
-    expect(runs[0]?.contextSnapshot).not.toMatchObject({ issueId: liveId });
+    expect(runs[0]?.contextSnapshot).toMatchObject({ issueId: liveId });
+    expect(await wakeRequests(agentId)).toHaveLength(0);
+  });
+
+  it("does not inspect timer work or log no-actionable-work before the timer is due", async () => {
+    const { agentId } = await seedAgent();
+    const baseline = new Date("2026-01-01T00:00:00.000Z");
+    await db.update(agents).set({ lastHeartbeatAt: baseline }).where(eq(agents.id, agentId));
+
+    await heartbeat.tickTimers(new Date(baseline.getTime() + 500));
+
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
+    expect(await wakeRequests(agentId)).toHaveLength(0);
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(eq(activityLog.agentId, agentId)))
+      .not.toContainEqual({ action: "heartbeat.timer.no_actionable_work" });
   });
 
   it("does not schedule a timer wake when the agent has no ready task", async () => {
