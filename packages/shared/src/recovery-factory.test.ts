@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { ISSUE_RECOVERY_ACTION_KINDS } from "./constants.js";
 import {
   buildRecoveryDedupeKey,
+  DEFAULT_RECOVERY_SLA_MINUTES,
+  RECOVERY_SLA_MINUTES_BY_KIND,
   recoveryFactoryRequestSchema,
+  resolveRecoverySlaMinutes,
   type RecoveryFactoryRequest,
 } from "./recovery-factory.js";
 
@@ -132,5 +135,40 @@ describe("buildRecoveryDedupeKey", () => {
     expect(first).toBe(second);
     // 4×32-bit hex lanes: fixed-length opaque identity, no time component.
     expect(first).toMatch(/^[0-9a-f]{32}$/);
+  });
+});
+
+describe("RECOVERY_SLA_MINUTES_BY_KIND", () => {
+  const expectedSlas: Record<string, number> = {
+    ci_restart: 30,
+    github_access: 60,
+    branch_relay: 60,
+    review_participant_restore: 60,
+    workspace_myr_ws: 120,
+    devbuild: 120,
+    disk_space: 60,
+    operator_action: 120,
+  };
+
+  it("contains exact launch SLA minutes for every recovery-factory kind", () => {
+    for (const [kind, expectedMinutes] of Object.entries(expectedSlas)) {
+      expect(RECOVERY_SLA_MINUTES_BY_KIND[kind]).toBe(expectedMinutes);
+      expect(DEFAULT_RECOVERY_SLA_MINUTES[kind]).toBe(expectedMinutes);
+    }
+  });
+
+  it("resolveRecoverySlaMinutes returns baseline SLA", () => {
+    for (const [kind, expectedMinutes] of Object.entries(expectedSlas)) {
+      expect(resolveRecoverySlaMinutes(kind)).toBe(expectedMinutes);
+    }
+  });
+
+  it("resolveRecoverySlaMinutes applies overrides when provided", () => {
+    expect(resolveRecoverySlaMinutes("ci_restart", { ci_restart: 15 })).toBe(15);
+    expect(resolveRecoverySlaMinutes("ci_restart", { github_access: 90 })).toBe(30);
+  });
+
+  it("resolveRecoverySlaMinutes falls back to default 60 for unknown kind", () => {
+    expect(resolveRecoverySlaMinutes("unknown_recovery_kind")).toBe(60);
   });
 });
