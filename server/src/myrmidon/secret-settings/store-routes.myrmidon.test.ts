@@ -46,14 +46,14 @@ describeEmbeddedPostgres("instance secret settings: routes and store on the real
   let firstSecretId!: string;
   let secondSecretId!: string;
 
-  function appFor(actor: Record<string, unknown>) {
+  function appFor(actor: Record<string, unknown>, routeRegistry = registry) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
       req.actor = actor as never;
       next();
     });
-    app.use("/api", instanceSecretSettingsRoutes(db, registry, env));
+    app.use("/api", instanceSecretSettingsRoutes(db, routeRegistry, env));
     app.use(errorHandler);
     return app;
   }
@@ -238,7 +238,7 @@ describeEmbeddedPostgres("instance secret settings: routes and store on the real
     try {
       const response = await request(appFor({
         type: "board", userId: "admin-1", source: "session", isInstanceAdmin: true, companyIds: [], memberships: [],
-      })).post("/api/instance/secret-settings/migrate").send({ apply: true, companyId });
+      }, localRegistry)).post("/api/instance/secret-settings/migrate").send({ apply: true, companyId });
 
       expect(response.status).toBe(200);
       expect(JSON.stringify(response.body)).not.toContain("second-value");
