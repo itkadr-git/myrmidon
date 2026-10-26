@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isCheckoutRequiredPreference,
   normalizeLabels,
+  shouldSkipContinuation,
   requiresEngineer,
 } from "./requires-engineer.js";
 
@@ -32,7 +33,7 @@ describe("requiresEngineer", () => {
     expect(requiresEngineer({ executionWorkspacePreference: "isolated_workspace" })).toBe(false);
   });
 
-  it("does not infer from unrelated labels or prose signals", () => {
+  it("fails open for unrelated inputs", () => {
     expect(requiresEngineer({ labels: ["backend"], harnessKind: "custom" })).toBe(false);
   });
 
@@ -52,5 +53,20 @@ describe("isCheckoutRequiredPreference", () => {
 
   it.each(["isolated", "isolated_workspace", "none", "invalid", undefined])("keeps %s fail-open", (value) => {
     expect(isCheckoutRequiredPreference(value)).toBe(false);
+  });
+});
+
+describe("shouldSkipContinuation", () => {
+  it("skips reviewer continuations for engineer issues", () => {
+    expect(shouldSkipContinuation({ agentRole: "reviewer", issueRole: "engineer" })).toBe(true);
+  });
+
+  it("keeps matching engineer continuations", () => {
+    expect(shouldSkipContinuation({ agentRole: "engineer", issueRole: "engineer" })).toBe(false);
+  });
+
+  it("fails open when either role is missing", () => {
+    expect(shouldSkipContinuation({ agentRole: null, issueRole: "engineer" })).toBe(false);
+    expect(shouldSkipContinuation({ agentRole: "engineer" })).toBe(false);
   });
 });
