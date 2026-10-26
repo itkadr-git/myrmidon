@@ -482,7 +482,7 @@ describe("startScentQueue: no re-entrant ticks", () => {
 
 // The queue imports logActivity directly; assert its journal through the mock.
 const { unconfiguredJournal } = vi.hoisted(() => ({
-  unconfiguredJournal: vi.fn(async (_entry: unknown) => undefined),
+  unconfiguredJournal: vi.fn(async (_db: unknown, _entry: unknown) => undefined),
 }));
 vi.mock("../../services/activity-log.js", () => ({
   logActivity: unconfiguredJournal,
@@ -504,17 +504,13 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     const db = {
       execute: async () => [{ n: 0 }], // return a Drizzle-style thenable for the throttle query
     };
-    const logActivity = vi.fn(async () => undefined);
-    delete process.env.MYRMIDON_SCENT_BASE_URL;
-    delete process.env.MYRMIDON_EVALS_BASE_URL;
     await runScentQueueTick(db as never, {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       listCompanyIds: async () => ["c1"],
       resolveSecret: async () => null, // no company secret, no env fallback
-      logActivity,
     });
-    expect(logActivity).toHaveBeenCalledTimes(1);
-    const entry = logActivity.mock.calls[0][0] as {
+    expect(unconfiguredJournal).toHaveBeenCalledTimes(1);
+    const entry = unconfiguredJournal.mock.calls[0][1] as {
       action: string;
       details: Record<string, unknown>;
     };
@@ -523,17 +519,14 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
   });
 
   it("stays silent when an entry already exists within the hour (throttle)", async () => {
-    unconfiguredJournal.mockClear();
     const db = {
-      execute: () => Promise.resolve([{ n: 1 }]), // already journaled in the last hour
+      execute: async () => [{ n: 1 }], // return a Drizzle-style thenable for the throttle query
     };
-    const logActivity = vi.fn(async () => undefined);
     await runScentQueueTick(db as never, {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       listCompanyIds: async () => ["c1"],
       resolveSecret: async () => null,
-      logActivity,
     });
-    expect(logActivity).not.toHaveBeenCalled();
+    expect(unconfiguredJournal).not.toHaveBeenCalled();
   });
 });
