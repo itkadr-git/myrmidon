@@ -7,25 +7,27 @@ in `heartbeat_run_events`.
 
 The snapshot is refreshed after terminal presentation/finalization and exposed
 as `runTelemetry` on heartbeat-run detail and list responses. It includes the run
-and agent IDs, issue ID, wake source/reason/trigger detail, retry/parent IDs,
-source event revision/ID/sequence when the durable wake receipt supplies them,
-run-event sequence, model, token totals, model-call count and bounded gateway
-request IDs, separate LiteLLM and adapter-reported spend, API-equivalent price
-estimate for subscription-included usage, and an outcome category with evidence
-counts.
+and agent IDs, issue ID, issue revision (`issues.updatedAt`), wake source/reason/
+trigger detail, retry/parent IDs, optional source event ID/sequence, model, token
+totals, model-call count and bounded gateway/LiteLLM request IDs, separate
+LiteLLM and adapter-reported spend, API-equivalent price estimate for
+subscription-included usage, and a result category derived only from registered
+work products.
 
-`eventRevision` and `eventRevisionId` are null when no actual source revision
-is present. `runEventSequence` is the local run-log sequence and is not an issue
-event revision. `modelCallCountSource` states whether the count came from
-LiteLLM request IDs, an explicit gateway count, or is unknown. At most 80
-call IDs are retained per run; `gatewayCallIdsTruncated` marks overflow. The
-aggregate call count remains separate from that capped list.
+The snapshot uses `issues.updatedAt` as `eventRevision`. It is the issue-state
+revision at snapshot time. `sourceEventId` and `sourceEventSeq` are separate and
+are included only when the durable wake payload carries them. They identify the
+source event, not the issue revision. `modelCallCountSource` states whether the
+count came from an explicit gateway count, gateway call IDs, LiteLLM request
+IDs, or is unknown. At most 80 gateway call IDs and 80 LiteLLM request IDs are
+retained; separate truncation flags mark overflow. The aggregate call count
+remains separate from those capped lists.
 
-`outcomeCategory` is one of `artifact`, `status`, `commit_push`, `comment_only`,
-or `nothing`, derived only from run-linked work products, document revisions,
-status activity, and comments. `commitCount` and `pullRequestCount` expose the
-registered commit/PR evidence separately. A missing commit/PR work product does
-not prove that no unregistered repository push occurred.
+`outcomeCategory` uses registered work products only. It is `artifact`,
+`commit_push`, `other_work_product`, or null when none exist. The snapshot
+reports artifact, document, commit, pull-request, branch, and other work-product
+counts. It does not classify status changes, comments, or a work-product-free
+run as a result.
 
 LiteLLM `gatewaySpendCents` and adapter-reported `reportedCostCents` remain
 separate. For `subscription_included` usage, `apiEquivalentCostUsd` is computed

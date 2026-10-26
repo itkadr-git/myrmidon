@@ -1,15 +1,12 @@
 import { and, eq, sql } from "drizzle-orm";
 import {
-  activityLog,
   agentWakeupRequests,
   agents,
-  costEvents,
-  documentRevisions,
-  heartbeatRunEvents,
   heartbeatRuns,
-  issueComments,
   issueWorkProducts,
   litellmCostEvents,
+  costEvents,
+  issues,
   type Db,
 } from "@myrmidon/db";
 import { estimateModelApiCostUsd, normalizeModelApiPricingSettings } from "@myrmidon/shared";
@@ -20,7 +17,6 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { getTelemetryClient } from "../telemetry.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
-type RunActivity = { action: string; details: Record<string, unknown> | null };
 type RunWorkProduct = { type: string };
 
 function readNonEmptyString(value: unknown): string | null {
@@ -59,28 +55,13 @@ function readModelCallCount(value: unknown): number | null {
   return null;
 }
 
-function isStatusChange(activity: RunActivity): boolean {
-  if (activity.action !== "issue.updated") return false;
-  const details = activity.details ?? {};
-  const status = readNonEmptyString(details.status);
-  const previousStatus = readNonEmptyString(details.previousStatus)
-    ?? readNonEmptyString(details.fromStatus)
-    ?? readNonEmptyString(parseObject(details._previous).status)
-    ?? readNonEmptyString(parseObject(parseObject(details.changes).status).from);
-  const nextStatus = readNonEmptyString(details.toStatus) ?? status;
-  return Boolean(nextStatus && previousStatus && nextStatus !== previousStatus);
-}
-
 export function buildRunTelemetry(input: {
   run: Pick<HeartbeatRun, "id" | "agentId" | "invocationSource" | "triggerDetail" | "retryOfRunId" | "nativeIssueId" | "contextSnapshot" | "usageJson" | "resultJson">;
   gatewayCalls: Array<{ requestId: string | null; costCents: number }>;
   reportedCostCents: number;
   modelApiPricing?: unknown;
-  activity: RunActivity[];
   workProducts: RunWorkProduct[];
-  commentCount: number;
-  documentRevisionCount: number;
-  eventSequence?: number | null;
+  issueUpdatedAt?: Date | null;
   wakeup?: {
     source: string;
     triggerDetail: string | null;
@@ -106,20 +87,20 @@ export function buildRunTelemetry(input: {
       : gatewayCallIds.length > 0 ? "gateway_call_ids" : litellmRequestIds.length > 0 ? "litellm_request_ids" : "unknown");
   const model = readNonEmptyString(usage.model) ?? readNonEmptyString(result.model);
   const billingType = readNonEmptyString(usage.billingType) ?? readNonEmptyString(usage.billing_type);
-  const statusChangeCount = input.activity.filter(isStatusChange).length;
   const artifactCount = input.workProducts.filter((product) => product.type === "artifact").length;
-  const documentRevisionCount = input.documentRevisionCount;
+  const documentCount = input.workProducts.filter((product) => product.type === "document").length;
   const commitCount = input.workProducts.filter((product) => product.type === "commit").length;
   const pullRequestCount = input.workProducts.filter((product) => product.type === "pull_request").length;
-  const outcomeCategory = artifactCount + documentRevisionCount > 0
+  const branchCount = input.workProducts.filter((product) => product.type === "branch").length;
+  const otherWorkProductCount = input.workProducts.filter((product) => !["artifact", "document", "commit", "pull_request", "branch"].includes(product.type)).length;
+  const workProductCount = input.workProducts.length;
+  const outcomeCategory = artifactCount > 0
     ? "artifact"
-    : statusChangeCount > 0
-      ? "status"
-      : commitCount + pullRequestCount > 0
-        ? "commit_push"
-        : input.commentCount > 0
-          ? "comment_only"
-          : "nothing";
+    : commitCount + pullRequestCount + branchCount > 0
+      ? "commit_push"
+      : workProductCount > 0
+        ? "other_work_product"
+        : null;
   const apiEquivalentCostUsd = billingType === "subscription_included" && model
     ? estimateModelApiCostUsd({
         model,
@@ -136,9 +117,6 @@ export function buildRunTelemetry(input: {
     : "not_applicable";
   const retryOfRunId = input.run.retryOfRunId ?? readNonEmptyString(context.retryOfRunId);
   const gatewaySpendCents = input.gatewayCalls.reduce((total, call) => total + Math.max(0, Math.floor(call.costCents)), 0);
-  const eventRevision = readRunEventId(context.eventRevision)
-    ?? readRunEventId(context.eventRevisionId)
-    ?? readRunEventId(context.event_revision);
   const wakePayload = input.wakeup?.payload ?? {};
   const wakeReason = readRunDimension(input.wakeup?.reason)
     ?? readRunDimension(context.wakeReason)
@@ -148,9 +126,6 @@ export function buildRunTelemetry(input: {
     ?? readRunDimension(context.source);
   const wakeTriggerDetail = readRunDimension(input.wakeup?.triggerDetail)
     ?? readRunDimension(context.wakeTriggerDetail);
-  const eventRevisionId = eventRevision
-    ?? readRunEventId(wakePayload.eventRevisionId)
-    ?? readRunEventId(wakePayload.event_revision_id);
   const sourceEventId = readRunEventId(wakePayload.sourceEventId)
     ?? readRunEventId(wakePayload.source_event_id)
     ?? readRunEventId(wakePayload.commentId)
@@ -173,11 +148,9 @@ export function buildRunTelemetry(input: {
     wakeTriggerDetail,
     invocationSource: input.run.invocationSource,
     triggerDetail: input.run.triggerDetail,
-    eventRevision,
-    eventRevisionId,
+    eventRevision: input.issueUpdatedAt?.toISOString() ?? null,
     sourceEventId,
     sourceEventSeq,
-    runEventSequence: typeof input.eventSequence === "number" && Number.isFinite(input.eventSequence) ? input.eventSequence : null,
     parentRunId,
     retryOfRunId,
     model,
@@ -198,12 +171,12 @@ export function buildRunTelemetry(input: {
     apiEquivalentCostStatus,
     gatewaySpendCents,
     reportedCostCents: Math.max(0, Math.floor(input.reportedCostCents)),
-    statusChangeCount,
     artifactCount,
-    documentRevisionCount,
+    documentCount,
     commitCount,
     pullRequestCount,
-    commentCount: Math.max(0, Math.floor(input.commentCount)),
+    branchCount,
+    otherWorkProductCount,
     outcomeCategory,
   };
 }
@@ -218,7 +191,7 @@ function resolveDurationSeconds(run: HeartbeatRun, now: Date): number | undefine
 async function buildRunTelemetryForDb(db: Db, run: HeartbeatRun) {
   const context = parseObject(run.contextSnapshot);
   const issueId = readNonEmptyString(context.issueId) ?? run.nativeIssueId;
-  const [agent, generalSettings, wakeup, activity, workProducts, commentCount, documentRevisionCount, gatewayCalls, reportedCosts, latestEvent] = await Promise.all([
+  const [agent, generalSettings, wakeup, issueRow, workProducts, gatewayCalls, reportedCosts] = await Promise.all([
     db.select({ role: agents.role, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
       .from(agents).where(eq(agents.id, run.agentId)).then((rows) => rows[0] ?? null),
     instanceSettingsService(db).getGeneral().catch(() => null),
@@ -232,23 +205,17 @@ async function buildRunTelemetryForDb(db: Db, run: HeartbeatRun) {
           .where(and(eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.id, run.wakeupRequestId)))
           .then((rows) => rows[0] ?? null)
       : Promise.resolve(null),
-    db.select({ action: activityLog.action, details: activityLog.details }).from(activityLog)
-      .where(and(eq(activityLog.companyId, run.companyId), eq(activityLog.runId, run.id))),
+    issueId
+      ? db.select({ updatedAt: issues.updatedAt }).from(issues)
+          .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
     db.select({ type: issueWorkProducts.type }).from(issueWorkProducts)
       .where(and(eq(issueWorkProducts.companyId, run.companyId), eq(issueWorkProducts.createdByRunId, run.id))),
-    db.select({ count: sql<number>`count(*)::int` }).from(issueComments)
-      .where(and(eq(issueComments.companyId, run.companyId), eq(issueComments.createdByRunId, run.id)))
-      .then((rows) => rows[0]?.count ?? 0),
-    db.select({ count: sql<number>`count(*)::int` }).from(documentRevisions)
-      .where(and(eq(documentRevisions.companyId, run.companyId), eq(documentRevisions.createdByRunId, run.id)))
-      .then((rows) => rows[0]?.count ?? 0),
     db.select({ requestId: litellmCostEvents.requestId, costCents: litellmCostEvents.costCents }).from(litellmCostEvents)
       .where(and(eq(litellmCostEvents.companyId, run.companyId), eq(litellmCostEvents.heartbeatRunId, run.id))),
     db.select({ costCents: costEvents.costCents }).from(costEvents)
       .where(and(eq(costEvents.companyId, run.companyId), eq(costEvents.heartbeatRunId, run.id))),
-    db.select({ seq: heartbeatRunEvents.seq }).from(heartbeatRunEvents)
-      .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id)))
-      .orderBy(sql`${heartbeatRunEvents.seq} desc`).limit(1).then((rows) => rows[0] ?? null),
   ]);
   return {
     agent,
@@ -258,11 +225,8 @@ async function buildRunTelemetryForDb(db: Db, run: HeartbeatRun) {
       gatewayCalls,
       reportedCostCents: reportedCosts.reduce((total, cost) => total + Math.max(0, cost.costCents), 0),
       modelApiPricing: generalSettings?.modelApiPricing,
-      activity,
       workProducts,
-      commentCount,
-      documentRevisionCount,
-      eventSequence: latestEvent ? Number(latestEvent.seq) : null,
+      issueUpdatedAt: issueRow?.updatedAt ?? null,
       wakeup,
     }),
   };

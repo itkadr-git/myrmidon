@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@myrmidon/db";
+import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, litellmCostEvents } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -30,8 +31,8 @@ describe("buildRunTelemetry", () => {
     run: {
       id: "run-1",
       agentId: "agent-1",
-      invocationSource: "event",
-      triggerDetail: "issue",
+      invocationSource: "automation",
+      triggerDetail: "manual",
       retryOfRunId: null,
       nativeIssueId: null,
       contextSnapshot: {
@@ -43,16 +44,14 @@ describe("buildRunTelemetry", () => {
     },
     gatewayCalls: [{ requestId: "gw-1", costCents: 2 }, { requestId: "gw-2", costCents: 3 }],
     reportedCostCents: 5,
-    activity: [],
     workProducts: [],
-    commentCount: 0,
-    documentRevisionCount: 0,
   };
 
   it("correlates trigger, issue, retry, model calls, token totals and gateway spend", () => {
     const telemetry = buildRunTelemetry({
       ...baseInput,
       run: { ...baseInput.run, retryOfRunId: "parent-run" },
+      issueUpdatedAt: new Date("2026-10-26T16:00:00.000Z"),
       modelApiPricing: {
         "gpt-6-luna": { inputUsdPerMillion: 0.1, cachedInputUsdPerMillion: 0.01, outputUsdPerMillion: 0.5 },
       },
@@ -60,10 +59,9 @@ describe("buildRunTelemetry", () => {
         source: "on_demand",
         triggerDetail: "manual",
         reason: "issue_commented",
-        payload: { eventRevisionId: "revision-7", sourceEventId: "source-event-7", sourceSeq: 7 },
+        payload: { sourceEventId: "source-event-7", sourceSeq: 7 },
       },
-      activity: [{ action: "issue.updated", details: { status: "in_review", previousStatus: "todo" } }],
-      commentCount: 1,
+      workProducts: [{ type: "artifact" }],
     });
 
     expect(telemetry).toMatchObject({
@@ -73,8 +71,7 @@ describe("buildRunTelemetry", () => {
       wakeReason: "issue_commented",
       wakeSource: "on_demand",
       wakeTriggerDetail: "manual",
-      eventRevision: null,
-      eventRevisionId: "revision-7",
+      eventRevision: "2026-10-26T16:00:00.000Z",
       sourceEventId: "source-event-7",
       sourceEventSeq: 7,
       parentRunId: "parent-run",
@@ -89,10 +86,12 @@ describe("buildRunTelemetry", () => {
       apiEquivalentCostUsd: 0.000025,
       apiEquivalentCostMicros: 25,
       apiEquivalentCostStatus: "estimated",
-      outcomeCategory: "status",
-      commentCount: 1,
+      outcomeCategory: "artifact",
+      artifactCount: 1,
     });
     expect(JSON.stringify(telemetry)).not.toContain("prompt");
+    expect(telemetry).not.toHaveProperty("statusChangeCount");
+    expect(telemetry).not.toHaveProperty("commentCount");
   });
 
   it("preserves gateway IDs separately from LiteLLM spend request IDs", () => {
@@ -110,19 +109,17 @@ describe("buildRunTelemetry", () => {
     expect(telemetry.modelCallCountSource).toBe("gateway_count");
   });
 
-  it("leaves event revision absent when the wake receipt has no revision", () => {
+  it("uses issues.updatedAt as the event revision and leaves it absent when no issue row exists", () => {
     const telemetry = buildRunTelemetry(baseInput);
     expect(telemetry.eventRevision).toBeNull();
-    expect(telemetry.eventRevisionId).toBeNull();
     expect(telemetry.sourceEventId).toBeNull();
     expect(telemetry.sourceEventSeq).toBeNull();
   });
 
-  it("keeps commits separately classifiable and labels comment-only or empty runs", () => {
+  it("classifies registered commit and push work products", () => {
     const commit = buildRunTelemetry({
       ...baseInput,
       workProducts: [{ type: "commit" }],
-      commentCount: 1,
     });
     expect(commit.outcomeCategory).toBe("commit_push");
     expect(commit.commitCount).toBe(1);
@@ -130,17 +127,13 @@ describe("buildRunTelemetry", () => {
     expect(pushed.outcomeCategory).toBe("commit_push");
     expect(pushed.pullRequestCount).toBe(1);
 
-    expect(buildRunTelemetry({ ...baseInput, commentCount: 1 }).outcomeCategory).toBe("comment_only");
-    expect(buildRunTelemetry(baseInput).outcomeCategory).toBe("nothing");
+    expect(buildRunTelemetry(baseInput).outcomeCategory).toBeNull();
   });
 
-  it("does not mistake non-status issue updates for a status outcome", () => {
-    const telemetry = buildRunTelemetry({
-      ...baseInput,
-      activity: [{ action: "issue.updated", details: { title: "Changed", status: "todo" } }],
-    });
-    expect(telemetry.outcomeCategory).toBe("nothing");
-    expect(telemetry.statusChangeCount).toBe(0);
+  it("classifies only registered work products", () => {
+    const doc = buildRunTelemetry({ ...baseInput, workProducts: [{ type: "document" }] });
+    expect(doc.outcomeCategory).toBe("other_work_product");
+    expect(doc.documentCount).toBe(1);
   });
 });
 
@@ -160,7 +153,10 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    await db.delete(litellmCostEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -195,6 +191,81 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
     });
     return { companyId, agentId };
   }
+
+  it("persists a snapshot joined to the wake receipt and LiteLLM requests", async () => {
+    await seedCompanyAndAgent();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const issueId = randomUUID();
+    const issueUpdatedAt = new Date("2026-10-26T16:00:00.000Z");
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Telemetry fixture",
+      updatedAt: issueUpdatedAt,
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "callback",
+      reason: "issue_commented",
+      payload: { issueId, sourceEventId: "comment-12", sourceSeq: 12 },
+      status: "completed",
+      runId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "callback",
+      status: "succeeded",
+      wakeupRequestId,
+      contextSnapshot: { issueId },
+      usageJson: {
+        model: "gpt-6-luna",
+        billingType: "subscription_included",
+        inputTokens: 120,
+        cachedInputTokens: 20,
+        outputTokens: 30,
+      },
+      resultJson: { gatewayCallIds: ["gateway-call-12"] },
+    });
+    await db.insert(litellmCostEvents).values({
+      id: `${companyId}:request-12`,
+      companyId,
+      agentId,
+      issueId,
+      heartbeatRunId: runId,
+      provider: "litellm",
+      model: "gpt-6-luna",
+      costCents: 7,
+      occurredAt: new Date("2026-10-26T00:00:00Z"),
+      requestId: "request-12",
+    });
+    const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]!);
+    await emitAgentTaskRun(db, run);
+    const saved = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]!);
+
+    expect(saved.resultJson?.runTelemetry).toMatchObject({
+      runId,
+      agentId,
+      issueId,
+      wakeSource: "automation",
+      wakeTriggerDetail: "callback",
+      eventRevision: issueUpdatedAt.toISOString(),
+      wakeReason: "issue_commented",
+      sourceEventId: "comment-12",
+      sourceEventSeq: 12,
+      gatewayCallIds: ["gateway-call-12"],
+      litellmRequestIds: ["request-12"],
+      gatewaySpendCents: 7,
+      apiEquivalentCostUsd: 0.000025,
+      outcomeCategory: null,
+    });
+  });
 
   it("emits one agent.task_run event for each of the five terminal states", async () => {
     await seedCompanyAndAgent();
