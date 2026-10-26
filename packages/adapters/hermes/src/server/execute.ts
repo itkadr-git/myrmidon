@@ -259,7 +259,7 @@ interface ParsedOutput {
 }
 
 export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
-  /^(?:the )?server is (?:sometimes )?overloaded.*(?:please retry|try again)[.!]?$/i,
+  /^(?:the )?server is (?:(?:\(sometimes\)|sometimes) )?overloaded.*(?:please retry|try again)[.!]?$/i,
   /^(?:rate limit|too many requests|quota exceeded).*(?:retry|try again)[.!]?$/i,
   /^(?:provider|service) (?:is )?(?:temporarily )?(?:unavailable|overloaded).*(?:retry|try again)[.!]?$/i,
   /^(?:insufficient quota|billing limit reached).*(?:retry|contact)[.!]?$/i,
