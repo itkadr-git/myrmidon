@@ -15,14 +15,11 @@ function createLifecycle() {
 
 function createDb(status: string) {
   const plugin = { id: "plugin-id", pluginKey: "example.plugin", status, enabled: true };
-  return {
-    query: { plugins: { findFirst: async () => plugin } },
-    update: () => ({
-      set: () => ({
-        where: () => ({ returning: async () => [plugin] }),
-      }),
-    }),
+  const registry = {
+    getById: async () => plugin,
+    updateStatus: async (_pluginId: string, update: { status: string }) => ({ ...plugin, ...update }),
   };
+  return { registry };
 }
 
 describe("plugin lifecycle readiness", () => {
