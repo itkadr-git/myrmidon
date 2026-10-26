@@ -502,7 +502,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     // silently for a day; the journal entry is the fix's observable.
     unconfiguredJournal.mockClear();
     const db = {
-      execute: () => Promise.resolve([{ n: 0 }]), // no entry in the last hour → write one
+      execute: async () => [{ n: 0 }], // return a Drizzle-style thenable for the throttle query
     };
     delete process.env.MYRMIDON_SCENT_BASE_URL;
     delete process.env.MYRMIDON_EVALS_BASE_URL;
