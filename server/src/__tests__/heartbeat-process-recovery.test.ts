@@ -992,7 +992,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: input.runStatus === "cancelled" ? "cancelled" : "failed",
       runId,
       claimedAt: now,
-      finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+      finishedAt: new Date(now.getTime() + 5_000),
       error:
         input.runStatus === "succeeded"
           ? null
@@ -1020,8 +1020,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         ...(input.runSource ? { source: input.runSource } : {}),
       },
       startedAt: now,
-      finishedAt: new Date("2026-03-19T00:05:00.000Z"),
-      updatedAt: new Date("2026-03-19T00:05:00.000Z"),
+      finishedAt: new Date(now.getTime() + 5_000),
+      updatedAt: new Date(now.getTime() + 5_000),
       errorCode:
         input.runStatus === "succeeded"
           ? null
