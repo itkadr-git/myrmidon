@@ -1528,7 +1528,6 @@ async function listReadyQueueCandidates(
   options: { order?: SwarmQueueOrderOptions; issueId?: string } = {},
 ): Promise<SwarmMatcherQueueCandidate[]> {
   const conditions = [
-    ...readyQueueConditions(db, companyId),
     or(
       and(isNotNull(issues.assigneeAgentId), eq(agents.role, role)),
       and(isNull(issues.assigneeAgentId), unassignedTaskRoutedToRole(role)),
@@ -1550,7 +1549,7 @@ async function listReadyQueueCandidates(
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
     // One bounded pass over the recent evaporating runs, joined once (#1047).
     .leftJoin(failedRunsDerivedSql(companyId, options.order?.now), failedRunsJoinOnSql())
-    .where(and(...conditions))
+    .where(and(...readyQueueConditions(db, companyId), ...conditions))
     .orderBy(...swarmQueueOrderBy(options.order))
     .limit(SWARM_POOL_READ_LIMIT);
   return rows.map((row) => ({
