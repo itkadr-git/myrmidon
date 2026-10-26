@@ -120,7 +120,7 @@ export function resolveAddresslessCard<T extends AddresslessCardInput>(card: T):
   try {
     const recipient = resolveInteractionRecipient({
       routeType,
-      kind: card.kind,
+      kind: card.kind ?? "decision",
       effectiveResolverPolicy: policy,
       projectId: card.projectId,
       casteScope: { projectId: card.projectId, casteKey: card.casteKey },
