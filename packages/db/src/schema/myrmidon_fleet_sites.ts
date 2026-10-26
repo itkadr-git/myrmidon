@@ -56,7 +56,6 @@ export const myrmidonFleetSites = pgTable(
     clientCert: text("client_cert"),
     clientCertSecretKey: text("client_cert_secret_key"),
     clientCertNotAfter: timestamp("client_cert_not_after", { withTimezone: true }),
-    certRotatedAt: timestamp("cert_rotated_at", { withTimezone: true }),
     status: text("status").notNull().default("active"),
     capacity: jsonb("capacity").$type<FleetSiteCapacity>().notNull().default({ maxCpus: 8, maxMemoryMb: 32768 }),
     profile: jsonb("profile").$type<FleetSiteProfile>().notNull().default({}),
