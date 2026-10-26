@@ -20128,7 +20128,6 @@ export function heartbeatService(
       lt(agentWakeupRequests.requestedAt, staleCutoff),
       lt(agentWakeupRequests.createdAt, staleCutoff),
       sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
-      sql`${agentWakeupRequests.payload}->'executionWait' is null`,
     )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
     let expired = 0;
     for (const row of staleWakes) {

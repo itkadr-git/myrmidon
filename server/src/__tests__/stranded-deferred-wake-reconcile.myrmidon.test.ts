@@ -177,13 +177,20 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
     expect(row.finishedAt).not.toBeNull();
   });
 
-  it("leaves an old deferred execution-wait wake for its specialized cleanup path", async () => {
+  it("expires deferred wakes with an execution wait after thirty minutes", async () => {
     const issueId = await seedIssue("todo");
     const expiredAt = new Date(Date.now() - 31 * 60_000);
-    const wakeId = await seedDeferredWake(issueId, { payload: { issueId, executionWait: { reason: "blocked", message: "wait" } }, requestedAt: expiredAt, updatedAt: expiredAt });
+    const wakeId = await seedDeferredWake(issueId, {
+      payload: { issueId, executionWait: { reason: "blocked", message: "wait" } },
+      requestedAt: expiredAt,
+      updatedAt: expiredAt,
+    });
     const result = await heartbeat.reconcileStrandedDeferredWakes();
-    expect(result.expired).toBe(0);
-    expect((await wakeRow(wakeId)).status).toBe("deferred_issue_execution");
+    const row = await wakeRow(wakeId);
+    expect(result.expired).toBe(1);
+    expect(row.status).toBe("cancelled");
+    expect(row.error).toBe("deferred_issue_execution_expired");
+    expect(row.finishedAt).not.toBeNull();
   });
 
   it("cancels deferred wakes of a closed task whose lock is free, with the close marker", async () => {
@@ -347,6 +354,6 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
     const second = await heartbeat.reconcileStrandedDeferredWakes();
 
     expect(first.cancelledTerminal).toBe(1);
-    expect(second).toEqual({ cancelledTerminal: 0, revisited: 0 });
+    expect(second).toEqual({ cancelledTerminal: 0, revisited: 0, expired: 0 });
   });
 });
