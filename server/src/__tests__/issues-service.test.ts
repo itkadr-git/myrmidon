@@ -3127,6 +3127,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(parent.responsibleUserId).toBe(responsibleUserId);
     expect(child.responsibleUserId).toBe(responsibleUserId);
+    expect(child.assigneeAgentId).toBe(agentId);
   });
 
   it("only honors explicit responsibleUserId for trusted issue create callers", async () => {

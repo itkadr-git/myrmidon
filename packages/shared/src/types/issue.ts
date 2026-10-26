@@ -411,6 +411,7 @@ export interface IssueSubtreeDiagnosticsResponse {
 export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
 
 export type IssueBlockerAttentionReason =
+  | "unassigned_blocked_issue_overdue"
   | "active_child"
   | "active_dependency"
   | "stalled_review"

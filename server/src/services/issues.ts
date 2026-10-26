@@ -4329,6 +4329,8 @@ async function listIssueBlockerAttentionMap(
       );
     });
     if (topLevelEdges.length === 0) {
+      const existing = attentionMap.get(root.id);
+      if (existing?.reason === "unassigned_blocked_issue_overdue") continue;
       attentionMap.set(
         root.id,
         createIssueBlockerAttention({
@@ -4407,7 +4409,10 @@ async function listIssueBlockerAttentionMap(
       root.id,
       createIssueBlockerAttention({
         state,
-        reason,
+        reason:
+          attentionMap.get(root.id)?.reason === "unassigned_blocked_issue_overdue"
+            ? "unassigned_blocked_issue_overdue"
+            : reason,
         unresolvedBlockerCount: topLevelEdges.length,
         coveredBlockerCount,
         stalledBlockerCount,
@@ -9721,6 +9726,21 @@ export function issueService(db: Db) {
         onDeduplicated,
         ...issueData
       } = data;
+      if (
+        issueData.parentId &&
+        !issueData.assigneeAgentId &&
+        issueData.assigneeUserId == null &&
+        (issueData.status === undefined || issueData.status === "todo" || issueData.status === "blocked")
+      ) {
+        const parent = await dbOrTx
+          .select({ assigneeAgentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, issueData.parentId)))
+          .then((rows) => rows[0] ?? null);
+        if (parent?.assigneeAgentId) {
+          issueData.assigneeAgentId = parent.assigneeAgentId;
+        }
+      }
       const isolatedWorkspacesEnabled = (
         await instanceSettings.getExperimental()
       ).enableIsolatedWorkspaces;
