@@ -51,7 +51,7 @@ describe("interaction readdress report", () => {
         const policy = n <= 4 ? "human_only" : n <= 7 ? "anyone" : "not_creator";
         const addressed = n === 2 || n === 6 || n === 9;
         return sql`(
-          ${id(n)}::uuid, ${id(1)}::uuid, ${id(1)}::uuid, 'request_confirmation', 'pending', ${id(1)}::uuid,
+          ${id(n)}::uuid, ${companyId}::uuid, ${issueId}::uuid, 'request_confirmation', 'pending', ${id(1)}::uuid,
           ${addressed ? id(2) : null}::uuid, ${null}::text, ${policy}, ${policy}, ${JSON.stringify({ prompt: `item-${n}` })}::jsonb
         )`;
       });
