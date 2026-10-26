@@ -13915,13 +13915,6 @@ export function issueRoutes(
         updateFields.executionPolicy !== undefined
           ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
           : previousExecutionPolicy;
-      const normalizedAssigneeAgentId =
-        updateFields.assigneeAgentId === undefined
-          ? undefined
-          : (updateFields.assigneeAgentId as string | null);
-      if (normalizedAssigneeAgentId !== undefined) {
-        updateFields.assigneeAgentId = normalizedAssigneeAgentId;
-      }
       const monitorChanged =
         monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) ===
         false;
@@ -14316,18 +14309,11 @@ export function issueRoutes(
         actorRunId: actor.runId,
         reviewInteractionId: requestedReviewInteractionId,
       });
-      const effectiveCommentBody = typeof req.body.comment === "string" ? req.body.comment : null;
-      const commentBody = effectiveCommentBody;
-      const reviewRequest = (updateFields.executionState as { reviewRequest?: unknown } | undefined)?.reviewRequest;
       const enteringReviewRequested =
         existing.status !== "in_review" && updateFields.status === "in_review";
       const persistReviewActivityTransactionally =
         enteringReviewRequested || Boolean(reviewInteractionId);
 
-      const requestedAssigneeAgentId =
-        updateFields.assigneeAgentId === undefined
-          ? existing.assigneeAgentId
-          : (updateFields.assigneeAgentId as string | null);
       const requestedAssigneeUserId =
         updateFields.assigneeUserId === undefined
           ? existing.assigneeUserId
