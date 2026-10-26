@@ -25,6 +25,6 @@ export function nextContinuationDelay({
   const count = Math.min(Math.floor(recentCount), MAX_EMPTY_CONTINUATIONS_PER_WINDOW);
   return Math.min(
     MAX_CONTINUATION_DELAY_MS,
-    (count / MAX_EMPTY_CONTINUATIONS_PER_WINDOW) * Math.min(windowMs, CONTINUATION_WINDOW_MS),
+    Math.min(windowMs, CONTINUATION_WINDOW_MS) / MAX_EMPTY_CONTINUATIONS_PER_WINDOW,
   );
 }
