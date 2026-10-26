@@ -504,15 +504,17 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     const db = {
       execute: async () => [{ n: 0 }], // return a Drizzle-style thenable for the throttle query
     };
+    const logActivity = vi.fn(async () => undefined);
     delete process.env.MYRMIDON_SCENT_BASE_URL;
     delete process.env.MYRMIDON_EVALS_BASE_URL;
     await runScentQueueTick(db as never, {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       listCompanyIds: async () => ["c1"],
       resolveSecret: async () => null, // no company secret, no env fallback
+      logActivity,
     });
-    expect(unconfiguredJournal).toHaveBeenCalledTimes(1);
-    const entry = unconfiguredJournal.mock.calls[0][0] as {
+    expect(logActivity).toHaveBeenCalledTimes(1);
+    const entry = logActivity.mock.calls[0][0] as {
       action: string;
       details: Record<string, unknown>;
     };
@@ -525,11 +527,13 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     const db = {
       execute: () => Promise.resolve([{ n: 1 }]), // already journaled in the last hour
     };
+    const logActivity = vi.fn(async () => undefined);
     await runScentQueueTick(db as never, {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       listCompanyIds: async () => ["c1"],
       resolveSecret: async () => null,
+      logActivity,
     });
-    expect(unconfiguredJournal).not.toHaveBeenCalled();
+    expect(logActivity).not.toHaveBeenCalled();
   });
 });
