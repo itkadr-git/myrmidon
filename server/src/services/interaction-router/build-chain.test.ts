@@ -6,7 +6,7 @@ const policy = {
   fallbackQueue: "review-recovery",
   stepDelayMinutes: 30,
 } satisfies EscalationChainPolicy;
-const agent = (agentId: string) => ({ agentId });
+const agent = (agentId: string) => ({ type: "agent" as const, agentId, isJoinedMember: true });
 
 describe("buildEscalationChain", () => {
   it("preserves role order and ends in the recovery queue", () => {
