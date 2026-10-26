@@ -16268,10 +16268,10 @@ export function issueRoutes(
               if (!resolved) return null;
               const [sourceIssue] = await tx
                 .select()
-                .from(issues)
+                .from(issueRows)
                 .where(and(
-                  eq(issues.id, recoveryAction.sourceIssueId),
-                  eq(issues.companyId, issue.companyId),
+                  eq(issueRows.id, recoveryAction.sourceIssueId),
+                  eq(issueRows.companyId, issue.companyId),
                 ))
                 .for("update");
               if (sourceIssue && sourceIssue.status === "blocked") {
