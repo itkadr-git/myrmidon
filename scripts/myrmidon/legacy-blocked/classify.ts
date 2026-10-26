@@ -70,14 +70,16 @@ function classifyComment(comment: string): Candidate[] {
   const hasNegationOrResolution =
     /\b(?:not|no longer|never)\s+(?:blocked|waiting|awaiting|pending)\b/.test(text) ||
     /\b(?:resolved|completed|cleared|unblocked)\b/.test(text) ||
-    /(?:уже\s+)?не\s+(?:ждем|ожидаем|заблокирован|заблокирована|заблокировано|ждет|ждут)|разблокирован|решен|решено|снят|снято/.test(text) ||
-    /(?:ждем|ожидаем)\s+(?:решени\w*|согласовани\w*)\s+(?:владельца|алекса|alex)?/.test(text);
-  if (hasNegationOrResolution) return [];
+    /(?:уже\s+)?не\s+(?:ждем|ожидаем|заблокирован|заблокирована|заблокировано|ждет|ждут)|разблокирован|решен(?:о|а|ы)?\b|снят(?:о|а|ы)?\b/.test(text);
+  const isNegatedDecisionWait =
+    /(?:уже\s+)?не\s+(?:ждем|ожидаем)\s+(?:решени\w*|согласовани\w*)/.test(text);
+  if (hasNegationOrResolution || isNegatedDecisionWait) return [];
 
   const candidates: Candidate[] = [];
   if (/\b(?:awaiting|waiting for)\s+(?:an?\s+)?(?:human|owner|user)\s+(?:decision|approval|input)\b/.test(text) ||
       /\b(?:human|owner|user)\s+(?:decision|approval|input)\s+(?:is\s+)?(?:required|needed|pending)\b/.test(text) ||
-      /(?:нужно|нужны)\s+(?:решени\w*|согласовани\w*)/.test(text)) {
+      /(?:нужно|нужны)\s+(?:решени\p{L}*|согласовани\p{L}*)/u.test(text) ||
+      /(?:ждем|ожидаем)\s+решени\p{L}*\s+(?:владельца|алекса|alex)/u.test(text)) {
     candidates.push("human_decision");
   }
   if (/\b(?:recovery task|recovery issue|operator action)\s+(?:is\s+)?(?:required|open|pending|created)\b/.test(text) ||
