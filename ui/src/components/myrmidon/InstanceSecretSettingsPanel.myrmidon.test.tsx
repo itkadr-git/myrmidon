@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import secretSettingsRu from "@/i18n/myrmidon-locales/areas/secret-settings.ru.json";
 import { InstanceSecretSettingsPanel } from "./InstanceSecretSettingsPanel";
 
 const mockApi = vi.hoisted(() => ({ list: vi.fn(), setRef: vi.fn(), clearRef: vi.fn(), migrationPlan: vi.fn() }));
@@ -18,12 +19,55 @@ vi.mock("@/api/secrets", () => ({ secretsApi: mockSecretsApi }));
 vi.mock("@/context/CompanyContext", () => ({
   useOptionalCompany: () => ({ selectedCompanyId: "company-1" }),
 }));
+
+function lookupRu(path: string): string | undefined {
+  const parts = path.split(".");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let cur: any = secretSettingsRu;
+  for (const p of parts) {
+    if (!cur || typeof cur !== "object") return undefined;
+    cur = cur[p];
+  }
+  return typeof cur === "string" ? cur : undefined;
+}
+
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, opts?: { defaultValue?: string; provider?: string }) => {
+      if (key.includes("settingDescriptions")) {
+        const ruValue = lookupRu(key);
+        return ruValue ?? opts?.defaultValue ?? key;
+      }
+      if (key.includes("toolOauthProvider")) {
+        const ruValue = lookupRu(key);
+        return ruValue && opts?.provider ? ruValue.replace("{{provider}}", opts.provider) : key;
+      }
+      return key;
+    },
+  }),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const STATIC_SETTING_NAMES = [
+  "bot.disk.dockergate_token",
+  "bot.egress.proxy_token",
+  "browser_console.node_token",
+  "cloud-oauth.google-drive.client-secret",
+  "cloud-oauth.onedrive.client-secret",
+  "cloud-oauth.yandex-disk.client-secret",
+  "feedback_export.backend_token",
+  "provider.openai.model_discovery_api_key",
+  "runner.acpx_codex_auth_json",
+  "sandbox.daytona.api_key",
+  "sandbox.e2b.api_key",
+  "sandbox.exe-dev.api_key",
+  "sandbox.novita.api_key",
+  "stack.github_token",
+  "tool-oauth.client-secret",
+  "tracing.clickhouse_password",
+] as const;
 
 const NAME = "test.connector.client_secret";
 const unset = { name: NAME, description: "Test setting", envOverride: "TEST_ENV", envOverrideActive: false, consumers: ["c"], ref: null, effectiveSource: "unset" as const };
@@ -92,6 +136,34 @@ describe("InstanceSecretSettingsPanel", () => {
     await flush();
     expect(container.textContent).toContain("Токен доски для доступа к физическому диску бота через dockergate");
     expect(container.textContent).not.toContain("Board-to-dockergate token");
+  });
+
+  it("translates every registered setting in the registry and dynamic tool-oauth family without falling back to English", async () => {
+    const settings = [
+      ...STATIC_SETTING_NAMES.map((name) => ({ ...unset, name, description: `English description for ${name}` })),
+      { ...unset, name: "tool-oauth.custom_tool.client-secret", description: "English description for custom tool" },
+    ];
+    mockApi.list.mockResolvedValue({ settings });
+    render();
+    await flush();
+
+    expect(container.textContent).not.toContain("English description for");
+    for (const name of STATIC_SETTING_NAMES) {
+      const normalized = name.replace(/[.-]/g, "_");
+      const ruDesc = secretSettingsRu.area["secret-settings"]["instance-secret-settings-panel"].settingDescriptions[normalized as keyof typeof secretSettingsRu.area["secret-settings"]["instance-secret-settings-panel"]["settingDescriptions"]];
+      expect(ruDesc).toBeDefined();
+      expect(container.textContent).toContain(ruDesc);
+    }
+    expect(container.textContent).toContain("Секрет клиента OAuth для custom tool");
+  });
+
+  it("falls back to server English description for unknown setting names", async () => {
+    mockApi.list.mockResolvedValue({
+      settings: [{ ...unset, name: "unknown.future.setting", description: "Future server setting description" }],
+    });
+    render();
+    await flush();
+    expect(container.textContent).toContain("Future server setting description");
   });
 
   it("sets a ref chosen from active secrets only, sending the secret id and nothing else", async () => {
