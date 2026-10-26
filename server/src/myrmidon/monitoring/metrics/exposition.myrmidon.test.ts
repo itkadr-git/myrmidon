@@ -11,6 +11,7 @@ import {
   renderMetricsText,
   type MetricsSnapshot,
 } from "./metrics.js";
+import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 
 function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
   return {
@@ -50,6 +51,23 @@ describe("prometheus exposition format", () => {
     const text = renderMetricsText(snapshot());
     for (const family of METRIC_FAMILIES) {
       expect(text, `family ${family} must appear`).toContain(family);
+    }
+  });
+
+  it("renders the created and deduped continuation counters after port calls", () => {
+    continuationDedupeMetrics.reset();
+    try {
+      continuationDedupeMetrics.metrics.onContinuationCreated("created-key");
+      continuationDedupeMetrics.metrics.onContinuationCreated("another-created-key");
+      continuationDedupeMetrics.metrics.onContinuationDeduped("deduped-key");
+
+      const text = renderMetricsText(snapshot());
+      expect(text).toContain("# TYPE continuation_created_total counter");
+      expect(text).toContain('continuation_created_total{role="all"} 2');
+      expect(text).toContain("# TYPE continuation_deduped_total counter");
+      expect(text).toContain('continuation_deduped_total{role="all"} 1');
+    } finally {
+      continuationDedupeMetrics.reset();
     }
   });
 
