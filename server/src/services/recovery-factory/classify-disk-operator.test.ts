@@ -38,6 +38,7 @@ describe("classifyDiskRecoveryCause", () => {
     { path: "/", usedPct: 89, freeBytes: 30 * 1024 ** 3 },
     { path: "/workspace/x", message: "no matching storage symptoms" },
     { host: "devbuild", path: "/", usedPct: 95, freeBytes: 1 },
+    { host: "vm-core", path: "/", usedPct: 95, message: "devbuild rsync ENOSPC" },
     { message: "unknown storage failure" },
     { exitCode: 137 },
     { exitCode: 143 },

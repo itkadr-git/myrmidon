@@ -83,14 +83,16 @@ function classifyDiskSignal(signal: DiskRecoverySignal): DiskRecoveryClassificat
   const devbuildLow = host === "devbuild" && signal.freeBytes != null && signal.freeBytes < DEVBUILD_MIN_FREE_BYTES;
   const rootSignal = path === "/" || path === "vmcore_root";
   const vmcoreRoot = rootSignal && host === "vm-core";
+  const conflictingHostAndPath = rootSignal && host === "devbuild";
+  if (conflictingHostAndPath) return null;
   const vmcoreLow = vmcoreRoot && ((signal.usedPct != null && signal.usedPct >= VMCORE_MIN_USED_PCT)
     || (signal.freeBytes != null && signal.freeBytes < VMCORE_MIN_FREE_BYTES));
   const workspace = path === "/workspace" || path.startsWith("/workspace/");
-  const workspaceFull = workspace && (isEnospc || /\bquota\b/.test(message));
+  const workspaceFull = workspace && (isEnospc || /\bquota\b/.test(message) || message.includes("bot_disk_quota_exceeded"));
   const containerPath = path === "/tmp" || path.startsWith("/tmp/");
   const containerFull = (containerPath && message.includes("tmpfs"))
     || ((message.includes("oom") || message.includes("memory.max") || message.includes("cgroup memory"))
-      && message.includes("container"));
+      && (host === "container" || message.includes("container")));
   const dockerFull = message.includes("docker")
     && (isEnospc || message.includes("pull") || message.includes("extract") || message.includes("system df"));
 
@@ -116,9 +118,9 @@ export function classifyOperatorAction(signal: RecoverySignal): OperatorRecovery
   const message = signal.message?.trim();
   if (!message) return null;
   const normalizedMessage = message.toLowerCase();
-  const matches = operatorMessageRules.filter(rule => rule.pattern.test(normalizedMessage));
-  if (matches.length !== 1) return null;
-  return { kind: "operator_action", cause: matches[0]!.cause, scope: "operator" };
+  const matchedRules = operatorMessageRules.filter(rule => rule.pattern.test(normalizedMessage));
+  if (matchedRules.length !== 1) return null;
+  return { kind: "operator_action", cause: matchedRules[0]!.cause, scope: "operator" };
 }
 export function buildRecoveryDedupeKey(
   result: Pick<RecoveryClassification, "kind" | "cause" | "scope">,
