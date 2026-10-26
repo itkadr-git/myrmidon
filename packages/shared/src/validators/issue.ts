@@ -754,7 +754,6 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(
     };
   }, schema);
 }
-
 const createIssueBaseSchema = z.object({
   projectId: z.string().guid().optional().nullable(),
   projectWorkspaceId: z.string().guid().optional().nullable(),
@@ -843,7 +842,10 @@ const createIssueBaseSchema = z.object({
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema
     .optional()
     .nullable(),
-  executionPolicy: issueExecutionPolicySchema.optional().nullable(),
+  executionPolicy: z.union([
+    issueExecutionPolicySchema,
+    legacySequentialExecutionPolicyInputSchema,
+  ]).optional().nullable(),
   executionWorkspaceId: z.string().guid().optional().nullable(),
   executionWorkspacePreference: z
     .enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES)
@@ -1048,6 +1050,10 @@ export const updateIssueSchema = objectWithoutDefaults(
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
     commentClientRequestId: z.string().uuid().optional(),
+    executionPolicy: z.union([
+      issueExecutionPolicySchema,
+      legacySequentialExecutionPolicyInputSchema,
+    ]).optional().nullable(),
     /** Only valid with a comment; the route binds these in the update transaction. */
     attachmentIds: issueCommentAttachmentIdsSchema.optional(),
     onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
