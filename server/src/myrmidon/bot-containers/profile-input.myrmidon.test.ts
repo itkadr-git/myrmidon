@@ -1111,22 +1111,23 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
     expect(yaml).toContain("disableAutomaticTypingAcquisition: true");
   });
 
-  it("refuses limited LSP startup when the configured heap exceeds the card container budget", () => {
-    expect(() =>
-      buildHermesProfileInput(
-        source({
-          role: "engineer",
-          adapterConfig: { container: { enabled: true, memoryMb: 768 } },
-          botLspSettings: {
-            codingRoles: ["engineer"],
-            idleTimeoutSeconds: 120,
-            tsserverMemoryMb: 308,
-            excludeRoots: ["**/node_modules/**", "**/dist/**"],
-          },
-        }),
-        settings(),
-      ),
-    ).toThrow("LSP startup refused: tsserver heap 308 MB exceeds the 768 MB container budget after reserving 461 MB");
+  it("clamps limited LSP startup heap to the card container's 40% budget", () => {
+    const { input } = buildHermesProfileInput(
+      source({
+        role: "engineer",
+        adapterConfig: { container: { enabled: true, memoryMb: 768 } },
+        botLspSettings: {
+          codingRoles: ["engineer"],
+          idleTimeoutSeconds: 120,
+          tsserverMemoryMb: 308,
+          excludeRoots: ["**/node_modules/**", "**/dist/**"],
+        },
+      }),
+      settings(),
+    );
+    const servers = input.lsp?.servers?.typescript as Record<string, unknown> | undefined;
+    const initializationOptions = servers?.initialization_options as Record<string, unknown> | undefined;
+    expect(initializationOptions?.maxTsServerMemory).toBe(307);
   });
 
   it("allows heap at the 40% container-memory boundary", () => {
