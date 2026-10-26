@@ -161,6 +161,9 @@ describe("myrmidon(G2) compileHermesProfile — file modes and secrecy", () => {
     expect(env).toContain('API_SERVER_KEY="fake-gateway-key-0002"');
     expect(env).toContain('PAPERCLIP_API_URL="https://example.com/board"');
     expect(env).toContain('PAPERCLIP_API_KEY="fake-board-key-0002"');
+    // myrmidon(REBRAND-C): canonical MYRMIDON_* names ship in the same .env.
+    expect(env).toContain('MYRMIDON_API_URL="https://example.com/board"');
+    expect(env).toContain('MYRMIDON_API_KEY="fake-board-key-0002"');
   });
 
   it("drops HOME, PATH and HERMES_HOME from the card's env, with a warning, even if the card sets them", () => {
