@@ -104,7 +104,7 @@ function coolingRunFilter() {
 }
 
 /** Last-run statuses that (with no task movement) start a cooling period. */
-const COOLING_TERMINAL_STATUSES = ["succeeded", "failed", "timed_out"] as const;
+const COOLING_TERMINAL_STATUSES = ["succeeded", "failed", "timed_out", "cancelled"] as const;
 
 /**
  * Activity actions that are real task movement (§4.3 "любое изменение задачи").
@@ -145,9 +145,10 @@ export const NOT_COOLING: IssueCoolingStatus = {
 };
 
 function runIsStale(
-  row: { status: string; livenessState: string | null },
+  row: { status: string; livenessState: string | null; cancellationSource?: string | null },
   issueStatus: string,
 ): boolean {
+  if (row.status === "cancelled") return false;
   if (row.status === "failed" || row.status === "timed_out") return true;
   if (row.livenessState === "blocked" || row.livenessState === "needs_followup") return true;
   return (
@@ -162,6 +163,7 @@ export interface CoolingRun {
   agentId: string | null;
   status: string;
   livenessState: string | null;
+  cancellationSource: string | null;
   finishedAt: Date | null;
   startedAt: Date | null;
   createdAt: Date;
@@ -220,8 +222,8 @@ export function decideIssueCooling(input: {
   let staleCount = 0;
   for (let i = 0; i < runs.length; i += 1) {
     const row = runs[i]!;
-    const healthy =
-      row.status === "succeeded" && HEALTHY_LIVENESS.has(row.livenessState ?? "");
+    if (row.status === "cancelled") continue;
+    const healthy = row.status === "succeeded" && HEALTHY_LIVENESS.has(row.livenessState ?? "");
     if (healthy) break;
     if (i > 0 && row.finishedAt) {
       const newer = runs[i - 1]!;
@@ -274,6 +276,7 @@ export async function isIssueCoolingDown(
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         livenessState: heartbeatRuns.livenessState,
+        cancellationSource: sql<string | null>`(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code')`,
         finishedAt: heartbeatRuns.finishedAt,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -285,6 +288,7 @@ export async function isIssueCoolingDown(
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
           coolingRunFilter(),
           inArray(heartbeatRuns.status, COOLING_TERMINAL_STATUSES),
+          sql`${heartbeatRuns.status} <> 'cancelled' or (${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code') in ('board_operator', 'reassignment')`,
         ),
       )
       .orderBy(desc(heartbeatRuns.finishedAt))

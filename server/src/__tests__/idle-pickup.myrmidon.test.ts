@@ -717,12 +717,14 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
     await db.update(issues).set({ executionState: { status: "changes_requested" } }).where(eq(issues.id, issueId));
+    await seedSucceededRun({ companyId, agentId, issueId, finishedAt: new Date(Date.now() - 90_000) });
     await db.insert(heartbeatRuns).values({
       companyId,
       agentId,
       status: "cancelled",
       invocationSource: "automation",
       contextSnapshot: { issueId },
+      resultJson: { executionCancellation: { source: { code: "reassignment" } } },
       startedAt: new Date(Date.now() - 60_000),
       finishedAt: new Date(Date.now() - 30_000),
     });
