@@ -85,6 +85,7 @@ export function buildRunTelemetry(input: {
   const spendCallIds = input.gatewayCalls.map((call) => readRunEventId(call.requestId)).filter((value): value is string => value !== null);
   const gatewayCallIds = [...new Set(gatewayResultIds)];
   const litellmRequestIds = [...new Set([...litellmResultIds, ...spendCallIds])];
+  const wakePayload = input.wakeup?.payload ?? {};
   const reportedCallCount = readModelCallCount(result)
     ?? readModelCallCount({ modelCallCount: result.gatewayModelCallCount })
     ?? readModelCallCount(wakePayload)
@@ -154,8 +155,8 @@ export function buildRunTelemetry(input: {
   const wakeCause = readRunDimension(wakePayload.wakeCause)
     ?? readRunDimension(wakePayload.reason)
     ?? readRunDimension(wakePayload.source)
-    ?? readRunDimension(wakeup?.reason)
-    ?? (wakeup?.source === "issue_comment" ? "issue_commented" : null);
+    ?? readRunDimension(input.wakeup?.reason)
+    ?? (input.wakeup?.source === "issue_comment" ? "issue_commented" : null);
   const sourceEventSeqValue = wakePayload.sourceEventSeq ?? wakePayload.sourceSeq ?? wakePayload.source_seq;
   const sourceEventSeq = typeof sourceEventSeqValue === "number" && Number.isSafeInteger(sourceEventSeqValue) && sourceEventSeqValue >= 0
     ? sourceEventSeqValue
