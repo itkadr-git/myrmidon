@@ -231,6 +231,36 @@ describe("agent auth middleware", () => {
     expect(res.body.error).toContain("Agent token did not verify");
   });
 
+  it.each(["/api/myrmidon/monitoring/alerts/webhook", "/api/myrmidon/monitoring/alerts/webhook?source=zabbix"]) (
+    "leaves monitoring webhook bearers for the route handler (%s)",
+    async (path) => {
+      const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+      const app = createApp(db, "authenticated");
+      app.post("/api/myrmidon/monitoring/alerts/webhook", (req, res) => {
+        res.json({ authorization: req.header("authorization") });
+      });
+
+      const res = await request(app).post(path).set("Authorization", "Bearer monitoring-webhook-token");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ authorization: "Bearer monitoring-webhook-token" });
+    },
+  );
+
+  it.each([
+    "/api/myrmidon/monitoring/alerts/webhook/extra",
+    "/api/myrmidon/monitoring/alerts/webhok",
+  ])("does not bypass actor authentication for lookalike monitoring webhook paths (%s)", async (path) => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db, "local_trusted");
+    app.post("*", (_req, res) => res.json({ reached: true }));
+
+    const res = await request(app).post(path).set("Authorization", "Bearer monitoring-webhook-token");
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("Agent token did not verify");
+  });
+
   it.each([
     ["terminated", "Agent is terminated"],
     ["pending_approval", "Agent is pending approval"],
