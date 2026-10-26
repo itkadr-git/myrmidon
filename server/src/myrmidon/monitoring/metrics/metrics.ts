@@ -321,27 +321,42 @@ export interface MetricsCollectorDeps {
   fleetSites?: (() => FleetSiteMetricsSample) | null;
 }
 
-/** Reads the run counters — one grouped query, whole instance. */
+/** Reads the run counters for the whole instance. */
 async function readRunCounters(db: Db, now: Date): Promise<{
   active: number;
   queued: number;
   queuedOver30m: number;
   failedTotal: number;
 }> {
+  // Keep the established grouped-by-status query: the global aggregate form
+  // hides rows behind tenant-scoped DB policies in the embedded Postgres tests.
   const rows = await db
-    .select({
-      active: sql<number>`count(*) filter (where ${heartbeatRuns.status} in ('running', 'claimed'))`,
-      queued: sql<number>`count(*) filter (where ${heartbeatRuns.status} in ('queued', 'retrying', 'scheduled_retry'))`,
-      queuedOver30m: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'queued' and ${heartbeatRuns.createdAt} < ${new Date(now.getTime() - 30 * 60 * 1000)})`,
-      failedTotal: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'failed')`,
-    })
-    .from(heartbeatRuns);
-  const row = rows[0];
+    .select({ status: heartbeatRuns.status, total: count() })
+    .from(heartbeatRuns)
+    .groupBy(heartbeatRuns.status);
+  let active = 0;
+  let queued = 0;
+  let failedTotal = 0;
+  for (const row of rows) {
+    if (row.status === "running" || row.status === "claimed") active += Number(row.total);
+    else if (row.status === "queued" || row.status === "retrying" || row.status === "scheduled_retry") {
+      queued += Number(row.total);
+    } else if (row.status === "failed") failedTotal += Number(row.total);
+  }
+  const [staleQueuedRow] = await db
+    .select({ total: count() })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.status, "queued"),
+        lt(heartbeatRuns.createdAt, new Date(now.getTime() - 30 * 60 * 1000)),
+      ),
+    );
   return {
-    active: Number(row?.active ?? 0),
-    queued: Number(row?.queued ?? 0),
-    queuedOver30m: Number(row?.queuedOver30m ?? 0),
-    failedTotal: Number(row?.failedTotal ?? 0),
+    active,
+    queued,
+    queuedOver30m: Number(staleQueuedRow?.total ?? 0),
+    failedTotal,
   };
 }
 
