@@ -8,7 +8,7 @@ The Myrmidon CLI handles instance setup, diagnostics, and control-plane operatio
 ## Usage
 
 ```sh
-pnpm paperclipai --help
+pnpm myrmidon --help
 ```
 
 ## Global Options
@@ -24,12 +24,14 @@ All commands support:
 | `--profile <name>` | Context profile name |
 | `--json` | Output as JSON |
 
+The `paperclipai` command remains available as a deprecated compatibility alias; prefer `myrmidon`.
+
 Company-scoped commands also accept `--company-id <id>`.
 
 For clean local instances, pass `--data-dir` on the command you run:
 
 ```sh
-npx paperclipai run --data-dir ./tmp/paperclip-dev
+npx myrmidon run --data-dir ./tmp/paperclip-dev
 ```
 
 ## Context Profiles
@@ -38,16 +40,16 @@ Store defaults to avoid repeating flags:
 
 ```sh
 # Set defaults
-npx paperclipai context set --api-base http://localhost:3100 --company-id <id>
+npx myrmidon context set --api-base http://localhost:3100 --company-id <id>
 
 # View current context
-pnpm paperclipai context show
+pnpm myrmidon context show
 
 # List profiles
-pnpm paperclipai context list
+pnpm myrmidon context list
 
 # Switch profile
-npx paperclipai context use default
+npx myrmidon context use default
 ```
 
 To avoid storing secrets in context, use an env var:
