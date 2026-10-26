@@ -936,6 +936,12 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
+      ajv-formats:
+        specifier: ^3.0.1
+        version: 3.0.1(ajv@8.20.0)
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -994,9 +1000,6 @@ importers:
       '@grpc/grpc-js':
         specifier: 1.14.4
         version: 1.14.4
-      '@opentelemetry/api':
-        specifier: ^1.9.0
-        version: 1.9.1
       '@myrmidon/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -1051,6 +1054,9 @@ importers:
       '@myrmidon/skills-catalog':
         specifier: workspace:*
         version: link:../packages/skills-catalog
+      '@opentelemetry/api':
+        specifier: ^1.9.0
+        version: 1.9.1
       '@photon-ai/advanced-imessage':
         specifier: 2.1.0
         version: 2.1.0(@grpc/grpc-js@1.14.4)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)
