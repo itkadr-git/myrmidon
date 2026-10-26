@@ -1731,6 +1731,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
       expect.objectContaining({ title: "Updated after commit" }),
+      expect.anything(),
     );
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       issueId,
@@ -2853,6 +2854,7 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).toHaveBeenCalledWith(
         issueId,
         expect.objectContaining({ status: "in_review" }),
+        expect.anything(),
       );
     });
 

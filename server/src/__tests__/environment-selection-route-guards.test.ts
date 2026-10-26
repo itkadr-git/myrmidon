@@ -372,7 +372,7 @@ describe.sequential("execution environment route guards", () => {
   });
 
   it("accepts sandbox environments on issue update", async () => {
-    mockIssueService.getById.mockResolvedValue({
+    const existingIssue = {
       id: "issue-1",
       companyId: "company-1",
       status: "todo",
@@ -380,7 +380,9 @@ describe.sequential("execution environment route guards", () => {
       assigneeUserId: null,
       createdByUserId: null,
       identifier: "PAPA-999",
-    });
+    };
+    mockIssueService.getById.mockResolvedValue(existingIssue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue(existingIssue);
     mockEnvironmentService.getById.mockResolvedValue({
       id: sandboxEnvironmentId,
       companyId: "company-1",
