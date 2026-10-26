@@ -329,6 +329,7 @@ describe("metrics endpoint routes", () => {
       swarmClaimsTotal: 0,
       agentErrorSignals: 0,
       llmCostCentsWindow: 0,
+      deferredIssueExecutionOver30m: 0,
       scrapeErrors: 0,
       collectedAt: NOW.toISOString(),
     };
