@@ -41,7 +41,7 @@ import type {
 } from "./scent/gateway.js";
 import { deriveScentAuto, isUnclassifiableIssue } from "./scent/create-hook.js";
 import { canSpendCall, createScentService } from "./scent/service.js";
-import { SCENT_QUEUE_TICK_MS, startScentQueue } from "./scent/queue.js";
+import { runScentQueueTick, SCENT_QUEUE_TICK_MS, startScentQueue } from "./scent/queue.js";
 import { issueScentResponseFormat, parseIssueScentContent } from "./scent/gateway.js";
 
 const CASTES = ["engineer", "designer", "marketer"];
