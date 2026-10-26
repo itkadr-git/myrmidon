@@ -34,7 +34,9 @@ export type ReaddressResult = PendingCard & {
   escalationChain?: Array<{ recipient: string; afterMinutes: number | null }>;
 };
 
-type AddresslessCardInput = Pick<PendingCard, "effectiveResolverPolicy"> & Partial<Omit<PendingCard, "effectiveResolverPolicy">>;
+type AddresslessCardInput = Partial<PendingCard> & Pick<PendingCard, "effectiveResolverPolicy">; // dry-run fixtures may omit DB-only columns
+
+// Keep the report resolver usable for isolated policy tests and partial snapshots.
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -134,7 +136,7 @@ export function resolveAddresslessCard<T extends AddresslessCardInput>(card: T):
       ...(escalationChain.length ? { escalationChain: escalationChain.map((step) => ({
         recipient: recipientLabel(step.recipient), afterMinutes: stepDelayMinutes === null ? null : step.afterMinutes,
       })) } : {}),
-    };
+    }; // dry-run result includes the computed destination
   } catch (error) {
     const policyReason = policy === "human_only"
       ? "human_only requires a concrete human or configured project recipient"
