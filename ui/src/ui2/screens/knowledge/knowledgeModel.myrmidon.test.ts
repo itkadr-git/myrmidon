@@ -69,7 +69,8 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) knowledge tree", () => {
 
     // A parent chain that loops back remains visible without attaching into a cycle.
     expect(space?.children.map((node) => node.item.slug).sort()).toEqual(["loop-a", "loop-b", "root"]);
-    expect(space?.children.find((node) => node.item.slug === "loop-a")?.children.map((node) => node.item.slug)).toEqual(["loop-b"]);
+    expect(space?.children.find((node) => node.item.slug === "loop-a")?.children).toEqual([]);
+    expect(space?.children.find((node) => node.item.slug === "loop-b")?.children).toEqual([]);
     const flattened = flattenKnowledgeTree(tree);
     expect(flattened.length).toBe(7);
   });
