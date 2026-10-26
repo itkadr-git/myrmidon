@@ -786,6 +786,41 @@ describe("the board-side matcher (OPE-6608 A: a task meets a free agent)", () =>
       expect(issue.assigneeAgentId).toBeNull();
     });
 
+    it("does not atomically claim a task with an open dependency", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId);
+      const issueId = await seedTask(companyId, { identifier: "TASK-BLOCKED" });
+      const blockerId = await seedTask(companyId, { identifier: "TASK-BLOCKER" });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId,
+        relatedIssueId: blockerId,
+        type: "blocks",
+      });
+
+      expect(await matchIssue(matcher([]), issueId)).toBeNull();
+      const [blocked] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(blocked.assigneeAgentId).toBeNull();
+      expect(agentId).toBeTruthy();
+    });
+
+    it("matches a dependency-blocked task after its blocker is completed", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId);
+      const issueId = await seedTask(companyId, { identifier: "TASK-UNBLOCKED" });
+      const blockerId = await seedTask(companyId, { identifier: "TASK-BLOCKER", status: "done" });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId,
+        relatedIssueId: blockerId,
+        type: "blocks",
+      });
+
+      const pair = await matchIssue(matcher([]), issueId);
+      expect(pair?.issueId).toBe(issueId);
+      expect(pair?.agentId).toBe(agentId);
+    });
+
     it("matches one task on its own event and hands it to the free agent", async () => {
       const companyId = await seedCompany();
       const agentId = await seedAgent(companyId, { name: "agent-a" });

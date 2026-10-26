@@ -545,7 +545,7 @@ async function claimTaskForAgent(
         .where(
           and(
             eq(issues.id, target.issueId),
-            eq(issues.companyId, companyId),
+            ...readyQueueConditions(txDb, companyId),
             // Revalidate scope after locking the issue. The pool/membership
             // reads are advisory; only this predicate protects the write.
             projectScopedClaimGate(target.agentId),
