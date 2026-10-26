@@ -508,6 +508,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       listCompanyIds: async () => ["c1"],
       resolveSecret: async () => null, // no company secret, no env fallback
+      logActivity: async (_db, entry) => unconfiguredJournal(_db, entry),
     });
     expect(unconfiguredJournal).toHaveBeenCalledTimes(1);
     const entry = unconfiguredJournal.mock.calls[0][1] as {
@@ -519,6 +520,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
   });
 
   it("stays silent when an entry already exists within the hour (throttle)", async () => {
+    unconfiguredJournal.mockClear();
     const db = {
       execute: async () => [{ n: 1 }], // return a Drizzle-style thenable for the throttle query
     };
@@ -526,6 +528,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       listCompanyIds: async () => ["c1"],
       resolveSecret: async () => null,
+      logActivity: async (_db, entry) => unconfiguredJournal(_db, entry),
     });
     expect(unconfiguredJournal).not.toHaveBeenCalled();
   });
