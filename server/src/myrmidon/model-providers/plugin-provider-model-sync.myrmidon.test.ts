@@ -216,4 +216,28 @@ describeEmbeddedPostgres("createPluginProviderModelSync multi-plugin / multi-com
     expect(last.companyId).toBe(COMPANY_A);
     expect(last.models).toEqual(["google-ai-gemini/gemini-3-pro"]);
   });
+
+  it("missing company credential fails before registration and error cleanup removes plugin models", async () => {
+    if (!db) throw new Error("db not ready");
+    const poolId = await seedPlugin(db, "myrmidon.chatgpt-pool", chatgptPoolManifest, [COMPANY_A]);
+    const { sync, remove } = createPluginProviderModelSync(db, ENV);
+    const poolRow = (await db.select().from(plugins).where(eq(plugins.id, poolId)))[0] as unknown as PluginRecord;
+    secretGetByName.mockImplementation(async (_companyId: string, name: string) =>
+      name === "chatgpt-pool-credential" ? null : { id: `secret-${name}` },
+    );
+
+    await expect(sync(COMPANY_A, poolRow)).rejects.toThrow(/requires company secret/);
+    expect(registeredModels).toEqual([]);
+    expect(allowlistUpdates).toEqual([]);
+
+    // pluginLifecycleManager marks a failed activation as error before it
+    // invokes providerModelSync.remove; model this state transition here.
+    await db.update(plugins).set({ status: "error" }).where(eq(plugins.id, poolId));
+    await remove(COMPANY_A, poolRow);
+
+    expect(unregisteredModels.sort()).toEqual(["chatgpt-pool/gpt-5.2", "chatgpt-pool/gpt-5.2-codex"]);
+    expect(allowlistUpdates).toEqual([
+      { companyId: COMPANY_A, models: [], allowEmpty: true },
+    ]);
+  });
 });
