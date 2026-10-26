@@ -206,7 +206,12 @@ export function decideIssueCooling(input: {
 }): IssueCoolingStatus {
   const { runs, issueStatus, settings, now } = input;
   if (runs.length === 0) return NOT_COOLING;
-  const last = runs[0]!;
+  // A board/reassignment cancellation is not stale and cannot become the
+  // cooling anchor. Keep the most recent actual stale-capable run as the
+  // anchor so the cancellation neither starts a cooldown nor erases a still
+  // active window from an earlier stale run.
+  const last = runs.find((row) => row.status !== "cancelled");
+  if (!last) return NOT_COOLING;
   const finishedAt = last.finishedAt;
   if (!finishedAt) return NOT_COOLING;
   if (!runIsStale(last, issueStatus)) return NOT_COOLING;

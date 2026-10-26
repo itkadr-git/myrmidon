@@ -104,6 +104,7 @@ describe("myrmidon(1.6.5 F-26 T5) cooling decision (pure, system actors excluded
     agentId: "agent-1",
     status: "failed",
     livenessState: null,
+    cancellationSource: null,
     finishedAt,
     startedAt: new Date(finishedAt.getTime() - 60_000),
     createdAt: new Date(finishedAt.getTime() - 60_000),
