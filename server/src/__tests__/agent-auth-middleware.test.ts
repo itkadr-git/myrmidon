@@ -253,7 +253,7 @@ describe("agent auth middleware", () => {
   ])("does not bypass actor authentication for lookalike monitoring webhook paths (%s)", async (path) => {
     const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
     const app = createApp(db, "local_trusted");
-    app.post("*", (_req, res) => res.json({ reached: true }));
+    app.post("/api/myrmidon/monitoring/alerts/webhook/*splat", (_req, res) => res.json({ reached: true }));
 
     const res = await request(app).post(path).set("Authorization", "Bearer monitoring-webhook-token");
 
