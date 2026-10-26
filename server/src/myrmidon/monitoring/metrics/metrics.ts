@@ -107,8 +107,9 @@ export const METRIC_FAMILIES = [
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
   "myrmidon_scrape_errors",
-  "continuation_created_total",
-  "continuation_deduped_total",
+  // Process-local continuation claims; continuation keys are not labels.
+  "myrmidon_continuation_created_total",
+  "myrmidon_continuation_deduped_total",
   // myrmidon(1.6.5-PROCS-Q3): the process families — the loop delay, the
   // memory of this process, and the live-event flow (design §1, этап 0).
   "myrmidon_board_event_loop_lag_seconds",
@@ -902,16 +903,16 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
   const continuationCounters = continuationDedupeMetrics.read();
   blocks.push(
     familyBlock(
-      "continuation_created_total",
+      "myrmidon_continuation_created_total",
       "Continuation keys claimed for the first time since this process started.",
       "counter",
-      [`continuation_created_total{${R}} ${formatSampleValue(continuationCounters.created)}`],
+      [`myrmidon_continuation_created_total{${R}} ${formatSampleValue(continuationCounters.created)}`],
     ),
     familyBlock(
-      "continuation_deduped_total",
+      "myrmidon_continuation_deduped_total",
       "Continuation keys suppressed because they were already claimed, cumulative since process start.",
       "counter",
-      [`continuation_deduped_total{${R}} ${formatSampleValue(continuationCounters.deduped)}`],
+      [`myrmidon_continuation_deduped_total{${R}} ${formatSampleValue(continuationCounters.deduped)}`],
     ),
   );
 
