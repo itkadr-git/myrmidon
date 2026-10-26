@@ -32577,22 +32577,27 @@ export function heartbeatService(
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
-        if (cutoff) {
-          const eligibleIssue = await db
-            .select({ id: issues.id })
-            .from(issues)
-            .where(
-              and(
-                eq(issues.companyId, agent.companyId),
-                eq(issues.assigneeAgentId, agent.id),
-                inArray(issues.status, ["todo", "in_progress"]),
-                gte(issues.createdAt, cutoff),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          if (!eligibleIssue) continue;
+        // A timer wake must be bound to the same actionable-task selection used
+        // by idle pickup. Otherwise the agent spends a full model invocation
+        // discovering a task and then fails the P5 source-context checkout gate.
+        const timerIssue = await findTopReadyIssueForAgent(db, {
+          id: agent.id,
+          companyId: agent.companyId,
+        });
+        if (!timerIssue) {
+          await logActivity(db, {
+            companyId: agent.companyId,
+            actorType: "system",
+            actorId: "heartbeat_scheduler",
+            agentId: agent.id,
+            action: "heartbeat.timer.no_actionable_work",
+            entityType: "agent",
+            entityId: agent.id,
+            details: { reason: "no_actionable_work" },
+          });
+          continue;
         }
+
 
         checked += 1;
         const baseline = new Date(
@@ -32618,6 +32623,7 @@ export function heartbeatService(
             reason: "interval_elapsed",
             now: now.toISOString(),
             timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat,
+            issueId: timerIssue.id,
           },
         });
         if (run) enqueued += 1;

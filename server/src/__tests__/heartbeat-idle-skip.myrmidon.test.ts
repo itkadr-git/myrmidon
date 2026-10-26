@@ -129,6 +129,27 @@ describeEmbeddedPostgres("skip idle timer heartbeats (M3)", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
+  it("timer scheduler binds its wake to the ready assigned issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue(companyId, agentId, "todo");
+    await db.update(agents).set({ lastHeartbeatAt: new Date("2000-01-01T00:00:00Z") }).where(eq(agents.id, agentId));
+
+    await heartbeat.tickTimers(new Date());
+
+    const run = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)).limit(1);
+    expect(run[0]?.contextSnapshot).toMatchObject({ issueId, wakeReason: "heartbeat_timer" });
+  });
+
+  it("does not schedule a timer wake when the agent has no ready task", async () => {
+    const { agentId } = await seedAgent();
+    await db.update(agents).set({ lastHeartbeatAt: new Date("2000-01-01T00:00:00Z") }).where(eq(agents.id, agentId));
+
+    await heartbeat.tickTimers(new Date());
+
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
+    expect(await wakeRequests(agentId)).toHaveLength(0);
+  });
+
   it("runs when the agent has a todo issue", async () => {
     process.env.MYRMIDON_SKIP_IDLE_HEARTBEATS = "true";
     const { companyId, agentId } = await seedAgent();
