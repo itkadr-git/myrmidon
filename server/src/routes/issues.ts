@@ -10100,6 +10100,7 @@ export function issueRoutes(
             source: "automation",
             triggerDetail: "system",
             reason: "issue_recovery_action_restored",
+            idempotencyKey: `recovery_resolved:${result.recoveryAction.id}`,
             payload: {
               issueId: result.issue.id,
               recoveryActionId: result.recoveryAction.id,
