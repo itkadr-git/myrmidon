@@ -215,8 +215,8 @@ export function PluginManager() {
     [installedPlugins, t]
   );
 
-  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">{t("area.adapters-plugins-2.plugin-manager.loading")}</div>;
-  if (error) return <div className="p-4 text-sm text-destructive">{t("area.adapters-plugins-2.plugin-manager.loadFailed")}</div>;
+  if (isLoading && !plugins) return <div className="p-4 text-sm text-muted-foreground">{t("area.adapters-plugins-2.plugin-manager.loading")}</div>;
+  if (error && !plugins) return <div className="p-4 text-sm text-destructive">{t("area.adapters-plugins-2.plugin-manager.loadFailed")}</div>;
 
   return (
     <div className="max-w-6xl space-y-6">
