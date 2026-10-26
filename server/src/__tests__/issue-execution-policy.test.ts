@@ -1035,13 +1035,13 @@ describe("issue execution policy transitions", () => {
         },
         policy: null,
         requestedStatus: "in_progress",
-        requestedAssigneePatch: { assigneeAgentId: ctoAgentId },
+        requestedAssigneePatch: {},
         actor: { agentId: qaAgentId },
       });
 
       expect(result.patch.executionState).toBeNull();
       expect(result.patch.status).toBe("in_progress");
-      expect(result.patch.assigneeAgentId).toBe(qaAgentId);
+      expect(result.patch.assigneeAgentId).toBeNull();
       expect(result.patch.assigneeUserId).toBeNull();
     });
 
