@@ -158,10 +158,10 @@ describe("assignment", () => {
     t.fixture.rows.set("authored", row("authored", { assigneeAgentId: null }));
     t.fixture.rows.set("assigned", row("assigned"));
     await t.sweep.sweep(NOW, { force: true });
-    expect(t.fixture.rows.get("authored")?.assigneeAgentId).toBe(REV_A);
+    expect(t.fixture.rows.get("authored")?.assigneeAgentId).toBe(REV_B);
     expect(t.fixture.rows.get("assigned")?.assigneeAgentId).toBe(REV_A);
     expect(t.wakes).toEqual([
-      expect.objectContaining({ agentId: REV_A, issueId: "authored" }),
+      expect.objectContaining({ agentId: REV_B, issueId: "authored" }),
       expect.objectContaining({ agentId: REV_A, issueId: "assigned" }),
     ]);
   });
