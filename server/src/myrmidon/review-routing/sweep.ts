@@ -94,6 +94,10 @@ export interface ReviewRoutingSweepResult {
   /** Tasks signalled (no reviewer, or overdue) in this pass. */
   signaled: number;
   failed: number;
+  /** Blocked tasks currently lacking an agent or user assignee. */
+  blockedWithoutAssignee: number;
+  /** Blocker-graph reports emitted for overdue unassigned blocked tasks. */
+  blockerGraphReported: number;
   // --- PR lane (1.6.5, additive) ---------------------------------------------
   /** Open PR candidates this pass looked at. */
   prScanned: number;
@@ -169,10 +173,18 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     result: ReviewRoutingSweepResult,
   ): Promise<ReviewRoutingSignal[]> {
     const rows = await deps.store.listInReviewIssues(companyId, REVIEW_ROUTING_PAGE_SIZE);
+    const recoveryCutoff = now.getTime() - 15 * 60 * 1000;
+    for (const row of rows) {
+      if (issueNeedsReviewer(row) && row.updatedAt.getTime() <= recoveryCutoff) {
+        row.reviewPathRecoveryEligible = true;
+      }
+    }
     result.scanned += rows.length;
 
     const rowById = new Map(rows.map((row) => [row.id, row] as const));
-    const needing = rows.filter((row) => issueNeedsReviewer(row));
+    const needing = rows.filter(
+      (row) => row.reviewPathRecoveryEligible && issueNeedsReviewer(row),
+    );
     const pending = rows
       .map((row) => ({ row, review: readPendingAgentReview(row) }))
       .filter((entry): entry is { row: InReviewIssueRow; review: NonNullable<typeof entry.review> } => entry.review !== null);
@@ -681,6 +693,8 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         reassigned: 0,
         signaled: 0,
         failed: 0,
+        blockedWithoutAssignee: 0,
+        blockerGraphReported: 0,
         prScanned: 0,
         prTasksCreated: 0,
         stewardTasksCreated: 0,

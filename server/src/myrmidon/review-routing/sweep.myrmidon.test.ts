@@ -36,6 +36,7 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
     identifier: `T-${id}`,
     title: `Task ${id}`,
     status: "in_review",
+    updatedAt: new Date(NOW.getTime() - 16 * 60 * 1000),
     assigneeAgentId: ASSIGNEE,
     assigneeUserId: null,
     createdByAgentId: AUTHOR,
@@ -136,6 +137,19 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
 beforeEach(() => resetReviewRoutingSignals());
 
 describe("assignment", () => {
+  it("does not route until the reviewer-less review has aged fifteen minutes", async () => {
+    const t = setup();
+    t.fixture.rows.set("fresh", row("fresh", { updatedAt: NOW }));
+    await t.sweep.sweep(NOW, { force: true });
+    expect(t.fixture.rows.get("fresh")?.assigneeAgentId).toBe(ASSIGNEE);
+    expect(t.wakes).toHaveLength(0);
+
+    t.fixture.rows.set("aged", row("aged", { updatedAt: new Date(NOW.getTime() - 16 * 60 * 1000) }));
+    await t.sweep.sweep(NOW, { force: true });
+    expect(t.fixture.rows.get("aged")?.assigneeAgentId).toBe(REV_A);
+    expect(t.wakes).toEqual([expect.objectContaining({ agentId: REV_A, issueId: "aged" })]);
+  });
+
   it("assigns the least loaded reviewer, comments, logs and wakes it", async () => {
     const t = setup({}, { load: new Map([[REV_A, 3], [REV_B, 1]]) });
     t.fixture.rows.set("1", row("1"));
@@ -174,7 +188,6 @@ describe("assignment", () => {
         load: new Map([[REV_A, 4]]),
       },
     );
-    t.fixture.rows.set("1", row("1"));
     await t.sweep.sweep(NOW, { force: true });
     expect(t.fixture.rows.get("1")!.assigneeAgentId).toBe(REV_A);
   });
