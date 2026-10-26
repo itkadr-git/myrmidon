@@ -166,9 +166,9 @@ export function buildKnowledgeTree(
       if (attached.has(node)) continue;
       const parentSlug = node.item.parentSlug?.trim() ||
         (node.item.slug.includes("/") ? node.item.slug.slice(0, node.item.slug.lastIndexOf("/")) : null);
-      if (parentSlug && !spaceNodeBySlug.has(parentSlug)) {
+      if (parentSlug && !spaceNodeBySlug.has(parentSlug) && !node.item.parentSlug?.trim()) {
         ensureFolders(parentSlug).children.push(node);
-      } else if (!parentSlug) {
+      } else if (!parentSlug || (node.item.parentSlug?.trim() && !spaceNodeBySlug.has(parentSlug))) {
         spaceRoot.children.push(node);
       } else {
         // A broken/cyclic parent chain is made visible at the space root.
