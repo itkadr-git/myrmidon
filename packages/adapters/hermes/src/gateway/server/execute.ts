@@ -1362,16 +1362,23 @@ function parseGatewayCallIds(value: unknown): { gatewayCallIds: string[]; litell
   return { gatewayCallIds: [...gatewayCallIds], litellmRequestIds: [...litellmRequestIds] };
 }
 
-function parseModelCallCount(value: unknown, gatewayCallIds: string[], litellmRequestIds: string[]): number {
+function parseModelCallCount(value: unknown): number | null {
   const record = asRecord(value);
   const usage = asRecord(record?.usage);
-  for (const candidate of [record?.model_call_count, record?.modelCallCount, usage?.model_call_count, usage?.modelCallCount]) {
+  const readCount = (candidate: unknown): number | null => {
     const count = typeof candidate === "number" ? candidate : typeof candidate === "string" ? Number(candidate) : Number.NaN;
-    if (Number.isSafeInteger(count) && count >= 0) return Math.min(count, 100_000);
+    return Number.isSafeInteger(count) && count >= 0 ? Math.min(count, 100_000) : null;
+  };
+  for (const candidate of [record?.model_call_count, record?.modelCallCount, usage?.model_call_count, usage?.modelCallCount]) {
+    const count = readCount(candidate);
+    if (count !== null) return count;
   }
-  return Math.min(gatewayCallIds.length > 0 && litellmRequestIds.length > 0
-    ? Math.max(gatewayCallIds.length, litellmRequestIds.length)
-    : gatewayCallIds.length + litellmRequestIds.length, 100_000);
+  const nested = asRecord(record?.model_calls) ?? asRecord(usage?.model_calls);
+  for (const candidate of [nested?.count, nested?.total]) {
+    const count = readCount(candidate);
+    if (count !== null) return count;
+  }
+  return null;
 }
 
 function parseGatewayCallCount(value: unknown): number | null {
@@ -1481,12 +1488,8 @@ export function mapFinalResultForTest(input: {
   const payloadCallIds = parseGatewayCallIds(payload);
   const gatewayModelCallCount = parseGatewayCallCount(payload);
   const explicitCallCount = gatewayModelCallCount ?? parseGatewayCallCount(usage);
-  const modelCallCount = explicitCallCount ?? parseModelCallCount(
-    payload,
-    payloadCallIds.gatewayCallIds,
-    payloadCallIds.litellmRequestIds,
-  );
-  const modelCallCountSource = explicitCallCount !== null ? "gateway_count" : "inferred_call_ids";
+  const modelCallCount = explicitCallCount ?? parseModelCallCount(payload);
+  const modelCallCountSource = explicitCallCount !== null ? "gateway_count" : modelCallCount !== null ? "gateway_metadata" : "unknown";
   const errorMessage = mapped.errorCode
     ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
@@ -1558,8 +1561,8 @@ export function mapFinalResultForTest(input: {
             modelCallCountSource,
           }
         : {}),
-      gatewayCallIds: payloadCallIds.gatewayCallIds.slice(0, 500),
-      litellmRequestIds: payloadCallIds.litellmRequestIds.slice(0, 500),
+      gatewayCallIds: payloadCallIds.gatewayCallIds,
+      litellmRequestIds: payloadCallIds.litellmRequestIds,
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     },
   };
