@@ -1062,7 +1062,10 @@ export const updateIssueSchema = objectWithoutDefaults(
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
     commentClientRequestId: z.string().uuid().optional(),
-    executionPolicy: issueExecutionPolicySchema.optional().nullable(),
+    executionPolicy: legacySequentialExecutionPolicyInputSchema
+      .or(issueExecutionPolicySchema)
+      .optional()
+      .nullable(),
     /** Only valid with a comment; the route binds these in the update transaction. */
     attachmentIds: issueCommentAttachmentIdsSchema.optional(),
     onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
