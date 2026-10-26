@@ -45,8 +45,8 @@ export class RunGuard {
 
   modelCall(): RunGuardDecision {
     if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
-    if (this.modelCalls >= this.modelCallLimit) return this.stop("model_call_limit");
     this.modelCalls += 1;
+    if (this.modelCalls > this.modelCallLimit) return this.stop("model_call_limit");
     this.lastEventAt = this.now();
     this.scheduleIdleWatch();
     return { stop: false };
