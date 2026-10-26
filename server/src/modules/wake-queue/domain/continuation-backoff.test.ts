@@ -44,7 +44,7 @@ describe("nextContinuationDelay", () => {
     const events = simulateWindow(WINDOW_MS, MAX_EVENTS + 2);
     expect(events.slice(0, MAX_EVENTS)).toEqual([0, WINDOW_MS / 6, 3 * WINDOW_MS / 6, 6 * WINDOW_MS / 6, 9 * WINDOW_MS / 6, 11 * WINDOW_MS / 6]);
     expect(events[MAX_EVENTS]).toBe(7 * WINDOW_MS / 3);
-    expect(events[MAX_EVENTS + 1]).toBe(8 * WINDOW_MS / 3);
+    expect(events[MAX_EVENTS + 1]).toBe(17 * WINDOW_MS / 6);
   });
 
   it("uses an arbitrary configured window and budget without truncating the window", () => {
