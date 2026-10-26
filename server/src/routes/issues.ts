@@ -13932,7 +13932,11 @@ export function issueRoutes(
         nextExecutionPolicy,
         "review",
       ).flatMap((participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : []);
-      const transitionIssue = await withDefaultEscalationChain(db, existing, nextExecutionPolicy);
+      const transitionIssue: IssueRouteSnapshot & {
+        assigneeAgentRole?: string | null;
+        executionReviewParticipantAgentIds?: string[];
+        defaultEscalationAgentIds?: string[];
+      } = await withDefaultEscalationChain(db, existing, nextExecutionPolicy);
       transitionIssue.assigneeAgentRole = existing.assigneeAgentId
         ? (await agentsSvc.getById(existing.assigneeAgentId))?.role ?? null
         : null;
