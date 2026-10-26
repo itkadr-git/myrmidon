@@ -79,6 +79,9 @@ vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "company-1",
   }),
+  useOptionalCompany: () => ({
+    selectedCompanyId: "company-1",
+  }),
 }));
 
 vi.mock("../context/BreadcrumbContext", () => ({

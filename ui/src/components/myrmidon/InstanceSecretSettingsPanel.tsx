@@ -52,7 +52,15 @@ export function InstanceSecretSettingsPanel() {
               ? t("area.secret-settings.instance-secret-settings-panel.toolOauthProvider", {
                   provider: setting.name.slice("tool-oauth.".length, -".client-secret".length).replace(/_/g, " "),
                 })
-              : setting.description}
+                : t(
+                    setting.name.startsWith("tool-oauth.")
+                      ? "area.secret-settings.instance-secret-settings-panel.toolOauthClientSecret"
+                      : ("area.secret-settings.instance-secret-settings-panel." + setting.name) as
+                          | "area.secret-settings.instance-secret-settings-panel.bot.disk.dockergate_token"
+                          | "area.secret-settings.instance-secret-settings-panel.bot.egress.proxy_token"
+                          | "area.secret-settings.instance-secret-settings-panel.browser_console.node_token"
+                          | "area.secret-settings.instance-secret-settings-panel.test.connector.client_secret",
+                  )}
           </div>
           <div className="font-mono text-xs text-muted-foreground">{setting.name}</div>
           <div className="text-sm" data-testid={`secret-setting-source-${setting.name}`}>

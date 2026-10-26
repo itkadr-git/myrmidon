@@ -13,6 +13,12 @@ import { Ui2Section } from "../../../components/ui2Primitives";
 const SECRET_REFS_KEYS = {
   title: "ui2.settings.secrets.title",
   hint: "ui2.settings.secrets.hint",
+  descriptions: {
+    "bot.disk.dockergate_token": "ui2.settings.secrets.descriptions.bot.disk.dockergate_token",
+    "bot.egress.proxy_token": "ui2.settings.secrets.descriptions.bot.egress.proxy_token",
+    "browser_console.node_token": "ui2.settings.secrets.descriptions.browser_console.node_token",
+    "test.connector.client_secret": "ui2.settings.secrets.descriptions.test.connector.client_secret",
+  },
 } as const;
 
 export function Ui2InstanceSecretSettings() {
@@ -33,7 +39,9 @@ export function Ui2InstanceSecretSettings() {
               ? t("ui2.settings.system.secretRefs.toolOauthProvider", {
                   provider: setting.name.slice("tool-oauth.".length, -".client-secret".length).replace(/_/g, " "),
                 })
-              : setting.description}
+              : t(
+                  SECRET_REFS_KEYS.descriptions[setting.name as keyof typeof SECRET_REFS_KEYS.descriptions] ?? "ui2.settings.secrets.hint",
+                )}
           </span>
           <span className="font-mono text-xs text-muted-foreground">{setting.name}</span>
           <span className="text-sm" data-testid={`ui2-secret-setting-source-${setting.name}`}>

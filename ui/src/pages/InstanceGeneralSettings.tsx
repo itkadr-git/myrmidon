@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@myrmidon/shared";
 import {
@@ -56,6 +56,7 @@ type BackupRetentionSettings = BackupRetentionPolicy & { keepLastOnly?: boolean 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function InstanceGeneralSettings({ embedded = false }: { embedded?: boolean }) {
+  const navigate = useNavigate();
   const { t, i18n } = useTranslation(); // myrmidon(UI-RU)
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -161,7 +162,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
         </div>
       )}
       <Link className="inline-flex items-center gap-2 text-sm text-primary underline underline-offset-4" to="/company/settings/secrets" data-testid="system-secrets-link">
-        {t("settings.secretReferencesLink")}
+        {t("area.settings-company.instance-general-settings.secretReferencesLink")}
       </Link>
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
