@@ -30,6 +30,7 @@ export class RunGuard {
   private modelCalls = 0;
   private lastEventAt: number;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private idleCallback: (() => void) | null = null;
   private lastToolFailure: string | null = null;
   private toolFailureCount = 0;
   private stoppedReason: RunGuardStopReason | null = null;
@@ -44,34 +45,35 @@ export class RunGuard {
 
   modelCall(): RunGuardDecision {
     if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
+    if (this.modelCalls >= this.modelCallLimit) return this.stop("model_call_limit");
     this.modelCalls += 1;
     this.lastEventAt = this.now();
-    return this.modelCalls >= this.modelCallLimit
-      ? this.stop("model_call_limit")
-      : { stop: false };
+    this.scheduleIdleWatch();
+    return { stop: false };
   }
 
   /** Record a provider/tool event without retaining its payload. */
   event(): RunGuardDecision {
     if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
-    this.clearIdleWatch();
     this.lastEventAt = this.now();
-    this.lastToolFailure = null;
-    this.toolFailureCount = 0;
+    this.scheduleIdleWatch();
     return { stop: false };
   }
 
-  startIdleWatch(onIdle: () => void): void {
+  private scheduleIdleWatch(): void {
+    if (!this.idleCallback || this.stoppedReason) return;
     this.clearIdleWatch();
-    const arm = () => {
-      this.idleTimer = setTimeout(() => {
-        if (this.stoppedReason) return;
-        const decision = this.idle();
-        if (decision.stop) onIdle();
-        else arm();
-      }, Math.max(1, this.idleTimeoutMs - (this.now() - this.lastEventAt)));
-    };
-    arm();
+    this.idleTimer = setTimeout(() => {
+      if (this.stoppedReason) return;
+      const onIdle = this.idleCallback;
+      const decision = this.idle();
+      if (decision.stop) onIdle?.();
+    }, Math.max(1, this.idleTimeoutMs - (this.now() - this.lastEventAt)));
+  }
+
+  startIdleWatch(onIdle: () => void): void {
+    this.idleCallback = onIdle;
+    this.scheduleIdleWatch();
   }
 
   clearIdleWatch(): void {
@@ -88,6 +90,7 @@ export class RunGuard {
   stop(reason: RunGuardStopReason): RunGuardDecision {
     this.stoppedReason ??= reason;
     this.clearIdleWatch();
+    this.idleCallback = null;
     return { stop: true, reason: this.stoppedReason };
   }
 
@@ -96,6 +99,9 @@ export class RunGuard {
   }
 
   toolSuccess(): RunGuardDecision {
+    if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
+    this.lastToolFailure = null;
+    this.toolFailureCount = 0;
     return this.event();
   }
 
@@ -107,8 +113,8 @@ export class RunGuard {
       this.lastToolFailure = signature;
       this.toolFailureCount = 1;
     }
-    this.clearIdleWatch();
     this.lastEventAt = this.now();
+    this.scheduleIdleWatch();
     return this.toolFailureCount >= this.toolRetryLimit
       ? this.stop("tool_retry_loop")
       : { stop: false };

@@ -1,6 +1,82 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { RunGuard, toolFailureSignature } from "@myrmidon/adapter-utils";
 import { legacyExecutionNeedsReconciliation } from "./legacy-execution-recovery.js";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../myrmidon/maintenance/domain.js";
+
+const runGuardReasons = ["model_call_limit", "idle_timeout", "tool_retry_loop"] as const;
+
+it.each(runGuardReasons)("turns %s into a no-auto-replay reconciliation", (reason) => {
+  for (const status of ["failed", "timed_out", "interrupted", "cancelled"]) {
+    expect(legacyExecutionNeedsReconciliation({
+      runtimeMode: "legacy",
+      status,
+      errorCode: reason,
+      scheduledRetryAttempt: 0,
+      resultJson: { conversationContinuation: "continue_conversation_v1" },
+    })).toBe(true);
+    expect(legacyExecutionNeedsReconciliation({
+      runtimeMode: "legacy",
+      status,
+      errorCode: "cancelled",
+      scheduledRetryAttempt: 0,
+      resultJson: { runGuardStopReason: reason },
+    })).toBe(true);
+  }
+});
+
+it("allows N model calls and rejects N+1 before it can dispatch", () => {
+  const guard = new RunGuard({ modelCallLimit: 3 });
+  expect(guard.modelCall().stop).toBe(false); // N-2
+  expect(guard.modelCall().stop).toBe(false); // N-1
+  expect(guard.modelCall().stop).toBe(false); // N
+  expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" }); // N+1
+  expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" });
+});
+
+it("refreshes the idle deadline on model and board events without cutting a long active run", async () => {
+  vi.useFakeTimers();
+  try {
+    const guard = new RunGuard({ idleTimeoutMs: 20 });
+    const onIdle = vi.fn();
+    guard.startIdleWatch(onIdle);
+    for (let index = 0; index < 8; index += 1) {
+      await vi.advanceTimersByTimeAsync(19);
+      if (index === 0) guard.modelCall();
+      else guard.event();
+      expect(onIdle).not.toHaveBeenCalled();
+    }
+    await vi.advanceTimersByTimeAsync(20);
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("counts identical failed tools across events, resets on success or different arguments, and never exposes arguments", () => {
+  const args = { b: 2, token: "do-not-log", a: 1 };
+  const guard = new RunGuard({ toolRetryLimit: 3 });
+  expect(guard.toolFailure("patch", args).stop).toBe(false);
+  guard.event();
+  expect(guard.toolFailure("patch", { a: 1, b: 2, token: "do-not-log" }).stop).toBe(false);
+  guard.event();
+  expect(guard.toolFailure("patch", args)).toEqual({ stop: true, reason: "tool_retry_loop" });
+  expect(toolFailureSignature("patch", args)).not.toContain("do-not-log");
+
+  const resetOnSuccess = new RunGuard({ toolRetryLimit: 3 });
+  expect(resetOnSuccess.toolFailure("patch", args).stop).toBe(false);
+  expect(resetOnSuccess.toolSuccess().stop).toBe(false);
+  expect(resetOnSuccess.toolFailure("patch", args).stop).toBe(false);
+  expect(resetOnSuccess.toolFailure("patch", args).stop).toBe(false);
+  expect(resetOnSuccess.toolFailure("patch", args).reason).toBe("tool_retry_loop");
+
+  const resetOnDifferentSignature = new RunGuard({ toolRetryLimit: 3 });
+  expect(resetOnDifferentSignature.toolFailure("patch", args).stop).toBe(false);
+  expect(resetOnDifferentSignature.toolFailure("patch", { ...args, a: 2 }).stop).toBe(false);
+  expect(resetOnDifferentSignature.toolFailure("patch", args).stop).toBe(false);
+  expect(resetOnDifferentSignature.toolFailure("patch", args).stop).toBe(false);
+  expect(resetOnDifferentSignature.toolFailure("patch", args).reason).toBe("tool_retry_loop");
+});
+
 
 const stopped = {
   runtimeMode: "legacy", status: "cancelled", errorCode: "cancelled",

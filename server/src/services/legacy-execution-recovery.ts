@@ -28,6 +28,13 @@ export function legacyExecutionNeedsReconciliation(
     !["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
   )
     return false;
+  // Guard stops are terminal for the current task revision. They must enter
+  // the existing reconciliation hold instead of the bounded retry scheduler;
+  // an explicit human wake or task edit is required before another run.
+  if (["model_call_limit", "idle_timeout", "tool_retry_loop"].includes(run.errorCode ?? "") ||
+      ["model_call_limit", "idle_timeout", "tool_retry_loop"].includes(String(run.resultJson?.runGuardStopReason ?? ""))) {
+    return true;
+  }
   // Maintenance interruption explicitly means retry, including after the
   // bounded retry scheduler's ordinary attempt budget is exhausted.
   if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
