@@ -31,8 +31,8 @@ export const BOT_DISK_AGENT_SILENT_MS = 30 * 60_000;
 export const BOT_DISK_DRIFT_EXTRA_MS = 15 * 60_000;
 /** A bot on a non-current image for longer than this raises `bot_image_stale`. */
 export const BOT_IMAGE_STALE_MS = 24 * 3_600_000;
-/** Archives live 30 days (design class F); an older one is not shown. */
-export const BOT_DISK_ARCHIVE_TTL_MS = 30 * 24 * 3_600_000;
+/** Archives live 7 days per the owner-approved operational retention policy. */
+export const BOT_DISK_ARCHIVE_TTL_MS = 7 * 24 * 3_600_000;
 
 export type BotDiskCardSourceKind = "bot_disk_lifecycle" | "bot_disk_archive" | "bot_image_stale";
 
@@ -244,7 +244,7 @@ export function buildForeignCards(input: BotDiskCardsInput): BotDiskCard[] {
   return cards;
 }
 
-/** `bot_disk_archive`: one card per archive on its task; gone on restore or after 30 days. */
+/** `bot_disk_archive`: one card per archive on its task; gone on restore or after 7 days. */
 export function buildArchiveCards(input: BotDiskCardsInput): BotDiskCard[] {
   const cards: BotDiskCard[] = [];
   for (const bot of input.bots) {
@@ -265,7 +265,7 @@ export function buildArchiveCards(input: BotDiskCardsInput): BotDiskCard[] {
         title: `Unpushed work of ${redactReportText(a.key)} was archived`,
         whyNow: `The copy of ${redactReportText(a.key)} held unpushed work and was removed; it is kept as ${redactReportText(baseName(a.path))} (${a.sizeBytes} bytes) until ${iso(expiresMs)}. Restore it with myr-ws restore ${redactReportText(a.key)}.`,
         entryRule: "the disk agent archived a copy with unpushed work",
-        exitRule: "the archive is restored, or expires after 30 days",
+        exitRule: "the archive is restored, or expires after 7 days",
         at,
         payload: {
           botKey: bot.botKey,

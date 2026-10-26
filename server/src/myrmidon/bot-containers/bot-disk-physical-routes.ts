@@ -19,10 +19,11 @@
 // `gateReached: false`; the screen shows "no data".
 //
 // `GET /api/myrmidon/bot-disk/reports` returns the stored C4 rows (botd's POST
-// /api/myrmidon/bots/me/disk-report, BOT-DISK-H4b): each bot's last report as
+// `GET /api/myrmidon/bot-disk/reports` returns the stored C4 rows (botd's
+// `/api/myrmidon/bots/me/disk-report`, BOT-DISK-H4b): each bot's last report as
 // received, with the board's receive time so the screen can mark a bot that
-// has gone silent (BOT_DISK_REPORT_STALE_MS) and age out archives past the
-// 30-day retention (BOT_DISK_ARCHIVE_RETENTION_MS).
+// has gone silent. Restore bundles and this report-card retention are distinct
+// from the 7-day host-side archive-transfer policy.
 
 import { createInstanceTokenReader } from "./instance-token-reader.js"; // myrmidon(SETTINGS-UI E2.3)
 import {

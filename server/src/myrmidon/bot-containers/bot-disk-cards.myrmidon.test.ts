@@ -183,11 +183,14 @@ describe("bot_disk_archive", () => {
     report.archives = [];
     expect(buildArchiveCards(input([bot({ report })]))).toHaveLength(0);
   });
-  it("expires at 30 days: shown at 30 d minus a minute, gone at 30 d", () => {
+  it("expires at 7 days: shown at 7 d minus a minute, gone at 7 d", () => {
     const report = fixture();
     const created = Date.parse(report.archives[0]!.createdAt);
     const near = { ...input([bot({ report })]), nowMs: created + BOT_DISK_ARCHIVE_TTL_MS - MIN };
     const past = { ...input([bot({ report })]), nowMs: created + BOT_DISK_ARCHIVE_TTL_MS };
+    const cards = buildArchiveCards(input([bot({ report })]));
+    expect(cards[0]!.exitRule).toBe("the archive is restored, or expires after 7 days");
+    expect(cards[0]!.payload.expiresAt).toBe(new Date(created + 7 * 24 * HOUR).toISOString());
     expect(buildArchiveCards(near)).toHaveLength(1);
     expect(buildArchiveCards(past)).toHaveLength(0);
   });
