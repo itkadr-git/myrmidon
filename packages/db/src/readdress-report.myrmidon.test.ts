@@ -35,7 +35,7 @@ describe("interaction readdress report", () => {
       const issueId = id(9002);
       await db.execute(sql`
         INSERT INTO companies (id, name, issue_prefix)
-        VALUES (${companyId}, 'Interaction readdress report test', ${`IRR${9001}`})
+        VALUES (${companyId}, 'Interaction readdress report test', 'IRR-REPORT-TEST')
       `);
       await db.execute(sql`
         INSERT INTO issues (id, company_id, title, identifier)
