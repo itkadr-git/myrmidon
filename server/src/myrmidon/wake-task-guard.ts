@@ -104,7 +104,7 @@ function coolingRunFilter() {
 }
 
 /** Last-run statuses that (with no task movement) start a cooling period. */
-const COOLING_TERMINAL_STATUSES = ["succeeded", "failed", "timed_out"] as const;
+const COOLING_TERMINAL_STATUSES = ["succeeded", "failed", "timed_out", "cancelled"] as const;
 
 /**
  * Activity actions that are real task movement (§4.3 "любое изменение задачи").
@@ -148,6 +148,7 @@ function runIsStale(
   row: { status: string; livenessState: string | null },
   issueStatus: string,
 ): boolean {
+  if (row.status === "cancelled") return false;
   if (row.status === "failed" || row.status === "timed_out") return true;
   if (row.livenessState === "blocked" || row.livenessState === "needs_followup") return true;
   return (
@@ -204,7 +205,12 @@ export function decideIssueCooling(input: {
 }): IssueCoolingStatus {
   const { runs, issueStatus, settings, now } = input;
   if (runs.length === 0) return NOT_COOLING;
-  const last = runs[0]!;
+  // A board/reassignment cancellation is not stale and cannot become the
+  // cooling anchor. Keep the most recent actual stale-capable run as the
+  // anchor so the cancellation neither starts a cooldown nor erases a still
+  // active window from an earlier stale run.
+  const last = runs.find((row) => row.status !== "cancelled");
+  if (!last) return NOT_COOLING;
   const finishedAt = last.finishedAt;
   if (!finishedAt) return NOT_COOLING;
   if (!runIsStale(last, issueStatus)) return NOT_COOLING;
@@ -220,8 +226,8 @@ export function decideIssueCooling(input: {
   let staleCount = 0;
   for (let i = 0; i < runs.length; i += 1) {
     const row = runs[i]!;
-    const healthy =
-      row.status === "succeeded" && HEALTHY_LIVENESS.has(row.livenessState ?? "");
+    if (row.status === "cancelled") continue;
+    const healthy = row.status === "succeeded" && HEALTHY_LIVENESS.has(row.livenessState ?? "");
     if (healthy) break;
     if (i > 0 && row.finishedAt) {
       const newer = runs[i - 1]!;
@@ -285,6 +291,10 @@ export async function isIssueCoolingDown(
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
           coolingRunFilter(),
           inArray(heartbeatRuns.status, COOLING_TERMINAL_STATUSES),
+          or(
+            sql`${heartbeatRuns.status} <> 'cancelled'`,
+            sql`coalesce(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code', '') in ('board_operator', 'reassignment')`,
+          ),
         ),
       )
       .orderBy(desc(heartbeatRuns.finishedAt))
