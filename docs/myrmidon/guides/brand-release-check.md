@@ -11,15 +11,19 @@ flows, do not edit runtime or configuration.
 
 ```bash
 node scripts/myrmidon/docs-branding-guard.mjs        # docs/ — must be clean
-node scripts/myrmidon/brand-release-audit.mjs        # root + docs/ — report mode
+node scripts/myrmidon/brand-release-audit.mjs        # root + docs/ + package.json — report mode
 node scripts/myrmidon/brand-release-audit.mjs --gate # same, fails on findings
+node scripts/myrmidon/brand-release-audit.mjs --package-json-only --gate # package.json repository/homepage/bugs only
 node --test scripts/myrmidon/brand-release-audit.test.mjs
 ```
 
 Report mode prints the exact count and paths of non-allowlisted old-brand
 mentions. A non-zero total is honest output: it means a parallel DEBRAND part
 has not landed yet — record the number in the release report instead of
-trimming the allowlist.
+trimming the allowlist. The audit also reports package.json manifests whose
+`repository`/`homepage`/`bugs` still point at the vendored repo
+(`https://github.com/paperclipai/paperclip`); these must be
+`https://github.com/itkadr-git/myrmidon` (OPE-9316).
 
 ## 2. UI copy (read-only browser pass)
 
