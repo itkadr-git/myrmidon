@@ -26,6 +26,7 @@ import {
   heartbeatRuns,
   issueClaims,
   issues,
+  issueRelations,
 } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
