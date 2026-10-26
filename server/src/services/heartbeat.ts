@@ -20118,8 +20118,35 @@ export function heartbeatService(
   // whose latest run is a legacy run, and the release drain stops at an
   // acknowledged operator Stop. This pass is idempotent and bounded, so one
   // pass after deploy is also the one-off cleanup of the records left behind.
-  async function reconcileStrandedDeferredWakes(): Promise<{ cancelledTerminal: number; revisited: number }> {
+  async function reconcileStrandedDeferredWakes(): Promise<{ cancelledTerminal: number; revisited: number; expired: number }> {
     const now = Date.now();
+    const staleCutoff = new Date(now - 30 * 60_000);
+    const staleWakes = await db.select({ wake: agentWakeupRequests }).from(agentWakeupRequests).innerJoin(companies,
+      and(eq(companies.id, agentWakeupRequests.companyId), eq(companies.status, "active"))).where(and(
+      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      isNull(agentWakeupRequests.runId),
+      lt(agentWakeupRequests.requestedAt, staleCutoff),
+      lt(agentWakeupRequests.createdAt, staleCutoff),
+      sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+      sql`${agentWakeupRequests.payload}->'executionWait' is null`,
+    )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
+    let expired = 0;
+    for (const row of staleWakes) {
+      const wake = row.wake;
+      const [cancelled] = await db.update(agentWakeupRequests).set({
+        status: "cancelled", error: "deferred_issue_execution_expired", finishedAt: new Date(), updatedAt: new Date(),
+      }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        lt(agentWakeupRequests.requestedAt, staleCutoff))).returning({ id: agentWakeupRequests.id });
+      if (!cancelled) continue;
+      expired++;
+      const wakePayload = parseObject(wake.payload);
+      const executionWait = parseObject(wakePayload.executionWait);
+      if (executionWait.reason && executionWait.message) {
+        await resumeExecutionWaitComments().catch((err) => logger.warn({ err, wakeId: wake.id }, "failed to resume expired execution wait"));
+      }
+      await enqueueWakeup(wake.agentId, { source: "automation", reason: "deferred_issue_execution_expired", payload: { expiredWakeId: wake.id } })
+        .catch(err => logger.warn({ err, wakeId: wake.id }, "failed to re-wake agent after deferred issue execution expiry"));
+    }
     const settleBefore = new Date(now - 2 * 60_000);
     // Wakes of a closed task are dead input: the comment is saved on the task,
     // the wake itself can only start work nobody wants. Cancel them like the
@@ -20154,6 +20181,7 @@ export function heartbeatService(
         isNull(issues.executionRunId),
         notInArray(issues.status, ["done", "cancelled"]),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+        sql`${agentWakeupRequests.payload}->'executionWait' is null`,
         lte(agentWakeupRequests.requestedAt, settleBefore),
         lte(agentWakeupRequests.updatedAt, new Date(now - 30_000)),
         not(exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
@@ -20221,10 +20249,10 @@ export function heartbeatService(
         logger.warn({ err, wakeId: wake.id, issueId }, "failed to advance stranded deferred wake");
       });
     }
-    if (closed.length || revisited) {
-      logger.info({ cancelledTerminal: closed.length, revisited }, "stranded deferred wake reconcile");
+    if (closed.length || revisited || expired) {
+      logger.info({ cancelledTerminal: closed.length, revisited, expired }, "stranded deferred wake reconcile");
     }
-    return { cancelledTerminal: closed.length, revisited };
+    return { cancelledTerminal: closed.length, revisited, expired };
   }
 
   async function resumeQueuedRuns() {
@@ -20268,6 +20296,7 @@ export function heartbeatService(
           sql`${agentWakeupRequests.payload} #> '{_paperclipWakeContext,wakeCommentIds}' <> '[]'::jsonb`,
         ), sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+        sql`${agentWakeupRequests.payload}->'executionWait' is null`,
         cutoff ? gte(agentWakeupRequests.requestedAt, cutoff) : undefined))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     for (const { wake } of strandedQueues) {

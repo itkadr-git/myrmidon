@@ -10,6 +10,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  agentWakeupRequests,
   issueClaims,
   issues,
   litellmCostEvents,
@@ -102,6 +103,19 @@ describeEmbeddedPostgres("metrics collector", () => {
     });
     return runId;
   }
+
+  it("counts deferred issue executions older than thirty minutes", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "engineer");
+    await db.insert(agentWakeupRequests).values([
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "cancelled", requestedAt: new Date(NOW.getTime() - 40 * 60_000) },
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 31 * 60_000), runId: randomUUID() },
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 31 * 60_000) },
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 29 * 60_000) },
+    ]);
+    const snapshot = await collectMetricsSnapshot({ db, now: () => NOW, errorWindowSec: 3600, latencyWindowSec: 3600 });
+    expect(snapshot.deferredIssueExecutionOver30m).toBe(1);
+  });
 
   it("counts active, queued and failed runs", async () => {
     const companyId = await seedCompany();

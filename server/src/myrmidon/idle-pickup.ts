@@ -780,20 +780,8 @@ async function hasCoveringWake(
         ]),
         sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
         wakeNotParkedOnExecutionHold(),
-        // myrmidon(1.6.6 OPE-8988): a queued/claimed request covers the issue
-        // only while it is real work in flight — a live run carries it, or it
-        // is a just-queued request whose run is still being created. On prod
-        // 147 queued and 438 claimed requests had no live run at all (the
-        // oldest from August): each one covered its issue forever, so idle
-        // pickup counted the agent "already active" and never woke it.
         sql`(
           (
-            -- myrmidon(1.6.6 OPE-8988): a deferred wake waits for the issue's
-            -- execution lock to clear; it covers the issue only while that lock
-            -- is still held, or briefly while the promotion after release is in
-            -- flight. A deferred wake whose lock is long gone was never promoted
-            -- (OPE-8268) and covered its issue forever (prod 24.10: 10 such, the
-            -- oldest a day old). Parked holds (executionWait) are excluded above.
             ${agentWakeupRequests.status} = 'deferred_issue_execution'
             and (
               exists (
@@ -801,7 +789,10 @@ async function hasCoveringWake(
                 where li.id::text = ${agentWakeupRequests.payload} ->> 'issueId'
                   and (li.execution_run_id is not null or li.checkout_run_id is not null)
               )
-              or ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+              or (
+                ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+                and ${agentWakeupRequests.requestedAt} > now() - interval '30 minutes'
+              )
             )
           )
           or exists (
