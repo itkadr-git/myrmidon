@@ -20631,7 +20631,8 @@ export function heartbeatService(
       await enqueueWakeup(agentId, {
         source: "automation",
         reason: "queued_run_stale_timeout",
-        payload: { companyId, issueId: null },
+        payload: { companyId },
+        contextSnapshot: { issueId: "system:queued-run-stale-timeout" },
       });
     },
     loadSettings: () => loadRunDispatchSettings(db),
