@@ -119,7 +119,7 @@ export const PERMANENT_RUN_FAILURE_ERROR_FAMILIES: ReadonlySet<string> =
   ]);
 
 export const TRANSIENT_ERROR_MESSAGE_RE =
-  /\b(continuation_source_context_missing|stream (?:was )?interrupted|interrupted stream|premature close|response stream|legacy controller lease lost|controller lease lost|native_session_lease_lost|lease lost|econnreset|etimedout|econnrefused|socket hang up|fetch failed|clientnetworkerror|connection error|network error)\b/i;
+  /\b(continuation_source_context_missing|no deployments available|all deployments (?:are )?in cooldown|stream (?:was )?interrupted|interrupted stream|premature close|response stream|legacy controller lease lost|controller lease lost|native_session_lease_lost|lease lost|econnreset|etimedout|econnrefused|socket hang up|fetch failed|clientnetworkerror|connection error|network error)\b|\b429\b|too many requests/i;
 
 export const PERMANENT_ERROR_MESSAGE_RE =
   /\b(continuation_user_authorization_missing|key not allowed to access model|refresh_token_reused|refresh_token_invalidated)\b/i;
