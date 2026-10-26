@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import { agents, companies, createDb, issueClaims, issueRelations, issues, type Db } from "@myrmidon/db";
+import { activityLog, agents, companies, createDb, issueClaims, issueRelations, issues, type Db } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -90,7 +90,6 @@ async function seedFixtures(now: Date) {
       status: "todo",
       priority: "medium",
       assigneeAgentId: null,
-      labels: ["role:engineer"],
     },
   ]);
   await db.insert(issueRelations).values(
@@ -102,6 +101,14 @@ async function seedFixtures(now: Date) {
       type: "blocks" as const,
     })),
   );
+  await db.insert(activityLog).values({
+    companyId,
+    actorType: "system",
+    actorId: "test",
+    action: "test",
+    entityType: "issue",
+    entityId: randomUUID(),
+  });
   await db.insert(issueClaims).values(
     taskIds.map((issueId) => ({
       id: randomUUID(),
@@ -175,6 +182,7 @@ describeDatabase("swarm expiry race under load", () => {
     if (db) {
       await db.delete(issueClaims).where(inArray(issueClaims.issueId, [...taskIds, ...blockedTaskIds, readyTaskId]));
       await db.delete(issueRelations).where(eq(issueRelations.companyId, companyId));
+      await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
       await db.delete(issues).where(eq(issues.companyId, companyId));
       await db.delete(agents).where(eq(agents.companyId, companyId));
       await db.delete(companies).where(eq(companies.id, companyId));

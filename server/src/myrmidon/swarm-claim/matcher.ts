@@ -1234,7 +1234,7 @@ async function openTaskIdsOfAgents(
   companyId: string,
   agentId: string | null,
 ): Promise<Map<string, { assigned: Set<string>; leased: Set<string> }>> {
-  const [assignedRows, leasedRows, blockedIssueRows] = await Promise.all([
+  const [assignedRows, blockedIssueRows, leasedRows] = await Promise.all([
     db
       .select({ agentId: issues.assigneeAgentId, issueId: issues.id })
       .from(issues)
