@@ -42,7 +42,10 @@ import {
   type IssueCommentMetadata,
   type IssueCommentPresentation,
 } from "@myrmidon/shared";
-import { tryClaimContinuationKey } from "../continuation-dedupe.js";
+import {
+  releaseContinuationKey,
+  tryClaimContinuationKey,
+} from "../continuation-dedupe.js";
 import {
   agents,
   agentTaskSessions,
@@ -2061,59 +2064,85 @@ export function recoveryService(
       )
         return null;
     }
+    let continuationClaimKey: string | null = null;
     if (input.reason === "issue_continuation_needed") {
+      const key = buildContinuationKey({
+        issueId: input.issueId,
+        event: "issue_continuation_needed",
+        head: input.continuationHead ?? "unversioned",
+      });
       const claimed = await tryClaimContinuationKey(db, {
         companyId: input.companyId,
         issueId: input.issueId,
-        key: buildContinuationKey({
-          issueId: input.issueId,
-          event: "issue_continuation_needed",
-          head: input.continuationHead ?? "unversioned",
-        }),
-        ttl: 24 * 60 * 60 * 1_000,
+        key,
+        // Recovery runs without a concrete run head can recur for the same
+        // issue indefinitely; don't suppress those retries for a full day.
+        ttl:
+          input.source === "issue.continuation_recovery" ||
+          !input.continuationHead
+            ? 60 * 1_000
+            : 24 * 60 * 60 * 1_000,
       });
       if (claimed === "deduped") return null;
+      continuationClaimKey = key;
     }
 
-    const queued = await deps.enqueueWakeup(input.agentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: input.reason,
-      idempotencyKey: input.idempotencyKey ?? undefined,
-      // The sweep can combine an old in-progress issue snapshot with a newer
-      // successful run. Validate eligibility under the enqueue issue lock so
-      // completion or reassignment cannot create a redundant continuation.
-      ...(input.source === "issue.productive_terminal_continuation_recovery"
-        ? {
-            issueStateGuard: {
-              statuses: ["in_progress"],
-              assigneeAgentId: input.agentId,
-            },
-          }
-        : {}),
-      payload: withRecoveryContext(
-        {
-          issueId: input.issueId,
-          ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-          ...(input.extraContext ?? {}),
-        },
-        "normal_model",
-      ),
-      requestedByActorType: "system",
-      requestedByActorId: null,
-      contextSnapshot: withRecoveryContext(
-        {
-          issueId: input.issueId,
-          taskId: input.issueId,
-          wakeReason: input.reason,
-          retryReason: input.retryReason,
-          source: input.source,
-          ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-          ...(input.extraContext ?? {}),
-        },
-        "normal_model",
-      ),
-    });
+    let queued: typeof heartbeatRuns.$inferSelect | null;
+    try {
+      queued = await deps.enqueueWakeup(input.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: input.reason,
+        idempotencyKey: input.idempotencyKey ?? undefined,
+        // The sweep can combine an old in-progress issue snapshot with a newer
+        // successful run. Validate eligibility under the enqueue issue lock so
+        // completion or reassignment cannot create a redundant continuation.
+        ...(input.source === "issue.productive_terminal_continuation_recovery"
+          ? {
+              issueStateGuard: {
+                statuses: ["in_progress"],
+                assigneeAgentId: input.agentId,
+              },
+            }
+          : {}),
+        payload: withRecoveryContext(
+          {
+            issueId: input.issueId,
+            ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(input.extraContext ?? {}),
+          },
+          "normal_model",
+        ),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: withRecoveryContext(
+          {
+            issueId: input.issueId,
+            taskId: input.issueId,
+            wakeReason: input.reason,
+            retryReason: input.retryReason,
+            source: input.source,
+            ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(input.extraContext ?? {}),
+          },
+          "normal_model",
+        ),
+      });
+    } catch (error) {
+      if (continuationClaimKey) {
+        await releaseContinuationKey(db, {
+          companyId: input.companyId,
+          key: continuationClaimKey,
+        });
+      }
+      throw error;
+    }
+    if (!queued && continuationClaimKey) {
+      await releaseContinuationKey(db, {
+        companyId: input.companyId,
+        key: continuationClaimKey,
+      });
+    }
 
     if (queued && input.retryOfRunId) {
       return db
@@ -6296,8 +6325,7 @@ export function recoveryService(
         issueId: issue.id,
         companyId: issue.companyId,
         agentId,
-        continuationHead:
-          latestRun?.id ?? issue.checkoutRunId ?? issue.id,
+        continuationHead: latestRun?.id ?? issue.checkoutRunId,
         reason: "issue_continuation_needed",
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",
