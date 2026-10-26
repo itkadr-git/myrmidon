@@ -22,29 +22,41 @@ describe("nextContinuationDelay", () => {
     expect(nextContinuationDelay({ recentCount: 0, windowMs: WINDOW_MS })).toBe(0);
   });
 
-  it("is monotone and caps the delay at the six-event window budget", () => {
-    const delays = Array.from({ length: MAX_EVENTS + 2 }, (_, recentCount) =>
+  it("increases delay with the event count and waits for a slot above budget", () => {
+    const delays = Array.from({ length: MAX_EVENTS + 3 }, (_, recentCount) =>
       nextContinuationDelay({ recentCount, windowMs: WINDOW_MS }),
     );
-    expect(delays).toEqual([...delays].sort((a, b) => a - b));
-    expect(delays[MAX_EVENTS]).toBe(WINDOW_MS / MAX_EVENTS);
-    expect(delays[MAX_EVENTS + 1]).toBe(delays[MAX_EVENTS]);
+    expect(delays.slice(0, MAX_EVENTS + 1)).toEqual([...delays.slice(0, MAX_EVENTS + 1)].sort((a, b) => a - b));
+    expect(delays.slice(1, 6)).toEqual([WINDOW_MS / 6, 2 * WINDOW_MS / 6, 3 * WINDOW_MS / 6, 4 * WINDOW_MS / 6, 5 * WINDOW_MS / 6]);
+    expect(delays[MAX_EVENTS]).toBe(WINDOW_MS);
+    expect(delays[MAX_EVENTS + 2]).toBe(WINDOW_MS);
   });
 
-  it("allows no more than six continuations in any rolling three-hour window", () => {
-    const events = simulateWindow(WINDOW_MS, 20);
+  it("allows no more than six events in every rolling three-hour window", () => {
+    const events = simulateWindow(WINDOW_MS, 30);
     for (let start = 0; start < events.length; start += 1) {
-      const count = events.filter(
-        (eventAt) => eventAt >= events[start]! && eventAt < events[start]! + WINDOW_MS,
-      ).length;
+      const count = events.filter((eventAt) => eventAt >= events[start]! && eventAt < events[start]! + WINDOW_MS).length;
       expect(count).toBeLessThanOrEqual(MAX_EVENTS);
     }
   });
 
-  it("keeps the first event immediate and expires events at the window boundary", () => {
+  it("handles a dense batch at the window boundary", () => {
     const events = simulateWindow(WINDOW_MS, MAX_EVENTS + 2);
-    expect(events[0]).toBe(0);
+    expect(events.slice(0, MAX_EVENTS)).toEqual([0, WINDOW_MS / 6, 3 * WINDOW_MS / 6, 6 * WINDOW_MS / 6, 10 * WINDOW_MS / 6, 15 * WINDOW_MS / 6]);
     expect(events[MAX_EVENTS]).toBe(WINDOW_MS);
-    expect(events[MAX_EVENTS + 1]).toBe(WINDOW_MS + WINDOW_MS / MAX_EVENTS);
+    expect(events[MAX_EVENTS + 1]).toBe(WINDOW_MS + WINDOW_MS / 6);
+  });
+
+  it("uses an arbitrary configured window and budget without truncating the window", () => {
+    expect(nextContinuationDelay({ recentCount: 2, windowMs: 1_000, maxContinuations: 4, maxDelayMs: 2_000 })).toBe(500);
+    expect(nextContinuationDelay({ recentCount: 4, windowMs: 1_000, maxContinuations: 4, maxDelayMs: 2_000 })).toBe(1_000);
+    expect(nextContinuationDelay({ recentCount: 4, windowMs: 10_000, maxContinuations: 4, maxDelayMs: 2_000 })).toBe(2_000);
+  });
+
+  it("returns zero for NaN and negative inputs", () => {
+    expect(nextContinuationDelay({ recentCount: Number.NaN, windowMs: WINDOW_MS })).toBe(0);
+    expect(nextContinuationDelay({ recentCount: -1, windowMs: WINDOW_MS })).toBe(0);
+    expect(nextContinuationDelay({ recentCount: 1, windowMs: Number.NaN })).toBe(0);
+    expect(nextContinuationDelay({ recentCount: 1, windowMs: -1 })).toBe(0);
   });
 });
