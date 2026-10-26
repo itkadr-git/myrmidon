@@ -830,6 +830,9 @@ function createExecutionState(runId: string): ExecutionState {
     toolPreviews: new Map(),
     lastRuntimeProgressAt: null,
     lastEventAtMs: Date.now(),
+    guardToolArguments: new Map(),
+    guardModelTurnObserved: false,
+    guardPendingToolCalls: 0,
   };
 }
 

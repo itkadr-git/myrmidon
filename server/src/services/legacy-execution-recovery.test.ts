@@ -112,7 +112,7 @@ it("counts gateway assistant turns and repeated failed tool rounds without loggi
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "guard-test-gateway-run", status: "started" }), { status: 200 });
-    if (url.endsWith("/events")) return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+    if (url.includes("/events")) return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
     return new Response(JSON.stringify({ status: "running" }), { status: 200 });
   }));
   try {
@@ -154,7 +154,7 @@ it("counts gateway model rounds once per assistant response and stops before the
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "guard-model-gateway-run", status: "started" }), { status: 200 });
-    if (url.endsWith("/events")) return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+    if (url.includes("/events")) return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
     return new Response(JSON.stringify({ status: "running" }), { status: 200 });
   }));
   try {
