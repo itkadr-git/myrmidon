@@ -480,19 +480,12 @@ describe("startScentQueue: no re-entrant ticks", () => {
   });
 });
 
-// --- OPE-7190: a parked queue must journal why it parks -------------------------
-
-// Hoisted by vitest regardless of position. The queue module imports
-// logActivity directly, so the journal is asserted through the mock.
-const { unconfiguredJournal, mockGetGeneral } = vi.hoisted(() => ({
+// The queue imports logActivity directly; assert its journal through the mock.
+const { unconfiguredJournal } = vi.hoisted(() => ({
   unconfiguredJournal: vi.fn(async (_entry: unknown) => undefined),
-  mockGetGeneral: vi.fn(async () => ({})),
 }));
 vi.mock("../../services/activity-log.js", () => ({
   logActivity: unconfiguredJournal,
-}));
-vi.mock("../../services/instance-settings.js", () => ({
-  instanceSettingsService: vi.fn(() => ({ getGeneral: mockGetGeneral })),
 }));
 
 describe("scent queue: unconfigured contour is visible in the activity log", () => {
@@ -508,14 +501,13 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     // and a completely empty contour (no base URL, no key). The queue parked
     // silently for a day; the journal entry is the fix's observable.
     unconfiguredJournal.mockClear();
-    mockGetGeneral.mockReset().mockResolvedValue({});
     const db = {
       execute: () => Promise.resolve([{ n: 0 }]), // no entry in the last hour → write one
     };
     delete process.env.MYRMIDON_SCENT_BASE_URL;
     delete process.env.MYRMIDON_EVALS_BASE_URL;
     await runScentQueueTick(db as never, {
-      listCompanyIds: async () => ["c1"],
+      getGeneral: async () => ({}),
       resolveSecret: async () => null, // no company secret, no env fallback
     });
     expect(unconfiguredJournal).toHaveBeenCalledTimes(1);
@@ -529,12 +521,11 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
 
   it("stays silent when an entry already exists within the hour (throttle)", async () => {
     unconfiguredJournal.mockClear();
-    mockGetGeneral.mockReset().mockResolvedValue({});
     const db = {
       execute: () => Promise.resolve([{ n: 1 }]), // already journaled in the last hour
     };
     await runScentQueueTick(db as never, {
-      listCompanyIds: async () => ["c1"],
+      getGeneral: async () => ({}),
       resolveSecret: async () => null,
     });
     expect(unconfiguredJournal).not.toHaveBeenCalled();

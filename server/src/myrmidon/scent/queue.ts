@@ -39,8 +39,8 @@ export interface ScentQueuePorts {
   fetch?: typeof fetch;
   /** Test hook: replace the secret store lookup. */
   resolveSecret?: (db: Db, companyId: string, secretName: string) => Promise<string | null>;
-  /** Test hook: replace the company listing (the queue is per-company). */
-  listCompanyIds?: () => Promise<string[]>;
+  /** Test hook: replace general instance settings lookup. */
+  getGeneral?: (db: Db) => Promise<unknown>;
   now?: () => number;
 }
 
@@ -62,8 +62,9 @@ async function defaultResolveSecret(
 }
 
 async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): Promise<void> {
-  const settingsSvc = instanceSettingsService(db);
-  const general = await settingsSvc.getGeneral();
+  const general = ports.getGeneral
+    ? await ports.getGeneral(db)
+    : await instanceSettingsService(db).getGeneral();
   const settings = readScentSettings(
     (general as unknown as Record<string, unknown> | null)?.swarm,
     process.env,
