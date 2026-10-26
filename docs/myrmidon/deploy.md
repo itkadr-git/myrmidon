@@ -649,8 +649,9 @@ the same settings file the deploy uses. It checks:
 4. nginx, LiteLLM, RAGFlow and Hindsight answer their check URLs (each URL
    unset: the check is off with a log line — nothing is silently skipped);
 5. the DNS names other services use resolve on the docker network
-   (`DNS_CHECK_NAMES`, default `mysql es01 paperclip-server-1` — the RAGFlow
-   lesson);
+   (`DNS_CHECK_NAMES`, default `mysql es01 paperclip-server-1` — the legacy
+   name resolves via its compatibility alias; the rc.17 rename window adds
+   `myrmidon-board`, see `docs/myrmidon/board-rename-runbook.md`);
 6. `systemctl --failed` is empty.
 
 Every failure is listed (not just the first), the script exits 1 and the unit

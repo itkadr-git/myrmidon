@@ -61,6 +61,38 @@ function run(dir, args) {
   }
 }
 
+check("package metadata pointing to the vendor repo makes the gate red", () => {
+  const dir = makeFixture({
+    "package.json": JSON.stringify({
+      name: "myrmidon-fixture",
+      repository: { type: "git", url: "https://github.com/paperclipai/paperclip", directory: "packages/example" },
+      homepage: "https://github.com/paperclipai/paperclip/tree/main/packages/example#readme",
+      bugs: { url: "https://github.com/paperclipai/paperclip/issues" },
+    }),
+  });
+  const r = run(dir, ["--package-json-only", "--gate"]);
+  if (r.code !== 1) throw new Error(`expected exit 1, got ${r.code}:\\n${r.stdout}`);
+  for (const field of ["repository", "homepage", "bugs"]) {
+    if (!new RegExp(`${field} points at the vendored repo`).test(r.stdout)) {
+      throw new Error(`${field} finding missing:\\n${r.stdout}`);
+    }
+  }
+});
+
+check("Myrmidon package metadata stays green", () => {
+  const dir = makeFixture({
+    "package.json": JSON.stringify({
+      name: "myrmidon-fixture",
+      repository: { type: "git", url: "https://github.com/itkadr-git/myrmidon", directory: "packages/example" },
+      homepage: "https://github.com/itkadr-git/myrmidon/tree/main/packages/example#readme",
+      bugs: { url: "https://github.com/itkadr-git/myrmidon/issues" },
+    }),
+  });
+  const r = run(dir, ["--package-json-only", "--gate"]);
+  if (r.code !== 0) throw new Error(`expected exit 0, got ${r.code}:\\n${r.stdout}`);
+  if (!/0 stale package\.json repository\/homepage\/bugs URL/.test(r.stdout)) throw new Error(`unexpected manifest finding:\\n${r.stdout}`);
+});
+
 check("forbidden user-facing mention makes the gate red", () => {
   const dir = makeFixture({
     "README.md": "# Myrmidon\n\nPaperclip is a control plane for agents.\n",
@@ -76,6 +108,29 @@ check("legal attribution stays green", () => {
   });
   const r = run(dir, ["--gate"]);
   if (r.code !== 0) throw new Error(`expected exit 0, got ${r.code}:\n${r.stdout}`);
+});
+
+check("removed product-copy allowlist entries are rejected", () => {
+  const src = fs.readFileSync(auditPath, "utf8");
+  const suspicious = [
+    "Paperclip, взятого", "vendor name **Paperclip**", "Paperclip не отправляем",
+    "бренд везде paperclip!", "БД Paperclip в бэкап-контуре", "тикеты Paperclip",
+    "БД Paperclip", "Paperclip: sign-up выключен", "Paperclip в бэкап-контуре",
+    "тикеты в Paperclip", "Имя вендора **Paperclip**", "[Paperclip](https://github.com/paperclipai/paperclip)",
+  ];
+  for (const phrase of suspicious) {
+    if (src.includes(JSON.stringify(phrase))) {
+      throw new Error(`product-copy phrase remains allowlisted: ${phrase}`);
+    }
+  }
+  const dir = makeFixture({
+    "docs/architecture/README.md": "Paperclip: sign-up выключен, доступны только оператору.\n",
+  });
+  const r = run(dir, ["--gate"]);
+  if (r.code !== 1) throw new Error(`expected removed product copy to fail, got ${r.code}:\n${r.stdout}`);
+  if (!r.stdout.includes("docs/architecture/README.md:1")) {
+    throw new Error(`architecture finding not reported:\n${r.stdout}`);
+  }
 });
 
 check("hidden compatibility boundary stays green", () => {
