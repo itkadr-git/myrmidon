@@ -166,7 +166,10 @@ export function botLspService(db: Db, overrides: Partial<BotLspServiceDeps> = {}
         if (next.tsserverMemoryMb !== undefined) {
           const limits = await deps.listContainerMemoryMb();
           const applicable = limits.filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
-          const minimum = applicable.length > 0 ? Math.min(...applicable) : 1024;
+          if (applicable.length === 0) {
+            throw badRequest("Cannot validate tsserverMemoryMb: no active bot container memory limit is available");
+          }
+          const minimum = Math.min(...applicable);
           if (next.tsserverMemoryMb > maxTsServerMemoryMb(minimum)) {
             throw badRequest(`tsserverMemoryMb must not exceed 40% of the smallest configured active bot container (${maxTsServerMemoryMb(minimum)} MB)`);
           }

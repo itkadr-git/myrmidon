@@ -20,7 +20,7 @@ language-server mode per bot.
 - `limited` — one tsserver per worktree (`tsserver.useSyntaxServer: "never"`), no automatic
   automatic typings download (`disableAutomaticTypingAcquisition`), heap cap `maxTsServerMemory` 384 MB by default,
   `idle_timeout` 120 s.
-- `full` — Hermes' own defaults (nothing written).
+- `full` — Hermes' own server defaults, with `lsp.enabled: true` and default workspace exclusions (`node_modules`, `dist`) written so the monorepo scan stays bounded. This adds an `lsp` block compared with earlier profiles that left the block absent; server behavior remains Hermes' default apart from excluded roots.
 
 ## Where to change it
 

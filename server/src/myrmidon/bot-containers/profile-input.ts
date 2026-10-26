@@ -937,8 +937,8 @@ function buildMcpServers(
 
 /**
  * myrmidon(BOT-LSP-DEFAULTS): the role policy and the card's pin -> the
- * compiler's per-agent `lsp` settings. Undefined = write no `lsp` block (full
- * mode with no exclusions, i.e. Hermes' own defaults).
+ * compiler's per-agent `lsp` settings. Full mode writes an enabled block only
+ * to carry conservative default excluded roots; Hermes keeps server defaults.
  */
 function buildBotLsp(
   role: string | undefined,
@@ -951,15 +951,14 @@ function buildBotLsp(
   const tsserverMemoryMb = block.servers?.typescript?.initialization_options.maxTsServerMemory;
   if (tsserverMemoryMb !== undefined) {
     const container = asRecord(card.container);
-    const containerMemoryMb =
-      container.enabled === true && typeof container.memoryMb === "number" && Number.isFinite(container.memoryMb)
-        ? container.memoryMb
-        : 1024;
-    const reserveMb = Math.ceil(containerMemoryMb * 0.6);
-    if (tsserverMemoryMb > containerMemoryMb - reserveMb) {
-      throw new BotProfileInputError(
-        `LSP startup refused: tsserver heap ${tsserverMemoryMb} MB exceeds the ${containerMemoryMb} MB container budget after reserving ${reserveMb} MB for Hermes and botd`,
-      );
+    const containerMemoryMb = container.enabled === true && typeof container.memoryMb === "number" && Number.isFinite(container.memoryMb)
+      ? container.memoryMb
+      : null;
+    // The instance default is sized for its smallest active container. Clamp
+    // to this card's 40% budget so a smaller container still compiles.
+    const heapCap = containerMemoryMb === null ? null : Math.floor(containerMemoryMb * 0.4);
+    if (heapCap !== null && tsserverMemoryMb > heapCap) {
+      block.servers!.typescript!.initialization_options.maxTsServerMemory = heapCap;
     }
   }
   return {

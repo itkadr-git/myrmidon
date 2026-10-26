@@ -1148,6 +1148,15 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
     });
   });
 
+  it("clamps configured heap to a smaller container without rejecting profile compilation", () => {
+    const { input } = buildHermesProfileInput(source({
+      role: "engineer",
+      adapterConfig: { container: { enabled: true, memoryMb: 768 } },
+      botLspSettings: { tsserverMemoryMb: 384 },
+    }), settings());
+    expect(input.lsp?.servers?.typescript?.initialization_options.maxTsServerMemory).toBe(307);
+  });
+
   it("turns language servers off for a role that does not write code, and for no role", () => {
     expect(buildHermesProfileInput(source({ role: "general" }), settings()).input.lsp).toEqual({ enabled: false });
     expect(buildHermesProfileInput(source(), settings()).input.lsp).toEqual({ enabled: false });
@@ -1164,7 +1173,10 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
       buildHermesProfileInput(source({ role: "general", adapterConfig: { lsp: { mode: "limited" } } }), settings()).input
         .lsp?.enabled,
     ).toBe(true);
-    // Full = the runtime's defaults: no lsp block at all.
+    // Full keeps Hermes server defaults and writes the exclusion-only block.
+    const { input } = buildHermesProfileInput(source({ role: "full", adapterConfig: { lsp: { mode: "full" } } }), settings());
+    expect(input.lsp).toMatchObject({ enabled: true, excludeRoots: ["**/node_modules/**", "**/dist/**"] });
+    expect(input.lsp?.servers).toBeUndefined();
     const yaml = configYaml({ role: "engineer", adapterConfig: { lsp: { mode: "full" } } });
     expect(yaml).toContain("lsp:\n  enabled: true");
     expect(yaml).toContain('"**/node_modules/**"');
