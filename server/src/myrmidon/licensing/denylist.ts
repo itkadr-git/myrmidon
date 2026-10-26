@@ -139,7 +139,7 @@ export function createDenyListReader(input: {
     const highest = seen.length > 0 ? Math.max(...seen) : null;
     if (highest !== null && data.serial < highest) {
       warnOnce(`rollback:${data.serial}<${highest}`, `serial ${data.serial} is lower than the seen ${highest}`);
-      return null;
+      return { ids: [], instance_ids: [], kids: [], serial: highest, issued_at: 0, rollback: true } as DenyList & { rollback: true };
     }
     if (highest === null || data.serial > highest) {
       try {
@@ -157,6 +157,7 @@ export function createDenyListReader(input: {
     revoked({ licenseId, instanceId, kid }) {
       const list = load();
       if (!list) return false;
+      if ((list as DenyList & { rollback?: boolean }).rollback) return true;
       return Boolean(
         (licenseId && list.ids.includes(licenseId)) ||
           (instanceId && list.instance_ids.includes(instanceId)) ||

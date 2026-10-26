@@ -120,11 +120,11 @@ describe("deny-list in the licensing check", () => {
     expect(s.status().reason).toBe("revoked");
     expect(readFileSync(path.join(dir, "license.deny.state"), "utf8").trim()).toBe("5");
     writeFileSync(s.denyPath, denyFile(s.k.privateKey, { serial: 4 }));
-    expect(s.status().reason).toBe("ok");
+    expect(s.status().reason).toBe("revoked");
     expect(s.warnings.some((w) => w.includes("lower than the seen 5"))).toBe(true);
     const fresh = createDenyListReader({ env: () => s.env, trustedKeys: [s.k.publicKey] });
-    writeFileSync(s.denyPath, denyFile(s.k.privateKey, { ids: ["lic-1"], serial: 3 }));
-    expect(fresh.revoked({ licenseId: "lic-1" })).toBe(false);
+    writeFileSync(s.denyPath, denyFile(s.k.privateKey, { serial: 3 }));
+    expect(fresh.revoked({ licenseId: "lic-1" })).toBe(true);
     writeFileSync(s.denyPath, denyFile(s.k.privateKey, { ids: ["lic-1"], serial: 6 }));
     expect(fresh.revoked({ licenseId: "lic-1" })).toBe(true);
   });
