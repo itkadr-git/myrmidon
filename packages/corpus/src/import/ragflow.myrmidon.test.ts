@@ -29,7 +29,6 @@ function fixtureSource(): RagflowSource {
   return {
     baseUrl: "https://ragflow.example",
     async listDatasets() { return [dataset]; },
-    async countDatasets() { return 1; },
     listDocuments: async function* (datasetId) {
       expect(datasetId).toBe(dataset.id);
       yield* documents;
