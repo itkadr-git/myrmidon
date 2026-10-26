@@ -13901,15 +13901,21 @@ export function issueRoutes(
             actor,
           });
       }
+      const previousExecutionPolicy = normalizeIssueExecutionPolicy(
+        existing.executionPolicy ?? null,
+      );
       if (req.body.executionPolicy !== undefined) {
         updateFields.executionPolicy = applyActorMonitorScheduledBy(
           normalizeIssueExecutionPolicy(req.body.executionPolicy),
           actor.actorType,
         );
+      } else if (previousExecutionPolicy) {
+        // Persist the supported representation when a legacy issue is otherwise updated.
+        updateFields.executionPolicy = applyActorMonitorScheduledBy(
+          previousExecutionPolicy,
+          actor.actorType,
+        );
       }
-      const previousExecutionPolicy = normalizeIssueExecutionPolicy(
-        existing.executionPolicy ?? null,
-      );
       const nextExecutionPolicy =
         updateFields.executionPolicy !== undefined
           ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)

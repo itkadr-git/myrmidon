@@ -1046,6 +1046,15 @@ export const updateIssueSchema = objectWithoutDefaults(
 )
   .partial()
   .extend({
+    executionPolicy: z.object({
+      mode: z.literal("sequential"),
+      stages: z.array(z.unknown()).optional(),
+      monitor: z.unknown().nullable().optional(),
+      reviewPreset: z.unknown().optional(),
+      authorizationPolicy: z.unknown().optional(),
+      maxReviewRounds: z.number().int().positive().max(50).nullable().optional(),
+      reviewEscalationPolicy: z.unknown().nullable().optional(),
+    }).or(issueExecutionPolicySchema).optional().nullable(),
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
