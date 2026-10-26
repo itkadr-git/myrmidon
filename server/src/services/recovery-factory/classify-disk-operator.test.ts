@@ -67,7 +67,7 @@ describe("classifyOperatorAction", () => {
 
 describe("buildRecoveryDedupeKey", () => {
   it("uses the first available identity in PR, head SHA, issue order", () => {
-    const result = { kind: "operator_action" as const, cause: "ci_rerun", scope: "operator" };
+    const result = { kind: "operator_action" as const, cause: "ci_rerun" as const, scope: "operator" as const };
     const signals = [
       { prNumber: 42, headSha: "abc", issueId: "OPE-1" },
       { headSha: "abc", issueId: "OPE-1" },

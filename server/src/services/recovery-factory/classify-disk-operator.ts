@@ -40,11 +40,6 @@ const diskCauseScopes: Record<RecoveryDiskCause, DiskRecoveryClassification["sco
   docker_storage_low: "docker",
 };
 
-const recoveryKinds: Record<RecoveryClassification["kind"], "disk_space" | "operator_action"> = {
-  disk_space: "disk_space",
-  operator_action: "operator_action",
-};
-
 const DISK_GIB = 1024 ** 3;
 const DEVBUILD_MIN_FREE_BYTES = 10 * DISK_GIB;
 const VMCORE_MIN_FREE_BYTES = 20 * DISK_GIB;
@@ -66,7 +61,7 @@ const operatorActions: Readonly<Record<string, RecoveryOperatorCause>> = {
 
 const operatorMessageRules: readonly { cause: RecoveryOperatorCause; pattern: RegExp }[] = [
   { cause: "ci_rerun", pattern: /\b(?:re-?run|restart|fresh)\b.{0,40}\bCI\b|\bCI\b.{0,40}\b(?:re-?run|restart|fresh)\b/i },
-  { cause: "ci_access", pattern: /\bCI\b.{0,40}\b(?:access|permission|slot|runner)\b|\b(?:access|permission|slot)\b.{0,40}\bCI\b/i },
+  { cause: "ci_access", pattern: /\b(?:scoped|grant|provide|restore)\b.{0,40}\bCI\b.{0,40}\b(?:access|permission|slot|runner)\b|\b(?:CI access|CI permission|CI slot|build slot|runner access)\b/i },
   { cause: "review_route", pattern: /\b(?:review|reviewer)\b.{0,40}\b(?:route|routing|assign|assignment)\b/i },
   { cause: "review_participant_restore", pattern: /\b(?:restore|recover)\b.{0,40}\b(?:review participant|review runtime)\b|\b(?:review participant|review runtime)\b.{0,40}\b(?:restore|recover)\b/i },
   { cause: "branch_relay", pattern: /\b(?:relay|transfer)\b.{0,40}\b(?:branch|artifact)\b|\b(?:branch|artifact)\b.{0,40}\b(?:relay|transfer)\b/i },
@@ -83,7 +78,7 @@ function classifyDiskSignal(signal: DiskRecoverySignal): DiskRecoveryClassificat
   const path = normalized(signal.path);
   const host = normalized(signal.host);
   const isEnospc = message.includes("enospc") || message.includes("no space left on device") || message.includes("disk full");
-  const devbuildOutput = host === "devbuild" || message.includes("devbuild") || message.includes("rsync");
+  const devbuildOutput = host === "devbuild" || message.includes("devbuild") || /\brsync\b/.test(message);
   const devbuildMatch = isEnospc && devbuildOutput;
   const devbuildLow = host === "devbuild" && signal.freeBytes != null && signal.freeBytes < DEVBUILD_MIN_FREE_BYTES;
   const rootSignal = path === "/" || path === "vmcore_root";
@@ -91,7 +86,7 @@ function classifyDiskSignal(signal: DiskRecoverySignal): DiskRecoveryClassificat
   const vmcoreLow = vmcoreRoot && ((signal.usedPct != null && signal.usedPct >= VMCORE_MIN_USED_PCT)
     || (signal.freeBytes != null && signal.freeBytes < VMCORE_MIN_FREE_BYTES));
   const workspace = path === "/workspace" || path.startsWith("/workspace/");
-  const workspaceFull = workspace && (isEnospc || message.includes("quota"));
+  const workspaceFull = workspace && (isEnospc || /\bquota\b/.test(message));
   const containerPath = path === "/tmp" || path.startsWith("/tmp/");
   const containerFull = (containerPath && message.includes("tmpfs"))
     || ((message.includes("oom") || message.includes("memory.max") || message.includes("cgroup memory"))
@@ -120,12 +115,13 @@ export function classifyOperatorAction(signal: RecoverySignal): OperatorRecovery
   }
   const message = signal.message?.trim();
   if (!message) return null;
-  const matches = operatorMessageRules.filter(rule => rule.pattern.test(message));
+  const normalizedMessage = message.toLowerCase();
+  const matches = operatorMessageRules.filter(rule => rule.pattern.test(normalizedMessage));
   if (matches.length !== 1) return null;
   return { kind: "operator_action", cause: matches[0]!.cause, scope: "operator" };
 }
 export function buildRecoveryDedupeKey(
-  result: RecoveryClassification,
+  result: Pick<RecoveryClassification, "kind" | "cause" | "scope">,
   signal: RecoverySignal,
 ): string {
   const identity = signal.prNumber ?? signal.headSha ?? signal.issueId ?? "";
