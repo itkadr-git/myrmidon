@@ -792,7 +792,7 @@ export async function createApp(
   app.locals.paperclipDb = db;
   const pluginReadiness = {
     boardReadyAt: null as number | null,
-    plugins: [] as Array<{ pluginId: string; pluginKey: string; readyAt: number }>,
+    plugins: new Map<string, { pluginId: string; pluginKey: string; readyAt: number }>(),
   };
   app.locals.pluginReadiness = pluginReadiness;
   const captureRawBody = (
@@ -968,7 +968,7 @@ export async function createApp(
     const boardReadyAt = pluginReadiness.boardReadyAt;
     res.json({
       boardReadyAt: boardReadyAt === null ? null : new Date(boardReadyAt).toISOString(),
-      plugins: pluginReadiness.plugins.map((plugin) => ({
+      plugins: Array.from(pluginReadiness.plugins.values(), (plugin) => ({
         pluginId: plugin.pluginId,
         pluginKey: plugin.pluginKey,
         readyAt: new Date(plugin.readyAt).toISOString(),
@@ -1284,7 +1284,7 @@ export async function createApp(
   const lifecycle = pluginLifecycleManager(db, { workerManager });
   lifecycle.on("plugin.ready", ({ pluginId, pluginKey }) => {
     const readyAt = Date.now();
-    pluginReadiness.plugins.push({ pluginId, pluginKey, readyAt });
+    pluginReadiness.plugins.set(pluginId, { pluginId, pluginKey, readyAt });
     logger.info(
       {
         pluginId,
@@ -1390,8 +1390,9 @@ export async function createApp(
       toolDispatcher,
       lifecycleManager: lifecycle,
       onPluginReady: ({ id, pluginKey }) => {
+        if (pluginReadiness.plugins.has(id)) return;
         const readyAt = Date.now();
-        pluginReadiness.plugins.push({ pluginId: id, pluginKey, readyAt });
+        pluginReadiness.plugins.set(id, { pluginId: id, pluginKey, readyAt });
         logger.info(
           {
             pluginId: id,

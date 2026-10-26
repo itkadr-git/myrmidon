@@ -410,17 +410,14 @@ export interface PluginRuntimeServices {
    * scoped to its capabilities and plugin ID.
    */
   buildHostHandlers: (pluginId: string, manifest: PaperclipPluginManifestV1) => WorkerToHostHandlers;
-  /**
-   * Host instance information passed to the worker during initialization.
-   * Includes the instance ID and host version.
-   */
+  /** Host instance information passed to the worker during initialization. */
   instanceInfo: {
     instanceId: string;
     hostVersion: string;
     deploymentMode?: "local_trusted" | "authenticated";
     deploymentExposure?: "private" | "public";
   };
-  /** Optional callback invoked when a plugin's runtime activation succeeds. */
+  /** Optional callback invoked when runtime activation succeeds. */
   onPluginReady?: (plugin: { id: string; pluginKey: string }) => void;
 }
 

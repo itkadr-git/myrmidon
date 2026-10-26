@@ -1378,9 +1378,10 @@ async function startServerWithDatabaseTeardown(
       server.listen(listenPort, primaryListenHost, onBound);
     }
   });
+  const startupStartedAt = Date.now();
   startupListenerBound = true;
-  const pluginReadiness = (app as { locals: { pluginReadiness?: { boardReadyAt: number | null; onReady?: (pluginId: string, pluginKey: string) => void } } }).locals.pluginReadiness;
-  if (pluginReadiness) pluginReadiness.boardReadyAt = Date.now();
+  const pluginReadiness = (app as { locals: { pluginReadiness?: { boardReadyAt: number | null } } }).locals.pluginReadiness;
+  if (pluginReadiness) pluginReadiness.boardReadyAt = startupStartedAt;
 
   // Register before reporting API readiness so drain/failover can resolve the
   // child identity as soon as the supervisor observes readiness.

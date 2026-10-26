@@ -112,7 +112,7 @@ export function PluginManager() {
     ]);
   }, [selectedCompany?.name, setBreadcrumbs, t]);
 
-  const { data: plugins, isLoading, isFetching, error } = useQuery({
+  const { data: plugins, isLoading, error } = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
@@ -215,7 +215,7 @@ export function PluginManager() {
     [installedPlugins, t]
   );
 
-  if (isLoading || isFetching) return <div className="p-4 text-sm text-muted-foreground">{t("area.adapters-plugins-2.plugin-manager.loading")}</div>;
+  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">{t("area.adapters-plugins-2.plugin-manager.loading")}</div>;
   if (error) return <div className="p-4 text-sm text-destructive">{t("area.adapters-plugins-2.plugin-manager.loadFailed")}</div>;
 
   return (
@@ -387,9 +387,7 @@ export function PluginManager() {
           <h2 className="text-base font-semibold">{t("area.adapters-plugins-2.plugin-manager.installed.heading")}</h2>
         </div>
 
-        {isFetching ? (
-          <div className="text-sm text-muted-foreground">{t("area.adapters-plugins-2.plugin-manager.loading")}</div>
-        ) : !installedPlugins.length ? (
+        {!installedPlugins.length ? (
           <Card className="bg-muted/30">
             <CardContent className="flex flex-col items-center justify-center py-10">
               <Puzzle className="h-10 w-10 text-muted-foreground mb-4" />
