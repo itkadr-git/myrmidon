@@ -814,6 +814,15 @@ export async function matchIssue(
   if (!(SWARM_CLAIM_QUEUE_ISSUE_STATUSES as readonly string[]).includes(row.status)) return null;
   if (await isCooling(deps, row.companyId, issueId)) return null;
 
+  // Event-driven matching must obey the same queue readiness predicate as
+  // periodic matching. Looking the issue up by id is not itself a claim gate.
+  const [readyCandidate] = await deps.db
+    .select({ issueId: issues.id })
+    .from(issues)
+    .where(and(...readyQueueConditions(deps.db, row.companyId), eq(issues.id, issueId)))
+    .limit(1);
+  if (!readyCandidate) return null;
+
   const castes = await casteDirectoryOf(deps, row.companyId);
   // Only this task is read, in every pool: the routing decides which one holds it.
   const pairs = await listIdleRolePairs(deps.db, row.companyId, { order: queueOrderOf(deps), issueId });
