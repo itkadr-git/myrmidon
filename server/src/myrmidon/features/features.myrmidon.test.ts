@@ -146,7 +146,7 @@ describe("swarm self-claim", () => {
   });
 
   it("fails when free agents sit next to a queue and nothing was claimed or woken in 24 h", async () => {
-    recordFeatureOutcome("swarm-claim", { ok: true, effect: 0, detail: { idleFreeAgents: 2 }, at: new Date(NOW.getTime() - 1000) });
+    recordFeatureOutcome("swarm-claim", { ok: true, effect: 0, detail: { idleUnmatchedTasks: 2 }, at: new Date(NOW.getTime() - 1000) });
     const result = await view(swarmClaimFeature, ctx({ general: enabled }));
     expect(result.health.status).toBe("failing");
     expect(result.health.effect).toEqual({ label: "issues claimed in 24 h", value: 0 });
