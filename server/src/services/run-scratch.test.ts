@@ -176,6 +176,12 @@ describe("heartbeat run scratch cleanup", () => {
     expect(result.env.PAPERCLIP_RUN_DIR).toBe(scratch.runDir);
     expect(result.env.CHROME_USER_DATA_DIR).toBe(scratch.runDir);
     expect(result.env.PAPERCLIP_TMPDIR).toBe(scratch.dir);
+    // myrmidon(REBRAND-C): canonical names ship alongside the legacy alias.
+    expect(result.env.MYRMIDON_RUN_SCRATCH_DIR).toBe(scratch.dir);
+    expect(result.env.MYRMIDON_TASK_SCRATCH_DIR).toBe(scratch.dir);
+    expect(result.env.MYRMIDON_SCRATCH_DIR).toBe(scratch.dir);
+    expect(result.env.MYRMIDON_RUN_DIR).toBe(scratch.runDir);
+    expect(result.env.MYRMIDON_TMPDIR).toBe(scratch.dir);
     expect(result.env.TMPDIR).toBeUndefined();
     expect(result.env.TEMP).toBe(scratch.dir);
     expect(result.env.TMP).toBe(scratch.dir);
@@ -195,6 +201,7 @@ describe("heartbeat run scratch cleanup", () => {
 
     const result = buildHeartbeatRunScratchEnv({}, scratch);
     expect(result.env.PAPERCLIP_RUN_DIR).toBe(scratch.runDir);
+    expect(result.env.MYRMIDON_RUN_DIR).toBe(scratch.runDir);
     expect(result.env.CHROME_USER_DATA_DIR).toBe(scratch.runDir);
   });
 
