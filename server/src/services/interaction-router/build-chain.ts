@@ -17,6 +17,12 @@ export function buildEscalationChain(input: {
 }): Array<{ recipient: InteractionRecipient; afterMinutes: number }> {
   return buildInteractionEscalationChain({
     ...input,
+    projectRoles: Object.fromEntries(Object.entries(input.projectRoles).map(([role, recipient]) => [
+      role,
+      recipient && "agentId" in recipient
+        ? { type: "agent", agentId: recipient.agentId, isJoinedMember: true }
+        : recipient,
+    ])) as typeof input.projectRoles,
     creator: { serviceQueue: "__no_excluded_agent__" },
   });
 }

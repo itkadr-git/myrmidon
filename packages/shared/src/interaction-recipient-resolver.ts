@@ -180,7 +180,7 @@ export function buildInteractionEscalationChain(input: {
     if ("type" in candidate && candidate.projectRoles && !candidate.projectRoles.includes(role)) continue;
     let recipient: InteractionRecipient;
     if ("type" in candidate) {
-      if (candidate.type === "agent" && !principalProjectMembership(candidate, input.projectId ?? "")) continue;
+      if (candidate.type === "agent" && input.projectId && !principalProjectMembership(candidate, input.projectId)) continue;
       if (!principalScopeMatches(candidate, input.projectId, input.casteScope)) continue;
       const resolved = principalRecipient(candidate);
       if (!resolved) continue;
