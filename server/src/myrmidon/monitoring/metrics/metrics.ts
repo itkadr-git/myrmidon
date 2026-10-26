@@ -327,7 +327,6 @@ async function readRunCounters(db: Db, now: Date): Promise<{
   queued: number;
   queuedOver30m: number;
   failedTotal: number;
-  failedWindow: number;
 }> {
   const rows = await db
     .select({
