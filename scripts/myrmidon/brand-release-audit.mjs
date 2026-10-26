@@ -20,9 +20,9 @@
 // per file.
 //
 // Usage:
-//   node scripts/myrmidon/brand-release-audit.mjs           # report, exit 0
-//   node scripts/myrmidon/brand-release-audit.mjs --gate    # fail on findings
-//
+//   node scripts/myrmidon/brand-release-audit.mjs                  # report, exit 0
+//   node scripts/myrmidon/brand-release-audit.mjs --gate           # fail on findings
+//   node scripts/myrmidon/brand-release-audit.mjs --package-json-only --gate
 // License/legal attribution (LICENSE, NOTICE, "Copyright (c) 2025 Paperclip
 // AI", "Based on Paperclip (MIT)") is NEVER scanned for removal and NEVER a
 // finding; it is out of scope by definition of the DEBRAND epic.
@@ -33,6 +33,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const gate = process.argv.includes("--gate");
+const packagesOnly = process.argv.includes("--package-json-only");
 
 // Root files a release ships that the docs-branding guard (docs/ only) did
 // not cover. Kept as an explicit list, not a glob, so adding a stray root
@@ -106,7 +107,7 @@ const ALLOWLIST = {
     "пользователей Paperclip", "Paperclip base", "Paperclip в основе",
     "основы Paperclip", "Base Paperclip version", "base Paperclip version",
     "базового Paperclip", "База:** Paperclip `v2026.916.1`", "Paperclip (MIT)»",
-    "Paperclip, взятого", "vendor name **Paperclip**", "Имя вендора **Paperclip**", "«Paperclip»", "[Paperclip](https://github.com/paperclipai/paperclip)",
+    "атрибуция MIT «основано на Paperclip» остаётся", "копирайта вендора (Paperclip)",
     "(лицензия MIT\nсохранена", "The Paperclip name remains",
     "Имя\nPaperclip остаётся", "Paperclip остаётся в именах пакетов",
     "рутине Paperclip", "рутина Paperclip", "vendor-product-word exceptions (Cloud", "stays Paperclip",
@@ -129,7 +130,6 @@ const ALLOWLIST = {
     "новое «Myrmidon …»", "MCP-серверов «Paperclip", "«Close the current Paperclip",
     "«Paperclip connected»", "requires a Paperclip", // CLAUDE.md fork pointer
     "его отношение к Paperclip",
-    "«Paperclip»", "[Paperclip](https://github.com/paperclipai/paperclip)",
     "(лицензия MIT\nсохранена", "The Paperclip name remains",
     "Имя\nPaperclip остаётся", "Paperclip остаётся в именах пакетов",
     "рутине Paperclip", "рутина Paperclip", "vendor-product-word exceptions (Cloud",
@@ -159,8 +159,73 @@ const targets = [
   ...walk(path.join(repoRoot, "docs")),
 ];
 
+// DEBRAND 1.6.6 (OPE-9316): repository/homepage/bugs in every package.json
+// must point at the Myrmidon repository, not the vendored Paperclip repo.
+// Runs inside the same audit so the release report has one place to read.
+// `--package-json-only` scopes the run to this check (the docs scan total
+// stays owned by the docs DEBRAND parts and must not mask manifest findings).
+const STALE_REPOSITORY_URL = "https://github.com/paperclipai/paperclip";
+const PACKAGE_JSON_SCAN_ROOTS = ["cli", "packages", "server", "ui"];
+const PACKAGE_JSON_FIELDS = ["repository", "homepage", "bugs"];
+
+function* walkPackageJson(dir) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === "node_modules" || entry.name === ".git") continue;
+      yield* walkPackageJson(p);
+    } else if (entry.name === "package.json") yield p;
+  }
+}
+
+function packageJsonFindings() {
+  const files = new Set([path.join(repoRoot, "package.json")]);
+  for (const root of PACKAGE_JSON_SCAN_ROOTS) {
+    for (const p of walkPackageJson(path.join(repoRoot, root))) files.add(p);
+  }
+  const found = [];
+  for (const file of files) {
+    if (!fs.existsSync(file)) continue;
+    const rel = path.relative(repoRoot, file);
+    let manifest;
+    try {
+      manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+      found.push({ file: rel, line: 0, text: "package.json is not valid JSON" });
+      continue;
+    }
+    for (const field of PACKAGE_JSON_FIELDS) {
+      const value = manifest[field];
+      const url =
+        typeof value === "string"
+          ? value
+          : value && typeof value === "object" && typeof value.url === "string"
+            ? value.url
+            : null;
+      if (url === null) continue;
+      if (url.includes(STALE_REPOSITORY_URL)) {
+        found.push({
+          file: rel,
+          line: 0,
+          text: `${field} points at the vendored repo: ${url}`,
+        });
+      }
+    }
+  }
+  return found;
+}
+
+const docTargets = packagesOnly ? [] : targets;
+const manifestFindings = packageJsonFindings();
+
 const findings = [];
-for (const file of targets) {
+for (const file of docTargets) {
   const rel = path.relative(repoRoot, file);
   const lines = fs.readFileSync(file, "utf8").split("\n");
   lines.forEach((line, i) => {
@@ -181,7 +246,11 @@ console.log(`brand-release-audit: ${findings.length} non-allowlisted "Paperclip"
 for (const f of findings) {
   console.log(`  ${f.file}:${f.line}: ${f.text}`);
 }
-if (findings.length > 0) {
+console.log(`brand-release-audit: ${manifestFindings.length} stale package.json repository/homepage/bugs URL(s)`);
+for (const f of manifestFindings) {
+  console.log(`  ${f.file}: ${f.text}`);
+}
+if (findings.length > 0 || manifestFindings.length > 0) {
   console.log("brand-release-audit: report mode — findings listed above (a non-zero total is expected until the parallel DEBRAND parts land)");
   if (gate) {
     console.log("brand-release-audit: --gate: failing");
