@@ -53,7 +53,7 @@ export function buildEscalationChain(input: {
 
   chain.push({
     recipient: { serviceQueue: policy.fallbackQueue },
-    afterMinutes: configuredQueueDelay ?? startAt + chain.length * policy.stepDelayMinutes,
+    afterMinutes: Math.max(configuredQueueDelay ?? 0, startAt + chain.length * policy.stepDelayMinutes),
   });
 
   return chain;
