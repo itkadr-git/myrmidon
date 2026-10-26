@@ -19,6 +19,7 @@ const mockProjectService = vi.hoisted(() => ({
 const mockIssueService = vi.hoisted(() => ({
   create: vi.fn(),
   getById: vi.fn(),
+  getByIdForUpdate: vi.fn(),
   update: vi.fn(),
   getByIdentifier: vi.fn(),
   assertCheckoutOwner: vi.fn(),
@@ -182,6 +183,7 @@ describe.sequential("execution environment route guards", () => {
     mockProjectService.listWorkspaces.mockReset();
     mockIssueService.create.mockReset();
     mockIssueService.getById.mockReset();
+    mockIssueService.getByIdForUpdate.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.getByIdentifier.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
@@ -391,7 +393,20 @@ describe.sequential("execution environment route guards", () => {
       status: "todo",
       identifier: "PAPA-999",
     });
-    const app = createIssueApp();
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            then: (resolve: (rows: unknown[]) => unknown) => resolve([
+              { sourceIssueId: "issue-1", evidence: { automaticRecovery: { replay: "blocked" } } },
+            ]),
+          })),
+        })),
+      })),
+      transaction: vi.fn(async (callback: (tx: Record<string, unknown>) => Promise<unknown>) => callback(db)),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: "action-1" }]) })) })) })),
+    };
+    const app = createIssueApp(db);
 
     const res = await request(app)
       .patch("/api/issues/issue-1")
@@ -402,6 +417,10 @@ describe.sequential("execution environment route guards", () => {
       });
 
     expect(res.status).not.toBe(422);
+    expect(mockSecretService.normalizeEnvBindingsForPersistence).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ environmentId: sandboxEnvironmentId }),
+    );
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 });

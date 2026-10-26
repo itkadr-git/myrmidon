@@ -1885,6 +1885,7 @@ describe("agent issue mutation checkout ownership", () => {
         // myrmidon(STALE-BLOCK): the request now carries a reasonRef (see send above).
         unblockDescriptor: { owner: "board", action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
       }),
+      expect.anything(),
     );
   });
 
@@ -2831,7 +2832,7 @@ describe("agent issue mutation checkout ownership", () => {
       );
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
-      expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status }));
+      expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status }), expect.anything());
     });
 
     it("lets a watchdog run transition a watched issue to in_review with a live review path", async () => {
@@ -2852,7 +2853,6 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).toHaveBeenCalledWith(
         issueId,
         expect.objectContaining({ status: "in_review" }),
-        expect.anything(),
       );
     });
 
@@ -2964,6 +2964,7 @@ describe("agent issue mutation checkout ownership", () => {
           blockedByIssueIds: [children[0]?.id],
           actorAgentId: peerAgentId,
         }),
+        expect.anything(),
       );
     });
 
@@ -3027,6 +3028,7 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).toHaveBeenCalledWith(
         issueId,
         expect.objectContaining({ assigneeAgentId: peerAgentId }),
+        expect.anything(),
       );
     });
 
