@@ -1084,7 +1084,7 @@ describe("issue execution policy routes", () => {
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 
-  it("preserves a legacy sequential policy on a status-only PATCH", async () => {
+  it("rejects a status-only PATCH when the stored policy uses legacy sequential mode", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
@@ -1111,17 +1111,11 @@ describe("issue execution policy routes", () => {
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ status: "in_progress" });
 
-    expect(res.status).toBe(200);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      expect.objectContaining({
-        status: "in_progress",
-        executionPolicy: expect.objectContaining({ mode: "normal", stages: expect.any(Array) }),
-      }),
-    );
+    expect(res.status).toBe(422);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("preserves a legacy sequential policy on an executionPolicy-only PATCH", async () => {
+  it("rejects an executionPolicy-only PATCH when the stored policy uses legacy sequential mode", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
@@ -1148,17 +1142,8 @@ describe("issue execution policy routes", () => {
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ executionPolicy: { monitor: { notes: "Keep watching" } } });
 
-    expect(res.status).toBe(200);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      expect.objectContaining({
-        executionPolicy: expect.objectContaining({
-          mode: "normal",
-          monitor: expect.objectContaining({ notes: "Keep watching" }),
-          stages: expect.any(Array),
-        }),
-      }),
-    );
+    expect(res.status).toBe(400);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("does not auto-start execution review when reviewers are added to an already in_review issue", async () => {
