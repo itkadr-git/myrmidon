@@ -755,6 +755,18 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(
   }, schema);
 }
 
+// Legacy mode is accepted only on PATCH so old stored policies can be updated.
+const legacySequentialExecutionPolicyInputSchema = z.object({
+  mode: z.literal("sequential"),
+  stages: z.array(z.unknown()).optional(),
+  commentRequired: z.boolean().optional(),
+  monitor: z.unknown().nullable().optional(),
+  reviewPreset: z.unknown().optional(),
+  authorizationPolicy: z.unknown().optional(),
+  maxReviewRounds: z.number().int().positive().max(50).nullable().optional(),
+  reviewEscalationPolicy: z.unknown().nullable().optional(),
+}).strict();
+
 const createIssueBaseSchema = z.object({
   projectId: z.string().guid().optional().nullable(),
   projectWorkspaceId: z.string().guid().optional().nullable(),
@@ -1044,6 +1056,10 @@ export const updateIssueSchema = objectWithoutDefaults(
 )
   .partial()
   .extend({
+    executionPolicy: legacySequentialExecutionPolicyInputSchema
+      .or(issueExecutionPolicySchema)
+      .optional()
+      .nullable(),
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
