@@ -105,9 +105,9 @@ describe("prometheus exposition format", () => {
     // 9 single-sample families + 2 quantile samples + 3 role pairs = 14,
     // plus the process half (1.6.5-PROCS-Q3): 3 loop quantiles + 1 RSS +
     // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
-    // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
-    // continuation dedupe counters = 27.
-    expect(sampleLines).toHaveLength(27);
+    // plus utilization (1.6.6 PROCS-0.1), queued >30m, and continuation
+    // dedupe counters.
+    expect(sampleLines).toHaveLength(28);
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{role="all",quantile="0.99"} 0.13');

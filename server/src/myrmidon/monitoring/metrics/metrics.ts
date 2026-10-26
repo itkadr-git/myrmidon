@@ -322,7 +322,7 @@ export interface MetricsCollectorDeps {
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
-async function readRunCounters(db: Db, now: Date, errorWindowSec: number): Promise<{
+async function readRunCounters(db: Db, now: Date): Promise<{
   active: number;
   queued: number;
   queuedOver30m: number;
@@ -335,7 +335,6 @@ async function readRunCounters(db: Db, now: Date, errorWindowSec: number): Promi
       queued: sql<number>`count(*) filter (where ${heartbeatRuns.status} in ('queued', 'retrying', 'scheduled_retry'))`,
       queuedOver30m: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'queued' and ${heartbeatRuns.createdAt} < ${new Date(now.getTime() - 30 * 60 * 1000)})`,
       failedTotal: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'failed')`,
-      failedWindow: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'failed' and ${heartbeatRuns.finishedAt} >= ${new Date(now.getTime() - errorWindowSec * 1000)})`,
     })
     .from(heartbeatRuns);
   const row = rows[0];
@@ -344,7 +343,6 @@ async function readRunCounters(db: Db, now: Date, errorWindowSec: number): Promi
     queued: Number(row?.queued ?? 0),
     queuedOver30m: Number(row?.queuedOver30m ?? 0),
     failedTotal: Number(row?.failedTotal ?? 0),
-    failedWindow: Number(row?.failedWindow ?? 0),
   };
 }
 
@@ -530,12 +528,12 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     }
   }
 
-  // The run counters answer five families with one aggregate query; a failure
-  // names all five in the selfcheck output.
+  // The run counters answer four families with one aggregate query; a failure
+  // names those families in the selfcheck output.
   const runCounters = await guarded(
-    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_queued_over_30m|myrmidon_runs_failed_total|myrmidon_runs_failed_window",
-    () => readRunCounters(deps.db, now, deps.errorWindowSec),
-    { active: 0, queued: 0, queuedOver30m: 0, failedTotal: 0, failedWindow: 0 },
+    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_queued_over_30m|myrmidon_runs_failed_total",
+    () => readRunCounters(deps.db, now),
+    { active: 0, queued: 0, queuedOver30m: 0, failedTotal: 0 },
   );
   const durations = await guarded(
     "myrmidon_run_duration_seconds",
@@ -572,7 +570,12 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   );
   const failedWindow = await guarded(
     "myrmidon_runs_failed_window",
-    () => Promise.resolve(runCounters.failedWindow),
+    () =>
+      deps.db
+        .select({ total: count() })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.status, "failed"), gte(heartbeatRuns.finishedAt, errorWindowStart)))
+        .then((rows) => Number(rows[0]?.total ?? 0)),
     0,
   );
   // myrmidon(1.6.5-PROCS-Q3): the process half rides the same guarded
