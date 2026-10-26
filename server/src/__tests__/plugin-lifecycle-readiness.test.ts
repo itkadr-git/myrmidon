@@ -5,6 +5,7 @@ import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 function createLifecycle() {
   const emitter = new EventEmitter();
   return Object.assign(emitter, {
+    discoverAll: async () => [],
     hasRuntimeServices: () => true,
     loadSingle: async (pluginId: string) => ({
       success: true,
@@ -15,11 +16,14 @@ function createLifecycle() {
 
 function createDb(status: string) {
   const plugin = { id: "plugin-id", pluginKey: "example.plugin", status, enabled: true };
-  const registry = {
-    getById: async () => plugin,
-    updateStatus: async (_pluginId: string, update: { status: string }) => ({ ...plugin, ...update }),
+  return {
+    select: () => ({ from: () => ({ where: async () => [plugin] }) }),
+    update: () => ({
+      set: (updates: Record<string, unknown>) => ({
+        where: () => ({ returning: async () => [{ ...plugin, ...updates }] }),
+      }),
+    }),
   };
-  return { registry };
 }
 
 describe("plugin lifecycle readiness", () => {
