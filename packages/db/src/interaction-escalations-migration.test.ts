@@ -5,7 +5,7 @@ import postgres from "postgres";
 import { applyPendingMigrations } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "0419_condemned_wolfsbane.sql";
+const MIGRATION_FILE = "0421_fixed_grim_reaper.sql";
 const UNIQUE_INDEX = "interaction_escalations_interaction_level_uq";
 const migrationSql = await readFile(new URL(`./migrations/${MIGRATION_FILE}`, import.meta.url), "utf8");
 const cleanups: Array<() => Promise<void>> = [];
