@@ -13,7 +13,7 @@ import {
   normalizeReviewRoutingSettings,
   type ReviewRoutingSettings,
 } from "@myrmidon/shared";
-import { readReviewRoutingSignals, resetReviewRoutingSignals, setImmediateNoReviewerSignal } from "./attention.js";
+import { readReviewRoutingSignals, replaceReviewRoutingSignals, resetReviewRoutingSignals, setImmediateNoReviewerSignal } from "./attention.js";
 import type { CreatePrRoutingTaskInput, InReviewIssueRow, PrCandidateRow, PrRoutingKind, ReviewRoutingStore, RoutingHistory } from "./store.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
@@ -248,6 +248,22 @@ describe("no reviewer available", () => {
       expect.objectContaining({ kind: "no_reviewer", issueId: "1", since: NOW.toISOString() }),
     ]);
     setImmediateNoReviewerSignal(signal, false);
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
+
+  it("clears immediate no_reviewer cards when a successful sweep finds no remaining condition", () => {
+    const signal = {
+      kind: "no_reviewer" as const,
+      issueId: "task-1",
+      companyId: COMPANY,
+      identifier: "T-1",
+      title: "Task 1",
+      since: NOW.toISOString(),
+      hoursInReview: null,
+    };
+    setImmediateNoReviewerSignal(signal, true);
+    replaceReviewRoutingSignals(COMPANY, []);
+
     expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
   });
 

@@ -30,7 +30,7 @@ import {
   isAgentStatusInvokable,
 } from "@myrmidon/shared";
 import { setImmediateNoReviewerSignal } from "../myrmidon/review-routing/attention.js";
-import { issueNeedsReviewer, type RoutingIssue } from "../myrmidon/review-routing/policy.js";
+import { excludedReviewerIds, issueNeedsReviewer, pickReviewer, type ReviewerCandidate, type RoutingIssue } from "../myrmidon/review-routing/policy.js";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -16477,14 +16477,15 @@ export function issueRoutes(
           : null;
       const needsReviewer = reviewerSignalIssue ? issueNeedsReviewer(reviewerSignalIssue) : false;
       if (issue && issue.id === existing.id) {
+        const general = needsReviewer ? await instanceSettings.getGeneral() : null;
         let unavailable = false;
-        if (needsReviewer) {
-          const general = await instanceSettings.getGeneral();
+        if (needsReviewer && general) {
           const settings = normalizeReviewRoutingSettings(
             (general as unknown as Record<string, unknown>)[REVIEW_ROUTING_SETTINGS_KEY],
           );
-          unavailable = settings.enabled && issue.reviewPolicy !== "human_only";
-          if (settings.enabled && issue.reviewPolicy !== "human_only") {
+          const shouldRoute = settings.enabled && issue.reviewPolicy !== "human_only";
+          unavailable = shouldRoute;
+          if (shouldRoute) {
             const reviewerRows = settings.reviewerRoles.length
               ? await db
                   .select({ id: agents.id, role: agents.role, status: agents.status })
@@ -16511,15 +16512,19 @@ export function issueRoutes(
                   .groupBy(issueRows.assigneeAgentId)
               : [];
             const load = new Map(loadRows.map((row) => [row.agentId!, row.count]));
-            const excluded = new Set(
-              [issue.createdByAgentId, issue.assigneeAgentId].filter((agentId): agentId is string => !!agentId),
-            );
-            unavailable = !reviewerRows.some(
-              (agent) =>
-                isAgentStatusInvokable(agent.status) &&
-                !excluded.has(agent.id) &&
-                (load.get(agent.id) ?? 0) < settings.maxLoadPerReviewer,
-            );
+            const candidates: ReviewerCandidate[] = reviewerRows
+              .filter((agent) => isAgentStatusInvokable(agent.status))
+              .map((agent) => ({
+                id: agent.id,
+                role: agent.role,
+                load: load.get(agent.id) ?? 0,
+              }));
+            unavailable =
+              pickReviewer({
+                candidates,
+                excluded: excludedReviewerIds(reviewerSignalIssue!),
+                maxLoad: settings.maxLoadPerReviewer,
+              }) === null;
           }
         }
         setImmediateNoReviewerSignal(

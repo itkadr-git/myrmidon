@@ -41,6 +41,62 @@ const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
 });
 
 describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", () => {
+  it("raises one no_reviewer signal on real PATCH when no eligible reviewer exists", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission no reviewer");
+    resetReviewRoutingSignals();
+    const authorAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: authorAgentId,
+      companyId,
+      name: "Task Author",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "No reviewer route regression",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: authorAgentId,
+    });
+
+    const first = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+    expect(first.status).toBe(200);
+    expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(1);
+
+    const repeated = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+    expect(repeated.status).toBe(200);
+    expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(1);
+
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Eligible Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const assigned = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: reviewerAgentId });
+    expect(assigned.status).toBe(200);
+    expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(0);
+  });
+
   it("transitions to in_review and writes reviewer wake atomically via real PATCH route", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission atomic");
     resetReviewRoutingSignals();

@@ -79,19 +79,23 @@ function signalKey(signal: ReviewRoutingSignal): string {
  */
 export function replaceReviewRoutingSignals(companyId: string, next: ReviewRoutingSignal[]): void {
   const previous = signalsByCompany.get(companyId);
-  if (next.length === 0) {
-    signalsByCompany.delete(companyId);
-    return;
-  }
   const byKey = new Map<string, ReviewRoutingSignal>();
   for (const signal of next) {
-    const before = previous?.get(signalKey(signal));
-    byKey.set(signalKey(signal), before ? { ...signal, since: before.since } : signal);
+    const key = signalKey(signal);
+    const before = previous?.get(key);
+    byKey.set(key, before ? { ...signal, since: before.since } : signal);
   }
-  for (const [key, signal] of immediateNoReviewerByCompany.get(companyId) ?? []) {
-    const current = byKey.get(key);
-    byKey.set(key, current ? { ...current, since: signal.since } : signal);
+  // A successful sweep is authoritative for task-level no_reviewer signals:
+  // remove route-origin entries absent from its computed snapshot.
+  const immediate = immediateNoReviewerByCompany.get(companyId);
+  for (const [key, signal] of immediate ?? []) {
+    if (!byKey.has(key)) immediate?.delete(key);
+    else {
+      const current = byKey.get(key)!;
+      byKey.set(key, { ...current, since: signal.since });
+    }
   }
+  if (immediate?.size === 0) immediateNoReviewerByCompany.delete(companyId);
   if (byKey.size === 0) signalsByCompany.delete(companyId);
   else signalsByCompany.set(companyId, byKey);
 }
