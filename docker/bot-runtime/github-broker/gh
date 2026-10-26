@@ -73,8 +73,12 @@ function brokerCandidateUrls(env) {
 // myrmidon(GITHUB-SHARED-IDENTITY): the repository this gh invocation targets,
 // as `owner/repo`, forwarded to the broker (a GitHub App token is minted
 // per repository, for allowed ones only; an OAuth identity ignores it).
-// Sources, first match wins: -R/--repo, GH_REPO, then the origin remote of
-// the current directory. Only github.com references are accepted.
+// Sources, first match wins: -R/--repo, GH_REPO, the `repos/OWNER/REPO` path
+// of `gh api`, then the origin remote of the current directory. Only github.com
+// references are accepted. When none is known the broker may still infer the
+// repository of the run's project; failing that it answers `absent` with the
+// reason code `repository_required` and this wrapper says so in plain words
+// (and `gh auth status` reports the broker's state instead of "not logged in").
 function normalizeRepository(value) {
   if (typeof value !== "string") return null;
   let rest = value.trim();
@@ -116,9 +120,23 @@ function repoFromArgs(args) {
   return null;
 }
 
+// `gh api repos/OWNER/REPO/...` names its repository in the endpoint.
+function repoFromApiEndpoint(args) {
+  if (args[0] !== "api") return null;
+  for (const arg of args.slice(1)) {
+    if (arg === "--") break;
+    if (arg.startsWith("-")) continue;
+    const match = /^\/?repos\/([^/?#]+)\/([^/?#]+)/.exec(arg);
+    if (match) return normalizeRepository(`${match[1]}/${match[2]}`);
+  }
+  return null;
+}
+
 function targetRepository(args, env) {
   const explicit = repoFromArgs(args) ?? (env.GH_REPO || null);
   if (explicit) return normalizeRepository(explicit);
+  const fromEndpoint = repoFromApiEndpoint(args);
+  if (fromEndpoint) return fromEndpoint;
   try {
     const result = spawnSync("git", ["config", "--get", "remote.origin.url"], {
       env: { ...env, PATH: originalPath.join(path.delimiter) },
@@ -196,6 +214,46 @@ async function requestBrokerCredentials(env, candidateUrls, body) {
 // The same allow-list the board's launcher applies to the broker's `env`.
 const ALLOWED_ENV_KEYS = /^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMINAL_PROMPT|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL)|GIT_CONFIG_COUNT|GIT_CONFIG_(KEY|VALUE)_\d+)$/;
 
+function isAuthStatus(args) {
+  return args[0] === "auth" && args[1] === "status";
+}
+
+function cleanText(value, limit) {
+  return String(value).replace(/[\x00-\x1f\x7f]/g, " ").slice(0, limit);
+}
+
+function repositoryHints(result) {
+  const list = Array.isArray(result.availableRepositories)
+    ? result.availableRepositories.filter((item) => typeof item === "string").slice(0, 20).map((item) => cleanText(item, 140))
+    : [];
+  return list.length > 0 ? list.join(", ") : "";
+}
+
+const REPOSITORY_REQUIRED_MESSAGE = "GitHub access is available through the Paperclip broker, but no repository is set: pass -R owner/repo, set GH_REPO, or work inside a clone of the repository";
+
+// `gh auth status` asked of the broker's answer, not of the real gh (which
+// holds no login of its own and would report "not logged in").
+function reportAuthStatus(result) {
+  const lines = ["github.com"];
+  if (result.status === "available") {
+    const login = typeof result.login === "string" && result.login ? ` as ${cleanText(result.login, 80)}` : "";
+    const source = result.source === "app" ? "GitHub App identity" : result.source === "pat" ? "scoped token" : "managed identity";
+    const repository = typeof result.repository === "string" ? cleanText(result.repository, 140) : "";
+    lines.push(`  ✓ Logged in through the Paperclip broker${login} (${source})`);
+    if (repository) lines.push(`  - Repository: ${repository}`);
+    lines.push("  - The token is issued per command; it is not stored in gh's config");
+  } else if (result.reasonCode === "repository_required") {
+    lines.push("  ✓ GitHub access is available through the Paperclip broker (no repository selected yet)");
+    const hints = repositoryHints(result);
+    if (hints) lines.push(`  - Allowed repositories: ${hints}`);
+    lines.push("  - Pass -R owner/repo, set GH_REPO, or work inside a clone of the repository");
+  } else {
+    return false;
+  }
+  process.stdout.write(`${lines.join("\n")}\n`);
+  return true;
+}
+
 async function main() {
   const env = { ...process.env };
   const capability = (env.PAPERCLIP_GITHUB_BROKER_TOKEN || "").trim();
@@ -210,6 +268,17 @@ async function main() {
     } else {
       let result;
       try { result = JSON.parse(response.body); } catch { result = null; }
+      if (result && isAuthStatus(process.argv.slice(2)) && reportAuthStatus(result)) {
+        process.exitCode = 0;
+        return;
+      }
+      if (result && result.status === "absent" && result.reasonCode === "repository_required") {
+        const hints = repositoryHints(result);
+        process.stderr.write(`paperclip: ${REPOSITORY_REQUIRED_MESSAGE}${hints ? ` (allowed: ${hints})` : ""}; continuing without managed credentials.\n`);
+      } else if (result && result.status === "absent") {
+        const reason = typeof result.reason === "string" ? cleanText(result.reason, 300) : "no GitHub identity connected";
+        process.stderr.write(`paperclip: no managed GitHub identity for this run (${reason}); continuing without managed credentials.\n`);
+      }
       if (result && result.status === "unavailable") {
         const reason = typeof result.reason === "string"
           ? result.reason.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 500)

@@ -119,7 +119,7 @@ export function createTracingAttentionSweeper(
     return { companies: companiesCount, signals, transitions };
   }
 
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void sweep().catch((err) => log.error({ err }, "tracing health signal sweep tick failed"));
   }, intervalMs);
   timer.unref?.();
@@ -201,6 +201,7 @@ import {
   gatewayRequestCount,
 } from "./probes.js";
 import { computeTracingHealthState, type TracingHealthEvidence } from "./domain.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 function defaultReportSource(db: Db, env: NodeJS.ProcessEnv): (companyId: string) => Promise<TracingHealthReport> {
   const secrets = secretService(db);

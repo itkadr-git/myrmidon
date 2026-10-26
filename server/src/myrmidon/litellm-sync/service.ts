@@ -241,17 +241,29 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
         )
       );
 
-    // Update credentials for all enabled models
+    // Update credentials for all enabled models, in place: an existing
+    // deployment is updated by id (`/model/update`), never re-created with
+    // `/model/new` (that adds a second deployment under the same name).
+    const registered = await deps.litellm.listRegisteredModels();
     for (const model of models) {
-      // Unregister and re-register with new credentials
-      await deps.litellm.unregisterModel(model.litellmModelName);
-      await deps.litellm.registerModel({
+      const input = {
         litellmModelName: model.litellmModelName,
         providerType: provider.type,
         baseUrl: provider.baseUrl,
         credentialSecretName: provider.credentialSecretName,
-      });
-      await trigger?.onModelUnregistered?.(model.litellmModelName);
+      };
+      const deployments = registered.filter(
+        (r) => r.litellmModelName === model.litellmModelName && r.modelId,
+      );
+      if (deployments.length === 0) {
+        // Not present in the gateway yet: nothing to update, register it.
+        await deps.litellm.registerModel(input);
+      } else {
+        const [primary, ...duplicates] = deployments;
+        await deps.litellm.updateDeployment({ ...input, modelId: primary.modelId! });
+        // Leftover duplicates would keep serving the old credential.
+        for (const duplicate of duplicates) await deps.litellm.deleteDeployment(duplicate.modelId!);
+      }
       await trigger?.onModelRegistered?.(model.litellmModelName);
     }
   }

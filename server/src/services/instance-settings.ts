@@ -432,6 +432,13 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.attentionFeedCacheTtlSeconds !== undefined
         ? { attentionFeedCacheTtlSeconds: parsed.data.attentionFeedCacheTtlSeconds }
         : {}),
+      // myrmidon(1.6.6 P1.10): the blocker-graph root fan-out alert limit
+      // survives every general write — without this line the whitelist drops
+      // the key, a PATCH answers 200 yet stores nothing, and a later write
+      // wipes a hand-set value.
+      ...(parsed.data.blockerRootFanoutAlertLimit !== undefined
+        ? { blockerRootFanoutAlertLimit: parsed.data.blockerRootFanoutAlertLimit }
+        : {}),
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
       ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),

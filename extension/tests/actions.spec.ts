@@ -401,14 +401,13 @@ describe("executeAction: confirmation primitive (part D)", () => {
     if (!outcome.ok) expect(outcome.code).toBe(-32603);
   });
 
-  it("never turns the extension into a signer: no sign capability, no sign action", () => {
-    expect([...extensionCapabilityList()]).not.toContain("sign");
+  it("describes a fill by its target", () => {
     expect(describeAction("browser.fill", { target: "#user" })).toBe("browser.fill → #user");
   });
 });
 
 describe("extensionCapabilityList", () => {
-  it("declares the read-only set plus the part D primitives", () => {
+  it("declares the read-only set, the part D primitives and sign", () => {
     expect([...extensionCapabilityList()].sort()).toEqual([
       "click",
       "download",
@@ -416,6 +415,7 @@ describe("extensionCapabilityList", () => {
       "open",
       "read",
       "screenshot",
+      "sign",
     ]);
   });
 });

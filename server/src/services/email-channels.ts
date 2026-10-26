@@ -69,6 +69,7 @@ import {
   AGENTMAIL_EVENTS,
   type AgentmailMessage,
 } from "./agentmail-api.js";
+import { backgroundInterval } from "../myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export type EmailActor = {
   userId?: string;
@@ -332,7 +333,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       : await lease(endpoint, leaseKey, token);
     if (!acquired) return undefined;
     let lost = false;
-    const renew = setInterval(() => {
+    const renew = backgroundInterval(() => {
       void lease(endpoint, leaseKey, token)
         .then((ok) => {
           if (!ok) lost = true;
@@ -1949,7 +1950,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       if (!state.connected) socket.close();
     }, 30_000);
     acknowledgmentDeadline.unref();
-    const renewSocket = setInterval(() => {
+    const renewSocket = backgroundInterval(() => {
       void (async () => {
         await active(endpoint);
         if (!(await lease(endpoint, "email-socket", token))) socket.close();
@@ -2666,7 +2667,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     },
     start: () => {
       if (!timer) {
-        timer = setInterval(() => {
+        timer = backgroundInterval(() => {
           void tick().catch(() => {});
         }, 1000);
         timer.unref();

@@ -504,7 +504,7 @@ function buildGitHubBrokerField(
 }
 
 // myrmidon(1.6.5 BOT-DISK-H5a, contract C6): the `workspace` field of a
-// /v1/runs request — `{key, repo, baseRef}` — from which the gateway runs
+// /v1/runs request — `{key, repo, baseRef?, branch?}` — from which the gateway runs
 // `myr-ws open` before the model starts. The shapes mirror
 // `runWorkspaceFieldSchema` of @myrmidon/shared (this package does not
 // depend on it; execute.test.ts checks the output against the real schema).
@@ -547,13 +547,23 @@ function deriveWorkspaceRepoName(repoUrl: string): string | null {
 
 function buildWorkspaceField(
   context: Record<string, unknown>,
-): { key: string; repo: string; baseRef?: string } | undefined {
+): { key: string; repo: string; baseRef?: string; branch?: string } | undefined {
   const wake = parseObject(context.paperclipWake);
   const key = asString(parseObject(wake.issue).identifier, "").trim();
   if (!WS_ISSUE_KEY_RE.test(key)) return undefined;
+  // The task's own pull request decides the repository and the branch: the project is only the
+  // fallback. A PR of one repository on a project bound to another (OPE-7967: PR #82 of
+  // myrmidon-deploy under a project of myrmidon) must open the PR's repository on the PR's
+  // head branch, not the project's repository on `bot/<KEY>`.
+  const pullRequest = parseObject(context.paperclipPullRequest);
+  const prRepoRaw = asString(pullRequest.repo, "").trim();
+  const prRepo = prRepoRaw && WS_REPO_NAME_RE.test(prRepoRaw) ? prRepoRaw : null;
+  const prBranchRaw = asString(pullRequest.headRef, "").trim().replace(/^refs\/heads\//, "");
+  const prBranch = prRepo && prBranchRaw && prBranchRaw.length <= 200 && WS_GIT_REF_RE.test(prBranchRaw) && !prBranchRaw.startsWith("-") && !prBranchRaw.includes("..") ? prBranchRaw : "";
   const workspace = parseObject(context.paperclipWorkspace);
   const repoUrl = asString(workspace.repoUrl, "").trim();
-  let repo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  const projectRepo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  let repo = prRepo ?? projectRepo;
   let usedDefault = false;
   if (!repo) {
     const fallback = asString(context.paperclipBotDiskDefaultRepo, "").trim();
@@ -563,12 +573,13 @@ function buildWorkspaceField(
     }
   }
   if (!repo) return undefined;
-  // The ref belongs to the project workspace's own repository, not to the fallback one.
-  const baseRef = usedDefault ? "" : asString(workspace.repoRef, "").trim();
+  // The ref belongs to the project workspace's own repository, not to the PR's or the fallback one.
+  const baseRef = usedDefault || repo !== projectRepo ? "" : asString(workspace.repoRef, "").trim();
   return {
     key,
     repo,
     ...(baseRef && baseRef.length <= 200 && WS_GIT_REF_RE.test(baseRef) ? { baseRef } : {}),
+    ...(prBranch ? { branch: prBranch } : {}),
   };
 }
 

@@ -22,6 +22,14 @@ export interface LitellmWorkersState {
     medianLatencyMs: number | null;
     queueDepth: number | null;
   };
+  /** How a new target is applied: a planned restart that briefly drops requests. */
+  apply?: { path: "restart"; configured: boolean; interruption: boolean };
+  /** Where `current` came from: the gateway gauge, the launch line (`--num_workers`), a hint, a record. */
+  currentSource?: string;
+  /** PUT answers only: true when `current` read after the restart equals the target. */
+  applied?: boolean;
+  /** PUT answers only: why the result is not confirmed; null when it is. */
+  applyError?: string | null;
   /** Present only when the backend implements auto-select. */
   auto?: { enabled: boolean } | null;
 }

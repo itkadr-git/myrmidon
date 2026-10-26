@@ -115,7 +115,7 @@ new file mode 100644
 index 0000000..360e518
 --- /dev/null
 +++ b/tools/run_workspace.py
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,196 @@
 +"""Run-scoped task workspace resolution via ``myr-ws open`` (myrmidon BOT-DISK-H5b).
 +
 +The board's hermes_gateway adapter may attach a ``workspace`` field to a
@@ -124,7 +124,7 @@ index 0000000..360e518
 +gateway then opens (or reuses) the task copy through the image's ``myr-ws``
 +CLI::
 +
-+    myr-ws open <key> <repo> [--base <baseRef>] --json
++    myr-ws open <key> <repo> [--base <baseRef>] [--branch <branch>] --json
 +
 +On success the run's cwd is the opened copy (``/workspace/<key>``) and its
 +terminal children see ``MYRMIDON_TASK_WORKSPACE`` pointing at it. Exit codes
@@ -216,6 +216,7 @@ index 0000000..360e518
 +    key = field.get("key")
 +    repo = field.get("repo")
 +    base_ref = field.get("baseRef")
++    branch = field.get("branch")
 +    if not (isinstance(key, str) and re.fullmatch(r"[A-Z][A-Z0-9]*-[0-9]+", key)):
 +        raise ValueError("workspace.key must look like PREFIX-123")
 +    if not (isinstance(repo, str) and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)):
@@ -227,9 +228,16 @@ index 0000000..360e518
 +        base_ref = base_ref.strip()
 +        if not base_ref:
 +            raise ValueError("workspace.baseRef is not a valid git ref")
++    if branch is not None:
++        if not (isinstance(branch, str) and 0 < len(branch) <= 200
++                and re.fullmatch(r"[^\s~^:?*\[\\]+", branch)
++                and not branch.startswith("-") and ".." not in branch):
++            raise ValueError("workspace.branch is not a valid git branch")
 +    out = {"key": key, "repo": repo}
 +    if base_ref:
 +        out["baseRef"] = base_ref
++    if branch:
++        out["branch"] = branch
 +    return out
 +
 +
@@ -257,6 +265,8 @@ index 0000000..360e518
 +    argv = [_myr_ws_bin(), "open", ws["key"], ws["repo"]]
 +    if ws.get("baseRef"):
 +        argv += ["--base", ws["baseRef"]]
++    if ws.get("branch"):
++        argv += ["--branch", ws["branch"]]
 +    argv.append("--json")
 +    binary = argv[0]
 +    if shutil.which(binary) is None and not os.path.isfile(binary):
@@ -288,7 +298,14 @@ index 0000000..360e518
 +        if not (isinstance(path, str) and path):
 +            return _fallback(
 +                1, f"myr-ws open {ws['key']} exited 0 without a JSON path: {stdout[:200]!r}")
-+        return {"path": path, "fallback": False, "exit_code": 0, "error": ""}
++        recovered = parsed.get("recovered") if isinstance(parsed, dict) else None
++        if recovered:
++            # myr-ws found the copy left half-way (merge/rebase in progress, ...) and repaired it;
++            # the state is in the recovery ref it names. Not a failure: log it for the operator.
++            logger.warning("myr-ws open repaired the copy of %s: %s (state in %s)", ws["key"],
++                           json.dumps(recovered)[:500], parsed.get("recoveryRef", "-"))
++        return {"path": path, "fallback": False, "exit_code": 0, "error": "",
++                "recovered": recovered if isinstance(recovered, list) else []}
 +    error_text = ""
 +    if isinstance(parsed, dict) and parsed.get("ok") is False:
 +        error_text = str(parsed.get("error") or "")

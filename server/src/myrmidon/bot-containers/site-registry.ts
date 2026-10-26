@@ -11,6 +11,7 @@ import {
   myrmidonFleetSites,
   myrmidonFleetAffinity,
   type FleetSiteCapacity,
+  type FleetSiteHealth,
   type FleetSiteProfile,
 } from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
@@ -45,6 +46,8 @@ export interface FleetSite {
   capacity: FleetSiteCapacity;
   profile: FleetSiteProfile;
   labels?: Record<string, string> | null;
+  /** The site health monitor's persisted state (REMOTE-SITES-T4); null until the first probe. */
+  health?: FleetSiteHealth | null;
   enrolledAt: Date;
   lastSeenAt?: Date | null;
   certRotatedAt?: Date | null;

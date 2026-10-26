@@ -16,6 +16,7 @@ export interface HeartbeatRunScratchMetadata {
 
 export interface HeartbeatRunScratch {
   dir: string;
+  runDir: string;
   markerPath: string;
   metadata: HeartbeatRunScratchMetadata;
 }
@@ -136,6 +137,8 @@ export async function prepareHeartbeatRunScratch(input: {
   const issueSegment = sanitizePathSegment(input.issueIdentifier, "unassigned");
   const runSegment = sanitizePathSegment(input.runId.slice(0, 12), "run");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-run-${issueSegment}-${runSegment}-`));
+  const runDir = path.join(dir, "run-dir");
+  await fs.mkdir(runDir, { recursive: true });
   const markerPath = path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER);
   const metadata: HeartbeatRunScratchMetadata = {
     version: 1,
@@ -147,7 +150,7 @@ export async function prepareHeartbeatRunScratch(input: {
     createdAt: (input.now ?? new Date()).toISOString(),
   };
   await fs.writeFile(markerPath, `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o600 });
-  return { dir, markerPath, metadata };
+  return { dir, runDir, markerPath, metadata };
 }
 
 async function directoryBytes(dir: string): Promise<number> {
@@ -164,12 +167,20 @@ export function buildHeartbeatRunScratchEnv(
   existingEnv: Record<string, unknown>,
   scratch: HeartbeatRunScratch,
 ): HeartbeatRunScratchEnvResult {
+  const runDir = scratch.runDir || path.join(scratch.dir, "run-dir");
   const env: Record<string, string> = {
     PAPERCLIP_RUN_SCRATCH_DIR: scratch.dir,
     PAPERCLIP_TASK_SCRATCH_DIR: scratch.dir,
     PAPERCLIP_SCRATCH_DIR: scratch.dir,
+    PAPERCLIP_RUN_DIR: runDir,
     PAPERCLIP_TMPDIR: scratch.dir,
   };
+  if (
+    typeof existingEnv.CHROME_USER_DATA_DIR !== "string" ||
+    existingEnv.CHROME_USER_DATA_DIR.trim().length === 0
+  ) {
+    env.CHROME_USER_DATA_DIR = runDir;
+  }
   const tempKeysApplied: string[] = [];
   for (const key of TEMP_ENV_KEYS) {
     const existing = existingEnv[key];
@@ -243,7 +254,7 @@ export async function sweepHeartbeatRunScratch(input: {
       continue;
     }
     const cleaned = await cleanupHeartbeatRunScratch({
-      scratch: { dir, markerPath, metadata: marker },
+      scratch: { dir, runDir: path.join(dir, "run-dir"), markerPath, metadata: marker },
       isProcessGroupAlive: input.isProcessGroupAlive,
     });
     if (cleaned.removed) {

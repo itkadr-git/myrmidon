@@ -36,6 +36,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "cases",
   "pipelines",
   "stack",
+  "wiki", // myrmidon(OPE-9222): the Knowledge screen
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);
