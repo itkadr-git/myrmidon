@@ -3994,19 +3994,21 @@ export function recoveryService(
       input.latestRun,
       input.recoveryCause,
     );
+    const successfulRunDisposition =
+      recoveryCause.startsWith("successful_run_") ||
+      Boolean(input.successfulRunHandoffEvidence);
 
     // legacy stranded-recovery issues retain their in-place escalation.
     if (
       input.rerouteToSharedQueue &&
       !isStrandedIssueRecoveryIssue(input.issue) &&
-      recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+      !successfulRunDisposition &&
       input.latestRun?.contextSnapshot &&
       typeof input.latestRun.contextSnapshot === "object" &&
       "retryReason" in input.latestRun.contextSnapshot &&
       isInfraInterruptErrorCode(input.latestRun.errorCode) &&
       input.recoveryCause !== "configuration_incomplete" &&
       input.latestRun.status !== "failed" &&
-      input.recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
       !infraInterruptRetryBudgetExhausted({
         scheduledRetryAttempt: input.scheduledRetryAttempt,
         scheduledRetryReason: input.scheduledRetryReason,
@@ -4065,9 +4067,9 @@ export function recoveryService(
       readStrandedAutoPolicyEnabled() &&
       strandedAutoPolicyLatestRun &&
       (strandedAutoPolicyLatestRun.status === "succeeded" ||
-        recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON) &&
+        successfulRunDisposition) &&
       (!input.rerouteToSharedQueue ||
-        recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON) &&
+        successfulRunDisposition) &&
       isStrandedAutoPolicyCause(recoveryCause) &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress") &&
       input.issue.assigneeAgentId &&
@@ -4122,7 +4124,7 @@ export function recoveryService(
         managerAgentId,
         escalationAgentId,
         targetIsAdm,
-        requireAgentDisposition: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        requireAgentDisposition: successfulRunDisposition,
         hasExecutionWorkflow: issueHasExistingExecutionWorkflow(input.issue),
         assigneePaused,
       });
@@ -4577,15 +4579,14 @@ export function recoveryService(
           return blockedIssue;
         }
       }
-      if (
-        autoPolicyDecision.kind === "vendor_default" &&
-        recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
-      ) {
-        // A missing escalation agent is not permission to create a board-owned
-        // liveness block for a successful-run disposition handoff.
-        return input.issue;
-      }
       // autoPolicyDecision.kind === "vendor_default" falls through as-is.
+    }
+
+    if (successfulRunDisposition) {
+      // Missing escalation agents, a paused assignee, or disabled auto-policy
+      // are not permission to create a board-owned liveness block for a
+      // successful-run disposition handoff.
+      return input.issue;
     }
 
     const approvedInfraReroute = Boolean(
@@ -4702,7 +4703,7 @@ export function recoveryService(
       typeof input.latestRun.contextSnapshot === "object" &&
       "retryReason" in input.latestRun.contextSnapshot &&
       isInfraInterruptErrorCode(input.latestRun.errorCode) &&
-      recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+      !successfulRunDisposition &&
       input.latestRun.status !== "failed" &&
       recoveryCause !== "configuration_incomplete" &&
       !infraInterruptRetryBudgetExhausted({
@@ -4734,7 +4735,7 @@ export function recoveryService(
       blockedByIssueIds: blockerIds,
       // myrmidon(BLOCKED-REASON): without an open blocker the board-owned
       // recovery action is the reason; name it so the block is never reasonless.
-      ...(blockerIds.length === 0 && recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON
+      ...(blockerIds.length === 0 && !successfulRunDisposition
         ? {
             unblockDescriptor: recoveryLivenessDescriptor(
               input.issue.id,
