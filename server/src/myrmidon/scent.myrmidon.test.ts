@@ -507,7 +507,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     delete process.env.MYRMIDON_SCENT_BASE_URL;
     delete process.env.MYRMIDON_EVALS_BASE_URL;
     await runScentQueueTick(db as never, {
-      getGeneral: async () => ({}),
+      getGeneral: async () => ({ scent: { enabled: true } }),
       listCompanyIds: async () => ["c1"],
       resolveSecret: async () => null, // no company secret, no env fallback
     });
@@ -526,7 +526,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
       execute: () => Promise.resolve([{ n: 1 }]), // already journaled in the last hour
     };
     await runScentQueueTick(db as never, {
-      getGeneral: async () => ({}),
+      getGeneral: async () => ({ scent: { enabled: true } }),
       listCompanyIds: async () => ["c1"],
       resolveSecret: async () => null,
     });
