@@ -209,7 +209,7 @@ export function decideIssueCooling(input: {
   const last = runs[0]!;
   const finishedAt = last.finishedAt;
   if (!finishedAt) return NOT_COOLING;
-  if (!runIsStale(last, issueStatus) && last.status !== "cancelled") return NOT_COOLING;
+  if (!runIsStale(last, issueStatus)) return NOT_COOLING;
 
   // Movement since the stale run cancels the cooling.
   const movesAfterLast = input.moves.filter(
@@ -222,12 +222,7 @@ export function decideIssueCooling(input: {
   let staleCount = 0;
   for (let i = 0; i < runs.length; i += 1) {
     const row = runs[i]!;
-    if (row.status === "cancelled") {
-      if (i === 0 && !["board_operator", "reassignment"].includes(row.cancellationSource ?? "")) {
-        return NOT_COOLING;
-      }
-      continue;
-    }
+    if (row.status === "cancelled") continue;
     const healthy = row.status === "succeeded" && HEALTHY_LIVENESS.has(row.livenessState ?? "");
     if (healthy) break;
     if (i > 0 && row.finishedAt) {
@@ -293,7 +288,10 @@ export async function isIssueCoolingDown(
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
           coolingRunFilter(),
           inArray(heartbeatRuns.status, COOLING_TERMINAL_STATUSES),
-          sql`${heartbeatRuns.status} <> 'cancelled' or (${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code') in ('board_operator', 'reassignment')`,
+          or(
+            sql`${heartbeatRuns.status} <> 'cancelled'`,
+            sql`(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code') in ('board_operator', 'reassignment')`,
+          ),
         ),
       )
       .orderBy(desc(heartbeatRuns.finishedAt))

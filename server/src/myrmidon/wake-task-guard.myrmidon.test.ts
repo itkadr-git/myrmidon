@@ -293,6 +293,27 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     });
     expect((await isIssueCoolingDown(db, companyId, stuck, settings, now)).cooling).toBe(true);
 
+    const boardCancelled = await seedIssue("todo");
+    await seedAutoRun(boardCancelled, { status: "failed", finishedAt: new Date(now.getTime() - 15 * 60_000) });
+    await seedAutoRun(boardCancelled, {
+      status: "cancelled",
+      cancellationCode: "reassignment",
+      finishedAt: new Date(now.getTime() - 5 * 60_000),
+    });
+    const reassignmentCooling = await isIssueCoolingDown(db, companyId, boardCancelled, settings, now);
+    expect(reassignmentCooling.cooling).toBe(true);
+    expect(reassignmentCooling.staleCount).toBe(1);
+    expect(reassignmentCooling.cooldownMin).toBe(30);
+
+    const unknownCancellation = await seedIssue("todo");
+    await seedAutoRun(unknownCancellation, { status: "failed", finishedAt: new Date(now.getTime() - 15 * 60_000) });
+    await seedAutoRun(unknownCancellation, {
+      status: "cancelled",
+      cancellationCode: "adapter_error",
+      finishedAt: new Date(now.getTime() - 5 * 60_000),
+    });
+    expect((await isIssueCoolingDown(db, companyId, unknownCancellation, settings, now)).cooling).toBe(false);
+
     const moving = await seedIssue("in_progress");
     await seedAutoRun(moving, {
       status: "succeeded",
@@ -302,7 +323,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     expect((await isIssueCoolingDown(db, companyId, moving, settings, now)).cooling).toBe(false);
   });
 
-  it("cooling: movement between runs resets the exponent; cancelled runs do not cool; real activity lifts", async () => {
+  it("cooling: movement between runs resets the exponent; cancelled runs do not count as stale; real activity lifts", async () => {
     const now = new Date();
     const settings = resolveSwarmSettings(undefined);
 
