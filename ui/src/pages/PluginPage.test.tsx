@@ -49,6 +49,7 @@ vi.mock("@/plugins/slots", async () => {
   const actual = await vi.importActual<typeof import("@/plugins/slots")>("@/plugins/slots");
   return {
     resolveRouteSidebarSlot: actual.resolveRouteSidebarSlot,
+    ensurePluginContributionLoaded: actual.ensurePluginContributionLoaded,
     usePluginSlots: (...args: unknown[]) => {
       mockPluginSlots.usePluginSlots(...args);
       return { slots: mockPluginSlots.slots };
