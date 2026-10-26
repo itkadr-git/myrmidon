@@ -136,6 +136,7 @@ export { heartbeatRuns } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 // myrmidon(DB-CARE DBC-3): continuation envelopes leave heartbeat_runs.context_snapshot.
 export { heartbeatRunContinuations } from "./heartbeat_run_continuations.js";
+export { issueContinuationKeys } from "./issue_continuation_keys.js";
 export { providerTraceRecords } from "./provider_trace_records.js";
 export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";

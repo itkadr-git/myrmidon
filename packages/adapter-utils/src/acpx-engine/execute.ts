@@ -1899,7 +1899,9 @@ async function buildRuntime(input: {
   await fs.mkdir(stateDir, { recursive: true });
 
   const envConfig = parseObject(config.env);
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent), PAPERCLIP_RUN_ID: runId };
+  const runtimeRunIdEnv: Record<string, string> = {};
+  writeProductEnv(runtimeRunIdEnv, "RUN_ID", runId); // myrmidon(REBRAND-C)
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent), ...runtimeRunIdEnv };
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim()) ||
     (typeof context.issueId === "string" && context.issueId.trim()) ||
@@ -1951,6 +1953,7 @@ async function buildRuntime(input: {
   const scratch = parseObject(context.paperclipScratch);
   const scratchKeys = scratch.type === "heartbeat_run" && typeof scratch.dir === "string"
     ? new Set(["PAPERCLIP_RUN_SCRATCH_DIR", "PAPERCLIP_TASK_SCRATCH_DIR", "PAPERCLIP_SCRATCH_DIR", "PAPERCLIP_RUN_DIR", "PAPERCLIP_TMPDIR",
+      "MYRMIDON_RUN_SCRATCH_DIR", "MYRMIDON_TASK_SCRATCH_DIR", "MYRMIDON_SCRATCH_DIR", "MYRMIDON_RUN_DIR", "MYRMIDON_TMPDIR",
       ...(Array.isArray(scratch.tempKeysApplied) ? scratch.tempKeysApplied.filter((key): key is string =>
         typeof key === "string" && ["TMPDIR", "TEMP", "TMP"].includes(key)) : [])])
     : new Set<string>();

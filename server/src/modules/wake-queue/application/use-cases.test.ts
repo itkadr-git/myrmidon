@@ -346,6 +346,62 @@ describe("releaseIssueExecution", () => {
     },
   );
 
+  it("skips a terminal first sibling and promotes the next sibling exactly once", async () => {
+    const terminalSibling = { ...ISSUE, id: "issue-terminal-sibling", identifier: "ISSUE-TERMINAL-SIBLING", status: "done" };
+    const promotableSibling = { ...ISSUE, id: "issue-promotable-sibling", identifier: "ISSUE-PROMOTABLE-SIBLING" };
+    const primaryRun = { ...RUN, status: "succeeded" };
+    const queue = [wakeCandidate({ id: "wake-promotable" }), wakeCandidate({ id: "wake-promotable" })];
+    const findNextDeferredWake = vi.fn(async ({ issueId }: { issueId: string }) =>
+      issueId === terminalSibling.id ? wakeCandidate({ id: "wake-terminal" }) : queue.shift() ?? null,
+    );
+    const claimIssueExecutionLease = vi.fn(async ({ issueId }: { issueId: string }) => issueId === terminalSibling.id);
+    const claimDeferredWakeForPromotion = vi.fn(async () => true);
+    const finalizePromotedWake = vi.fn(async () => runSummary("run-promoted-sibling"));
+    const releaseIssueExecutionLease = vi.fn(async () => undefined);
+    const transaction = createFakeTransaction({
+      claimIssueExecutionLease,
+      claimDeferredWakeForPromotion,
+      findIssue: vi.fn(async ({ issueId }: { issueId: string }) =>
+        issueId === terminalSibling.id ? terminalSibling : promotableSibling),
+      findNextDeferredWake,
+      releaseIssueExecutionLease,
+      finalizePromotedWake,
+    });
+    const base = createFakeIssueLock(createFakeHost(), transaction, ISSUE, primaryRun);
+    const issueLock: IssueLockWriter = {
+      ...base,
+      withIssueExecutionLock: vi.fn(async (_input, fn) => {
+        const result = await fn(
+          { primaryIssue: ISSUE, releasedSiblingIssue: terminalSibling, run: primaryRun },
+          { host: createFakeHost(), transaction },
+        );
+        return { ...result, run: primaryRun };
+      }),
+    };
+    const release = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(releaseIssueExecutionLease).toHaveBeenCalledExactlyOnceWith({
+      companyId: RUN.companyId, issueId: terminalSibling.id, runId: primaryRun.id,
+    });
+    expect(result.outcome).toEqual({ kind: "promoted", run: runSummary("run-promoted-sibling") });
+    expect(claimIssueExecutionLease).toHaveBeenCalledExactlyOnceWith({
+      companyId: RUN.companyId, issueId: terminalSibling.id, runId: primaryRun.id,
+    });
+    expect(findNextDeferredWake.mock.calls.map(([call]) => call.issueId)).toEqual([
+      terminalSibling.id, ISSUE.id,
+    ]);
+    expect(claimDeferredWakeForPromotion).toHaveBeenCalledExactlyOnceWith({
+      companyId: RUN.companyId, wakeId: "wake-promotable", now: expect.any(Date),
+    });
+    expect(finalizePromotedWake).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      companyId: RUN.companyId, wakeId: "wake-promotable", issue: ISSUE,
+      finishingRun: primaryRun, responsibleUserId: "user-1",
+    }));
+    expect(result.postCommitEffects).toEqual([{ kind: "run_queued", run: runSummary("run-promoted-sibling") }]);
+  });
+
   it("drains the first released sibling issue under an atomic issue-lease claim", async () => {
     const sibling = { ...ISSUE, id: "issue-2", identifier: "ISSUE-2" };
     const findNextDeferredWake = vi.fn(async (input: { issueId: string }) =>
