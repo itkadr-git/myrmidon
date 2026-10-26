@@ -32,7 +32,7 @@ export const BOT_DISK_DRIFT_EXTRA_MS = 15 * 60_000;
 /** A bot on a non-current image for longer than this raises `bot_image_stale`. */
 export const BOT_IMAGE_STALE_MS = 24 * 3_600_000;
 /** Archives live 7 days per the owner-approved operational retention policy. */
-export const BOT_DISK_ARCHIVE_TTL_MS = 7 * 24 * 3_600_000;
+export const BOT_DISK_ARCHIVE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type BotDiskCardSourceKind = "bot_disk_lifecycle" | "bot_disk_archive" | "bot_image_stale";
 
