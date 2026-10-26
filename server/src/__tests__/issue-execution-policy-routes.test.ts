@@ -302,7 +302,7 @@ describe("issue execution policy routes", () => {
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       expect.objectContaining({ status: "done" }),
       expect.anything(),
-      undefined,
+      [],
       expect.any(Array),
     );
   });
