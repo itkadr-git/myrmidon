@@ -537,7 +537,7 @@ export async function idlePickupForAgent(
   // success per issue decides, because its silence is the one that must hold.
   // A cancellation is not a successful handoff: the board may cancel the run
   // while the issue is still assigned and has review changes to address.
-  const recentSuccessesByIssueId = new Map<string, { runId: string; endedAt: Date }>();
+  const recentSuccessesByIssueId = new Map<string, { runId: string; endedAt: Date; status: string }>();
   for (const run of liveRuns) {
     if (run.status !== "succeeded" && run.status !== "cancelled") continue;
     const issueId = readNonEmptyString(run.contextSnapshot?.issueId);
@@ -546,7 +546,7 @@ export async function idlePickupForAgent(
     if (Date.now() - endedAt.getTime() >= recentSuccessWindowMs) continue;
     const known = recentSuccessesByIssueId.get(issueId);
     if (!known || known.endedAt.getTime() < endedAt.getTime()) {
-      recentSuccessesByIssueId.set(issueId, { runId: run.id, endedAt });
+      recentSuccessesByIssueId.set(issueId, { runId: run.id, endedAt, status: run.status });
     }
   }
 
@@ -579,7 +579,7 @@ export async function idlePickupForAgent(
       continue;
     }
     const recentSuccess = recentSuccessesByIssueId.get(candidate.id);
-    if (recentSuccess) {
+    if (recentSuccess?.status === "succeeded") {
       // The issue just had a successful run without a disposition; the
       // successful-run-handoff / stranded-recovery paths own that next step.
       //
