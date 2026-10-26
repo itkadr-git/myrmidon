@@ -426,10 +426,9 @@ import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
+import { tryClaimContinuationKeyInTransaction } from "./continuation-dedupe.js";
 import {
-  tryClaimContinuationKeyInTransaction,
-} from "./continuation-dedupe.js";
-import {
+  ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
