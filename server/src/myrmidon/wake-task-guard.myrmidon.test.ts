@@ -313,7 +313,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
       cancellationCode: "adapter_error",
       finishedAt: new Date(now.getTime() - 5 * 60_000),
     });
-    expect((await isIssueCoolingDown(db, companyId, unknownCancellation, settings, now)).cooling).toBe(false);
+    const unknownCancellationCooling = await isIssueCoolingDown(db, companyId, unknownCancellation, settings, now);
+    expect(unknownCancellationCooling.cooling).toBe(true);
+    expect(unknownCancellationCooling.staleCount).toBe(1);
+    expect(unknownCancellationCooling.cooldownMin).toBe(30);
 
     const moving = await seedIssue("in_progress");
     await seedAutoRun(moving, {
