@@ -1289,9 +1289,10 @@ describe("mapFinalResultForTest", () => {
     });
 
     expect(result.resultJson).toMatchObject({
-      gatewayCallIds: ["call-456", "req-123"],
-      modelCallCount: 2,
-      modelCallCountSource: "gateway_call_ids",
+      gatewayCallIds: ["call-456"],
+      litellmRequestIds: ["req-123"],
+      modelCallCount: 1,
+      modelCallCountSource: "gateway_count",
       usage: { inputTokens: 120, cachedInputTokens: 30, outputTokens: 45 },
     });
     expect(JSON.stringify(result.resultJson)).not.toContain("must not be recorded");
@@ -1311,6 +1312,80 @@ describe("mapFinalResultForTest", () => {
 
     expect(result.resultJson?.modelCallCount).toBe(3);
     expect(result.resultJson?.gatewayCallIds).toEqual([]);
+  });
+
+  it("prefers an explicit call count and keeps partial ID namespaces independent", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-telemetry",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model_call_count: 7,
+          gateway_call_ids: ["gw-1"],
+          litellm_request_ids: ["gw-1"],
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(7);
+    expect(result.resultJson?.gatewayCallIds).toEqual(["gw-1"]);
+    expect(result.resultJson?.litellmRequestIds).toEqual(["gw-1"]);
+  });
+
+  it("uses the largest distinct ID namespace as a bounded count fallback", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-telemetry",
+        status: "completed",
+        payload: {
+          status: "completed",
+          gateway_call_ids: Array.from({ length: 101 }, (_, index) => `gw-${index}`),
+          litellm_request_ids: ["req-1", "req-2"],
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(101);
+    expect(result.resultJson?.gatewayCallIds).toHaveLength(101);
+    expect(result.resultJson?.modelCallCountSource).toBe("gateway_count");
+  });
+
+  it("uses a reported gateway count over incomplete identifiers from either namespace", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-count-partial",
+        status: "completed",
+        payload: { model_call_count: 9, gateway_call_ids: ["call-a"], litellm_request_ids: ["req-a", "req-b"] },
+      },
+    });
+    expect(result.resultJson?.modelCallCount).toBe(9);
+    expect(result.resultJson?.gatewayCallIds).toEqual(["call-a"]);
+    expect(result.resultJson?.litellmRequestIds).toEqual(["req-a", "req-b"]);
+  });
+
+  it("preserves call IDs beyond the previous 100-ID cutoff while marking telemetry truncation", () => {
+    const ids = Array.from({ length: 550 }, (_, index) => `call-${index}`);
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-overflow", status: "completed", payload: { gateway_call_ids: ids } },
+    });
+    expect(result.resultJson?.modelCallCount).toBe(550);
+    expect(result.resultJson?.gatewayCallIds).toHaveLength(500);
+    expect(result.resultJson?.gatewayCallIdsTruncated).toBe(true);
+  });
+  it("keeps explicit count when a gateway call ID list is capped", () => {
+    const ids = Array.from({ length: 125 }, (_, index) => `call-${index}`);
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-count", status: "completed", payload: { model_call_count: 125, gateway_call_ids: ids } },
+    });
+    const resultJson = result.resultJson as Record<string, unknown>;
+    expect(resultJson.modelCallCount).toBe(125);
+    expect((resultJson.gatewayCallIds as string[]).length).toBe(125);
+    expect(resultJson.gatewayCallIdsTruncated).toBe(false);
   });
 
   it("maps failed statuses into adapter errors", () => {

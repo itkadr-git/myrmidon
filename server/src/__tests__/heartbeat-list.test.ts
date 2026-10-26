@@ -266,7 +266,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
         summary: "completed",
         stdout: oversizedStdout,
         nestedHuge: { payload: oversizedNestedPayload },
-        runTelemetry: { outcomeCategory: null, modelCallCount: 0, gatewayCallIds: ["gw-1"] },
+        runTelemetry: { outcomeCategory: "nothing", modelCallCount: 0, gatewayCallIds: ["gw-1"] },
       },
     });
 
