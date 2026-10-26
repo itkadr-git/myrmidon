@@ -14737,6 +14737,10 @@ export function issueRoutes(
         updateFields.status === "done";
       const shouldCollectTerminalIssueActions =
         updateFields.status === "done" || updateFields.status === "cancelled";
+      const closesRecoveryIssue =
+        shouldCollectTerminalIssueActions &&
+        existing.status !== updateFields.status &&
+        existing.originKind === "stranded_issue_recovery";
       // myrmidon(HOLD-READY): a possible board unblock of an issue that has
       // a settled replay hold runs the update in a transaction, so the hold
       // is cleared atomically with it.
@@ -16232,6 +16236,62 @@ export function issueRoutes(
                 ...(delegation ? { resumeIntent: true, followUpRequested: true } : {}),
               },
             });
+          }
+        }
+
+        const becameTerminal =
+          !["done", "cancelled"].includes(existing.status) &&
+          ["done", "cancelled"].includes(issue.status);
+        if (closesRecoveryIssue && becameTerminal) {
+          try {
+            const recoveryAction = await db
+              .select()
+              .from(issueRecoveryActions)
+              .where(and(
+                eq(issueRecoveryActions.companyId, issue.companyId),
+                eq(issueRecoveryActions.recoveryIssueId, issue.id),
+                inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              ))
+              .then((rows) => rows[0] ?? null);
+            if (recoveryAction) {
+              const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+                companyId: issue.companyId,
+                sourceIssueId: recoveryAction.sourceIssueId,
+                actionId: recoveryAction.id,
+                status: issue.status === "cancelled" ? "cancelled" : "resolved",
+                outcome: issue.status === "cancelled" ? "cancelled" : "restored",
+                resolutionNote: null,
+              }, db);
+              if (resolved?.returnOwnerAgentId) {
+                await enqueueRecoveryActionWakeup(resolved.returnOwnerAgentId, {
+                  source: "automation",
+                  triggerDetail: "system",
+                  reason: "issue_recovery_action_restored",
+                  idempotencyKey: `recovery_resolved:${resolved.id}`,
+                  requestedByActorType: "system",
+                  requestedByActorId: "recovery_issue_closed",
+                  payload: {
+                    issueId: resolved.sourceIssueId,
+                    recoveryIssueId: issue.id,
+                    recoveryActionId: resolved.id,
+                    outcome: resolved.outcome,
+                  },
+                  contextSnapshot: {
+                    issueId: resolved.sourceIssueId,
+                    taskId: resolved.sourceIssueId,
+                    recoveryIssueId: issue.id,
+                    recoveryActionId: resolved.id,
+                    source: "issue.recovery_closed",
+                    wakeReason: "issue_recovery_action_restored",
+                  },
+                });
+              }
+            }
+          } catch (err) {
+            logger.warn(
+              { err, issueId: issue.id },
+              "failed to resolve recovery action after recovery issue closure",
+            );
           }
         }
 
