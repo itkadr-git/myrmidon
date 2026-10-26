@@ -27,6 +27,7 @@ import {
   createDb,
   heartbeatRuns,
   issueClaims,
+  issueRelations,
   issues,
   projectMemberships,
   projects,
@@ -60,6 +61,7 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueClaims);
+    await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(projectMemberships);
     await db.delete(projects);
@@ -262,6 +264,36 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
 
       expect(result.pairs.map((pair) => pair.issueId)).toEqual([task]);
       expect(await assigneeOf(task)).toBe(agent);
+    });
+
+    it("ignores three assigned todo tasks held by open blockers and claims ready work", async () => {
+      const companyId = await seedCompany();
+      const agent = await seedAgent(companyId, "agent-with-blocked-todos");
+      const blocker = await seedTask(companyId, { status: "in_progress" });
+      const blockedTasks = await Promise.all(
+        Array.from({ length: 3 }, () => seedTask(companyId, { assigneeAgentId: agent })),
+      );
+      await db.insert(issueRelations).values(
+        blockedTasks.map((blockedIssueId) => ({
+          companyId,
+          issueId: blocker,
+          relatedIssueId: blockedIssueId,
+          type: "blocks" as const,
+        })),
+      );
+      const readyTask = await seedTask(companyId);
+      const wakes: string[] = [];
+
+      expect((await openTasksOf(agent))).toHaveLength(3);
+      expect((await openLoadByAgent(db, companyId)).get(agent) ?? 0).toBe(0);
+
+      const result = await matchCompany(deps(wakes, { maxActiveTasks: 3 }), companyId);
+
+      expect(result.pairs.map((pair) => pair.issueId)).toEqual([readyTask]);
+      expect(result.pairs.map((pair) => pair.agentId)).toEqual([agent]);
+      expect(await assigneeOf(readyTask)).toBe(agent);
+      expect(wakes).toEqual([agent]);
+      expect((await openLoadByAgent(db, companyId)).get(agent)).toBe(1);
     });
 
     it("counts a task that is both assigned and leased once", async () => {

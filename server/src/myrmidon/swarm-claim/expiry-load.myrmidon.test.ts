@@ -204,43 +204,6 @@ describeDatabase("swarm expiry race under load", () => {
     await tempDb?.cleanup();
   }, 60_000);
 
-  it("does not count assigned todo tasks held by open blockers toward the matcher ceiling", async () => {
-    await db.delete(issueClaims).where(inArray(issueClaims.issueId, taskIds));
-    await db.delete(issues).where(eq(issues.id, readyTaskId));
-    const load = await openLoadByAgent(db, companyId);
-    expect(load.get(explicitlyAssignedId) ?? 0).toBe(0);
-    expect(load.get(ownerId) ?? 0).toBe(taskCount);
-    const sweep = createSwarmClaimSweeper({
-      db,
-      settings: {
-        getGeneral: async () => ({
-          swarmClaim: {
-            enabled: true,
-            leaseTtlSec: 900,
-            maxActiveTasks: 3,
-            sweepIntervalSec: 5,
-            p0Preemption: true,
-            pheromone: {},
-          },
-        }) as never,
-      },
-      env: {},
-      intervalMs: 0,
-      hostMemoryGate: () => ({ state: "open" } as never),
-      hostCpuGate: () => ({ state: "open" } as never),
-      enqueueWakeup: async () => ({ accepted: true }),
-      castes: async () => [{ key: "engineer", swarmEligible: true, maxActiveTasks: 3 }],
-    });
-    const result = await sweep.sweep(new Date());
-    const ready = await db
-      .select({ assigneeAgentId: issues.assigneeAgentId })
-      .from(issues)
-      .where(eq(issues.id, readyTaskId));
-    expect(ready[0]?.assigneeAgentId).toBe(explicitlyAssignedId);
-    expect(result.idleClaimed).toBe(1);
-    await db.delete(issueClaims).where(inArray(issueClaims.issueId, blockedTaskIds));
-  });
-
   it("preserves every explicit reassignment against an expiry sweep under load", async () => {
     const startedAt = Date.now();
     const now = new Date();

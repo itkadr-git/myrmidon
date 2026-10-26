@@ -123,6 +123,7 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 if (joinedTable === issues || joinedTable === issueRelations) {
                   return {
                     orderBy: () => ({ limit: () => Promise.resolve([]) }),
+                    then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
                   };
                 }
                 return {
