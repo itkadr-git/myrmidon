@@ -868,6 +868,39 @@ describe("issue execution policy transitions", () => {
   });
 
   describe("policy removal mid-flow", () => {
+    it("does not reassign to a reviewer when no safe return assignee exists", () => {
+      const stageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeAgentRole: "reviewer",
+          executionReviewParticipantAgentIds: [qaAgentId],
+          assigneeUserId: null,
+          executionPolicy: null,
+          executionState: {
+            status: "pending",
+            currentStageId: stageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: qaAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: null,
+        requestedStatus: undefined,
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+      });
+
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBeUndefined();
+      expect(result.patch.assigneeUserId).toBeUndefined();
+    });
+
     it("clears execution state when policy removed and returns to executor", () => {
       // Use a real UUID for currentStageId so parseIssueExecutionState succeeds
       const stageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -1174,7 +1207,7 @@ describe("issue execution policy transitions", () => {
         commentBody: "Done",
       });
 
-      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      expect(result.patch.assigneeAgentId).toBe(qaAgentId);
     });
 
     it("skips a self-review-only stage and completes the workflow", () => {
@@ -1428,6 +1461,40 @@ describe("issue execution policy transitions", () => {
   });
 
   describe("changes requested with no return assignee", () => {
+    it("does not clear or replace the assignee when the stored return assignee is a reviewer", () => {
+      const policy = twoStagePolicy();
+      const reviewStageId = policy.stages[0].id;
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionReviewParticipantAgentIds: [qaAgentId],
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: qaAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Changes needed",
+      });
+
+      expect(result.patch.assigneeAgentId).toBeUndefined();
+      expect(result.patch.assigneeUserId).toBeUndefined();
+      expect(result.patch.executionState).toMatchObject({ status: "changes_requested" });
+    });
+
     it("throws when requesting changes with no return assignee", () => {
       const policy = twoStagePolicy();
       const reviewStageId = policy.stages[0].id;

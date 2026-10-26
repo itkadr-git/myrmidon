@@ -13945,6 +13945,16 @@ export function issueRoutes(
         transitionIssue.assigneeAgentRole =
           (await agentsSvc.getById(existing.assigneeAgentId))?.role ?? null;
       }
+      const explicitAssigneePatch = {
+        assigneeAgentId:
+          req.body.assigneeAgentId === undefined
+            ? undefined
+            : (updateFields.assigneeAgentId as string | null),
+        assigneeUserId:
+          req.body.assigneeUserId === undefined
+            ? undefined
+            : (updateFields.assigneeUserId as string | null),
+      };
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
         issue: transitionIssue,
@@ -13954,16 +13964,7 @@ export function issueRoutes(
           typeof updateFields.status === "string"
             ? updateFields.status
             : undefined,
-        requestedAssigneePatch: {
-          assigneeAgentId:
-            req.body.assigneeAgentId === undefined
-              ? undefined
-              : (updateFields.assigneeAgentId as string | null),
-          assigneeUserId:
-            req.body.assigneeUserId === undefined
-              ? undefined
-              : (updateFields.assigneeUserId as string | null),
-        },
+        requestedAssigneePatch: explicitAssigneePatch,
         actor: {
           agentId: actor.agentId ?? null,
           userId: actor.actorType === "user" ? actor.actorId : null,
