@@ -119,7 +119,9 @@ it("counts gateway assistant turns and repeated failed tool rounds without loggi
     await executeHermesGateway(ctx);
     expect(onRunGuardStop).toHaveBeenCalledTimes(1);
     expect(onRunGuardStop).toHaveBeenCalledWith("tool_retry_loop");
-    expect(onLog.mock.calls.flat().join("\\n")).not.toContain("do-not-log");
+    const logged = onLog.mock.calls.flat().join("\\n");
+    expect(logged).not.toContain("do-not-log");
+    expect(logged).toContain('"token":"[redacted]"');
   } finally {
     vi.unstubAllGlobals();
   }

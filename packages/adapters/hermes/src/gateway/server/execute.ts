@@ -887,7 +887,19 @@ function toolNameFromEvent(record: Record<string, unknown> | null): string {
 
 function toolPreviewFromEvent(record: Record<string, unknown> | null, redactText: TextRedactor): string {
   const preview = nonEmpty(record?.preview) ?? nonEmpty(record?.detail) ?? "";
-  return preview ? redactText(preview) : "";
+  if (!preview) return "";
+
+  // Tool arguments may contain arbitrary secrets; redact structured values by
+  // key before rendering the preview into persistent run logs.
+  try {
+    const parsed: unknown = JSON.parse(preview);
+    if (parsed !== null && typeof parsed === "object") {
+      return redactText(JSON.stringify(redactForLog(parsed, [], 0, redactText)));
+    }
+  } catch {
+    // Keep non-JSON previews, while still applying the text redactor below.
+  }
+  return redactText(preview);
 }
 
 function toolDurationSeconds(record: Record<string, unknown> | null): number | null {
