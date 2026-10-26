@@ -70,13 +70,14 @@ function classifyComment(comment: string): Candidate[] {
   const hasNegationOrResolution =
     /\b(?:not|no longer|never)\s+(?:blocked|waiting|awaiting|pending)\b/.test(text) ||
     /\b(?:resolved|completed|cleared|unblocked)\b/.test(text) ||
-    /(?:уже\s+)?не\s+(?:ждем|ожидаем|заблокирован|заблокирована|заблокировано|ждет|ждут)|разблокирован|решен|решено|снят|снято/.test(text);
+    /(?:уже\s+)?не\s+(?:ждем|ожидаем|заблокирован|заблокирована|заблокировано|ждет|ждут)|разблокирован|решен|решено|снят|снято/.test(text) ||
+    /(?:ждем|ожидаем)\s+(?:решения|согласования)\s+(?:владельца|алекса|alex)?/.test(text);
   if (hasNegationOrResolution) return [];
 
   const candidates: Candidate[] = [];
   if (/\b(?:awaiting|waiting for)\s+(?:an?\s+)?(?:human|owner|user)\s+(?:decision|approval|input)\b/.test(text) ||
       /\b(?:human|owner|user)\s+(?:decision|approval|input)\s+(?:is\s+)?(?:required|needed|pending)\b/.test(text) ||
-      /(?:ждем|ожидаем)\s+(?:решения|согласования)\s+(?:владельца|алекса|alex)?|(?:нужно|нужны)\s+(?:решение|согласование)/.test(text)) {
+      /(?:нужно|нужны)\s+(?:решение|согласование)/.test(text)) {
     candidates.push("human_decision");
   }
   if (/\b(?:recovery task|recovery issue|operator action)\s+(?:is\s+)?(?:required|open|pending|created)\b/.test(text) ||
