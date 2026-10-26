@@ -1987,6 +1987,11 @@ describe("review round circuit breaker", () => {
 
     expect(result.patch.status).toBe("in_progress");
     expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+    expect(result.patch.executionState).toMatchObject({
+      status: "changes_requested",
+      changesRequestedCount: 1,
+      lastDecisionOutcome: "changes_requested",
+    });
   });
 
   it("carries the round count through the executor's resubmission", () => {

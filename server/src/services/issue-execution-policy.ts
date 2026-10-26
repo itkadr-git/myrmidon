@@ -790,8 +790,9 @@ function safeReturnAssignee(
       (reviewStage ? stageHasParticipant(reviewStage, principal) : false) ||
       reviewerIds.includes(principal.agentId ?? "");
   };
-  if (isReviewer(currentAssignee) || isReviewer(actor)) return null;
-  return currentAssignee ?? actor;
+  if (!isReviewer(currentAssignee)) return currentAssignee;
+  if (!isReviewer(actor)) return actor;
+  return null;
 }
 
 function clearExecutionStatePatch(input: {
@@ -837,16 +838,34 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     ? existingState?.reviewRequest ?? null
     : input.reviewRequest;
 
+  const safeReturnAssignee = (principal: IssueExecutionStagePrincipal | null) => {
+    if (!principal || principal.type !== "agent") return principal;
+    const isReviewer = (candidate: IssueExecutionStagePrincipal | null) => {
+      if (candidate?.type !== "agent") return false;
+      return (
+        (input.issue.executionReviewParticipantAgentIds ?? []).includes(
+          candidate.agentId ?? "",
+        ) ||
+        (input.issue.assigneeAgentRole === "reviewer" &&
+          candidate.agentId === input.issue.assigneeAgentId)
+      );
+    };
+    if (!isReviewer(principal)) return principal;
+    if (!isReviewer(actor)) return actor;
+    return null;
+  };
+
   if (!input.policy) {
     if (existingState) {
       patch.executionState = null;
-      if (
-        input.issue.status === "in_review" &&
-        (existingState.returnAssignee || requestedAssigneePatchProvided || requestedStatus !== undefined)
-      ) {
+      if (input.issue.status === "in_review") {
         if (requestedStatus === undefined) patch.status = "in_progress";
-        if (existingState.returnAssignee && !requestedAssigneePatchProvided) {
-          Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
+        if (requestedAssigneePatchProvided) {
+          Object.assign(patch, patchForPrincipal(explicitAssignee));
+        } else if (existingState.returnAssignee) {
+          Object.assign(patch, patchForPrincipal(safeReturnAssignee(existingState.returnAssignee)));
+        } else if (requestedStatus !== undefined && actor) {
+          Object.assign(patch, patchForPrincipal(safeReturnAssignee(currentAssignee)));
         }
       }
     }
@@ -858,16 +877,6 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     requestedStatus &&
     requestedStatus !== "done" &&
     requestedStatus !== "cancelled"
-  ) {
-    patch.executionState = null;
-    return { patch };
-  }
-
-  if (
-    requestedAssigneePatchProvided &&
-    input.issue.status === "in_review" &&
-    requestedStatus !== undefined &&
-    requestedStatus !== "in_review"
   ) {
     patch.executionState = null;
     return { patch };

@@ -13915,6 +13915,10 @@ export function issueRoutes(
         updateFields.executionPolicy !== undefined
           ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
           : previousExecutionPolicy;
+      const normalizedAssigneeAgentId =
+        updateFields.assigneeAgentId === undefined
+          ? undefined
+          : (updateFields.assigneeAgentId as string | null);
       if (normalizedAssigneeAgentId !== undefined) {
         updateFields.assigneeAgentId = normalizedAssigneeAgentId;
       }
@@ -13929,24 +13933,25 @@ export function issueRoutes(
         req.body.executionPolicy !== undefined && monitorChanged,
       );
 
-      const reviewParticipantAgentIds = summarizeExecutionParticipants(
-        nextExecutionPolicy,
-        "review",
-      ).flatMap((participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : []);
       const transitionIssue: IssueRouteSnapshot & {
         assigneeAgentRole?: string | null;
         executionReviewParticipantAgentIds?: string[];
         defaultEscalationAgentIds?: string[];
-      } = await withDefaultEscalationChain(db, existing, nextExecutionPolicy);
-      if (
-        existing.status !== "in_review" &&
-        updateFields.status === "in_review" &&
-        existing.assigneeAgentId
-      ) {
+      } = { ...existing };
+      Object.assign(
+        transitionIssue,
+        await withDefaultEscalationChain(db, existing, nextExecutionPolicy),
+      );
+      const reviewParticipantAgentIds = nextExecutionPolicy
+        ? summarizeExecutionParticipants(nextExecutionPolicy, "review").flatMap(
+            (participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
+          )
+        : [];
+      transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
+      if (nextExecutionPolicy === null && existing.assigneeAgentId) {
         transitionIssue.assigneeAgentRole =
           (await agentsSvc.getById(existing.assigneeAgentId))?.role ?? null;
       }
-      transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
         issue: transitionIssue,
@@ -13957,11 +13962,14 @@ export function issueRoutes(
             ? updateFields.status
             : undefined,
         requestedAssigneePatch: {
-          assigneeAgentId: normalizedAssigneeAgentId,
+          assigneeAgentId:
+            req.body.assigneeAgentId === undefined
+              ? undefined
+              : (updateFields.assigneeAgentId as string | null),
           assigneeUserId:
             req.body.assigneeUserId === undefined
               ? undefined
-              : (req.body.assigneeUserId as string | null),
+              : (updateFields.assigneeUserId as string | null),
         },
         actor: {
           agentId: actor.agentId ?? null,
@@ -14308,19 +14316,24 @@ export function issueRoutes(
         actorRunId: actor.runId,
         reviewInteractionId: requestedReviewInteractionId,
       });
+      const effectiveCommentBody = typeof req.body.comment === "string" ? req.body.comment : null;
+      const commentBody = effectiveCommentBody;
+      const reviewRequest = (updateFields.executionState as { reviewRequest?: unknown } | undefined)?.reviewRequest;
       const enteringReviewRequested =
         existing.status !== "in_review" && updateFields.status === "in_review";
       const persistReviewActivityTransactionally =
         enteringReviewRequested || Boolean(reviewInteractionId);
 
-      const nextAssigneeAgentId =
+      const requestedAssigneeAgentId =
         updateFields.assigneeAgentId === undefined
           ? existing.assigneeAgentId
           : (updateFields.assigneeAgentId as string | null);
-      const nextAssigneeUserId =
+      const requestedAssigneeUserId =
         updateFields.assigneeUserId === undefined
           ? existing.assigneeUserId
           : (updateFields.assigneeUserId as string | null);
+      const nextAssigneeAgentId = requestedAssigneeAgentId;
+      const nextAssigneeUserId = requestedAssigneeUserId;
       const assigneeWillChange =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
         nextAssigneeUserId !== existing.assigneeUserId;
@@ -14931,13 +14944,15 @@ export function issueRoutes(
       const attachmentCommentSourceTrust = commentAttachmentIds?.length
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
-        const shouldUseTransactionalIssueUpdate =
-          closesRecoveryIssue ||
+      const reviewActivityRequiresTransaction =
+        persistReviewActivityTransactionally ||
+        nextExecutionPolicy === null;
+      const shouldUseTransactionalIssueUpdate =
+        closesRecoveryIssue ||
           Boolean(commentAttachmentIds?.length) ||
           Boolean(decision) ||
           shouldRelayStop ||
-          enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
-          persistReviewActivityTransactionally ||
+          reviewActivityRequiresTransaction || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
           ((updateFields.status === "in_review" || existing.status === "in_review") &&
             assigneeWillChange) ||
           reviewPolicySensitiveMutationRequested ||
@@ -14947,6 +14962,51 @@ export function issueRoutes(
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            const lockedExisting = await svc.getByIdForUpdate(id, tx);
+            if (!lockedExisting) return null;
+            const lockedReviewParticipants = nextExecutionPolicy
+              ? summarizeExecutionParticipants(nextExecutionPolicy, "review").flatMap(
+                  (participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
+                )
+              : [];
+            const lockedTransitionIssue: typeof transitionIssue = {
+              ...existing,
+              ...lockedExisting,
+              assigneeAgentRole: undefined,
+              executionReviewParticipantAgentIds: lockedReviewParticipants,
+            };
+            if (nextExecutionPolicy === null && lockedExisting.assigneeAgentId) {
+              lockedTransitionIssue.assigneeAgentRole =
+                (await agentsSvc.getById(lockedExisting.assigneeAgentId))?.role ?? null;
+            }
+            const lockedTransition = applyIssueExecutionPolicyTransition({
+              issue: lockedTransitionIssue,
+              policy: nextExecutionPolicy,
+              previousPolicy: previousExecutionPolicy,
+              requestedStatus: updateFields.status,
+              requestedAssigneePatch: explicitAssigneePatch,
+              actor: {
+                agentId: actor.agentId ?? null,
+                userId: actor.actorType === "user" ? actor.actorId : null,
+              },
+              allowBoardOverride: req.actor.type === "board",
+              commentBody,
+              reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
+              monitorExplicitlyUpdated:
+                req.body.executionPolicy !== undefined && monitorChanged,
+            });
+            Object.assign(updateFields, lockedTransition.patch);
+            const lockedDecisionId = lockedTransition.decision ? randomUUID() : null;
+            if (lockedDecisionId) {
+              const nextExecutionState = updateFields.executionState as Record<string, unknown> | null | undefined;
+              if (!nextExecutionState || typeof nextExecutionState !== "object") {
+                throw new Error("Execution policy decision patch is missing executionState");
+              }
+              updateFields.executionState = {
+                ...nextExecutionState,
+                lastDecisionId: lockedDecisionId,
+              };
+            }
             // myrmidon(HANDOFF-CAS): the authoritative compare — re-read the
             // row under SELECT ... FOR UPDATE, re-check CAS expectations and
             // the stopped-run fence (executionRunId unchanged, no live run)
