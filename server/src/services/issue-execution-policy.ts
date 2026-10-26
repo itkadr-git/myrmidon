@@ -394,7 +394,15 @@ export function setIssueExecutionPolicyMonitorScheduledBy(
 
 export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
   if (input == null) return null;
-  const parsed = issueExecutionPolicySchema.safeParse(input);
+  // Older persisted rows may contain `sequential`; accept it only as a legacy
+  // storage value, while the public schema continues rejecting new writes.
+  const normalizedInput =
+    typeof input === "object" &&
+    !Array.isArray(input) &&
+    (input as { mode?: unknown }).mode === "sequential"
+      ? { ...input, mode: "normal" }
+      : input;
+  const parsed = issueExecutionPolicySchema.safeParse(normalizedInput);
   if (!parsed.success) {
     throw unprocessable("Invalid execution policy", parsed.error.flatten());
   }
