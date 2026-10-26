@@ -16245,14 +16245,8 @@ export function issueRoutes(
           ["done", "cancelled"].includes(issue.status);
         if (closesRecoveryIssue && recoveryIssueBecameTerminal) {
           try {
-            let recoveryWake: {
-              agentId: string;
-              actionId: string;
-              sourceIssueId: string;
-              outcome: string | null;
-            } | null = null;
-            await db.transaction(async (tx) => {
-              const recoveryAction = await tx
+            const recoveryWake = await db.transaction(async (tx) => {
+              const [recoveryAction] = await tx
                 .select()
                 .from(issueRecoveryActions)
                 .where(and(
@@ -16260,9 +16254,8 @@ export function issueRoutes(
                   eq(issueRecoveryActions.recoveryIssueId, issue.id),
                   inArray(issueRecoveryActions.status, ["active", "escalated"]),
                 ))
-                .for("update")
-                .then((rows) => rows[0] ?? null);
-              if (!recoveryAction) return;
+                .for("update");
+              if (!recoveryAction) return null;
 
               const resolved = await recoveryActionsSvc.resolveActiveForIssue({
                 companyId: issue.companyId,
@@ -16272,7 +16265,7 @@ export function issueRoutes(
                 outcome: issue.status === "cancelled" ? "cancelled" : "restored",
                 resolutionNote: null,
               }, tx);
-              if (!resolved) return;
+              if (!resolved) return null;
               const [sourceIssue] = await tx
                 .select()
                 .from(issues)
@@ -16292,14 +16285,14 @@ export function issueRoutes(
                   assigneeUserId: null,
                 }, tx);
               }
-              if (resolved.returnOwnerAgentId) {
-                recoveryWake = {
-                  agentId: resolved.returnOwnerAgentId,
-                  actionId: resolved.id,
-                  sourceIssueId: resolved.sourceIssueId,
-                  outcome: resolved.outcome,
-                };
-              }
+              return resolved.returnOwnerAgentId
+                ? {
+                    agentId: resolved.returnOwnerAgentId,
+                    actionId: resolved.id,
+                    sourceIssueId: resolved.sourceIssueId,
+                    outcome: resolved.outcome,
+                  }
+                : null;
             });
             if (recoveryWake) {
               await enqueueRecoveryActionWakeup(recoveryWake.agentId, {
