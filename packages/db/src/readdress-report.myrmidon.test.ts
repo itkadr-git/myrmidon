@@ -57,14 +57,19 @@ describe("interaction readdress report", () => {
       cleanups.push(() => db.$client.end());
 
       const companyId = id(9001);
-      const issueId = id(9002);
+      const projectId = id(9002);
+      const issueId = id(9003);
       await db.execute(sql`
         INSERT INTO companies (id, name, issue_prefix)
         VALUES (${companyId}, 'Interaction readdress report test', 'IRR-REPORT-TEST')
       `);
       await db.execute(sql`
-        INSERT INTO issues (id, company_id, title, identifier)
-        VALUES (${issueId}, ${companyId}, 'Readdress report fixture', 'IRR-1')
+        INSERT INTO projects (id, company_id, name)
+        VALUES (${projectId}, ${companyId}, 'Readdress report fixture project')
+      `);
+      await db.execute(sql`
+        INSERT INTO issues (id, company_id, title, identifier, project_id, caste_key)
+        VALUES (${issueId}, ${companyId}, 'Readdress report fixture', 'IRR-1', ${projectId}, 'review')
       `);
       await db.execute(sql`
         INSERT INTO agents (id, company_id, name)
@@ -77,7 +82,7 @@ describe("interaction readdress report", () => {
       `);
       await db.execute(sql`
         INSERT INTO project_memberships (company_id, project_id, user_id, state)
-        VALUES (${companyId}, ${id(9002)}, ${id(3)}, 'joined'), (${companyId}, ${id(9002)}, ${id(4)}, 'joined')
+        VALUES (${companyId}, ${projectId}, ${id(3)}, 'joined'), (${companyId}, ${projectId}, ${id(4)}, 'joined')
       `);
 
       const inserts = Array.from({ length: 10 }, (_, index) => {
@@ -88,9 +93,9 @@ describe("interaction readdress report", () => {
           routing: {
             routeType: "decision",
             projectRoles: {
-              lead: { type: "agent", agentId: id(1), projectId: id(9002), casteKey: "review", projectRoles: ["lead"], isJoinedMember: true },
-              architect: { type: "agent", agentId: id(3), projectId: id(9002), casteKey: "review", projectRoles: ["architect"], isJoinedMember: true },
-              secondary_reviewer: { type: "agent", agentId: id(4), projectId: id(9002), casteKey: "review", projectRoles: ["secondary_reviewer"], isJoinedMember: true },
+              lead: { type: "agent", agentId: id(1), projectId, casteKey: "review", projectRoles: ["lead"] },
+              architect: { type: "agent", agentId: id(3), projectId, casteKey: "review", projectRoles: ["architect"] },
+              secondary_reviewer: { type: "agent", agentId: id(4), projectId, casteKey: "review", projectRoles: ["secondary_reviewer"] },
             },
             escalationPolicy: {
               participantRoles: ["lead", "architect", "secondary_reviewer"],
