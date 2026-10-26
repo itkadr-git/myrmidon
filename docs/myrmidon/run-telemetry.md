@@ -4,7 +4,7 @@ Heartbeat runs expose an aggregate `resultJson.runTelemetry` snapshot in both ru
 
 ## Model call attribution and costs
 
-The adapter caps each retained ID list at 500 and sets a truncation flag; an explicit gateway `model_call_count` remains authoritative even when only a partial ID list is available. Without an explicit gateway count, ID counts from gateway-call and LiteLLM-request namespaces are combined using the maximum when both sets exist; this is an estimate, not a gateway-reported count. Token usage is aggregated from recorded run usage. Paid-channel LiteLLM spend remains separate from API-equivalent cost estimates for subscription-pool usage.
+`gateway_call_ids` and `litellm_request_ids` are retained in separate bounded lists (up to 500 IDs each); their truncation flags show when a list exceeded the bound. Explicit `model_call_count` supplied by the gateway takes precedence over the lists. The gateway ID fields do not include arbitrary `call_ids` or `model_call_ids`; those aliases are ambiguous. When no explicit count is supplied, the larger unique-ID count across the two namespaces is used as a fallback estimate. Token usage is aggregated from recorded run usage.
 
 API-equivalent prices are operator-managed at Instance → General → Model API pricing. Set input, cached-input, and output USD prices per million tokens for each model. Defaults are `gpt-6-luna` = $0.10 / $0.01 / $0.50 and `gpt-6.1-sol` = $2.00 / $0.10 / $10.00. Models without a configured price are reported as unpriced; pool spend is not written into LiteLLM.
 
