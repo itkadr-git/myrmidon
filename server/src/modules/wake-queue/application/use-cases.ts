@@ -440,7 +440,15 @@ async function promoteDeferredWake(
     issueId: issue.id,
     key: `issue:${issue.id}:head:${workingCandidate.id}`,
   });
-  if (claimed === "deduped") return null;
+  if (claimed === "deduped") {
+    await ports.transaction.cancelDeferredWake({
+      companyId: run.companyId,
+      wakeId: workingCandidate.id,
+      reason: "Deferred execution wake continuation already claimed",
+      now: input.now,
+    });
+    return null;
+  }
 
   const claimedForPromotion = await ports.transaction.claimDeferredWakeForPromotion({
     companyId: run.companyId,
@@ -787,7 +795,7 @@ async function runReleaseRecoveryTail(
     );
   }
 
-  const claimed = await ports.transaction.claimContinuationKey({
+  const claimed = await transaction.claimContinuationKey({
     companyId: issue.companyId,
     issueId: issue.id,
     key: `issue:${issue.id}:head:${run.id}`,

@@ -220,6 +220,14 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .set({ executionRunId: null })
         .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId), eq(issues.executionRunId, runId)));
     },
+    async claimContinuationKey({ companyId, issueId, key }): Promise<"created" | "deduped"> {
+      return tryClaimContinuationKey(tx, {
+        companyId,
+        issueId,
+        key,
+        ttl: 24 * 60 * 60 * 1_000,
+      });
+    },
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
       const agent = await tx
         .select()
@@ -1308,8 +1316,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         const drainResult = await fn(locked, {
           host: buildHost(tx, deps),
           transaction: buildTransaction(tx, deps, db, run),
-          claimContinuationKey: async ({ companyId, issueId, key }) =>
-            tryClaimContinuationKey(tx, { companyId, key, issueId, ttl: 24 * 60 * 60 * 1_000 }),
         });
         drainMs = performance.now() - drainStartedAt;
         return { ...drainResult, run: runSnapshot };
