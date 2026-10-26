@@ -72,6 +72,7 @@
 
 ## Подробнее
 
+- [Корпус посева знаний: решения и справочник продукта](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/knowledge-seed.ru.md)
 - [Форажинг: сбор знаний из одобренных источников](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/foraging.md)
 - [Эталонные задачи и LLM-судья](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/reference-task-evals.md)
 - [Оценки: выбор судьи из другого семейства](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/evals-judge-family-selection.md)
