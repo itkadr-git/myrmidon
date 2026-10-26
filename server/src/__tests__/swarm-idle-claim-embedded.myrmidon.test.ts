@@ -812,8 +812,8 @@ describe("the board-side matcher (OPE-6608 A: a task meets a free agent)", () =>
       const blockerId = await seedTask(companyId, { identifier: "TASK-BLOCKER", status: "done" });
       await db.insert(issueRelations).values({
         companyId,
-        issueId,
-        relatedIssueId: blockerId,
+        issueId: blockerId,
+        relatedIssueId: issueId,
         type: "blocks",
       });
 
