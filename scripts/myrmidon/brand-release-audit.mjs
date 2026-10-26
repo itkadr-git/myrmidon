@@ -107,7 +107,7 @@ const ALLOWLIST = {
     "пользователей Paperclip", "Paperclip base", "Paperclip в основе",
     "основы Paperclip", "Base Paperclip version", "base Paperclip version",
     "базового Paperclip", "База:** Paperclip `v2026.916.1`", "Paperclip (MIT)»",
-    "Paperclip, взятого", "vendor name **Paperclip**", "Имя вендора **Paperclip**", "«Paperclip»", "[Paperclip](https://github.com/paperclipai/paperclip)",
+    "атрибуция MIT «основано на Paperclip» остаётся", "копирайта вендора (Paperclip)",
     "(лицензия MIT\nсохранена", "The Paperclip name remains",
     "Имя\nPaperclip остаётся", "Paperclip остаётся в именах пакетов",
     "рутине Paperclip", "рутина Paperclip", "vendor-product-word exceptions (Cloud", "stays Paperclip",
@@ -130,7 +130,6 @@ const ALLOWLIST = {
     "новое «Myrmidon …»", "MCP-серверов «Paperclip", "«Close the current Paperclip",
     "«Paperclip connected»", "requires a Paperclip", // CLAUDE.md fork pointer
     "его отношение к Paperclip",
-    "«Paperclip»", "[Paperclip](https://github.com/paperclipai/paperclip)",
     "(лицензия MIT\nсохранена", "The Paperclip name remains",
     "Имя\nPaperclip остаётся", "Paperclip остаётся в именах пакетов",
     "рутине Paperclip", "рутина Paperclip", "vendor-product-word exceptions (Cloud",
