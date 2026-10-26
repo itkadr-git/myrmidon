@@ -152,6 +152,7 @@ describe("createCorpusShadowRunner", () => {
     const { runner, rows } = makeRunner({ enabled: true, search });
     await runner.recordShadowCall({
       plan: { dataset: "kb", query: "q" },
+      companyId: "company-1",
       botId: "bot-2",
       ragflowChunkIds: ["r1"],
       ragflowLatencyMs: 30,
@@ -171,7 +172,7 @@ describe("createCorpusShadowRunner", () => {
     };
     const fdb = fakeDb();
     const runner = createCorpusShadowRunner({ db: fdb.db, isEnabled: () => true, search, timeoutMs: 40 });
-    runner.recordShadowCall({ plan: { dataset: null, query: "q" }, botId: null, ragflowChunkIds: [], ragflowLatencyMs: 5 });
+    runner.recordShadowCall({ plan: { dataset: null, query: "q" }, companyId: "company-1", botId: null, ragflowChunkIds: [], ragflowLatencyMs: 5 });
     await runner.settle();
     expect(fdb.rows[0]!.moduleError).toContain("timed out");
     expect(fdb.rows[0]!.moduleChunkIds).toBeNull();
@@ -194,7 +195,7 @@ describe("createCorpusShadowRunner", () => {
     const warn = vi.fn();
     const runner = createCorpusShadowRunner({ db, isEnabled: () => true, timeoutMs: 100, logger: { warn } });
     expect(() =>
-      runner.recordShadowCall({ plan: { dataset: null, query: "q" }, botId: null, ragflowChunkIds: [], ragflowLatencyMs: 1 }),
+      runner.recordShadowCall({ plan: { dataset: null, query: "q" }, companyId: "company-1", botId: null, ragflowChunkIds: [], ragflowLatencyMs: 1 }),
     ).not.toThrow();
     await runner.settle();
     expect(warn).toHaveBeenCalled();
@@ -210,8 +211,9 @@ describe("maybeRecordShadowSearchCall decision gate", () => {
       tool: { name: "mcp.ragflow-1:chat_retrieval", upstreamToolName: "chat_retrieval" },
       execution: null,
       result: {},
-      parameters: { query: "q" },
+      parameters: { query: "q", dataset: "dataset-1" },
       botId: "b",
+      companyId: "company-1",
       latencyMs: 1,
     });
     expect(record).not.toHaveBeenCalled();
@@ -242,6 +244,7 @@ describe("maybeRecordShadowSearchCall decision gate", () => {
         result: {},
         parameters: { query: "q" },
         botId: "b",
+        companyId: "company-1",
         latencyMs: 1,
       }),
     ).not.toThrow();
