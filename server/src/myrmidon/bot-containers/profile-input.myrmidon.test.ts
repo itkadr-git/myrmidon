@@ -1154,7 +1154,9 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
       adapterConfig: { container: { enabled: true, memoryMb: 768 } },
       botLspSettings: { tsserverMemoryMb: 384 },
     }), settings());
-    expect(input.lsp?.servers?.typescript?.initialization_options.maxTsServerMemory).toBe(307);
+    const servers = input.lsp?.servers?.typescript as Record<string, unknown> | undefined;
+    const initializationOptions = servers?.initialization_options as Record<string, unknown> | undefined;
+    expect(initializationOptions?.maxTsServerMemory).toBe(307);
   });
 
   it("turns language servers off for a role that does not write code, and for no role", () => {
