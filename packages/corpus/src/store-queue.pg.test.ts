@@ -278,7 +278,7 @@ d("corpus store/queue on embedded Postgres", () => {
 
     const defaults = await settingsStore.getSettings(companyId);
     expect(defaults.enabled).toBe(false);
-    expect(defaults.defaultEmbeddingModel).toBe("dashscope-text-embedding-v4");
+    expect(defaults.defaultEmbeddingModel).toBe("hindsight-embed-bge-m3");
 
     const updated = await settingsStore.updateSettings(companyId, {
       enabled: true,

@@ -19,8 +19,8 @@ describe("corpus domain", () => {
     expect(isCorpusParseStatus("unknown")).toBe(false);
   });
 
-  it("uses the pilot-proven embedding defaults", () => {
-    expect(CORPUS_DEFAULT_EMBEDDING_MODEL).toBe("dashscope-text-embedding-v4");
+  it("uses the bge-m3 embedding default with 1024 dimensions", () => {
+    expect(CORPUS_DEFAULT_EMBEDDING_MODEL).toBe("hindsight-embed-bge-m3");
     expect(CORPUS_EMBEDDING_DIMENSIONS).toBe(1024);
   });
 

@@ -18,7 +18,7 @@ it imports nothing RAGFlow-related and builds without any external service.
   - `BlobStore` — raw document bytes;
   - `DocumentParser` — HTTP client port of the external parse service;
   - `Embedder` — OpenAI-compatible embeddings endpoint (the company gateway;
-    default model `dashscope-text-embedding-v4`, 1024 dimensions).
+    default model `hindsight-embed-bge-m3`, 1024 dimensions).
 - `src/postgres/` — PostgreSQL implementations of `CorpusStore`, `WorkQueue`
   and the module settings store. This is the only layer with SQL dialect
   operators (`vector`, `tsvector`, `FOR UPDATE SKIP LOCKED`, ...).

@@ -27,6 +27,8 @@ export const OCR_TIMEOUT_SEC_ENV = "MYRMIDON_OCR_TIMEOUT_SEC";
 export type OcrBackendKind = "ragflow" | "litellm";
 
 export const DEFAULT_OCR_BACKEND: OcrBackendKind = "ragflow";
+/** Replacement vision model; used when the LiteLLM backend has no explicit model setting. */
+export const DEFAULT_OCR_MODEL = "chatgpt-pool/gpt-6-luna";
 export const DEFAULT_OCR_MAX_BYTES = 32 * 1024 * 1024;
 export const DEFAULT_OCR_MAX_PAGES = 500;
 export const DEFAULT_OCR_MAX_CHARS = 2_000_000;
@@ -83,7 +85,7 @@ export function readOcrSettings(env: NodeJS.ProcessEnv = process.env): OcrSettin
     backend,
     baseUrl,
     keySecret,
-    model: env[OCR_MODEL_ENV]?.trim() || (live("ocrModel") as string | undefined) || null,
+    model: env[OCR_MODEL_ENV]?.trim() || (live("ocrModel") as string | undefined) || DEFAULT_OCR_MODEL,
     maxBytes: readPositiveInt(env[OCR_MAX_BYTES_ENV] ?? (live("ocrMaxBytes") as number | undefined)?.toString(), DEFAULT_OCR_MAX_BYTES, Number.MAX_SAFE_INTEGER),
     maxPages: readPositiveInt(env[OCR_MAX_PAGES_ENV] ?? (live("ocrMaxPages") as number | undefined)?.toString(), DEFAULT_OCR_MAX_PAGES, Number.MAX_SAFE_INTEGER),
     maxChars: readPositiveInt(env[OCR_MAX_CHARS_ENV] ?? (live("ocrMaxChars") as number | undefined)?.toString(), DEFAULT_OCR_MAX_CHARS, Number.MAX_SAFE_INTEGER),

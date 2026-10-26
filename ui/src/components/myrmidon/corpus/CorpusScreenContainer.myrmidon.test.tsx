@@ -47,7 +47,7 @@ vi.mock("@/i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }
 const STORED = {
   enabled: true,
   parsingServiceBaseUrl: "http://parsers.internal:8080",
-  embedderModel: "text-embedding-v4",
+  embedderModel: "hindsight-embed-bge-m3",
   limits: { maxUploadMb: 25, maxDocumentsPerDataset: 500, searchTopK: 5 },
   workerPool: 2,
 };
