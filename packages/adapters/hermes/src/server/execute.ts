@@ -258,6 +258,18 @@ interface ParsedOutput {
   errorMessage?: string;
 }
 
+export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
+  /^(?:the )?server is (?:sometimes )?overloaded.*(?:please retry|try again)[.!]?$/i,
+  /^(?:rate limit|too many requests|quota exceeded).*(?:retry|try again)[.!]?$/i,
+  /^(?:provider|service) (?:is )?(?:temporarily )?(?:unavailable|overloaded).*(?:retry|try again)[.!]?$/i,
+  /^(?:insufficient quota|billing limit reached).*(?:retry|contact)[.!]?$/i,
+];
+
+export function isProviderErrorAsContent(response: string): boolean {
+  const normalized = response.trim().replace(/\s+/g, " ");
+  return PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
 // ---------------------------------------------------------------------------
 // Response cleaning
 // ---------------------------------------------------------------------------
@@ -667,6 +679,12 @@ export async function execute(
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const providerErrorAsContent = Boolean(parsed.response && isProviderErrorAsContent(parsed.response));
+  if (providerErrorAsContent) {
+    await ctx.onLog("stderr", `[hermes] provider_error_as_content model=${model}\n`);
+    parsed.errorMessage = "Provider returned an overload or quota error as successful response content";
+    parsed.response = undefined;
+  }
 
   await ctx.onLog(
     "stdout",
@@ -687,6 +705,10 @@ export async function execute(
 
   if (parsed.errorMessage) {
     executionResult.errorMessage = parsed.errorMessage;
+    if (providerErrorAsContent) {
+      executionResult.errorCode = "hermes_transient_upstream";
+      executionResult.errorFamily = "transient_upstream";
+    }
   } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
   }
