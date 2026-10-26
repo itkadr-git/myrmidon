@@ -105,7 +105,7 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) knowledge tree", () => {
     expect(ui2Messages.ru["ui2.knowledge.sources.title"]).toBe("Источники");
     expect(ui2Messages.ru["ui2.knowledge.item.status.pending_review"]).toBe("Требует одобрения");
     expect(ui2Messages.ru["ui2.knowledge.item.updated"]).toContain("Обновлено");
-    expect(ui2Messages.ru["ui2.knowledge.item.reviewDue"]).toContain("проверку");
+    expect(ui2Messages.ru["ui2.knowledge.item.reviewDue"]).toContain("пересмотреть");
   });
 
 
