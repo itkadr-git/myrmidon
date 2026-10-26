@@ -123,6 +123,10 @@ type ExecutionState = {
    * Initialized at run creation, so a run whose stream never connects still
    * stalls after its full timeoutSec. */
   lastEventAtMs: number;
+  /** Raw tool args are ephemeral and only passed to RunGuard's hash-only signature. */
+  guardToolArguments: Map<string, unknown[]>;
+  guardModelTurnObserved: boolean;
+  guardPendingToolCalls: number;
 };
 
 type TextRedactor = (value: string) => string;
@@ -933,6 +937,62 @@ function popToolPreview(state: ExecutionState, name: string): string {
   return queue?.shift() ?? "";
 }
 
+function pushGuardToolArguments(state: ExecutionState, name: string, args: unknown): void {
+  const queue = state.guardToolArguments.get(name);
+  if (queue) queue.push(args);
+  else state.guardToolArguments.set(name, [args]);
+}
+
+function popGuardToolArguments(state: ExecutionState, name: string): unknown {
+  const queue = state.guardToolArguments.get(name);
+  if (!queue) return undefined;
+  const args = queue.shift();
+  if (queue.length === 0) state.guardToolArguments.delete(name);
+  return args;
+}
+
+async function observeModelTurn(ctx: AdapterExecutionContext, state: ExecutionState): Promise<void> {
+  if (!ctx.runGuard || state.guardModelTurnObserved) return;
+  state.guardModelTurnObserved = true;
+  const decision = ctx.runGuard.modelCall();
+  if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+}
+
+async function observeRunGuardEvent(input: {
+  ctx: AdapterExecutionContext;
+  state: ExecutionState;
+  eventName: string | null;
+  record: Record<string, unknown> | null;
+}): Promise<void> {
+  const { ctx, state, eventName, record } = input;
+  const guard = ctx.runGuard;
+  if (!guard) return;
+  if (eventName === "tool.started") {
+    state.guardPendingToolCalls += 1;
+    await observeModelTurn(ctx, state);
+    const name = toolNameFromEvent(record);
+    const args = record?.input ?? record?.arguments ?? record?.preview;
+    if (args !== undefined) pushGuardToolArguments(state, name, args);
+    guard.event();
+    return;
+  }
+  if (eventName === "tool.completed") {
+    state.guardPendingToolCalls = Math.max(0, state.guardPendingToolCalls - 1);
+    const name = toolNameFromEvent(record);
+    const args = popGuardToolArguments(state, name);
+    const decision = toolHasError(record)
+      ? guard.toolFailure(name, args)
+      : guard.toolSuccess();
+    if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+    if (state.guardPendingToolCalls === 0) state.guardModelTurnObserved = false;
+    return;
+  }
+  if (eventName === "message.delta" && state.guardPendingToolCalls === 0) {
+    await observeModelTurn(ctx, state);
+  }
+  guard.event();
+}
+
 /** `  [tool] <name> <preview>` — real hermes chat prints this per agent/display.py's
  * Spinner._animate(); parseHermesStdoutLine() deliberately discards it (the [done]
  * completion line below carries the structured data), so it exists for human log
@@ -1136,6 +1196,7 @@ async function handleEvent(input: {
   // myrmidon(N4-RUN-LIVENESS): every gateway event is proof of life; the
   // liveness watch (when enabled) reads this stamp instead of the wall clock.
   touchRunLiveness(state);
+  await observeRunGuardEvent({ ctx, state, eventName, record });
 
   if (debugEvents) {
     // myrmidon(G4): raw event JSON is now opt-in (adapterConfig.debugEvents);

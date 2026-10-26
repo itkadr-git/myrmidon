@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
-import { RunGuard, toolFailureSignature } from "@myrmidon/adapter-utils";
+import { RunGuard, toolFailureSignature, type AdapterExecutionContext } from "@myrmidon/adapter-utils";
+import { execute as executeHermesGateway } from "@myrmidon/hermes-paperclip-adapter/gateway/server";
 import { legacyExecutionNeedsReconciliation } from "./legacy-execution-recovery.js";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../myrmidon/maintenance/domain.js";
 
@@ -77,6 +78,93 @@ it("counts identical failed tools across events, resets on success or different 
   expect(resetOnDifferentSignature.toolFailure("patch", args).reason).toBe("tool_retry_loop");
 });
 
+
+it("counts gateway assistant turns and repeated failed tool rounds without logging tool arguments", async () => {
+  const guard = new RunGuard({ modelCallLimit: 10, toolRetryLimit: 3 });
+  const onRunGuardStop = vi.fn(async () => undefined);
+  const onLog = vi.fn(async () => undefined);
+  const preview = JSON.stringify({ token: "do-not-log", path: "src/a.ts" });
+  const frames = [
+    ["message.delta", { delta: "first response" }],
+    ["tool.started", { tool: "patch", preview }],
+    ["tool.completed", { tool: "patch", error: "failed" }],
+    ["message.delta", { delta: "second response" }],
+    ["tool.started", { tool: "patch", preview }],
+    ["tool.completed", { tool: "patch", error: "failed" }],
+    ["message.delta", { delta: "third response" }],
+    ["tool.started", { tool: "patch", preview }],
+    ["tool.completed", { tool: "patch", error: "failed" }],
+    ["run.completed", { status: "completed", output: "done" }],
+  ] as const;
+  const newline = String.fromCharCode(10);
+  const sse = frames.map(([event, data]) => [`event: ${event}`, `data: ${JSON.stringify(data)}`, "", ""].join(newline)).join("");
+  const ctx: AdapterExecutionContext = {
+    runId: "guard-test-run",
+    agent: { id: "agent-test", companyId: "company-test", name: "test", adapterType: "hermes_gateway", adapterConfig: {} },
+    runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: "issue-test" },
+    config: { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "test-only", timeoutSec: 10, sessionKeyStrategy: "run" },
+    context: { issueId: "issue-test" },
+    runGuard: guard,
+    onRunGuardStop,
+    onLog,
+    onMeta: vi.fn(async () => undefined),
+  };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "guard-test-gateway-run", status: "started" }), { status: 200 });
+    if (url.endsWith("/events")) return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+    return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+  }));
+  try {
+    await executeHermesGateway(ctx);
+    expect(onRunGuardStop).toHaveBeenCalledTimes(1);
+    expect(onRunGuardStop).toHaveBeenCalledWith("tool_retry_loop");
+    expect(onLog.mock.calls.flat().join("\\n")).not.toContain("do-not-log");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("counts gateway model rounds once per assistant response and stops before the limit is exceeded", async () => {
+  const guard = new RunGuard({ modelCallLimit: 2 });
+  const onRunGuardStop = vi.fn(async () => undefined);
+  const frames = [
+    ["message.delta", { delta: "first" }],
+    ["tool.started", { tool: "noop" }],
+    ["tool.completed", { tool: "noop" }],
+    ["message.delta", { delta: "second" }],
+    ["tool.started", { tool: "noop" }],
+    ["tool.completed", { tool: "noop" }],
+    ["message.delta", { delta: "third" }],
+    ["run.completed", { status: "completed", output: "done" }],
+  ] as const;
+  const newline = String.fromCharCode(10);
+  const sse = frames.map(([event, data]) => [`event: ${event}`, `data: ${JSON.stringify(data)}`, "", ""].join(newline)).join("");
+  const ctx: AdapterExecutionContext = {
+    runId: "guard-model-test-run",
+    agent: { id: "agent-test", companyId: "company-test", name: "test", adapterType: "hermes_gateway", adapterConfig: {} },
+    runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: "issue-test" },
+    config: { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "test-only", timeoutSec: 10, sessionKeyStrategy: "run" },
+    context: { issueId: "issue-test" },
+    runGuard: guard,
+    onRunGuardStop,
+    onLog: vi.fn(async () => undefined),
+    onMeta: vi.fn(async () => undefined),
+  };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "guard-model-gateway-run", status: "started" }), { status: 200 });
+    if (url.endsWith("/events")) return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+    return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+  }));
+  try {
+    await executeHermesGateway(ctx);
+    expect(onRunGuardStop).toHaveBeenCalledTimes(1);
+    expect(onRunGuardStop).toHaveBeenCalledWith("model_call_limit");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 const stopped = {
   runtimeMode: "legacy", status: "cancelled", errorCode: "cancelled",
