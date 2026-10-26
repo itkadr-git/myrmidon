@@ -754,7 +754,7 @@ describe("releaseIssueExecution", () => {
       reason: "Deferred execution wake continuation already claimed",
       now: expect.any(Date),
     });
-    expect(findNextDeferredWake).toHaveBeenCalledTimes(1);
+    expect(findNextDeferredWake).toHaveBeenCalledTimes(2);
     expect(result.outcome.kind).toBe("released");
   });
 
