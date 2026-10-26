@@ -372,7 +372,6 @@ describe("issue activity event routes", () => {
     expect(response.body).toMatchInlineSnapshot(`
       {
         "assigneeAgentId": "22222222-2222-4222-8222-222222222222",
-        "assigneeAgentRole": null,
         "assigneeUserId": null,
         "changes": {
           "priority": {
