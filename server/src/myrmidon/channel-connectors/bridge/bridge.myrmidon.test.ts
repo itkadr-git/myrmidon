@@ -131,7 +131,8 @@ describe("bridge seam: theme selection", () => {
 // Telegram helper modules). The shared re-export of point 70 stays in
 // `packages/shared` on purpose: it is the data contract (types and validators
 // the board UI reads too), not a bridge call the connector can serve.
-const BATCH_SEAM = "myrmidon/channel-connectors/bridge/";const CONVERTED: {
+const BATCH_SEAM = "myrmidon/channel-connectors/bridge/";
+const CONVERTED: {
   file: string;
   legacy: string;
   seam: string;
@@ -421,7 +422,8 @@ const BATCH3_SEAM_MODULES = [
   "telegram-media.ts",
   "telegram-photo.ts",
   "telegram-ephemeral.ts",
-  "telegram-rich.ts",];
+  "telegram-rich.ts",
+];
 
 const SRC_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "..");
 
