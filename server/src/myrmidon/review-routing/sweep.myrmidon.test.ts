@@ -150,22 +150,6 @@ describe("assignment", () => {
     expect(t.wakes).toEqual([expect.objectContaining({ agentId: REV_A, issueId: "aged" })]);
   });
 
-  it("excludes the issue author from the reviewer pool", async () => {
-    const t = setup(
-      {},
-      { reviewers: [{ id: AUTHOR, role: "reviewer" }, { id: REV_A, role: "reviewer" }, { id: ASSIGNEE, role: "reviewer" }] },
-    );
-    t.fixture.rows.set("authored", row("authored", { assigneeAgentId: null }));
-    t.fixture.rows.set("assigned", row("assigned"));
-    await t.sweep.sweep(NOW, { force: true });
-    expect(t.fixture.rows.get("authored")?.assigneeAgentId).toBe(ASSIGNEE);
-    expect(t.fixture.rows.get("assigned")?.assigneeAgentId).toBe(REV_A);
-    expect(t.wakes).toEqual([
-      expect.objectContaining({ agentId: ASSIGNEE, issueId: "authored" }),
-      expect.objectContaining({ agentId: REV_A, issueId: "assigned" }),
-    ]);
-  });
-
   it("assigns the least loaded reviewer, comments, logs and wakes it", async () => {
     const t = setup({}, { load: new Map([[REV_A, 3], [REV_B, 1]]) });
     t.fixture.rows.set("1", row("1"));

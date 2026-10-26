@@ -224,20 +224,35 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
 
     async countUnroutedReviewIssues(companyId, asOf = new Date()) {
       const rows = await db
-        .select({ id: issues.id, updatedAt: issues.updatedAt, executionPolicy: issues.executionPolicy, executionState: issues.executionState, reviewPolicy: issues.reviewPolicy })
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
+          responsibleUserId: issues.responsibleUserId,
+          conversationAgentId: issues.conversationAgentId,
+          conversationUserId: issues.conversationUserId,
+          updatedAt: issues.updatedAt,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          reviewPolicy: issues.reviewPolicy,
+        })
         .from(issues)
-        .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_review"), isNull(issues.hiddenAt)));
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.status, "in_review"),
+          isNull(issues.hiddenAt),
+          isNull(issues.conversationAgentId),
+          isNull(issues.conversationUserId),
+        ));
       const recoveryCutoff = asOf.getTime() - 15 * 60 * 1000;
-      return rows.filter((row) => row.updatedAt.getTime() <= recoveryCutoff && issueNeedsReviewer({
-        id: row.id,
-        status: "in_review",
-        assigneeAgentId: null,
-        assigneeUserId: null,
-        createdByAgentId: null,
-        createdByUserId: null,
-        executionPolicy: row.executionPolicy,
-        executionState: row.executionState,
-        reviewPolicy: row.reviewPolicy ?? null,
+      return rows.filter((row) => issueNeedsReviewer({
+        ...row,
+        reviewPathRecoveryEligible: row.updatedAt.getTime() <= recoveryCutoff,
+        reviewRecoveryNow: asOf,
+        reviewRecoveryUpdatedAt: row.updatedAt,
       })).length;
     },
 
