@@ -42,7 +42,7 @@ describe("nextContinuationDelay", () => {
   });
 
   it("keeps the first event immediate and expires events at the window boundary", () => {
-    const events = simulateWindow(WINDOW_MS, MAX_EVENTS + 1);
+    const events = simulateWindow(WINDOW_MS, MAX_EVENTS + 2);
     expect(events[0]).toBe(0);
     expect(events[MAX_EVENTS]).toBe(WINDOW_MS);
     expect(events[MAX_EVENTS + 1]).toBe(WINDOW_MS + WINDOW_MS / MAX_EVENTS);
