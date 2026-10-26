@@ -145,7 +145,7 @@ export const NOT_COOLING: IssueCoolingStatus = {
 };
 
 function runIsStale(
-  row: { status: string; livenessState: string | null; cancellationSource?: string | null },
+  row: { status: string; livenessState: string | null },
   issueStatus: string,
 ): boolean {
   if (row.status === "cancelled") return false;
@@ -163,7 +163,6 @@ export interface CoolingRun {
   agentId: string | null;
   status: string;
   livenessState: string | null;
-  cancellationSource: string | null;
   finishedAt: Date | null;
   startedAt: Date | null;
   createdAt: Date;
@@ -281,7 +280,6 @@ export async function isIssueCoolingDown(
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         livenessState: heartbeatRuns.livenessState,
-        cancellationSource: sql<string | null>`(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code')`,
         finishedAt: heartbeatRuns.finishedAt,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
