@@ -13,7 +13,7 @@ import {
   normalizeReviewRoutingSettings,
   type ReviewRoutingSettings,
 } from "@myrmidon/shared";
-import { readReviewRoutingSignals, resetReviewRoutingSignals } from "./attention.js";
+import { readReviewRoutingSignals, resetReviewRoutingSignals, setImmediateNoReviewerSignal } from "./attention.js";
 import type { CreatePrRoutingTaskInput, InReviewIssueRow, PrCandidateRow, PrRoutingKind, ReviewRoutingStore, RoutingHistory } from "./store.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
@@ -232,6 +232,42 @@ describe("assignment", () => {
 });
 
 describe("no reviewer available", () => {
+  it("sets one immediate no_reviewer signal until a reviewer is assigned", () => {
+    const signal = {
+      kind: "no_reviewer" as const,
+      issueId: "1",
+      companyId: COMPANY,
+      identifier: "T-1",
+      title: "Task 1",
+      since: NOW.toISOString(),
+      hoursInReview: null,
+    };
+    setImmediateNoReviewerSignal(signal, true);
+    setImmediateNoReviewerSignal({ ...signal, since: new Date(NOW.getTime() + 1000).toISOString() }, true);
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([
+      expect.objectContaining({ kind: "no_reviewer", issueId: "1", since: NOW.toISOString() }),
+    ]);
+    setImmediateNoReviewerSignal(signal, false);
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
+
+  it("preserves immediate route signals when a later sweep replaces the company's set", () => {
+    const signal = {
+      kind: "no_reviewer" as const,
+      issueId: "2",
+      companyId: COMPANY,
+      identifier: "T-2",
+      title: "Task 2",
+      since: NOW.toISOString(),
+      hoursInReview: null,
+    };
+    setImmediateNoReviewerSignal(signal, true);
+    replaceReviewRoutingSignals(COMPANY, []);
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([expect.objectContaining({ issueId: "2" })]);
+    setImmediateNoReviewerSignal(signal, false);
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
+
   it("raises a no_reviewer signal instead of staying silent", async () => {
     const t = setup({}, { reviewers: [] });
     t.fixture.rows.set("1", row("1"));

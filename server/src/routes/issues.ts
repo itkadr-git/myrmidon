@@ -21,7 +21,16 @@ import {
   REASSIGN_UNBLOCK_NOTE,
   type HumanUnblockResult,
 } from "../myrmidon/settled-holds/human-unblock.js";
-import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@myrmidon/shared";
+import {
+  extractIssueReferenceIdentifiers,
+  requiresExecutionReconciliation,
+  EXECUTION_RECONCILIATION_CAUSES,
+  REVIEW_ROUTING_SETTINGS_KEY,
+  normalizeReviewRoutingSettings,
+  isAgentStatusInvokable,
+} from "@myrmidon/shared";
+import { setImmediateNoReviewerSignal } from "../myrmidon/review-routing/attention.js";
+import { issueNeedsReviewer, type RoutingIssue } from "../myrmidon/review-routing/policy.js";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -16451,6 +16460,81 @@ export function issueRoutes(
               },
             }
           : {};
+      const reviewerSignalIssue =
+        issue && issue.status === "in_review"
+          ? ({
+              id: issue.id,
+              status: issue.status,
+              assigneeAgentId: issue.assigneeAgentId,
+              assigneeUserId: issue.assigneeUserId,
+              createdByAgentId: issue.createdByAgentId,
+              createdByUserId: issue.createdByUserId,
+              responsibleUserId: issue.responsibleUserId,
+              executionPolicy: issue.executionPolicy,
+              executionState: issue.executionState,
+              reviewPolicy: issue.reviewPolicy,
+            } satisfies RoutingIssue)
+          : null;
+      const needsReviewer = reviewerSignalIssue ? issueNeedsReviewer(reviewerSignalIssue) : false;
+      if (issue && issue.id === existing.id) {
+        let unavailable = false;
+        if (needsReviewer) {
+          const general = await instanceSettings.getGeneral();
+          const settings = normalizeReviewRoutingSettings(
+            (general as unknown as Record<string, unknown>)[REVIEW_ROUTING_SETTINGS_KEY],
+          );
+          unavailable = settings.enabled && issue.reviewPolicy !== "human_only";
+          if (settings.enabled && issue.reviewPolicy !== "human_only") {
+            const reviewerRows = settings.reviewerRoles.length
+              ? await db
+                  .select({ id: agents.id, role: agents.role, status: agents.status })
+                  .from(agents)
+                  .where(
+                    and(
+                      eq(agents.companyId, issue.companyId),
+                      inArray(agents.role, settings.reviewerRoles),
+                    ),
+                  )
+              : [];
+            const loadRows = reviewerRows.length
+              ? await db
+                  .select({ agentId: issueRows.assigneeAgentId, count: sql<number>`count(*)::int` })
+                  .from(issueRows)
+                  .where(
+                    and(
+                      eq(issueRows.companyId, issue.companyId),
+                      isNull(issueRows.hiddenAt),
+                      sql`${issueRows.status} in ('in_progress', 'in_review')`,
+                      inArray(issueRows.assigneeAgentId, reviewerRows.map((agent) => agent.id)),
+                    ),
+                  )
+                  .groupBy(issueRows.assigneeAgentId)
+              : [];
+            const load = new Map(loadRows.map((row) => [row.agentId!, row.count]));
+            const excluded = new Set(
+              [issue.createdByAgentId, issue.assigneeAgentId].filter((agentId): agentId is string => !!agentId),
+            );
+            unavailable = !reviewerRows.some(
+              (agent) =>
+                isAgentStatusInvokable(agent.status) &&
+                !excluded.has(agent.id) &&
+                (load.get(agent.id) ?? 0) < settings.maxLoadPerReviewer,
+            );
+          }
+        }
+        setImmediateNoReviewerSignal(
+          {
+            kind: "no_reviewer",
+            issueId: issue.id,
+            companyId: issue.companyId,
+            identifier: issue.identifier,
+            title: issue.title,
+            since: new Date().toISOString(),
+            hoursInReview: null,
+          },
+          unavailable,
+        );
+      }
       if (prefersMinimalIssueUpdateResponse(req)) {
         res.setHeader("Preference-Applied", "return=minimal");
         res.json({

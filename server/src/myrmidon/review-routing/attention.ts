@@ -65,6 +65,7 @@ export function prSignalSubjectId(repository: string, number: number): string {
 }
 
 const signalsByCompany = new Map<string, Map<string, ReviewRoutingSignal>>();
+const immediateNoReviewerByCompany = new Map<string, Map<string, ReviewRoutingSignal>>();
 
 /** Registry key: a task may hold one card per kind; PR cards key on the synthetic subject. */
 function signalKey(signal: ReviewRoutingSignal): string {
@@ -87,16 +88,44 @@ export function replaceReviewRoutingSignals(companyId: string, next: ReviewRouti
     const before = previous?.get(signalKey(signal));
     byKey.set(signalKey(signal), before ? { ...signal, since: before.since } : signal);
   }
-  signalsByCompany.set(companyId, byKey);
+  for (const [key, signal] of immediateNoReviewerByCompany.get(companyId) ?? []) {
+    const current = byKey.get(key);
+    byKey.set(key, current ? { ...current, since: signal.since } : signal);
+  }
+  if (byKey.size === 0) signalsByCompany.delete(companyId);
+  else signalsByCompany.set(companyId, byKey);
 }
 
 export function readReviewRoutingSignals(companyId: string): ReviewRoutingSignal[] {
   return [...(signalsByCompany.get(companyId)?.values() ?? [])];
 }
 
+export function setImmediateNoReviewerSignal(
+  signal: ReviewRoutingSignal,
+  unresolved: boolean,
+): void {
+  const current = signalsByCompany.get(signal.companyId) ?? new Map<string, ReviewRoutingSignal>();
+  const immediate = immediateNoReviewerByCompany.get(signal.companyId) ?? new Map<string, ReviewRoutingSignal>();
+  const key = signalKey({ ...signal, kind: "no_reviewer" });
+  if (unresolved) {
+    const previous = immediate.get(key) ?? current.get(key);
+    const next = previous ? { ...signal, since: previous.since } : signal;
+    immediate.set(key, next);
+    current.set(key, next);
+  } else {
+    immediate.delete(key);
+    current.delete(key);
+  }
+  if (immediate.size === 0) immediateNoReviewerByCompany.delete(signal.companyId);
+  else immediateNoReviewerByCompany.set(signal.companyId, immediate);
+  if (current.size === 0) signalsByCompany.delete(signal.companyId);
+  else signalsByCompany.set(signal.companyId, current);
+}
+
 /** Test helper: forget every recorded signal. */
 export function resetReviewRoutingSignals(): void {
   signalsByCompany.clear();
+  immediateNoReviewerByCompany.clear();
 }
 
 export function reviewRoutingSignalDedupKey(signal: ReviewRoutingSignal): string {

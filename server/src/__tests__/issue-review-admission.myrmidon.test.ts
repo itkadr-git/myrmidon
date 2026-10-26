@@ -17,6 +17,7 @@ import {
 } from "./helpers/route-test-harness.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { readReviewRoutingSignals, resetReviewRoutingSignals } from "../myrmidon/review-routing/attention.js";
 
 // myrmidon(REVIEW-ADMISSION): issue transition to in_review and reviewer wake
 // must be written in the same database transaction via PATCH /api/issues/:id.
@@ -42,6 +43,7 @@ const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
 describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", () => {
   it("transitions to in_review and writes reviewer wake atomically via real PATCH route", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission atomic");
+    resetReviewRoutingSignals();
     const reviewerAgentId = randomUUID();
     await ctx.db.insert(agents).values({
       id: reviewerAgentId,
