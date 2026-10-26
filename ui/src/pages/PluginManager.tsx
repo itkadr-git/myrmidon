@@ -464,21 +464,19 @@ export function PluginManager() {
                   <div className="flex shrink-0 self-center">
                     <div className="flex flex-col items-end gap-2">
                       <div className="flex items-center gap-2">
-                        <Badge
-                          variant={
-                            plugin.status === "ready"
-                              ? "default"
-                              : plugin.status === "error"
-                                ? "destructive"
-                              : "secondary"
-                          }
-                          className={cn(
-                            "shrink-0",
-                            plugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""
-                          )}
-                        >
-                          {plugin.status}
-                        </Badge>
+                        {plugin.status === "ready" ? (
+                          <Badge variant="default" className="shrink-0 bg-green-600 hover:bg-green-700">{plugin.status}</Badge>
+                        ) : plugin.status === "error" ? (
+                          <Badge variant="destructive" className="shrink-0">{plugin.status}</Badge>
+                        ) : plugin.status === "disabled" ? (
+                          <Badge variant="secondary" className="shrink-0">{plugin.status}</Badge>
+                        ) : plugin.status === "upgrade_pending" ? (
+                          <Badge variant="secondary" className="shrink-0">{plugin.status}</Badge>
+                        ) : (
+                          <Badge variant="secondary" className="shrink-0" role="status" aria-live="polite">
+                            {t("area.adapters-plugins-2.plugin-manager.loading")}
+                          </Badge>
+                        )}
                         <Button
                           variant="outline"
                           size="icon-sm"
@@ -487,11 +485,11 @@ export function PluginManager() {
                           onClick={() => {
                             if (plugin.status === "ready") {
                               disableMutation.mutate(plugin.id);
-                            } else {
+                            } else if (plugin.status === "disabled" || plugin.status === "error") {
                               enableMutation.mutate(plugin.id);
                             }
                           }}
-                          disabled={enableMutation.isPending || disableMutation.isPending}
+                          disabled={plugin.status !== "ready" && plugin.status !== "disabled" && plugin.status !== "error" || enableMutation.isPending || disableMutation.isPending}
                         >
                           <Power className={cn("h-4 w-4", plugin.status === "ready" ? "text-green-600" : "")} />
                         </Button>

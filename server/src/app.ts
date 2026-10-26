@@ -791,10 +791,12 @@ export async function createApp(
   const app = express();
   app.locals.paperclipDb = db;
   const pluginReadiness = {
-    boardReadyAt: null as number | null,
+    boardReadyAt: Date.now() as number | null,
     plugins: new Map<string, { pluginId: string; pluginKey: string; readyAt: number }>(),
   };
   app.locals.pluginReadiness = pluginReadiness;
+  const readinessOrigin = Date.now();
+  pluginReadiness.boardReadyAt = readinessOrigin;
   const captureRawBody = (
     req: express.Request,
     _res: express.Response,
@@ -1387,8 +1389,7 @@ export async function createApp(
             pluginKey,
             boardReadyAt: pluginReadiness.boardReadyAt,
             readyAt,
-            readyAfterBoardReadyMs:
-              pluginReadiness.boardReadyAt === null ? null : readyAt - pluginReadiness.boardReadyAt,
+            readyAfterBoardReadyMs: readyAt - (pluginReadiness.boardReadyAt ?? readyAt),
           },
           "plugin readiness: ready",
         );
