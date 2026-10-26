@@ -752,7 +752,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     },
   );
 
-  it("does not repeatedly wake review changes after a system cancellation or cool an actual stale failure", async () => {
+  it("does not repeatedly wake review changes after a system cancellation or cool an actual stale issue", async () => {
     const { companyId, agentId } = await seedAgent();
     const systemCancelled = await seedIssue({ companyId, agentId, status: "in_progress" });
     await db.update(issues).set({ executionState: { status: "changes_requested" } }).where(eq(issues.id, systemCancelled));
@@ -764,8 +764,9 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       finishedAt: new Date(Date.now() - 30_000),
       cancellationCode: "watchdog",
     });
-    const staleIssue = await seedIssue({ companyId, agentId, status: "in_progress" });
-    await seedAutoRun(staleIssue, { status: "failed", finishedAt: new Date(Date.now() - 15 * 60_000) });
+    const staleIssue = await seedIssue({ companyId, agentId, status: "todo" });
+    await seedAutoRun(staleIssue, { status: "succeeded", livenessState: "empty_response", finishedAt: new Date(Date.now() - 15 * 60_000) });
+    await seedAutoRun(staleIssue, { status: "succeeded", livenessState: "empty_response", finishedAt: new Date(Date.now() - 5 * 60_000) });
     const deps = fakeDeps();
 
     const result = await idlePickupForAgent(deps, { id: agentId, companyId });

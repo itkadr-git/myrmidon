@@ -511,8 +511,13 @@ export async function idlePickupForAgent(
             ? or(
                 inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
                 and(
-                  inArray(heartbeatRuns.status, ["succeeded", "cancelled"]),
+                  eq(heartbeatRuns.status, "succeeded"),
                   sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff.toISOString()}::timestamptz`,
+                ),
+                and(
+                  eq(heartbeatRuns.status, "cancelled"),
+                  sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff.toISOString()}::timestamptz`,
+                  sql`coalesce(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code', '') in ('board_operator', 'reassignment')`,
                 ),
               )
             : inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
