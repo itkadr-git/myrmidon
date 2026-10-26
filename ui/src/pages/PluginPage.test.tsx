@@ -144,7 +144,6 @@ describe("PluginPage", () => {
       type: "page",
       routePath: "wiki",
     };
-    mockPluginSlots.slots = [pageSlot];
     mockPluginsApi.listUiContributions.mockResolvedValue([{ ...contribution, slots: [pageSlot] }]);
 
     const root = await renderPage(container);
