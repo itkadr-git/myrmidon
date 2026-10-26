@@ -94,7 +94,12 @@ export function buildKnowledgeTree(
 ): KnowledgeTreeNode[] {
   const nodes = new Map<string, KnowledgeTreeNode>();
   for (const item of items) {
-    nodes.set(treeKey(item.spaceKey, item.slug), { item, depth: 0, children: [] });
+    const key = treeKey(item.spaceKey, item.slug);
+    const previous = nodes.get(key);
+    // De-duplicate overlapping list responses by their logical space/slug key.
+    if (!previous || item.updatedAt > previous.item.updatedAt) {
+      nodes.set(key, { item, depth: 0, children: [] });
+    }
   }
 
   const roots: KnowledgeTreeNode[] = [];
@@ -106,17 +111,64 @@ export function buildKnowledgeTree(
   }
 
   for (const [spaceKey, spaceItems] of itemsBySpace) {
+    const spaceLabel = spaceKey.split("/").filter(Boolean)[0] || spaceKey || "wiki";
     const spaceRoot: KnowledgeTreeNode = {
-      item: { id: `space:${spaceKey}`, spaceKey, slug: "", title: spaceKey, status: "published", revision: 0, updatedAt: "" },
+      item: { id: `space:${spaceKey}`, spaceKey, slug: "", title: spaceLabel, status: "published", revision: 0, updatedAt: "" },
       depth: 0,
       children: [],
     };
     roots.push(spaceRoot);
+    const spaceNodeBySlug = new Map(spaceItems.map((node) => [node.item.slug, node]));
+    const attached = new Set<KnowledgeTreeNode>();
     for (const node of spaceItems) {
-      const parentKey = node.item.parentSlug ? treeKey(spaceKey, node.item.parentSlug) : null;
-      const parent = parentKey ? nodes.get(parentKey) : undefined;
-      if (!parent || parent === node || isDescendant(parent, node, nodes)) spaceRoot.children.push(node);
-      else parent.children.push(node);
+      const explicitParentSlug = node.item.parentSlug?.trim() || null;
+      const pathParentSlug = node.item.slug.includes("/")
+        ? node.item.slug.slice(0, node.item.slug.lastIndexOf("/"))
+        : null;
+      const parentSlug = explicitParentSlug ?? pathParentSlug;
+      const parent = parentSlug ? spaceNodeBySlug.get(parentSlug) : undefined;
+      let cursor = parent;
+      let cyclic = false;
+      for (let steps = 0; cursor && steps <= spaceItems.length; steps += 1) {
+        if (cursor === node) {
+          cyclic = true;
+          break;
+        }
+        const cursorParentSlug = cursor.item.parentSlug?.trim() ||
+          (cursor.item.slug.includes("/") ? cursor.item.slug.slice(0, cursor.item.slug.lastIndexOf("/")) : null);
+        cursor = cursorParentSlug ? spaceNodeBySlug.get(cursorParentSlug) : undefined;
+      }
+      if (parent && parent !== node && !cyclic) {
+        parent.children.push(node);
+        attached.add(node);
+      }
+    }
+    const ensureFolders = (slug: string): KnowledgeTreeNode => {
+      const existing = spaceNodeBySlug.get(slug);
+      if (existing) return existing;
+      const parentSlug = slug.includes("/") ? slug.slice(0, slug.lastIndexOf("/")) : null;
+      const parent = parentSlug ? ensureFolders(parentSlug) : spaceRoot;
+      const folder = {
+        item: { id: `folder:${spaceKey}/${slug}`, spaceKey, slug, title: slug.split("/").at(-1) ?? slug, status: "published", revision: 0, updatedAt: "" },
+        depth: 0,
+        children: [],
+      } satisfies KnowledgeTreeNode;
+      spaceNodeBySlug.set(slug, folder);
+      parent.children.push(folder);
+      return folder;
+    };
+    for (const node of spaceItems) {
+      if (attached.has(node)) continue;
+      const parentSlug = node.item.parentSlug?.trim() ||
+        (node.item.slug.includes("/") ? node.item.slug.slice(0, node.item.slug.lastIndexOf("/")) : null);
+      if (parentSlug && !spaceNodeBySlug.has(parentSlug)) {
+        ensureFolders(parentSlug).children.push(node);
+      } else if (!parentSlug) {
+        spaceRoot.children.push(node);
+      } else {
+        // A broken/cyclic parent chain is made visible at the space root.
+        spaceRoot.children.push(node);
+      }
     }
   }
 

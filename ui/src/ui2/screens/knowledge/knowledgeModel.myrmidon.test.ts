@@ -73,15 +73,41 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) knowledge tree", () => {
     expect(flattened.length).toBe(7);
   });
 
-  it("groups pages under spaces and disambiguates duplicate titles with slugs", () => {
+  it("nests slash-path pages into inferred folders and de-duplicates space/slug", () => {
     const tree = buildKnowledgeTree([
-      item({ spaceKey: "alpha", slug: "one/index", title: "Overview" }),
-      item({ spaceKey: "alpha", slug: "two/index", title: "Overview" }),
-      item({ spaceKey: "beta", slug: "index", title: "Overview" }),
+      item({ spaceKey: "docs", slug: "guides/index", title: "Guide index" }),
+      item({ spaceKey: "docs", slug: "guides/setup", title: "Setup" }),
+      item({ spaceKey: "docs", slug: "guides", title: "Guides" }),
+      item({ spaceKey: "docs", slug: "guides/index", title: "Guide index duplicate" }),
+      item({ spaceKey: "other", slug: "guides/index", title: "Other index" }),
     ]);
-    expect(tree.map((node) => node.item.title)).toEqual(["alpha", "beta"]);
-    expect(flattenKnowledgeTree(tree).filter((node) => node.item.slug).map((node) => node.item.slug)).toEqual(["one/index", "two/index", "index"]);
+    const flattened = flattenKnowledgeTree(tree);
+    const guides = flattened.find((node) => node.item.spaceKey === "docs" && node.item.slug === "guides");
+    expect(guides?.children.map((node) => node.item.slug).sort()).toEqual(["guides/index", "guides/setup"]);
+    expect(flattened.filter((node) => node.item.spaceKey === "docs" && node.item.slug === "guides/index")).toHaveLength(1);
+    expect(flattened.find((node) => node.item.spaceKey === "docs" && node.item.slug === "guides/index")?.item.title).toBe("Guide index duplicate");
   });
+
+  it("honors explicit parentSlug even when children arrive first and isolates spaces", () => {
+    const tree = buildKnowledgeTree([
+      item({ spaceKey: "docs", slug: "child", title: "Child", parentSlug: "parent" }),
+      item({ spaceKey: "docs", slug: "parent", title: "Parent" }),
+      item({ spaceKey: "other", slug: "child", title: "Other child", parentSlug: "parent" }),
+    ]);
+    const docs = tree.find((node) => node.item.spaceKey === "docs");
+    const parent = docs?.children.find((node) => node.item.slug === "parent");
+    expect(parent?.children.map((node) => node.item.slug)).toEqual(["child"]);
+    expect(tree.find((node) => node.item.spaceKey === "other")?.children.map((node) => node.item.slug)).toEqual(["child"]);
+  });
+
+  it("catalogs visible UI labels and status text in English and Russian", () => {
+    expect(ui2Messages.en["ui2.knowledge.sources.title"]).toBe("Sources");
+    expect(ui2Messages.ru["ui2.knowledge.sources.title"]).toBe("Источники");
+    expect(ui2Messages.ru["ui2.knowledge.item.status.pending_review"]).toBe("Требует одобрения");
+    expect(ui2Messages.ru["ui2.knowledge.item.updated"]).toContain("Обновлено");
+    expect(ui2Messages.ru["ui2.knowledge.item.reviewDue"]).toContain("проверку");
+  });
+
 
   it("builds a wide tree within the 300 ms budget of §6 K-4", () => {
     const items: KnowledgeItemSummary[] = [];
