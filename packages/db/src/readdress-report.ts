@@ -34,7 +34,7 @@ export type ReaddressResult = PendingCard & {
   escalationChain?: Array<{ recipient: string; afterMinutes: number | null }>;
 };
 
-type AddresslessCardInput = Partial<PendingCard> & Pick<PendingCard, "effectiveResolverPolicy">; // dry-run fixtures may omit DB-only columns
+type AddresslessCardInput = Pick<PendingCard, "addresseeAgentId" | "addresseeUserId" | "effectiveResolverPolicy"> & Partial<Omit<PendingCard, "addresseeAgentId" | "addresseeUserId" | "effectiveResolverPolicy">>; // dry-run fixtures may omit DB-only columns
 
 // Keep the report resolver usable for isolated policy tests and partial snapshots.
 
