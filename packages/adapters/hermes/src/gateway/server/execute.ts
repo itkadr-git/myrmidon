@@ -1518,7 +1518,7 @@ export function mapFinalResultForTest(input: {
     // the owner when the run has no separate final message, so it must carry the
     // complete answer. A 2,000-character cut here reached Telegram as a
     // silently truncated reply; length is handled downstream by splitting.
-    ...(output ? { summary: output } : {}),
+    ...(output && !providerErrorAsContent ? { summary: output } : {}),
     sessionId: sessionDisplayId,
     sessionParams: {
       hermesRunId: input.terminal.runId,
