@@ -1,5 +1,6 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
 import { blockerOpenSql } from "../myrmidon/blocker-resolved.js";
+import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
 import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
 import { resolveRunnerAcpxCodexAuthEnv } from "../myrmidon/secret-settings/runner-environment.js";
 import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
@@ -65,6 +66,7 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
 import { connectionIntentService } from "./connection-intents.js";
+import { externalSessionScheduler, scheduleExternalSessionRun } from "./external-session-scheduler.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { listAdapterModels } from "../adapters/registry.js";
 import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/router.js";
@@ -24263,6 +24265,13 @@ export function heartbeatService(
         if (defaultRepo) context.paperclipBotDiskDefaultRepo = defaultRepo;
         else delete context.paperclipBotDiskDefaultRepo;
       }
+      // myrmidon(MYR-WS-RECOVER): the task's own pull request (repository and head branch) for
+      // the gateway's `workspace` field; the project's repository is only the fallback.
+      {
+        const pullRequest = issueRef?.id ? await loadRunPullRequest(db, issueRef.id).catch(() => null) : null;
+        if (pullRequest) context.paperclipPullRequest = pullRequest;
+        else delete context.paperclipPullRequest;
+      }
       // Emit exactly one requested-vs-synced observability line for the referenced-project set. A run
       // with no referenced project stays silent, so this adds no noise to the anchor-only default. The
       // per-drop human warning already rides `runtimeWorkspaceWarnings`; this line carries the counts
@@ -26252,8 +26261,8 @@ export function heartbeatService(
             if (managedMcpConfig) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
             }
-            const guardedDispatch =
-              await dispatchResolvedInteractionContinuationWithAtomicGate(
+            const dispatch = () =>
+              dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {
                   legacyAdapterEntered = true;
                   return adapter.execute({
@@ -26348,6 +26357,21 @@ export function heartbeatService(
                   });
                 },
               );
+            const guardedDispatch = typeof externalSession.connectionId === "string" && externalSession.connectionId
+              ? await scheduleExternalSessionRun(
+                  { companyId: run.companyId, connectionId: externalSession.connectionId },
+                  async () => {
+                    const latestRun = await getRun(run.id);
+                    if (executionControl.controller.signal.aborted || latestRun?.status !== "running") {
+                      throw new Error("External session run cancelled before dispatch");
+                    }
+                    const guarded = await dispatch();
+                    if (guarded.dispatched) await guarded.resultPromise;
+                    return guarded;
+                  },
+                  { runId: run.id, signal: executionControl.controller.signal },
+                )
+              : await dispatch();
             if (!guardedDispatch.dispatched) return;
             adapterResult = await guardedDispatch.resultPromise;
           }
@@ -31753,7 +31777,7 @@ export function heartbeatService(
                   parseObject(current?.resultJson),
                 )
               : {};
-          return await setRunStatusFromLive(
+          const cancelledRun = await setRunStatusFromLive(
             run.id,
             "cancelled",
             pendingNativeRetry
@@ -31811,6 +31835,10 @@ export function heartbeatService(
                 : {}),
             },
           );
+          // A run still queued behind the external-session limit has no registered
+          // adapter control, so Stop reaches it only through the shared scheduler.
+          externalSessionScheduler.cancel(run.id, new Error(reason));
+          return cancelledRun;
         } catch (error) {
           if (processCancellationSettlement) {
             processCancellationSettlement.failed = true;

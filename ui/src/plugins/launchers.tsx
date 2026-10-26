@@ -1,4 +1,5 @@
 import { i18n, useTranslation } from "@/i18n";
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 import {
   Component,
   createContext,
@@ -175,14 +176,19 @@ function launcherRoutePath(launcher: ResolvedPluginLauncher): string | null {
   return segment ? segment.toLowerCase() : null;
 }
 
-function launcherDisplayName(launcher: ResolvedPluginLauncher, contribution: PluginUiContribution | undefined): string {
-  if (launcher.placementZone !== "sidebar" || !contribution) return launcher.displayName;
+function launcherDisplayName(
+  launcher: ResolvedPluginLauncher,
+  contribution: PluginUiContribution | undefined,
+  t: Parameters<typeof pluginLabel>[0], // myrmidon(OPE-9352)
+): string {
+  const ownLabel = pluginLabel(t, launcher.pluginKey, launcher.id, launcher.displayName); // myrmidon(OPE-9352)
+  if (launcher.placementZone !== "sidebar" || !contribution) return ownLabel;
   const routePath = launcherRoutePath(launcher);
-  if (!routePath) return launcher.displayName;
+  if (!routePath) return ownLabel;
   const routeSidebar = contribution.slots.find((slot) =>
     slot.type === "routeSidebar" && slot.routePath?.toLowerCase() === routePath
   );
-  return routeSidebar?.displayName ?? launcher.displayName;
+  return routeSidebar ? pluginLabel(t, launcher.pluginKey, routeSidebar.id, routeSidebar.displayName) : ownLabel; // myrmidon(OPE-9352)
 }
 
 function trapFocus(container: HTMLElement, event: KeyboardEvent): void {
@@ -433,6 +439,7 @@ function LauncherRenderContent({
   instance: LauncherInstance;
   renderEnvironment: PluginRenderEnvironmentContext;
 }) {
+  const { t } = useTranslation(); // myrmidon(OPE-9352)
   const component = instance.component;
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -449,7 +456,7 @@ function LauncherRenderContent({
       return (
         <iframe
           src={`/_plugins/${encodeURIComponent(instance.launcher.pluginId)}/ui/${instance.launcher.action.target}`}
-          title={`${instance.launcher.pluginDisplayName} ${instance.launcher.displayName}`}
+          title={`${pluginLabel(t, instance.launcher.pluginKey, null, instance.launcher.pluginDisplayName)} ${pluginLabel(t, instance.launcher.pluginKey, instance.launcher.id, instance.launcher.displayName)}`} // myrmidon(OPE-9352)
           className="h-full min-h-[24rem] w-full rounded-md border border-border bg-background"
         />
       );
@@ -585,10 +592,10 @@ function LauncherModalShell({
         <div className="flex items-center gap-3 border-b border-border px-4 py-3">
           <div className="min-w-0">
             <h2 id={titleId} className="truncate text-sm font-semibold">
-              {instance.launcher.displayName}
+              {pluginLabel(t, instance.launcher.pluginKey, instance.launcher.id, instance.launcher.displayName) /* myrmidon(OPE-9352) */}
             </h2>
             <p className="truncate text-xs text-muted-foreground">
-              {instance.launcher.pluginDisplayName}
+              {pluginLabel(t, instance.launcher.pluginKey, null, instance.launcher.pluginDisplayName) /* myrmidon(OPE-9352) */}
             </p>
           </div>
           <Button
@@ -817,7 +824,7 @@ export function PluginLauncherOutlet({
       {launchers.map((launcher) => (
         <div key={`${launcher.pluginKey}:${launcher.id}`} className={itemClassName}>
           <DefaultLauncherTrigger
-            displayName={launcherDisplayName(launcher, contributionsByPluginId.get(launcher.pluginId))}
+            displayName={launcherDisplayName(launcher, contributionsByPluginId.get(launcher.pluginId), t)} // myrmidon(OPE-9352)
             launcher={launcher}
             placementZone={launcher.placementZone}
             onClick={(event) => {
