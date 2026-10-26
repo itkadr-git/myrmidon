@@ -233,6 +233,9 @@ importers:
       '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
+      '@myrmidon/shared':
+        specifier: workspace:*
+        version: link:../../shared
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -249,6 +252,9 @@ importers:
       '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
+      '@myrmidon/shared':
+        specifier: workspace:*
+        version: link:../../shared
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -265,6 +271,9 @@ importers:
       '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
+      '@myrmidon/shared':
+        specifier: workspace:*
+        version: link:../../shared
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -338,6 +347,9 @@ importers:
       '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
+      '@myrmidon/shared':
+        specifier: workspace:*
+        version: link:../../shared
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -354,6 +366,9 @@ importers:
       '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
+      '@myrmidon/shared':
+        specifier: workspace:*
+        version: link:../../shared
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -994,9 +1009,6 @@ importers:
       '@grpc/grpc-js':
         specifier: 1.14.4
         version: 1.14.4
-      '@opentelemetry/api':
-        specifier: ^1.9.0
-        version: 1.9.1
       '@myrmidon/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -1051,6 +1063,9 @@ importers:
       '@myrmidon/skills-catalog':
         specifier: workspace:*
         version: link:../packages/skills-catalog
+      '@opentelemetry/api':
+        specifier: ^1.9.0
+        version: 1.9.1
       '@photon-ai/advanced-imessage':
         specifier: 2.1.0
         version: 2.1.0(@grpc/grpc-js@1.14.4)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)

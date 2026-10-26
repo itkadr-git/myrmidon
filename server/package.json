@@ -2,13 +2,13 @@
   "name": "@myrmidon/server",
   "version": "0.3.1",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/itkadr-git/myrmidon",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/itkadr-git/myrmidon/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/itkadr-git/myrmidon",
     "directory": "server"
   },
   "type": "module",
@@ -37,6 +37,7 @@
     "skills"
   ],
   "scripts": {
+    "corpus:import:ragflow": "tsx ../scripts/myrmidon/ragflow-corpus-import.ts",
     "dev": "tsx src/index.ts",
     "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
     "worker": "tsx src/worker.ts",
