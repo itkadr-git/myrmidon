@@ -4066,7 +4066,8 @@ export function recoveryService(
       strandedAutoPolicyLatestRun &&
       (strandedAutoPolicyLatestRun.status === "succeeded" ||
         recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON) &&
-      !input.rerouteToSharedQueue &&
+      (!input.rerouteToSharedQueue ||
+        recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON) &&
       isStrandedAutoPolicyCause(recoveryCause) &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress") &&
       input.issue.assigneeAgentId &&
