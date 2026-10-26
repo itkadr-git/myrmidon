@@ -32553,8 +32553,6 @@ export function heartbeatService(
           skipped: 0,
         };
       }
-      const cutoff = await getWorktreeExecutionCutoff();
-
       const allAgents = await db
         .select({ ...getTableColumns(agents) })
         .from(agents)
@@ -32597,7 +32595,6 @@ export function heartbeatService(
           });
           continue;
         }
-
 
         checked += 1;
         const baseline = new Date(
