@@ -492,7 +492,7 @@ vi.mock("../../services/activity-log.js", () => ({
   logActivity: unconfiguredJournal,
 }));
 vi.mock("../../services/instance-settings.js", () => ({
-  instanceSettingsService: () => ({ getGeneral: mockGetGeneral }),
+  instanceSettingsService: vi.fn(() => ({ getGeneral: mockGetGeneral })),
 }));
 
 describe("scent queue: unconfigured contour is visible in the activity log", () => {
