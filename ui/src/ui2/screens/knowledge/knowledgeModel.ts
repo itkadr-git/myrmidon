@@ -97,7 +97,7 @@ export function buildKnowledgeTree(
     const key = treeKey(item.spaceKey, item.slug);
     const previous = nodes.get(key);
     // De-duplicate overlapping list responses by their logical space/slug key.
-    if (!previous || item.updatedAt > previous.item.updatedAt) {
+    if (!previous || item.updatedAt >= previous.item.updatedAt) {
       nodes.set(key, { item, depth: 0, children: [] });
     }
   }
@@ -120,12 +120,18 @@ export function buildKnowledgeTree(
     roots.push(spaceRoot);
     const spaceNodeBySlug = new Map(spaceItems.map((node) => [node.item.slug, node]));
     const attached = new Set<KnowledgeTreeNode>();
+    const effectiveParent = new Map<KnowledgeTreeNode, string | null>();
     for (const node of spaceItems) {
-      const explicitParentSlug = node.item.parentSlug?.trim() || null;
-      const pathParentSlug = node.item.slug.includes("/")
-        ? node.item.slug.slice(0, node.item.slug.lastIndexOf("/"))
-        : null;
-      const parentSlug = explicitParentSlug ?? pathParentSlug;
+      effectiveParent.set(
+        node,
+        node.item.parentSlug?.trim() ||
+          (node.item.slug.includes("/")
+            ? node.item.slug.slice(0, node.item.slug.lastIndexOf("/"))
+            : null),
+      );
+    }
+    for (const node of spaceItems) {
+      const parentSlug = effectiveParent.get(node) ?? null;
       const parent = parentSlug ? spaceNodeBySlug.get(parentSlug) : undefined;
       let cursor = parent;
       let cyclic = false;
@@ -134,8 +140,7 @@ export function buildKnowledgeTree(
           cyclic = true;
           break;
         }
-        const cursorParentSlug = cursor.item.parentSlug?.trim() ||
-          (cursor.item.slug.includes("/") ? cursor.item.slug.slice(0, cursor.item.slug.lastIndexOf("/")) : null);
+        const cursorParentSlug = effectiveParent.get(cursor) ?? null;
         cursor = cursorParentSlug ? spaceNodeBySlug.get(cursorParentSlug) : undefined;
       }
       if (parent && parent !== node && !cyclic) {
