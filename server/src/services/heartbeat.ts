@@ -20144,7 +20144,10 @@ export function heartbeatService(
       if (executionWait.reason && executionWait.message) {
         await resumeExecutionWaitComments().catch((err) => logger.warn({ err, wakeId: wake.id }, "failed to resume expired execution wait"));
       }
-      await enqueueWakeup(wake.agentId, { source: "automation", reason: "deferred_issue_execution_expired", payload: { expiredWakeId: wake.id } })
+      await enqueueWakeup(wake.agentId, { source: "automation", reason: "deferred_issue_execution_expired", payload: {
+        issueId: readNonEmptyString(wake.payload?.issueId) ?? readNonEmptyString(wake.payload?.taskId),
+        expiredWakeId: wake.id,
+      } })
         .catch(err => logger.warn({ err, wakeId: wake.id }, "failed to re-wake agent after deferred issue execution expiry"));
     }
     const settleBefore = new Date(now - 2 * 60_000);
