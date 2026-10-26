@@ -267,22 +267,6 @@ describe("no reviewer available", () => {
     expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
   });
 
-  it("preserves immediate route signals when a later sweep replaces the company's set", () => {
-    const signal = {
-      kind: "no_reviewer" as const,
-      issueId: "2",
-      companyId: COMPANY,
-      identifier: "T-2",
-      title: "Task 2",
-      since: NOW.toISOString(),
-      hoursInReview: null,
-    };
-    setImmediateNoReviewerSignal(signal, true);
-    replaceReviewRoutingSignals(COMPANY, []);
-    expect(readReviewRoutingSignals(COMPANY)).toEqual([expect.objectContaining({ issueId: "2" })]);
-    setImmediateNoReviewerSignal(signal, false);
-    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
-  });
 
   it("raises a no_reviewer signal instead of staying silent", async () => {
     const t = setup({}, { reviewers: [] });

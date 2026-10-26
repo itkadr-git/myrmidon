@@ -16509,9 +16509,11 @@ export function issueRoutes(
                       inArray(issueRows.assigneeAgentId, reviewerRows.map((agent) => agent.id)),
                     ),
                   )
-                  .groupBy(issueRows.assigneeAgentId)
               : [];
-            const load = new Map(loadRows.map((row) => [row.agentId!, row.count]));
+            const load = new Map<string, number>();
+            for (const row of loadRows) {
+              if (row.agentId) load.set(row.agentId, (load.get(row.agentId) ?? 0) + Number(row.count));
+            }
             const candidates: ReviewerCandidate[] = reviewerRows
               .filter((agent) => isAgentStatusInvokable(agent.status))
               .map((agent) => ({
