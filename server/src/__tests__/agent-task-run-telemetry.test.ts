@@ -23,7 +23,126 @@ vi.mock("@myrmidon/shared/telemetry", async () => {
   };
 });
 
-import { emitAgentTaskRun } from "../services/agent-task-run-telemetry.ts";
+import { emitAgentTaskRun, buildRunTelemetry } from "../services/agent-task-run-telemetry.ts";
+
+describe("buildRunTelemetry", () => {
+  const baseInput = {
+    run: {
+      id: "run-1",
+      agentId: "agent-1",
+      invocationSource: "event",
+      triggerDetail: "issue",
+      retryOfRunId: null,
+      nativeIssueId: null,
+      contextSnapshot: {
+        issueId: "issue-1",
+        wakeReason: "issue_commented",
+      },
+      usageJson: { inputTokens: 120, cachedInputTokens: 20, outputTokens: 30, model: "gpt-6-luna", billingType: "subscription_included" },
+      resultJson: null,
+    },
+    gatewayCalls: [{ requestId: "gw-1", costCents: 2 }, { requestId: "gw-2", costCents: 3 }],
+    reportedCostCents: 5,
+    activity: [],
+    workProducts: [],
+    commentCount: 0,
+    documentRevisionCount: 0,
+  };
+
+  it("correlates trigger, issue, retry, model calls, token totals and gateway spend", () => {
+    const telemetry = buildRunTelemetry({
+      ...baseInput,
+      run: { ...baseInput.run, retryOfRunId: "parent-run" },
+      modelApiPricing: {
+        "gpt-6-luna": { inputUsdPerMillion: 0.1, cachedInputUsdPerMillion: 0.01, outputUsdPerMillion: 0.5 },
+      },
+      wakeup: {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "issue_commented",
+        payload: { eventRevisionId: "revision-7", sourceEventId: "source-event-7", sourceSeq: 7 },
+      },
+      activity: [{ action: "issue.updated", details: { status: "in_review", previousStatus: "todo" } }],
+      commentCount: 1,
+    });
+
+    expect(telemetry).toMatchObject({
+      runId: "run-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      wakeReason: "issue_commented",
+      wakeSource: "on_demand",
+      wakeTriggerDetail: "manual",
+      eventRevision: null,
+      eventRevisionId: "revision-7",
+      sourceEventId: "source-event-7",
+      sourceEventSeq: 7,
+      parentRunId: "parent-run",
+      retryOfRunId: "parent-run",
+      modelCallCount: 2,
+      litellmRequestIds: ["gw-1", "gw-2"],
+      inputTokens: 120,
+      cachedInputTokens: 20,
+      outputTokens: 30,
+      gatewaySpendCents: 5,
+      reportedCostCents: 5,
+      apiEquivalentCostUsd: 0.000025,
+      apiEquivalentCostMicros: 25,
+      apiEquivalentCostStatus: "estimated",
+      outcomeCategory: "status",
+      commentCount: 1,
+    });
+    expect(JSON.stringify(telemetry)).not.toContain("prompt");
+  });
+
+  it("preserves gateway IDs separately from LiteLLM spend request IDs", () => {
+    const telemetry = buildRunTelemetry({
+      ...baseInput,
+      run: {
+        ...baseInput.run,
+        resultJson: { gatewayCallIds: ["gw-call-1", "gw-call-2"], modelCallCount: 3 },
+      },
+      gatewayCalls: [{ requestId: "litellm-req-1", costCents: 4 }],
+    });
+    expect(telemetry.gatewayCallIds).toEqual(["gw-call-1", "gw-call-2"]);
+    expect(telemetry.litellmRequestIds).toEqual(["litellm-req-1"]);
+    expect(telemetry.modelCallCount).toBe(3);
+    expect(telemetry.modelCallCountSource).toBe("gateway_count");
+  });
+
+  it("leaves event revision absent when the wake receipt has no revision", () => {
+    const telemetry = buildRunTelemetry(baseInput);
+    expect(telemetry.eventRevision).toBeNull();
+    expect(telemetry.eventRevisionId).toBeNull();
+    expect(telemetry.sourceEventId).toBeNull();
+    expect(telemetry.sourceEventSeq).toBeNull();
+  });
+
+  it("keeps commits separately classifiable and labels comment-only or empty runs", () => {
+    const commit = buildRunTelemetry({
+      ...baseInput,
+      workProducts: [{ type: "commit" }],
+      commentCount: 1,
+    });
+    expect(commit.outcomeCategory).toBe("commit_push");
+    expect(commit.commitCount).toBe(1);
+    const pushed = buildRunTelemetry({ ...baseInput, workProducts: [{ type: "pull_request" }] });
+    expect(pushed.outcomeCategory).toBe("commit_push");
+    expect(pushed.pullRequestCount).toBe(1);
+
+    expect(buildRunTelemetry({ ...baseInput, commentCount: 1 }).outcomeCategory).toBe("comment_only");
+    expect(buildRunTelemetry(baseInput).outcomeCategory).toBe("nothing");
+  });
+
+  it("does not mistake non-status issue updates for a status outcome", () => {
+    const telemetry = buildRunTelemetry({
+      ...baseInput,
+      activity: [{ action: "issue.updated", details: { title: "Changed", status: "todo" } }],
+    });
+    expect(telemetry.outcomeCategory).toBe("nothing");
+    expect(telemetry.statusChangeCount).toBe(0);
+  });
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

@@ -383,6 +383,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import {
   emitAgentTaskRun,
   emitAgentTaskRunById,
+  refreshRunTelemetrySnapshot,
 } from "./agent-task-run-telemetry.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { companySkillService } from "./company-skills.js";
@@ -3591,6 +3592,7 @@ const heartbeatRunListColumns = {
   exitCode: heartbeatRuns.exitCode,
   signal: heartbeatRuns.signal,
   usageJson: heartbeatRuns.usageJson,
+  runTelemetry: sql<Record<string, unknown> | null>`${heartbeatRuns.resultJson} -> 'runTelemetry'`.as("runTelemetry"),
   sessionIdBefore: heartbeatRuns.sessionIdBefore,
   sessionIdAfter: heartbeatRuns.sessionIdAfter,
   logStore: heartbeatRuns.logStore,
@@ -3712,6 +3714,7 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
           ${heartbeatRuns.resultJson} -> 'cost_usd',
           ${heartbeatRuns.resultJson} -> 'costUsd'
         ),
+        'runTelemetry', ${heartbeatRuns.resultJson} -> 'runTelemetry',
         'truncated', true,
         'truncationReason', 'oversized_result_json',
         'originalSizeBytes', pg_column_size(${heartbeatRuns.resultJson})
@@ -3724,6 +3727,7 @@ const heartbeatRunSafeColumns = {
   ...getTableColumns(heartbeatRuns),
   processGroupId: heartbeatRunProcessGroupIdColumn,
   resultJson: heartbeatRunSafeResultJsonColumn,
+  runTelemetry: sql<Record<string, unknown> | null>`${heartbeatRuns.resultJson} -> 'runTelemetry'`.as("runTelemetry"),
 } as const;
 
 const heartbeatRunSqlAsciiSafeColumns = {
@@ -3731,6 +3735,7 @@ const heartbeatRunSqlAsciiSafeColumns = {
   processGroupId: heartbeatRunProcessGroupIdColumn,
   error: sql<string | null>`NULL`.as("error"),
   resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
+  runTelemetry: sql<Record<string, unknown> | null>`${heartbeatRuns.resultJson} -> 'runTelemetry'`.as("runTelemetry"),
   stdoutExcerpt: sql<string | null>`NULL`.as("stdoutExcerpt"),
   stderrExcerpt: sql<string | null>`NULL`.as("stderrExcerpt"),
 } as const;
@@ -20965,10 +20970,7 @@ export function heartbeatService(
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
     const billedCostUsd = resolveCacheAdjustedCostUsd(result);
-    const additionalCostCents = normalizeBilledCostCents(
-      billedCostUsd,
-      billingType,
-    );
+    const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
     const hasTokenUsage =
       inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
@@ -27362,6 +27364,12 @@ export function heartbeatService(
               "failed to auto-reset session after context window error",
             );
           }
+        }
+        if (finalizedRun) {
+          await refreshRunTelemetrySnapshot(db, {
+            runId: finalizedRun.id,
+            companyId: finalizedRun.companyId,
+          });
         }
       } catch (err) {
         if (err instanceof NativeControllerDetachedForRestartError) {

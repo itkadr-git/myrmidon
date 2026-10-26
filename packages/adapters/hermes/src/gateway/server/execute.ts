@@ -1336,6 +1336,47 @@ function parseUsage(value: unknown): UsageSummary | undefined {
   };
 }
 
+function parseGatewayCallIds(value: unknown): string[] {
+  const record = asRecord(value);
+  if (!record) return [];
+  const usage = asRecord(record.usage);
+  const candidates: unknown[] = [
+    record.gateway_call_ids,
+    record.litellm_request_ids,
+    record.model_call_ids,
+    record.call_ids,
+    record.model_call_id,
+    record.call_id,
+    usage?.gateway_call_ids,
+    usage?.litellm_request_ids,
+    usage?.model_call_ids,
+    usage?.call_ids,
+    usage?.model_call_id,
+    usage?.call_id,
+  ];
+  const ids = new Set<string>();
+  for (const candidate of candidates) {
+    for (const raw of Array.isArray(candidate) ? candidate : [candidate]) {
+      if (typeof raw !== "string") continue;
+      const id = raw.trim();
+      if (id.length > 0 && id.length <= 256) ids.add(id);
+      if (ids.size >= 100) return [...ids];
+    }
+  }
+  return [...ids];
+}
+
+function parseModelCallCount(value: unknown, gatewayCallIds: string[]): number {
+  if (gatewayCallIds.length > 0) return gatewayCallIds.length;
+  const record = asRecord(value);
+  const usage = asRecord(record?.usage);
+  for (const candidate of [record?.model_call_count, record?.modelCallCount, usage?.model_call_count, usage?.modelCallCount]) {
+    const count = typeof candidate === "number" ? candidate : typeof candidate === "string" ? Number(candidate) : Number.NaN;
+    if (Number.isSafeInteger(count) && count >= 0) return Math.min(count, 100_000);
+  }
+  return 0;
+}
+
 function parseCostUsd(value: unknown): number | null {
   const record = asRecord(value);
   const raw = record?.cost_usd ?? record?.costUsd ?? asRecord(record?.usage)?.cost_usd ?? asRecord(record?.usage)?.costUsd;
@@ -1430,6 +1471,8 @@ export function mapFinalResultForTest(input: {
   const mapped = terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
+  const gatewayCallIds = parseGatewayCallIds(payload);
+  const modelCallCount = parseModelCallCount(payload, gatewayCallIds);
   const errorMessage = mapped.errorCode
     ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
@@ -1495,6 +1538,13 @@ export function mapFinalResultForTest(input: {
       output: output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
+      ...(gatewayCallIds.length > 0 || modelCallCount > 0
+        ? {
+            modelCallCount,
+            modelCallCountSource: gatewayCallIds.length > 0 ? "gateway_call_ids" : "gateway_count",
+          }
+        : {}),
+      gatewayCallIds,
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     },
   };

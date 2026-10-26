@@ -185,6 +185,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
       resultJson: {
         summary: "large run summary",
         stdout: "x".repeat(20_000),
+        runTelemetry: { outcomeCategory: "nothing", modelCallCount: 0 },
       },
       sessionIdBefore: "session-before",
       sessionIdAfter: "session-after",
@@ -210,6 +211,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
       error: "Failed after doing useful work",
       usageJson: null,
       resultJson: null,
+      runTelemetry: { outcomeCategory: "nothing", modelCallCount: 0 },
       sessionIdBefore: null,
       sessionIdAfter: null,
       logStore: null,
@@ -264,6 +266,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
         summary: "completed",
         stdout: oversizedStdout,
         nestedHuge: { payload: oversizedNestedPayload },
+        runTelemetry: { outcomeCategory: "nothing", modelCallCount: 0, gatewayCallIds: ["gw-1"] },
       },
     });
 
@@ -272,6 +275,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
 
     expect(result).toMatchObject({
       summary: "completed",
+      runTelemetry: { outcomeCategory: "nothing", gatewayCallIds: ["gw-1"] },
       truncated: true,
       truncationReason: "oversized_result_json",
       stdoutTruncated: true,
