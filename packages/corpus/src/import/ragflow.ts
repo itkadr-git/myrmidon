@@ -234,6 +234,16 @@ export function createRagflowSource(options: {
         },
       );
     },
+    async countChunks(datasetId, documentId) {
+      const data = await get<unknown>(`/api/v1/datasets/${encodeURIComponent(datasetId)}/documents/${encodeURIComponent(documentId)}/chunks?page=1&page_size=1`);
+      if (typeof data !== "object" || data === null) throw new RagflowApiError("RAGFlow chunks response is invalid");
+      const envelope = data as { total?: unknown; total_chunks?: unknown };
+      const total = sourceCount(envelope.total_chunks, envelope.total);
+      if (total !== undefined) return total;
+      let count = 0;
+      for await (const _chunk of this.listChunks(datasetId, documentId)) count += 1;
+      return count;
+    },
   };
 }
 

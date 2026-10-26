@@ -222,7 +222,8 @@ describe("RAGFlow corpus import", () => {
     for await (const chunk of source.listChunks("d1", "f1")) chunks.push(chunk);
     expect(docs.map((document) => document.id)).toEqual(["f1", "f2"]);
     expect(chunks.map((chunk) => chunk.id)).toEqual(["c1", "c2"]);
-    expect(calls).toHaveLength(5);
+    expect(await source.countChunks?.("d1", "f1")).toBe(2);
+    expect(calls).toHaveLength(6);
   });
 
   it("uses the pilot embedding model as its default", async () => {
