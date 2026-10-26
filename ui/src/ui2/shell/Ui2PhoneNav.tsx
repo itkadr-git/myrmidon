@@ -143,7 +143,7 @@ export function Ui2PhoneTabBar() {
     if (!element) return;
     const updateHeight = () => {
       const pluginSection = element.querySelector("section");
-      element.style.setProperty("--myr-phone-plugins-height", `${pluginSection ? pluginSection.getBoundingClientRect().height : 0}px`);
+      element.parentElement?.style.setProperty("--myr-phone-plugins-height", `${pluginSection ? pluginSection.getBoundingClientRect().height : 0}px`);
     };
     updateHeight();
     const observer = new ResizeObserver(updateHeight);

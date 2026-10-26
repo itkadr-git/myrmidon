@@ -10,5 +10,9 @@ import { Ui2Shell } from "./shell/Ui2Shell";
 export function Ui2Root({ children }: { children?: ReactNode }) {
   // UI-0b mounts its provider here (ONE line, first merge wins), e.g.:
   // <Ui2LanguageProvider><Ui2Shell>{children}</Ui2Shell></Ui2LanguageProvider>
-  return <Ui2Shell lang={i18n.language?.toLowerCase().startsWith("ru") ? "ru" : undefined}>{children}</Ui2Shell>;
+  return (
+    <Ui2Shell lang={i18n.language?.toLowerCase().startsWith("ru") ? "ru" : undefined}>
+      {children}
+    </Ui2Shell>
+  );
 }

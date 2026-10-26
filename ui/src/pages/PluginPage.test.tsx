@@ -42,18 +42,15 @@ vi.mock("@/lib/router", () => ({
   useParams: () => mockParams,
 }));
 
-const mockPluginSlots = vi.hoisted(() => ({ usePluginSlots: vi.fn(), slots: [] as unknown[] }));
+const mockContributionLoader = vi.hoisted(() => ({ ensurePluginContributionLoaded: vi.fn() }));
 const mockPluginLaunchers = vi.hoisted(() => ({ usePluginLaunchers: vi.fn(), launchers: [] as unknown[] }));
 
 vi.mock("@/plugins/slots", async () => {
   const actual = await vi.importActual<typeof import("@/plugins/slots")>("@/plugins/slots");
   return {
     resolveRouteSidebarSlot: actual.resolveRouteSidebarSlot,
-    ensurePluginContributionLoaded: actual.ensurePluginContributionLoaded,
-    usePluginSlots: (...args: unknown[]) => {
-      mockPluginSlots.usePluginSlots(...args);
-      return { slots: mockPluginSlots.slots };
-    },
+    ensurePluginContributionLoaded: (...args: unknown[]) => mockContributionLoader.ensurePluginContributionLoaded(...args),
+    usePluginSlots: actual.usePluginSlots,
     PluginSlotMount: ({ slot }: { slot: { displayName: string } }) => (
       <div data-testid="plugin-slot-mount">{slot.displayName}</div>
     ),
@@ -127,7 +124,8 @@ describe("PluginPage", () => {
     mockParams.pluginId = undefined;
     mockParams.pluginRoutePath = undefined;
     mockParams["*"] = undefined;
-    mockPluginSlots.usePluginSlots.mockClear();
+    vi.clearAllMocks();
+    mockContributionLoader.ensurePluginContributionLoaded.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -151,11 +149,7 @@ describe("PluginPage", () => {
 
     const root = await renderPage(container);
 
-    expect(mockPluginSlots.usePluginSlots).toHaveBeenCalledWith({
-      slotTypes: ["page"],
-      companyId: "company-1",
-      enabled: true,
-    });
+    expect(mockContributionLoader.ensurePluginContributionLoaded).toHaveBeenCalledWith(contribution);
     expect(mockPluginsApi.listUiContributions).toHaveBeenCalled();
     expect(container.querySelector('[data-testid="plugin-slot-mount"]')?.textContent).toBe("Wiki");
     await act(async () => root.unmount());
