@@ -15,9 +15,11 @@ describe("agent local JWT", () => {
   const audienceEnv = "PAPERCLIP_AGENT_JWT_AUDIENCE";
   const disableLegacyFallbackEnv = "PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK";
   const instanceIdEnv = "PAPERCLIP_INSTANCE_ID";
+  const myrmidonSecretEnv = "MYRMIDON_AGENT_JWT_SECRET";
 
   const originalEnv = {
     secret: process.env[secretEnv],
+    myrmidonSecret: process.env[myrmidonSecretEnv],
     betterAuthSecret: process.env[betterAuthSecretEnv],
     ttl: process.env[ttlEnv],
     issuer: process.env[issuerEnv],
@@ -28,6 +30,7 @@ describe("agent local JWT", () => {
 
   beforeEach(() => {
     process.env[secretEnv] = "test-secret";
+    delete process.env[myrmidonSecretEnv];
     delete process.env[betterAuthSecretEnv];
     process.env[ttlEnv] = "3600";
     delete process.env[issuerEnv];
@@ -41,6 +44,8 @@ describe("agent local JWT", () => {
     vi.useRealTimers();
     if (originalEnv.secret === undefined) delete process.env[secretEnv];
     else process.env[secretEnv] = originalEnv.secret;
+    if (originalEnv.myrmidonSecret === undefined) delete process.env[myrmidonSecretEnv];
+    else process.env[myrmidonSecretEnv] = originalEnv.myrmidonSecret;
     if (originalEnv.betterAuthSecret === undefined) delete process.env[betterAuthSecretEnv];
     else process.env[betterAuthSecretEnv] = originalEnv.betterAuthSecret;
     if (originalEnv.ttl === undefined) delete process.env[ttlEnv];
@@ -102,8 +107,10 @@ describe("agent local JWT", () => {
     expect(runnerEnvironment.PAPERCLIP_API_KEY).toBe(token);
   });
 
-  it("returns null when secret is missing", () => {
-    process.env[secretEnv] = "";
+  it("returns null when all JWT secrets are missing", () => {
+    delete process.env[secretEnv];
+    delete process.env[myrmidonSecretEnv];
+    delete process.env[betterAuthSecretEnv];
     const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
     expect(token).toBeNull();
     expect(verifyLocalAgentJwt("abc.def.ghi")).toBeNull();
