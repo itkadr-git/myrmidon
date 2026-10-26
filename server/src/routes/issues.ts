@@ -16273,7 +16273,14 @@ export function issueRoutes(
                 resolutionNote: null,
               }, tx);
               if (!resolved) return;
-              const sourceIssue = await svc.get(recoveryAction.sourceIssueId);
+              const [sourceIssue] = await tx
+                .select()
+                .from(issues)
+                .where(and(
+                  eq(issues.id, recoveryAction.sourceIssueId),
+                  eq(issues.companyId, issue.companyId),
+                ))
+                .for("update");
               if (sourceIssue && sourceIssue.status === "blocked") {
                 const remainingBlockers = (sourceIssue.blockedByIssueIds ?? []).filter(
                   (blockerId) => blockerId !== issue.id,
