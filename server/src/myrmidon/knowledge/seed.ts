@@ -141,9 +141,6 @@ export async function seedKnowledgeBase(
 
   // Supersede chains — second pass so both ends exist. Existing chains are
   // already in their intended state and therefore count as successful skips.
-  // A legacy superseded row is intentionally not revived: superseded is a
-  // terminal audit state, and removing a stale source link must not rewrite
-  // history during a normal seed run.
   for (const d of SEED_DECISIONS) {
     if (!d.supersedes) continue;
     const replaced = await store.get(nestId, d.supersedes);
