@@ -44,6 +44,8 @@ export interface ScentQueuePorts {
   /** Test hook: replace the company listing (the queue is per-company). */
   listCompanyIds?: () => Promise<string[]>;
   now?: () => number;
+  /** Test hook: observe queue diagnostics without coupling to the logger module. */
+  logActivity?: (db: Db, entry: Parameters<typeof logActivity>[1]) => Promise<unknown>;
 }
 
 async function defaultResolveSecret(
@@ -92,7 +94,7 @@ async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): P
     `);
     const recent = Number((seen as unknown as Array<{ n: number }>)[0]?.n ?? 0);
     if (recent === 0) {
-      await logActivity(db, {
+      await (ports.logActivity ?? logActivity)(db, {
         companyId,
         actorType: "system",
         actorId: "system",
