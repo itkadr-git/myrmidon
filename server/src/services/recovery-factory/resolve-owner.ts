@@ -231,7 +231,7 @@ export function resolveRecoveryOwner(input: ResolveRecoveryOwnerInput): ResolveR
     // Project matching: if candidate has explicit projectId(s) that conflict with input.projectId, exclude
     if (input.projectId) {
       const candidateProjectId = candidate.projectId?.trim() || null;
-      const candidateProjectIds = candidate.projectIds?.map((p) => p.trim()) || [];
+      const candidateProjectIds = candidate.projectIds ? candidate.projectIds.map((p: string) => p.trim()) : [];
       const hasSpecificProject = candidateProjectId !== null || candidateProjectIds.length > 0;
       if (hasSpecificProject) {
         const matchesProject =
@@ -247,7 +247,7 @@ export function resolveRecoveryOwner(input: ResolveRecoveryOwnerInput): ResolveR
       role: (candidate.role ?? "").trim().toLowerCase(),
       title: (candidate.title ?? "").trim().toLowerCase(),
       projectId: candidate.projectId?.trim() || null,
-      projectIds: candidate.projectIds?.map((p) => p.trim()) || [],
+      projectIds: candidate.projectIds ? candidate.projectIds.map((p: string) => p.trim()) : [],
       reportsTo: candidate.reportsTo?.trim() || null,
       isManager: managerIds.has(agentId),
       raw: candidate,
