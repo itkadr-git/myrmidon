@@ -15,9 +15,15 @@ const schema = JSON.parse(
 const examples = JSON.parse(
   await readFile(path.join(contractDir, "examples.json"), "utf8"),
 );
-const ajv = new Ajv2020({ allErrors: true, strict: false });
-addFormats(ajv);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const Ajv2020Ctor = (Ajv2020 as any).default ?? Ajv2020;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const applyFormats = (addFormats as any).default ?? addFormats;
+
+const ajv = new Ajv2020Ctor({ allErrors: true, strict: false });
+applyFormats(ajv);
 const validate = ajv.compile(schema);
+
 
 describe("ADM knowledge schema contract", () => {
   it("accepts all valid examples", () => {
