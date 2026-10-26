@@ -87,6 +87,7 @@ describeEmbeddedPostgres("metrics collector", () => {
       status: string;
       startedAt?: Date;
       finishedAt?: Date;
+      createdAt?: Date;
     },
   ) {
     const runId = randomUUID();
@@ -99,6 +100,7 @@ describeEmbeddedPostgres("metrics collector", () => {
       status: input.status,
       startedAt: input.startedAt ?? null,
       finishedAt: input.finishedAt ?? null,
+      ...(input.createdAt ? { createdAt: input.createdAt } : {}),
     });
     return runId;
   }
@@ -109,6 +111,7 @@ describeEmbeddedPostgres("metrics collector", () => {
     await seedRun(companyId, agentId, { status: "running", startedAt: NOW });
     await seedRun(companyId, agentId, { status: "claimed", startedAt: NOW });
     await seedRun(companyId, agentId, { status: "queued" });
+    await seedRun(companyId, agentId, { status: "queued", createdAt: new Date(NOW.getTime() - 31 * 60 * 1000) });
     await seedRun(companyId, agentId, { status: "retrying" });
     await seedRun(companyId, agentId, {
       status: "failed",
@@ -344,6 +347,16 @@ describeEmbeddedPostgres("metrics collector", () => {
     expect(snapshot.scrapeErrors).toBeGreaterThan(0);
     expect(snapshot.runsActive).toBe(0);
     expect(snapshot.roleQueueTasks).toEqual([]);
+  });
+
+  it("counts queued runs older than 30 minutes separately", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "engineer");
+    await seedRun(companyId, agentId, { status: "queued", createdAt: new Date(NOW.getTime() - 31 * 60 * 1000) });
+    await seedRun(companyId, agentId, { status: "queued", createdAt: new Date(NOW.getTime() - 5 * 60 * 1000) });
+    const snapshot = await collectMetricsSnapshot({ db, now: () => NOW, errorWindowSec: 3600, latencyWindowSec: 3600 });
+    expect(snapshot.runsQueued).toBe(3);
+    expect(snapshot.runsQueuedOver30m).toBe(1);
   });
 
   it("the self-check probe is green over real rows — the runbook link", async () => {

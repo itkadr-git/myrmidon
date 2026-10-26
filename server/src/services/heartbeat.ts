@@ -612,6 +612,9 @@ import {
   deriveCommentId,
   allowsIssueInteractionWake,
   isResolvedInteractionContinuationWakeContext,
+  createCancelStaleQueuedRun,
+  type RunDispatch,
+  type PostCommitEffect,
 } from "../modules/run-dispatch/index.js";
 import {
   createWakeQueue,
@@ -20608,8 +20611,25 @@ export function heartbeatService(
     error: (fields: Record<string, unknown>, message: string) => logger.error(fields, message),
   };
   const runStartDispatcher = createRunStartDispatcher({
-    listQueuedAgents: (options) => listAgentsWithQueuedRunsAndNoRunningRun(db, options),
-    startNextQueuedRunForAgent: (agentId, options) => startNextQueuedRunForAgent(agentId, options),
+    listQueuedAgents: async ({ cutoff }) => listAgentsWithQueuedRunsAndNoRunningRun(db, { cutoff }),
+    listStaleQueuedRuns: async ({ executionCutoff, staleAfterMs }) => {
+      const staleRuns = await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId, createdAt: heartbeatRuns.createdAt })
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "queued"), lte(heartbeatRuns.createdAt, new Date(Date.now() - staleAfterMs)), executionCutoff ? gte(heartbeatRuns.createdAt, executionCutoff) : undefined))
+        .orderBy(asc(heartbeatRuns.createdAt)).limit(200);
+      return staleRuns;
+    },
+    createCancelStaleQueuedRun: async (run, staleAfterMs) => {
+      const outcome = await createCancelStaleQueuedRun({ writer: runDispatch })({
+        runId: run.id, companyId: run.companyId, expectedStatus: "queued",
+        staleAfterMs, now: new Date(),
+      });
+      if (outcome.outcome !== "cancelled") return false;
+      applyRunDispatchPostCommitEffects(outcome.postCommitEffects);
+      return true;
+    },
+    wakeAgent: async (agentId, companyId) => {
+      await enqueueWakeup(agentId, { source: "system", reason: "queued_run_stale_timeout", companyId });
+    },
     loadSettings: () => loadRunDispatchSettings(db),
     readCutoff: () => getWorktreeExecutionCutoff(),
     // The role gate of T1.1 and the bus publish of the `notify` mode.

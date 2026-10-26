@@ -18,6 +18,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     role: "all",
     runsActive: 2,
     runsQueued: 5,
+    runsQueuedOver30m: 1,
     runsFailedTotal: 7,
     runsFailedWindow: 1,
     runDurationSecondsP50: 42.5,

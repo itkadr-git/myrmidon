@@ -17,7 +17,7 @@
 //  - routes.ts — the express router: bearer guard + the endpoint.
 //  - index.ts — the app wiring (app.ts mounts that).
 
-import { and, count, eq, gt, gte, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, count, eq, gte, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -98,6 +98,7 @@ const LATENCY_SAMPLE_CAP = 5000;
 export const METRIC_FAMILIES = [
   "myrmidon_runs_active",
   "myrmidon_runs_queued",
+  "myrmidon_runs_queued_over_30m",
   "myrmidon_runs_failed_total",
   "myrmidon_runs_failed_window",
   "myrmidon_run_duration_seconds",
@@ -170,6 +171,8 @@ export interface MetricsSnapshotFields {
   runsActive: number;
   /** Queued runs waiting for admission right now. */
   runsQueued: number;
+  /** Queued runs older than 30 minutes. */
+  runsQueuedOver30m: number;
   /** Failed runs, all time. */
   runsFailedTotal: number;
   /** Failed runs inside the error window. */
@@ -319,28 +322,32 @@ export interface MetricsCollectorDeps {
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
-async function readRunCounters(db: Db): Promise<{
+async function readRunCounters(db: Db, now: Date): Promise<{
   active: number;
   queued: number;
+  queuedOver30m: number;
   failedTotal: number;
 }> {
   const rows = await db
     .select({
       status: heartbeatRuns.status,
       total: count(),
+      staleQueued: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'queued' and ${heartbeatRuns.createdAt} < ${new Date(now.getTime() - 30 * 60 * 1000)})`,
     })
     .from(heartbeatRuns)
     .groupBy(heartbeatRuns.status);
   let active = 0;
   let queued = 0;
+  let queuedOver30m = 0;
   let failedTotal = 0;
   for (const row of rows) {
+    queuedOver30m += Number(row.staleQueued ?? 0);
     if (row.status === "running" || row.status === "claimed") active += Number(row.total);
     else if (row.status === "queued" || row.status === "retrying" || row.status === "scheduled_retry") {
       queued += Number(row.total);
     } else if (row.status === "failed") failedTotal += Number(row.total);
   }
-  return { active, queued, failedTotal };
+  return { active, queued, queuedOver30m, failedTotal };
 }
 
 /** p50/p95 over finished run durations (finishedAt - startedAt), seconds. */
@@ -528,9 +535,9 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   // The run counters answer three families with one grouped query; a failure
   // names all three in the selfcheck output.
   const runCounters = await guarded(
-    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_failed_total",
-    () => readRunCounters(deps.db),
-    { active: 0, queued: 0, failedTotal: 0 },
+    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_queued_over_30m|myrmidon_runs_failed_total",
+    () => readRunCounters(deps.db, now),
+    { active: 0, queued: 0, queuedOver30m: 0, failedTotal: 0 },
   );
   const durations = await guarded(
     "myrmidon_run_duration_seconds",
@@ -633,6 +640,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     fields: {
       runsActive: runCounters.active,
       runsQueued: runCounters.queued,
+      runsQueuedOver30m: runCounters.queuedOver30m,
       runsFailedTotal: runCounters.failedTotal,
       runsFailedWindow: failedWindow,
       runDurationSecondsP50: durations.p50,
@@ -783,6 +791,14 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Heartbeat runs waiting for admission (queued, retrying, scheduled_retry).",
       "gauge",
       [`myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_runs_queued_over_30m",
+      "Queued heartbeat runs older than 30 minutes.",
+      "gauge",
+      [`myrmidon_runs_queued_over_30m{${R}} ${formatSampleValue(snapshot.runsQueuedOver30m)}`],
     ),
   );
   blocks.push(

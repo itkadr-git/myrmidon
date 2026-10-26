@@ -9,6 +9,7 @@ import {
   issueApprovals,
   issueThreadInteractions,
   heartbeatRuns,
+  activityLog,
   issueRecoveryActions,
   issueComments,
   issues,
@@ -38,6 +39,7 @@ import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/po
 import { isOwnerExplainWake, isPendingInteractionAddresseeWake } from "../myrmidon-pending-interaction-wake.js";
 import type {
   QueuedRunFacts,
+  QueuedRunStalenessErrorCode,
   ReviewParticipantFacts,
   RetryReasonKind,
   ScheduledRetryFacts,
@@ -855,8 +857,13 @@ export function createPostgresRunDispatchAdapter(
   async function cancelStaleRunInTx(
     tx: Db,
     run: HeartbeatRun,
-    issueId: string,
-    decision: Extract<ReturnType<typeof decideQueuedRunStaleness>, { stale: true }>,
+    issueId: string | null,
+    decision: {
+      stale: true;
+      errorCode: QueuedRunStalenessErrorCode;
+      reason: string;
+      details: Record<string, unknown>;
+    },
     expectedStatus: "queued" | "running",
     now: Date,
   ): Promise<CancelStaleQueuedRunOutcome> {
@@ -955,21 +962,23 @@ export function createPostgresRunDispatchAdapter(
         }
       }
 
-      await tx
-        .update(issues)
-        .set({
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.companyId, row.companyId),
-            eq(issues.id, issueId),
-            eq(issues.executionRunId, row.id),
-          ),
-        );
+      if (issueId) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.companyId, row.companyId),
+              eq(issues.id, issueId),
+              eq(issues.executionRunId, row.id),
+            ),
+          );
+      }
 
       await appendHeartbeatRunEvent(tx as unknown as Db, {
         companyId: row.companyId,
@@ -981,7 +990,17 @@ export function createPostgresRunDispatchAdapter(
         message: decision.reason,
         payload: decision.details,
       });
-
+      await tx.insert(activityLog).values({
+        companyId: row.companyId,
+        actorType: "system",
+        actorId: "queued-run-timeout",
+        action: "heartbeat_run.cancelled",
+        entityType: "heartbeat_run",
+        entityId: row.id,
+        agentId: row.agentId,
+        runId: row.id,
+        details: { reason: decision.reason, errorCode: decision.errorCode, ...decision.details },
+      });
       return {
         outcome: "cancelled",
         reason: decision.reason,
@@ -1020,6 +1039,27 @@ export function createPostgresRunDispatchAdapter(
   ): Promise<CancelStaleQueuedRunOutcome> {
     const cancelLockedRun = async (tx: Db, run: HeartbeatRun) => {
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
+      const staleAgeMs = input.now.getTime() - run.createdAt.getTime();
+      if (
+        input.expectedStatus === "queued" &&
+        input.staleAfterMs !== undefined &&
+        input.staleAfterMs > 0 &&
+        staleAgeMs >= input.staleAfterMs
+      ) {
+        return cancelStaleRunInTx(
+          tx,
+          run,
+          null,
+          {
+            stale: true,
+            errorCode: "queued_run_stale_timeout",
+            reason: `Cancelled because it remained queued for more than ${Math.round(input.staleAfterMs / 60000)} minutes without starting`,
+            details: { staleAgeMs, staleAfterMs: input.staleAfterMs },
+          },
+          input.expectedStatus,
+          input.now,
+        );
+      }
       const { issueId, facts, decision } = await decideCurrentRunStaleness(tx, run, input.now);
       if (!decision.stale || !issueId) {
         if (input.expectedStatus === "queued" && facts?.isInteractionWake) {

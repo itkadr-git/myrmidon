@@ -54,6 +54,7 @@ import { and, asc, eq, gte, sql } from "drizzle-orm";
 import { companies, heartbeatRuns, type Db } from "@myrmidon/db";
 import {
   DEFAULT_QUEUED_RESWEEP_SEC,
+  DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
   loadRunDispatchSettings,
   type RunDispatchSettings,
   type RunStartDispatchMode,
@@ -167,7 +168,9 @@ export interface RunStartDispatcherDeps {
     agentId: string,
     options?: RunStartDispatchOptions,
   ) => Promise<unknown[]>;
-  /** Defaults to the stored `general.processes` reader. */
+  listStaleQueuedRuns?: (options: { executionCutoff: Date | null; staleAfterMs: number }) => Promise<Array<{ id: string; agentId: string; companyId: string; createdAt: Date }>>;
+  createCancelStaleQueuedRun?: (run: { id: string; agentId: string; companyId: string; createdAt: Date }, staleAfterMs: number) => Promise<boolean>;
+  wakeAgent?: (agentId: string, companyId: string) => Promise<void>;
   loadSettings?: () => Promise<RunDispatchSettings>;
   /** The worktree execution cutoff, when the host has one. */
   readCutoff?: () => Promise<Date | null>;
@@ -190,6 +193,7 @@ export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStart
   const loadSettings = deps.loadSettings ?? (async () => ({
     runStartDispatch: "inline" as RunStartDispatchMode,
     queuedResweepSec: DEFAULT_QUEUED_RESWEEP_SEC,
+    queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
   }));
 
   const mode = async (): Promise<RunStartDispatchMode> =>
@@ -248,6 +252,17 @@ export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStart
 
   const sweepQueuedWithoutRunning = async (): Promise<QueuedResweepOutcome> => {
     const cutoff = deps.readCutoff ? await deps.readCutoff() : null;
+    const settings = await loadSettings();
+    const staleAfterMs = settings.queuedRunStaleAfterSec * 1000;
+    const staleCandidates = await deps.listStaleQueuedRuns?.({ executionCutoff: cutoff, staleAfterMs }) ?? [];
+    for (const run of staleCandidates) {
+      try {
+        const cancelled = await deps.createCancelStaleQueuedRun?.(run, staleAfterMs);
+        if (cancelled) await deps.wakeAgent?.(run.agentId, run.companyId);
+      } catch (err) {
+        deps.log?.error?.({ err, runId: run.id, agentId: run.agentId }, "stale queued run cleanup failed");
+      }
+    }
     const agents = await deps.listQueuedAgents({ cutoff });
     let started = 0;
     let failed = 0;
