@@ -21,7 +21,6 @@ const ownerId = randomUUID();
 const explicitlyAssignedId = randomUUID();
 const blockerId = randomUUID();
 const blockedTaskIds = Array.from({ length: 3 }, () => randomUUID());
-const blockedTaskId = randomUUID();
 const readyTaskId = randomUUID();
 let db: Db;
 let tempDb: EmbeddedPostgresTestDatabase | undefined;
@@ -95,11 +94,11 @@ async function seedFixtures(now: Date) {
     },
   ]);
   await db.insert(issueRelations).values(
-    blockedTaskIds.map((issueId) => ({
+    blockedTaskIds.map((blockedIssueId) => ({
       id: randomUUID(),
       companyId,
-      issueId,
-      relatedIssueId: blockerId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
       type: "blocks" as const,
     })),
   );

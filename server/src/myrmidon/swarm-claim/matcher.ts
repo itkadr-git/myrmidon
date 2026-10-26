@@ -1248,12 +1248,12 @@ async function openTaskIdsOfAgents(
         ),
       ),
     db
-      .select({ issueId: issueRelations.issueId })
+      .select({ issueId: issueRelations.relatedIssueId })
       .from(issueRelations)
       .innerJoin(
         issues,
         and(
-          eq(issues.id, issueRelations.relatedIssueId),
+          eq(issues.id, issueRelations.issueId),
           eq(issues.companyId, companyId),
           isNull(issues.hiddenAt),
           blockerOpenSql("issues.status"),
