@@ -402,6 +402,28 @@ describe("resolveHeartbeatRunResponse", () => {
     });
   });
 
+  it("suppresses retryable provider error content from every comment candidate", () => {
+    expect(resolveHeartbeatRunResponse({
+      resultJson: {
+        errorFamily: "transient_upstream",
+        summary: "The server is overloaded. Please retry!",
+        result: "The server is overloaded. Please retry!",
+      },
+      finalAgentMessage: {
+        text: "The server is overloaded. Please retry!",
+        sourceEventId: "event-error",
+        channel: "final",
+      },
+    })).toMatchObject({
+      text: null,
+      decision: {
+        chosenSource: "none",
+        commentAction: "none",
+        reasonCodes: ["retryable_provider_failure"],
+      },
+    });
+  });
+
   it("returns no response instead of an artificial placeholder", () => {
     expect(resolveHeartbeatRunResponse({ resultJson: null })).toMatchObject({
       text: null,

@@ -517,6 +517,19 @@ describe("execute", () => {
 
   const wsBaseConfig = { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 };
 
+  it("sends configured fallback models to gateway in declared order", async () => {
+    const config = { ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a", "backup-b"] } };
+    const body = await runAndReadBody(makeCtx(config));
+    expect(body.fallback_model).toEqual([
+      { provider: "openai", model: "backup-a" },
+      { provider: "openai", model: "backup-b" },
+    ]);
+    const bareConfig = { ...wsBaseConfig, model: "primary", provider: "openai", fallbacks: ["backup-c"] };
+    expect((await runAndReadBody(makeCtx(bareConfig))).fallback_model).toEqual([
+      { provider: "openai", model: "backup-c" },
+    ]);
+  });
+
   // myrmidon(F06-D): a chat's `/model` and `/think` choice is stored as an issue
   // override; heartbeat merges it over the agent card into `ctx.config` before
   // the adapter runs (heartbeat.ts: `mergedConfig`). The run the next turn

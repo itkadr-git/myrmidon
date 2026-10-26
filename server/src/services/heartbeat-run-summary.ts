@@ -379,6 +379,19 @@ export function resolveHeartbeatRunResponse(input: {
   } | null;
 }): ResolvedHeartbeatRunResponse {
   const resultJson = record(input.resultJson);
+  // Retryable adapter failures are control-plane outcomes, never user-facing prose.
+  // Guard every candidate source, including independently captured final events.
+  const errorFamily = typeof resultJson?.errorFamily === "string" ? resultJson.errorFamily : null;
+  const retryableProviderFailure = errorFamily === "transient_upstream" || errorFamily === "provider_quota";
+  if (retryableProviderFailure) {
+    return {
+      text: null,
+      decision: decision("none", {
+        commentAction: "none",
+        reasonCodes: ["retryable_provider_failure"],
+      }),
+    };
+  }
   const finalAgentText = readCommentText(input.finalAgentMessage?.text);
   const explicitProviderFinal = input.finalAgentMessage?.channel === "final";
   const compatibleTerminalAssistant =
