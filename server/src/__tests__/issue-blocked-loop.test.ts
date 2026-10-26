@@ -419,6 +419,14 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
       .patch(`/api/issues/${s.issueId}`)
       .send({
         status: "blocked",
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: s.agentId },
+          blockedByIssueIds: [s.doneBlockerId],
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "agent",
+        },
         unblockDescriptor: {
           owner: "board",
           action: "Waiting for the external check",
