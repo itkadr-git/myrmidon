@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
+
 export const HEARTBEAT_RUN_SCRATCH_MARKER = ".paperclip-run-scratch.json";
 
 export interface HeartbeatRunScratchMetadata {
@@ -168,13 +170,15 @@ export function buildHeartbeatRunScratchEnv(
   scratch: HeartbeatRunScratch,
 ): HeartbeatRunScratchEnvResult {
   const runDir = scratch.runDir || path.join(scratch.dir, "run-dir");
-  const env: Record<string, string> = {
-    PAPERCLIP_RUN_SCRATCH_DIR: scratch.dir,
-    PAPERCLIP_TASK_SCRATCH_DIR: scratch.dir,
-    PAPERCLIP_SCRATCH_DIR: scratch.dir,
-    PAPERCLIP_RUN_DIR: runDir,
-    PAPERCLIP_TMPDIR: scratch.dir,
-  };
+  const env: Record<string, string> = {};
+  // myrmidon(REBRAND-C): canonical MYRMIDON_* names plus the PAPERCLIP_* alias
+  // so older bots keep resolving them through the transition.
+  writeProductEnv(env, "RUN_SCRATCH_DIR", scratch.dir);
+  writeProductEnv(env, "TASK_SCRATCH_DIR", scratch.dir);
+  writeProductEnv(env, "SCRATCH_DIR", scratch.dir);
+  writeProductEnv(env, "RUN_DIR", runDir);
+  writeProductEnv(env, "TMPDIR", scratch.dir);
+
   if (
     typeof existingEnv.CHROME_USER_DATA_DIR !== "string" ||
     existingEnv.CHROME_USER_DATA_DIR.trim().length === 0
