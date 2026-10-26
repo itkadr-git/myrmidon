@@ -192,6 +192,7 @@ import {
 import {
   classifyIssueGraphLiveness,
   classifyIssueReviewPaths,
+  UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS,
   type IssueGraphLivenessInput,
   type IssueLivenessFinding,
 } from "./recovery/issue-graph-liveness.js";
@@ -3359,7 +3360,6 @@ function lowTrustBoundaryIssueCondition(
 }
 
 const BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES = ["done", "cancelled"];
-const UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS = 30 * 60 * 1000;
 const BLOCKER_ATTENTION_MAX_DEPTH = 8;
 export const BLOCKER_ATTENTION_MAX_NODES = 2000;
 const BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES = new Set([
@@ -3721,7 +3721,6 @@ async function listIssueBlockerAttentionMap(
   const roots = issueRows.filter(
     (row) => row.companyId === companyId && row.status === "blocked",
   );
-  const overdueUnassignedBlockers = new Set<string>();
   const attentionMap = new Map<string, IssueBlockerAttention>();
   const overdueUnassignedIds = new Set<string>();
   for (const row of issueRows) {
@@ -3838,14 +3837,6 @@ async function listIssueBlockerAttentionMap(
           isBlockerOpen(row.status) ||
           pendingFinalizeBlockerIssueIds.has(row.blockerIssueId),
       );
-      for (const blockerRow of unresolvedExplicitBlockerRows) {
-        if (
-          overdueUnassignedIds.has(blockerRow.blockerIssueId) &&
-          !pendingFinalizeBlockerIssueIds.has(blockerRow.blockerIssueId)
-        ) {
-          unassignedOverdueBlockerCount += 1;
-        }
-      }
       appendBlockerAttentionEdges(edgesByIssueId, [
         ...unresolvedExplicitBlockerRows
           .filter(
@@ -4426,18 +4417,18 @@ async function listIssueBlockerAttentionMap(
         : "active_dependency";
     }
 
-  const overdueUnassignedBlockerCount = topLevelEdges.filter((edge) => {
-    const blocker = nodesById.get(edge.blockerIssueId);
-    return overdueUnassignedIds.has(edge.blockerIssueId) &&
-      !pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId) &&
-      blocker?.status === "blocked" &&
-      !blocker.assigneeAgentId &&
-      !blocker.assigneeUserId &&
-      blocker.blockedTransitionAt &&
-      Date.now() - blocker.blockedTransitionAt.getTime() >=
-        UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS;
-  }).length;
-  attentionMap.set(
+    const overdueUnassignedBlockerCount = topLevelEdges.filter((edge) => {
+      const blocker = nodesById.get(edge.blockerIssueId);
+      return overdueUnassignedIds.has(edge.blockerIssueId) &&
+        !pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId) &&
+        blocker?.status === "blocked" &&
+        !blocker.assigneeAgentId &&
+        !blocker.assigneeUserId &&
+        blocker.blockedTransitionAt &&
+        Date.now() - blocker.blockedTransitionAt.getTime() >=
+          UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS;
+    }).length;
+    attentionMap.set(
       root.id,
       createIssueBlockerAttention({
         state: attentionBlockerCount === 0 && overdueUnassignedBlockerCount > 0
