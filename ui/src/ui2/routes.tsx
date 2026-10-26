@@ -102,6 +102,13 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     legacyPath: "/agents",
   },
   {
+    key: "settings-runs-queue",
+    path: "company/settings/runs-queue",
+    titleKey: "ui2.screens.runsQueue",
+    element: ui2Screen(<Ui2RunsSettings />),
+    legacyPath: "/company/settings",
+  },
+  {
     key: "settings-secrets",
     path: "company/settings/secrets",
     titleKey: "ui2.screens.secrets",
