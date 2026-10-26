@@ -545,7 +545,7 @@ async function claimTaskForAgent(
         .where(
           and(
             eq(issues.id, target.issueId),
-            eq(issues.companyId, companyId),
+            ...readyQueueConditions(txDb, companyId),
             // Revalidate scope after locking the issue. The pool/membership
             // reads are advisory; only this predicate protects the write.
             projectScopedClaimGate(target.agentId),
@@ -813,6 +813,15 @@ export async function matchIssue(
   if (row.assigneeAgentId) return null;
   if (!(SWARM_CLAIM_QUEUE_ISSUE_STATUSES as readonly string[]).includes(row.status)) return null;
   if (await isCooling(deps, row.companyId, issueId)) return null;
+
+  // Event-driven matching must obey the same queue readiness predicate as
+  // periodic matching. Looking the issue up by id is not itself a claim gate.
+  const [readyCandidate] = await deps.db
+    .select({ issueId: issues.id })
+    .from(issues)
+    .where(and(...readyQueueConditions(deps.db, row.companyId), eq(issues.id, issueId)))
+    .limit(1);
+  if (!readyCandidate) return null;
 
   const castes = await casteDirectoryOf(deps, row.companyId);
   // Only this task is read, in every pool: the routing decides which one holds it.
@@ -1519,7 +1528,6 @@ async function listReadyQueueCandidates(
   options: { order?: SwarmQueueOrderOptions; issueId?: string } = {},
 ): Promise<SwarmMatcherQueueCandidate[]> {
   const conditions = [
-    ...readyQueueConditions(db, companyId),
     or(
       and(isNotNull(issues.assigneeAgentId), eq(agents.role, role)),
       and(isNull(issues.assigneeAgentId), unassignedTaskRoutedToRole(role)),
@@ -1541,7 +1549,7 @@ async function listReadyQueueCandidates(
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
     // One bounded pass over the recent evaporating runs, joined once (#1047).
     .leftJoin(failedRunsDerivedSql(companyId, options.order?.now), failedRunsJoinOnSql())
-    .where(and(...conditions))
+    .where(and(...readyQueueConditions(db, companyId), ...conditions))
     .orderBy(...swarmQueueOrderBy(options.order))
     .limit(SWARM_POOL_READ_LIMIT);
   return rows.map((row) => ({
