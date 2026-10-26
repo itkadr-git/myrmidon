@@ -60,16 +60,27 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) knowledge tree", () => {
       item({ slug: "loop-b", title: "Loop B", parentSlug: "loop-a" }),
     ]);
 
-    const root = tree.find((node) => node.item.slug === "root");
+    const space = tree.find((node) => node.item.spaceKey === "wiki");
+    const root = space?.children.find((node) => node.item.slug === "root");
     expect(root?.depth).toBe(0);
     expect(root?.children.map((node) => node.item.slug)).toEqual(["child-a", "child-b"]);
     expect(root?.children[0]?.children.map((node) => node.item.slug)).toEqual(["grand"]);
     expect(root?.children[0]?.children[0]?.depth).toBe(2);
 
     // A parent chain that loops back is a root instead of a hung walk.
-    expect(tree.map((node) => node.item.slug).sort()).toContain("loop-a");
+    expect(space?.children.map((node) => node.item.slug).sort()).toContain("loop-a");
     const flattened = flattenKnowledgeTree(tree);
-    expect(flattened.length).toBe(6);
+    expect(flattened.length).toBe(7);
+  });
+
+  it("groups pages under spaces and disambiguates duplicate titles with slugs", () => {
+    const tree = buildKnowledgeTree([
+      item({ spaceKey: "alpha", slug: "one/index", title: "Overview" }),
+      item({ spaceKey: "alpha", slug: "two/index", title: "Overview" }),
+      item({ spaceKey: "beta", slug: "index", title: "Overview" }),
+    ]);
+    expect(tree.map((node) => node.item.title)).toEqual(["alpha", "beta"]);
+    expect(flattenKnowledgeTree(tree).filter((node) => node.item.slug).map((node) => node.item.slug)).toEqual(["one/index", "two/index", "index"]);
   });
 
   it("builds a wide tree within the 300 ms budget of §6 K-4", () => {
@@ -86,8 +97,8 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) knowledge tree", () => {
     const started = Date.now();
     const tree = buildKnowledgeTree(items);
     const elapsed = Date.now() - started;
-    expect(tree.length).toBe(20);
-    expect(flattenKnowledgeTree(tree).length).toBe(2000);
+    expect(tree.length).toBe(1);
+    expect(flattenKnowledgeTree(tree).length).toBe(2001);
     expect(elapsed).toBeLessThan(KNOWLEDGE_TREE_BUDGET_MS);
   });
 });
