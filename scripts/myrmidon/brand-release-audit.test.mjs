@@ -61,6 +61,38 @@ function run(dir, args) {
   }
 }
 
+check("package metadata pointing to the vendor repo makes the gate red", () => {
+  const dir = makeFixture({
+    "package.json": JSON.stringify({
+      name: "myrmidon-fixture",
+      repository: { type: "git", url: "https://github.com/paperclipai/paperclip", directory: "packages/example" },
+      homepage: "https://github.com/paperclipai/paperclip/tree/main/packages/example#readme",
+      bugs: { url: "https://github.com/paperclipai/paperclip/issues" },
+    }),
+  });
+  const r = run(dir, ["--package-json-only", "--gate"]);
+  if (r.code !== 1) throw new Error(`expected exit 1, got ${r.code}:\\n${r.stdout}`);
+  for (const field of ["repository", "homepage", "bugs"]) {
+    if (!new RegExp(`${field} points at the vendored repo`).test(r.stdout)) {
+      throw new Error(`${field} finding missing:\\n${r.stdout}`);
+    }
+  }
+});
+
+check("Myrmidon package metadata stays green", () => {
+  const dir = makeFixture({
+    "package.json": JSON.stringify({
+      name: "myrmidon-fixture",
+      repository: { type: "git", url: "https://github.com/itkadr-git/myrmidon", directory: "packages/example" },
+      homepage: "https://github.com/itkadr-git/myrmidon/tree/main/packages/example#readme",
+      bugs: { url: "https://github.com/itkadr-git/myrmidon/issues" },
+    }),
+  });
+  const r = run(dir, ["--package-json-only", "--gate"]);
+  if (r.code !== 0) throw new Error(`expected exit 0, got ${r.code}:\\n${r.stdout}`);
+  if (!/0 stale package\.json repository\/homepage\/bugs URL/.test(r.stdout)) throw new Error(`unexpected manifest finding:\\n${r.stdout}`);
+});
+
 check("forbidden user-facing mention makes the gate red", () => {
   const dir = makeFixture({
     "README.md": "# Myrmidon\n\nPaperclip is a control plane for agents.\n",
