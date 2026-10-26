@@ -168,6 +168,10 @@ describe("normalizeIssueExecutionPolicy", () => {
     });
   });
 
+  it("still rejects unsupported new execution policy modes", () => {
+    expect(() => normalizeIssueExecutionPolicy({ mode: "parallel", stages: [] })).toThrow("Invalid execution policy");
+  });
+
   it("rejects approvalsNeeded values above 1", () => {
     expect(() =>
       normalizeIssueExecutionPolicy({
