@@ -15949,6 +15949,97 @@ export function issueRoutes(
         requestedByActorId: actor.actorId,
       });
 
+      if (closesRecoveryIssue) {
+        try {
+          const recoveryWake = await db.transaction(async (tx) => {
+            const [recoveryAction] = await tx
+              .select()
+              .from(issueRecoveryActions)
+              .where(and(
+                eq(issueRecoveryActions.companyId, issue.companyId),
+                eq(issueRecoveryActions.recoveryIssueId, issue.id),
+                inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              ))
+              .for("update");
+            if (!recoveryAction) return null;
+
+            const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+              companyId: issue.companyId,
+              sourceIssueId: recoveryAction.sourceIssueId,
+              actionId: recoveryAction.id,
+              status: issue.status === "cancelled" ? "cancelled" : "resolved",
+              outcome: issue.status === "cancelled" ? "cancelled" : "restored",
+              resolutionNote: null,
+            }, tx);
+            if (!resolved) return null;
+            const [sourceIssue] = await tx
+              .select()
+              .from(issueRows)
+              .where(and(
+                eq(issueRows.id, recoveryAction.sourceIssueId),
+                eq(issueRows.companyId, issue.companyId),
+              ))
+              .for("update");
+            if (sourceIssue && sourceIssue.status === "blocked") {
+              const remainingBlockers = await tx
+                .select({ blockerIssueId: issueRelations.issueId })
+                .from(issueRelations)
+                .where(and(
+                  eq(issueRelations.companyId, issue.companyId),
+                  eq(issueRelations.relatedIssueId, recoveryAction.sourceIssueId),
+                  eq(issueRelations.type, "blocks"),
+                ));
+              const blockerIds = remainingBlockers
+                .map(({ blockerIssueId }) => blockerIssueId)
+                .filter((blockerId) => blockerId !== issue.id);
+              await svc.update(recoveryAction.sourceIssueId, {
+                status: blockerIds.length ? "blocked" : "todo",
+                blockedByIssueIds: blockerIds,
+                assigneeAgentId: recoveryAction.returnOwnerAgentId,
+                assigneeUserId: null,
+              }, tx);
+            }
+            return resolved.returnOwnerAgentId
+              ? {
+                  agentId: resolved.returnOwnerAgentId,
+                  actionId: resolved.id,
+                  sourceIssueId: resolved.sourceIssueId,
+                  outcome: resolved.outcome,
+                }
+              : null;
+          });
+          if (recoveryWake) {
+            await enqueueRecoveryActionWakeup(recoveryWake.agentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_recovery_action_restored",
+              idempotencyKey: `recovery_resolved:${recoveryWake.actionId}`,
+              requestedByActorType: "system",
+              requestedByActorId: "recovery_issue_closed",
+              payload: {
+                issueId: recoveryWake.sourceIssueId,
+                recoveryIssueId: issue.id,
+                recoveryActionId: recoveryWake.actionId,
+                outcome: recoveryWake.outcome,
+              },
+              contextSnapshot: {
+                issueId: recoveryWake.sourceIssueId,
+                taskId: recoveryWake.sourceIssueId,
+                recoveryIssueId: issue.id,
+                recoveryActionId: recoveryWake.actionId,
+                source: "issue.recovery_closed",
+                wakeReason: "issue_recovery_action_restored",
+              },
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id },
+            "failed to resolve recovery action after recovery issue closure",
+          );
+        }
+      }
+
       // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
       void (async () => {
         type WakeupRequest = NonNullable<
@@ -16240,99 +16331,6 @@ export function issueRoutes(
           }
         }
 
-        const recoveryIssueBecameTerminal =
-          !["done", "cancelled"].includes(existing.status) &&
-          ["done", "cancelled"].includes(issue.status);
-        if (closesRecoveryIssue && recoveryIssueBecameTerminal) {
-          try {
-            const recoveryWake = await db.transaction(async (tx) => {
-              const [recoveryAction] = await tx
-                .select()
-                .from(issueRecoveryActions)
-                .where(and(
-                  eq(issueRecoveryActions.companyId, issue.companyId),
-                  eq(issueRecoveryActions.recoveryIssueId, issue.id),
-                  inArray(issueRecoveryActions.status, ["active", "escalated"]),
-                ))
-                .for("update");
-              if (!recoveryAction) return null;
-
-              const resolved = await recoveryActionsSvc.resolveActiveForIssue({
-                companyId: issue.companyId,
-                sourceIssueId: recoveryAction.sourceIssueId,
-                actionId: recoveryAction.id,
-                status: issue.status === "cancelled" ? "cancelled" : "resolved",
-                outcome: issue.status === "cancelled" ? "cancelled" : "restored",
-                resolutionNote: null,
-              }, tx);
-              if (!resolved) return null;
-              const [sourceIssue] = await tx
-                .select()
-                .from(issueRows)
-                .where(and(
-                  eq(issueRows.id, recoveryAction.sourceIssueId),
-                  eq(issueRows.companyId, issue.companyId),
-                ))
-                .for("update");
-              if (sourceIssue && sourceIssue.status === "blocked") {
-                const remainingBlockers = await tx
-                  .select({ blockerIssueId: issueRelations.issueId })
-                  .from(issueRelations)
-                  .where(and(
-                    eq(issueRelations.companyId, issue.companyId),
-                    eq(issueRelations.relatedIssueId, recoveryAction.sourceIssueId),
-                    eq(issueRelations.type, "blocks"),
-                  ));
-                const blockerIds = remainingBlockers
-                  .map(({ blockerIssueId }) => blockerIssueId)
-                  .filter((blockerId) => blockerId !== issue.id);
-                await svc.update(recoveryAction.sourceIssueId, {
-                  status: blockerIds.length ? "blocked" : "todo",
-                  blockedByIssueIds: blockerIds,
-                  assigneeAgentId: recoveryAction.returnOwnerAgentId,
-                  assigneeUserId: null,
-                }, tx);
-              }
-              return resolved.returnOwnerAgentId
-                ? {
-                    agentId: resolved.returnOwnerAgentId,
-                    actionId: resolved.id,
-                    sourceIssueId: resolved.sourceIssueId,
-                    outcome: resolved.outcome,
-                  }
-                : null;
-            });
-            if (recoveryWake) {
-              await enqueueRecoveryActionWakeup(recoveryWake.agentId, {
-                source: "automation",
-                triggerDetail: "system",
-                reason: "issue_recovery_action_restored",
-                idempotencyKey: `recovery_resolved:${recoveryWake.actionId}`,
-                requestedByActorType: "system",
-                requestedByActorId: "recovery_issue_closed",
-                payload: {
-                  issueId: recoveryWake.sourceIssueId,
-                  recoveryIssueId: issue.id,
-                  recoveryActionId: recoveryWake.actionId,
-                  outcome: recoveryWake.outcome,
-                },
-                contextSnapshot: {
-                  issueId: recoveryWake.sourceIssueId,
-                  taskId: recoveryWake.sourceIssueId,
-                  recoveryIssueId: issue.id,
-                  recoveryActionId: recoveryWake.actionId,
-                  source: "issue.recovery_closed",
-                  wakeReason: "issue_recovery_action_restored",
-                },
-              });
-            }
-          } catch (err) {
-            logger.warn(
-              { err, issueId: issue.id },
-              "failed to resolve recovery action after recovery issue closure",
-            );
-          }
-        }
 
         const becameDone =
           existing.status !== "done" && issue.status === "done";
