@@ -40,9 +40,9 @@ export function resolveAddresslessCard(card: PendingCard): ReaddressResult {
 export async function loadReport(databaseUrl: string): Promise<ReaddressResult[]> {
   const db = createDb(databaseUrl);
   try {
-    return await db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx) => {
       await tx.execute(sql`SET TRANSACTION READ ONLY`);
-      const result = await tx.execute(sql`
+      return await tx.execute(sql`
         SELECT i.id,
                issues.identifier AS "issueIdentifier",
                i.kind,
@@ -59,9 +59,8 @@ export async function loadReport(databaseUrl: string): Promise<ReaddressResult[]
           AND i.addressee_user_id IS NULL
         ORDER BY i.created_at, i.id
       `);
-      const rows = Array.isArray(result) ? result : (result as { rows?: PendingCard[] }).rows ?? [];
-      return rows.map((row) => resolveAddresslessCard(row as PendingCard));
     }, { accessMode: "read only" });
+    return result.map((row) => resolveAddresslessCard(row as PendingCard));
   } finally {
     await db.$client.end();
   }

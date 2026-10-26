@@ -63,23 +63,25 @@ describePostgres("interaction readdress report read-only PostgreSQL integration"
           ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000001', 'creator'),
           ('00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000001', 'recipient');
         INSERT INTO issues VALUES ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000001', 'OPE-TEST');
+        INSERT INTO issue_thread_interactions (
+          id, company_id, issue_id, kind, status, created_by_agent_id,
+          addressee_agent_id, requested_resolver_policy, effective_resolver_policy, payload
+        ) VALUES
+          ${Array.from({ length: 10 }, (_, index) => {
+            const n = index + 1;
+            const policy = n <= 4 ? "human_only" : n <= 7 ? "anyone" : "not_creator";
+            const addressed = n === 2 || n === 6 || n === 9;
+            const id = `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+            return sql`(
+              ${id}::uuid,
+              '00000000-0000-4000-8000-000000000001',
+              '00000000-0000-4000-8000-000000000001',
+              'request_confirmation', 'pending', '00000000-0000-4000-8000-000000000001',
+              ${addressed ? "00000000-0000-4000-8000-000000000002" : null}::uuid,
+              ${policy}, ${policy}, ${JSON.stringify({ prompt: `item-${n}` })}::jsonb
+            )`;
+          }).reduce((query, row) => sql`${query}, ${row}`)}
       `));
-      for (let i = 1; i <= 10; i += 1) {
-        const policy = i <= 4 ? "human_only" : i <= 7 ? "anyone" : "not_creator";
-        const addressed = i === 2 || i === 6 || i === 9;
-        await db.execute(sql`
-          INSERT INTO issue_thread_interactions (
-            id, company_id, issue_id, kind, status, created_by_agent_id,
-            addressee_agent_id, requested_resolver_policy, effective_resolver_policy, payload
-          ) VALUES (
-            ${`00000000-0000-4000-8000-${String(i).padStart(12, "0")}`}::uuid,
-            '00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000001',
-            'request_confirmation', 'pending', '00000000-0000-4000-8000-000000000001',
-            ${addressed ? "00000000-0000-4000-8000-000000000002" : null}::uuid,
-            ${policy}, ${policy}, ${JSON.stringify({ prompt: `item-${i}` })}::jsonb
-          )
-        `);
-      }
       const fingerprint = async () => {
         const rows = await db.execute(sql`SELECT * FROM issue_thread_interactions ORDER BY id`);
         return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
