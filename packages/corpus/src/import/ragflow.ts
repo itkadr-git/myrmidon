@@ -4,7 +4,7 @@ import { assertEmbeddingVector, isL2Normalized, l2Normalize } from "../search/ve
 export const DEFAULT_RAGFLOW_PAGE_SIZE = 500;
 export const DEFAULT_EMBEDDING_BATCH_SIZE = 64;
 export const DEFAULT_EMBEDDING_CONCURRENCY = 4;
-export const DEFAULT_EMBEDDING_MODEL = "text-embedding-v4";
+export const DEFAULT_EMBEDDING_MODEL = "hindsight-embed-bge-m3";
 export const DEFAULT_EMBEDDING_DIMENSIONS = 1024;
 
 export type RagflowDataset = {
@@ -12,7 +12,9 @@ export type RagflowDataset = {
   name: string;
   description?: string | null;
   chunk_count?: number;
+  chunk_num?: number;
   document_count?: number;
+  doc_num?: number;
   embedding_model?: string;
 };
 
@@ -22,6 +24,7 @@ export type RagflowDocument = {
   location?: string;
   size?: number;
   chunk_count?: number;
+  chunk_num?: number;
   type?: string;
   run?: string | number;
   create_time?: number;
@@ -45,6 +48,7 @@ export type RagflowSource = {
   listDatasets(): Promise<RagflowDataset[]>;
   listDocuments(datasetId: string): AsyncIterable<RagflowDocument>;
   listChunks(datasetId: string, documentId: string): AsyncIterable<RagflowChunk>;
+  countChunks?(datasetId: string, documentId: string): Promise<number | undefined>;
 };
 
 export type CorpusImportDataset = {
@@ -103,9 +107,6 @@ export type CorpusImporterOptions = {
   embeddingDimensions?: number;
   embeddingBatchSize?: number;
   embeddingConcurrency?: number;
-  expectedDatasetCount?: number;
-  expectedDocumentCount?: number;
-  expectedChunkCount?: number;
   chunkCountTolerance?: number;
   onProgress?: (progress: CorpusImportProgress) => void;
 };
@@ -119,6 +120,7 @@ export type CorpusImportProgress = {
   documents: number;
   chunks: number;
   embedded: number;
+  reused: number;
 };
 
 export type CorpusImportSummary = {
@@ -126,6 +128,7 @@ export type CorpusImportSummary = {
   documents: number;
   chunks: number;
   embedded: number;
+  reused: number;
   durationMs: number;
 };
 
@@ -178,49 +181,55 @@ export function createRagflowSource(options: {
     baseUrl,
     async listDatasets() {
       const datasets: RagflowDataset[] = [];
+      let reportedTotal: number | undefined;
       let page = 1;
       while (true) {
         const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
         const data = await get<unknown>(`/api/v1/datasets?${query}`);
-        const pageTotal = typeof data === "object" && data !== null && typeof (data as { total_datasets?: unknown }).total_datasets === "number"
-          ? (data as { total_datasets: number }).total_datasets
-          : undefined;
-        if (pageTotal !== undefined && (!Number.isSafeInteger(pageTotal) || pageTotal < 0)) throw new RagflowApiError("RAGFlow datasets response has an invalid total");
-        const pageData = Array.isArray(data) ? data : typeof data === "object" && data !== null ? (data as { datasets?: unknown }).datasets : undefined;
-        if (!Array.isArray(pageData)) throw new RagflowApiError("RAGFlow datasets response is not an array");
-        datasets.push(...pageData as RagflowDataset[]);
-        if (pageTotal !== undefined && datasets.length > pageTotal) throw new RagflowApiError("RAGFlow returned more datasets than its reported total");
-        if (pageData.length === 0 || pageData.length < pageSize) {
-          if (pageTotal !== undefined && datasets.length < pageTotal) throw new RagflowApiError(`RAGFlow dataset pagination ended early: received ${datasets.length} of ${pageTotal}`);
+        let pageItems: RagflowDataset[];
+        if (Array.isArray(data)) {
+          pageItems = data as RagflowDataset[];
+        } else {
+          if (typeof data !== "object" || data === null) throw new RagflowApiError("RAGFlow datasets response is invalid");
+          const envelope = data as { datasets?: unknown; total_datasets?: unknown; total?: unknown };
+          if (!Array.isArray(envelope.datasets)) throw new RagflowApiError("RAGFlow datasets response has no datasets array");
+          pageItems = envelope.datasets as RagflowDataset[];
+          const total = sourceCount(envelope.total_datasets, envelope.total);
+          if (total !== undefined && reportedTotal !== undefined && reportedTotal !== total) throw new RagflowApiError("RAGFlow returned inconsistent dataset totals across pages");
+          if (total !== undefined) reportedTotal = total;
+        }
+        datasets.push(...pageItems);
+        if (reportedTotal !== undefined && datasets.length > reportedTotal) throw new RagflowApiError("RAGFlow returned more datasets than its reported total");
+        if (reportedTotal !== undefined && datasets.length === reportedTotal) return datasets;
+        if (pageItems.length === 0 || pageItems.length < pageSize) {
+          if (reportedTotal !== undefined && datasets.length !== reportedTotal) throw new RagflowApiError(`RAGFlow dataset count mismatch: source reports ${reportedTotal}, listed ${datasets.length}`);
           return datasets;
         }
-        if (pageTotal !== undefined && datasets.length >= pageTotal) return datasets;
         page += 1;
       }
     },
-    listDocuments(datasetId) {
-      const encodedDatasetId = encodeURIComponent(datasetId);
-      return pages(
-        (page) => `/api/v1/datasets/${encodedDatasetId}/documents?page=${page}&page_size=${pageSize}`,
+    async *listDocuments(datasetId) {
+      yield* pages<RagflowDocument>(
+        (page) => `/api/v1/datasets/${encodeURIComponent(datasetId)}/documents?page=${page}&page_size=${pageSize}`,
         (data) => {
           if (typeof data !== "object" || data === null) throw new RagflowApiError("RAGFlow documents response is invalid");
           const envelope = data as { docs?: unknown; total?: unknown; total_documents?: unknown };
           if (!Array.isArray(envelope.docs)) throw new RagflowApiError("RAGFlow documents response has no docs array");
-          const total = typeof envelope.total === "number" ? envelope.total : typeof envelope.total_documents === "number" ? envelope.total_documents : undefined;
+          const total = typeof envelope.total_documents === "number" ? envelope.total_documents : typeof envelope.total === "number" ? envelope.total : undefined;
           return { items: envelope.docs as RagflowDocument[], total };
         },
       );
     },
-    listChunks(datasetId, documentId) {
+    async *listChunks(datasetId, documentId) {
       const encodedDatasetId = encodeURIComponent(datasetId);
       const encodedDocumentId = encodeURIComponent(documentId);
-      return pages(
+      yield* pages(
         (page) => `/api/v1/datasets/${encodedDatasetId}/documents/${encodedDocumentId}/chunks?page=${page}&page_size=${pageSize}`,
         (data) => {
           if (typeof data !== "object" || data === null) throw new RagflowApiError("RAGFlow chunks response is invalid");
           const envelope = data as { chunks?: unknown; total?: unknown; total_chunks?: unknown };
           if (!Array.isArray(envelope.chunks)) throw new RagflowApiError("RAGFlow chunks response has no chunks array");
-          const total = typeof envelope.total === "number" ? envelope.total : typeof envelope.total_chunks === "number" ? envelope.total_chunks : undefined;
+          const total = typeof envelope.total_chunks === "number" ? envelope.total_chunks : typeof envelope.total === "number" ? envelope.total : undefined;
           return { items: envelope.chunks as RagflowChunk[], total };
         },
       );
@@ -239,21 +248,56 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
   if (!Number.isInteger(batchSize) || batchSize < 1) throw new RangeError("embeddingBatchSize must be positive");
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new RangeError("embeddingConcurrency must be positive");
 
-  const progress: CorpusImportProgress = { phase: "dataset", datasets: 0, documents: 0, chunks: 0, embedded: 0 };
+  const progress: CorpusImportProgress = { phase: "dataset", datasets: 0, documents: 0, chunks: 0, embedded: 0, reused: 0 };
   const report = () => options.onProgress?.({ ...progress });
   const datasets = await options.source.listDatasets();
-  if (options.expectedDatasetCount !== undefined && datasets.length !== options.expectedDatasetCount) {
-    throw new RagflowApiError(`RAGFlow dataset count mismatch: expected ${options.expectedDatasetCount}, received ${datasets.length}`);
-  }
-  if (options.expectedDocumentCount !== undefined && (!Number.isInteger(options.expectedDocumentCount) || options.expectedDocumentCount < 0)) {
-    throw new RangeError("expectedDocumentCount must be a non-negative integer");
-  }
-  if (options.expectedChunkCount !== undefined && (!Number.isInteger(options.expectedChunkCount) || options.expectedChunkCount < 0)) {
-    throw new RangeError("expectedChunkCount must be a non-negative integer");
-  }
   const tolerance = options.chunkCountTolerance ?? 0;
   if (!Number.isFinite(tolerance) || tolerance < 0 || tolerance > 1) throw new RangeError("chunkCountTolerance must be between 0 and 1");
   const embeddingModel = options.embeddingModel ?? DEFAULT_EMBEDDING_MODEL;
+
+  // Source preflight completes before the importer writes rows or calls the
+  // embedder. Prefer RAGFlow's per-document chunk totals; when absent, count
+  // the source's listed chunks in this streaming preflight pass.
+  const documentsByDataset = new Map<string, RagflowDocument[]>();
+  const expectedChunksByDocument = new Map<string, number>();
+  const sourceDatasetCount = datasets.length;
+  let sourceDocumentCount = 0;
+  let sourceChunkCount = 0;
+  for (const dataset of datasets) {
+    if (!dataset.id || !dataset.name) throw new RagflowApiError("RAGFlow dataset is missing id or name");
+    const documents: RagflowDocument[] = [];
+    for await (const document of options.source.listDocuments(dataset.id)) documents.push(document);
+    documentsByDataset.set(dataset.id, documents);
+    sourceDocumentCount += documents.length;
+    const declaredDocuments = sourceCount(dataset.document_count, dataset.doc_num);
+    if (declaredDocuments !== undefined && declaredDocuments !== documents.length) {
+      throw new RagflowApiError(`RAGFlow document count mismatch for dataset ${dataset.id}: source reports ${declaredDocuments}, listed ${documents.length}`);
+    }
+    let datasetChunks = 0;
+    for (const document of documents) {
+      if (!document.id) throw new RagflowApiError(`RAGFlow document in dataset ${dataset.id} is missing an id`);
+      const declaredChunks = sourceCount(document.chunk_count, document.chunk_num);
+      const sourceChunkCount = options.source.countChunks
+        ? sourceCount(await options.source.countChunks(dataset.id, document.id))
+        : undefined;
+      if (declaredChunks !== undefined && sourceChunkCount !== undefined && declaredChunks !== sourceChunkCount) {
+        throw new RagflowApiError(`RAGFlow chunk count mismatch for ${document.id}: document reports ${declaredChunks}, source endpoint reports ${sourceChunkCount}`);
+      }
+      const expectedChunks = sourceChunkCount ?? declaredChunks;
+      if (expectedChunks === undefined) {
+        throw new RagflowApiError(`RAGFlow provides no source chunk total for ${document.id}; cannot preflight before embedding`);
+      }
+      expectedChunksByDocument.set(JSON.stringify([dataset.id, document.id]), expectedChunks);
+      datasetChunks += expectedChunks;
+    }
+    const declaredChunks = sourceCount(dataset.chunk_count, dataset.chunk_num);
+    if (declaredChunks !== undefined && declaredChunks !== datasetChunks) {
+      throw new RagflowApiError(`RAGFlow chunk count mismatch for dataset ${dataset.id}: source reports ${declaredChunks}, listed documents report ${datasetChunks}`);
+    }
+    sourceChunkCount += datasetChunks;
+  }
+  const sourceMinimumChunks = Math.floor(sourceChunkCount * (1 - tolerance));
+  const sourceMaximumChunks = Math.ceil(sourceChunkCount * (1 + tolerance));
 
   for (const dataset of datasets) {
     if (!dataset.id || !dataset.name) throw new RagflowApiError("RAGFlow dataset is missing id or name");
@@ -273,7 +317,7 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
     progress.datasets += 1;
     report();
 
-    for await (const document of options.source.listDocuments(dataset.id)) {
+    for (const document of documentsByDataset.get(dataset.id) ?? []) {
       if (!document.id) throw new RagflowApiError(`RAGFlow document in dataset ${dataset.id} is missing an id`);
       const runState = document.run === undefined || document.run === null ? "" : String(document.run).toUpperCase();
       // The documented completed statuses are textual DONE or numeric 3. Fail closed
@@ -365,10 +409,12 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
             report();
           });
         }
-        const reusable = targetChunks.filter((chunk) => !pending.includes(chunk));
+        const pendingIds = new Set(pending.map((chunk) => chunk.id));
+        const reusable = targetChunks.filter((chunk) => !pendingIds.has(chunk.id));
         if (reusable.length > 0) {
-          await options.target.upsertChunks(reusable.map((chunk) => ({ ...chunk, embedding: null })));
-          progress.embedded += reusable.length;
+          await options.target.upsertChunks(reusable);
+          progress.reused += reusable.length;
+          report();
         }
         progress.chunks += targetChunks.length;
         documentChunks += targetChunks.length;
@@ -382,28 +428,36 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
         if (batch.length >= importBatchSize) await flush();
       }
       await flush();
-      if (typeof document.chunk_count === "number" && documentChunks !== document.chunk_count) {
-        throw new RagflowApiError(`RAGFlow chunk count mismatch for ${document.id}: expected ${document.chunk_count}, imported ${documentChunks}`);
+      const expectedDocumentChunks = expectedChunksByDocument.get(JSON.stringify([dataset.id, document.id]));
+      if (expectedDocumentChunks !== undefined && documentChunks !== expectedDocumentChunks) {
+        throw new RagflowApiError(`RAGFlow chunk count mismatch for ${document.id}: source reports ${expectedDocumentChunks}, imported ${documentChunks}`);
       }
       await options.target.markDocumentReady(options.companyId, documentId);
     }
   }
 
   progress.phase = "complete";
-  if (options.expectedDocumentCount !== undefined && progress.documents !== options.expectedDocumentCount) {
-    throw new RagflowApiError(`RAGFlow document count mismatch: expected ${options.expectedDocumentCount}, imported ${progress.documents}`);
+  if (progress.datasets !== sourceDatasetCount) {
+    throw new RagflowApiError(`RAGFlow dataset count mismatch: source listed ${sourceDatasetCount}, imported ${progress.datasets}`);
   }
-  if (options.expectedChunkCount !== undefined) {
-    const minimum = Math.floor(options.expectedChunkCount * (1 - tolerance));
-    const maximum = Math.ceil(options.expectedChunkCount * (1 + tolerance));
-    if (progress.chunks < minimum || progress.chunks > maximum) {
-      throw new RagflowApiError(`RAGFlow corpus chunk count mismatch: expected ${options.expectedChunkCount} ±${tolerance * 100}%, imported ${progress.chunks}`);
-    }
+  if (progress.documents !== sourceDocumentCount) {
+    throw new RagflowApiError(`RAGFlow document count mismatch: source listed ${sourceDocumentCount}, imported ${progress.documents}`);
+  }
+  if (sourceChunkCount > 0 && (progress.chunks < sourceMinimumChunks || progress.chunks > sourceMaximumChunks)) {
+    throw new RagflowApiError(`RAGFlow corpus chunk count mismatch: source lists ${sourceChunkCount} ±${tolerance * 100}%, imported ${progress.chunks}`);
   }
   report();
-  return { datasets: progress.datasets, documents: progress.documents, chunks: progress.chunks, embedded: progress.embedded, durationMs: Date.now() - startedAt };
+  return { datasets: progress.datasets, documents: progress.documents, chunks: progress.chunks, embedded: progress.embedded, reused: progress.reused, durationMs: Date.now() - startedAt };
 }
 
+function sourceCount(...values: unknown[]): number | undefined {
+  const value = values.find((candidate) => candidate !== undefined && candidate !== null);
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new RagflowApiError("RAGFlow source reported an invalid document/chunk count");
+  }
+  return value;
+}
 function isReusableEmbedding(vector: number[], dimensions: number): boolean {
   try {
     assertEmbeddingVector(vector, dimensions);
