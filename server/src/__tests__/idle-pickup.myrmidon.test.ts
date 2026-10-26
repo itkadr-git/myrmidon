@@ -777,8 +777,8 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     const staleTodo = await seedIssue({ companyId, agentId, status: "todo" });
     await seedSucceededRun({ companyId, agentId, issueId: staleTodo, finishedAt: new Date(Date.now() - 15 * 60_000) });
     const staleInProgress = await seedIssue({ companyId, agentId, status: "in_progress" });
-    await seedAutoRun(staleInProgress, { status: "succeeded", livenessState: "empty_response", finishedAt: new Date(Date.now() - 15 * 60_000) });
-    await seedAutoRun(staleInProgress, { status: "succeeded", livenessState: "empty_response", finishedAt: new Date(Date.now() - 5 * 60_000) });
+    await seedSucceededRun({ companyId, agentId, issueId: staleInProgress, finishedAt: new Date(Date.now() - 15 * 60_000) });
+    await seedSucceededRun({ companyId, agentId, issueId: staleInProgress, finishedAt: new Date(Date.now() - 5 * 60_000) });
     const deps = fakeDeps();
 
     const result = await idlePickupForAgent(deps, { id: agentId, companyId });
