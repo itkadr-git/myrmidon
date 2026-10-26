@@ -34,7 +34,7 @@ export type RecoveryFactoryKind = RecoveryFactoryRequest["kind"];
  * - disk_space: 60
  * - operator_action: 120
  */
-export const RECOVERY_SLA_MINUTES_BY_KIND: Readonly<Record<string, number>> = Object.freeze({
+export const RECOVERY_SLA_MINUTES_BY_KIND: Readonly<Record<RecoveryFactoryKind, number>> = Object.freeze({
   ci_restart: 30,
   github_access: 60,
   branch_relay: 60,
@@ -43,10 +43,14 @@ export const RECOVERY_SLA_MINUTES_BY_KIND: Readonly<Record<string, number>> = Ob
   devbuild: 120,
   disk_space: 60,
   operator_action: 120,
+  missing_disposition: 60,
+  deliberate_wait_without_target: 60,
+  stranded_assigned_issue: 60,
+  workspace_validation: 60,
+  configuration_validation: 60,
+  active_run_watchdog: 60,
+  issue_graph_liveness: 60,
 });
-
-export const DEFAULT_RECOVERY_SLA_MINUTES = RECOVERY_SLA_MINUTES_BY_KIND;
-export const RECOVERY_FACTORY_SLA_MINUTES = RECOVERY_SLA_MINUTES_BY_KIND;
 
 export function resolveRecoverySlaMinutes(
   kind: string,
@@ -55,7 +59,7 @@ export function resolveRecoverySlaMinutes(
   if (overrides && typeof overrides[kind] === "number" && overrides[kind]! > 0) {
     return overrides[kind]!;
   }
-  const defaultSla = RECOVERY_SLA_MINUTES_BY_KIND[kind];
+  const defaultSla = (RECOVERY_SLA_MINUTES_BY_KIND as Record<string, number>)[kind];
   if (typeof defaultSla === "number" && defaultSla > 0) {
     return defaultSla;
   }

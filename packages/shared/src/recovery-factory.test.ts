@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { ISSUE_RECOVERY_ACTION_KINDS } from "./constants.js";
 import {
   buildRecoveryDedupeKey,
-  DEFAULT_RECOVERY_SLA_MINUTES,
   RECOVERY_SLA_MINUTES_BY_KIND,
   recoveryFactoryRequestSchema,
   resolveRecoverySlaMinutes,
@@ -148,16 +147,32 @@ describe("RECOVERY_SLA_MINUTES_BY_KIND", () => {
     devbuild: 120,
     disk_space: 60,
     operator_action: 120,
+    missing_disposition: 60,
+    deliberate_wait_without_target: 60,
+    stranded_assigned_issue: 60,
+    workspace_validation: 60,
+    configuration_validation: 60,
+    active_run_watchdog: 60,
+    issue_graph_liveness: 60,
   };
 
-  it("contains exact launch SLA minutes for every recovery-factory kind", () => {
-    for (const [kind, expectedMinutes] of Object.entries(expectedSlas)) {
-      expect(RECOVERY_SLA_MINUTES_BY_KIND[kind]).toBe(expectedMinutes);
-      expect(DEFAULT_RECOVERY_SLA_MINUTES[kind]).toBe(expectedMinutes);
+  it("completeness: covers every kind in ISSUE_RECOVERY_ACTION_KINDS with a positive SLA", () => {
+    expect(ISSUE_RECOVERY_ACTION_KINDS.length).toBe(15);
+    for (const kind of ISSUE_RECOVERY_ACTION_KINDS) {
+      const minutes = RECOVERY_SLA_MINUTES_BY_KIND[kind];
+      expect(typeof minutes).toBe("number");
+      expect(minutes).toBeGreaterThan(0);
+      expect(minutes).toBe(expectedSlas[kind]);
     }
   });
 
-  it("resolveRecoverySlaMinutes returns baseline SLA", () => {
+  it("contains exact launch SLA minutes for every recovery kind", () => {
+    for (const [kind, expectedMinutes] of Object.entries(expectedSlas)) {
+      expect(RECOVERY_SLA_MINUTES_BY_KIND[kind as keyof typeof RECOVERY_SLA_MINUTES_BY_KIND]).toBe(expectedMinutes);
+    }
+  });
+
+  it("resolveRecoverySlaMinutes returns baseline SLA for all kinds", () => {
     for (const [kind, expectedMinutes] of Object.entries(expectedSlas)) {
       expect(resolveRecoverySlaMinutes(kind)).toBe(expectedMinutes);
     }
