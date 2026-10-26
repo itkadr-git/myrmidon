@@ -1,13 +1,11 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDb } from "./client.js";
-import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
+import { startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 import { formatReport, loadReport, resolveAddresslessCard } from "./readdress-report.js";
 import { sql } from "drizzle-orm";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const support = await getEmbeddedPostgresTestSupport();
-const describeEmbedded = support.supported ? describe : describe.skip;
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
@@ -26,24 +24,27 @@ describe("interaction readdress report", () => {
     expect(formatReport([row], "csv")).toContain('"OPE,""1"');
   });
 
-  describeEmbedded("PostgreSQL read-only integration", () => {
+  describe("PostgreSQL read-only integration", () => {
     it("returns seven addressless cards from ten and preserves their table hash", async () => {
       const database = await startEmbeddedPostgresTestDatabase("interaction-readdress-report-");
       cleanups.push(() => database.cleanup());
       const db = createDb(database.connectionString);
       cleanups.push(() => db.$client.end());
 
-      await db.execute(sql.raw(`
-        CREATE TABLE issues (id uuid PRIMARY KEY, company_id uuid NOT NULL, identifier text);
-        CREATE TABLE issue_thread_interactions (
-          id uuid PRIMARY KEY, company_id uuid NOT NULL, issue_id uuid NOT NULL,
-          kind text NOT NULL, status text NOT NULL, created_by_agent_id uuid,
-          addressee_agent_id uuid, addressee_user_id text,
-          requested_resolver_policy text NOT NULL, effective_resolver_policy text NOT NULL,
-          payload jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
-        );
-        INSERT INTO issues VALUES ('${id(1)}', '${id(1)}', 'OPE-TEST');
-      `));
+      const companyId = id(9001);
+      const issueId = id(9002);
+      await db.execute(sql`
+        INSERT INTO companies (id, name, issue_prefix)
+        VALUES (${companyId}, 'Interaction readdress report test', ${`IRR${9001}`})
+      `);
+      await db.execute(sql`
+        INSERT INTO issues (id, company_id, title, identifier)
+        VALUES (${issueId}, ${companyId}, 'Readdress report fixture', 'IRR-1')
+      `);
+      await db.execute(sql`
+        INSERT INTO agents (id, company_id, name)
+        VALUES (${id(1)}, ${companyId}, 'Creator'), (${id(2)}, ${companyId}, 'Existing recipient')
+      `);
 
       const inserts = Array.from({ length: 10 }, (_, index) => {
         const n = index + 1;
@@ -68,7 +69,10 @@ describe("interaction readdress report", () => {
       const before = await fingerprint();
       const report = await loadReport(database.connectionString);
       const after = await fingerprint();
-      expect(report).toHaveLength(7);
+      expect(report.map((entry) => entry.id)).toEqual([id(1), id(3), id(4), id(5), id(7), id(8), id(10)]);
+      expect(report.map((entry) => entry.effectiveResolverPolicy)).toEqual([
+        "human_only", "human_only", "human_only", "anyone", "anyone", "not_creator", "not_creator",
+      ]);
       expect(report.every((entry) => entry.proposedRecipient === "unresolved" && entry.reason)).toBe(true);
       expect(after).toBe(before);
     }, 90_000);
