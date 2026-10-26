@@ -8,7 +8,7 @@ import {
   GITHUB_LAUNCHER_PAYLOAD_VERSION,
   githubLauncherProgramFiles,
 } from "@myrmidon/adapter-utils/github-launcher";
-import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { execute, isProviderErrorAsContent, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import {
   CREATE_CANCEL_GRACE_MS,
@@ -1366,6 +1366,64 @@ describe("mapFinalResultForTest", () => {
       strategy: "issue",
     });
     expect(result.errorFamily).toBe("permanent_config_error");
+  });
+
+  it("rejects a completed overloaded response as a retryable failure, never as comment content", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-overloaded",
+        status: "completed",
+        output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+        payload: {
+          status: "completed",
+          output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+          model: "gpt-main",
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+      configuredModel: "gpt-main",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.summary).toBeUndefined();
+    expect(result.resultJson).toMatchObject({ result: "", output: "" });
+    expect(warn).toHaveBeenCalledWith("provider_error_as_content", { model: "gpt-main" });
+    warn.mockRestore();
+  });
+
+  it("keeps at least five ordinary short responses out of provider error detection", () => {
+    for (const response of ["Hello.", "Try again tomorrow.", "The server is helpful.", "Quota means a limit.", "Please retry this command later."]) {
+      expect(isProviderErrorAsContent(response)).toBe(false);
+    }
+  });
+
+  it("detects the overloaded HTTP-200 response with a newline", () => {
+    expect(isProviderErrorAsContent("The server is (sometimes) overloaded\ndue to high user traffic. Please retry!")).toBe(true);
+  });
+
+  it("does not treat an overload-like tool result as a provider error", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-tool-output",
+        status: "completed",
+        output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+        payload: {
+          status: "completed",
+          output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+          tool_calls: [{ name: "lookup", result: "The server is (sometimes) overloaded due to high user traffic. Please retry!" }],
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.errorFamily).toBeUndefined();
   });
 
   it("keeps a failure without the key-permission signature a plain provider failure", () => {
