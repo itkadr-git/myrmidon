@@ -62,13 +62,14 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) knowledge tree", () => {
 
     const space = tree.find((node) => node.item.spaceKey === "wiki");
     const root = space?.children.find((node) => node.item.slug === "root");
-    expect(root?.depth).toBe(0);
+    expect(root?.depth).toBe(1);
     expect(root?.children.map((node) => node.item.slug)).toEqual(["child-a", "child-b"]);
     expect(root?.children[0]?.children.map((node) => node.item.slug)).toEqual(["grand"]);
-    expect(root?.children[0]?.children[0]?.depth).toBe(2);
+    expect(root?.children[0]?.children[0]?.depth).toBe(3);
 
-    // A parent chain that loops back is a root instead of a hung walk.
-    expect(space?.children.map((node) => node.item.slug).sort()).toContain("loop-a");
+    // A parent chain that loops back remains visible without attaching into a cycle.
+    expect(space?.children.map((node) => node.item.slug).sort()).toEqual(["loop-a", "root"]);
+    expect(space?.children.find((node) => node.item.slug === "loop-a")?.children.map((node) => node.item.slug)).toEqual(["loop-b"]);
     const flattened = flattenKnowledgeTree(tree);
     expect(flattened.length).toBe(7);
   });
