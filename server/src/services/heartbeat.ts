@@ -20632,7 +20632,7 @@ export function heartbeatService(
         source: "automation",
         reason: "queued_run_stale_timeout",
         payload: { companyId },
-        contextSnapshot: { issueId: "system:queued-run-stale-timeout" },
+        contextSnapshot: { taskId: "system:queued-run-stale-timeout" },
       });
     },
     loadSettings: () => loadRunDispatchSettings(db),
