@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, litellmCostEvents } from "@myrmidon/db";
+import {
+  agents,
+  agentWakeupRequests,
+  companies,
+  createDb,
+  heartbeatRuns,
+  issueComments,
+  issues,
+  litellmCostEvents,
+  statusDecisions,
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -109,11 +119,49 @@ describe("buildRunTelemetry", () => {
     expect(telemetry.modelCallCountSource).toBe("gateway_count");
   });
 
-  it("uses issues.updatedAt as the event revision and leaves it absent when no issue row exists", () => {
-    const telemetry = buildRunTelemetry(baseInput);
-    expect(telemetry.eventRevision).toBeNull();
-    expect(telemetry.sourceEventId).toBeNull();
-    expect(telemetry.sourceEventSeq).toBeNull();
+  it("does not collapse separate gateway and LiteLLM IDs into a double-counted call", () => {
+    const telemetry = buildRunTelemetry({
+      ...baseInput,
+      run: {
+        ...baseInput.run,
+        resultJson: { gatewayCallIds: ["same-call"] },
+      },
+      gatewayCalls: [{ requestId: "same-call", costCents: 2 }, { requestId: "req-2", costCents: 0 }],
+    });
+    expect(telemetry.modelCallCount).toBe(2);
+    expect(telemetry.gatewayCallIds).toEqual(["same-call"]);
+    expect(telemetry.litellmRequestIds).toEqual(["same-call", "req-2"]);
+  });
+
+  it("prefers immutable wake revision to issue timestamp from later in the run", () => {
+    const telemetry = buildRunTelemetry({
+      ...baseInput,
+      issueUpdatedAt: new Date("2026-10-26T20:00:00.000Z"),
+      run: { ...baseInput.run, contextSnapshot: { issueId: "issue-1", eventRevision: "2026-10-26T16:00:00.000Z" } },
+    });
+    expect(telemetry.eventRevision).toBe("2026-10-26T16:00:00.000Z");
+  });
+
+  it("uses issues.updatedAt when run issue context exists and no wake revision was recorded", () => {
+    const telemetry = buildRunTelemetry({
+      ...baseInput,
+      run: { ...baseInput.run, contextSnapshot: { issueId: "issue-1" } },
+    });
+    expect(telemetry.eventRevision).toBe("2026-10-26T16:00:00.000Z");
+  });
+
+  it("prefers the immutable revision carried by the wake receipt to a later issue timestamp", () => {
+    const telemetry = buildRunTelemetry({
+      ...baseInput,
+      issueUpdatedAt: new Date("2026-10-26T18:00:00.000Z"),
+      wakeup: {
+        source: "on_demand",
+        triggerDetail: "callback",
+        reason: "issue_commented",
+        payload: { eventRevision: "2026-10-26T16:00:00.000Z" },
+      },
+    });
+    expect(telemetry.eventRevision).toBe("2026-10-26T16:00:00.000Z");
   });
 
   it("classifies registered commit and push work products", () => {
@@ -132,6 +180,12 @@ describe("buildRunTelemetry", () => {
     expect(branch.branchCount).toBe(1);
 
     expect(buildRunTelemetry(baseInput).outcomeCategory).toBeNull();
+    expect(buildRunTelemetry({ ...baseInput, workProducts: [{ type: "status" }] }).outcomeCategory).toBe("status");
+    expect(buildRunTelemetry({ ...baseInput, workProducts: [{ type: "comment" }] }).outcomeCategory).toBe("comment_only");
+    expect(buildRunTelemetry({ ...baseInput, workProducts: [{ type: "no_change" }] }).outcomeCategory).toBe("no_change");
+    expect(buildRunTelemetry({ ...baseInput, outcomeCategoryOverride: "status" }).outcomeCategory).toBe("status");
+    expect(buildRunTelemetry({ ...baseInput, outcomeCategoryOverride: "comment_only" }).outcomeCategory).toBe("comment_only");
+    expect(buildRunTelemetry({ ...baseInput, outcomeCategoryOverride: "nothing" }).outcomeCategory).toBe("nothing");
   });
 
   it("classifies only registered work products", () => {
@@ -215,7 +269,7 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
       source: "automation",
       triggerDetail: "callback",
       reason: "issue_commented",
-      payload: { issueId, sourceEventId: "comment-12", sourceSeq: 12 },
+      payload: { issueId, sourceEventId: "comment-12", sourceSeq: 12, eventRevision: issueUpdatedAt.toISOString() },
       status: "completed",
       runId,
     });
@@ -269,6 +323,49 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
       apiEquivalentCostUsd: 0.000025,
       outcomeCategory: null,
     });
+  });
+
+  it("records the status, comment-only, and no-change outcomes from persisted issue activity", async () => {
+    await seedCompanyAndAgent();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    const run = {
+      id: runId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      nativeIssueId: issueId,
+      startedAt: new Date(),
+      finishedAt: new Date(),
+      usageJson: null,
+      contextSnapshot: { issueId },
+      wakeupRequestId: null,
+    } as unknown as typeof heartbeatRuns.$inferSelect;
+    await db.insert(issues).values({ id: issueId, companyId, title: "telemetry outcome test", status: "todo" });
+    const assessmentId = randomUUID();
+    await db.insert(statusDecisions).values({
+      id: randomUUID(), companyId, issueId, runId, assessmentId,
+      decisionVersion: 1, policyVersion: "test", fromStatus: "todo", toStatus: "in_progress",
+      reasonCode: "test", decisionJson: {}, decisionDigest: randomUUID(),
+      applicationState: "applied", createdAt: new Date(),
+    });
+    await emitAgentTaskRun(db, run);
+    const [statusResult] = await db.select({ resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect((statusResult.resultJson as any).runTelemetry.outcomeCategory).toBe("status");
+
+    await db.delete(statusDecisions).where(eq(statusDecisions.issueId, issueId));
+    await db.insert(issueComments).values({ id: randomUUID(), companyId, issueId, createdByRunId: runId, body: "comment only" });
+    await emitAgentTaskRun(db, run);
+    const [commentResult] = await db.select({ resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect((commentResult.resultJson as any).runTelemetry.outcomeCategory).toBe("comment_only");
+
+    await db.delete(issueComments).where(eq(issueComments.createdByRunId, runId));
+    await emitAgentTaskRun(db, run);
+    const [emptyResult] = await db.select({ resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect((emptyResult.resultJson as any).runTelemetry.outcomeCategory).toBe("nothing");
   });
 
   it("emits one agent.task_run event for each of the five terminal states", async () => {

@@ -6399,6 +6399,15 @@ function getActorIdentityPart(req: Request): string {
     if (typeof req.body.idempotencyKey === "string" && req.body.idempotencyKey.startsWith(CHAT_INBOUND_WAKE_KEY_PREFIX)) {
       throw unprocessable(`idempotencyKey must not start with "${CHAT_INBOUND_WAKE_KEY_PREFIX}"`);
     }
+    const issueId =
+      typeof wakePayload?.issueId === "string" ? wakePayload.issueId :
+      typeof wakePayload?.taskId === "string" ? wakePayload.taskId : null;
+    if (issueId) {
+      const issue = await issueService(db).getById(issueId);
+      if (issue?.companyId === agent.companyId) {
+        wakePayload = { ...(wakePayload ?? {}), eventRevision: issue.updatedAt.toISOString() };
+      }
+    }
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
       ...(req.actor.type === "board" && !req.body.failedRunId ? { manualUserWake: true } : {}),

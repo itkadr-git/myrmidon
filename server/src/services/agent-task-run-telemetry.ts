@@ -2,11 +2,14 @@ import { and, eq, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
   agents,
+  heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issueWorkProducts,
+  issues,
+  statusDecisions,
   litellmCostEvents,
   costEvents,
-  issues,
   type Db,
 } from "@myrmidon/db";
 import { estimateModelApiCostUsd, normalizeModelApiPricingSettings } from "@myrmidon/shared";
@@ -56,12 +59,13 @@ function readModelCallCount(value: unknown): number | null {
 }
 
 export function buildRunTelemetry(input: {
-  run: Pick<HeartbeatRun, "id" | "agentId" | "invocationSource" | "triggerDetail" | "retryOfRunId" | "nativeIssueId" | "contextSnapshot" | "usageJson" | "resultJson">;
+  run: Pick<HeartbeatRun, "id" | "agentId" | "invocationSource" | "triggerDetail" | "retryOfRunId" | "nativeIssueId" | "contextSnapshot" | "usageJson" | "resultJson" | "startedAt" | "finishedAt" | "modelCallCount">;
   gatewayCalls: Array<{ requestId: string | null; costCents: number }>;
   reportedCostCents: number;
   modelApiPricing?: unknown;
   workProducts: RunWorkProduct[];
   issueUpdatedAt?: Date | null;
+  outcomeCategoryOverride?: "status" | "comment_only" | "nothing" | null;
   wakeup?: {
     source: string;
     triggerDetail: string | null;
@@ -75,14 +79,22 @@ export function buildRunTelemetry(input: {
   const gatewayResultIds = Array.isArray(result.gatewayCallIds)
     ? result.gatewayCallIds.map((value) => readRunEventId(value)).filter((value): value is string => value !== null)
     : [];
+  const litellmResultIds = Array.isArray(result.litellmRequestIds)
+    ? result.litellmRequestIds.map((value) => readRunEventId(value)).filter((value): value is string => value !== null)
+    : [];
   const spendCallIds = input.gatewayCalls.map((call) => readRunEventId(call.requestId)).filter((value): value is string => value !== null);
   const gatewayCallIds = [...new Set(gatewayResultIds)];
-  const litellmRequestIds = [...new Set(spendCallIds)];
+  const litellmRequestIds = [...new Set([...litellmResultIds, ...spendCallIds])];
   const declaredCallCount = readModelCallCount(result);
-  const modelCallCount = declaredCallCount
-    ?? (gatewayCallIds.length > 0 ? gatewayCallIds.length : litellmRequestIds.length > 0 ? litellmRequestIds.length : null);
+  const gatewayReportedCount = readModelCallCount({ modelCallCount: result.gatewayModelCallCount });
+  const deduplicatedCallCount =
+    gatewayCallIds.length > 0 && litellmRequestIds.length > 0
+      ? Math.max(gatewayCallIds.length, litellmRequestIds.length)
+      : gatewayCallIds.length + litellmRequestIds.length;
+  const modelCallCount = declaredCallCount ?? gatewayReportedCount
+    ?? (deduplicatedCallCount > 0 ? deduplicatedCallCount : null);
   const modelCallCountSource = readRunDimension(result.modelCallCountSource)
-    ?? (declaredCallCount !== null
+    ?? (declaredCallCount !== null || gatewayReportedCount !== null
       ? "gateway_count"
       : gatewayCallIds.length > 0 ? "gateway_call_ids" : litellmRequestIds.length > 0 ? "litellm_request_ids" : "unknown");
   const model = readNonEmptyString(usage.model) ?? readNonEmptyString(result.model);
@@ -93,14 +105,15 @@ export function buildRunTelemetry(input: {
   const pullRequestCount = input.workProducts.filter((product) => product.type === "pull_request").length;
   const branchCount = input.workProducts.filter((product) => product.type === "branch").length;
   const otherWorkProductCount = input.workProducts.filter((product) => !["artifact", "document", "commit", "pull_request", "branch"].includes(product.type)).length;
-  const workProductCount = input.workProducts.length;
-  const outcomeCategory = artifactCount > 0
-    ? "artifact"
-    : commitCount + pullRequestCount + branchCount > 0
-      ? "commit_push"
-      : workProductCount > 0
-        ? "other_work_product"
-        : null;
+  const outcomeCategory = input.workProducts.length > 0
+    ? artifactCount > 0
+      ? "artifact"
+      : commitCount + pullRequestCount + branchCount > 0
+        ? "commit_push"
+        : "other_work_product"
+    : input.outcomeCategoryOverride === "status" || input.outcomeCategoryOverride === "comment_only" || input.outcomeCategoryOverride === "nothing"
+      ? input.outcomeCategoryOverride
+      : null;
   const apiEquivalentCostUsd = billingType === "subscription_included" && model
     ? estimateModelApiCostUsd({
         model,
@@ -126,10 +139,23 @@ export function buildRunTelemetry(input: {
     ?? readRunDimension(context.source);
   const wakeTriggerDetail = readRunDimension(input.wakeup?.triggerDetail)
     ?? readRunDimension(context.wakeTriggerDetail);
+  const runIssueId = readNonEmptyString(context.issueId) ?? input.run.nativeIssueId;
+  const eventRevision =
+    readNonEmptyString(input.wakeup?.payload?.eventRevision)
+    ?? readNonEmptyString(input.wakeup?.payload?.event_revision)
+    ?? readNonEmptyString(context.eventRevision)
+    ?? readNonEmptyString(wakePayload.eventRevision)
+    ?? readNonEmptyString(wakePayload.event_revision)
+    ?? (runIssueId ? input.issueUpdatedAt?.toISOString() ?? null : null);
   const sourceEventId = readRunEventId(wakePayload.sourceEventId)
     ?? readRunEventId(wakePayload.source_event_id)
     ?? readRunEventId(wakePayload.commentId)
     ?? readRunEventId(context.wakeCommentId);
+  const wakeCause = readRunDimension(wakePayload.wakeCause)
+    ?? readRunDimension(wakePayload.reason)
+    ?? readRunDimension(wakePayload.source)
+    ?? readRunDimension(wakeup?.reason)
+    ?? (wakeup?.source === "issue_comment" ? "issue_commented" : null);
   const sourceEventSeqValue = wakePayload.sourceEventSeq ?? wakePayload.sourceSeq ?? wakePayload.source_seq;
   const sourceEventSeq = typeof sourceEventSeqValue === "number" && Number.isSafeInteger(sourceEventSeqValue) && sourceEventSeqValue >= 0
     ? sourceEventSeqValue
@@ -143,12 +169,12 @@ export function buildRunTelemetry(input: {
     runId: input.run.id,
     agentId: input.run.agentId,
     issueId: readNonEmptyString(context.issueId) ?? input.run.nativeIssueId,
-    wakeReason,
+    wakeReason: wakeCause ?? wakeReason,
     wakeSource,
     wakeTriggerDetail,
     invocationSource: input.run.invocationSource,
     triggerDetail: input.run.triggerDetail,
-    eventRevision: input.issueUpdatedAt?.toISOString() ?? null,
+    eventRevision: eventRevision,
     sourceEventId,
     sourceEventSeq,
     parentRunId,
@@ -157,10 +183,10 @@ export function buildRunTelemetry(input: {
     billingType,
     modelCallCount,
     modelCallCountSource,
-    gatewayCallIds: gatewayCallIds.slice(0, 80),
-    gatewayCallIdsTruncated: gatewayCallIds.length > 80,
-    litellmRequestIds: litellmRequestIds.slice(0, 80),
-    litellmRequestIdsTruncated: litellmRequestIds.length > 80,
+    gatewayCallIds: gatewayCallIds.slice(0, 500),
+    gatewayCallIdsTruncated: gatewayCallIds.length > 500,
+    litellmRequestIds: litellmRequestIds.slice(0, 500),
+    litellmRequestIdsTruncated: litellmRequestIds.length > 500,
     inputTokens: readUsageToken(usage, "inputTokens", "input_tokens", "rawInputTokens"),
     cachedInputTokens: readUsageToken(usage, "cachedInputTokens", "cached_input_tokens", "rawCachedInputTokens"),
     outputTokens: readUsageToken(usage, "outputTokens", "output_tokens", "rawOutputTokens"),
@@ -191,7 +217,7 @@ function resolveDurationSeconds(run: HeartbeatRun, now: Date): number | undefine
 async function buildRunTelemetryForDb(db: Db, run: HeartbeatRun) {
   const context = parseObject(run.contextSnapshot);
   const issueId = readNonEmptyString(context.issueId) ?? run.nativeIssueId;
-  const [agent, generalSettings, wakeup, issueRow, workProducts, gatewayCalls, reportedCosts] = await Promise.all([
+  const [agent, generalSettings, wakeup, issueRow, workProducts, gatewayCalls, runStatusDecision, litellmCosts, reportedCosts] = await Promise.all([
     db.select({ role: agents.role, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
       .from(agents).where(eq(agents.id, run.agentId)).then((rows) => rows[0] ?? null),
     instanceSettingsService(db).getGeneral().catch(() => null),
@@ -206,17 +232,43 @@ async function buildRunTelemetryForDb(db: Db, run: HeartbeatRun) {
           .then((rows) => rows[0] ?? null)
       : Promise.resolve(null),
     issueId
-      ? db.select({ updatedAt: issues.updatedAt }).from(issues)
+      ? db.select({ updatedAt: issues.updatedAt, lastStatusDecisionId: issues.lastStatusDecisionId }).from(issues)
           .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
           .then((rows) => rows[0] ?? null)
       : Promise.resolve(null),
     db.select({ type: issueWorkProducts.type }).from(issueWorkProducts)
       .where(and(eq(issueWorkProducts.companyId, run.companyId), eq(issueWorkProducts.createdByRunId, run.id))),
+    issueId
+      ? db.select({ id: statusDecisions.id }).from(statusDecisions)
+          .where(and(
+            eq(statusDecisions.companyId, run.companyId),
+            eq(statusDecisions.issueId, issueId),
+            eq(statusDecisions.runId, run.id),
+            eq(statusDecisions.applicationState, "applied"),
+          )).limit(1).then((rows) => rows.length > 0)
+      : Promise.resolve(false),
     db.select({ requestId: litellmCostEvents.requestId, costCents: litellmCostEvents.costCents }).from(litellmCostEvents)
       .where(and(eq(litellmCostEvents.companyId, run.companyId), eq(litellmCostEvents.heartbeatRunId, run.id))),
     db.select({ costCents: costEvents.costCents }).from(costEvents)
       .where(and(eq(costEvents.companyId, run.companyId), eq(costEvents.heartbeatRunId, run.id))),
   ]);
+  const issueCommentsForRun = issueId
+    ? await db.select({ id: issueComments.id }).from(issueComments)
+        .where(and(
+          eq(issueComments.companyId, run.companyId),
+          eq(issueComments.issueId, issueId),
+          eq(issueComments.createdByRunId, run.id),
+        )).limit(1)
+    : [];
+  const fallbackFinished = !!run.startedAt && !!run.finishedAt;
+  const outcomeCategoryOverride = runStatusDecision
+    ? "status"
+    : issueCommentsForRun.length > 0
+      ? "comment_only"
+      : fallbackFinished
+        ? "nothing"
+        : undefined;
+  const outcomeProducts = workProducts.length > 0 ? workProducts : [];
   return {
     agent,
     issueId,
@@ -225,7 +277,8 @@ async function buildRunTelemetryForDb(db: Db, run: HeartbeatRun) {
       gatewayCalls,
       reportedCostCents: reportedCosts.reduce((total, cost) => total + Math.max(0, cost.costCents), 0),
       modelApiPricing: generalSettings?.modelApiPricing,
-      workProducts,
+      workProducts: outcomeProducts,
+      outcomeCategoryOverride,
       issueUpdatedAt: issueRow?.updatedAt ?? null,
       wakeup,
     }),
@@ -234,8 +287,9 @@ async function buildRunTelemetryForDb(db: Db, run: HeartbeatRun) {
 
 async function persistRunTelemetrySnapshot(db: Db, run: HeartbeatRun): Promise<Record<string, unknown>> {
   const { telemetry } = await buildRunTelemetryForDb(db, run);
+  const resultJson = parseObject(run.resultJson);
   await db.update(heartbeatRuns)
-    .set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ runTelemetry: telemetry })}::jsonb`, updatedAt: new Date() })
+    .set({ resultJson: { ...resultJson, runTelemetry: telemetry }, updatedAt: new Date() })
     .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
   return telemetry;
 }
@@ -245,8 +299,9 @@ export async function emitAgentTaskRun(db: Db, run: HeartbeatRun): Promise<void>
   try {
     const client = getTelemetryClient();
     const { agent, issueId, telemetry } = await buildRunTelemetryForDb(db, run);
+    const resultJson = parseObject(run.resultJson);
     await db.update(heartbeatRuns)
-      .set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ runTelemetry: telemetry })}::jsonb`, updatedAt: new Date() })
+      .set({ resultJson: { ...resultJson, runTelemetry: telemetry }, updatedAt: new Date() })
       .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
     if (!client) return;
 
