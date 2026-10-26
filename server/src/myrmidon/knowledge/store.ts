@@ -22,7 +22,7 @@
 //   - `exportTree()/importTree()` are canonical: export → import → export is
 //     byte-for-byte identical.
 
-import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   knowledgeEvents,
@@ -1480,6 +1480,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     rollback,
     archive,
     supersede,
+    restoreSeedSuperseded,
     get,
     getRevision,
     listRevisions,

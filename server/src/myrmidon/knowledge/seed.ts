@@ -124,22 +124,6 @@ export async function seedKnowledgeBase(
     created ? result.created++ : result.skipped++;
   }
 
-  // Only restore the three known legacy supersede targets. This is an
-  // allowlisted recovery, not a general reversal of terminal workflow state.
-  for (const slug of LEGACY_SUPERSEDE_TARGETS) {
-    const item = await store.get(nestId, slug);
-    if (!item || item.status !== "superseded") continue;
-    try {
-      if (await store.restoreSeedSuperseded(nestId, item.id, SEED_ACTOR)) result.recovered++;
-    } catch (err: unknown) {
-      if (err instanceof KnowledgeDomainError) {
-        result.errors.push({ slug, code: err.code });
-        continue;
-      }
-      throw err;
-    }
-  }
-
   // Only restore the explicit legacy targets retired by the removed curated edges.
   for (const slug of LEGACY_SUPERSEDE_TARGETS) {
     const item = await store.get(nestId, slug);
@@ -157,9 +141,6 @@ export async function seedKnowledgeBase(
 
   // Supersede chains — second pass so both ends exist. Existing chains are
   // already in their intended state and therefore count as successful skips.
-  // A legacy superseded row is intentionally not revived: superseded is a
-  // terminal audit state, and removing a stale source link must not rewrite
-  // history during a normal seed run.
   for (const d of SEED_DECISIONS) {
     if (!d.supersedes) continue;
     const replaced = await store.get(nestId, d.supersedes);
