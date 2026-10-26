@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { Trans } from "react-i18next";
 import { useTranslation } from "@/i18n";
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 import { Link, Navigate, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
@@ -118,12 +119,12 @@ export function PluginPage() {
   useEffect(() => {
     if (!pageSlot) return;
     if (routeSidebarActive) {
-      setBreadcrumbs([{ label: resolveRouteSidebarPageTitle(pageSlot, pluginRouteSplat) }]);
+      setBreadcrumbs([{ label: resolveRouteSidebarPageTitle(pageSlot, pluginRouteSplat, t) }]); // myrmidon(OPE-9352)
       return;
     }
     setBreadcrumbs([
       { label: t("area.adapters-plugins-2.plugin-page.breadcrumbPlugins"), href: "/company/settings/instance/plugins" },
-      { label: pageSlot.pluginDisplayName },
+      { label: pluginLabel(t, pageSlot.pluginKey, null, pageSlot.pluginDisplayName) }, // myrmidon(OPE-9352)
     ]);
   }, [pageSlot, pluginRouteSplat, setBreadcrumbs, routeSidebarActive, t]);
 
@@ -192,9 +193,15 @@ export function PluginPage() {
   );
 }
 
-function resolveRouteSidebarPageTitle(pageSlot: ResolvedPluginSlot, routeSplat: string | undefined): string {
+function resolveRouteSidebarPageTitle(
+  pageSlot: ResolvedPluginSlot,
+  routeSplat: string | undefined,
+  t: Parameters<typeof pluginLabel>[0], // myrmidon(OPE-9352)
+): string {
   const title = titleFromRouteSplat(routeSplat);
-  return title ?? pageSlot.displayName ?? pageSlot.pluginDisplayName;
+  return title
+    ?? (pageSlot.displayName ? pluginLabel(t, pageSlot.pluginKey, pageSlot.id, pageSlot.displayName) : null) // myrmidon(OPE-9352)
+    ?? pluginLabel(t, pageSlot.pluginKey, null, pageSlot.pluginDisplayName);
 }
 
 function titleFromRouteSplat(routeSplat: string | undefined): string | null {
