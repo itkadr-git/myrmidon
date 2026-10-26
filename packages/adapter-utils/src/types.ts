@@ -213,6 +213,10 @@ export interface AdapterRuntimeEvent {
 }
 
 export interface AdapterExecutionContext {
+  /** Host-owned circuit breaker for model-call / tool event guards. */
+  runGuard?: import("./run-guard.js").RunGuard;
+  /** Called when a guard trips; implementations should stop their active process. */
+  onRunGuardStop?: (reason: import("./run-guard.js").RunGuardStopReason) => Promise<void>;
   /** Run-scoped operator cancellation; adapters must settle before returning. */
   signal?: AbortSignal;
   /** Opt in to signal-based cancellation before starting provider work. */
