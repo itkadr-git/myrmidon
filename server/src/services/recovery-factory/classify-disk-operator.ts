@@ -59,7 +59,7 @@ export function classifyDiskRecoveryCause(signal: DiskRecoverySignal): DiskOpera
   const prefix = signal.type.split(":").slice(0, 3).join(":");
   const cause = diskRules.get(prefix) ?? diskRules.get(signal.type);
   if (!cause) return null;
-  const scope = signal.scope ?? [signal.companyId, signal.mount].filter(Boolean).join(":") || "host";
+  const scope = signal.scope ?? ([signal.companyId, signal.mount].filter(Boolean).join(":") || "host");
   return result("disk_space", cause, scope);
 }
 
