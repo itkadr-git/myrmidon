@@ -29,8 +29,10 @@ export class RunGuard {
   private readonly now: () => number;
   private modelCalls = 0;
   private lastEventAt: number;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private lastToolFailure: string | null = null;
   private toolFailureCount = 0;
+  private stoppedReason: RunGuardStopReason | null = null;
 
   constructor(options: RunGuardOptions = {}) {
     this.modelCallLimit = options.modelCallLimit ?? DEFAULT_MODEL_CALL_LIMIT;
@@ -41,25 +43,56 @@ export class RunGuard {
   }
 
   modelCall(): RunGuardDecision {
+    if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
     this.modelCalls += 1;
     this.lastEventAt = this.now();
-    return this.modelCalls > this.modelCallLimit
-      ? { stop: true, reason: "model_call_limit" }
+    return this.modelCalls >= this.modelCallLimit
+      ? this.stop("model_call_limit")
       : { stop: false };
   }
 
   /** Record a provider/tool event without retaining its payload. */
   event(): RunGuardDecision {
+    if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
+    this.clearIdleWatch();
     this.lastEventAt = this.now();
     this.lastToolFailure = null;
     this.toolFailureCount = 0;
     return { stop: false };
   }
 
+  startIdleWatch(onIdle: () => void): void {
+    this.clearIdleWatch();
+    const arm = () => {
+      this.idleTimer = setTimeout(() => {
+        if (this.stoppedReason) return;
+        const decision = this.idle();
+        if (decision.stop) onIdle();
+        else arm();
+      }, Math.max(1, this.idleTimeoutMs - (this.now() - this.lastEventAt)));
+    };
+    arm();
+  }
+
+  clearIdleWatch(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+  }
+
   idle(): RunGuardDecision {
     return this.now() - this.lastEventAt >= this.idleTimeoutMs
-      ? { stop: true, reason: "idle_timeout" }
+      ? this.stop("idle_timeout")
       : { stop: false };
+  }
+
+  stop(reason: RunGuardStopReason): RunGuardDecision {
+    this.stoppedReason ??= reason;
+    this.clearIdleWatch();
+    return { stop: true, reason: this.stoppedReason };
+  }
+
+  isStopped(): boolean {
+    return this.stoppedReason !== null;
   }
 
   toolSuccess(): RunGuardDecision {
@@ -67,15 +100,17 @@ export class RunGuard {
   }
 
   toolFailure(name: string, args: unknown): RunGuardDecision {
+    if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
     const signature = toolFailureSignature(name, args);
     if (signature === this.lastToolFailure) this.toolFailureCount += 1;
     else {
       this.lastToolFailure = signature;
       this.toolFailureCount = 1;
     }
+    this.clearIdleWatch();
     this.lastEventAt = this.now();
     return this.toolFailureCount >= this.toolRetryLimit
-      ? { stop: true, reason: "tool_retry_loop" }
+      ? this.stop("tool_retry_loop")
       : { stop: false };
   }
 }

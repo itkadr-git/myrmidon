@@ -656,6 +656,8 @@ import {
   hasSessionCompactionThresholds,
   resolvePaperclipRunnerIdleTimeoutMs,
   resolveSessionCompactionPolicy,
+  RunGuard,
+  type RunGuardStopReason,
   type RuntimeStatusUpdate,
   type SessionCompactionPolicy,
 } from "@myrmidon/adapter-utils";
@@ -21771,6 +21773,16 @@ export function heartbeatService(
         run.controllerBootId !== legacyControllerBootId) return;
     activeRunExecutions.add(run.id);
     const executionControl = createAdapterExecutionControl();
+    const runGuard = new RunGuard();
+    let runGuardStopReason: RunGuardStopReason | null = null;
+    const stopForRunGuard = (reason: RunGuardStopReason) => {
+      runGuardStopReason ??= reason;
+      runGuard.stop(reason);
+      runGuard.clearIdleWatch();
+      if (!executionControl.controller.signal.aborted) {
+        executionControl.controller.abort(new Error(reason));
+      }
+    };
     const controllerLease = watchLegacyControllerLease(db, run, executionControl.controller);
     let runScratch: HeartbeatRunScratch | null = null;
     let githubLauncherLocation:
@@ -24738,6 +24750,7 @@ export function heartbeatService(
           const sanitizedChunk = compactRunLogChunk(
             redactCurrentUserText(chunk, currentUserRedactionOptions),
           );
+          if (sanitizedChunk) runGuard.event();
           // myrmidon(DM-PROGRESS): Hermes tool lines feed the step history of
           // the live Telegram DM status (legacy adapters write no step events).
           recordDmProgressLogChunk(run.id, stream, sanitizedChunk);
@@ -24919,6 +24932,18 @@ export function heartbeatService(
         const onAdapterEvent = async (event: AdapterRuntimeEvent) => {
           const eventType = event.eventType.trim();
           if (!eventType) return;
+          const payload = event.payload ?? {};
+          if (eventType === "tool_call") {
+            const toolName = String(payload.toolName ?? payload.name ?? "tool");
+            const decision = payload.status === "failed" || payload.isError === true
+              ? runGuard.toolFailure(toolName, payload.input ?? payload.args)
+              : payload.status === "completed" || payload.isError === false
+                ? runGuard.toolSuccess()
+                : runGuard.event();
+            if (decision.stop) stopForRunGuard(decision.reason!);
+          } else if (eventType === "assistant") {
+            runGuard.event();
+          }
           await appendRunEvent(currentRun, {
             eventType: eventType.slice(0, 120),
             stream: event.stream,
@@ -26261,10 +26286,12 @@ export function heartbeatService(
             if (managedMcpConfig) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
             }
-            const dispatch = () =>
-              dispatchResolvedInteractionContinuationWithAtomicGate(
+            try {
+              const dispatch = () =>
+                dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {
                   legacyAdapterEntered = true;
+                  runGuard.startIdleWatch(() => stopForRunGuard("idle_timeout"));
                   return adapter.execute({
                     runId: run.id,
                     agent,
@@ -26272,6 +26299,8 @@ export function heartbeatService(
                     config: runtimeConfig,
                     context: adapterContext,
                     paperclipCancellation: executionControl.cancellation,
+                    runGuard,
+                    onRunGuardStop: async (reason) => stopForRunGuard(reason),
                     executionContinuation: executionContinuation ?? null,
                     runtimeCommandSpec:
                       adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
@@ -26374,6 +26403,9 @@ export function heartbeatService(
               : await dispatch();
             if (!guardedDispatch.dispatched) return;
             adapterResult = await guardedDispatch.resultPromise;
+            } finally {
+              runGuard.clearIdleWatch();
+            }
           }
           // Adapter returned cleanly, which means its workspace-restore finally
           // block also ran without throwing. Record the workspace_finalize
@@ -26563,6 +26595,7 @@ export function heartbeatService(
           }
           throw adapterErr;
         } finally {
+          runGuard.clearIdleWatch();
           try {
             await revokeHeartbeatRunGatewayTokens({
               db,
@@ -26727,7 +26760,7 @@ export function heartbeatService(
                 );
         const recordedResponsibleUserDenialCode =
           normalizeResponsibleUserDenialCode(latestRun?.errorCode);
-        const runErrorCode =
+        const runErrorCode = runGuardStopReason ?? (
           outcome === "timed_out"
             ? "timeout"
             : outcome === "cancelled"
@@ -26736,7 +26769,8 @@ export function heartbeatService(
                 ? (adapterResult.errorCode ??
                   recordedResponsibleUserDenialCode ??
                   "adapter_failed")
-                : null;
+                : null
+        );
 
         let logSummary: {
           bytes: number;
@@ -26859,6 +26893,7 @@ export function heartbeatService(
                   ? parseObject(latestRun?.resultJson)
                   : {}),
                 ...parseObject(adapterResult.resultJson),
+                ...(runGuardStopReason ? { runGuardStopReason } : {}),
                 ...(adapterResult.executionRecovery
                   ? { executionRecovery: adapterResult.executionRecovery }
                   : {}),
@@ -27556,17 +27591,20 @@ export function heartbeatService(
         });
 
         const stoppedDuringFailure = executionControl.controller.signal.aborted;
+        const stopReason = runGuardStopReason;
+        const stopMessage = stopReason ? `Run stopped by guard: ${stopReason}` : message;
         const stopSnapshot = stoppedDuringFailure ? await getRun(run.id) : null;
         const failureOutcome = stoppedDuringFailure ? "cancelled" : "failed";
         const failedRunWrite = await setRunStatusIfRunning(run.id, failureOutcome, {
-          error: message,
-          errorCode: stopSnapshot?.errorCode ?? failureErrorCode,
+          error: stopMessage,
+          errorCode: stopReason ?? stopSnapshot?.errorCode ?? failureErrorCode,
           finishedAt: new Date(),
           resultJson: mergeRunStopMetadataForAgent(agent, failureOutcome, {
-            errorCode: failureErrorCode,
-            errorMessage: message,
+            errorCode: stopReason ?? stopSnapshot?.errorCode ?? failureErrorCode,
+            errorMessage: stopMessage,
             resultJson: {
               ...parseObject(stopSnapshot?.resultJson),
+              ...(stopReason ? { runGuardStopReason: stopReason } : {}),
               ...(workspaceValidationFailure?.resultJson ??
                 configurationIncompleteFailure?.resultJson ??
                 {}),

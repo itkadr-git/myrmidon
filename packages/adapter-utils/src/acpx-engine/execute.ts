@@ -3063,6 +3063,14 @@ async function emitRuntimeEvent(
   toolTitles?: Map<string, string>,
   coalescePlaceholderToolUpdates?: boolean,
 ) {
+  if (ctx.runGuard && event.type === "tool_call") {
+    const decision = event.status === "failed"
+      ? ctx.runGuard.toolFailure(event.title ?? "acp_tool", (event as Record<string, unknown>).input)
+      : event.status === "completed"
+        ? ctx.runGuard.toolSuccess()
+        : ctx.runGuard.event();
+    if (decision.stop) void ctx.onRunGuardStop?.(decision.reason!);
+  }
   if (event.type === "text_delta") {
     await emitAcpxLog(ctx, {
       type: "acpx.text_delta",
@@ -4736,6 +4744,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       const stepTurnStart = (signal: AbortSignal, startTimeoutMs: number | undefined): StartedTurn => {
         ctx.signal?.throwIfAborted();
+        const callDecision = ctx.runGuard?.modelCall();
+        if (callDecision?.stop) {
+          void ctx.onRunGuardStop?.(callDecision.reason!);
+          throw new Error(callDecision.reason);
+        }
+        ctx.onModelCall?.();
         const turn = runtime.startTurn({
           handle: sessionHandle,
           text: runPrompt,

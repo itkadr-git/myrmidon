@@ -1,3 +1,5 @@
+export { RunGuard } from "./run-guard.js";
+export type { RunGuardDecision, RunGuardOptions, RunGuardStopReason } from "./run-guard.js";
 export type {
   AdapterAgent,
   AdapterRuntime,
@@ -7,10 +9,6 @@ export type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
   AdapterRuntimeEvent,
-  RunGuard,
-  RunGuardDecision,
-  RunGuardOptions,
-  RunGuardStopReason,
   AdapterRuntimeMcpServer,
   AdapterRuntimeMcpAccess,
   AdapterExecutionContext,
@@ -81,7 +79,6 @@ export {
   DEFAULT_IDLE_TIMEOUT_MS,
   DEFAULT_MODEL_CALL_LIMIT,
   DEFAULT_TOOL_RETRY_LIMIT,
-  RunGuard,
   toolFailureSignature,
 } from "./run-guard.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
