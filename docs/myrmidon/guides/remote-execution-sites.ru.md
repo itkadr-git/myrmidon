@@ -327,6 +327,7 @@
   "network": "myrmidon-bots",
   "images": ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
   "boardAddress": "192.0.2.1:3100",
+  // Старое имя остаётся DNS-алиасом для обратной совместимости на время перехода.
   "boardExtraHost": "paperclip-server-1:192.0.2.1",
   "gatewayBindIp": "192.0.2.10",
   "gatewayPortStart": 18700,

@@ -19,7 +19,10 @@ afterEach(async () => {
 describe("issue continuation keys migration", () => {
   it("registers the schema and migration snapshot", async () => {
     const journal = JSON.parse(await readFile(new URL("./migrations/meta/_journal.json", import.meta.url), "utf8"));
-    expect(journal.entries.at(-1)).toMatchObject({ idx: 419, tag: "0419_issue_continuation_keys" });
+    expect(journal.entries.find((entry: { idx: number }) => entry.idx === 419)).toMatchObject({
+      idx: 419,
+      tag: "0419_issue_continuation_keys",
+    });
     const snapshot = JSON.parse(await readFile(new URL("./migrations/meta/0419_snapshot.json", import.meta.url), "utf8"));
     expect(snapshot.tables["public.issue_continuation_keys"].indexes.issue_continuation_keys_company_key_uq.isUnique).toBe(true);
     expect(snapshot.tables["public.issue_continuation_keys"].foreignKeys.issue_continuation_keys_issue_id_issues_id_fk.onDelete).toBe("cascade");
