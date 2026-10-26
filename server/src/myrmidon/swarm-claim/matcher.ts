@@ -47,6 +47,7 @@ import {
   companies,
   heartbeatRuns,
   issueClaims,
+  issueRelations,
   issues,
   type Db,
 } from "@myrmidon/db";
@@ -1233,7 +1234,7 @@ async function openTaskIdsOfAgents(
   companyId: string,
   agentId: string | null,
 ): Promise<Map<string, { assigned: Set<string>; leased: Set<string> }>> {
-  const [assignedRows, leasedRows] = await Promise.all([
+  const [assignedRows, blockedIssueRows, leasedRows] = await Promise.all([
     db
       .select({ agentId: issues.assigneeAgentId, issueId: issues.id })
       .from(issues)
@@ -1247,6 +1248,24 @@ async function openTaskIdsOfAgents(
         ),
       ),
     db
+      .select({ issueId: issueRelations.relatedIssueId })
+      .from(issueRelations)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.id, issueRelations.issueId),
+          eq(issues.companyId, companyId),
+          isNull(issues.hiddenAt),
+          blockerOpenSql("issues.status"),
+        ),
+      )
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      ),
+    db
       .select({ agentId: issueClaims.agentId, issueId: issueClaims.issueId })
       .from(issueClaims)
       .where(
@@ -1257,6 +1276,7 @@ async function openTaskIdsOfAgents(
         ),
       ),
   ]);
+  const blockedIssueIds = new Set(blockedIssueRows.map((row) => row.issueId));
   const out = new Map<string, { assigned: Set<string>; leased: Set<string> }>();
   const slot = (id: string) => {
     let entry = out.get(id);
@@ -1266,7 +1286,9 @@ async function openTaskIdsOfAgents(
     }
     return entry;
   };
-  for (const row of assignedRows) if (row.agentId) slot(row.agentId).assigned.add(row.issueId);
+  for (const row of assignedRows) {
+    if (row.agentId && !blockedIssueIds.has(row.issueId)) slot(row.agentId).assigned.add(row.issueId);
+  }
   for (const row of leasedRows) slot(row.agentId).leased.add(row.issueId);
   return out;
 }
@@ -1274,12 +1296,14 @@ async function openTaskIdsOfAgents(
 /**
  * 1.6.6 (SWARM-B): the open load per agent of one company - assigned `todo` and
  * `in_progress` tasks (the reserved ones included) plus live leases, a task that
- * is both counted once. The idle/live-run flags alone said nothing about it.
+ * is both counted once. Tasks with unresolved blockers aren't actionable and
+ * don't consume a slot. The idle/live-run flags alone said nothing about it.
  */
 export async function openLoadByAgent(db: Db, companyId: string): Promise<Map<string, number>> {
-  const tasks = await openTaskIdsOfAgents(db, companyId, null);
   const loads = new Map<string, number>();
-  for (const [agentId, entry] of tasks) loads.set(agentId, openLoadOf(entry.assigned, entry.leased));
+  for (const [agentId, entry] of await openTaskIdsOfAgents(db, companyId, null)) {
+    loads.set(agentId, openLoadOf(entry.assigned, entry.leased));
+  }
   return loads;
 }
 
