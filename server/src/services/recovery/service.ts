@@ -2078,8 +2078,10 @@ export function recoveryService(
         // Recovery runs without a concrete run head can recur for the same
         // issue indefinitely; don't suppress those retries for a full day.
         ttl:
+          !input.continuationHead ||
           input.source === "issue.continuation_recovery" ||
-          !input.continuationHead
+          input.source === "issue.interaction_continuation_recovery" ||
+          input.source === STRANDED_AUTO_POLICY_RETRY_SOURCE
             ? 60 * 1_000
             : 24 * 60 * 60 * 1_000,
       });
@@ -6325,7 +6327,7 @@ export function recoveryService(
         issueId: issue.id,
         companyId: issue.companyId,
         agentId,
-        continuationHead: latestRun?.id ?? issue.checkoutRunId,
+        continuationHead: latestRun?.id ?? issue.checkoutRunId ?? undefined,
         reason: "issue_continuation_needed",
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",
