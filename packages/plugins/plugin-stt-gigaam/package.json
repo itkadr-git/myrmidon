@@ -1,0 +1,32 @@
+{
+  "name": "@myrmidon/plugin-stt-gigaam",
+  "version": "0.1.0",
+  "description": "Operator health and SLO monitoring for the GigaAM speech-to-text runtime",
+  "type": "module",
+  "private": true,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "scripts": {
+    "prebuild": "pnpm --filter @myrmidon/plugin-sdk ensure-build-deps",
+    "build": "tsc && node scripts/build-artifact.mjs",
+    "typecheck": "pnpm --filter @myrmidon/plugin-sdk ensure-build-deps && tsc --noEmit",
+    "test": "vitest run --config ./vitest.config.ts"
+  },
+  "dependencies": {
+    "@myrmidon/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}
