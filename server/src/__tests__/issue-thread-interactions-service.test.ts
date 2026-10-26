@@ -657,7 +657,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         status: "todo",
       }),
       expect.objectContaining({
-        assigneeAgentId: null,
+        assigneeAgentId,
         status: "todo",
       }),
     ]);
