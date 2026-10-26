@@ -2,13 +2,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import { agents, companies, createDb, issueClaims, issues, type Db } from "@myrmidon/db";
+import { agents, companies, createDb, issueClaims, issueRelations, issues, type Db } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { issueService } from "../../services/issues.js";
+import { openLoadByAgent } from "./matcher.js";
 import { createSwarmClaimSweeper } from "./sweep.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
@@ -18,6 +19,10 @@ const taskCount = 200;
 const companyId = randomUUID();
 const ownerId = randomUUID();
 const explicitlyAssignedId = randomUUID();
+const blockerId = randomUUID();
+const blockedTaskIds = Array.from({ length: 3 }, () => randomUUID());
+const blockedTaskId = randomUUID();
+const readyTaskId = randomUUID();
 let db: Db;
 let tempDb: EmbeddedPostgresTestDatabase | undefined;
 let taskIds: string[] = [];
@@ -53,8 +58,8 @@ async function seedFixtures(now: Date) {
       permissions: {},
     },
   ]);
-  await db.insert(issues).values(
-    taskIds.map((id, index) => ({
+  await db.insert(issues).values([
+    ...taskIds.map((id, index) => ({
       id,
       companyId,
       title: `lease expiry race ${index + 1}`,
@@ -62,7 +67,41 @@ async function seedFixtures(now: Date) {
       priority: "medium",
       assigneeAgentId: ownerId,
       updatedAt: new Date(now.getTime() - 10_000),
-    }))
+    })),
+    ...blockedTaskIds.map((id, index) => ({
+      id,
+      companyId,
+      title: `blocked task ${index + 1}`,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: explicitlyAssignedId,
+    })),
+    {
+      id: blockerId,
+      companyId,
+      title: "open blocker",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: null,
+    },
+    {
+      id: readyTaskId,
+      companyId,
+      title: "ready work for agent with blocked todos",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+      labels: ["role:engineer"],
+    },
+  ]);
+  await db.insert(issueRelations).values(
+    blockedTaskIds.map((issueId) => ({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      relatedIssueId: blockerId,
+      type: "blocks" as const,
+    })),
   );
   await db.insert(issueClaims).values(
     taskIds.map((issueId) => ({
@@ -135,13 +174,48 @@ describeDatabase("swarm expiry race under load", () => {
 
   afterAll(async () => {
     if (db) {
-      await db.delete(issueClaims).where(inArray(issueClaims.issueId, taskIds));
-      await db.delete(issues).where(inArray(issues.id, taskIds));
+      await db.delete(issueClaims).where(inArray(issueClaims.issueId, [...taskIds, ...blockedTaskIds, readyTaskId]));
+      await db.delete(issueRelations).where(eq(issueRelations.companyId, companyId));
+      await db.delete(issues).where(eq(issues.companyId, companyId));
       await db.delete(agents).where(eq(agents.companyId, companyId));
       await db.delete(companies).where(eq(companies.id, companyId));
     }
     await tempDb?.cleanup();
   }, 60_000);
+
+  it("does not count assigned todo tasks held by open blockers toward the matcher ceiling", async () => {
+    const load = await openLoadByAgent(db, companyId);
+    expect(load.get(explicitlyAssignedId) ?? 0).toBe(0);
+    expect(load.get(ownerId) ?? 0).toBe(taskCount);
+    const sweep = createSwarmClaimSweeper({
+      db,
+      settings: {
+        getGeneral: async () => ({
+          swarmClaim: {
+            enabled: true,
+            leaseTtlSec: 900,
+            maxActiveTasks: 3,
+            sweepIntervalSec: 5,
+            p0Preemption: true,
+            pheromone: {},
+          },
+        }) as never,
+      },
+      env: {},
+      intervalMs: 0,
+      hostMemoryGate: () => ({ state: "open" } as never),
+      hostCpuGate: () => ({ state: "open" } as never),
+      enqueueWakeup: async () => ({ accepted: true }),
+      castes: async () => [{ key: "engineer", swarmEligible: true, maxActiveTasks: 3 }],
+    });
+    const result = await sweep.sweep(new Date());
+    const ready = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, readyTaskId));
+    expect(ready[0]?.assigneeAgentId).toBe(explicitlyAssignedId);
+    expect(result.idleClaimed).toBe(1);
+  });
 
   it("preserves every explicit reassignment against an expiry sweep under load", async () => {
     const startedAt = Date.now();
