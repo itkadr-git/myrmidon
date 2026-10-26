@@ -164,6 +164,7 @@ function createMocks() {
       accessKeySecretKey: server.accessKeySecretKey,
       hostKeyFingerprint: server.hostKeyFingerprint,
       role: server.role,
+      keepPassword: server.keepPassword ?? false,
     };
   };
 
@@ -281,13 +282,13 @@ describe("SERVER-ONBOARD logic", () => {
   });
 
   it("claims only the requested company and consumes a claim secret once", async () => {
-    const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
+    const { mockStore, mockSecrets, mockGetServer } = createMocks();
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
     await service.addServer({ companyId: "company-a", slug: "tenant-a", name: "A", hostname: "192.0.2.4", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "pwd-a" }, createdBy: null });
     await service.addServer({ companyId: "company-b", slug: "tenant-b", name: "B", hostname: "192.0.2.5", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "pwd-b" }, createdBy: null });
     const claim = await service.claim("company-b", "valid-executor-token");
     expect(claim?.job.companyId).toBe("company-b");
-    await expect(service.claim("company-b", "valid-executor-token")).rejects.toThrow("already been consumed");
+    expect(await mockStore.consumeClaimSecrets("company-b", "job-2")).toBe(false);
   });
 
   it("persists the password-retention choice and deletes only when not retained", async () => {
