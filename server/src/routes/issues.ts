@@ -16245,16 +16245,34 @@ export function issueRoutes(
           ["done", "cancelled"].includes(issue.status);
         if (closesRecoveryIssue && becameTerminal) {
           try {
-            const recoveryAction = await db
-              .select()
-              .from(issueRecoveryActions)
-              .where(and(
-                eq(issueRecoveryActions.companyId, issue.companyId),
-                eq(issueRecoveryActions.recoveryIssueId, issue.id),
-                inArray(issueRecoveryActions.status, ["active", "escalated"]),
-              ))
-              .then((rows) => rows[0] ?? null);
-            if (recoveryAction) {
+            let recoveryWake: {
+              agentId: string;
+              actionId: string;
+              sourceIssueId: string;
+              outcome: string | null;
+            } | null = null;
+            await db.transaction(async (tx) => {
+              const recoveryAction = await tx
+                .select()
+                .from(issueRecoveryActions)
+                .where(and(
+                  eq(issueRecoveryActions.companyId, issue.companyId),
+                  eq(issueRecoveryActions.recoveryIssueId, issue.id),
+                  inArray(issueRecoveryActions.status, ["active", "escalated"]),
+                ))
+                .for("update")
+                .then((rows) => rows[0] ?? null);
+              if (!recoveryAction) return;
+
+              const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+                companyId: issue.companyId,
+                sourceIssueId: recoveryAction.sourceIssueId,
+                actionId: recoveryAction.id,
+                status: issue.status === "cancelled" ? "cancelled" : "resolved",
+                outcome: issue.status === "cancelled" ? "cancelled" : "restored",
+                resolutionNote: null,
+              }, tx);
+              if (!resolved) return;
               const sourceIssue = await svc.get(recoveryAction.sourceIssueId);
               if (sourceIssue && sourceIssue.status === "blocked") {
                 const remainingBlockers = (sourceIssue.blockedByIssueIds ?? []).filter(
@@ -16265,40 +16283,40 @@ export function issueRoutes(
                   blockedByIssueIds: remainingBlockers,
                   assigneeAgentId: recoveryAction.returnOwnerAgentId,
                   assigneeUserId: null,
-                });
+                }, tx);
               }
-              const resolved = await recoveryActionsSvc.resolveActiveForIssue({
-                companyId: issue.companyId,
-                sourceIssueId: recoveryAction.sourceIssueId,
-                actionId: recoveryAction.id,
-                status: issue.status === "cancelled" ? "cancelled" : "resolved",
-                outcome: issue.status === "cancelled" ? "cancelled" : "restored",
-                resolutionNote: null,
-              }, db);
-              if (resolved?.returnOwnerAgentId) {
-                await enqueueRecoveryActionWakeup(resolved.returnOwnerAgentId, {
-                  source: "automation",
-                  triggerDetail: "system",
-                  reason: "issue_recovery_action_restored",
-                  idempotencyKey: `recovery_resolved:${resolved.id}`,
-                  requestedByActorType: "system",
-                  requestedByActorId: "recovery_issue_closed",
-                  payload: {
-                    issueId: resolved.sourceIssueId,
-                    recoveryIssueId: issue.id,
-                    recoveryActionId: resolved.id,
-                    outcome: resolved.outcome,
-                  },
-                  contextSnapshot: {
-                    issueId: resolved.sourceIssueId,
-                    taskId: resolved.sourceIssueId,
-                    recoveryIssueId: issue.id,
-                    recoveryActionId: resolved.id,
-                    source: "issue.recovery_closed",
-                    wakeReason: "issue_recovery_action_restored",
-                  },
-                });
+              if (resolved.returnOwnerAgentId) {
+                recoveryWake = {
+                  agentId: resolved.returnOwnerAgentId,
+                  actionId: resolved.id,
+                  sourceIssueId: resolved.sourceIssueId,
+                  outcome: resolved.outcome,
+                };
               }
+            });
+            if (recoveryWake) {
+              await enqueueRecoveryActionWakeup(recoveryWake.agentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "issue_recovery_action_restored",
+                idempotencyKey: `recovery_resolved:${recoveryWake.actionId}`,
+                requestedByActorType: "system",
+                requestedByActorId: "recovery_issue_closed",
+                payload: {
+                  issueId: recoveryWake.sourceIssueId,
+                  recoveryIssueId: issue.id,
+                  recoveryActionId: recoveryWake.actionId,
+                  outcome: recoveryWake.outcome,
+                },
+                contextSnapshot: {
+                  issueId: recoveryWake.sourceIssueId,
+                  taskId: recoveryWake.sourceIssueId,
+                  recoveryIssueId: issue.id,
+                  recoveryActionId: recoveryWake.actionId,
+                  source: "issue.recovery_closed",
+                  wakeReason: "issue_recovery_action_restored",
+                },
+              });
             }
           } catch (err) {
             logger.warn(
