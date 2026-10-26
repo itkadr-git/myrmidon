@@ -1473,9 +1473,9 @@ function readyQueueConditions(db: Db, companyId: string): SQL[] {
     sql`not exists (
       select 1
       from issue_relations ir
-        join issues blocker on blocker.id = ir.related_issue_id and blocker.company_id = ${issues.companyId}
+        join issues blocker on blocker.id = ir.issue_id and blocker.company_id = ${issues.companyId}
       where ir.company_id = ${issues.companyId}
-        and ir.issue_id = ${issues.id}
+        and ir.related_issue_id = ${issues.id}
         and ir.type = 'blocks'
         and ${blockerOpenSql('blocker.status')}
     )`,
