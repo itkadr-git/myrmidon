@@ -15415,7 +15415,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runSource: "issue.continuation_recovery",
       livenessState: "advanced",
     });
-    const start = Date.now();
     const enqueueWakeup = vi.fn(async () => {
       const [sourceRun] = await db
         .select()
@@ -15427,9 +15426,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         status: "queued",
       } as typeof heartbeatRuns.$inferSelect;
     });
+    const startedAt = Date.now();
     await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues({
       issueIds: [issueId],
     });
+    const finishedAt = Date.now();
     const [claim] = await db
       .select()
       .from(issueContinuationKeys)
@@ -15440,8 +15441,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         ),
       );
     expect(claim).toBeDefined();
-    expect(claim!.expiresAt.getTime()).toBeLessThanOrEqual(start + 60_000);
-    expect(claim!.expiresAt.getTime()).toBeGreaterThan(start + 50_000);
+    expect(claim!.expiresAt.getTime()).toBeGreaterThanOrEqual(startedAt + 60_000);
+    expect(claim!.expiresAt.getTime()).toBeLessThanOrEqual(finishedAt + 60_000);
   }, 30_000);
 
   it("does not treat a productive terminal run as healthy when in-progress work has no live path", async () => {
