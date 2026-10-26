@@ -41,6 +41,8 @@ export interface ScentQueuePorts {
   resolveSecret?: (db: Db, companyId: string, secretName: string) => Promise<string | null>;
   /** Test hook: replace general instance settings lookup. */
   getGeneral?: (db: Db) => Promise<unknown>;
+  /** Test hook: replace the company listing (the queue is per-company). */
+  listCompanyIds?: () => Promise<string[]>;
   now?: () => number;
 }
 
