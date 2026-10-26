@@ -36,7 +36,7 @@ describe("classifyDiskRecoveryCause", () => {
     { message: "disk full in unrelated documentation" },
     { host: "devbuild", freeBytes: 10 * 1024 ** 3 },
     { path: "/", usedPct: 89, freeBytes: 30 * 1024 ** 3 },
-    { path: "/workspace/x", message: "quota exceeded and OOMKilled" },
+    { path: "/workspace/x", message: "no matching storage symptoms" },
     { host: "devbuild", path: "/", usedPct: 95, freeBytes: 1 },
     { message: "unknown storage failure" },
     { exitCode: 137 },
@@ -59,7 +59,7 @@ describe("classifyOperatorAction", () => {
     { message: "operator may inspect the task" },
     { action: "restart-ci" },
     { action: "relay-branch" },
-    { message: "configure CI access and route review" },
+    { message: "grant scoped CI access and route review" },
   ])("returns null for unknown or ambiguous actions", signal => {
     expect(classifyOperatorAction(signal)).toBeNull();
   });
