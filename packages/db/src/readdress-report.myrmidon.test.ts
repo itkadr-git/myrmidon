@@ -42,7 +42,7 @@ describe("interaction readdress report", () => {
       { recipient: `agent:${id(4)}`, afterMinutes: 30 },
       { recipient: "queue:review-recovery", afterMinutes: 60 },
     ]);
-        const addressed = resolveAddresslessCard({ addresseeAgentId: id(2), addresseeUserId: null, effectiveResolverPolicy: "anyone", kind: "request_confirmation", createdByAgentId: id(1), createdByUserId: null });
+    const addressed = resolveAddresslessCard({ addresseeAgentId: id(2), addresseeUserId: null, effectiveResolverPolicy: "anyone", kind: "request_confirmation", createdByAgentId: id(1), createdByUserId: null });
     expect(addressed.proposedRecipient).toBe(id(2));
     const row = { ...addressed, id: id(51), issueIdentifier: 'OPE,"1', requestedResolverPolicy: "anyone", payload: {}, projectId: null, casteKey: null, executionPolicy: null, projectLeadAgentId: null };
     expect(JSON.parse(formatReport([row], "json"))).toEqual([row]);
