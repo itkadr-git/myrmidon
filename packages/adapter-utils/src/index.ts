@@ -7,6 +7,10 @@ export type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
   AdapterRuntimeEvent,
+  RunGuard,
+  RunGuardDecision,
+  RunGuardOptions,
+  RunGuardStopReason,
   AdapterRuntimeMcpServer,
   AdapterRuntimeMcpAccess,
   AdapterExecutionContext,
@@ -73,6 +77,13 @@ export {
 // packages that already depend on adapter-utils can use it without adding a
 // direct dependency on @myrmidon/shared.
 export { PRODUCT_NAME } from "@myrmidon/shared";
+export {
+  DEFAULT_IDLE_TIMEOUT_MS,
+  DEFAULT_MODEL_CALL_LIMIT,
+  DEFAULT_TOOL_RETRY_LIMIT,
+  RunGuard,
+  toolFailureSignature,
+} from "./run-guard.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export {
   PROMPT_METER_CHARS_PER_TOKEN,

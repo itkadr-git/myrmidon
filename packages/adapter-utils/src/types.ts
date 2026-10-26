@@ -274,6 +274,10 @@ export interface AdapterExecutionContext {
    * span path stays inert. The type is an inline import so this module keeps no
    * top-level dependency on the timing helper.
    */
+  /** Optional host-owned circuit breaker for model/tool progress. */
+  runGuard?: import("./run-guard.js").RunGuard;
+  /** Called when the guard trips; adapters should stop and return. */
+  onRunGuardStop?: (reason: import("./run-guard.js").RunGuardStopReason) => Promise<void>;
   startupTraceContext?: import("./acpx-engine/startup-timing.js").StartupTraceContext;
 }
 
