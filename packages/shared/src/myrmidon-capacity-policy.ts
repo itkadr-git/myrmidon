@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { swarmPriorityRank } from "./myrmidon-swarm-claim.js";
 
 const shareSchema = z.number().finite().min(0).max(1);
 const nonNegativeNumberSchema = z.number().finite().min(0);
@@ -61,6 +62,27 @@ export interface CapacityMetrics {
   activeByCaste: Readonly<Record<string, number>>;
   queuedByProject: Readonly<Record<string, number>>;
   queueDepth: number;
+}
+
+export interface CapacityCandidate {
+  priority: string | null | undefined;
+  createdAt: Date | string | number;
+}
+
+/** Priority establishes the band; capped exponential aging only breaks ties gradually. */
+export function scoreCandidate(
+  candidate: CapacityCandidate,
+  now: Date | string | number,
+  policy: CapacityPolicy = DEFAULT_CAPACITY_POLICY,
+): number {
+  const priorityScore = Math.max(0, 4 - swarmPriorityRank(candidate.priority));
+  const ageMs = Math.max(0, new Date(now).getTime() - new Date(candidate.createdAt).getTime());
+  const ageMinutes = ageMs / 60_000;
+  const { halfLifeMin, maxBoost } = policy.aging;
+  const boost = halfLifeMin === 0
+    ? (ageMinutes > 0 ? maxBoost : 0)
+    : maxBoost * (1 - Math.pow(0.5, ageMinutes / halfLifeMin));
+  return priorityScore + Math.min(maxBoost, boost);
 }
 
 /** Validate a partial update, then apply it without replacing untouched sections. */
