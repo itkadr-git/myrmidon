@@ -110,6 +110,20 @@ async function seedFixtures(now: Date) {
     entityId: randomUUID(),
   });
   await db.insert(issueClaims).values(
+    blockedTaskIds.map((issueId) => ({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      agentId: explicitlyAssignedId,
+      runId: null,
+      origin: "auto_match",
+      role: "engineer",
+      claimedAt: new Date(now.getTime() - 60_000),
+      heartbeatAt: new Date(now.getTime() - 60_000),
+      expiresAt: new Date(now.getTime() + 900_000),
+    })),
+  );
+  await db.insert(issueClaims).values(
     taskIds.map((issueId) => ({
       id: randomUUID(),
       companyId,
@@ -191,6 +205,8 @@ describeDatabase("swarm expiry race under load", () => {
   }, 60_000);
 
   it("does not count assigned todo tasks held by open blockers toward the matcher ceiling", async () => {
+    await db.delete(issueClaims).where(inArray(issueClaims.issueId, taskIds));
+    await db.delete(issues).where(eq(issues.id, readyTaskId));
     const load = await openLoadByAgent(db, companyId);
     expect(load.get(explicitlyAssignedId) ?? 0).toBe(0);
     expect(load.get(ownerId) ?? 0).toBe(taskCount);
@@ -222,6 +238,7 @@ describeDatabase("swarm expiry race under load", () => {
       .where(eq(issues.id, readyTaskId));
     expect(ready[0]?.assigneeAgentId).toBe(explicitlyAssignedId);
     expect(result.idleClaimed).toBe(1);
+    await db.delete(issueClaims).where(inArray(issueClaims.issueId, blockedTaskIds));
   });
 
   it("preserves every explicit reassignment against an expiry sweep under load", async () => {
