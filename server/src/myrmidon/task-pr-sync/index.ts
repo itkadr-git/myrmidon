@@ -54,5 +54,9 @@ export function createTaskPrSyncScheduler(input: {
         }),
     );
   };
-  return run;
+  const intervalMs = readTaskPrSyncSettings(input.env).pollMs;
+  const interval = setInterval(run, intervalMs);
+  interval.unref?.();
+  const stop = () => clearInterval(interval);
+  return Object.assign(run, { stop });
 }

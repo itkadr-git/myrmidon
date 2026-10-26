@@ -250,14 +250,16 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     expect(product!.status).toBe("merged");
   });
 
-  it("does not settle a mixed merged-and-closed PR set on a terminal task", async () => {
-    const seeded = await seed({ status: "done", products: [{ number: 73, status: "merged" }, { number: 74, status: "closed" }] });
-    const resolver = fakeResolver({});
+  it("reconciles closed tasks' open products even when another PR is already merged", async () => {
+    const seeded = await seed({ status: "done", products: [{ number: 73, status: "merged" }, { number: 74, status: "open" }] });
+    const resolver = fakeResolver({ 74: "closed" });
     const result = await reconcileClosedIssuePullRequests({ db, resolvePullRequestDetails: resolver, limit: 10 });
 
     expect(result.scanned).toBe(1);
-    expect(result.synced).toBe(0);
-    expect(resolver).not.toHaveBeenCalled();
+    expect(result.synced).toBe(1);
+    expect(resolver).toHaveBeenCalledTimes(1);
+    const products = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, seeded.issueId));
+    expect(products.find((p) => p.status === "closed")).toBeDefined();
   });
 
   it("does not auto-close inactive tasks, even with a merged PR", async () => {

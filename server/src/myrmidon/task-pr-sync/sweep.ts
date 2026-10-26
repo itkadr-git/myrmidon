@@ -164,6 +164,8 @@ function readMonitorNextCheckAt(policy: unknown): string | null {
 }
 
 
+let lastClosedTaskReconcileAt = 0;
+
 /** Periodically reconcile every non-terminal issue that has linked PR work products. */
 export async function reconcileClosedIssuePullRequests(input: {
   db: Db;

@@ -53,18 +53,14 @@ describe("issue done pull-request gate", () => {
 
     expect(resolve).toHaveBeenCalledTimes(1);
     expect(() => assertIssueDonePullRequestsSettled(snapshot)).not.toThrow();
-    expect(() => assertStoredIssueDonePullRequestsSettled([product({ id: "wp-live", number: 91, status: "open" })])).toThrowError(
-      expect.objectContaining({ code: ISSUE_DONE_PULL_REQUEST_GATE }),
-    );
+    expect(() => assertStoredIssueDonePullRequestsSettled([product({ id: "wp-live", number: 91, status: "open" })])).toThrowError(/Cannot mark this task done until/);
   });
 
   it("does not accept a mixed stored set until a merged PR is present", () => {
     const merged = product({ id: "wp-merged", number: 92, status: "merged" });
     const closed = product({ id: "wp-closed", number: 93, status: "closed" });
     expect(() => assertStoredIssueDonePullRequestsSettled([merged, closed])).not.toThrow();
-    expect(() => assertStoredIssueDonePullRequestsSettled([closed])).toThrowError(
-      expect.objectContaining({ code: ISSUE_DONE_PULL_REQUEST_GATE }),
-    );
+    expect(() => assertStoredIssueDonePullRequestsSettled([closed])).toThrowError(/Cannot mark this task done until/);
   });
 
   it("does not treat non-PR work products as blocking a done issue", () => {

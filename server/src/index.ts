@@ -1867,7 +1867,7 @@ async function startServerWithDatabaseTeardown(
   // the existing resolver, and settles the task (status done, one comment with the
   // PR refs / merge sha / time) once every PR is merged — or returns it to the
   // assignee when a PR was closed without merging.
-  const scheduleTaskPrSyncSweep = createTaskPrSyncScheduler({ db: db as any, track: trackTaskPrSyncWork });
+  const scheduleTaskPrSyncSweep = createTaskPrSyncScheduler({ db: db as any, track: trackTaskPrSyncWork, env: process.env });
   let lastClosedTaskReconcileAt = 0;
   const closedTaskReconcileIntervalMs = 24 * 60 * 60_000;
   let taskPrSyncTimer: ReturnType<typeof setInterval> | null = null;
