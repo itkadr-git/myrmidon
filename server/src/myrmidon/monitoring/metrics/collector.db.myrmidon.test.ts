@@ -127,6 +127,7 @@ describeEmbeddedPostgres("metrics collector", () => {
     });
     expect(snapshot.runsActive).toBe(2);
     expect(snapshot.runsQueued).toBe(2);
+    expect(snapshot.runsQueuedOver30m).toBe(1);
     expect(snapshot.runsFailedTotal).toBe(1);
     expect(snapshot.runsFailedWindow).toBe(1);
     expect(snapshot.scrapeErrors).toBe(0);
@@ -146,7 +147,6 @@ describeEmbeddedPostgres("metrics collector", () => {
       startedAt: new Date(NOW.getTime() - 1000),
       finishedAt: NOW,
     });
-
     const snapshot = await collectMetricsSnapshot({
       db,
       now: () => NOW,

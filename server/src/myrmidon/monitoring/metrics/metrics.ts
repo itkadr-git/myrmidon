@@ -327,27 +327,25 @@ async function readRunCounters(db: Db, now: Date): Promise<{
   queued: number;
   queuedOver30m: number;
   failedTotal: number;
+  failedWindow: number;
 }> {
   const rows = await db
     .select({
-      status: heartbeatRuns.status,
-      total: count(),
-      staleQueued: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'queued' and ${heartbeatRuns.createdAt} < ${new Date(now.getTime() - 30 * 60 * 1000)})`,
+      active: sql<number>`count(*) filter (where ${heartbeatRuns.status} in ('running', 'claimed'))`,
+      queued: sql<number>`count(*) filter (where ${heartbeatRuns.status} in ('queued', 'retrying', 'scheduled_retry'))`,
+      queuedOver30m: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'queued' and ${heartbeatRuns.createdAt} < ${new Date(now.getTime() - 30 * 60 * 1000)})`,
+      failedTotal: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'failed')`,
+      failedWindow: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'failed' and ${heartbeatRuns.finishedAt} >= ${new Date(now.getTime() - 60 * 60 * 1000)})`,
     })
-    .from(heartbeatRuns)
-    .groupBy(heartbeatRuns.status);
-  let active = 0;
-  let queued = 0;
-  let queuedOver30m = 0;
-  let failedTotal = 0;
-  for (const row of rows) {
-    queuedOver30m += Number(row.staleQueued ?? 0);
-    if (row.status === "running" || row.status === "claimed") active += Number(row.total);
-    else if (row.status === "queued" || row.status === "retrying" || row.status === "scheduled_retry") {
-      queued += Number(row.total);
-    } else if (row.status === "failed") failedTotal += Number(row.total);
-  }
-  return { active, queued, queuedOver30m, failedTotal };
+    .from(heartbeatRuns);
+  const row = rows[0];
+  return {
+    active: Number(row?.active ?? 0),
+    queued: Number(row?.queued ?? 0),
+    queuedOver30m: Number(row?.queuedOver30m ?? 0),
+    failedTotal: Number(row?.failedTotal ?? 0),
+    failedWindow: Number(row?.failedWindow ?? 0),
+  };
 }
 
 /** p50/p95 over finished run durations (finishedAt - startedAt), seconds. */
@@ -535,9 +533,9 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   // The run counters answer three families with one grouped query; a failure
   // names all three in the selfcheck output.
   const runCounters = await guarded(
-    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_queued_over_30m|myrmidon_runs_failed_total",
+    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_queued_over_30m|myrmidon_runs_failed_total|myrmidon_runs_failed_window",
     () => readRunCounters(deps.db, now),
-    { active: 0, queued: 0, queuedOver30m: 0, failedTotal: 0 },
+    { active: 0, queued: 0, queuedOver30m: 0, failedTotal: 0, failedWindow: 0 },
   );
   const durations = await guarded(
     "myrmidon_run_duration_seconds",
@@ -574,12 +572,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   );
   const failedWindow = await guarded(
     "myrmidon_runs_failed_window",
-    () =>
-      deps.db
-        .select({ total: count() })
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.status, "failed"), gte(heartbeatRuns.finishedAt, errorWindowStart)))
-        .then((rows) => Number(rows[0]?.total ?? 0)),
+    () => Promise.resolve(runCounters.failedWindow),
     0,
   );
   // myrmidon(1.6.5-PROCS-Q3): the process half rides the same guarded
