@@ -96,6 +96,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     parentId?: string | null;
     assigneeAgentId?: string | null;
     assigneeUserId?: string | null;
+    blockedTransitionAt?: Date | null;
     originKind?: string | null;
     originId?: string | null;
     originFingerprint?: string | null;
@@ -114,6 +115,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
       assigneeUserId: input.assigneeUserId ?? null,
+      blockedTransitionAt: input.blockedTransitionAt ?? null,
       originKind: input.originKind ?? "manual",
       originId: input.originId ?? null,
       originFingerprint: input.originFingerprint ?? "default",
@@ -833,7 +835,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       identifier: "PBO-1",
       title: "Unassigned blocked issue",
       status: "blocked",
-      createdAt: new Date(Date.now() - 31 * 60 * 1000),
+      createdAt: new Date(Date.now() - 90 * 60 * 1000),
+      blockedTransitionAt: new Date(Date.now() - 31 * 60 * 1000),
     });
     const blockerId = await insertIssue({
       companyId,

@@ -282,6 +282,13 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
         })),
       );
       const readyTask = await seedTask(companyId);
+      const unrelated = await seedTask(companyId, { assigneeAgentId: agent });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blocker,
+        relatedIssueId: unrelated,
+        type: "blocks" as const,
+      });
       const wakes: string[] = [];
 
       expect((await openTasksOf(agent))).toHaveLength(3);

@@ -52,7 +52,8 @@ describe("issue graph liveness classifier", () => {
       id: "overdue",
       status: "blocked",
       assigneeAgentId: null,
-      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+      createdAt: new Date(now.getTime() - 90 * 60 * 1000),
+      blockedTransitionAt: new Date(now.getTime() - 31 * 60 * 1000),
     });
     const findings = classifyIssueGraphLiveness({
       issues: [overdue, issue({ id: blockerId, status: "todo" })],
@@ -74,17 +75,26 @@ describe("issue graph liveness classifier", () => {
       issues: [issue({
         status: "blocked",
         assigneeAgentId: null,
-        createdAt: new Date(now.getTime() - 31 * 60 * 1000),
+        createdAt: new Date(now.getTime() - 90 * 60 * 1000),
+        blockedTransitionAt: new Date(now.getTime() - 31 * 60 * 1000),
       })],
       relations: [],
       agents: [agent(), manager],
       now,
     });
-    expect(findings).toHaveLength(1);
-    expect(findings[0]).toMatchObject({
-      issueId: blockedId,
-      state: "unassigned_blocked_issue_overdue",
+    const recentlyBlocked = issue({
+      id: "recently-blocked",
+      status: "blocked",
+      assigneeAgentId: null,
+      createdAt: new Date(now.getTime() - 90 * 60 * 1000),
+      blockedTransitionAt: new Date(now.getTime() - 10 * 60 * 1000),
     });
+    expect(classifyIssueGraphLiveness({
+      issues: [recentlyBlocked],
+      relations: [],
+      agents: [agent(), manager],
+      now,
+    })).toEqual([]);
   });
 
   it("detects a PAP-1703-style blocked chain with an unassigned blocker and stable incident key", () => {

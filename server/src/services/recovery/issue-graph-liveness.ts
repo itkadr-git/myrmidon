@@ -2,6 +2,8 @@ import { getAgentWorkEligibility, isAgentInvokable, type IssueReviewPolicy } fro
 import { isBlockerOpen } from "../../myrmidon/blocker-resolved.js";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 
+export const UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS = 30 * 60 * 1000;
+
 export type IssueLivenessSeverity = "warning" | "critical";
 
 export type IssueLivenessState =
@@ -23,6 +25,7 @@ export interface IssueLivenessIssueInput {
   title: string;
   status: string;
   createdAt?: Date | string | null;
+  blockedTransitionAt?: Date | string | null;
   projectId?: string | null;
   goalId?: string | null;
   parentId?: string | null;
@@ -554,29 +557,30 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
   for (const issue of input.issues) {
     if (issue.status !== "blocked") continue;
-    const createdAtMs = readDateMs(issue.createdAt);
     if (
-      !issue.assigneeAgentId &&
-      !issue.assigneeUserId &&
-      createdAtMs !== null &&
-      nowMs - createdAtMs >= 30 * 60 * 1000 &&
-      !hasExplicitWaitingPath(issue)
+      issue.assigneeAgentId ||
+      issue.assigneeUserId ||
+      !issue.blockedTransitionAt ||
+      nowMs - (readDateMs(issue.blockedTransitionAt) ?? nowMs) <
+        UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS ||
+      hasExplicitWaitingPath(issue)
     ) {
-      const ownerCandidates = ownerCandidatesForRecoveryIssue(issue, input.agents, agentsById, {
-        includeStalledAssignee: true,
-      });
-      findings.push(finding({
-        issue,
-        state: "unassigned_blocked_issue_overdue",
-        reason: `${issueLabel(issue)} has remained blocked without an assignee for at least 30 minutes.`,
-        dependencyPath: [issue],
-        recoveryIssue: issue,
-        recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
-        recommendedOwnerCandidates: ownerCandidates,
-        recommendedAction: `Assign ${issueLabel(issue)} to an owner who can unblock it, or record an explicit waiting path.`,
-        blockerIssueId: issue.id,
-      }));
+      continue;
     }
+    const ownerCandidates = ownerCandidatesForRecoveryIssue(issue, input.agents, agentsById, {
+      includeStalledAssignee: true,
+    });
+    findings.push(finding({
+      issue,
+      state: "unassigned_blocked_issue_overdue",
+      reason: `${issueLabel(issue)} has remained blocked without an assignee for at least 30 minutes.`,
+      dependencyPath: [issue],
+      recoveryIssue: issue,
+      recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+      recommendedOwnerCandidates: ownerCandidates,
+      recommendedAction: `Assign ${issueLabel(issue)} to an owner who can unblock it, or record an explicit waiting path.`,
+      blockerIssueId: issue.id,
+    }));
   }
 
   function reviewFinding(

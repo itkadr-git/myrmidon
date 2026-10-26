@@ -653,11 +653,11 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
     expect(accepted.createdIssues).toEqual([
       expect.objectContaining({
-        assigneeAgentId,
+        assigneeAgentId: null,
         status: "todo",
       }),
       expect.objectContaining({
-        assigneeAgentId,
+        assigneeAgentId: null,
         status: "todo",
       }),
     ]);

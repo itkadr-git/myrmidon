@@ -1234,37 +1234,41 @@ async function openTaskIdsOfAgents(
   companyId: string,
   agentId: string | null,
 ): Promise<Map<string, { assigned: Set<string>; leased: Set<string> }>> {
-  const [assignedRows, blockedIssueRows, leasedRows] = await Promise.all([
-    db
-      .select({ agentId: issues.assigneeAgentId, issueId: issues.id })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, companyId),
-          isNotNull(issues.assigneeAgentId),
-          inArray(issues.status, [...SWARM_LOAD_ISSUE_STATUSES]),
-          isNull(issues.hiddenAt),
-          ...(agentId ? [eq(issues.assigneeAgentId, agentId)] : []),
-        ),
+  const assignedRows = await db
+    .select({ agentId: issues.assigneeAgentId, issueId: issues.id })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        isNotNull(issues.assigneeAgentId),
+        inArray(issues.status, [...SWARM_LOAD_ISSUE_STATUSES]),
+        isNull(issues.hiddenAt),
+        ...(agentId ? [eq(issues.assigneeAgentId, agentId)] : []),
       ),
-    db
-      .select({ issueId: issueRelations.relatedIssueId })
-      .from(issueRelations)
-      .innerJoin(
-        issues,
-        and(
-          eq(issues.id, issueRelations.issueId),
-          eq(issues.companyId, companyId),
-          isNull(issues.hiddenAt),
-          blockerOpenSql("issues.status"),
-        ),
-      )
-      .where(
-        and(
-          eq(issueRelations.companyId, companyId),
-          eq(issueRelations.type, "blocks"),
-        ),
-      ),
+    );
+  const relatedIds = assignedRows.map((row) => row.issueId);
+  const [blockedIssueRows, leasedRows] = await Promise.all([
+    relatedIds.length === 0
+      ? Promise.resolve([] as Array<{ issueId: string }>)
+      : db
+          .select({ issueId: issueRelations.relatedIssueId })
+          .from(issueRelations)
+          .innerJoin(
+            issues,
+            and(
+              eq(issues.id, issueRelations.issueId),
+              eq(issues.companyId, companyId),
+              isNull(issues.hiddenAt),
+              blockerOpenSql("issues.status"),
+            ),
+          )
+          .where(
+            and(
+              eq(issueRelations.companyId, companyId),
+              eq(issueRelations.type, "blocks"),
+              inArray(issueRelations.relatedIssueId, relatedIds),
+            ),
+          ),
     db
       .select({ agentId: issueClaims.agentId, issueId: issueClaims.issueId })
       .from(issueClaims)

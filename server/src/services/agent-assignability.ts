@@ -1,5 +1,5 @@
-import { eq } from "drizzle-orm";
-import type { Db } from "@myrmidon/db";
+import { and, eq } from "drizzle-orm";
+import { issues as issueTable, type Db } from "@myrmidon/db";
 import { agents } from "@myrmidon/db";
 import {
   getAgentWorkEligibility,
@@ -99,6 +99,30 @@ function assignmentReasonFromHealth(health: AgentOrgChainHealth): AgentAssignmen
   if (health.reason === "missing_manager") return "ancestor_missing";
   if (health.reason === "cycle") return "ancestor_cycle";
   return "ancestor_missing";
+}
+
+export async function resolveParentAssigneeForChild(
+  db: Db,
+  companyId: string,
+  parentIssueId: string | null | undefined,
+  childCasteKey: string | null | undefined,
+): Promise<string | null> {
+  if (!parentIssueId || childCasteKey) return null;
+  const [parent] = await db
+    .select({ assigneeAgentId: issueTable.assigneeAgentId, casteKey: issueTable.casteKey })
+    .from(issueTable)
+    .where(and(eq(issueTable.companyId, companyId), eq(issueTable.id, parentIssueId)))
+    .limit(1);
+  if (!parent?.assigneeAgentId || parent.casteKey) return null;
+  const [parentAgent] = await db
+    .select({ role: agents.role, companyId: agents.companyId })
+    .from(agents)
+    .where(eq(agents.id, parent.assigneeAgentId))
+    .limit(1);
+  if (!parentAgent || parentAgent.companyId !== companyId || parentAgent.role !== "engineer") {
+    return null;
+  }
+  return parent.assigneeAgentId;
 }
 
 export async function assertAssignableAgent(

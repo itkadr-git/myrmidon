@@ -157,7 +157,10 @@ import {
 } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
-import { assertAssignableAgent } from "./agent-assignability.js";
+import {
+  assertAssignableAgent,
+  resolveParentAssigneeForChild,
+} from "./agent-assignability.js";
 import {
   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
   isExternalChatPresentationContext,
@@ -3356,7 +3359,8 @@ function lowTrustBoundaryIssueCondition(
 }
 
 const BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES = ["done", "cancelled"];
-export const BLOCKER_ATTENTION_MAX_DEPTH = 8;
+const UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS = 30 * 60 * 1000;
+const BLOCKER_ATTENTION_MAX_DEPTH = 8;
 export const BLOCKER_ATTENTION_MAX_NODES = 2000;
 const BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES = new Set([
   "active",
@@ -3374,6 +3378,7 @@ type IssueBlockerAttentionNode = {
   status: string;
   priority: string;
   createdAt: Date;
+  blockedTransitionAt: Date | null;
   executionRunId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -3388,6 +3393,7 @@ type IssueBlockerAttentionInputNode = Pick<
   | "status"
   | "priority"
   | "createdAt"
+  | "blockedTransitionAt"
   | "assigneeAgentId"
   | "assigneeUserId"
 > & { executionRunId?: string | null };
@@ -3715,15 +3721,20 @@ async function listIssueBlockerAttentionMap(
   const roots = issueRows.filter(
     (row) => row.companyId === companyId && row.status === "blocked",
   );
+  const overdueUnassignedBlockers = new Set<string>();
   const attentionMap = new Map<string, IssueBlockerAttention>();
+  const overdueUnassignedIds = new Set<string>();
   for (const row of issueRows) {
     if (row.status !== "blocked") {
       attentionMap.set(row.id, createIssueBlockerAttention());
     } else if (
       !row.assigneeAgentId &&
       !row.assigneeUserId &&
-      Date.now() - row.createdAt.getTime() >= 30 * 60 * 1000
+      row.blockedTransitionAt &&
+      Date.now() - row.blockedTransitionAt.getTime() >=
+        UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS
     ) {
+      overdueUnassignedIds.add(row.id);
       attentionMap.set(row.id, createIssueBlockerAttention({
         state: "needs_attention",
         reason: "unassigned_blocked_issue_overdue",
@@ -3774,6 +3785,7 @@ async function listIssueBlockerAttentionMap(
           status: issues.status,
           priority: issues.priority,
           createdAt: issues.createdAt,
+          blockedTransitionAt: issues.blockedTransitionAt,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -3800,6 +3812,7 @@ async function listIssueBlockerAttentionMap(
           status: issues.status,
           priority: issues.priority,
           createdAt: issues.createdAt,
+          blockedTransitionAt: issues.blockedTransitionAt,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -3825,6 +3838,14 @@ async function listIssueBlockerAttentionMap(
           isBlockerOpen(row.status) ||
           pendingFinalizeBlockerIssueIds.has(row.blockerIssueId),
       );
+      for (const blockerRow of unresolvedExplicitBlockerRows) {
+        if (
+          overdueUnassignedIds.has(blockerRow.blockerIssueId) &&
+          !pendingFinalizeBlockerIssueIds.has(blockerRow.blockerIssueId)
+        ) {
+          unassignedOverdueBlockerCount += 1;
+        }
+      }
       appendBlockerAttentionEdges(edgesByIssueId, [
         ...unresolvedExplicitBlockerRows
           .filter(
@@ -4405,12 +4426,26 @@ async function listIssueBlockerAttentionMap(
         : "active_dependency";
     }
 
-    attentionMap.set(
+  const overdueUnassignedBlockerCount = topLevelEdges.filter((edge) => {
+    const blocker = nodesById.get(edge.blockerIssueId);
+    return overdueUnassignedIds.has(edge.blockerIssueId) &&
+      !pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId) &&
+      blocker?.status === "blocked" &&
+      !blocker.assigneeAgentId &&
+      !blocker.assigneeUserId &&
+      blocker.blockedTransitionAt &&
+      Date.now() - blocker.blockedTransitionAt.getTime() >=
+        UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS;
+  }).length;
+  attentionMap.set(
       root.id,
       createIssueBlockerAttention({
-        state,
-        reason:
-          attentionMap.get(root.id)?.reason === "unassigned_blocked_issue_overdue"
+        state: attentionBlockerCount === 0 && overdueUnassignedBlockerCount > 0
+          ? "needs_attention"
+          : state,
+        reason: attentionBlockerCount === 0 && overdueUnassignedBlockerCount > 0
+          ? "blocked_by_unassigned_issue"
+          : attentionMap.get(root.id)?.reason === "unassigned_blocked_issue_overdue"
             ? "unassigned_blocked_issue_overdue"
             : reason,
         unresolvedBlockerCount: topLevelEdges.length,
@@ -4655,6 +4690,7 @@ async function listIssueReviewAttentionMap(
         originId: issues.originId,
         status: issues.status,
         createdAt: issues.createdAt,
+        blockedTransitionAt: issues.blockedTransitionAt,
       })
       .from(issues)
       .where(
@@ -4709,6 +4745,7 @@ async function listIssueReviewAttentionMap(
       title: issue.title,
       status: issue.status,
       createdAt: issue.createdAt,
+      blockedTransitionAt: issue.blockedTransitionAt,
       projectId: issue.projectId,
       goalId: issue.goalId,
       parentId: issue.parentId,
@@ -5539,6 +5576,12 @@ async function listIssueBlockedInboxAttentionMap(
     ]);
 
   const graphIssues = graphIssueRows as IssueRow[];
+  for (const row of issueRows) {
+    const graphRow = graphIssues.find((issue) => issue.id === row.id);
+    if (graphRow && !row.blockedTransitionAt) {
+      row.blockedTransitionAt = graphRow.blockedTransitionAt;
+    }
+  }
   const graphRelations = graphRelationRows as Array<{
     companyId: string;
     blockerIssueId: string;
@@ -5554,6 +5597,11 @@ async function listIssueBlockedInboxAttentionMap(
     reportsTo: string | null;
   }>;
   const graphIssueIds = graphIssues.map((issue) => issue.id);
+  const initialRowsById = new Map(issueRows.map((row) => [row.id, row]));
+  for (const row of graphIssues) {
+    const exposed = initialRowsById.get(row.id);
+    if (exposed) exposed.blockedTransitionAt = row.blockedTransitionAt;
+  }
   const issuesById = new Map<string, IssueRow>(
     graphIssues.map((issue) => [issue.id, issue]),
   );
@@ -5752,7 +5800,36 @@ async function listIssueBlockedInboxAttentionMap(
       return entries;
     });
 
-  const findings = classifyIssueGraphLiveness({
+  const recoveryIssueBySourceId = new Map<string, IssueRow>();
+  for (const recovery of graphIssues) {
+    if (
+      !BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS.includes(
+        recovery.originKind as (typeof BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS)[number],
+      )
+    ) continue;
+    const sourceIds = [recovery.originId];
+    if (recovery.originKind === "harness_liveness_escalation") {
+      const parsed = parseIssueGraphLivenessIncidentKey(recovery.originId);
+      if (parsed?.companyId === companyId) {
+        sourceIds.push(parsed.issueId, parsed.leafIssueId);
+      }
+    }
+    for (const sourceId of sourceIds) {
+      if (sourceId) recoveryIssueBySourceId.set(sourceId, recovery);
+    }
+  }
+  const [recoveryIssues, findings] = await Promise.all([
+    dbOrTx
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.originKind, [...BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS]),
+          notInArray(issues.status, [...BLOCKED_INBOX_TERMINAL_STATUSES]),
+        ),
+      ),
+    Promise.resolve(classifyIssueGraphLiveness({
     issues: graphIssues.map((issue) => ({
       id: issue.id,
       companyId: issue.companyId,
@@ -5761,6 +5838,7 @@ async function listIssueBlockedInboxAttentionMap(
       status: issue.status,
       priority: issue.priority,
       createdAt: issue.createdAt,
+      blockedTransitionAt: issue.blockedTransitionAt,
       projectId: issue.projectId,
       goalId: issue.goalId,
       parentId: issue.parentId,
@@ -5833,8 +5911,9 @@ async function listIssueBlockedInboxAttentionMap(
   });
   const findingByIssueId = new Map<string, IssueLivenessFinding>();
   for (const finding of findings) {
-    if (!findingByIssueId.has(finding.issueId))
+    if (!findingByIssueId.has(finding.issueId)) {
       findingByIssueId.set(finding.issueId, finding);
+    }
   }
 
   const interactionByIssueId = new Map<string, BlockedInboxInteractionRow>();
@@ -6011,7 +6090,80 @@ async function listIssueBlockedInboxAttentionMap(
       continue;
     }
 
+    const openRecoveryIssue = recoveryIssueBySourceId.get(row.id);
+    const hardRecoveryFinding = findingByIssueId.get(row.id);
+    const staleLivenessRecovery =
+      openRecoveryIssue?.originKind === "harness_liveness_escalation" &&
+      hardRecoveryFinding?.recoveryIssueId === row.id;
     const finding = findingByIssueId.get(row.id);
+    const overdueBlocker = (finding?.dependencyPath ?? []).find((pathNode) => {
+      const pathIssue = issuesById.get(pathNode.issueId);
+      return pathIssue?.status === "blocked" &&
+        !pathIssue.assigneeAgentId &&
+        !pathIssue.assigneeUserId &&
+        pathIssue.blockedTransitionAt &&
+        Date.now() - pathIssue.blockedTransitionAt.getTime() >=
+          UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS;
+    });
+    const blockedByUnassignedBlocker =
+      finding?.state === "blocked_by_unassigned_issue" ||
+      (finding?.state === "unassigned_blocked_issue_overdue" &&
+        finding.issueId !== row.id &&
+        Boolean(overdueBlocker));
+    if (blockedByUnassignedBlocker) {
+      result.set(
+        row.id,
+        attentionBase({
+          state: "needs_attention",
+          reason: "blocked_by_unassigned_issue",
+          severity: "high",
+          stoppedSinceAt: overdueBlocker?.blockedTransitionAt ?? row.updatedAt,
+          owner: { type: "unknown", agentId: null, userId: null, label: null },
+          action: {
+            label: "Assign overdue blocked issue",
+            detail: "Assign an eligible owner to the overdue blocked issue in this dependency chain.",
+          },
+          sourceIssue: source,
+          sampleIssueIdentifier: overdueBlocker?.identifier ?? finding?.identifier ?? null,
+        }),
+      );
+      continue;
+    }
+    if (finding?.state === "unassigned_blocked_issue_overdue" && row.status === "blocked") {
+      result.set(
+        row.id,
+        attentionBase({
+          state: "needs_attention",
+          reason: "unassigned_blocked_issue_overdue",
+          severity: "high",
+          stoppedSinceAt: row.blockedTransitionAt,
+          owner: { type: "unknown", agentId: null, userId: null, label: null },
+          action: {
+            label: "Assign overdue blocked issue",
+            detail: "Assign an eligible owner to this blocked issue.",
+          },
+          sourceIssue: source,
+        }),
+      );
+      continue;
+    }
+    if (finding && finding.recoveryIssueId === row.id) {
+      result.set(
+        row.id,
+        attentionBase({
+          state: "recovery_open",
+          reason: finding.state,
+          severity: "medium",
+          action: {
+            label: "Review existing recovery issue",
+            detail: "Update the existing recovery issue rather than creating another one.",
+          },
+          sourceIssue: issueRef(row),
+          recoveryIssue: issueRef(row),
+        }),
+      );
+      continue;
+    }
     if (finding) {
       const leaf =
         finding.dependencyPath.length > 1
@@ -6021,7 +6173,8 @@ async function listIssueBlockedInboxAttentionMap(
             )
           : issuesById.get(finding.recoveryIssueId);
       const ownerAgentId =
-        finding.state === "blocked_by_unassigned_issue"
+        finding.state === "blocked_by_unassigned_issue" ||
+        finding.state === "unassigned_blocked_issue_overdue"
           ? null
           : (finding.recommendedOwnerAgentId ??
             row.assigneeAgentId ??
@@ -6107,15 +6260,33 @@ async function listIssueBlockedInboxAttentionMap(
       continue;
     }
 
+    const issueRows = graphIssueRows as IssueBlockerAttentionInputNode[];
     const blockerAttention = await listIssueBlockerAttentionMap(
       dbOrTx,
       companyId,
-      [row],
+      issueRows,
     );
+    for (const issue of issueRows) {
+      if (
+        issue.status === "blocked" &&
+        !issue.assigneeAgentId &&
+        !issue.assigneeUserId &&
+        issue.blockedTransitionAt &&
+        Date.now() - issue.blockedTransitionAt.getTime() >=
+          UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS &&
+        !blockerAttention.has(issue.id)
+      ) {
+        blockerAttention.set(issue.id, createIssueBlockerAttention({
+          state: "needs_attention",
+          reason: "unassigned_blocked_issue_overdue",
+        }));
+      }
+    }
     const blockerState = blockerAttention.get(row.id);
     if (
       row.status === "blocked" &&
-      (blockerState?.state === "needs_attention" ||
+      (blockerState?.reason === "unassigned_blocked_issue_overdue" ||
+        blockerState?.state === "needs_attention" ||
         blockerState?.state === "stalled")
     ) {
       result.set(
@@ -9198,10 +9369,15 @@ export function issueService(db: Db) {
       if (
         !data.assigneeAgentId &&
         data.assigneeUserId == null &&
-        parent.assigneeAgentId &&
         (data.status === undefined || data.status === "todo" || data.status === "blocked")
       ) {
-        data = { ...data, assigneeAgentId: parent.assigneeAgentId };
+        const inheritedAssignee = await resolveParentAssigneeForChild(
+          db,
+          parent.companyId,
+          parent.id,
+          data.casteKey,
+        );
+        if (inheritedAssignee) data = { ...data, assigneeAgentId: inheritedAssignee };
       }
 
       const idempotencyKey = data.idempotencyKey?.trim();
@@ -9732,14 +9908,13 @@ export function issueService(db: Db) {
         issueData.assigneeUserId == null &&
         (issueData.status === undefined || issueData.status === "todo" || issueData.status === "blocked")
       ) {
-        const parent = await dbOrTx
-          .select({ assigneeAgentId: issues.assigneeAgentId })
-          .from(issues)
-          .where(and(eq(issues.companyId, companyId), eq(issues.id, issueData.parentId)))
-          .then((rows) => rows[0] ?? null);
-        if (parent?.assigneeAgentId) {
-          issueData.assigneeAgentId = parent.assigneeAgentId;
-        }
+        const inheritedAssignee = await resolveParentAssigneeForChild(
+          dbOrTx as unknown as Db,
+          companyId,
+          issueData.parentId,
+          issueData.casteKey,
+        );
+        if (inheritedAssignee) issueData.assigneeAgentId = inheritedAssignee;
       }
       const isolatedWorkspacesEnabled = (
         await instanceSettings.getExperimental()
