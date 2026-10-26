@@ -148,7 +148,7 @@ describe("PluginPage", () => {
 
     const root = await renderPage(container);
 
-    expect(mockContributionLoader.ensurePluginContributionLoaded).toHaveBeenCalledWith(contribution);
+    expect(mockContributionLoader.ensurePluginContributionLoaded).toHaveBeenCalledWith({ ...contribution, slots: [pageSlot] });
     expect(mockPluginsApi.listUiContributions).toHaveBeenCalled();
     expect(container.querySelector('[data-testid="plugin-slot-mount"]')?.textContent).toBe("Wiki");
     await act(async () => root.unmount());
