@@ -14913,18 +14913,19 @@ export function issueRoutes(
       const attachmentCommentSourceTrust = commentAttachmentIds?.length
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
-      const shouldUseTransactionalIssueUpdate =
-        Boolean(commentAttachmentIds?.length) ||
-        Boolean(decision) ||
-        shouldRelayStop ||
-        enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
-        persistReviewActivityTransactionally ||
-        ((updateFields.status === "in_review" || existing.status === "in_review") &&
-          assigneeWillChange) ||
-        reviewPolicySensitiveMutationRequested ||
-        humanUnblockPossible ||
-        // myrmidon(HANDOFF-CAS): the guarded commit needs the row lock.
-        handoffGuarded;
+        const shouldUseTransactionalIssueUpdate =
+          closesRecoveryIssue ||
+          Boolean(commentAttachmentIds?.length) ||
+          Boolean(decision) ||
+          shouldRelayStop ||
+          enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
+          persistReviewActivityTransactionally ||
+          ((updateFields.status === "in_review" || existing.status === "in_review") &&
+            assigneeWillChange) ||
+          reviewPolicySensitiveMutationRequested ||
+          humanUnblockPossible ||
+          // myrmidon(HANDOFF-CAS): the guarded commit needs the row lock.
+          handoffGuarded;
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
@@ -16254,6 +16255,18 @@ export function issueRoutes(
               ))
               .then((rows) => rows[0] ?? null);
             if (recoveryAction) {
+              const sourceIssue = await svc.get(recoveryAction.sourceIssueId);
+              if (sourceIssue && sourceIssue.status === "blocked") {
+                const remainingBlockers = (sourceIssue.blockedByIssueIds ?? []).filter(
+                  (blockerId) => blockerId !== issue.id,
+                );
+                await svc.update(recoveryAction.sourceIssueId, {
+                  status: remainingBlockers.length ? "blocked" : "todo",
+                  blockedByIssueIds: remainingBlockers,
+                  assigneeAgentId: recoveryAction.returnOwnerAgentId,
+                  assigneeUserId: null,
+                });
+              }
               const resolved = await recoveryActionsSvc.resolveActiveForIssue({
                 companyId: issue.companyId,
                 sourceIssueId: recoveryAction.sourceIssueId,
