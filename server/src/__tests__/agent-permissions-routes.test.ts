@@ -661,6 +661,89 @@ describe.sequential("agent permission routes", () => {
     expect(afterVisibilityChange.body).toEqual([]);
   }, 20_000);
 
+  it("does not reuse an agent-list ETag when actor configuration read permissions change", async () => {
+    let canReadConfigs = true;
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
+      if (input.action === "company_scope:read") return { allowed: true };
+      if (input.action === "agent:read") return { allowed: true };
+      if (input.action === "agent_config:read") return { allowed: canReadConfigs };
+      return { allowed: Boolean(await mockAccessService.canUser()) };
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "reader-agent",
+      companyId,
+      companyIds: [companyId],
+    });
+    mockAgentService.listSummaries.mockResolvedValue([
+      { ...baseAgentListItem, id: "builder-agent", adapterModel: "claude-sonnet-4-5" },
+    ]);
+    mockAgentService.listSummariesVersionKey.mockImplementation(async (_companyId: string, actorShape?: string) => (
+      `"vk-agents-list:${actorShape ?? "default"}"`
+    ));
+
+    const first = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/agents`),
+    );
+    expect(first.status).toBe(200);
+    expect(first.body[0]?.adapterModel).toBe("claude-sonnet-4-5");
+    const etag = first.headers.etag;
+    expect(etag).toBeTruthy();
+
+    canReadConfigs = false;
+    const afterRevocation = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get(`/api/companies/${companyId}/agents`)
+        .set("If-None-Match", etag),
+    );
+
+    expect(afterRevocation.status).toBe(200);
+    expect(afterRevocation.headers.etag).not.toBe(etag);
+    expect(afterRevocation.body[0]?.adapterModel).toBeNull();
+  }, 20_000);
+
+  it("does not reuse an agent-list ETag when actor membership changes without agent rows changing", async () => {
+    mockAccessService.decide.mockResolvedValue({ allowed: true });
+    mockAgentService.listSummaries.mockResolvedValue([
+      { ...baseAgentListItem, id: "builder-agent" },
+    ]);
+    mockAgentService.listSummariesVersionKey.mockImplementation(async (_companyId: string, actorShape?: string) => (
+      `"vk-agents-list:${actorShape ?? "default"}"`
+    ));
+
+    const actor = {
+      type: "user",
+      userId: "user-1",
+      companyId,
+      companyIds: [companyId],
+      onBehalfOfMemberships: [
+        { companyId, status: "active", membershipRole: "admin" },
+      ],
+    };
+    const app = await createApp(actor);
+
+    const first = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/agents`),
+    );
+    expect(first.status).toBe(200);
+    const etag = first.headers.etag;
+    expect(etag).toBeTruthy();
+
+    actor.onBehalfOfMemberships = [
+      { companyId, status: "active", membershipRole: "member" },
+    ];
+    const afterMembershipChange = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get(`/api/companies/${companyId}/agents`)
+        .set("If-None-Match", etag),
+    );
+
+    expect(afterMembershipChange.status).toBe(200);
+    expect(afterMembershipChange.headers.etag).not.toBe(etag);
+  }, 20_000);
+
+
   // Mutation routes echo the stored row back, so they leak the same values the
   // GET paths redact.
   it("returns 304 for a matching heartbeat-runs ETag without fetching or redacting the response body", async () => {
