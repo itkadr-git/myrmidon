@@ -34,6 +34,7 @@ export type Ui2ScreenKey =
   | "agent-overview"
   | "agents-fleet"
   | "settings-runs-queue"
+  | "settings-secrets"
   | "settings-system"
   | "settings-language"
   | "commander-chat"
