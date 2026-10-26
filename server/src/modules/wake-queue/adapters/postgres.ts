@@ -8,6 +8,7 @@ import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { logger } from "../../../middleware/logger.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
+import { tryClaimContinuationKey } from "../../../services/continuation-dedupe.js";
 import { runContextPersistenceFields } from "@myrmidon/db";
 import { extractIssueReferenceIdentifiers } from "@myrmidon/shared";
 import {
@@ -1304,7 +1305,12 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           recoveryOnly,
         };
         const drainStartedAt = performance.now();
-        const drainResult = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
+        const drainResult = await fn(locked, {
+          host: buildHost(tx, deps),
+          transaction: buildTransaction(tx, deps, db, run),
+          claimContinuationKey: async ({ companyId, issueId, key }) =>
+            tryClaimContinuationKey(tx, { companyId, key, issueId, ttl: 24 * 60 * 60 * 1_000 }),
+        });
         drainMs = performance.now() - drainStartedAt;
         return { ...drainResult, run: runSnapshot };
       });

@@ -147,7 +147,10 @@ type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts
  */
 async function runReleaseDrain(
   locked: LockedIssueExecution,
-  ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
+  ports: {
+    host: WakeQueueHost;
+    transaction: WakeQueueTransaction;
+  },
   input: ReleaseIssueExecutionInput,
 ): Promise<ReleaseTransactionResult> {
   const { run } = locked;
@@ -377,7 +380,10 @@ async function runReleaseDrain(
  * on to the next queued wake instead of ending the drain.
  */
 async function promoteDeferredWake(
-  ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
+  ports: {
+    host: WakeQueueHost;
+    transaction: WakeQueueTransaction;
+  },
   run: RunSnapshot,
   issue: IssueSnapshot,
   workingCandidate: DeferredWakeCandidate,
@@ -429,8 +435,13 @@ async function promoteDeferredWake(
     return null;
   }
 
-  // Claim before reopening. A reopen write and its post-commit effect must
-  // never survive a lost race on this compare-and-set.
+  const claimed = await ports.transaction.claimContinuationKey({
+    companyId: issue.companyId,
+    issueId: issue.id,
+    key: `issue:${issue.id}:head:${workingCandidate.id}`,
+  });
+  if (claimed === "deduped") return null;
+
   const claimedForPromotion = await ports.transaction.claimDeferredWakeForPromotion({
     companyId: run.companyId,
     wakeId: workingCandidate.id,
@@ -775,6 +786,13 @@ async function runReleaseRecoveryTail(
       },
     );
   }
+
+  const claimed = await ports.transaction.claimContinuationKey({
+    companyId: issue.companyId,
+    issueId: issue.id,
+    key: `issue:${issue.id}:head:${run.id}`,
+  });
+  if (claimed === "deduped") return { outcome: { kind: "released" }, postCommitEffects };
 
   const queuedRun = await transaction.queueImmediateRecoveryRun({
     companyId: issue.companyId,
