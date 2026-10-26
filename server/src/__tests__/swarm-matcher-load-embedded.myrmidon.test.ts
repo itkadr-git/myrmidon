@@ -38,7 +38,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { matchCompany, matchIssue, quotaHoldsByAgent, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
+import { matchCompany, matchIssue, openLoadByAgent, quotaHoldsByAgent, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
