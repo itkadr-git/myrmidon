@@ -26,6 +26,8 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
       { role: "engineer", status: "in_progress", count: 1 },
       { role: "reviewer", status: "in_review", count: 2 },
     ],
+    reviewTasksWithoutReviewer: 0,
+    blockedTasksWithoutAssignee: 0,
     swarmClaimsActive: 4,
     swarmClaimsTotal: 12,
     agentErrorSignals: 1,

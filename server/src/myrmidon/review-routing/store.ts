@@ -229,7 +229,12 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_review"), isNull(issues.hiddenAt)));
       const recoveryCutoff = asOf.getTime() - 15 * 60 * 1000;
       return rows.filter((row) => row.updatedAt.getTime() <= recoveryCutoff && issueNeedsReviewer({
+        id: row.id,
         status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
         executionPolicy: row.executionPolicy,
         executionState: row.executionState,
         reviewPolicy: row.reviewPolicy ?? null,
