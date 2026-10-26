@@ -22,7 +22,7 @@ export function Ui2Page({
   children: ReactNode;
 }) {
   return (
-    <div className="ui2-page mx-auto flex w-full max-w-5xl flex-col gap-6 p-6">
+    <div className="ui2-page mx-auto flex w-full max-w-none flex-col gap-6 p-6">
       <header className="ui2-page-header flex flex-wrap items-start justify-between gap-4">
         <div className="flex flex-col gap-1">
           <h1 className="ui2-page-title text-2xl font-semibold tracking-tight">{title}</h1>

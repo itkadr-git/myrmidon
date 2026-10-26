@@ -209,30 +209,38 @@ function TreeBranch({
   node,
   activeKey,
   onSelect,
+  t,
 }: {
   node: KnowledgeTreeNode;
   activeKey: string | null;
   onSelect: (item: KnowledgeItemSummary) => void;
+  t: Translate;
 }) {
   const key = revisionKey(node.item);
   const active = key === activeKey;
+  const [expanded, setExpanded] = useState(true);
   return (
     <li className="ui2-knowledge-tree-node" data-depth={node.depth}>
-      <button
-        type="button"
-        className={`ui2-knowledge-tree-item w-full rounded-md px-2 py-1 text-left text-sm hover:bg-accent ${
-          active ? "bg-accent font-medium" : "text-muted-foreground"
-        }`}
-        style={{ paddingLeft: `${8 + node.depth * 12}px` }}
-        aria-current={active ? "page" : undefined}
-        onClick={() => onSelect(node.item)}
-      >
-        {node.item.title}
-      </button>
-      {node.children.length > 0 ? (
+      <div className="flex items-center gap-1">
+        {node.children.length > 0 ? (
+          <button type="button" className="rounded px-1" aria-label={t(expanded ? "ui2.knowledge.tree.collapse" : "ui2.knowledge.tree.expand")} aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+            {expanded ? "▾" : "▸"}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className={`ui2-knowledge-tree-item min-w-0 flex-1 rounded-md px-2 py-1 text-left text-sm hover:bg-accent ${active ? "bg-accent font-medium" : "text-muted-foreground"}`}
+          style={{ paddingLeft: `${8 + node.depth * 12}px` }}
+          aria-current={active ? "page" : undefined}
+          onClick={() => onSelect(node.item)}
+        >
+          {node.item.title}
+        </button>
+      </div>
+      {node.children.length > 0 && expanded ? (
         <ul className="ui2-knowledge-tree-children flex flex-col gap-0.5">
           {node.children.map((child) => (
-            <TreeBranch key={revisionKey(child.item)} node={child} activeKey={activeKey} onSelect={onSelect} />
+            <TreeBranch key={revisionKey(child.item)} node={child} activeKey={activeKey} onSelect={onSelect} t={t} />
           ))}
         </ul>
       ) : null}
@@ -629,8 +637,8 @@ export function Ui2Knowledge({ basePath }: { basePath?: string } = {}) {
       ) : tree.length === 0 ? (
         <Ui2EmptyStateView title={t("ui2.knowledge.tree.empty")} variant="done" />
       ) : (
-        <div className="ui2-knowledge-layout flex flex-col gap-4 md:flex-row">
-          <div className="ui2-knowledge-tree-pane md:sticky md:top-0 md:w-72 md:shrink-0 md:self-start">
+        <div className="ui2-knowledge-layout flex w-full min-w-0 flex-col gap-4 md:flex-row">
+          <div className="ui2-knowledge-tree-pane md:sticky md:top-0 md:w-[clamp(18rem,24vw,30rem)] md:shrink-0 md:resize-x md:overflow-auto md:self-start">
           <Ui2Section title={t("ui2.knowledge.tree.aria")}>
             <div className="ui2-knowledge-tree-scroll max-h-[40dvh] overflow-y-auto md:max-h-[calc(100dvh-24rem)]" data-testid="knowledge-tree-scroll">
             <ul className="ui2-knowledge-tree flex flex-col gap-0.5" aria-label={t("ui2.knowledge.tree.aria")}>
@@ -639,6 +647,7 @@ export function Ui2Knowledge({ basePath }: { basePath?: string } = {}) {
                   key={revisionKey(node.item)}
                   node={node}
                   activeKey={activeKey}
+                  t={t}
                   onSelect={(item) => {
                     if (basePath) navigate(knowledgeHref({ spaceKey: item.spaceKey, slug: item.slug, anchor: null }, basePath));
                     else setLocalSelection({ spaceKey: item.spaceKey, slug: item.slug });
