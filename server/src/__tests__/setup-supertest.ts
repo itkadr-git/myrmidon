@@ -26,8 +26,7 @@ const SupertestTest = require("supertest/lib/test.js") as SupertestTestConstruct
 
 if (process.env.MYRMIDON_AGENT_JWT_SECRET === undefined &&
     process.env.PAPERCLIP_AGENT_JWT_SECRET === undefined &&
-    process.env.BETTER_AUTH_SECRET === undefined &&
-    !process.env.VITEST) {
+    process.env.BETTER_AUTH_SECRET === undefined) {
   // Real process-adapter tests need to mint run tokens; failure-path tests
   // explicitly clear all JWT secret sources when exercising fail-closed setup.
   process.env.MYRMIDON_AGENT_JWT_SECRET = "vitest-agent-jwt-secret";
