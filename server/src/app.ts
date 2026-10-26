@@ -1287,6 +1287,17 @@ export async function createApp(
   lifecycle.on("plugin.ready", ({ pluginId, pluginKey }) => {
     const readyAt = Date.now();
     pluginReadiness.plugins.set(pluginId, { pluginId, pluginKey, readyAt });
+    logger.info(
+      {
+        pluginId,
+        pluginKey,
+        boardReadyAt: pluginReadiness.boardReadyAt,
+        readyAt,
+        readyAfterBoardReadyMs:
+          pluginReadiness.boardReadyAt === null ? null : readyAt - pluginReadiness.boardReadyAt,
+      },
+      "plugin readiness: ready",
+    );
   });
   const scheduler = createPluginJobScheduler({
     db,
