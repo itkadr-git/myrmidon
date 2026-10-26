@@ -13937,9 +13937,14 @@ export function issueRoutes(
         executionReviewParticipantAgentIds?: string[];
         defaultEscalationAgentIds?: string[];
       } = await withDefaultEscalationChain(db, existing, nextExecutionPolicy);
-      transitionIssue.assigneeAgentRole = existing.assigneeAgentId
-        ? (await agentsSvc.getById(existing.assigneeAgentId))?.role ?? null
-        : null;
+      if (
+        existing.status !== "in_review" &&
+        updateFields.status === "in_review" &&
+        existing.assigneeAgentId
+      ) {
+        transitionIssue.assigneeAgentRole =
+          (await agentsSvc.getById(existing.assigneeAgentId))?.role ?? null;
+      }
       transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
