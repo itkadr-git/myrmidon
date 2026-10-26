@@ -16,7 +16,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { TASK_PR_SYNC_SETTLED_ACTION, createTaskPrSyncSweep } from "./sweep.js";
+import { TASK_PR_SYNC_SETTLED_ACTION, createTaskPrSyncSweep, reconcileClosedIssuePullRequests } from "./sweep.js";
 import type { TaskPrSyncSettings } from "./settings.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -237,7 +237,42 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId))).toHaveLength(1);
   });
 
-  it("defers the settle while an explicit post-deploy gate is open", async () => {
+  it("keeps a merged PR's work product settled without closing a blocked issue", async () => {
+    const seeded = await seed({ status: "blocked", products: [{ number: 72 }] });
+    const sweep = sweepFor(fakeResolver({ 72: "merged" }));
+
+    const result = await sweep.sweep({ settings: SETTINGS, force: true });
+
+    expect(result).toMatchObject({ scanned: 1, settled: 0, skipped: 1 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("blocked");
+    const [product] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, seeded.issueId));
+    expect(product!.status).toBe("merged");
+  });
+
+  it("does not settle a mixed merged-and-closed PR set on a terminal task", async () => {
+    const seeded = await seed({ status: "done", products: [{ number: 73, status: "merged" }, { number: 74, status: "closed" }] });
+    const resolver = fakeResolver({});
+    const result = await reconcileClosedIssuePullRequests({ db, resolvePullRequestDetails: resolver, limit: 10 });
+
+    expect(result.scanned).toBe(1);
+    expect(result.synced).toBe(0);
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it("does not auto-close inactive tasks, even with a merged PR", async () => {
+    const seeded = await seed({ status: "todo", products: [{ number: 72 }] });
+    const sweep = sweepFor(fakeResolver({ 72: "merged" }));
+
+    const result = await sweep.sweep({ settings: SETTINGS, force: true });
+
+    expect(result).toMatchObject({ scanned: 1, settled: 0, skipped: 1 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("todo");
+    const [product] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, seeded.issueId));
+    expect(product!.status).toBe("merged");
+  });
+  it("does not close a task while an open post-deploy gate remains", async () => {
     const seeded = await seed({ products: [{ number: 71 }] });
     await db.insert(issueThreadInteractions).values({
       companyId: seeded.companyId,

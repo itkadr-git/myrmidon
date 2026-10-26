@@ -50,7 +50,8 @@ export type TaskPrSyncNoopReason =
   | "no_pr_products"
   | "pr_still_open"
   | "pr_state_unknown"
-  | "post_deploy_gate_open";
+  | "post_deploy_gate_open"
+  | "inactive_issue";
 
 export type TaskPrSyncDecision =
   | { kind: "settle_done"; mergedSha: string | null; prRefs: string[] }
@@ -125,6 +126,11 @@ export function readLastMergedSha(
  */
 export function decideTaskPrSync(facts: TaskPrSyncFacts): TaskPrSyncDecision {
   if (TERMINAL_ISSUE_STATUSES.has(facts.issueStatus)) return noop("terminal_issue");
+  // Inactive queue states may update PR work-product state, but must not auto-close
+  // a task before an assignee starts it. Explicit post-deploy gates remain decisive.
+  if (facts.issueStatus === "todo" || facts.issueStatus === "backlog" || facts.issueStatus === "blocked") {
+    return facts.openPostDeployGate ? noop("post_deploy_gate_open") : noop("inactive_issue");
+  }
 
   const active = facts.prs.filter((pr) => pr.state !== "superseded");
   if (active.length === 0) return noop("no_pr_products");

@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { conflict } from "../../errors.js";
+import { logger } from "../../middleware/logger.js";
 import {
   createPullRequestMergeDetailsResolver,
   extractGitHubPullRequestReferences,
@@ -94,9 +95,11 @@ export async function inspectIssueDonePullRequests(
                 status: replacementState,
                 metadata: { ...metadata, state: replacementState, draft: false },
               }).where(and(eq(issueWorkProducts.id, product.id), eq(issueWorkProducts.companyId, companyId)));
-            } catch {
-              // The persistence refresh is bookkeeping; the gate still acts on
-              // the freshly resolved state.
+            } catch (err) {
+              logger.warn(
+                { errorKind: "issue_done_pr_state_persist_failed", errorName: err instanceof Error ? err.name : typeof err, workProductId: product.id },
+                "could not persist replacement pull-request state during done validation",
+              );
             }
           }
           return {
@@ -116,9 +119,11 @@ export async function inspectIssueDonePullRequests(
             status: state,
             metadata: { ...metadata, state, draft: false },
           }).where(and(eq(issueWorkProducts.id, product.id), eq(issueWorkProducts.companyId, companyId)));
-        } catch {
-          // The persistence refresh is bookkeeping; the gate still acts on
-          // the freshly resolved state above.
+        } catch (err) {
+          logger.warn(
+            { errorKind: "issue_done_pr_state_persist_failed", errorName: err instanceof Error ? err.name : typeof err, workProductId: product.id },
+            "could not persist pull-request state during done validation",
+          );
         }
       }
       return {
@@ -127,7 +132,11 @@ export async function inspectIssueDonePullRequests(
         url: product.url,
         ...(details.access === "denied" ? { accessDenied: true as const } : {}),
       };
-    } catch {
+    } catch (err) {
+      logger.warn(
+        { errorKind: "issue_done_pr_lookup_failed", errorName: err instanceof Error ? err.name : typeof err, workProductId: product.id },
+        "could not resolve pull-request state during done validation",
+      );
       return { product, state: "unknown" as const, url: product.url };
     }
   }));
@@ -147,12 +156,16 @@ export function assertIssueDonePullRequestsSettled(states: Awaited<ReturnType<ty
   for (const entry of states) {
     if (entry.state === "superseded" || entry.state === "merged") continue;
     if ("accessDenied" in entry && entry.accessDenied && entry.state === "unknown") noAccess(entry.product, entry.url);
-    if (entry.state !== "merged") block(entry.product, entry.url);
+    block(entry.product, entry.url);
   }
 }
 
 export function assertStoredIssueDonePullRequestsSettled(products: GateProduct[]) {
-  for (const product of products) {
+  const pullRequests = products.filter((product) => product.type === "pull_request");
+  const merged = pullRequests.some((product) => product.status === "merged");
+  const closed = pullRequests.filter((product) => product.status === "closed");
+  if (merged && closed.length > 0) return;
+  for (const product of pullRequests) {
     if (product.status === "archived" || product.status === "merged") continue;
     block(product);
   }

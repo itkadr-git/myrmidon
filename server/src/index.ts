@@ -1605,7 +1605,6 @@ async function startServerWithDatabaseTeardown(
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
-  let taskPrSyncInterval: ReturnType<typeof setInterval> | null = null;
   let runContextColumnsBackfill: { stop(): void } | null = null; // OPE-5007 П2
 
   // myrmidon(PROCS-1.7, design OPE-5394 §5): the leader lease manager. The
@@ -1870,12 +1869,14 @@ async function startServerWithDatabaseTeardown(
   // assignee when a PR was closed without merging.
   const scheduleTaskPrSyncSweep = createTaskPrSyncScheduler({ db: db as any, track: trackTaskPrSyncWork });
   let lastClosedTaskReconcileAt = 0;
+  const closedTaskReconcileIntervalMs = 24 * 60 * 60_000;
+  let taskPrSyncTimer: ReturnType<typeof setInterval> | null = null;
   if (processRoleProfile.runsBackground) {
     const runTaskPrSync = () => {
       if (!leaderLeaseManager.isLeader("scheduler")) return;
       scheduleTaskPrSyncSweep();
       const now = Date.now();
-      if (now - lastClosedTaskReconcileAt < 60_000) return;
+      if (now - lastClosedTaskReconcileAt < closedTaskReconcileIntervalMs) return;
       lastClosedTaskReconcileAt = now;
       trackTaskPrSyncWork(reconcileClosedIssuePullRequests({
         db: db as any,
@@ -1886,8 +1887,8 @@ async function startServerWithDatabaseTeardown(
         logger.warn({ errorKind: "closed_task_pr_reconcile_failed", errorName: err instanceof Error ? err.name : typeof err }, "closed-task PR reconcile failed");
       }));
     };
-    taskPrSyncInterval = setInterval(runTaskPrSync, readTaskPrSyncSettings(process.env).pollMs);
-    taskPrSyncInterval.unref?.();
+    taskPrSyncTimer = setInterval(runTaskPrSync, readTaskPrSyncSettings(process.env).pollMs);
+    taskPrSyncTimer.unref?.();
     runTaskPrSync();
   }
   // myrmidon(STALE-BLOCK): the periodic watchdog that lifts dead blocked
@@ -3013,9 +3014,9 @@ async function startServerWithDatabaseTeardown(
       clearInterval(heartbeatSchedulerInterval);
       heartbeatSchedulerInterval = null;
     }
-    if (taskPrSyncInterval) {
-      clearInterval(taskPrSyncInterval);
-      taskPrSyncInterval = null;
+    if (taskPrSyncTimer) {
+      clearInterval(taskPrSyncTimer);
+      taskPrSyncTimer = null;
     }
 
     // myrmidon(PROCS-1.7, design OPE-5394 §5.3): release the leader leases

@@ -7,7 +7,6 @@
 import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import type { PullRequestMergeDetailsResolver } from "../../services/github-pull-request-merge.js";
-import { readTaskPrSyncSettings } from "./settings.js";
 import { createTaskPrSyncSweep } from "./sweep.js";
 
 export { shouldSuppressRunForIssue } from "./guard.js";
@@ -16,8 +15,9 @@ export { decideTaskPrSync, effectivePullRequestState, settlePendingForProducts }
 export { readTaskPrSyncSettings } from "./settings.js";
 
 /**
- * Builds the tick callback the scheduler calls. The GitHub resolve seam is the
- * existing company-scoped resolver; nothing new holds a credential.
+ * Starts the scheduler-owned interval for task PR synchronization. The caller is
+ * responsible for leadership checks before calling `start()` and stopping it at
+ * shutdown; no heartbeat callback is scheduled here.
  */
 export function createTaskPrSyncScheduler(input: {
   db: Db;
@@ -40,8 +40,6 @@ export function createTaskPrSyncScheduler(input: {
     resolvePullRequestDetails,
     env: input.env,
   });
-  const pollMs = readTaskPrSyncSettings(input.env).pollMs;
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
   const run = () => {
     input.track(
       sweep
@@ -56,16 +54,5 @@ export function createTaskPrSyncScheduler(input: {
         }),
     );
   };
-  const stop = () => {
-    if (!pollTimer) return;
-    clearInterval(pollTimer);
-    pollTimer = null;
-  };
-  const start = () => {
-    if (pollTimer) return;
-    run();
-    pollTimer = setInterval(run, pollMs);
-    pollTimer.unref?.();
-  };
-  return Object.assign(start, { stop });
+  return run;
 }
