@@ -31,8 +31,8 @@ describe("buildRunTelemetry", () => {
     run: {
       id: "run-1",
       agentId: "agent-1",
-      invocationSource: "automation",
-      triggerDetail: "manual",
+      invocationSource: "automation" as const,
+      triggerDetail: "manual" as const,
       retryOfRunId: null,
       nativeIssueId: null,
       contextSnapshot: {
