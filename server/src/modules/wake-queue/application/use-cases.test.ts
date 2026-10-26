@@ -725,7 +725,9 @@ describe("releaseIssueExecution", () => {
 
   it("dedupes a replayed deferred wake before promotion", async () => {
     const candidate = wakeCandidate({ id: "wake-replayed" });
-    const findNextDeferredWake = vi.fn(async () => candidate);
+    const findNextDeferredWake = vi.fn()
+      .mockResolvedValueOnce(candidate)
+      .mockResolvedValueOnce(null);
     const cancelDeferredWake = vi.fn(async () => true);
     const claimContinuationKey = vi.fn(async () => "deduped" as const);
     const transaction = createFakeTransaction({
