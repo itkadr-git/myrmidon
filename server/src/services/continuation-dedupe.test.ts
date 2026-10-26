@@ -6,7 +6,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
-import { clearExpiredContinuationKeys, tryClaimContinuationKey } from "./continuation-dedupe.js";
+import { clearExpiredContinuationKeys, tryClaimContinuationKey, tryClaimContinuationKeyInTransaction } from "./continuation-dedupe.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("continuation dedupe (P1.9)", () => {
@@ -59,6 +59,37 @@ const support = await getEmbeddedPostgresTestSupport();
       .where(and(eq(issueContinuationKeys.companyId, companyId), eq(issueContinuationKeys.key, key)));
     expect(storedRows).toHaveLength(1);
     expect(storedRows[0]?.issueId).toBe(issueId);
+  }, 30_000);
+
+  it("transaction-scoped claims race through the shared admission transaction", async () => {
+    const key = `transaction-race-${randomUUID()}`;
+    const outcomes = await Promise.all(Array.from({ length: 20 }, () =>
+      db.transaction((tx) => tryClaimContinuationKeyInTransaction(tx as unknown as Db, {
+        companyId, key, issueId, ttl: 60_000,
+      })),
+    ));
+    expect(outcomes.filter((outcome) => outcome === "created")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome === "deduped")).toHaveLength(19);
+  }, 30_000);
+
+  it("a transaction rollback releases the claim for a later admission", async () => {
+    const key = `rollback-key-${randomUUID()}`;
+    await expect(db.transaction(async (tx) => {
+      expect(await tryClaimContinuationKeyInTransaction(tx as unknown as Db, {
+        companyId,
+        key,
+        issueId,
+        ttl: 60_000,
+      })).toBe("created");
+      throw new Error("force admission rollback");
+    })).rejects.toThrow("force admission rollback");
+
+    expect(await tryClaimContinuationKey(db, {
+      companyId,
+      key,
+      issueId,
+      ttl: 60_000,
+    })).toBe("created");
   }, 30_000);
 
   it("different keys are independent", async () => {

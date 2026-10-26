@@ -9,21 +9,36 @@ export async function tryClaimContinuationKey(
   db: Db,
   input: { companyId: string; key: string; issueId: string; ttl: number },
 ): Promise<ContinuationDedupeOutcome> {
+  return tryClaimContinuationKeyInTransaction(db, input);
+}
+
+/** Claim on a caller-owned transaction so dedupe and admission commit together. */
+export async function tryClaimContinuationKeyInTransaction(
+  tx: Db,
+  input: { companyId: string; key: string; issueId: string; ttl: number },
+): Promise<ContinuationDedupeOutcome> {
   const now = new Date();
-  await clearExpiredContinuationKeys(db, input.companyId, now);
-  const inserted = await db
-    .insert(issueContinuationKeys)
-    .values({
-      companyId: input.companyId,
-      key: input.key,
-      issueId: input.issueId,
-      expiresAt: new Date(now.getTime() + input.ttl),
-    })
-    .returning({ key: issueContinuationKeys.key })
-    .catch((err: unknown) => {
-      if (isUniqueViolation(err, "issue_continuation_keys_company_key_uq") || isUniqueViolation(err)) return [];
+  await clearExpiredContinuationKeys(tx, input.companyId, now);
+  let inserted: { key: string }[];
+  try {
+    inserted = await tx
+      .insert(issueContinuationKeys)
+      .values({
+        companyId: input.companyId,
+        key: input.key,
+        issueId: input.issueId,
+        expiresAt: new Date(now.getTime() + input.ttl),
+      })
+      .onConflictDoNothing({ target: [issueContinuationKeys.companyId, issueContinuationKeys.key] })
+      .returning({ key: issueContinuationKeys.key });
+  } catch (err) {
+    if (isUniqueViolation(err, "issue_continuation_keys_company_key_uq") || isUniqueViolation(err)) {
+      inserted = [];
+    } else {
       throw err;
-    });
+    }
+  }
+
   const outcome: ContinuationDedupeOutcome = inserted.length ? "created" : "deduped";
   if (outcome === "created") continuationDedupeMetrics.metrics.onContinuationCreated(input.key);
   else continuationDedupeMetrics.metrics.onContinuationDeduped(input.key);

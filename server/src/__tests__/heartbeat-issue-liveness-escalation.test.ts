@@ -697,6 +697,40 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   });
 
+  it("does not start a continuation without new issue input, but admits one new input only once", async () => {
+    const { companyId, agentId, blockedIssueId: issueId } = await seedResolvedDependencyBackstopFixture();
+    const heartbeat = heartbeatService(db);
+    const priorRunId = randomUUID();
+    const finishedAt = new Date(Date.now() - 60_000);
+    await db.insert(heartbeatRuns).values({
+      id: priorRunId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      createdAt: new Date(finishedAt.getTime() - 10_000),
+      finishedAt,
+      contextSnapshot: { issueId },
+    });
+
+    const wake = () => heartbeat.wakeup(agentId, {
+      source: "automation", triggerDetail: "system", reason: "issue_continuation_needed",
+      requestedByActorType: "system", payload: { issueId }, contextSnapshot: { issueId },
+    });
+    expect(await wake()).toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+
+    await db.insert(activityLog).values({
+      companyId, actorType: "user", actorId: "board-user", action: "issue.comment_added",
+      entityType: "issue", entityId: issueId, createdAt: new Date(finishedAt.getTime() + 1_000),
+    });
+    const [first, duplicate] = await Promise.all([wake(), wake()]);
+    expect([first, duplicate].filter(Boolean)).toHaveLength(1);
+    await heartbeat.drainActiveRunExecutions();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(2);
+    const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(receipts.filter((row) => row.status === "skipped")).toHaveLength(2);
+  });
+
   it("rechecks every gate after an execution hold clears", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId, action } = await seedExecutionWait();
     const wake = () => heartbeatService(db).wakeup(agentId, {

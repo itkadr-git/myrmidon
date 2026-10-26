@@ -154,6 +154,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { buildContinuationKey } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -426,7 +427,9 @@ import {
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
 import {
-  ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
+  tryClaimContinuationKeyInTransaction,
+} from "./continuation-dedupe.js";
+import {
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
@@ -3913,6 +3916,7 @@ export interface WakeupOptions {
   idempotencyKey?: string | null;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  continuationEventId?: string | null;
   contextSnapshot?: Record<string, unknown>;
   externalSession?: { connectionId: string; grantId: string; model: string };
   issueStateGuard?: {
@@ -28380,6 +28384,10 @@ export function heartbeatService(
   }
 
   async function enqueueWakeupInner(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
+    const continuationEventId = opts.continuationEventId ??
+      readNonEmptyString(opts.payload?.continuationEventId) ??
+      readNonEmptyString(opts.contextSnapshot?.continuationEventId) ??
+      null;
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
@@ -29614,6 +29622,71 @@ export function heartbeatService(
             onBlocked: (reason, message) => { continuationWait = { reason, message }; },
           }))) return deferBlockedExecution(executionBlocker);
 
+          if (
+            reason === "issue_continuation_needed" &&
+            source === "automation" &&
+            (opts.requestedByActorType === "system" || !opts.requestedByActorType)
+          ) {
+            const recoveryParentRunId = readNonEmptyString(enrichedContextSnapshot.retryOfRunId)
+              ?? readNonEmptyString(payload?.retryOfRunId);
+            const lastRunRows = await tx
+              .select({ finishedAt: heartbeatRuns.finishedAt })
+              .from(heartbeatRuns)
+              .where(and(
+                eq(heartbeatRuns.companyId, agent.companyId),
+                eq(heartbeatRuns.agentId, agentId),
+                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                sql`${heartbeatRuns.finishedAt} is not null`,
+              ))
+              .orderBy(desc(heartbeatRuns.finishedAt))
+              .limit(1);
+            const lastFinishedAt = lastRunRows[0]?.finishedAt ?? null;
+            const eventRows = continuationEventId
+              ? [{ id: continuationEventId }]
+              : lastFinishedAt
+                ? await tx.select({ id: activityLog.id }).from(activityLog).where(and(
+                    eq(activityLog.companyId, agent.companyId),
+                    eq(activityLog.entityType, "issue"),
+                    eq(activityLog.entityId, issue.id),
+                    gt(activityLog.createdAt, lastFinishedAt),
+                    inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+                  )).orderBy(desc(activityLog.createdAt), desc(activityLog.id))
+                : [];
+            if (!recoveryParentRunId && eventRows.length === 0) {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
+                reason, payload: { ...(payload ?? {}), issueId, continuationSkipped: "no_new_issue_input" },
+                status: "skipped", requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date(),
+              });
+              return { kind: "skipped" as const };
+            }
+            const revision = recoveryParentRunId
+              ? `recovery:${recoveryParentRunId}`
+              : eventRows.map((row) => row.id).sort().join(",");
+            const dedupeKey = buildContinuationKey({ issueId: issue.id, event: `${reason}:${agentId}`, head: revision });
+            if (await tryClaimContinuationKeyInTransaction(tx as unknown as Db, {
+              companyId: agent.companyId, key: dedupeKey, issueId: issue.id, ttl: 365 * 24 * 60 * 60 * 1000,
+            }) === "deduped") {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
+                reason, payload: { ...(payload ?? {}), issueId, continuationEventRevision: revision, duplicateContinuation: true },
+                status: "skipped", requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date(),
+              });
+              return { kind: "skipped" as const };
+            }
+            enrichedContextSnapshot.continuationEventId = revision;
+            enrichedContextSnapshot.continuationEventRevision = revision;
+            if (recoveryParentRunId) enrichedContextSnapshot.retryOfRunId = recoveryParentRunId;
+            payload = {
+              ...(payload ?? {}), issueId, continuationEventId: revision, continuationEventRevision: revision,
+              ...(recoveryParentRunId ? { retryOfRunId: recoveryParentRunId } : {}),
+            };
+          }
+
           const issueStateGuard = opts.issueStateGuard;
           if (
             issueStateGuard &&
@@ -30478,22 +30551,17 @@ export function heartbeatService(
                 ? await tx
                     .select({ id: activityLog.id })
                     .from(activityLog)
-                    .where(
-                      and(
-                        eq(activityLog.companyId, agent.companyId),
-                        eq(activityLog.entityType, "issue"),
-                        eq(activityLog.entityId, issue.id),
-                        gt(activityLog.createdAt, lastRunFinishedAt),
-                        inArray(
-                          activityLog.action,
-                          ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
-                        ),
-                        wakeCommentId && opts.requestedByActorType === "agent"
-                          ? ne(activityLog.actorType, "agent")
-                          : undefined,
-                      ),
-                    )
-                    .limit(1)
+                    .where(and(
+                      eq(activityLog.companyId, agent.companyId),
+                      eq(activityLog.entityType, "issue"),
+                      eq(activityLog.entityId, issue.id),
+                      gt(activityLog.createdAt, lastRunFinishedAt),
+                      inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+                      wakeCommentId && opts.requestedByActorType === "agent"
+                        ? ne(activityLog.actorType, "agent")
+                        : undefined,
+                    ))
+                    .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
                 : [];
 
               const throttleDecision = evaluateIssueRewakeThrottle({
@@ -30504,10 +30572,6 @@ export function heartbeatService(
                     .map((row) => row.runId)
                     .filter((runId): runId is string => Boolean(runId)),
                 ),
-                // For an agent comment wake, the query excludes agent-authored
-                // activity while preserving genuinely new user/system input.
-                // Presentation/author metadata therefore cannot smuggle human
-                // wake privilege, nor can it mask an actual human response.
                 hasNewIssueInputSinceLastRun: newInputRows.length > 0,
               });
 
