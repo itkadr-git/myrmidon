@@ -1,6 +1,6 @@
 import { and, eq, lt } from "drizzle-orm";
-import { issueContinuationKeys } from "@paperclipai/db";
-import type { createDb } from "@paperclipai/db";
+import { issueContinuationKeys } from "@myrmidon/db";
+import type { Db } from "@myrmidon/db";
 import { isUniqueViolation } from "../db-errors.js";
 
 export type ContinuationDedupeOutcome = "created" | "deduped";
