@@ -55,18 +55,18 @@ npx myrmidon context use default
 To avoid storing secrets in context, use an env var:
 
 ```sh
-npx paperclipai context set --api-key-env-var-name PAPERCLIP_API_KEY
+npx myrmidon context set --api-key-env-var-name PAPERCLIP_API_KEY
 export PAPERCLIP_API_KEY=...
 ```
 
-Secret operations are available under `paperclipai secrets`:
+Secret operations are available under `myrmidon secrets`:
 
 ```sh
-npx paperclipai secrets declarations --company-id <company-id> --kind secret
-npx paperclipai secrets create --company-id <company-id> --name anthropic-api-key --value-env ANTHROPIC_API_KEY
-npx paperclipai secrets link --company-id <company-id> --name prod-stripe-key --provider aws_secrets_manager --external-ref <provider-ref>
-npx paperclipai secrets doctor --company-id <company-id>
-npx paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+npx myrmidon secrets declarations --company-id <company-id> --kind secret
+npx myrmidon secrets create --company-id <company-id> --name anthropic-api-key --value-env ANTHROPIC_API_KEY
+npx myrmidon secrets link --company-id <company-id> --name prod-stripe-key --provider aws_secrets_manager --external-ref <provider-ref>
+npx myrmidon secrets doctor --company-id <company-id>
+npx myrmidon secrets migrate-inline-env --company-id <company-id> --apply
 ```
 
 Context is stored at `~/.paperclip/context.json`.
