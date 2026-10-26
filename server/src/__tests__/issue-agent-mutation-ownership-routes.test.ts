@@ -2966,7 +2966,6 @@ describe("agent issue mutation checkout ownership", () => {
           blockedByIssueIds: [children[0]?.id],
           actorAgentId: peerAgentId,
         }),
-        expect.anything(),
       );
     });
 
