@@ -970,6 +970,65 @@ describe("issue execution policy transitions", () => {
       expect(result.patch.assigneeAgentId).toBe(coderAgentId);
     });
 
+    it("preserves an explicitly assigned executor when policy is removed", () => {
+      const stageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: null,
+          executionState: {
+            status: "pending",
+            currentStageId: stageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: null,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: { assigneeAgentId: ctoAgentId },
+        actor: { agentId: qaAgentId },
+      });
+
+      expect(result.patch.executionState).toBeNull();
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBe(ctoAgentId);
+    });
+
+    it("returns to the stored executor when policy is removed without explicit assignee", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionState: {
+            status: "pending",
+            currentStageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: null,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+      });
+
+      expect(result.patch.executionState).toBeNull();
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+    });
+
     it("clears execution state without assignee change when not in_review", () => {
       const stageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
       const result = applyIssueExecutionPolicyTransition({
@@ -1215,6 +1274,53 @@ describe("issue execution policy transitions", () => {
   });
 
   describe("multi-participant stages", () => {
+    it("does not record the assigned reviewer as the return assignee", () => {
+      const policy = reviewOnlyPolicy();
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          assigneeAgentRole: "reviewer",
+          executionReviewParticipantAgentIds: [qaAgentId],
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "in_review",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Ready for review",
+      });
+
+      expect(result.patch.executionState).toMatchObject({
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+        returnAssignee: null,
+      });
+    });
+
+    it("clears a previously stored reviewer as the return assignee", () => {
+      const policy = reviewOnlyPolicy();
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+          executionReviewParticipantAgentIds: [qaAgentId],
+        },
+        policy,
+        requestedStatus: "in_review",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Ready for review",
+      });
+      expect(result.patch.executionState).toMatchObject({
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+      });
+    });
+
     it("selects the preferred participant when explicitly requested", () => {
       const policy = makePolicy([
         {

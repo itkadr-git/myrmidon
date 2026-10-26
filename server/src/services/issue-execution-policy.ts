@@ -35,6 +35,9 @@ type IssueLike = AssigneeLike & {
    * escalation, never a human), `[]` = computed, nobody eligible (recovery).
    */
   defaultEscalationAgentIds?: string[] | null;
+  /** Role of the currently assigned agent, when resolved by the route. */
+  assigneeAgentRole?: string | null;
+  executionReviewParticipantAgentIds?: string[];
   executionPolicy?: IssueExecutionPolicy | Record<string, unknown> | null;
   executionState?: IssueExecutionState | Record<string, unknown> | null;
   monitorNextCheckAt?: Date | null;
@@ -780,16 +783,38 @@ function buildPendingStagePatch(input: {
   });
 }
 
+function safeReturnAssignee(
+  currentAssignee: IssueExecutionStagePrincipal | null,
+  reviewStage: IssueExecutionStage | null,
+  issue: IssueLike,
+  actor: IssueExecutionStagePrincipal | null,
+) {
+  const reviewerIds = issue.executionReviewParticipantAgentIds ?? [];
+  const isReviewer = (principal: IssueExecutionStagePrincipal | null) => {
+    if (principal?.type !== "agent") return false;
+    const assignedAgentIsReviewer =
+      principal.agentId === issue.assigneeAgentId && issue.assigneeAgentRole === "reviewer";
+    return assignedAgentIsReviewer ||
+      (reviewStage ? stageHasParticipant(reviewStage, principal) : false) ||
+      reviewerIds.includes(principal.agentId ?? "");
+  };
+  if (isReviewer(currentAssignee) || isReviewer(actor)) return null;
+  return currentAssignee ?? actor;
+}
+
 function clearExecutionStatePatch(input: {
   patch: Record<string, unknown>;
   issueStatus: string;
   requestedStatus?: string;
+  requestedAssigneePatchProvided?: boolean;
   returnAssignee: IssueExecutionStagePrincipal | null;
 }) {
   input.patch.executionState = null;
-  if (input.requestedStatus === undefined && input.issueStatus === "in_review" && input.returnAssignee) {
-    input.patch.status = "in_progress";
-    Object.assign(input.patch, patchForPrincipal(input.returnAssignee));
+  if (input.issueStatus === "in_review") {
+    if (input.requestedStatus === undefined) input.patch.status = "in_progress";
+    if (!input.requestedAssigneePatchProvided && input.returnAssignee) {
+      Object.assign(input.patch, patchForPrincipal(input.returnAssignee));
+    }
   }
 }
 
@@ -823,9 +848,14 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   if (!input.policy) {
     if (existingState) {
       patch.executionState = null;
-      if (input.issue.status === "in_review" && existingState.returnAssignee) {
-        patch.status = "in_progress";
-        Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
+      if (
+        input.issue.status === "in_review" &&
+        (existingState.returnAssignee || requestedAssigneePatchProvided || requestedStatus !== undefined)
+      ) {
+        if (requestedStatus === undefined) patch.status = "in_progress";
+        if (existingState.returnAssignee && !requestedAssigneePatchProvided) {
+          Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
+        }
       }
     }
     return { patch };
@@ -841,11 +871,22 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     return { patch };
   }
 
+  if (
+    requestedAssigneePatchProvided &&
+    input.issue.status === "in_review" &&
+    requestedStatus !== undefined &&
+    requestedStatus !== "in_review"
+  ) {
+    patch.executionState = null;
+    return { patch };
+  }
+
   if (existingState?.currentStageId && !currentStage) {
     clearExecutionStatePatch({
       patch,
       issueStatus: input.issue.status,
       requestedStatus,
+      requestedAssigneePatchProvided,
       returnAssignee: existingState.returnAssignee,
     });
     return { patch };
@@ -923,6 +964,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           patch,
           issueStatus: input.issue.status,
           requestedStatus,
+          requestedAssigneePatchProvided,
           returnAssignee: existingState?.returnAssignee ?? null,
         });
         return { patch };
@@ -934,7 +976,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         policy: input.policy,
         stage: activeStage,
         participant,
-        returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+        returnAssignee: safeReturnAssignee(existingState?.returnAssignee ?? currentAssignee, activeStage, input.issue, actor),
         reviewRequest: effectiveReviewRequest,
       });
       return {
@@ -983,7 +1025,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           policy: input.policy,
           stage: nextStage,
           participant,
-          returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+          returnAssignee: safeReturnAssignee(existingState?.returnAssignee ?? currentAssignee, nextStage, input.issue, actor),
           reviewRequest: input.reviewRequest ?? null,
         });
         return {
@@ -1131,8 +1173,12 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
             };
           }
         }
-        patch.status = "in_progress";
-        Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
+        if (input.issue.status === "in_review" && requestedStatus === undefined) {
+          patch.status = "in_progress";
+        }
+        if (!requestedAssigneePatchProvided) {
+          Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
+        }
         patch.executionState = buildChangesRequestedState(existingState, activeStage, nextRounds);
         return {
           patch,
@@ -1169,7 +1215,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           policy: input.policy,
           stage: activeStage,
           participant: explicitAssignee,
-          returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+          returnAssignee: safeReturnAssignee(existingState?.returnAssignee ?? currentAssignee, activeStage, input.issue, actor),
           reviewRequest: effectiveReviewRequest,
         });
         return { patch };
@@ -1192,7 +1238,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         policy: input.policy,
         stage: activeStage,
         participant: currentParticipant,
-        returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+        returnAssignee: safeReturnAssignee(existingState?.returnAssignee ?? currentAssignee, activeStage, input.issue, actor),
         reviewRequest: effectiveReviewRequest,
       });
       return {
@@ -1224,7 +1270,12 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       : nextPendingStage(input.policy, existingState);
   if (!pendingStage) return { patch };
 
-  const returnAssignee = existingState?.returnAssignee ?? currentAssignee;
+  const returnAssignee = safeReturnAssignee(
+    existingState?.returnAssignee ?? currentAssignee,
+    pendingStage,
+    input.issue,
+    actor,
+  );
   const skippedStageIds = [...(existingState?.completedStageIds ?? [])];
   let participant = selectStageParticipant(pendingStage, {
     preferred:

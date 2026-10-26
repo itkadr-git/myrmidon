@@ -13928,9 +13928,18 @@ export function issueRoutes(
         req.body.executionPolicy !== undefined && monitorChanged,
       );
 
+      const reviewParticipantAgentIds = summarizeExecutionParticipants(
+        nextExecutionPolicy,
+        "review",
+      ).flatMap((participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : []);
+      const transitionIssue = await withDefaultEscalationChain(db, existing, nextExecutionPolicy);
+      transitionIssue.assigneeAgentRole = existing.assigneeAgentId
+        ? (await agentsSvc.getById(existing.assigneeAgentId))?.role ?? null
+        : null;
+      transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
-        issue: await withDefaultEscalationChain(db, existing, nextExecutionPolicy),
+        issue: transitionIssue,
         policy: nextExecutionPolicy,
         previousPolicy: previousExecutionPolicy,
         requestedStatus:
