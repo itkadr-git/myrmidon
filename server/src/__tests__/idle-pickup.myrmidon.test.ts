@@ -775,7 +775,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
   it("cools a genuinely stale todo issue with consecutive succeeded runs", async () => {
     const { companyId, agentId } = await seedAgent();
     const staleTodo = await seedIssue({ companyId, agentId, status: "todo" });
-    await seedAutoRun(staleTodo, { status: "succeeded", finishedAt: new Date(Date.now() - 15 * 60_000) });
+    await seedSucceededRun({ companyId, agentId, issueId: staleTodo, finishedAt: new Date(Date.now() - 15 * 60_000) });
     const staleInProgress = await seedIssue({ companyId, agentId, status: "in_progress" });
     await seedAutoRun(staleInProgress, { status: "succeeded", livenessState: "empty_response", finishedAt: new Date(Date.now() - 15 * 60_000) });
     await seedAutoRun(staleInProgress, { status: "succeeded", livenessState: "empty_response", finishedAt: new Date(Date.now() - 5 * 60_000) });
