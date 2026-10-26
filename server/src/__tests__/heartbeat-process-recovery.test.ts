@@ -5808,7 +5808,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         runErrorCode: "adapter_failed",
         runError: "Authorization: Bearer ***",
         reportsToAdm: true,
-        executionState: { status: "running" },
+        executionState: null,
         now: fixtureNow,
       });
     const sourceRunId = randomUUID();
