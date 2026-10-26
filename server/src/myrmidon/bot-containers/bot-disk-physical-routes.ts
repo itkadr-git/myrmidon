@@ -18,12 +18,11 @@
 // gate, a non-200 answer or a timeout all yield 200 with an empty snapshot and
 // `gateReached: false`; the screen shows "no data".
 //
-// `GET /api/myrmidon/bot-disk/reports` returns the stored C4 rows (botd's POST
 // `GET /api/myrmidon/bot-disk/reports` returns the stored C4 rows (botd's
-// `/api/myrmidon/bots/me/disk-report`, BOT-DISK-H4b): each bot's last report as
+// `POST /api/myrmidon/bots/me/disk-report`, BOT-DISK-H4b): each bot's last report as
 // received, with the board's receive time so the screen can mark a bot that
-// has gone silent. Restore bundles and this report-card retention are distinct
-// from the 7-day host-side archive-transfer policy.
+// has gone silent. Report-card visibility does not delete the host archive; the
+// archive transfer/retention policy is managed separately.
 
 import { createInstanceTokenReader } from "./instance-token-reader.js"; // myrmidon(SETTINGS-UI E2.3)
 import {
