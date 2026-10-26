@@ -56,11 +56,11 @@ describe("classifyOperatorAction", () => {
 
   it.each([
     { action: "unrecognized" },
-    { message: "rerun CI and route the review to another reviewer" },
+    { message: "rerun CI and assign the review route to another reviewer" },
     { message: "operator may inspect the task" },
     { action: "restart-ci" },
     { action: "relay-branch" },
-    { message: "grant scoped CI access and route review" },
+    { message: "grant scoped CI access and assign review route" },
   ])("returns null for unknown or ambiguous actions", signal => {
     expect(classifyOperatorAction(signal)).toBeNull();
   });
