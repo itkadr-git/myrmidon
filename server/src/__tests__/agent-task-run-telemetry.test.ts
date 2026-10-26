@@ -127,6 +127,10 @@ describe("buildRunTelemetry", () => {
     expect(pushed.outcomeCategory).toBe("commit_push");
     expect(pushed.pullRequestCount).toBe(1);
 
+    const branch = buildRunTelemetry({ ...baseInput, workProducts: [{ type: "branch" }] });
+    expect(branch.outcomeCategory).toBe("commit_push");
+    expect(branch.branchCount).toBe(1);
+
     expect(buildRunTelemetry(baseInput).outcomeCategory).toBeNull();
   });
 
