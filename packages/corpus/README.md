@@ -38,6 +38,31 @@ Tables (all additive, migration `0390_corpus_module` in `@myrmidon/db`):
 
 All queries are company-scoped: every read/write takes `companyId`.
 
+## RAGFlow corpus import
+
+The `scripts/myrmidon/ragflow-corpus-import.ts` CLI copies already-parsed
+RAGFlow dataset, document, and chunk records into `corpus_*`; it calls only
+RAGFlow's read endpoints and never re-runs parsing. Chunk text and positions are
+retained, with stable IDs and conflict-safe upserts so a failed run can resume.
+Chunks without a matching stored vector are embedded through LiteLLM in
+configurable batches and parallel requests. Progress and the final elapsed
+milliseconds are JSON lines on stdout.
+
+Run it with `pnpm --filter @myrmidon/server corpus:import:ragflow` after
+setting `RAGFLOW_BASE_URL`, `RAGFLOW_API_KEY`, `DATABASE_URL`,
+`CORPUS_COMPANY_ID`, `LITELLM_BASE_URL`, and `LITELLM_API_KEY`. Select the pilot
+with `CORPUS_EMBEDDING_MODEL` (default `text-embedding-v4`); corpus
+storage currently requires 1024 dimensions. The acceptance guard defaults to
+12 datasets, 2,185 documents, and 256,498 chunks within 1%; override these only
+for an intentionally different source corpus. `CORPUS_IMPORT_BATCH_SIZE` and
+`CORPUS_IMPORT_CONCURRENCY` tune embedding batch size/concurrency.
+
+The importer stores the authenticated RAGFlow document-record API URL as
+`source_uri`; it does not retrieve or copy original file bytes, and it does not
+invent a content hash. The fixture test covers chunk/position transfer,
+idempotent resume, concurrent embeddings, pagination, count mismatches, and
+vector checks.
+
 ## Parse pipeline
 
 1. `CorpusStore.createDocument` — document row in `queued`.
