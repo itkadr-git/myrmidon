@@ -7,6 +7,8 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issueRelations,
+  activityLog,
   issueThreadInteractions,
   issues,
 } from "@myrmidon/db";
@@ -106,6 +108,20 @@ describeEmbeddedPostgres("skip idle timer heartbeats (M3)", () => {
     return issueId;
   }
 
+  async function expectCheckoutContext(contextSnapshot: unknown, companyId: string, agentId: string) {
+    const runId = (await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)))[0]!.id;
+    const { assertRunHasTaskSourceContext } = await import("../myrmidon/issue-checkout-guard.ts");
+    await expect(assertRunHasTaskSourceContext(db, { companyId, agentId, runId })).resolves.toBe(
+      (contextSnapshot as { issueId: string }).issueId,
+    );
+    const unscopedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: unscopedRunId, companyId, agentId, invocationSource: "timer", status: "running", contextSnapshot: {},
+    });
+    await expect(assertRunHasTaskSourceContext(db, { companyId, agentId, runId: unscopedRunId }))
+      .rejects.toMatchObject({ status: 403, details: { code: "cross_issue_influence_run_context_required" } });
+  }
+
   const timerWake = (agentId: string) =>
     heartbeat.wakeup(agentId, { source: "timer", triggerDetail: "system", reason: "heartbeat_timer" });
 
@@ -127,6 +143,8 @@ describeEmbeddedPostgres("skip idle timer heartbeats (M3)", () => {
     ]);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(eq(activityLog.agentId, agentId)))
+      .toContainEqual({ action: "heartbeat.timer.no_actionable_work" });
   });
 
   it("timer scheduler binds its wake to the ready assigned issue", async () => {
@@ -138,6 +156,27 @@ describeEmbeddedPostgres("skip idle timer heartbeats (M3)", () => {
 
     const run = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)).limit(1);
     expect(run[0]?.contextSnapshot).toMatchObject({ issueId, wakeReason: "heartbeat_timer" });
+    await expectCheckoutContext(run[0]!.contextSnapshot, companyId, agentId);
+  });
+
+  it("does not bind a timer to blocked work or work with a live run", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const blockedId = await seedIssue(companyId, agentId, "todo");
+    const blockerId = await seedIssue(companyId, null, "in_progress");
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: blockedId, type: "blocks" });
+    const liveId = await seedIssue(companyId, agentId, "in_progress");
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId, invocationSource: "on_demand", status: "running",
+      contextSnapshot: { issueId: liveId },
+    });
+    await db.update(agents).set({ lastHeartbeatAt: new Date("2000-01-01T00:00:00Z") }).where(eq(agents.id, agentId));
+
+    await heartbeat.tickTimers(new Date());
+
+    const runs = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.contextSnapshot).not.toMatchObject({ issueId: blockedId });
+    expect(runs[0]?.contextSnapshot).not.toMatchObject({ issueId: liveId });
   });
 
   it("does not schedule a timer wake when the agent has no ready task", async () => {
@@ -148,6 +187,8 @@ describeEmbeddedPostgres("skip idle timer heartbeats (M3)", () => {
 
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
     expect(await wakeRequests(agentId)).toHaveLength(0);
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(eq(activityLog.agentId, agentId)))
+      .toContainEqual({ action: "heartbeat.timer.no_actionable_work" });
   });
 
   it("runs when the agent has a todo issue", async () => {
