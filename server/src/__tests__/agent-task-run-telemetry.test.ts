@@ -69,7 +69,12 @@ describe("buildRunTelemetry", () => {
         source: "on_demand",
         triggerDetail: "manual",
         reason: "issue_commented",
-        payload: { sourceEventId: "source-event-7", sourceSeq: 7 },
+        payload: {
+          sourceEventId: "source-event-7",
+          sourceSeq: 7,
+          modelCallCount: 4,
+          eventRevision: "2026-10-26T15:59:00.000Z",
+        },
       },
       workProducts: [{ type: "artifact" }],
     });
@@ -81,12 +86,12 @@ describe("buildRunTelemetry", () => {
       wakeReason: "issue_commented",
       wakeSource: "on_demand",
       wakeTriggerDetail: "manual",
-      eventRevision: "2026-10-26T16:00:00.000Z",
+      eventRevision: "2026-10-26T15:59:00.000Z",
       sourceEventId: "source-event-7",
       sourceEventSeq: 7,
       parentRunId: "parent-run",
       retryOfRunId: "parent-run",
-      modelCallCount: 2,
+      modelCallCount: 4,
       litellmRequestIds: ["gw-1", "gw-2"],
       inputTokens: 120,
       cachedInputTokens: 20,
@@ -131,7 +136,7 @@ describe("buildRunTelemetry", () => {
       run: { ...baseInput.run, resultJson: null },
     });
     expect(telemetry.modelCallCount).toBe(3);
-    expect(telemetry.modelCallCountSource).toBe("inferred_call_ids");
+    expect(telemetry.modelCallCountSource).toBe("unknown");
   });
 
   it("prefers immutable wake revision to issue timestamp from later in the run", () => {
@@ -290,7 +295,7 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
         cachedInputTokens: 20,
         outputTokens: 30,
       },
-      resultJson: { gatewayCallIds: ["gateway-call-12"] },
+      resultJson: { gatewayCallIds: ["gateway-call-12"], modelCallCount: 2 },
     });
     await db.insert(litellmCostEvents).values({
       id: `${companyId}:request-12`,
@@ -314,12 +319,14 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
       issueId,
       wakeSource: "automation",
       wakeTriggerDetail: "callback",
-      eventRevision: issueUpdatedAt.toISOString(),
+      eventRevision: "2026-10-26T15:59:00.000Z",
       wakeReason: "issue_commented",
       sourceEventId: "comment-12",
       sourceEventSeq: 12,
       gatewayCallIds: ["gateway-call-12"],
       litellmRequestIds: ["request-12"],
+      modelCallCount: 1,
+      modelCallCountSource: "gateway_count",
       gatewaySpendCents: 7,
       apiEquivalentCostUsd: 0.000025,
       outcomeCategory: null,

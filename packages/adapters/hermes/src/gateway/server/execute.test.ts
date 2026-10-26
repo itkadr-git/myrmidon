@@ -1275,6 +1275,7 @@ describe("mapFinalResultForTest", () => {
           status: "completed",
           call_id: "call-456",
           usage: {
+            model_call_count: 2,
             litellm_request_ids: ["req-123"],
             input_tokens: 120,
             cached_input_tokens: 30,
@@ -1291,7 +1292,7 @@ describe("mapFinalResultForTest", () => {
     expect(result.resultJson).toMatchObject({
       gatewayCallIds: ["call-456"],
       litellmRequestIds: ["req-123"],
-      modelCallCount: 1,
+      modelCallCount: 2,
       modelCallCountSource: "gateway_count",
       usage: { inputTokens: 120, cachedInputTokens: 30, outputTokens: 45 },
     });
@@ -1335,24 +1336,27 @@ describe("mapFinalResultForTest", () => {
     expect(result.resultJson?.litellmRequestIds).toEqual(["gw-1"]);
   });
 
-  it("uses the largest distinct ID namespace as a bounded count fallback", () => {
+  it("does not infer a count when gateway IDs are partial and LiteLLM IDs are missing", () => {
     const result = mapFinalResultForTest({
       terminal: {
-        runId: "run-telemetry",
+        runId: "run-partial-ids",
         status: "completed",
-        payload: {
-          status: "completed",
-          gateway_call_ids: Array.from({ length: 101 }, (_, index) => `gw-${index}`),
-          litellm_request_ids: ["req-1", "req-2"],
-        },
+        payload: { gateway_call_ids: ["gw-1", "gw-2"] },
       },
-      outputChunks: [],
-      sessionKey: null,
-      strategy: "issue",
     });
-    expect(result.resultJson?.modelCallCount).toBe(101);
-    expect(result.resultJson?.gatewayCallIds).toHaveLength(101);
-    expect(result.resultJson?.modelCallCountSource).toBe("gateway_count");
+    expect(result.resultJson?.modelCallCount).toBeNull();
+    expect(result.resultJson?.modelCallCountSource).toBe("unknown");
+  });
+
+  it("preserves explicit counts when ID metadata is partial", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-partial-count",
+        status: "completed",
+        payload: { usage: { model_call_count: 4 }, gateway_call_ids: ["gw-1"] },
+      },
+    });
+    expect(result.resultJson?.modelCallCount).toBe(4);
   });
 
   it("uses a reported gateway count over incomplete identifiers from either namespace", () => {
@@ -1360,7 +1364,7 @@ describe("mapFinalResultForTest", () => {
       terminal: {
         runId: "run-count-partial",
         status: "completed",
-        payload: { model_call_count: 9, gateway_call_ids: ["call-a"], litellm_request_ids: ["req-a", "req-b"] },
+        payload: { model_call_count: 4, gateway_call_ids: ["call-a"], litellm_request_ids: ["req-a", "req-b"] },
       },
     });
     expect(result.resultJson?.modelCallCount).toBe(9);
@@ -1380,14 +1384,18 @@ describe("mapFinalResultForTest", () => {
     expect(result.resultJson?.modelCallCountSource).toBe("gateway_count");
   });
 
-  it("preserves call IDs beyond the previous 100-ID cutoff while marking telemetry truncation", () => {
+  it("preserves call IDs across both namespaces even beyond 500 IDs", () => {
     const ids = Array.from({ length: 550 }, (_, index) => `call-${index}`);
     const result = mapFinalResultForTest({
-      terminal: { runId: "run-overflow", status: "completed", payload: { gateway_call_ids: ids } },
+      terminal: {
+        runId: "run-overflow",
+        status: "completed",
+        payload: { gateway_call_ids: ids, litellm_request_ids: ids.map((id) => `req-${id}`) },
+      },
     });
-    expect(result.resultJson?.modelCallCount).toBe(550);
-    expect(result.resultJson?.gatewayCallIds).toHaveLength(500);
-    expect(result.resultJson?.gatewayCallIdsTruncated).toBe(true);
+    expect(result.resultJson?.gatewayCallIds).toEqual(ids);
+    expect(result.resultJson?.litellmRequestIds).toEqual(ids.map((id) => `req-${id}`));
+    expect(result.resultJson?.modelCallCount).toBeNull();
   });
   it("keeps explicit count when a gateway call ID list is capped", () => {
     const ids = Array.from({ length: 125 }, (_, index) => `call-${index}`);

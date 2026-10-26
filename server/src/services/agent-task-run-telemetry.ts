@@ -85,8 +85,11 @@ export function buildRunTelemetry(input: {
   const spendCallIds = input.gatewayCalls.map((call) => readRunEventId(call.requestId)).filter((value): value is string => value !== null);
   const gatewayCallIds = [...new Set(gatewayResultIds)];
   const litellmRequestIds = [...new Set([...litellmResultIds, ...spendCallIds])];
-  const reportedCallCount = readModelCallCount(result) ?? readModelCallCount({ modelCallCount: result.gatewayModelCallCount });
-  const explicitCallCount = reportedCallCount ?? readModelCallCount(usage);
+  const reportedCallCount = readModelCallCount(result)
+    ?? readModelCallCount({ modelCallCount: result.gatewayModelCallCount })
+    ?? readModelCallCount(wakePayload)
+    ?? readModelCallCount(usage);
+  const explicitCallCount = reportedCallCount;
   const deduplicatedCallCount =
     gatewayCallIds.length > 0 && litellmRequestIds.length > 0
       ? Math.max(gatewayCallIds.length, litellmRequestIds.length)
