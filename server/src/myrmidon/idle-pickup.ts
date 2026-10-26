@@ -505,7 +505,7 @@ export async function idlePickupForAgent(
             ? or(
                 inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
                 and(
-                  eq(heartbeatRuns.status, "succeeded"),
+                  inArray(heartbeatRuns.status, ["succeeded", "cancelled"]),
                   sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff.toISOString()}::timestamptz`,
                 ),
               )
@@ -535,9 +535,11 @@ export async function idlePickupForAgent(
   // comment, nobody asking) leaves nothing to wake for, while a success whose
   // issue got a new comment meanwhile is work waiting for the agent. The latest
   // success per issue decides, because its silence is the one that must hold.
+  // A cancellation is not a successful handoff: the board may cancel the run
+  // while the issue is still assigned and has review changes to address.
   const recentSuccessesByIssueId = new Map<string, { runId: string; endedAt: Date }>();
   for (const run of liveRuns) {
-    if (run.status !== "succeeded") continue;
+    if (run.status !== "succeeded" && run.status !== "cancelled") continue;
     const issueId = readNonEmptyString(run.contextSnapshot?.issueId);
     if (!issueId) continue;
     const endedAt = run.finishedAt ?? run.startedAt ?? run.createdAt;

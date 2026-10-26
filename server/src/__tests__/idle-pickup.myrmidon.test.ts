@@ -713,6 +713,27 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(deps.enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("wakes an issue with review changes requested after the board cancelled its run", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await db.update(issues).set({ executionState: { status: "changes_requested" } }).where(eq(issues.id, issueId));
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "cancelled",
+      invocationSource: "automation",
+      contextSnapshot: { issueId },
+      startedAt: new Date(Date.now() - 60_000),
+      finishedAt: new Date(Date.now() - 30_000),
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+  });
+
   it("keeps a silent success quiet long past the old 15-minute window (no wake storm)", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
