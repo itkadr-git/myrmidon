@@ -290,7 +290,7 @@ export async function isIssueCoolingDown(
           inArray(heartbeatRuns.status, COOLING_TERMINAL_STATUSES),
           or(
             sql`${heartbeatRuns.status} <> 'cancelled'`,
-            sql`(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code') in ('board_operator', 'reassignment')`,
+            sql`coalesce(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code', '') in ('board_operator', 'reassignment')`,
           ),
         ),
       )
