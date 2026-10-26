@@ -42,7 +42,6 @@ export interface FleetSite {
   clientCert?: string | null;
   clientCertSecretKey?: string | null;
   clientCertNotAfter?: Date | null;
-  certRotatedAt?: Date | null;
   status: string;
   capacity: FleetSiteCapacity;
   profile: FleetSiteProfile;

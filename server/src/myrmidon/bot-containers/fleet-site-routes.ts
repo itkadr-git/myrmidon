@@ -18,7 +18,7 @@ import { z } from "zod";
 import { badRequest, conflict, notFound } from "../../errors.js";
 import { assertBoard, assertCompanyAccess, assertCompanyAdmin } from "../../routes/authz.js";
 import { parseTlsCredentials, type FleetSite, type FleetSiteInsert } from "./site-registry.js";
-import { generateSiteCa, issueSiteClientCertificate, SITE_CLIENT_CERT_VALIDITY_DAYS, type SiteCaMaterial } from "./site-client-pki.js";
+import { generateSiteCa, issueSiteClientCertificate, SITE_CLIENT_CERT_VALIDITY_DAYS, SITE_CLIENT_CERT_RENEW_BEFORE_DAYS, siteCaSubject, type SiteCaMaterial } from "./site-client-pki.js";
 
 const SITE_CLIENT_SECRET_PREFIX = "myrmidon-site-client";
 

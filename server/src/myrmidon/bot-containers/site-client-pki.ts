@@ -1,6 +1,7 @@
 import { createHash, createPrivateKey, generateKeyPairSync, randomBytes, sign, X509Certificate, type KeyObject } from "node:crypto";
 const DAY_MS = 86_400_000;
 export const SITE_CLIENT_CERT_VALIDITY_DAYS = 90;
+export const SITE_CLIENT_CERT_RENEW_BEFORE_DAYS = 30;
 const CA_VALIDITY_DAYS = 3650;
 
 export interface SiteCaMaterial {
@@ -47,7 +48,11 @@ function signCert(tbs: Buffer, key: string | KeyObject): Buffer {
   const algorithm = seq(oid([0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]));
   return seq(tbs, algorithm, der(0x03, Buffer.concat([Buffer.from([0]), sign("sha256", tbs, typeof key === "string" ? createPrivateKey(key) : key)])));
 }
-function subjectFromCert(cert: string): Buffer { return new X509Certificate(cert).subject.includes("myrmidon-site-ca") ? name("myrmidon-site-ca") : name("invalid-site-ca"); }
+export function siteCaSubject(cert: string): Buffer {
+  const parsed = new X509Certificate(cert);
+  if (!parsed.ca || !parsed.subject.includes("myrmidon-site-ca")) throw new Error("Stored site CA certificate has an invalid subject");
+  return name("myrmidon-site-ca");
+}
 function makeTbs(serial: number, issuer: Buffer, owner: Buffer, publicKey: Buffer, from: Date, to: Date, ca: boolean): Buffer {
   const alg = seq(oid([0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]));
   const usage = seq(oid([0x55, 0x1d, 0x0f]), der(0x04, der(0x03, ca ? Buffer.from([0x02, 0x06, 0x40]) : Buffer.from([0x02, 0x07, 0x80]))));

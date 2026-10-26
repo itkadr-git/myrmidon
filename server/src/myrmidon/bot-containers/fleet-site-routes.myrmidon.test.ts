@@ -4,10 +4,8 @@ import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../../middleware/index.js";
-import {
-  fleetSiteRoutes,
-  normalizeFleetdUrl,
-} from "./fleet-site-routes.js";
+import { fleetSiteRoutes, normalizeFleetdUrl } from "./fleet-site-routes.js";
+import { generateSiteCa } from "./site-client-pki.js";
 import { cleanupTestPki, generateEphemeralTestPki, type TestPkiArtifacts } from "./site-agent-pki.js";
 
 import type { FleetSite, FleetSiteInsert } from "./site-registry.js";
@@ -45,7 +43,7 @@ afterAll(() => {
 
 function harness(
   secrets: string[] = ["fleetd-myr-vm1-token", "fleetd-myr-vm1-client-cert", "fleetd-myr-vm1-client-key", "myrmidon-site-ca"],
-  opts: { bots?: number; secretValues?: Record<string, string> } = {},
+  opts: { bots?: number; secretValues?: Record<string, string>; siteCa?: ReturnType<typeof generateSiteCa> } = {},
 ) {
   const rows: FleetSite[] = [];
   const createSite = vi.fn(async (input: FleetSiteInsert) => {
@@ -73,10 +71,8 @@ function harness(
       return true;
     }),
     countBotsOnSite: vi.fn(async () => opts.bots ?? 0),
-    readSiteCa: vi.fn(async () => {
-      const ca = generateSiteCa();
-      return ca;
-    }),
+    readSecret: vi.fn(async (_companyId: string, name: string) => opts.secretValues?.[name] ?? null),
+    readSiteCa: vi.fn(async () => opts.siteCa ?? generateSiteCa()),
     secretExists: vi.fn(async (_companyId: string, name: string) => secrets.includes(name)),
     writeSecret: vi.fn(async (_companyId: string, _name: string, _value: string) => undefined),
     refreshRegistry: vi.fn(),
@@ -100,8 +96,6 @@ function body(overrides: Record<string, unknown> = {}) {
     name: "myr-vm1",
     url: "https://192.0.2.10:9100",
     tokenSecret: "fleetd-myr-vm1-token",
-    caCert: pki.caCert,
-    clientCertSecretKey: "fleetd-myr-vm1-client",
     capacity: { maxCpus: 4, maxMemoryMb: 32768, maxBots: 5 },
     gatewayPortStart: 18700,
     gatewayPortEnd: 18759,
@@ -114,14 +108,16 @@ const path = `/companies/${COMPANY_A}/fleet/sites`;
 
 describe("fleet site enroll routes", () => {
   it("stores only the CA key in a company secret, issues the client cert, and never returns credentials", async () => {
-    const { app, deps } = harness();
-    const response = await request(app).post(path).send(body({ caCert: undefined, caFingerprint: undefined, clientCertSecretKey: undefined })).expect(201);
+    const ca = generateSiteCa();
+    const { app, deps } = harness(undefined, { siteCa: ca });
+    const response = await request(app).post(path).send(body()).expect(201);
+    expect(deps.writeSecret).toHaveBeenCalledWith(COMPANY_A, "myrmidon-site-ca", JSON.stringify({ cert: ca.cert, key: ca.key }));
     const returned = JSON.stringify(response.body);
     expect(returned).not.toContain("PRIVATE KEY");
     expect(returned).not.toContain("privateKey");
-    expect(deps.writeSecret).toHaveBeenCalled();
     expect(deps.createSite.mock.calls[0]![0].clientCertNotAfter).toBeInstanceOf(Date);
     expect(deps.createSite.mock.calls[0]![0].caCertFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(deps.writeSecret).toHaveBeenCalled();
     const siteCaWrite = deps.writeSecret.mock.calls.find((call) => call[1] === "myrmidon-site-ca");
     expect(siteCaWrite?.[2]).toContain("PRIVATE KEY");
     const listed = JSON.stringify((await request(app).get(path)).body);
@@ -224,9 +220,9 @@ describe("fleet site helpers", () => {
   it("normalizes a fleetd url to its origin", () => {
     expect(normalizeFleetdUrl("https://fleetd.internal:9100/")).toBe("https://fleetd.internal:9100");
   });
-  it("refuses a client reference with only half of the cert/key pair", async () => {
-    const { app, deps } = harness(["fleetd-myr-vm1-token", "fleetd-myr-vm1-client-cert"]);
-    await request(app).post(path).send(body()).expect(400);
+  it("rejects client certificate secret references supplied by the caller", async () => {
+    const { app, deps } = harness();
+    await request(app).post(path).send(body({ clientCertSecretKey: "fleetd-myr-vm1-client" })).expect(400);
     expect(deps.createSite).not.toHaveBeenCalled();
   });
 });

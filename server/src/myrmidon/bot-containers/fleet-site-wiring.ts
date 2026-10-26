@@ -8,6 +8,7 @@ import { X509Certificate, createPrivateKey } from "node:crypto";
 import type { Router } from "express";
 import type { Db } from "@myrmidon/db";
 import { secretService } from "../../services/index.js";
+import { siteCaSubject } from "./site-client-pki.js";
 import { fleetSiteRoutes } from "./fleet-site-routes.js";
 import { siteHealthStore } from "./site-health-store.js";
 import { createFleetSite, deleteFleetSite, getFleetSite, listFleetSites, parseTlsCredentials, updateFleetSite, bumpFleetRegistryVersion } from "./site-registry.js";
@@ -36,7 +37,7 @@ export function myrmidonFleetSiteRoutes(db: Db): Router {
       const cert = new X509Certificate(material.cert);
       const key = createPrivateKey(material.key);
       if (!cert.ca || !cert.checkPrivateKey(key)) throw new Error("Stored site CA secret is malformed");
-      return { cert: material.cert, key: material.key };
+      return { cert: material.cert, key: material.key, subject: siteCaSubject(material.cert) };
     },
     secretExists: async (companyId, name) => Boolean(await secrets.getByName(companyId, name)),
     writeSecret: async (companyId, name, value) => {
