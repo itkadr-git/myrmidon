@@ -3,6 +3,7 @@
 // samples must be parseable values, and the text must end with a newline.
 
 import { describe, expect, it } from "vitest";
+import { ISSUE_RECOVERY_ACTION_KINDS, type IssueRecoveryActionKind, type RecoveryFactoryMetrics as RecoveryFactoryMetricsPort } from "@myrmidon/shared";
 import {
   METRIC_FAMILIES,
   escapeLabelValue,
@@ -30,6 +31,11 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     swarmClaimsTotal: 12,
     agentErrorSignals: 1,
     llmCostCentsWindow: 1234,
+    recoveryCreatedTotal: new Map([["ci", 2], ["github", 0]]),
+    recoveryDedupedTotal: new Map([["github", 1]]),
+    recoverySuccessTotal: new Map([["myr-ws", 3]]),
+    recoveryAgeSeconds: [{ kind: "operator_action", seconds: 42 }],
+    recoveryAddresslessActive: 1,
     process: {
       eventLoop: { p50Seconds: 0.02, p99Seconds: 0.13, maxSeconds: 0.5 },
       eventLoopUtilization: { utilization: 0.42 },
@@ -51,6 +57,47 @@ describe("prometheus exposition format", () => {
     for (const family of METRIC_FAMILIES) {
       expect(text, `family ${family} must appear`).toContain(family);
     }
+  });
+
+  it("renders exact recovery factory counters, ages, and addressless count", () => {
+    const text = renderMetricsText(snapshot());
+    expect(text).toContain('myrmidon_recovery_created_total{role="all",kind="ci"} 2');
+    expect(text).toContain('myrmidon_recovery_created_total{role="all",kind="github"} 0');
+    expect(text).toContain('myrmidon_recovery_deduped_total{role="all",kind="github"} 1');
+    expect(text).toContain('myrmidon_recovery_success_total{role="all",kind="myr-ws"} 3');
+    expect(text).toContain('myrmidon_recovery_age_seconds{role="all",kind="operator_action"} 42');
+    expect(text).toContain('myrmidon_recovery_addressless_active{role="all"} 1');
+  });
+
+  it("renders the recovery factory port series", () => {
+    const created = new Map<IssueRecoveryActionKind, number>();
+    const deduped = new Map<IssueRecoveryActionKind, number>();
+    const succeeded = new Map<IssueRecoveryActionKind, number>();
+    const ages = new Map<IssueRecoveryActionKind, number>();
+    const port: RecoveryFactoryMetricsPort = {
+      created: (kind) => created.set(kind, (created.get(kind) ?? 0) + 1),
+      deduped: (kind) => deduped.set(kind, (deduped.get(kind) ?? 0) + 1),
+      succeeded: (kind) => succeeded.set(kind, (succeeded.get(kind) ?? 0) + 1),
+      age: (kind, seconds) => ages.set(kind, Math.max(ages.get(kind) ?? 0, seconds)),
+    };
+    port.created("ci");
+    port.created("ci");
+    port.deduped("github");
+    port.succeeded("myr-ws");
+    port.age("operator_action", 18);
+    port.age("operator_action", 42);
+    const text = renderMetricsText(snapshot({
+      recoveryCreatedTotal: created,
+      recoveryDedupedTotal: deduped,
+      recoverySuccessTotal: succeeded,
+      recoveryAgeSeconds: [...ages].map(([kind, seconds]) => ({ kind, seconds })),
+      recoveryAddresslessActive: 2,
+    }));
+    expect(text).toContain('myrmidon_recovery_created_total{role="all",kind="ci"} 2');
+    expect(text).toContain('myrmidon_recovery_deduped_total{role="all",kind="github"} 1');
+    expect(text).toContain('myrmidon_recovery_success_total{role="all",kind="myr-ws"} 1');
+    expect(text).toContain('myrmidon_recovery_age_seconds{role="all",kind="operator_action"} 42');
+    expect(text).toContain('myrmidon_recovery_addressless_active{role="all"} 2');
   });
 
   it("renders exactly one HELP and one TYPE line per family", () => {
@@ -76,6 +123,11 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_swarm_claims_total counter");
     expect(text).toContain("# TYPE myrmidon_agent_error_signals gauge");
     expect(text).toContain("# TYPE myrmidon_llm_cost_cents_total counter");
+    expect(text).toContain("# TYPE myrmidon_recovery_created_total counter");
+    expect(text).toContain("# TYPE myrmidon_recovery_deduped_total counter");
+    expect(text).toContain("# TYPE myrmidon_recovery_success_total counter");
+    expect(text).toContain("# TYPE myrmidon_recovery_age_seconds gauge");
+    expect(text).toContain("# TYPE myrmidon_recovery_addressless_active gauge");
     expect(text).toContain("# TYPE myrmidon_scrape_errors gauge");
     expect(text).toContain("# TYPE myrmidon_board_event_loop_utilization gauge");
   });
@@ -86,7 +138,8 @@ describe("prometheus exposition format", () => {
     // 9 single-sample families + 2 quantile samples + 3 role pairs = 14,
     // plus the process half (1.6.5-PROCS-Q3): 3 loop quantiles + 1 RSS +
     // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
-    // plus the utilization gauge (1.6.6 PROCS-0.1) = 25.
+    // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the five
+    // recovery families = 30.
     expect(sampleLines).toHaveLength(25);
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');

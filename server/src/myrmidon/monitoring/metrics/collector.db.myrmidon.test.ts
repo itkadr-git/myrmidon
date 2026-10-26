@@ -11,6 +11,7 @@ import {
   createDb,
   heartbeatRuns,
   issueClaims,
+  issueRecoveryActions,
   issues,
   litellmCostEvents,
 } from "@myrmidon/db";
@@ -18,7 +19,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
-import { collectMetricsSnapshot, runMetricsSelfCheck, METRIC_FAMILIES } from "./metrics.js";
+import { collectMetricsSnapshot, runMetricsSelfCheck, METRIC_FAMILIES, renderMetricsText } from "./metrics.js";
+import type { IssueRecoveryActionKind, RecoveryFactoryMetrics as RecoveryFactoryMetricsPort } from "@myrmidon/shared";
 import { recordSwarmClaimSignal, resetSwarmClaimSignals } from "./swarm-signals.js";
 import { resetStaleBlockSignals, recordStaleBlockSignal } from "../../stale-block/attention.js";
 import { resetTracingHealthSignals } from "../../tracing-health/attention.js";
@@ -44,6 +46,7 @@ describeEmbeddedPostgres("metrics collector", () => {
     resetTracingHealthSignals();
     await db.delete(litellmCostEvents);
     await db.delete(issueClaims);
+    await db.delete(issueRecoveryActions);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(agents);
@@ -102,6 +105,89 @@ describeEmbeddedPostgres("metrics collector", () => {
     });
     return runId;
   }
+
+  it("reads active recovery age and counts manually seeded addressless actions", async () => {
+    const companyId = await seedCompany();
+    const sourceIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Recovery source",
+      status: "todo",
+      priority: "normal",
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    const recoveryActionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: recoveryActionId,
+      companyId,
+      sourceIssueId,
+      kind: "ci",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: null,
+      ownerUserId: null,
+      ownerQueue: null,
+      cause: "ci_failure",
+      fingerprint: "fingerprint-a",
+      dedupeKey: "dedupe-a",
+      slaDueAt: new Date(NOW.getTime() + 60_000),
+      nextCheckAt: new Date(NOW.getTime() + 30_000),
+      nextAction: "inspect",
+      createdAt: new Date(NOW.getTime() - 45_000),
+      updatedAt: NOW,
+    });
+    const snapshot = await collectMetricsSnapshot({
+      db,
+      now: () => NOW,
+      errorWindowSec: 3600,
+      latencyWindowSec: 3600,
+    });
+    expect(snapshot.recoveryAddresslessActive).toBe(1);
+    expect(snapshot.recoveryAgeSeconds).toEqual([{ kind: "ci", seconds: 45 }]);
+  });
+
+  it("reports recovery factory counters and the manually inserted addressless row in /metrics", async () => {
+    const companyId = await seedCompany();
+    const sourceIssueId = randomUUID();
+    await db.insert(issues).values({ id: sourceIssueId, companyId, title: "Recovery source", status: "todo", priority: "normal", createdAt: NOW, updatedAt: NOW });
+    const actionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: actionId, companyId, sourceIssueId, kind: "ci", status: "active", ownerType: "agent",
+      ownerAgentId: null, ownerUserId: null, ownerQueue: null, cause: "ci_failure", fingerprint: "recovery-metrics-test",
+      dedupeKey: "recovery-metrics-addressless", slaDueAt: new Date(NOW.getTime() + 60_000),
+      nextCheckAt: new Date(NOW.getTime() + 30_000), nextAction: "inspect",
+      createdAt: new Date(NOW.getTime() - 45_000), updatedAt: NOW,
+    });
+    const counters = {
+      created: new Map<IssueRecoveryActionKind, number>(),
+      deduped: new Map<IssueRecoveryActionKind, number>(),
+      succeeded: new Map<IssueRecoveryActionKind, number>(),
+    };
+    const ages = new Map<IssueRecoveryActionKind, number>();
+    const metrics: RecoveryFactoryMetricsPort = {
+      created: (kind) => counters.created.set(kind, (counters.created.get(kind) ?? 0) + 1),
+      deduped: (kind) => counters.deduped.set(kind, (counters.deduped.get(kind) ?? 0) + 1),
+      succeeded: (kind) => counters.succeeded.set(kind, (counters.succeeded.get(kind) ?? 0) + 1),
+      age: (kind, seconds) => ages.set(kind, Math.max(ages.get(kind) ?? 0, seconds)),
+    };
+    metrics.created("ci");
+    metrics.deduped("github");
+    metrics.succeeded("myr-ws");
+    metrics.age("operator_action", 20);
+    metrics.age("operator_action", 42);
+    const text = renderMetricsText(await collectMetricsSnapshot({
+      db, now: () => NOW, errorWindowSec: 3600, latencyWindowSec: 3600,
+      recoveryFactoryMetrics: metrics, recoveryCounters: counters, recoveryAges: ages, recoveryPort: metrics,
+    }));
+    expect(text).toContain('myrmidon_recovery_created_total{role="all",kind="ci"} 1');
+    expect(text).toContain('myrmidon_recovery_deduped_total{role="all",kind="github"} 1');
+    expect(text).toContain('myrmidon_recovery_success_total{role="all",kind="myr-ws"} 1');
+    expect(text).toContain('myrmidon_recovery_age_seconds{role="all",kind="operator_action"} 42');
+    expect(text).toContain('myrmidon_recovery_age_seconds{role="all",kind="ci"} 45');
+    expect(text).toContain('myrmidon_recovery_addressless_active{role="all"} 1');
+  });
 
   it("counts active, queued and failed runs", async () => {
     const companyId = await seedCompany();

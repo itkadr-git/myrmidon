@@ -17,7 +17,7 @@
 //  - routes.ts — the express router: bearer guard + the endpoint.
 //  - index.ts — the app wiring (app.ts mounts that).
 
-import { and, count, eq, gt, gte, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, count, eq, gt, gte, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -56,6 +56,10 @@ import {
 } from "../../singleton-proxy/counters.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-containers/fleet-site-metrics.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
+import { recoveryFactoryMetrics as processRecoveryMetrics, type IssueRecoveryActionKind, type RecoveryFactoryMetrics as RecoveryFactoryMetricsPort } from "@myrmidon/shared";
+import { recoveryFactoryMetricsState, snapshotRecoveryFactoryMetrics } from "@myrmidon/shared";
+import { issueRecoveryActions } from "@myrmidon/db";
+
 
 // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors —
 // the in-process counter the ingress seam keeps (design section 4 and 7).
@@ -105,6 +109,11 @@ export const METRIC_FAMILIES = [
   "myrmidon_swarm_claims_total",
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
+  "myrmidon_recovery_created_total",
+  "myrmidon_recovery_deduped_total",
+  "myrmidon_recovery_success_total",
+  "myrmidon_recovery_age_seconds",
+  "myrmidon_recovery_addressless_active",
   "myrmidon_scrape_errors",
   // myrmidon(1.6.5-PROCS-Q3): the process families — the loop delay, the
   // memory of this process, and the live-event flow (design §1, этап 0).
@@ -183,6 +192,11 @@ export interface MetricsSnapshotFields {
   agentErrorSignals: number;
   /** Cost spend collected by litellm-costs inside the error window, in cents. */
   llmCostCentsWindow: number;
+  recoveryCreatedTotal?: Map<IssueRecoveryActionKind, number> | null;
+  recoveryDedupedTotal?: Map<IssueRecoveryActionKind, number> | null;
+  recoverySuccessTotal?: Map<IssueRecoveryActionKind, number> | null;
+  recoveryAgeSeconds?: Array<{ kind: IssueRecoveryActionKind; seconds: number }> | null;
+  recoveryAddresslessActive?: number;
   /**
    * myrmidon(1.6.5-PROCS-Q3): the process half, read from the in-process
    * source (no DB). null renders HELP/TYPE with no samples — the families
@@ -263,6 +277,17 @@ export interface MetricsSnapshot extends MetricsSnapshotFields {
 // Port: where the numbers come from
 // ---------------------------------------------------------------------------
 
+export function recoveryPortSnapshot(port: RecoveryFactoryMetricsPort) {
+  const state = recoveryFactoryMetricsState(port);
+  if (port === processRecoveryMetrics) return snapshotRecoveryFactoryMetrics();
+  return {
+    created: new Map(state.created),
+    deduped: new Map(state.deduped),
+    succeeded: new Map(state.succeeded),
+    ages: new Map(state.ages),
+  };
+}
+
 export interface MetricsCollectorDeps {
   db: Db;
   /** Fixed clock for tests. */
@@ -312,6 +337,8 @@ export interface MetricsCollectorDeps {
 
   /** myrmidon(1.6.6 REMOTE-SITES-T4): where the remote-site metrics come from; tests inject a fake. */
   fleetSites?: (() => FleetSiteMetricsSample) | null;
+  /** Per-process RecoveryFactory event counters; tests inject an isolated port. */
+  recoveryFactoryMetrics?: RecoveryFactoryMetricsPort | null;
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
@@ -624,6 +651,29 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => Promise.resolve().then(() => (deps.fleetSites ?? readFleetSiteMetrics)()),
     null as FleetSiteMetricsSample | null,
   );
+  const recoveryPort = deps.recoveryFactoryMetrics ?? processRecoveryMetrics;
+  const recoveryCounters = recoveryPortSnapshot(recoveryPort);
+  const recoveryRows = await guarded(
+    "myrmidon_recovery_age_seconds|myrmidon_recovery_addressless_active",
+    async () => {
+      const active = await deps.db
+        .select({ kind: issueRecoveryActions.kind, createdAt: issueRecoveryActions.createdAt })
+        .from(issueRecoveryActions)
+        .where(inArray(issueRecoveryActions.status, ["active", "escalated"]));
+      const ages = new Map<IssueRecoveryActionKind, number>();
+      for (const row of active) {
+        const kind = row.kind as IssueRecoveryActionKind;
+        const seconds = Math.max(0, (now.getTime() - row.createdAt.getTime()) / 1000);
+        ages.set(kind, Math.max(ages.get(kind) ?? 0, seconds));
+      }
+      const addressless = await deps.db
+        .select({ total: count() })
+        .from(issueRecoveryActions)
+        .where(and(inArray(issueRecoveryActions.status, ["active", "escalated"]), isNotNull(issueRecoveryActions.dedupeKey), isNull(issueRecoveryActions.ownerAgentId), isNull(issueRecoveryActions.ownerUserId), isNull(issueRecoveryActions.ownerQueue)));
+      return { age: [...ages].map(([kind, seconds]) => ({ kind, seconds })), addressless: Number(addressless[0]?.total ?? 0) };
+    },
+    { age: [] as Array<{ kind: IssueRecoveryActionKind; seconds: number }>, addressless: 0 },
+  );
 
   return {
     fields: {
@@ -642,6 +692,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       swarmClaimsTotal: claimCounters.total,
       agentErrorSignals: errorSignals,
       llmCostCentsWindow: costWindow,
+      recoveryCreatedTotal: new Map(recoveryCounters.created),
+      recoveryDedupedTotal: new Map(recoveryCounters.deduped),
+      recoverySuccessTotal: new Map(recoveryCounters.succeeded),
+      recoveryAgeSeconds: recoveryRows.age,
+      recoveryAddresslessActive: recoveryRows.addressless,
       process: processSample,
       lanes: laneSample,
 
@@ -887,6 +942,21 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       [`myrmidon_llm_cost_cents_total{${R}} ${formatSampleValue(snapshot.llmCostCentsWindow)}`],
     ),
   );
+  const recoveryCounterFamily = (
+    name: string,
+    help: string,
+    values: Map<IssueRecoveryActionKind, number> | null | undefined,
+  ) => blocks.push(familyBlock(
+    name,
+    help,
+    "counter",
+    values ? ISSUE_RECOVERY_ACTION_KINDS.map((kind) => `${name}{${R},kind="${escapeLabelValue(kind)}"} ${formatSampleValue(values.get(kind) ?? 0)}`) : [],
+  ));
+  recoveryCounterFamily("myrmidon_recovery_created_total", "Recovery actions created by kind, cumulative since process start.", snapshot.recoveryCreatedTotal);
+  recoveryCounterFamily("myrmidon_recovery_deduped_total", "Recovery action requests deduplicated by kind, cumulative since process start.", snapshot.recoveryDedupedTotal);
+  recoveryCounterFamily("myrmidon_recovery_success_total", "Recovery actions successfully completed by kind, cumulative since process start.", snapshot.recoverySuccessTotal);
+  blocks.push(familyBlock("myrmidon_recovery_age_seconds", "Maximum age of active recovery actions by kind.", "gauge", snapshot.recoveryAgeSeconds ? snapshot.recoveryAgeSeconds.map(({ kind, seconds }) => `myrmidon_recovery_age_seconds{${R},kind="${escapeLabelValue(kind)}"} ${formatSampleValue(seconds)}`) : []));
+  blocks.push(familyBlock("myrmidon_recovery_addressless_active", "Active recovery actions with a dedupe key and no owner.", "gauge", snapshot.recoveryAddresslessActive === undefined ? [] : [`myrmidon_recovery_addressless_active{${R}} ${formatSampleValue(snapshot.recoveryAddresslessActive)}`]));
   blocks.push(
     familyBlock(
       "myrmidon_scrape_errors",
@@ -1133,5 +1203,5 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     ),
   );
 
-  return `${blocks.join("\n\n")}\n`;
+  return blocks.join("\n\n") + "\n";
 }
