@@ -4734,7 +4734,7 @@ export function recoveryService(
       blockedByIssueIds: blockerIds,
       // myrmidon(BLOCKED-REASON): without an open blocker the board-owned
       // recovery action is the reason; name it so the block is never reasonless.
-      ...(blockerIds.length === 0
+      ...(blockerIds.length === 0 && recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON
         ? {
             unblockDescriptor: recoveryLivenessDescriptor(
               input.issue.id,
