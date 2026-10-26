@@ -48,7 +48,7 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
 
 interface Fixture {
   rows: Map<string, InReviewIssueRow>;
-  reviewers: Array<{ id: string; role: string }>;
+  reviewers: Array<{ id: string; role: string; invokable?: boolean }>;
   load: Map<string, number>;
   history: Map<string, RoutingHistory>;
 }
@@ -251,7 +251,7 @@ describe("no reviewer available", () => {
     expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
   });
 
-  it("clears immediate no_reviewer cards when a successful sweep finds no remaining condition", () => {
+  it("clears stale immediate cards when a successful sweep replaces the company's snapshot", () => {
     const signal = {
       kind: "no_reviewer" as const,
       issueId: "task-1",
@@ -267,7 +267,43 @@ describe("no reviewer available", () => {
     expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
   });
 
+  it("sweep clears an immediate card after the task acquires a reviewer", async () => {
+    const t = setup({ enabled: true }, { reviewers: [{ id: REV_A, role: "reviewer" }] });
+    const signal = {
+      kind: "no_reviewer" as const,
+      issueId: "task-1",
+      companyId: COMPANY,
+      identifier: "T-1",
+      title: "Task 1",
+      since: NOW.toISOString(),
+      hoursInReview: null,
+    };
+    setImmediateNoReviewerSignal(signal, true);
+    t.fixture.rows.set("task-1", row("task-1"));
 
+    await t.sweep.sweep(NOW, { force: true });
+
+    expect(t.fixture.rows.get("task-1")?.assigneeAgentId).toBe(REV_A);
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
+  it("sweep clears an immediate card when the task is no longer pending review", async () => {
+    const t = setup();
+    const signal = {
+      kind: "no_reviewer" as const,
+      issueId: "task-1",
+      companyId: COMPANY,
+      identifier: "T-1",
+      title: "Task 1",
+      since: NOW.toISOString(),
+      hoursInReview: null,
+    };
+    setImmediateNoReviewerSignal(signal, true);
+    t.fixture.rows.set("task-1", row("task-1", { status: "done" }));
+
+    await t.sweep.sweep(NOW, { force: true });
+
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
   it("raises a no_reviewer signal instead of staying silent", async () => {
     const t = setup({}, { reviewers: [] });
     t.fixture.rows.set("1", row("1"));

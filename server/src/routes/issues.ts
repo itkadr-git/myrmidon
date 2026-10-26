@@ -25,12 +25,16 @@ import {
   extractIssueReferenceIdentifiers,
   requiresExecutionReconciliation,
   EXECUTION_RECONCILIATION_CAUSES,
-  REVIEW_ROUTING_SETTINGS_KEY,
-  normalizeReviewRoutingSettings,
   isAgentStatusInvokable,
 } from "@myrmidon/shared";
 import { setImmediateNoReviewerSignal } from "../myrmidon/review-routing/attention.js";
-import { excludedReviewerIds, issueNeedsReviewer, pickReviewer, type ReviewerCandidate, type RoutingIssue } from "../myrmidon/review-routing/policy.js";
+import {
+  evaluateReviewerAvailability,
+  issueNeedsReviewer,
+  type RoutingIssue,
+} from "../myrmidon/review-routing/policy.js";
+import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
+import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -16477,56 +16481,22 @@ export function issueRoutes(
           : null;
       const needsReviewer = reviewerSignalIssue ? issueNeedsReviewer(reviewerSignalIssue) : false;
       if (issue && issue.id === existing.id) {
-        const general = needsReviewer ? await instanceSettings.getGeneral() : null;
         let unavailable = false;
-        if (needsReviewer && general) {
-          const settings = normalizeReviewRoutingSettings(
-            (general as unknown as Record<string, unknown>)[REVIEW_ROUTING_SETTINGS_KEY],
-          );
-          const shouldRoute = settings.enabled && issue.reviewPolicy !== "human_only";
-          unavailable = shouldRoute;
-          if (shouldRoute) {
-            const reviewerRows = settings.reviewerRoles.length
-              ? await db
-                  .select({ id: agents.id, role: agents.role, status: agents.status })
-                  .from(agents)
-                  .where(
-                    and(
-                      eq(agents.companyId, issue.companyId),
-                      inArray(agents.role, settings.reviewerRoles),
-                    ),
-                  )
-              : [];
-            const loadRows = reviewerRows.length
-              ? await db
-                  .select({ agentId: issueRows.assigneeAgentId, count: sql<number>`count(*)::int` })
-                  .from(issueRows)
-                  .where(
-                    and(
-                      eq(issueRows.companyId, issue.companyId),
-                      isNull(issueRows.hiddenAt),
-                      sql`${issueRows.status} in ('in_progress', 'in_review')`,
-                      inArray(issueRows.assigneeAgentId, reviewerRows.map((agent) => agent.id)),
-                    ),
-                  )
-              : [];
-            const load = new Map<string, number>();
-            for (const row of loadRows) {
-              if (row.agentId) load.set(row.agentId, (load.get(row.agentId) ?? 0) + Number(row.count));
-            }
-            const candidates: ReviewerCandidate[] = reviewerRows
-              .filter((agent) => isAgentStatusInvokable(agent.status))
-              .map((agent) => ({
-                id: agent.id,
-                role: agent.role,
-                load: load.get(agent.id) ?? 0,
-              }));
+        if (needsReviewer) {
+          const reviewRoutingSettings = await readReviewRoutingSettings(instanceSettings);
+          if (reviewRoutingSettings.enabled && issue.reviewPolicy !== "human_only") {
+            const routingStore = createPgReviewRoutingStore(db);
+            const [reviewerRows, loadByAgent] = await Promise.all([
+              routingStore.listReviewerAgents(issue.companyId, reviewRoutingSettings.reviewerRoles),
+              routingStore.loadByAgent(issue.companyId),
+            ]);
             unavailable =
-              pickReviewer({
-                candidates,
-                excluded: excludedReviewerIds(reviewerSignalIssue!),
-                maxLoad: settings.maxLoadPerReviewer,
-              }) === null;
+              evaluateReviewerAvailability({
+                reviewers: reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, invokable: agent.invokable ?? true })),
+                loadByAgent,
+                issue: reviewerSignalIssue!,
+                maxLoad: reviewRoutingSettings.maxLoadPerReviewer,
+              }).selected === null;
           }
         }
         setImmediateNoReviewerSignal(

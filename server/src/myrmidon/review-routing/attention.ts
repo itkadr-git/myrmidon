@@ -14,11 +14,9 @@
 //     merge steward.
 //
 // The sweep REPLACES the whole set of a company on every pass
-// (`replaceReviewRoutingSignals`): a card exists exactly while its condition
-// held at the last pass, and disappears on the next pass after the task gets
-// a reviewer, a verdict, or leaves review. The registry is process-level and
-// recomputed within one pass after a restart; nothing is persisted (the same
-// "computed on the fly" shape as the stale-block cards).
+// (`replaceReviewRoutingSignals`). Successful snapshots reconcile immediate
+// route-origin `no_reviewer` cards too: they preserve the original timestamp
+// while the condition remains true and disappear when the sweep clears it.
 
 import type { AttentionSeverity } from "@myrmidon/shared";
 
@@ -73,9 +71,8 @@ function signalKey(signal: ReviewRoutingSignal): string {
 }
 
 /**
- * Replaces the company's signals with `next`. A signal that already exists for
- * the same task and kind keeps its original `since`, so the card's timestamps
- * do not move on every pass.
+ * Replaces the company's signals with `next`. Existing signal timestamps
+ * remain stable across passes.
  */
 export function replaceReviewRoutingSignals(companyId: string, next: ReviewRoutingSignal[]): void {
   const previous = signalsByCompany.get(companyId);
@@ -85,8 +82,6 @@ export function replaceReviewRoutingSignals(companyId: string, next: ReviewRouti
     const before = previous?.get(key);
     byKey.set(key, before ? { ...signal, since: before.since } : signal);
   }
-  // A successful sweep is authoritative for task-level no_reviewer signals:
-  // remove route-origin entries absent from its computed snapshot.
   const immediate = immediateNoReviewerByCompany.get(companyId);
   for (const [key, signal] of immediate ?? []) {
     if (!byKey.has(key)) immediate?.delete(key);
