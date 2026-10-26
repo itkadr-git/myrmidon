@@ -10,6 +10,11 @@ import { useInstanceSecretSettings } from "@/hooks/useInstanceSecretSettings";
 import { useUi2I18n } from "../../../i18n/Ui2I18n";
 import { Ui2Section } from "../../../components/ui2Primitives";
 
+const SECRET_REFS_KEYS = {
+  title: "ui2.settings.secrets.title",
+  hint: "ui2.settings.secrets.hint",
+} as const;
+
 export function Ui2InstanceSecretSettings() {
   const { t } = useUi2I18n();
   const { selectedCompanyId } = useCompany();
@@ -20,7 +25,7 @@ export function Ui2InstanceSecretSettings() {
   if (data.settingsLoading || data.settingsError || data.settings.length === 0) return null;
 
   return (
-    <Ui2Section title={t("ui2.settings.system.secretRefs.title")} footer={t("ui2.settings.system.secretRefs.hint")}>
+    <Ui2Section title={t(SECRET_REFS_KEYS.title)} footer={t(SECRET_REFS_KEYS.hint)}>
       {data.settings.map((setting) => (
         <div key={setting.name} className="ui2-secret-ref flex flex-col gap-2 rounded-md border border-border p-3" data-testid={`ui2-secret-setting-${setting.name}`}>
           <span className="text-sm font-medium">

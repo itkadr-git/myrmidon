@@ -17,6 +17,7 @@ import { Ui2AgentOverviewPage } from "./screens/agent-overview/Ui2AgentOverviewP
 import { Ui2AgentsFleetPage } from "./screens/agent-overview/Ui2AgentsFleetPage";
 import { Ui2RunsSettings } from "./screens/settings/runs-queue/Ui2RunsSettings";
 import { Ui2SystemSettings } from "./screens/settings/system/Ui2SystemSettings";
+import { Ui2InstanceSecretSettings } from "./screens/settings/system/Ui2InstanceSecretSettings";
 import { Ui2LanguageSettings } from "./screens/settings/language/Ui2LanguageSettings";
 // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — a real ui2 screen, not
 // a placeholder (see screens/CommanderChatScreen.tsx).
@@ -105,6 +106,13 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     titleKey: "ui2.screens.runsQueue",
     element: ui2Screen(<Ui2RunsSettings />),
     legacyPath: "/company/settings",
+  },
+  {
+    key: "settings-secrets",
+    path: "company/settings/secrets",
+    titleKey: "ui2.settings.secrets",
+    element: ui2Screen(<Ui2InstanceSecretSettings />),
+    legacyPath: "/company/settings/secrets",
   },
   {
     key: "settings-system",

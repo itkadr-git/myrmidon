@@ -1039,7 +1039,8 @@
         "topicLogDisplay": "log display",
         "topicKeyboardShortcuts": "keyboard shortcuts",
         "topicBackupRetention": "backup retention",
-        "topicDataSharing": "data sharing"
+        "topicDataSharing": "data sharing",
+        "secretReferencesLink": "Manage secret references in Secrets"
       },
       "pipeline-settings": {
         "alreadyAvailableOnChildItems": "Already available on child items",
