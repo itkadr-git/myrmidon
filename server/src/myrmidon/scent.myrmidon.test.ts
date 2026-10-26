@@ -507,6 +507,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     // and a completely empty contour (no base URL, no key). The queue parked
     // silently for a day; the journal entry is the fix's observable.
     unconfiguredJournal.mockClear();
+    mockGetGeneral.mockReset().mockResolvedValue({});
     const db = {
       execute: () => Promise.resolve([{ n: 0 }]), // no entry in the last hour → write one
     };
@@ -527,6 +528,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
 
   it("stays silent when an entry already exists within the hour (throttle)", async () => {
     unconfiguredJournal.mockClear();
+    mockGetGeneral.mockReset().mockResolvedValue({});
     const db = {
       execute: () => Promise.resolve([{ n: 1 }]), // already journaled in the last hour
     };
