@@ -665,19 +665,24 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         .select()
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
-      expect(action).toMatchObject({
-        ownerType: "board",
-        ownerAgentId: null,
-        previousOwnerAgentId: coderId,
-        returnOwnerAgentId: coderId,
-        evidence: expect.objectContaining({
-          routingPolicy: "board_escalation_no_takeover_v1",
-        }),
-        wakePolicy: expect.objectContaining({
-          type: "board_escalation",
-          preservesSourceAssignee: true,
-        }),
-      });
+      if (errorCode === "adapter_failed" && explicitCause === "successful_run_missing_state") {
+        expect(action).toBeUndefined();
+        expect(sourceIssue.status).toBe("in_progress");
+      } else {
+        expect(action).toMatchObject({
+          ownerType: "board",
+          ownerAgentId: null,
+          previousOwnerAgentId: coderId,
+          returnOwnerAgentId: coderId,
+          evidence: expect.objectContaining({
+            routingPolicy: "board_escalation_no_takeover_v1",
+          }),
+          wakePolicy: expect.objectContaining({
+            type: "board_escalation",
+            preservesSourceAssignee: true,
+          }),
+        });
+      }
       // myrmidon(L4): a succeeded run with `successful_run_missing_state` is
       // the auto-policy's scope (stranded-autopolicy.ts). With the seeded
       // coder having zero prior attempts today, it first tries one more
