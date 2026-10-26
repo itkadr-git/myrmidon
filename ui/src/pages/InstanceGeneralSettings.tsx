@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowRight } from "lucide-react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@myrmidon/shared";
 import {
@@ -161,7 +161,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
         </div>
       )}
       <Link className="inline-flex items-center gap-2 text-sm text-primary underline underline-offset-4" to="/company/settings/secrets" data-testid="system-secrets-link">
-        {t("settings.secretReferencesLink")} <ArrowRight className="h-4 w-4" aria-hidden="true" />
+        {t("settings.secretReferencesLink")}
       </Link>
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
