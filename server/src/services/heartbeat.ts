@@ -20627,8 +20627,8 @@ export function heartbeatService(
       applyRunDispatchPostCommitEffects(outcome.postCommitEffects);
       return true;
     },
-    wakeAgent: async (agentId, companyId) => {
-      await enqueueWakeup(agentId, { source: "automation", reason: "queued_run_stale_timeout", companyId });
+    wakeAgent: async (agentId) => {
+      await enqueueWakeup(agentId, { source: "automation", reason: "queued_run_stale_timeout" });
     },
     loadSettings: () => loadRunDispatchSettings(db),
     readCutoff: () => getWorktreeExecutionCutoff(),

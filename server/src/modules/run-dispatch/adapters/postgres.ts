@@ -1049,7 +1049,7 @@ export function createPostgresRunDispatchAdapter(
         return cancelStaleRunInTx(
           tx,
           run,
-          null,
+          readNonEmptyString(parseObject(run.contextSnapshot).issueId),
           {
             stale: true,
             errorCode: "queued_run_stale_timeout",

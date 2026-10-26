@@ -228,9 +228,10 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
     expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
   });
 
-  it("appends activity_log for expired queued runs", async () => {
+  it("appends activity_log and releases issue executionRunId for expired queued runs", async () => {
     const { companyId, assigneeId, issueId } = await seed();
     const runId = await seedRun({ companyId, agentId: assigneeId, contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 31 * 60 * 1000) }).where(eq(heartbeatRuns.id, runId));
     const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
       runId, companyId, expectedStatus: "queued", staleAfterMs: 30 * 60 * 1000, now: new Date(),
@@ -239,6 +240,8 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
     const rows = await db.select().from(activityLog).where(eq(activityLog.runId, runId));
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ action: "heartbeat_run.cancelled", entityId: runId });
+    const [issue] = await db.select({ executionRunId: issues.executionRunId }).from(issues).where(eq(issues.id, issueId));
+    expect(issue?.executionRunId).toBeNull();
   });
 
   it("does not let another agent borrow the addressee wake context", async () => {
