@@ -490,6 +490,7 @@ export type IssueBlockedInboxState =
 export type IssueBlockedInboxSeverity = "critical" | "high" | "medium" | "low";
 
 export type IssueBlockedInboxReason =
+  | "unassigned_blocked_issue_overdue"
   | "blocked_by_unassigned_issue"
   | "blocked_by_assigned_backlog_issue"
   | "blocked_by_uninvokable_assignee"

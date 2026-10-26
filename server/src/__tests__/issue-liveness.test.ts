@@ -46,6 +46,47 @@ const manager = agent({
 const blocks = [{ companyId, blockerIssueId: blockerId, blockedIssueId: blockedId }];
 
 describe("issue graph liveness classifier", () => {
+  it("reports overdue blocked issues without owners after thirty minutes", () => {
+    const now = new Date("2026-10-26T12:00:00.000Z");
+    const overdue = issue({
+      id: "overdue",
+      status: "blocked",
+      assigneeAgentId: null,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+    });
+    const findings = classifyIssueGraphLiveness({
+      issues: [overdue, issue({ id: blockerId, status: "todo" })],
+      relations: [{ companyId, blockerIssueId: blockerId, blockedIssueId: "overdue" }],
+      agents: [agent(), manager],
+      now,
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: "overdue",
+      state: "unassigned_blocked_issue_overdue",
+      recoveryIssueId: "overdue",
+    });
+  });
+
+  it("reports an overdue blocked issue without explicit blocker edges", () => {
+    const now = new Date("2026-10-26T12:00:00.000Z");
+    const findings = classifyIssueGraphLiveness({
+      issues: [issue({
+        status: "blocked",
+        assigneeAgentId: null,
+        createdAt: new Date(now.getTime() - 31 * 60 * 1000),
+      })],
+      relations: [],
+      agents: [agent(), manager],
+      now,
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockedId,
+      state: "unassigned_blocked_issue_overdue",
+    });
+  });
+
   it("detects a PAP-1703-style blocked chain with an unassigned blocker and stable incident key", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [

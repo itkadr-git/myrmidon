@@ -101,6 +101,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originFingerprint?: string | null;
     executionState?: Record<string, unknown> | null;
     description?: string | null;
+    createdAt?: Date;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -118,6 +119,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       originFingerprint: input.originFingerprint ?? "default",
       executionState: input.executionState ?? null,
       description: input.description ?? null,
+      ...(input.createdAt ? { createdAt: input.createdAt } : {}),
     });
     return id;
   }
@@ -821,6 +823,29 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       reason: "invalid_review_participant",
       severity: "critical",
       action: { label: "Repair review participant" },
+    });
+  });
+
+  it("includes unassigned blocked issues in attention after thirty minutes", async () => {
+    const { companyId } = await createCompany("PBO");
+    const oldBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBO-1",
+      title: "Unassigned blocked issue",
+      status: "blocked",
+      createdAt: new Date(Date.now() - 31 * 60 * 1000),
+    });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBO-2",
+      title: "Open blocker",
+      status: "todo",
+    });
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    expect(rows.find((row) => row.id === oldBlockerId)?.blockedInboxAttention).toMatchObject({
+      reason: "unassigned_blocked_issue_overdue",
+      state: "needs_attention",
+      action: { label: "Assign overdue blocked issue" },
     });
   });
 
