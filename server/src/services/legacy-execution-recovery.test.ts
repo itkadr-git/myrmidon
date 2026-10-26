@@ -121,7 +121,7 @@ it("counts gateway assistant turns and repeated failed tool rounds without loggi
     expect(onRunGuardStop).toHaveBeenCalledWith("tool_retry_loop");
     const logged = onLog.mock.calls.flat().join("\\n");
     expect(logged).not.toContain("do-not-log");
-    expect(logged).toContain('"token":"[redacted]"');
+    expect(logged).toContain('"token":"[redacted len=10]"');
   } finally {
     vi.unstubAllGlobals();
   }
