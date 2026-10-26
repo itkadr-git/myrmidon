@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@myrmidon/plugin-sdk/testing";
-import manifest from "../src/manifest.js";
-import { createSttGigaamPlugin, PLUGIN_ID, PLUGIN_VERSION } from "../src/plugin.js";
+import manifest, { PLUGIN_ID, PLUGIN_VERSION } from "../src/manifest.js";
+import { createSttGigaamPlugin } from "../src/plugin.js";
 import type { FetchLike } from "../src/client.js";
 
 const tokenValue = "secret-token-value";
@@ -11,18 +11,20 @@ const serviceMetrics = { transcriptions_total: 12, transcription_latency_p50_sec
 function makeFetch(): FetchLike {
   return vi.fn(async (url: string, init?: RequestInit) => {
     expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${tokenValue}`);
-    return new Response(JSON.stringify(url.endsWith("/health") ? serviceHealth : serviceMetrics), { status: 200 });
+    return new Response(JSON.stringify(url.endsWith("/health")
+      ? { ...serviceHealth, transcript: "private words", audio: "audio-fixture", hf_token: "hf-private", license: "license-fixture" }
+      : { ...serviceMetrics, transcript: "private words", cloud_credential: "cloud-private" }), { status: 200 });
   });
 }
 
 describe("GigaAM plugin", () => {
   it("discovers health and metrics and returns only safe operator diagnostics", async () => {
     const fetchImpl = makeFetch();
-    const harness = createTestHarness({ manifest, plugin: createSttGigaamPlugin({ fetchImpl }) });
-    harness.config = { baseUrl: "https://stt.example.test", authTokenRef: { type: "secret_ref", secretId: "stt-token" } };
-    harness.secrets.resolve = vi.fn(async () => tokenValue);
-    await harness.setup();
-    const result = await harness.plugin.definition.onHealth?.();
+    const harness = createTestHarness({ manifest, config: { baseUrl: "https://stt.example.test", authTokenRef: { type: "secret_ref", secretId: "stt-token" } } });
+    vi.spyOn(harness.ctx.secrets, "resolve").mockResolvedValue(tokenValue);
+    const plugin = createSttGigaamPlugin({ fetchImpl });
+    await plugin.definition.setup(harness.ctx);
+    const result = await plugin.definition.onHealth?.();
     expect(result).toEqual({
       status: "ok",
       message: "GigaAM STT ready",
@@ -36,16 +38,19 @@ describe("GigaAM plugin", () => {
       },
     });
     expect(JSON.stringify(result)).not.toContain(tokenValue);
-    expect(JSON.stringify(result)).not.toContain("transcript");
+    expect(JSON.stringify(result)).not.toContain("private words");
+    expect(JSON.stringify(result)).not.toContain("audio");
+    expect(JSON.stringify(result)).not.toContain("license-fixture");
   });
 
   it("reports degraded health for service fallback mode", async () => {
     const fetchImpl: FetchLike = async (url) => new Response(JSON.stringify(
       url.endsWith("/health") ? { ...serviceHealth, fallback_mode: true } : serviceMetrics,
     ));
-    const harness = createTestHarness({ manifest, plugin: createSttGigaamPlugin({ fetchImpl }) });
-    await harness.setup();
-    const result = await harness.plugin.definition.onHealth?.();
+    const harness = createTestHarness({ manifest, config: { baseUrl: "https://stt.example.test" } });
+    const plugin = createSttGigaamPlugin({ fetchImpl });
+    await plugin.definition.setup(harness.ctx);
+    const result = await plugin.definition.onHealth?.();
     expect(result?.status).toBe("degraded");
     expect(result?.details).toMatchObject({ fallbackMode: true });
   });
@@ -54,9 +59,10 @@ describe("GigaAM plugin", () => {
     const fetchImpl: FetchLike = async () => new Response(
       JSON.stringify({ transcript: "private content", credential: tokenValue }), { status: 500 },
     );
-    const harness = createTestHarness({ manifest, plugin: createSttGigaamPlugin({ fetchImpl }) });
-    await harness.setup();
-    const result = await harness.plugin.definition.onHealth?.();
+    const harness = createTestHarness({ manifest, config: { baseUrl: "https://stt.example.test" } });
+    const plugin = createSttGigaamPlugin({ fetchImpl });
+    await plugin.definition.setup(harness.ctx);
+    const result = await plugin.definition.onHealth?.();
     expect(result?.status).toBe("error");
     expect(result?.message).toBe("GigaAM STT health or metrics are unavailable");
     expect(JSON.stringify(result)).not.toContain(tokenValue);
@@ -65,9 +71,10 @@ describe("GigaAM plugin", () => {
 
   it("validates configuration against the exact candidate endpoint", async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify(serviceHealth)));
-    const harness = createTestHarness({ manifest, plugin: createSttGigaamPlugin({ fetchImpl }) });
-    await harness.setup();
-    const result = await harness.plugin.definition.onValidateConfig?.({
+    const harness = createTestHarness({ manifest });
+    const plugin = createSttGigaamPlugin({ fetchImpl });
+    await plugin.definition.setup(harness.ctx);
+    const result = await plugin.definition.onValidateConfig?.({
       baseUrl: "https://candidate.example.test",
       authTokenRef: { type: "secret_ref", secretId: "stt-token" },
     });

@@ -12,7 +12,7 @@ const manifest: PaperclipPluginManifestV1 = {
   author: "Paperclip",
   categories: ["monitoring"],
   capabilities: ["http.outbound", "secrets.read-ref"],
-  entrypoints: { worker: "./dist/worker.js" },
+  entrypoints: { worker: "./worker.js" },
   instanceConfigSchema: {
     type: "object",
     required: ["baseUrl"],

@@ -4,4 +4,4 @@ The bundled plugin polls the configured GigaAM STT runtime's `/health` and `/met
 
 Configure an HTTPS base URL (or loopback HTTP for local development). If endpoint authentication is enabled, bind `authTokenRef` to a Paperclip secret reference; the secret value is resolved only for requests and is never included in diagnostics or logs. Responses are bounded and requests time out after five seconds.
 
-The manifest and worker are compiled to `dist/` in the workspace CI build.
+The CI-built package exposes `/api/plugins/:pluginId/health` through Paperclip operator health diagnostics after installation and configuration. The manifest and worker are compiled into the installable package artifact, with entrypoints validated during packaging.

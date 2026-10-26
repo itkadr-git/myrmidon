@@ -26,6 +26,33 @@ describe("GigaamClient", () => {
       .rejects.toThrow("exceeds size limit");
   });
 
+  it("bounds streamed response bodies even when content-length is absent", async () => {
+    const largeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(40_000));
+        controller.enqueue(new Uint8Array(40_000));
+        controller.close();
+      },
+    });
+    const fetchImpl = vi.fn(async () => new Response(largeStream));
+    await expect(new GigaamClient("https://stt.example.test", undefined, fetchImpl).snapshot())
+      .rejects.toThrow("exceeds size limit");
+  });
+
+  it("keeps the request timeout active while a response body is stalled", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start() {},
+    })));
+    try {
+      const snapshot = new GigaamClient("https://stt.example.test", undefined, fetchImpl).snapshot();
+      await vi.advanceTimersByTimeAsync(5_001);
+      await expect(snapshot).rejects.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("allows cleartext only on loopback and rejects URL credentials", () => {
     expect(() => new GigaamClient("http://stt.example.test")).toThrow("HTTPS");
     expect(() => new GigaamClient("https://user:pass@stt.example.test")).toThrow("credentials");

@@ -9,8 +9,8 @@
     "README.md"
   ],
   "paperclipPlugin": {
-    "manifest": "./dist/manifest.js",
-    "worker": "./dist/worker.js"
+    "manifest": "./manifest.js",
+    "worker": "./worker.js"
   },
   "scripts": {
     "prebuild": "pnpm --filter @myrmidon/plugin-sdk ensure-build-deps",
