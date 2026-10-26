@@ -37,7 +37,7 @@ import {
 // myrmidon(1.6.6-CORPUS-SHADOW A): corpus-module shadow comparison (part A).
 import { liveBehaviorSetting } from "../myrmidon/behavior-settings/live.js";
 import { createCorpusShadowRunner, maybeRecordShadowSearchCall } from "../myrmidon/corpus-shadow.js";
-import type { CorpusShadowRunner } from "../myrmidon/corpus-shadow.js";
+import type { CorpusShadowRunner, CorpusShadowSearch } from "../myrmidon/corpus-shadow.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
@@ -1106,12 +1106,8 @@ export function createToolGatewayService(
     beforeManagedArgumentDriftExpiry?: () => Promise<void>;
     /** Test seam for pausing a legacy approved request before its execution claim. */
     beforeLegacyApprovedActionClaim?: () => Promise<void>;
-    /**
-     * myrmidon(1.6.6-CORPUS-SHADOW A): test seam for the corpus shadow runner
-     * (and a production seam for wiring the real corpus SearchIndex port when
-     * the corpus module delivers it). Default: a runner behind the live `corpus.shadow`
-     * flag with the no-op module leg.
-     */
+    /** Corpus SearchIndex used by the shadow runner; production wiring passes it explicitly. */
+    corpusShadowSearch?: CorpusShadowSearch;
     corpusShadowRunner?: CorpusShadowRunner;
     mcpGatewayProtocolLimits?: Partial<{
       authFailures: Partial<McpGatewayRateLimitConfig>;
@@ -1128,16 +1124,12 @@ export function createToolGatewayService(
     trustedLocalStdioRuntimeHost: options.trustedLocalStdioRuntimeHost,
     ...options.runtimeSupervisor,
   });
-  // myrmidon(1.6.6-CORPUS-SHADOW A): the fire-and-forget corpus comparison.
-  // Flag off (the default) means this object only ever answers "disabled" —
-  // zero behavior change; on, search calls get a shadow row after the bot
-  // response was decided. The module leg is the no-op port until the corpus module
-  // wires the real SearchIndex (a later part passes it via this seam).
   const corpusShadowRunner: CorpusShadowRunner =
     options.corpusShadowRunner ??
     createCorpusShadowRunner({
       db,
       isEnabled: () => liveBehaviorSetting<boolean>("corpus.shadow") === true,
+      search: options.corpusShadowSearch ?? undefined,
     });
   const pluginToolDispatcher = options.pluginToolDispatcher;
   const interactions = issueThreadInteractionService(db);
@@ -11006,6 +10998,7 @@ export function createToolGatewayService(
         // helper returns before touching anything (byte-for-byte old behavior).
         maybeRecordShadowSearchCall({
           runner: corpusShadowRunner,
+          companyId: session.companyId,
           tool,
           execution: connectedMcpExecution?.execution ?? null,
           result: resultValidation.value,
