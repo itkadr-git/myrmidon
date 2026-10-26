@@ -83,7 +83,12 @@ describeEmbeddedPostgres("agent service clearError", () => {
     expect(childBeforeDeletion?.updatedAt).not.toEqual(childAfterDeletion?.updatedAt);
     expect(childAfterDeletion?.reportsTo).toBeNull();
     expect(afterManagerDeletion).not.toBe(beforeManagerDeletion);
+
+    const actorKeyAdmin = await service.listSummariesVersionKey(companyId, "actor-shape-admin");
+    const actorKeyMember = await service.listSummariesVersionKey(companyId, "actor-shape-member");
+    expect(actorKeyAdmin).not.toBe(actorKeyMember);
   });
+
 
   it("resets converted agent sessions while preserving identity, configuration and run history", async () => {
     const companyId = randomUUID();
