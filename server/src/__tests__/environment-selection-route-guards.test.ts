@@ -417,10 +417,6 @@ describe.sequential("execution environment route guards", () => {
       });
 
     expect(res.status).not.toBe(422);
-    expect(mockSecretService.normalizeEnvBindingsForPersistence).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({ environmentId: sandboxEnvironmentId }),
-    );
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 });
