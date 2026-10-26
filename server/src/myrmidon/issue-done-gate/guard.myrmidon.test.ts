@@ -69,6 +69,21 @@ describe("issue done pull-request gate", () => {
     ])).not.toThrow();
   });
 
+  it("uses live merged facts through transaction validation when stored status is stale", async () => {
+    const { assertIssueDoneSnapshotUnchanged } = await import("./guard.js");
+    const staleProduct = product({ id: "wp-merged-now", number: 95, status: "open" });
+    const snapshot = await inspectIssueDonePullRequests(fakeDb([staleProduct]), companyId, issueId, resolver({ 95: "open" }));
+    const liveSnapshot = await inspectIssueDonePullRequests(fakeDb([staleProduct]), companyId, issueId, resolver({ 95: "merged" }));
+    const tx = {
+      execute: vi.fn(async () => undefined),
+      select: vi.fn()
+        .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [{ companyId }]) })) })
+        .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [staleProduct]) })) }),
+    } as never;
+
+    await expect(assertIssueDoneSnapshotUnchanged(tx, companyId, issueId, snapshot, liveSnapshot)).resolves.toBeUndefined();
+  });
+
   it.each(["open", "draft", "unknown"] as const)("blocks a %s PR with a stable retryable error", async (state) => {
     const snapshot = await inspectIssueDonePullRequests(
       fakeDb([product({ id: "wp-1", number: 12 })]),

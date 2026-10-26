@@ -10975,8 +10975,17 @@ export function issueService(db: Db) {
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
         if (receiptExisting.status !== "done" && patch.status === "done" && donePullRequestSnapshot) {
-          const { assertIssueDoneSnapshotUnchanged } = await import("../myrmidon/issue-done-gate/guard.js");
-          await assertIssueDoneSnapshotUnchanged(tx as Db, existing.companyId, id, donePullRequestSnapshot);
+          const [{ assertIssueDoneSnapshotUnchanged, inspectIssueDonePullRequests }, { createPullRequestMergeDetailsResolver }] = await Promise.all([
+            import("../myrmidon/issue-done-gate/guard.js"),
+            import("./github-pull-request-merge.js"),
+          ]);
+          const liveSnapshot = await inspectIssueDonePullRequests(
+            db,
+            existing.companyId,
+            id,
+            createPullRequestMergeDetailsResolver(db),
+          );
+          await assertIssueDoneSnapshotUnchanged(tx as Db, existing.companyId, id, donePullRequestSnapshot, liveSnapshot);
         } else if (receiptExisting.status !== "done" && patch.status === "done") {
           // External transaction callers cannot perform provider requests without
           // holding their transaction open; fail closed unless the stored facts

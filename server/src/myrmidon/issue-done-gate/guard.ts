@@ -162,9 +162,6 @@ export function assertIssueDonePullRequestsSettled(states: Awaited<ReturnType<ty
 
 export function assertStoredIssueDonePullRequestsSettled(products: GateProduct[]) {
   const pullRequests = products.filter((product) => product.type === "pull_request");
-  const merged = pullRequests.some((product) => product.status === "merged");
-  const closed = pullRequests.filter((product) => product.status === "closed");
-  if (merged && closed.length > 0) return;
   for (const product of pullRequests) {
     if (product.status === "archived" || product.status === "merged") continue;
     block(product);
@@ -172,7 +169,13 @@ export function assertStoredIssueDonePullRequestsSettled(products: GateProduct[]
 }
 
 /** A short serialized validation/write window prevents a PR being attached between check and close. */
-export async function assertIssueDoneSnapshotUnchanged(tx: Db, companyId: string, issueId: string, snapshot: Awaited<ReturnType<typeof inspectIssueDonePullRequests>>) {
+export async function assertIssueDoneSnapshotUnchanged(
+  tx: Db,
+  companyId: string,
+  issueId: string,
+  snapshot: Awaited<ReturnType<typeof inspectIssueDonePullRequests>>,
+  liveSnapshot?: Awaited<ReturnType<typeof inspectIssueDonePullRequests>>,
+) {
   await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-done-gate:${issueId}`}, 0))`);
   const currentIssue = await tx.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
   if (!currentIssue || currentIssue.companyId !== companyId) {
@@ -193,14 +196,15 @@ export async function assertIssueDoneSnapshotUnchanged(tx: Db, companyId: string
     eq(issueWorkProducts.issueId, issueId),
     eq(issueWorkProducts.type, "pull_request"),
   ));
-  if (current.length !== snapshot.length || current.some((item) => {
-    const old = snapshot.find((candidate) => candidate.product.id === item.id)?.product;
-    return !old || old.status !== item.status || old.url !== item.url || JSON.stringify(old.metadata) !== JSON.stringify(item.metadata);
+  const validatedSnapshot = liveSnapshot ?? snapshot;
+  if (current.length !== validatedSnapshot.length || current.some((item) => {
+    const currentState = validatedSnapshot.find((candidate) => candidate.product.id === item.id);
+    return !currentState || currentState.product.url !== item.url || JSON.stringify(currentState.product.metadata) !== JSON.stringify(item.metadata);
   })) {
-    throw conflict("Pull request work products changed during completion validation. Retry marking the task done.", {
+    throw conflict("Pull request links changed during completion validation. Retry marking the task done.", {
       code: ISSUE_DONE_PULL_REQUEST_GATE,
       retryable: true,
     });
   }
-  assertIssueDonePullRequestsSettled(snapshot);
+  assertIssueDonePullRequestsSettled(validatedSnapshot);
 }
