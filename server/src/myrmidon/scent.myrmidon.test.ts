@@ -484,14 +484,15 @@ describe("startScentQueue: no re-entrant ticks", () => {
 
 // Hoisted by vitest regardless of position. The queue module imports
 // logActivity directly, so the journal is asserted through the mock.
-const unconfiguredJournal = vi.hoisted(() => vi.fn(async () => undefined));
+const { unconfiguredJournal, mockGetGeneral } = vi.hoisted(() => ({
+  unconfiguredJournal: vi.fn(async (_entry: unknown) => undefined),
+  mockGetGeneral: vi.fn(async () => ({})),
+}));
 vi.mock("../../services/activity-log.js", () => ({
-  logActivity: (...args: unknown[]) => unconfiguredJournal(...(args as [never])),
+  logActivity: unconfiguredJournal,
 }));
 vi.mock("../../services/instance-settings.js", () => ({
-  instanceSettingsService: () => ({
-    getGeneral: async () => ({}), // no stored swarm section → schema defaults, enabled=true
-  }),
+  instanceSettingsService: () => ({ getGeneral: mockGetGeneral }),
 }));
 
 describe("scent queue: unconfigured contour is visible in the activity log", () => {
