@@ -277,7 +277,13 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1048R",
       title: "Reviewer assignee should not be returned to",
-      executionPolicy: null,
+      executionPolicy: normalizeIssueExecutionPolicy({
+        stages: [{
+          id: "66666666-6666-4666-8666-666666666666",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        }],
+      }),
       executionState: null,
       reviewPolicy: "not_creator",
     };
@@ -295,10 +301,12 @@ describe("issue execution policy routes", () => {
       runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_review", reviewPolicy: "not_creator" });
+      .send({ status: "in_review", executionPolicy: issue.executionPolicy });
 
     expect(res.status).toBe(200);
     const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.status).toBe("in_review");
+    expect(updatePatch.assigneeAgentId).toBe("44444444-4444-4444-8444-444444444444");
     expect(updatePatch.executionState).toMatchObject({ returnAssignee: null });
   });
 
