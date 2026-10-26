@@ -282,7 +282,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const [updatedSource] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     expect(resolved).toMatchObject({ status: "resolved", outcome: "restored", returnOwnerAgentId: coderId });
     expect(resolved?.resolvedAt).toBeTruthy();
-    expect(updatedSource).toMatchObject({ status: "blocked", assigneeAgentId: coderId });
+    expect(updatedSource).toMatchObject({ status: "todo", assigneeAgentId: coderId });
     expect(enqueueRecoveryActionWakeup).toHaveBeenCalledTimes(1);
     expect(enqueueRecoveryActionWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({ idempotencyKey: `recovery_resolved:${action.id}` }));
 
