@@ -790,6 +790,11 @@ export async function createApp(
 ) {
   const app = express();
   app.locals.paperclipDb = db;
+  const pluginReadiness = {
+    boardReadyAt: null as number | null,
+    plugins: [] as Array<{ pluginId: string; pluginKey: string; readyAt: number }>,
+  };
+  app.locals.pluginReadiness = pluginReadiness;
   const captureRawBody = (
     req: express.Request,
     _res: express.Response,
@@ -955,6 +960,23 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  api.get("/plugins/readiness", (req, res) => {
+    if (!req.actor?.userId) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const boardReadyAt = pluginReadiness.boardReadyAt;
+    res.json({
+      boardReadyAt: boardReadyAt === null ? null : new Date(boardReadyAt).toISOString(),
+      plugins: pluginReadiness.plugins.map((plugin) => ({
+        pluginId: plugin.pluginId,
+        pluginKey: plugin.pluginKey,
+        readyAt: new Date(plugin.readyAt).toISOString(),
+        readyAfterBoardReadyMs:
+          boardReadyAt === null ? null : plugin.readyAt - boardReadyAt,
+      })),
+    });
+  });
   // myrmidon(1.6.6 PROCS-0.3A): tags every /api request with the http_route
   // lane and journals it on finish. First on purpose — a request rejected by a
   // guard below is load the board really served, so it is measured too.
@@ -1260,6 +1282,21 @@ export async function createApp(
   setPluginEventBus(eventBus);
   const jobStore = pluginJobStore(db);
   const lifecycle = pluginLifecycleManager(db, { workerManager });
+  lifecycle.on("plugin.ready", ({ pluginId, pluginKey }) => {
+    const readyAt = Date.now();
+    pluginReadiness.plugins.push({ pluginId, pluginKey, readyAt });
+    logger.info(
+      {
+        pluginId,
+        pluginKey,
+        boardReadyAt: pluginReadiness.boardReadyAt,
+        readyAt,
+        readyAfterBoardReadyMs:
+          pluginReadiness.boardReadyAt === null ? null : readyAt - pluginReadiness.boardReadyAt,
+      },
+      "plugin readiness: ready",
+    );
+  });
   const scheduler = createPluginJobScheduler({
     db,
     jobStore,
@@ -1352,6 +1389,21 @@ export async function createApp(
       jobStore,
       toolDispatcher,
       lifecycleManager: lifecycle,
+      onPluginReady: ({ id, pluginKey }) => {
+        const readyAt = Date.now();
+        pluginReadiness.plugins.push({ pluginId: id, pluginKey, readyAt });
+        logger.info(
+          {
+            pluginId: id,
+            pluginKey,
+            boardReadyAt: pluginReadiness.boardReadyAt,
+            readyAt,
+            readyAfterBoardReadyMs:
+              pluginReadiness.boardReadyAt === null ? null : readyAt - pluginReadiness.boardReadyAt,
+          },
+          "plugin readiness: ready",
+        );
+      },
       instanceInfo: {
         instanceId: opts.instanceId ?? "default",
         hostVersion: opts.hostVersion ?? "0.0.0",

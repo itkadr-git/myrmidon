@@ -420,6 +420,8 @@ export interface PluginRuntimeServices {
     deploymentMode?: "local_trusted" | "authenticated";
     deploymentExposure?: "private" | "public";
   };
+  /** Optional callback invoked when a plugin's runtime activation succeeds. */
+  onPluginReady?: (plugin: { id: string; pluginKey: string }) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -2068,7 +2070,9 @@ export function pluginLoader(
       );
 
       const loadResults = results.map((r, i) => {
-        if (r.status === "fulfilled") return r.value;
+        if (r.status === "fulfilled") {
+          return r.value;
+        }
         return {
           plugin: pluginsToLoad[i]!,
           success: false,
@@ -2578,6 +2582,8 @@ export function pluginLoader(
         },
         "plugin-loader: plugin activated successfully",
       );
+
+      runtimeServices?.onPluginReady?.({ id: pluginId, pluginKey });
 
       return { plugin: activePlugin, success: true, registered };
     } catch (err) {

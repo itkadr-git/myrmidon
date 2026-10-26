@@ -104,6 +104,8 @@ function isValidTransition(from: PluginStatus, to: PluginStatus): boolean {
 export interface PluginLifecycleEvents {
   /** Emitted after a plugin is loaded (installed → ready). */
   "plugin.loaded": { pluginId: string; pluginKey: string };
+  /** Emitted after plugin activation succeeds. */
+  "plugin.ready": { pluginId: string; pluginKey: string };
   /** Emitted after a plugin transitions to ready (enabled). */
   "plugin.enabled": { pluginId: string; pluginKey: string };
   /** Emitted after a plugin is disabled (ready → disabled). */
@@ -429,6 +431,7 @@ export function pluginLifecycleManager(
         ?? `Failed to activate plugin ${loadResult.plugin.pluginKey}`,
       );
     }
+    emitDomain("plugin.ready", { pluginId, pluginKey: loadResult.plugin.pluginKey });
   }
 
   async function deactivatePluginRuntime(
