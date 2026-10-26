@@ -16240,10 +16240,10 @@ export function issueRoutes(
           }
         }
 
-        const becameTerminal =
+        const recoveryIssueBecameTerminal =
           !["done", "cancelled"].includes(existing.status) &&
           ["done", "cancelled"].includes(issue.status);
-        if (closesRecoveryIssue && becameTerminal) {
+        if (closesRecoveryIssue && recoveryIssueBecameTerminal) {
           try {
             let recoveryWake: {
               agentId: string;
