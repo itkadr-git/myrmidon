@@ -173,6 +173,7 @@ describe("run retry policy: failure classification", () => {
       "No deployments available",
       "all deployments in cooldown",
       "all deployments are in cooldown",
+      "All deployments for selected model are in cooldown",
       "HTTP 429 too many requests",
     ]) {
       expect(
