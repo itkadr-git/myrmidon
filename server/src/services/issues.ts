@@ -3372,6 +3372,8 @@ type IssueBlockerAttentionNode = {
   identifier: string | null;
   title: string;
   status: string;
+  priority: string;
+  createdAt: Date;
   executionRunId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -3384,6 +3386,8 @@ type IssueBlockerAttentionInputNode = Pick<
   | "identifier"
   | "title"
   | "status"
+  | "priority"
+  | "createdAt"
   | "assigneeAgentId"
   | "assigneeUserId"
 > & { executionRunId?: string | null };
@@ -3715,6 +3719,15 @@ async function listIssueBlockerAttentionMap(
   for (const row of issueRows) {
     if (row.status !== "blocked") {
       attentionMap.set(row.id, createIssueBlockerAttention());
+    } else if (
+      !row.assigneeAgentId &&
+      !row.assigneeUserId &&
+      Date.now() - row.createdAt.getTime() >= 30 * 60 * 1000
+    ) {
+      attentionMap.set(row.id, createIssueBlockerAttention({
+        state: "needs_attention",
+        reason: "unassigned_blocked_issue_overdue",
+      }));
     }
   }
   if (roots.length === 0) return attentionMap;
@@ -3759,6 +3772,8 @@ async function listIssueBlockerAttentionMap(
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          priority: issues.priority,
+          createdAt: issues.createdAt,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -3783,6 +3798,8 @@ async function listIssueBlockerAttentionMap(
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          priority: issues.priority,
+          createdAt: issues.createdAt,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -3838,6 +3855,8 @@ async function listIssueBlockerAttentionMap(
           identifier: row.identifier,
           title: row.title,
           status: row.status,
+          priority: row.priority,
+          createdAt: row.createdAt,
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
           assigneeUserId: row.assigneeUserId,
@@ -4310,6 +4329,8 @@ async function listIssueBlockerAttentionMap(
       );
     });
     if (topLevelEdges.length === 0) {
+      const existing = attentionMap.get(root.id);
+      if (existing?.reason === "unassigned_blocked_issue_overdue") continue;
       attentionMap.set(
         root.id,
         createIssueBlockerAttention({
@@ -4388,7 +4409,10 @@ async function listIssueBlockerAttentionMap(
       root.id,
       createIssueBlockerAttention({
         state,
-        reason,
+        reason:
+          attentionMap.get(root.id)?.reason === "unassigned_blocked_issue_overdue"
+            ? "unassigned_blocked_issue_overdue"
+            : reason,
         unresolvedBlockerCount: topLevelEdges.length,
         coveredBlockerCount,
         stalledBlockerCount,
@@ -4684,6 +4708,7 @@ async function listIssueReviewAttentionMap(
       identifier: issue.identifier,
       title: issue.title,
       status: issue.status,
+      createdAt: issue.createdAt,
       projectId: issue.projectId,
       goalId: issue.goalId,
       parentId: issue.parentId,
@@ -5734,6 +5759,8 @@ async function listIssueBlockedInboxAttentionMap(
       identifier: issue.identifier,
       title: issue.title,
       status: issue.status,
+      priority: issue.priority,
+      createdAt: issue.createdAt,
       projectId: issue.projectId,
       goalId: issue.goalId,
       parentId: issue.parentId,
@@ -6028,6 +6055,8 @@ async function listIssueBlockedInboxAttentionMap(
               switch (finding.state) {
                 case "blocked_by_unassigned_issue":
                   return "Assign blocker";
+                case "unassigned_blocked_issue_overdue":
+                  return "Assign overdue blocked issue";
                 case "blocked_by_assigned_backlog_issue":
                   return "Resume parked blocker";
                 case "blocked_by_uninvokable_assignee":
@@ -9166,6 +9195,15 @@ export function issueService(db: Db) {
       if (!parent) throw notFound("Parent issue not found");
       await assertExecutionTaskParent(db, parent.companyId, parent.id);
 
+      if (
+        !data.assigneeAgentId &&
+        data.assigneeUserId == null &&
+        parent.assigneeAgentId &&
+        (data.status === undefined || data.status === "todo" || data.status === "blocked")
+      ) {
+        data = { ...data, assigneeAgentId: parent.assigneeAgentId };
+      }
+
       const idempotencyKey = data.idempotencyKey?.trim();
       if (idempotencyKey) {
         const existingChild = await db
@@ -9688,6 +9726,21 @@ export function issueService(db: Db) {
         onDeduplicated,
         ...issueData
       } = data;
+      if (
+        issueData.parentId &&
+        !issueData.assigneeAgentId &&
+        issueData.assigneeUserId == null &&
+        (issueData.status === undefined || issueData.status === "todo" || issueData.status === "blocked")
+      ) {
+        const parent = await dbOrTx
+          .select({ assigneeAgentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, issueData.parentId)))
+          .then((rows) => rows[0] ?? null);
+        if (parent?.assigneeAgentId) {
+          issueData.assigneeAgentId = parent.assigneeAgentId;
+        }
+      }
       const isolatedWorkspacesEnabled = (
         await instanceSettings.getExperimental()
       ).enableIsolatedWorkspaces;

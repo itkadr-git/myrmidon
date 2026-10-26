@@ -3127,6 +3127,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(parent.responsibleUserId).toBe(responsibleUserId);
     expect(child.responsibleUserId).toBe(responsibleUserId);
+    expect(child.assigneeAgentId).toBe(agentId);
   });
 
   it("only honors explicit responsibleUserId for trusted issue create callers", async () => {
@@ -3687,6 +3688,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const goalId = randomUUID();
+    const assigneeAgentId = randomUUID();
     const parentIssueId = randomUUID();
     const projectWorkspaceId = randomUUID();
     const executionWorkspaceId = randomUUID();
@@ -3705,6 +3707,18 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       title: "Ship child helpers",
       level: "task",
       status: "active",
+    });
+
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Parent assignee",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
     });
 
     await db.insert(projects).values({
@@ -3745,6 +3759,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       title: "Parent issue",
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId,
       requestDepth: 1,
       executionWorkspaceId,
       executionWorkspacePreference: "reuse_existing",
@@ -3766,6 +3781,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.projectId).toBe(projectId);
     expect(child.goalId).toBe(goalId);
     expect(child.requestDepth).toBe(2);
+    expect(child.assigneeAgentId).toBe(assigneeAgentId);
     expect(child.description).toContain("## Acceptance Criteria");
     expect(child.description).toContain("- Uses the parent issue as parentId");
     expect(child.projectWorkspaceId).toBe(projectWorkspaceId);

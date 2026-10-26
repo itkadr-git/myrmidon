@@ -6,6 +6,7 @@ export type IssueLivenessSeverity = "warning" | "critical";
 
 export type IssueLivenessState =
   | "blocked_by_unassigned_issue"
+  | "unassigned_blocked_issue_overdue"
   | "blocked_by_assigned_backlog_issue"
   | "blocked_by_uninvokable_assignee"
   | "blocked_by_cancelled_issue"
@@ -21,6 +22,7 @@ export interface IssueLivenessIssueInput {
   identifier: string | null;
   title: string;
   status: string;
+  createdAt?: Date | string | null;
   projectId?: string | null;
   goalId?: string | null;
   parentId?: string | null;
@@ -548,6 +550,33 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
       hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
+  }
+
+  for (const issue of input.issues) {
+    if (issue.status !== "blocked") continue;
+    const createdAtMs = readDateMs(issue.createdAt);
+    if (
+      !issue.assigneeAgentId &&
+      !issue.assigneeUserId &&
+      createdAtMs !== null &&
+      nowMs - createdAtMs >= 30 * 60 * 1000 &&
+      !hasExplicitWaitingPath(issue)
+    ) {
+      const ownerCandidates = ownerCandidatesForRecoveryIssue(issue, input.agents, agentsById, {
+        includeStalledAssignee: true,
+      });
+      findings.push(finding({
+        issue,
+        state: "unassigned_blocked_issue_overdue",
+        reason: `${issueLabel(issue)} has remained blocked without an assignee for at least 30 minutes.`,
+        dependencyPath: [issue],
+        recoveryIssue: issue,
+        recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+        recommendedOwnerCandidates: ownerCandidates,
+        recommendedAction: `Assign ${issueLabel(issue)} to an owner who can unblock it, or record an explicit waiting path.`,
+        blockerIssueId: issue.id,
+      }));
+    }
   }
 
   function reviewFinding(
