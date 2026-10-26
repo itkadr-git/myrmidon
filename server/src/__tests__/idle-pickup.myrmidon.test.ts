@@ -718,6 +718,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
     await db.update(issues).set({ executionState: { status: "changes_requested" } }).where(eq(issues.id, issueId));
     await seedSucceededRun({ companyId, agentId, issueId, finishedAt: new Date(Date.now() - 90_000) });
+    const cancelledAt = new Date(Date.now() - 30_000);
     await db.insert(heartbeatRuns).values({
       companyId,
       agentId,
@@ -725,8 +726,8 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       invocationSource: "automation",
       contextSnapshot: { issueId },
       resultJson: { executionCancellation: { source: { code: "reassignment" } } },
-      startedAt: new Date(Date.now() - 60_000),
-      finishedAt: new Date(Date.now() - 30_000),
+      startedAt: new Date(cancelledAt.getTime() - 30_000),
+      finishedAt: cancelledAt,
     });
     const deps = fakeDeps();
 

@@ -327,7 +327,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     const cancelled = await seedIssue("todo");
     await seedAutoRun(cancelled, { status: "failed", finishedAt: new Date(now.getTime() - 15 * 60_000) });
     await seedAutoRun(cancelled, { status: "cancelled", cancellationCode: "reassignment", finishedAt: new Date(now.getTime() - 5 * 60_000) });
-    expect((await isIssueCoolingDown(db, companyId, cancelled, settings, now)).cooling).toBe(false);
+    const reassigned = await isIssueCoolingDown(db, companyId, cancelled, settings, now);
+    expect(reassigned.cooling).toBe(true);
+    expect(reassigned.staleCount).toBe(1);
+    expect(reassigned.cooldownMin).toBe(30);
 
     const staleSuccesses = await seedIssue("todo");
     await seedAutoRun(staleSuccesses, { status: "succeeded", livenessState: "empty_response", finishedAt: new Date(now.getTime() - 15 * 60_000) });
