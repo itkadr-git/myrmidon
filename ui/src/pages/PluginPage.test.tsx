@@ -138,7 +138,13 @@ describe("PluginPage", () => {
   it("loads page slots on a cold direct plugin URL", async () => {
     mockParams.pluginRoutePath = "wiki";
     const contribution = pageContribution();
-    const pageSlot = { id: "wiki-page", pluginKey: contribution.pluginKey, displayName: "Wiki", type: "page" };
+    const pageSlot = {
+      id: "wiki-page",
+      pluginKey: contribution.pluginKey,
+      displayName: "Wiki",
+      type: "page",
+      routePath: "wiki",
+    };
     mockPluginSlots.slots = [pageSlot];
     mockPluginsApi.listUiContributions.mockResolvedValue([{ ...contribution, slots: [pageSlot] }]);
 
