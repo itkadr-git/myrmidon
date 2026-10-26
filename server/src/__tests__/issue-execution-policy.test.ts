@@ -125,13 +125,6 @@ describe("normalizeIssueExecutionPolicy", () => {
       protectedAgent: { requiresApproval: true, approvalReason: "Security review" },
     });
   });
-    const result = normalizeIssueExecutionPolicy({
-      stages: [
-        { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
-      ],
-    });
-    expect(result!.mode).toBe("normal");
-  });
 
   it("defaults mode to normal", () => {
     const result = normalizeIssueExecutionPolicy({
