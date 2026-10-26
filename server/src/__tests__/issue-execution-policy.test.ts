@@ -100,32 +100,6 @@ describe("normalizeIssueExecutionPolicy", () => {
     expect(result!.commentRequired).toBe(true);
   });
 
-  it("normalizes legacy sequential mode while preserving stages and monitor", () => {
-    const result = normalizeIssueExecutionPolicy({
-      mode: "sequential",
-      stages: [
-        { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
-        { type: "approval", participants: [{ type: "user", userId: ctoUserId }] },
-      ],
-      monitor: {
-        nextCheckAt: "2026-04-11T12:30:00.000Z",
-        notes: "Check deployment",
-        externalRef: "https://example.test/deploy",
-      },
-      authorizationPolicy: {
-        protectedAgent: { requiresApproval: true, approvalReason: "Security review" },
-      },
-    });
-
-    expect(result?.mode).toBe("normal");
-    expect(result?.stages).toHaveLength(2);
-    expect(result?.stages[1].participants[0].userId).toBe(ctoUserId);
-    expect(result?.monitor?.notes).toBe("Check deployment");
-    expect(result?.authorizationPolicy).toEqual({
-      protectedAgent: { requiresApproval: true, approvalReason: "Security review" },
-    });
-  });
-
   it("defaults mode to normal", () => {
     const result = normalizeIssueExecutionPolicy({
       stages: [
@@ -133,36 +107,6 @@ describe("normalizeIssueExecutionPolicy", () => {
       ],
     });
     expect(result!.mode).toBe("normal");
-  });
-
-  it("normalizes legacy sequential mode while preserving stages, monitor, and authorization", () => {
-    const result = normalizeIssueExecutionPolicy({
-      mode: "sequential",
-      stages: [
-        { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
-        { type: "approval", participants: [{ type: "user", userId: ctoUserId }] },
-      ],
-      monitor: {
-        nextCheckAt: "2026-04-11T12:30:00.000Z",
-        notes: "Check deployment",
-        externalRef: "https://example.test/deploy",
-      },
-      authorizationPolicy: {
-        protectedAgent: { requiresApproval: true, approvalReason: "Security review" },
-      },
-    });
-
-    expect(result?.mode).toBe("normal");
-    expect(result?.stages).toHaveLength(2);
-    expect(result?.stages[1].participants[0].userId).toBe(ctoUserId);
-    expect(result?.monitor?.notes).toBe("Check deployment");
-    expect(result?.authorizationPolicy).toEqual({
-      protectedAgent: { requiresApproval: true, approvalReason: "Security review" },
-    });
-  });
-
-  it("still rejects unsupported new execution policy modes", () => {
-    expect(() => normalizeIssueExecutionPolicy({ mode: "parallel", stages: [] })).toThrow("Invalid execution policy");
   });
 
   it("rejects approvalsNeeded values above 1", () => {
