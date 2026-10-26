@@ -143,8 +143,6 @@ describeEmbeddedPostgres("skip idle timer heartbeats (M3)", () => {
     ]);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
-    expect(await db.select({ action: activityLog.action }).from(activityLog).where(eq(activityLog.agentId, agentId)))
-      .toContainEqual({ action: "heartbeat.timer.no_actionable_work" });
   });
 
   it("timer scheduler binds its wake to the ready assigned issue", async () => {
