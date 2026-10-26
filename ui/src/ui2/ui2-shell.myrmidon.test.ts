@@ -121,7 +121,7 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     const shellSource = readFileSync(join(UI_SRC, "ui2", "shell", "Ui2Shell.tsx"), "utf8");
     expect(rootSource).not.toMatch(/<PluginLauncherProvider\b/);
     expect(shellSource).not.toMatch(/<PluginLauncherProvider\b/);
-    expect(shellSource).toContain("PluginLauncherProvider wraps the tree ONCE");
+    expect(shellSource).toContain("PluginLauncherProvider is installed at the application root");
   });
 
   it("the theme keys the RU display-font switch on [lang=ru] and keeps the wordmark font", () => {

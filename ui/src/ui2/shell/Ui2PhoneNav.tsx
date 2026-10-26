@@ -3,13 +3,15 @@
 // Touch targets: tab items 60px high (screen-map §3.3: >= 44px, bar items 60).
 // Desktop rail is hidden on phone; pages render in the column between the
 // two bars.
+import { useEffect, useRef } from "react";
 import { useTranslation } from "@/i18n";
+import { useUi2I18n } from "../i18n/Ui2I18n";
 import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_PHONE_TABS } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
 import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
-import { PluginLauncherOutlet } from "@/plugins/launchers";
+import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 import { useCompany } from "@/context/CompanyContext";
 
 function PhoneTab({
@@ -128,16 +130,32 @@ export function isUi2PhoneTabActive(tabPath: string, pathname: string): boolean 
 
 export function Ui2PhoneTabBar() {
   const { t } = useTranslation();
+  const { t: tUi2 } = useUi2I18n();
   const location = useLocation();
   const attentionCount = useUi2AttentionCount();
   const { selectedCompany } = useCompany();
   const { slots: pluginSlots } = usePluginSlots({ slotTypes: ["sidebar"], companyId: selectedCompany?.id });
-  const hasPlugins = pluginSlots.length > 0;
+  const { launchers } = usePluginLaunchers({ placementZones: ["sidebar"], companyId: selectedCompany?.id, enabled: !!selectedCompany?.id });
+  const hasPlugins = pluginSlots.length > 0 || launchers.length > 0;
+  const navigationRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = navigationRef.current;
+    if (!element) return;
+    const updateHeight = () => {
+      const pluginSection = element.querySelector("section");
+      element.style.setProperty("--myr-phone-plugins-height", `${pluginSection ? pluginSection.getBoundingClientRect().height : 0}px`);
+    };
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [hasPlugins, pluginSlots.length, launchers.length]);
 
   return (
     <div
+      ref={navigationRef}
       className="myr-ui2__phone-navigation"
-      style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "var(--myr-surface-raised)", borderTop: "1px solid var(--myr-hairline)", ["--myr-phone-plugins-height" as string]: hasPlugins ? "112px" : "0px" }}
+      style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "var(--myr-surface-raised)", borderTop: "1px solid var(--myr-hairline)" }}
     >
       <nav
         className="myr-ui2__phone-tabbar"
@@ -165,9 +183,9 @@ export function Ui2PhoneTabBar() {
         })}
       </nav>
       {hasPlugins ? (
-        <section aria-label={t("ui2.nav.group.plugins", { defaultValue: "Plugins" })} style={{ borderTop: "1px solid var(--myr-hairline)", padding: "6px 8px", maxHeight: 112, overflowY: "auto" }}>
+        <section aria-label={tUi2("ui2.nav.group.plugins")} style={{ borderTop: "1px solid var(--myr-hairline)", padding: "6px 8px", maxHeight: 112, overflowY: "auto" }}>
           <div style={{ fontSize: "var(--myr-text-nano)", fontWeight: 700, color: "var(--myr-ink-muted)", padding: "2px 4px 6px" }}>
-            {t("ui2.nav.group.plugins", { defaultValue: "Plugins" })}
+            {tUi2("ui2.nav.group.plugins")}
           </div>
           {pluginSlots.map((slot) => (
             <PluginSlotMount key={`${slot.pluginKey}:${slot.id}`} slot={slot} context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }} />

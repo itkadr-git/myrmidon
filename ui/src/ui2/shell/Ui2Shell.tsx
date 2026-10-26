@@ -7,8 +7,7 @@
 // the outlet renders the routes. Settings routes get the internal 10-section
 // side panel (screen-map §3.1); the `lang` prop keys the RU display-font
 // switch (UI-0b contract).
-// OPE-9380: PluginLauncherProvider wraps the tree ONCE, in Ui2Root — this
-// component must not nest a second one.
+// PluginLauncherProvider is installed at the application root in ui/src/main.tsx.
 import type { ReactNode } from "react";
 import { Outlet, useLocation } from "@/lib/router";
 import { useIsMobileViewport } from "../useIsMobileViewport";
@@ -42,9 +41,7 @@ export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: stri
         <main style={{ flex: 1, minWidth: 0, paddingBottom: "calc(var(--myr-phone-tabbar-height) + var(--myr-phone-plugins-height, 0px))" }}>
           {content}
         </main>
-        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0 }}>
-          <Ui2PhoneTabBar />
-        </div>
+        <Ui2PhoneTabBar />
       </div>
     );
   }

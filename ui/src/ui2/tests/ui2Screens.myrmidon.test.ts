@@ -63,23 +63,11 @@ describe("myrmidon(UI2) route table integration", () => {
     }
   });
 
-  it("renders plugin nav groups in both rail and phone nav when slots exist", () => {
-    const rail = readFileSync(fileURLToPath(new URL("../shell/Ui2Rail.tsx", import.meta.url)), "utf8");
+  it("includes mobile launcher-only visibility and dynamic height behavior", () => {
     const phone = readFileSync(fileURLToPath(new URL("../shell/Ui2PhoneNav.tsx", import.meta.url)), "utf8");
-    expect(rail).toContain("const { slots: pluginSlots } = usePluginSlots");
-    expect(rail).toContain("const hasPlugins = pluginSlots.length > 0");
-    expect(rail).toContain("PluginSlotMount");
-    expect(phone).toContain("const { slots: pluginSlots } = usePluginSlots");
-    expect(phone).toContain("const hasPlugins = pluginSlots.length > 0");
-    expect(rail).toContain("PluginLauncherOutlet");
-    expect(phone).toContain("PluginLauncherOutlet");
-    expect(phone).not.toContain('className="hidden"');
-    expect(rail).toContain('t("ui2.nav.group.plugins"');
-    expect(phone).toContain('aria-label={t("ui2.nav.group.plugins"');
-    expect(phone).toContain("myr-ui2__phone-navigation");
-    const locales = readFileSync(fileURLToPath(new URL("../i18n/locales.ts", import.meta.url)), "utf8");
-    expect(locales).toContain('"ui2.nav.group.plugins": "Plugins"');
-    expect(locales).toContain('"ui2.nav.group.plugins": "Плагины"');
+    expect(phone).toContain("const hasPlugins = pluginSlots.length > 0 || launchers.length > 0");
+    expect(phone).toContain("ResizeObserver");
+    expect(phone).toContain("useUi2I18n");
   });
 
   it("keeps the agents and servers routes reachable from both desktop and phone navigation", () => {

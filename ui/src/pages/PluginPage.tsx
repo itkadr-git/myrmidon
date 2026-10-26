@@ -10,6 +10,7 @@ import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   PluginSlotMount,
+  ensurePluginContributionLoaded,
   usePluginSlots,
   resolveRouteSidebarSlot,
   type ResolvedPluginSlot,
@@ -61,8 +62,14 @@ export function PluginPage() {
     queryFn: () => pluginsApi.listUiContributions(),
     enabled: !!resolvedCompanyId && (!!pluginId || !!pluginRoutePath),
   });
-  // This slot lookup loads the plugin UI module even when a plugin route is opened directly.
-  usePluginSlots({ slotTypes: ["page"], companyId: resolvedCompanyId, enabled: !!resolvedCompanyId && (!!pluginId || !!pluginRoutePath) });
+  const { slots: pageSlots } = usePluginSlots({ slotTypes: ["page"], companyId: resolvedCompanyId, enabled: !!resolvedCompanyId && (!!pluginId || !!pluginRoutePath) });
+  useEffect(() => {
+    if (!contributions || !resolvedCompanyId || (!pluginId && !pluginRoutePath)) return;
+    const matched = pluginId
+      ? contributions.find((contribution) => contribution.pluginId === pluginId)
+      : contributions.find((contribution) => contribution.slots.some((slot) => slot.type === "page" && slot.routePath === pluginRoutePath));
+    if (matched) void ensurePluginContributionLoaded(matched);
+  }, [contributions, resolvedCompanyId, pluginId, pluginRoutePath]);
 
   const pageSlot = useMemo(() => {
     if (!contributions) return null;
@@ -93,7 +100,7 @@ export function PluginPage() {
     });
     if (matches.length !== 1) return null;
     return matches[0] ?? null;
-  }, [pluginId, pluginRoutePath, contributions]);
+  }, [pluginId, pluginRoutePath, contributions, pageSlots]);
 
   const context = useMemo(
     () => ({
