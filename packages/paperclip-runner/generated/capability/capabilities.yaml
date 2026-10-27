@@ -877,7 +877,7 @@
     {
       "id": "skill:skills/paperclip/references/api-reference.md:1485",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md#L1485:agent-secret-proposals",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md#L1478:agent-secret-proposals",
       "heading": "Agent secret proposals",
       "primaryDisposition": "optional_agent_tool",
       "semanticOperation": "scoped_discovery",
@@ -895,7 +895,7 @@
     {
       "id": "skill:skills/paperclip/references/api-reference.md:1599",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md#L1599:agent-secret-access",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md#L1592:agent-secret-access",
       "heading": "Agent secret access",
       "primaryDisposition": "optional_agent_tool",
       "semanticOperation": "scoped_discovery",
@@ -904,7 +904,7 @@
     {
       "id": "skill:skills/paperclip/references/api-reference.md:1639",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md#L1639:common-mistakes",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md#L1632:common-mistakes",
       "heading": "Common Mistakes",
       "primaryDisposition": "optional_agent_tool",
       "semanticOperation": "scoped_discovery",
