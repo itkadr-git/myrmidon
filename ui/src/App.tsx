@@ -96,6 +96,7 @@ import { OwnerDeliveryScreen } from "./components/myrmidon/owner-delivery/OwnerD
 import { AgentExchangeFeedScreen } from "./components/myrmidon/AgentExchangeFeedScreen"; // myrmidon(1.7-AGENT-EXCHANGE-B)
 import { ReviewRoutingScreen } from "./components/myrmidon/review-routing/ReviewRoutingScreenContainer"; // myrmidon(REVIEW-ROUTING)
 import { CorpusScreen } from "./components/myrmidon/corpus/CorpusScreenContainer"; // myrmidon(1.6.6 CORPUS E)
+import { KnowledgeReview } from "./pages/KnowledgeReview";
 import { Ui2KnowledgeCurrentUi } from "./ui2/screens/knowledge/Ui2KnowledgeCurrentUi"; // myrmidon(OPE-9222)
 import { BudgetLimitsScreen } from "./components/myrmidon/budget-limits/BudgetLimitsScreenContainer"; // myrmidon(1.7 BUDGET-CONFIG D)
 
@@ -235,6 +236,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/wip-limit" element={<WipLimitScreen />} /> {/* myrmidon(1.6.1 WIP-LIMIT B) */}
       <Route path="company/settings/owner-delivery" element={<OwnerDeliveryScreen />} /> {/* myrmidon(1.6.5-OWNER-DM-FILTER) */}
       <Route path="company/settings/review-routing" element={<ReviewRoutingScreen />} /> {/* myrmidon(REVIEW-ROUTING) */}
+      <Route path="knowledge/review" element={<KnowledgeReview />} />
       <Route path="wiki" element={<Ui2KnowledgeCurrentUi />} /> {/* myrmidon(OPE-9222): the Knowledge screen of the current UI */}
       <Route path="wiki/:spaceKey/:slug" element={<Ui2KnowledgeCurrentUi />} />
       <Route path="company/settings/corpus" element={<CorpusScreen />} /> {/* myrmidon(1.6.6 CORPUS E): the knowledge corpus settings screen route */}

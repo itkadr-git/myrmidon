@@ -14,6 +14,9 @@ import {
 } from "../lib/inboxArchiveCache";
 import { taskCollectionPreferencesStorageKey } from "../lib/task-collection-preferences";
 
+import { loadInboxFilterPreferences, saveInboxFilterPreferences } from "../lib/inbox";
+import { KnowledgeReview } from "./KnowledgeReview";
+
 const routerMock = vi.hoisted(() => ({
   location: { pathname: "/", search: "", hash: "" },
   navigate: vi.fn(),
@@ -24,6 +27,7 @@ const externalObjectMocks = vi.hoisted(() => ({
 }));
 
 const apiMocks = vi.hoisted(() => ({
+  knowledgeSuggestions: vi.fn(),
   approvalsList: vi.fn(),
   joinRequestsList: vi.fn(),
   userDirectoryList: vi.fn(),
@@ -41,6 +45,8 @@ const apiMocks = vi.hoisted(() => ({
   experimentalSettings: vi.fn(),
   projectsList: vi.fn(),
 }));
+
+vi.mock("../api/knowledge", () => ({ knowledgeApi: { listSuggestions: apiMocks.knowledgeSuggestions } }));
 
 vi.mock("../api/approvals", () => ({
   approvalsApi: { list: apiMocks.approvalsList },
@@ -388,6 +394,31 @@ describe("Inbox toolbar", () => {
       clearLocalInboxArchive("company-1", issueId);
     }
     container.remove();
+  });
+
+  it.each([true, false])("shows knowledge suggestions and links to review (streamlined=%s)", async (streamlined) => {
+    routerMock.location.pathname = "/inbox/all";
+    apiMocks.experimentalSettings.mockResolvedValue({ streamlinedDrilldown: streamlined });
+    saveInboxFilterPreferences("company-1", { ...loadInboxFilterPreferences("company-1"), allCategoryFilter: "knowledge" });
+    apiMocks.issuesList.mockResolvedValue([createIssue({ title: "Task hidden by knowledge filter" })]);
+    apiMocks.knowledgeSuggestions.mockResolvedValue([{ id: "suggestion-1", body: "Reusable knowledge proposal", status: "pending", trust: null, targetItemId: null, createdAt: "2026-10-27T00:00:00Z" }]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(async () => { root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>); });
+    await vi.waitFor(() => expect(container.textContent).toContain("Reusable knowledge proposal"));
+    expect(container.textContent).not.toContain("Task hidden by knowledge filter");
+    expect(apiMocks.knowledgeSuggestions).toHaveBeenCalledWith("company-1");
+    expect(container.querySelector('a[href="/knowledge/review"]')?.textContent).toContain("Reusable knowledge proposal");
+    act(() => root.unmount());
+  });
+
+  it("renders the suggestion on the review destination", async () => {
+    apiMocks.knowledgeSuggestions.mockResolvedValue([{ id: "suggestion-1", body: "Review this proposal", status: "pending", trust: null, targetItemId: null, createdAt: "2026-10-27T00:00:00Z" }]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(async () => { root.render(<QueryClientProvider client={client}><KnowledgeReview /></QueryClientProvider>); });
+    await vi.waitFor(() => expect(container.querySelector("article")?.textContent).toContain("Review this proposal"));
+    act(() => root.unmount());
   });
 
   it("restores the legacy toolbar and issue-row presentation when Streamlined UI is off", async () => {

@@ -68,6 +68,7 @@ type InboxScopeFilters = {
 const inboxCategoryOptions = (): ReadonlyArray<[InboxCategoryFilter, string]> => [
   ["everything", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.everything")],
   ["issues_i_touched", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.issuesITouched")],
+  ["knowledge", i18n.t("ui2.nav.knowledge")],
   ["join_requests", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.joinRequests")],
   ["approvals", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.approvals")],
   ["failed_runs", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.failedRuns")],
