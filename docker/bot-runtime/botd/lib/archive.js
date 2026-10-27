@@ -515,9 +515,13 @@ function retentionFiles(archiveRoot, entry) {
   if (!files.length) throw new Error("archive has no files");
   for (const file of files) {
     // Do not normalise traversal or accept arbitrary manifest paths/protected data.
+    // Accept current writer names KEY-YYYYMMDDTHHMMSSZ.ext plus legacy
+    // KEY.ext / KEY-x.ext fixtures. Keep the stem anchored so arbitrary files
+    // (state.db, session/auth, media) can never enter retention via a manifest.
+    const archiveBasename = /^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,80}-\d{8}T\d{6}Z|[A-Za-z0-9][A-Za-z0-9._-]{0,80}(?:-[A-Za-z0-9._-]+)?)\.(bundle|patch|untracked\.tar|dir\.tar|full\.tar\.zst)$/;
     if (!path.isAbsolute(file) || file.split(path.sep).some((p) => p === "." || p === "..") ||
         path.dirname(file) !== root ||
-        !/^.+-\d{8}T\d{6}Z\.(bundle|patch|untracked\.tar|dir\.tar|full\.tar\.zst)$/.test(path.basename(file))) {
+        !archiveBasename.test(path.basename(file))) {
       throw new Error("unsafe archive file path");
     }
     try {
