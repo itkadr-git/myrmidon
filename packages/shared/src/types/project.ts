@@ -4,6 +4,7 @@ import type {
   ProjectWorkspaceRuntimeConfig,
   WorkspaceRuntimeService,
 } from "./workspace-runtime.js";
+import type { AgentEnvConfig } from "./secrets.js";
 import type { ProjectDevelopmentProcess } from "./project-development-process.js";
 
 export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
