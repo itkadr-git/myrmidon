@@ -104,7 +104,7 @@ export const knowledgeProposeSchema = z.object({
   targetItemId: z.string().min(1).max(200).nullish(),
   targetSlug: z.string().min(1).max(200).nullish(),
   title: z.string().min(1).max(300).optional(),
-  recommendation: z.enum(["accepted", "declined"], { description: "Classifier disposition based on the supplied evidence." }),
+  recommendation: z.enum({ accepted: "accepted", declined: "declined" }, { description: "Classifier disposition based on the supplied evidence." }),
   rationale: z.string().min(1).max(2000, "Classifier explanation grounded in the supplied evidence."),
   body: z.string().min(1).max(500_000),
   folderPath: z.string().max(500).optional(),
