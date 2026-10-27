@@ -4,13 +4,17 @@ import { nextContinuationDelay } from "./continuation-backoff.js";
 const WINDOW_MS = 3 * 60 * 60 * 1000;
 const MAX_EVENTS = 6;
 
-function simulateWindow(windowMs: number, requestCount: number): number[] {
+function simulateWindow(
+  windowMs: number,
+  requestCount: number,
+  maxContinuations = MAX_EVENTS,
+): number[] {
   const acceptedAt: number[] = [];
   let time = 0;
 
   for (let request = 0; request < requestCount; request += 1) {
     const recent = acceptedAt.filter((eventAt) => eventAt > time - windowMs);
-    time += nextContinuationDelay({ recentCount: recent.length, windowMs });
+    time += nextContinuationDelay({ recentCount: recent.length, windowMs, maxContinuations });
     acceptedAt.push(time);
   }
 
