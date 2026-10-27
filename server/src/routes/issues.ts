@@ -14931,8 +14931,6 @@ export function issueRoutes(
       const attachmentCommentSourceTrust = commentAttachmentIds?.length
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
-      const reviewActivityRequiresTransaction =
-        persistReviewActivityTransactionally;
       const exitingReviewWithExplicitAssignee =
         existing.status === "in_review" &&
         updateFields.status !== undefined &&
@@ -14943,7 +14941,10 @@ export function issueRoutes(
           Boolean(commentAttachmentIds?.length) ||
           Boolean(decision) ||
           shouldRelayStop ||
-          reviewActivityRequiresTransaction || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
+          enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
+          persistReviewActivityTransactionally ||
+          ((updateFields.status === "in_review" || existing.status === "in_review") &&
+            assigneeWillChange) ||
           exitingReviewWithExplicitAssignee ||
           reviewPolicySensitiveMutationRequested ||
           humanUnblockPossible ||
