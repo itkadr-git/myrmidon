@@ -424,6 +424,7 @@ const en = {
   // myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): the Knowledge screen (read / search /
   // revisions) and the Regulations screen in Autonomy.
   "ui2.knowledge.title": "Knowledge",
+  "ui2.knowledge.reviewQueue": "Review suggestions",
   "ui2.knowledge.subtitle": "Read, search and re-approve what the company knows.",
   "ui2.knowledge.search.placeholder": "Search knowledge…",
   "ui2.knowledge.search.mode.fulltext": "Full text",
@@ -904,6 +905,7 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.settings.navLabel": "Настройки",
   // myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): экран «Знания» и «Регламенты» в Автономии.
   "ui2.knowledge.title": "Знания",
+  "ui2.knowledge.reviewQueue": "Разбор предложений",
   "ui2.knowledge.subtitle": "Читайте, ищите и переутверждайте то, что знает компания.",
   "ui2.knowledge.search.placeholder": "Поиск по знаниям…",
   "ui2.knowledge.search.mode.fulltext": "По тексту",
