@@ -507,16 +507,62 @@ export function verifyEntry(entry, opts = {}) {
  * @param {{now?:Date, maxAgeDays?:number, capBytes?:number, keepCreatedAt?:string[]}} [opts]
  * @returns {{ok:true, removed:object[], remainingBytes:number, remaining:number}|{ok:false, reason:string}}
  */
+function retentionFiles(archiveRoot, entry) {
+  const root = path.resolve(archiveRoot);
+  const rootStat = fs.lstatSync(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("unsafe archive root");
+  const files = entryFiles(entry);
+  if (!files.length) throw new Error("archive has no files");
+  for (const file of files) {
+    // Do not normalise traversal or accept arbitrary manifest paths/protected data.
+    if (!path.isAbsolute(file) || file.split(path.sep).some((p) => p === "." || p === "..") ||
+        path.dirname(file) !== root ||
+        !/^.+-\d{8}T\d{6}Z\.(bundle|patch|untracked\.tar|dir\.tar|full\.tar\.zst)$/.test(path.basename(file))) {
+      throw new Error("unsafe archive file path");
+    }
+    try {
+      const st = fs.lstatSync(file);
+      if (!st.isFile() || st.isSymbolicLink() || st.nlink !== 1) throw new Error("unsafe archive file type");
+    } catch (err) { if (err.code !== "ENOENT") throw err; }
+  }
+  return files;
+}
+
+function retentionAudit(archiveRoot, record) {
+  const fd = fs.openSync(path.join(archiveRoot, "retention-journal.jsonl"),
+    fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.nlink !== 1) throw new Error("unsafe retention journal");
+    fs.writeSync(fd, `${JSON.stringify(record)}\n`);
+    fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
+}
+
 export function retain(archiveRoot, opts = {}) {
   const now = opts.now || new Date();
   const maxAge = (opts.maxAgeDays ?? RETENTION_DAYS) * DAY_MS;
   const capBytes = opts.capBytes ?? RETENTION_CAP_BYTES;
   const keep = new Set(opts.keepCreatedAt || []);
   try {
-    const manifest = readManifest(archiveRoot, now);
+    const manifestFile = path.join(archiveRoot, MANIFEST_NAME);
+    if (fs.existsSync(manifestFile) && !fs.lstatSync(manifestFile).isFile()) throw new Error("unsafe archive manifest");
+    if (fs.existsSync(manifestFile) && fs.lstatSync(manifestFile).isSymbolicLink()) throw new Error("unsafe archive manifest");
+    const manifest = opts.dryRun
+      ? JSON.parse(fs.readFileSync(manifestFile, "utf8"))
+      : readManifest(archiveRoot, now);
+    // Validate the complete batch before deleting any entry.
+    for (const entry of manifest.archives) if (entry) retentionFiles(archiveRoot, entry);
     const removed = [];
     const drop = (entry, why) => {
-      for (const f of entryFiles(entry)) fs.rmSync(f, { force: true });
+      const files = retentionFiles(archiveRoot, entry);
+      if (!opts.dryRun) {
+        retentionAudit(archiveRoot, { at: now.toISOString(), action: "delete-intent", key: entry.key, files, reason: why });
+        for (const f of files) {
+          try { fs.unlinkSync(f); } catch (err) { if (err.code !== "ENOENT") throw err; }
+        }
+        retentionAudit(archiveRoot, { at: now.toISOString(), action: "deleted", key: entry.key, files, reason: why });
+      }
       removed.push({ key: entry.key, createdAt: entry.createdAt, sizeBytes: entry.sizeBytes, reason: why });
     };
     const withSize = (e) => ({ e, size: entryFiles(e).reduce((s, f) => s + sizeOf(f), 0) });
@@ -541,7 +587,7 @@ export function retain(archiveRoot, opts = {}) {
       } else rest.push(x);
     }
     alive = rest;
-    if (removed.length > 0 || alive.length !== manifest.archives.length) {
+    if (!opts.dryRun && (removed.length > 0 || alive.length !== manifest.archives.length)) {
       writeManifest(archiveRoot, { version: 1, archives: alive.map((x) => x.e) });
     }
     return { ok: true, removed, remainingBytes: total, remaining: alive.length };
