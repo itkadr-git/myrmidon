@@ -55,12 +55,27 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
+    const connectionId = randomUUID();
+    const grantId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "GHE" });
     await db.insert(agents).values({ id: agentId, companyId, name: "worker", role: "engineer" });
+    const [application] = await db.insert(toolApplications).values({
+      companyId, applicationKey: `github-${randomUUID()}`, name: "GitHub", type: "mcp_server", status: "active",
+    }).returning({ id: toolApplications.id });
+    await db.insert(toolConnections).values({
+      id: connectionId, companyId, applicationId: application!.id, name: "GitHub", uid: `github-${randomUUID()}`,
+      transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user", status: "active", enabled: true,
+      config: { sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } }, transportConfig: {},
+    });
+    await db.insert(connectionGrants).values({
+      id: grantId, companyId, connectionId, kind: "agent", subjectAgentId: agentId, status: "active", isDefault: false,
+      providerTenant: { github: { userId: "42", login: "octocat", installationCount: 1, repositoryCount: 1,
+        repositorySelection: "selected", installationIds: ["101"], installationOwnerLogins: ["paperclipai"] } },
+    });
     await db.insert(issues).values({ id: issueId, companyId, title: "PR task", status: "in_progress", assigneeAgentId: agentId });
     await db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", externalId: "paperclipai/paperclip#pull/123", title: "PR #123", status: "open", metadata: { repository: "paperclipai/paperclip", number: 123 } });
     const events = [false, true].map((merged, i) => ({
-      id: `delivery-pr-close-${i}`, provider: "github" as const, event: "pull_request", action: "closed", installationId: "101", repositoryId: "99", createdAt: "2026-09-04T12:00:00.000Z", bindingIds: [],
+      id: `delivery-pr-close-${i}`, provider: "github" as const, event: "pull_request", action: "closed", installationId: "101", repositoryId: "99", createdAt: "2026-09-04T12:00:00.000Z", bindingIds: [`${grantId}_101`],
       payload: { repository: "paperclipai/paperclip", number: 123, state: "closed", merged, mergedAt: merged ? "2026-09-04T11:59:00.000Z" : null, updatedAt: "2026-09-04T12:00:00.000Z", url: "https://github.com/paperclipai/paperclip/pull/123" },
     }));
     const connector = { getCapabilities: vi.fn(async () => ["github.code" as const]), startAuthorization: vi.fn(), claim: vi.fn(), refresh: vi.fn(), revoke: vi.fn(), setWebhookBinding: vi.fn(async () => undefined), leaseEvents: vi.fn(async () => ({ leaseId: randomUUID(), events: [events.shift()!] })), acknowledgeEvents: vi.fn(async () => 1) } as unknown as PaperclipCloudConnector;
