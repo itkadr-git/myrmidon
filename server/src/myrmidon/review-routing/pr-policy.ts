@@ -34,7 +34,7 @@ export interface PullRequestHeadState extends PrRef {
 }
 
 export function shouldHandOffDeliveringPr(head: PullRequestHeadState): boolean {
-  return head.open && !head.draft && !head.fetchFailed && head.mergeable === true && head.ci !== "not_green";
+  return head.open && !head.draft && !head.fetchFailed && head.mergeable === true && head.ci === "green";
 }
 
 /** The board-side view of an open pr-routing task, for coverage and supersede. */
@@ -59,14 +59,14 @@ export interface PrRoutedTask {
  */
 export function reviewTaskDueForHead(head: PullRequestHeadState): boolean {
   if (!head.open || head.draft) return false;
-  if (head.fetchFailed || head.ci !== "green") return false;
+  if (head.fetchFailed || head.ci !== "green" || head.mergeable !== true) return false;
   return head.reviewDecision === null;
 }
 
 /** The steward trigger: open, green, APPROVED on the current head. */
 export function stewardTaskDueForHead(head: PullRequestHeadState): boolean {
   if (!head.open) return false;
-  if (head.fetchFailed || head.ci !== "green") return false;
+  if (head.fetchFailed || head.ci !== "green" || head.mergeable !== true) return false;
   return head.reviewDecision === "APPROVED";
 }
 

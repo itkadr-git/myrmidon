@@ -47,6 +47,7 @@ function head(overrides: Partial<PullRequestHeadState> = {}): PullRequestHeadSta
     ci: "green",
     reviewDecision: null,
     fetchFailed: false,
+    mergeable: true,
     baseRef: "main",
     ...overrides,
   };
@@ -294,6 +295,11 @@ describe("pickPrReviewer", () => {
 });
 
 describe("PR lane triggers (pr-policy)", () => {
+  it("requires resolved mergeability before routing a PR", () => {
+    expect(reviewTaskDueForHead(head({ mergeable: null }))).toBe(false);
+    expect(reviewTaskDueForHead(head({ mergeable: false }))).toBe(false);
+    expect(stewardTaskDueForHead(head({ mergeable: null, reviewDecision: "APPROVED" }))).toBe(false);
+  });
   it("fires on a green head with no verdict", () => {
     expect(reviewTaskDueForHead(head())).toBe(true);
   });
