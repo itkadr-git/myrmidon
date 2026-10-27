@@ -20132,17 +20132,14 @@ export function heartbeatService(
     let expired = 0;
     for (const row of staleWakes) {
       const wake = row.wake;
+      const wakePayload = parseObject(wake.payload);
+      if (wakePayload.executionWait !== undefined) continue;
       const [cancelled] = await db.update(agentWakeupRequests).set({
         status: "cancelled", error: "deferred_issue_execution_expired", finishedAt: new Date(), updatedAt: new Date(),
       }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
         lt(agentWakeupRequests.requestedAt, staleCutoff))).returning({ id: agentWakeupRequests.id });
       if (!cancelled) continue;
       expired++;
-      const wakePayload = parseObject(wake.payload);
-      const executionWait = parseObject(wakePayload.executionWait);
-      if (executionWait.reason && executionWait.message) {
-        await resumeExecutionWaitComments().catch((err) => logger.warn({ err, wakeId: wake.id }, "failed to resume expired execution wait"));
-      }
       await enqueueWakeup(wake.agentId, { source: "automation", reason: "deferred_issue_execution_expired", payload: {
         issueId: readNonEmptyString(wake.payload?.issueId) ?? readNonEmptyString(wake.payload?.taskId),
         expiredWakeId: wake.id,
@@ -20150,6 +20147,8 @@ export function heartbeatService(
         .catch(err => logger.warn({ err, wakeId: wake.id }, "failed to re-wake agent after deferred issue execution expiry"));
     }
     const settleBefore = new Date(now - 2 * 60_000);
+    // Execution-wait deferrals belong to the queued-comment resume path; the
+    // stale issue-execution expiry must not cancel them before their blocker clears.
     // Wakes of a closed task are dead input: the comment is saved on the task,
     // the wake itself can only start work nobody wants. Cancel them like the
     // close transition does (DEFERRED-WAKE-LEAK), with the same marker.

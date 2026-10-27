@@ -166,26 +166,23 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
     return row!;
   }
 
+  it("does not expire execution-wait wakes even after thirty minutes", async () => {
+    const issueId = await seedIssue("todo");
+    const expiredAt = new Date(Date.now() - 31 * 60_000);
+    const wakeId = await seedDeferredWake(issueId, {
+      payload: { issueId, executionWait: { reason: "process_running", message: "Waiting for process." } },
+      requestedAt: expiredAt, createdAt: expiredAt, updatedAt: expiredAt,
+    });
+    const result = await heartbeat.reconcileStrandedDeferredWakes();
+    const row = await wakeRow(wakeId);
+    expect(result.expired).toBe(0);
+    expect(row.status).toBe("deferred_issue_execution");
+  });
+
   it("expires deferred wakes older than thirty minutes and records the reason", async () => {
     const issueId = await seedIssue("todo");
     const expiredAt = new Date(Date.now() - 31 * 60_000);
     const wakeId = await seedDeferredWake(issueId, { requestedAt: expiredAt, updatedAt: expiredAt });
-    const result = await heartbeat.reconcileStrandedDeferredWakes();
-    const row = await wakeRow(wakeId);
-    expect(result.expired).toBe(1);
-    expect(row.status).toBe("cancelled");
-    expect(row.error).toBe("deferred_issue_execution_expired");
-    expect(row.finishedAt).not.toBeNull();
-  });
-
-  it("expires deferred wakes with an execution wait after thirty minutes", async () => {
-    const issueId = await seedIssue("todo");
-    const expiredAt = new Date(Date.now() - 31 * 60_000);
-    const wakeId = await seedDeferredWake(issueId, {
-      payload: { issueId, executionWait: { reason: "blocked", message: "wait" } },
-      requestedAt: expiredAt,
-      updatedAt: expiredAt,
-    });
     const result = await heartbeat.reconcileStrandedDeferredWakes();
     const row = await wakeRow(wakeId);
     expect(result.expired).toBe(1);
