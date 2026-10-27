@@ -5,13 +5,9 @@ import { applyCompanyPrefix, extractCompanyPrefixFromPath, isBoardPathWithoutPre
 
 describe("company routes", () => {
   it("keeps board route roots in sync with the company-prefixed route tree", () => {
-    const appSource = readFileSync(fileURLToPath(new URL("../App.tsx", import.meta.url)), "utf8");
-    const routeBlock = appSource.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
-    expect(routeBlock).toBeDefined();
-    const roots = (block: string) => new Set([...block.matchAll(/path="([a-z][a-z0-9-]*)/g)].map(([, root]) => root!));
-    const routeRoots = roots(routeBlock!);
-    const boardRouteRoots = new Set([...routeRoots].filter((root) => !["runs", "budgets"].includes(root)));
-    for (const root of ["onboarding", "plugins", "tests", "status-cards", "review-queue", "learnings", "dev", "instance", "chat-identity", "ux-lab"]) boardRouteRoots.delete(root);
+    const routesSource = readFileSync(fileURLToPath(new URL("../ui2/routes.tsx", import.meta.url)), "utf8");
+    const routePaths = [...routesSource.matchAll(/\bpath:\s*"([^"]+)"/g)].map(([, path]) => path!);
+    const boardRouteRoots = new Set(routePaths.map((path) => path.split("/")[0]!));
     const source = readFileSync(fileURLToPath(new URL("./company-routes.ts", import.meta.url)), "utf8");
     const rootsBlock = source.match(/const BOARD_ROUTE_ROOTS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
     expect(rootsBlock).toBeDefined();
