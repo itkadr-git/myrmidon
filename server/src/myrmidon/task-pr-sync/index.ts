@@ -15,11 +15,7 @@ export { createTaskPrSyncSweep, reconcileClosedIssuePullRequests } from "./sweep
 export { decideTaskPrSync, effectivePullRequestState, settlePendingForProducts } from "./policy.js";
 export { readTaskPrSyncSettings } from "./settings.js";
 
-/**
- * Starts the scheduler-owned interval for task PR synchronization. The caller is
- * responsible for leadership checks before calling `start()` and stopping it at
- * shutdown; no heartbeat callback is scheduled here.
- */
+/** Builds a sweep runner. The process scheduler owns its timer and leadership gate. */
 export function createTaskPrSyncScheduler(input: {
   db: Db;
   track: (work: Promise<unknown>) => void;
@@ -55,9 +51,5 @@ export function createTaskPrSyncScheduler(input: {
         }),
     );
   };
-  const intervalMs = readTaskPrSyncSettings(input.env).pollMs;
-  const interval = setInterval(run, intervalMs);
-  interval.unref?.();
-  const stop = () => clearInterval(interval);
-  return Object.assign(run, { stop });
+  return run;
 }

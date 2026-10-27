@@ -1604,6 +1604,8 @@ async function startServerWithDatabaseTeardown(
     drainRunIds?: string[];
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
+  let taskPrSyncRunner: (() => void) | null = null;
+  let taskPrSyncTimer: ReturnType<typeof setInterval> | null = null;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   let runContextColumnsBackfill: { stop(): void } | null = null; // OPE-5007 П2
 
@@ -1870,26 +1872,27 @@ async function startServerWithDatabaseTeardown(
   const scheduleTaskPrSyncSweep = createTaskPrSyncScheduler({ db: db as any, track: trackTaskPrSyncWork, env: process.env });
   let lastClosedTaskReconcileAt = 0;
   const closedTaskReconcileIntervalMs = 24 * 60 * 60_000;
-  let taskPrSyncTimer: ReturnType<typeof setInterval> | null = null;
+  const closedTaskReconcileInterval = backgroundInterval(() => {
+    if (heartbeatSchedulerStopped || !leaderLeaseManager.isLeader("scheduler")) return;
+    const now = Date.now();
+    if (now - lastClosedTaskReconcileAt < closedTaskReconcileIntervalMs) return;
+    lastClosedTaskReconcileAt = now;
+    trackTaskPrSyncWork(reconcileClosedIssuePullRequests({
+      db: db as any,
+      resolvePullRequestDetails: createPullRequestMergeDetailsResolver(db as any),
+    }).then((result) => {
+      if (result.synced > 0) logger.info(result, "reconciled PR work products on closed tasks");
+    }).catch((err) => {
+      logger.warn({ errorKind: "closed_task_pr_reconcile_failed", errorName: err instanceof Error ? err.name : typeof err }, "closed-task PR reconcile failed");
+    }));
+  }, 60_000);
   if (processRoleProfile.runsBackground) {
-    const runTaskPrSync = () => {
-      if (!leaderLeaseManager.isLeader("scheduler")) return;
+    taskPrSyncRunner = () => {
+      if (heartbeatSchedulerStopped || !leaderLeaseManager.isLeader("scheduler")) return;
       scheduleTaskPrSyncSweep();
-      const now = Date.now();
-      if (now - lastClosedTaskReconcileAt < closedTaskReconcileIntervalMs) return;
-      lastClosedTaskReconcileAt = now;
-      trackTaskPrSyncWork(reconcileClosedIssuePullRequests({
-        db: db as any,
-        resolvePullRequestDetails: createPullRequestMergeDetailsResolver(db as any),
-      }).then((result) => {
-        if (result.synced > 0) logger.info(result, "reconciled PR work products on closed tasks");
-      }).catch((err) => {
-        logger.warn({ errorKind: "closed_task_pr_reconcile_failed", errorName: err instanceof Error ? err.name : typeof err }, "closed-task PR reconcile failed");
-      }));
     };
-    taskPrSyncTimer = setInterval(runTaskPrSync, readTaskPrSyncSettings(process.env).pollMs);
-    taskPrSyncTimer.unref?.();
-    runTaskPrSync();
+    taskPrSyncTimer = backgroundInterval(taskPrSyncRunner, readTaskPrSyncSettings(process.env).pollMs);
+    taskPrSyncRunner();
   }
   // myrmidon(STALE-BLOCK): the periodic watchdog that lifts dead blocked
   // reasons (a done/cancelled blocker, a passed due date, a cleared gate) off
@@ -2984,6 +2987,11 @@ async function startServerWithDatabaseTeardown(
     logger.info({ signal }, `myrmidon(OPE-9107): shutdown started (runtime pid ${process.pid})`);
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
+    if (taskPrSyncTimer) {
+      clearInterval(taskPrSyncTimer);
+      taskPrSyncTimer = null;
+    }
+    clearInterval(closedTaskReconcileInterval);
     if (executionControlInterval) clearInterval(executionControlInterval);
     runContextColumnsBackfill?.stop(); // OPE-5007 П2
     // myrmidon(PROCS-1.2): the children go first — SIGTERM each, stop the
