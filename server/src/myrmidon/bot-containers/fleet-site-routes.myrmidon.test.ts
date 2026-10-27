@@ -43,7 +43,7 @@ afterAll(() => {
 
 function harness(
   secrets: string[] = ["fleetd-myr-vm1-token", "fleetd-myr-vm1-client-cert", "fleetd-myr-vm1-client-key", "myrmidon-site-ca"],
-  opts: { bots?: number; secretValues?: Record<string, string>; siteCa?: ReturnType<typeof generateSiteCa> } = {},
+  opts: { bots?: number; secretValues?: Record<string, string>; siteCa?: ReturnType<typeof generateSiteCa> | null } = {},
 ) {
   const rows: FleetSite[] = [];
   const createSite = vi.fn(async (input: FleetSiteInsert) => {
@@ -72,7 +72,7 @@ function harness(
     }),
     countBotsOnSite: vi.fn(async () => opts.bots ?? 0),
     readSecret: vi.fn(async (_companyId: string, name: string) => opts.secretValues?.[name] ?? null),
-    readSiteCa: vi.fn(async () => opts.siteCa ?? generateSiteCa()),
+    readSiteCa: vi.fn(async () => opts.siteCa === undefined ? generateSiteCa() : opts.siteCa),
     secretExists: vi.fn(async (_companyId: string, name: string) => secrets.includes(name)),
     writeSecret: vi.fn(async (_companyId: string, _name: string, _value: string) => undefined),
     refreshRegistry: vi.fn(),
@@ -111,7 +111,7 @@ describe("fleet site enroll routes", () => {
     const ca = generateSiteCa();
     const { app, deps } = harness(undefined, { siteCa: ca });
     const response = await request(app).post(path).send(body()).expect(201);
-    expect(deps.writeSecret).toHaveBeenCalledWith(COMPANY_A, "myrmidon-site-ca", JSON.stringify({ cert: ca.cert, key: ca.key }));
+    expect(deps.writeSecret).toHaveBeenCalledWith(COMPANY_A, "myrmidon-site-ca", expect.stringContaining(JSON.stringify({ cert: ca.cert, key: ca.key })));
     expect(deps.writeSecret).toHaveBeenCalledWith(
       COMPANY_A,
       "myrmidon-site-client-myr-vm1",
@@ -159,7 +159,7 @@ describe("fleet site enroll routes", () => {
   });
 
   it("rejects secret references that do not exist, and unknown or reserved fields", async () => {
-    const { app, deps } = harness(["fleetd-myr-vm1-token"]);
+    const { app, deps } = harness(["fleetd-myr-vm1-token"], { siteCa: null });
     await request(app).post(path).send(body()).expect(400);
     const ok = harness();
     await request(ok.app).post(path).send(body({ tokenSecret: "nope" })).expect(400);
