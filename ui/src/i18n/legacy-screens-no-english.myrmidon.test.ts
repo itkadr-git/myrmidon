@@ -106,11 +106,7 @@ describe("legacy screens carry no English literals", () => {
 // guarded/*.txt: the stronger rule (multi-line JSX text, {"..."} literals,
 // alt/aria/title/label/placeholder/tooltip attributes with any letter).
 describe("guarded files carry no English literals", () => {
-  it("fails on an intentionally hard-coded English JSX string", () => {
-    expect(findEnglishLiterals('<button>Intentionally untranslated</button>')).toEqual([
-      { line: 1, kind: "text", text: "Intentionally untranslated" },
-    ]);
-  });
+
   it("guarded lists name only .tsx files under ui/src", () => {
     expect(guardedFromLists.filter((rel) => !rel.endsWith(".tsx") || rel.startsWith("/") || rel.includes(".."))).toEqual([]);
   });

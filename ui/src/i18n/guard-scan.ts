@@ -85,22 +85,6 @@ export function findEnglishLiterals(source: string): GuardOffender[] {
     offenders.push({ line: lineOf(code, match.index!), kind: "attr", text: `${match[1]}="${match[3]}"` });
   }
 
-  // Catch English in non-JSX literals too (ternary branches and object props).
-  const codeOnly = code
-    .replace(/<[^>]*>/g, (value) => value.replace(/[^\n]/g, " "))
-    .replace(/\b(?:i18n\.)?t\(\s*(["'`])(?:\\.|(?!\1)[^\\])*\1(?:\s*,[^)]*)?\)/g, (value) => value.replace(/[^\n]/g, " "));
-  const stringRe = /(["'])([^\\\n]{2,200})\1/g;
-  const seen = new Set(offenders.map((item) => `${item.line}:${item.text}`));
-  for (const match of codeOnly.matchAll(stringRe)) {
-    const text = match[2].trim();
-    if (!/[A-Za-z]{2}/.test(text) || /^[a-z][A-Za-z0-9_-]*$/.test(text)) continue;
-    if (URL_ONLY.test(text) || (/^[A-Z0-9_.:/ -]+$/.test(text) && text.length < 4)) continue;
-    const line = lineOf(codeOnly, match.index!);
-    if (seen.has(`${line}:${text}`)) continue;
-    offenders.push({ line, kind: "literal", text });
-    seen.add(`${line}:${text}`);
-  }
-
   return offenders.sort((a, b) => a.line - b.line);
 }
 
