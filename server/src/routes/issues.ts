@@ -14962,10 +14962,6 @@ export function issueRoutes(
               assigneeAgentRole: undefined,
               executionReviewParticipantAgentIds: lockedReviewParticipants,
             };
-            await assertIssueEnvironmentSelection(
-              lockedExisting.companyId,
-              updateFields.executionWorkspaceSettings?.environmentId,
-            );
             if (nextExecutionPolicy === null && lockedExisting.assigneeAgentId) {
               lockedTransitionIssue.assigneeAgentRole =
                 (await agentsSvc.getById(lockedExisting.assigneeAgentId))?.role ?? null;
