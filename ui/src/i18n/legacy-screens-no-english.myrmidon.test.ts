@@ -29,6 +29,8 @@ const SCREENS = [
   "components/myrmidon/budget-limits/BudgetLimitsScreen.tsx",
   "components/myrmidon/budget-limits/BudgetLimitsScreenContainer.tsx",
   "components/access/CompanySettingsNav.tsx",
+  "components/Sidebar.tsx",
+  "components/myrmidon/MaintenanceBanner.tsx",
 ];
 
 // myrmidon(OPE-8950): per-area guard lists. Every extraction PR adds its own
