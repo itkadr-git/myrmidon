@@ -17,6 +17,15 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 5));
 afterEach(() => setSwarmEventSink(null));
 
 describe("issueEventMakesTaskAvailable", () => {
+  it("a task changed to ready without an assignee is available to dispatch", () => {
+    expect(issueEventMakesTaskAvailable({
+      issueId: "i",
+      status: "todo",
+      assigneeAgentId: null,
+      touched: ["status"],
+    })).toBe(true);
+  });
+
   it("a created ready ownerless task is available", () => {
     expect(issueEventMakesTaskAvailable({ issueId: "i", status: "todo", assigneeAgentId: null, created: true })).toBe(true);
   });

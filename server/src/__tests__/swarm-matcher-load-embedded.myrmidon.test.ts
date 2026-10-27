@@ -195,7 +195,7 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       settings: {
         ...baseSettings,
         enabled: true,
-        maxActiveTasks: overrides.maxActiveTasks === undefined ? 3 : overrides.maxActiveTasks,
+        maxActiveTasks: overrides.maxActiveTasks === undefined ? 2 : overrides.maxActiveTasks,
       },
       hostGateOpen: true,
       now: overrides.now ?? NOW,
@@ -231,6 +231,22 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       expect(result.pairs.map((pair) => pair.agentId)).toEqual([free]);
       expect(await assigneeOf(task)).toBe(free);
       expect(wakes).toEqual([free]);
+    });
+
+    it("leaves a ready task queued when every engineer has reached the default ceiling", async () => {
+      const companyId = await seedCompany();
+      const agent = await seedAgent(companyId, "agent-at-capacity");
+      await seedTask(companyId, { assigneeAgentId: agent, status: "todo" });
+      await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
+      const task = await seedTask(companyId);
+      const wakes: string[] = [];
+
+      const result = await matchCompany(deps(wakes), companyId);
+
+      expect(result.pairs).toEqual([]);
+      expect(result.unmatched).toBe(1);
+      expect(await assigneeOf(task)).toBeNull();
+      expect(wakes).toEqual([]);
     });
 
     it("counts reserved todo and in_progress tasks against the ceiling, not only leases", async () => {
