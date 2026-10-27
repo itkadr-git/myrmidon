@@ -10,8 +10,10 @@ import { expect, test, type Page } from "@playwright/test";
 // tests/knowledge-screen/screenshots (uploaded as a CI artifact).
 
 const SIZES = [
+  { width: 2560, height: 1440 },
   { width: 1920, height: 1080 },
   { width: 1366, height: 768 },
+  { width: 390, height: 844 },
 ] as const;
 const SCREENS = [
   { id: "ui2", main: '[data-testid="ui2-main"]' },
@@ -126,6 +128,12 @@ for (const screen of SCREENS) {
       expect(bodyText).not.toContain("](../servers/vm-core.md)");
       expect(bodyText).not.toContain("[[");
       await expect(bodyBox.locator("ul li").first()).toBeVisible();
+
+      const horizontal = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      expect(horizontal.scrollWidth, "viewport has no horizontal overflow").toBeLessThanOrEqual(horizontal.clientWidth);
 
       // 1a. The long page scrolls down to its last line.
       const main = page.locator(screen.main);
