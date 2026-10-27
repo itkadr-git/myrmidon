@@ -19,6 +19,7 @@ function jsonResponse(body: unknown, ok = true): Response {
 
 function prBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    mergeable: null,
     state: "open",
     draft: false,
     number: 7,
@@ -127,6 +128,7 @@ describe("resolve", () => {
       url: "https://github.com/acme/widgets/pull/7",
       authorLogin: "author-a",
       baseRef: "main",
+      mergeable: true,
     });
   });
 
@@ -135,6 +137,7 @@ describe("resolve", () => {
     const head = await resolver.resolve({ companyId: COMPANY, repository: REPO, number: 7 });
     expect(head.fetchFailed).toBe(true);
     expect(head.ci).toBe("unknown");
+    expect(head.mergeable).toBe(true);
     expect(head.open).toBe(false);
   });
 

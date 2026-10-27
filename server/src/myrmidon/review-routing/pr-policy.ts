@@ -24,11 +24,17 @@ export interface PullRequestHeadState extends PrRef {
   ci: PullRequestHeadCiState;
   reviewDecision: PullRequestReviewDecision;
   fetchFailed: boolean;
+  /** GitHub mergeability, null when GitHub cannot determine it. */
+  mergeable?: boolean | null;
   /** Present when the PR body was read (title, link, author, base for the task text). */
   title?: string | null;
   url?: string | null;
   authorLogin?: string | null;
   baseRef?: string | null;
+}
+
+export function shouldHandOffDeliveringPr(head: PullRequestHeadState): boolean {
+  return head.open && !head.draft && !head.fetchFailed && head.mergeable === true && head.ci !== "not_green";
 }
 
 /** The board-side view of an open pr-routing task, for coverage and supersede. */

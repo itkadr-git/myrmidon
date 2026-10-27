@@ -218,6 +218,7 @@ export function createGitHubPrHeadResolver(input: {
         url: asString(pr.html_url),
         authorLogin: asString(asRecord(pr.user)?.login),
         baseRef: asString(asRecord(pr.base)?.ref),
+        mergeable: typeof pr.mergeable === "boolean" ? pr.mergeable : null,
       };
 
       if (!open || !headSha) {
