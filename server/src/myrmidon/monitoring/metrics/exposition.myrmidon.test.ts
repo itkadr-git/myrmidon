@@ -21,7 +21,6 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     runsFailedTotal: 7,
     runsFailedWindow: 1,
     emptyRunsByAgent: [],
-    corpusShadowLegQuantiles: [],
     runDurationSecondsP50: 42.5,
     runDurationSecondsP95: 130.25,
     roleQueueTasks: [
