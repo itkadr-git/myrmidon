@@ -374,8 +374,6 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
       status: "succeeded",
       contextSnapshot: { issueId },
     });
-    const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0]!);
     await db.insert(issues).values({ id: issueId, companyId, title: "telemetry outcome test", status: "todo" });
     const contractId = randomUUID();
     await db.insert(completionContracts).values({
@@ -385,6 +383,9 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
       incompleteCriteriaPolicy: "preserve_non_terminal", contractJson: {},
       canonicalSha256: randomUUID(), createdByActorType: "system", createdByActorId: "test",
     });
+    await db.update(heartbeatRuns).set({ completionContractId: contractId }).where(eq(heartbeatRuns.id, runId));
+    const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]!);
     const resultId = randomUUID();
     await db.insert(nativeRunResults).values({
       id: resultId, companyId, issueId, runId, completionContractId: contractId,
