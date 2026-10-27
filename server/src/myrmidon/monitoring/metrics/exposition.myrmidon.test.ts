@@ -5,14 +5,12 @@
 import { describe, expect, it } from "vitest";
 import {
   METRIC_FAMILIES,
-  escapeLabelValue,
   formatSampleValue,
   percentile,
   renderMetricsText,
   type MetricsSnapshot,
 } from "./metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
-import { BLOCKER_DASHBOARD_PANELS } from "../../../../../ui/src/lib/blockerDashboardPanels.js";
 import { computeBlockedMetrics, renderBlockedMetrics } from "./blocked.js";
 import { renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
 
@@ -359,16 +357,10 @@ describe("prometheus exposition format", () => {
     const text = renderMetricsText(snapshot());
     expect(text.endsWith("\n")).toBe(true);
     const body = text.slice(0, -1);
-    const blocks = body.split("\n\n");
-    const families = blocks.map((block) => {
-      // Check registered names, including the task's blocker_* families,
-      // rather than imposing a namespace on otherwise valid exposition.
-      const match = /^# HELP ([a-zA-Z_:][a-zA-Z0-9_:]*) /.exec(block);
-      expect(match).not.toBeNull();
-      expect(block.split("\n")[1]).toMatch(new RegExp(`^# TYPE ${match![1]} `));
-      return match![1];
-    });
+    const families = [...body.matchAll(/^# HELP ([a-zA-Z_:][a-zA-Z0-9_:]*) /gm)].map((match) => match[1]);
+    const types = [...body.matchAll(/^# TYPE ([a-zA-Z_:][a-zA-Z0-9_:]*) /gm)].map((match) => match[1]);
     expect(families.sort()).toEqual([...METRIC_FAMILIES].sort());
+    expect(types.sort()).toEqual([...METRIC_FAMILIES].sort());
   });
 
   it("escapes label values the way the exposition format requires", () => {
