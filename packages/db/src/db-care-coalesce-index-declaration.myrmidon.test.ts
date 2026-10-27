@@ -43,7 +43,7 @@ describe("DB-CARE index declarations", () => {
 
     const currentPosition = journal.entries.findIndex((entry) => entry.tag === MIGRATION_TAG);
     expect(currentPosition).toBe(journal.entries.length - 1);
-    expect(journal.entries[currentPosition]?.idx).toBe(422);
+    expect(journal.entries[currentPosition]?.idx).toBe(421);
     expect(journal.entries[currentPosition - 1]?.tag).toBe("0420_issue_recovery_actions_dedupe_sla");
     expect(snapshot.prevId).toBe(previous.id);
     expect(snapshot.tables["public.heartbeat_runs"].indexes).toHaveProperty(COALESCE_INDEX_NAME);
