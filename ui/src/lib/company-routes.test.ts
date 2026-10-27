@@ -13,7 +13,7 @@ describe("company routes", () => {
     expect(rootsBlock).toBeDefined();
     const listedRoots = new Set([...rootsBlock!.matchAll(/"([a-z][a-z0-9-]*)"/g)].map(([, root]) => root!));
     const expectedRouteRoots = new Set(["fleet", "decisions", "activity", "agents", "company", "commander-chat", "knowledge"]);
-    expect([...boardRouteRoots].filter((root) => !expectedRouteRoots.has(root))).toEqual([]);
+    expect(boardRouteRoots).toEqual(expectedRouteRoots);
     expect([...expectedRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
   });
 
