@@ -111,6 +111,7 @@ import {
   validateBotKey,
   type DevbuildSettings,
 } from "./template.js";
+import { containerOomObservation, type ContainerOomObservation } from "./container-oom.js";
 import { buildUstarArchive, parseUstarArchive, type UstarEntry, type UstarReadEntry } from "./ustar.js";
 
 export const BOT_DOCKER_SOCKET_ENV = "MYRMIDON_BOT_DOCKER_SOCKET";
@@ -217,6 +218,7 @@ export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): Do
 
 /** Test hooks; production code passes none. */
 export interface DockerDriverOptions {
+  recordOom?: (botKey: string, observation: ContainerOomObservation) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
   startHealthTimeoutMs?: number;
   healthPollIntervalMs?: number;
@@ -839,7 +841,7 @@ interface DockerInspect {
   /** Image id the container runs (sha256:…). */
   Image: string;
   Config?: { Image?: string; Labels?: Record<string, string>; Env?: string[] };
-  State?: { Status?: string; ExitCode?: number; Health?: { Status?: string } };
+  State?: { Status?: string; ExitCode?: number; OOMKilled?: boolean; FinishedAt?: string; Health?: { Status?: string } };
   HostConfig?: { Memory?: number; NanoCpus?: number; PidsLimit?: number; NetworkMode?: string; Binds?: string[] };
 }
 
@@ -1293,7 +1295,16 @@ export function dockerBotContainerDriver(
       const res = await requestWithRateLimitRetry({ method: "GET", path: `/containers/${nameSegment(name)}/json` });
       if (res.status === 404) return null;
       if (res.status >= 400) throw describeFailure(`docker inspect ${name}`, res);
-      return JSON.parse(res.body.toString("utf8")) as DockerInspect;
+      const info = JSON.parse(res.body.toString("utf8")) as DockerInspect;
+      const observation = containerOomObservation(info);
+      const prefix = "myrmidon-bot-";
+      // Only the primary agent container, never helpers or replacement containers.
+      if (observation && options.recordOom && new RegExp(`^${prefix}[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`).test(name)) {
+        await options.recordOom(name.slice(prefix.length), observation).catch((err) => {
+          logger.warn({ err, containerId: info.Id }, "failed to persist container OOM observation");
+        });
+      }
+      return info;
     })();
     inspectInFlight.set(name, read);
     try {

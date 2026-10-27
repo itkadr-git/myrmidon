@@ -30,6 +30,7 @@ import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js"; // myrmidon(1.6.1-BOT-DISK-D)
 import { listBotContainerAgents } from "./agents-query.js";
 import { isBotContainersEnabled } from "./agent-config.js";
+import { containerOomRecorder } from "./container-oom-store.js";
 import type { BotContainerDriver } from "./driver.js";
 import { fleetSiteKey } from "./fleetd-hosts.js";
 import { dockerBotContainerDriver, readDockerDriverConfig, type DockerDriverConfig } from "./docker-driver.js";
@@ -154,6 +155,7 @@ const defaultPorts: BotContainersStartupPorts = {
   readDriverConfig: (env) => readDockerDriverConfig(env),
   createDriver: (config, db) =>
     dockerBotContainerDriver(config, {
+      recordOom: containerOomRecorder(db),
       // myrmidon(BOT-DISK-F): the layout the owner applied (isolated unless a scope change was applied),
       // and the host-side move of a bot's directories when a recreate changes it.
       readScopeLayout: (botKey) => readAppliedScopeLayout(db, botKey),

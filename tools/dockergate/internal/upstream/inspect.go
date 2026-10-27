@@ -40,11 +40,13 @@ type Container struct {
 	} `json:"Config"`
 
 	State struct {
-		Status   *string `json:"Status"`
-		Running  bool    `json:"Running"`
-		Pid      int     `json:"Pid"`
-		ExitCode *int    `json:"ExitCode"`
-		Health   *health `json:"Health"`
+		Status     *string `json:"Status"`
+		Running    bool    `json:"Running"`
+		Pid        int     `json:"Pid"`
+		ExitCode   *int    `json:"ExitCode"`
+		OOMKilled  bool    `json:"OOMKilled"`
+		FinishedAt string  `json:"FinishedAt"`
+		Health     *health `json:"Health"`
 	} `json:"State"`
 
 	HostConfig struct {
@@ -81,9 +83,11 @@ type trimmedContainer struct {
 		Labels map[string]string `json:"Labels"`
 	} `json:"Config"`
 	State struct {
-		Status   *string `json:"Status,omitempty"`
-		ExitCode *int    `json:"ExitCode,omitempty"`
-		Health   *health `json:"Health,omitempty"`
+		Status     *string `json:"Status,omitempty"`
+		ExitCode   *int    `json:"ExitCode,omitempty"`
+		OOMKilled  bool    `json:"OOMKilled"`
+		FinishedAt string  `json:"FinishedAt"`
+		Health     *health `json:"Health,omitempty"`
 	} `json:"State"`
 	HostConfig struct {
 		Memory      *int64   `json:"Memory,omitempty"`
@@ -118,6 +122,8 @@ func (c *Container) Trimmed() []byte {
 	t.Config.Labels = labelsOrEmpty(c.Config.Labels)
 	t.State.Status = c.State.Status
 	t.State.ExitCode = c.State.ExitCode
+	t.State.OOMKilled = c.State.OOMKilled
+	t.State.FinishedAt = c.State.FinishedAt
 	t.State.Health = c.State.Health
 	t.HostConfig.Memory = c.HostConfig.Memory
 	t.HostConfig.NanoCpus = c.HostConfig.NanoCpus
