@@ -51,5 +51,5 @@ export function createTaskPrSyncScheduler(input: {
         }),
     );
   };
-  return run;
+  return Object.assign(run, { stop: () => {} });
 }
