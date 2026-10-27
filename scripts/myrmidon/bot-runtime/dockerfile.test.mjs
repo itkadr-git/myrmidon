@@ -307,8 +307,7 @@ describe("docker/bot-runtime/patches/", () => {
     assert.ok(files.some((f) => f.includes("state-read")), "expected a state-read retry patch");
     assert.ok(files.some((f) => f.includes("gateway-executor")), "expected a gateway executor pool patch");
     assert.ok(files.some((f) => f.includes("fd-probe")), "expected a state-db descriptor-probe patch");
-    assert.ok(files.some((f) => f === "18-terminal-foreground-heartbeat.patch"), "expected foreground heartbeat normalization");
-    assert.ok(files.some((f) => f === "19-terminal-foreground-heartbeat-test.patch"), "expected foreground heartbeat regression test");
+    assert.ok(files.some((f) => f === "18-terminal-foreground-defaults.patch"), "expected foreground heartbeat normalization");
     // The two hindsight patches are gone on purpose: v2026.9.24 removed the in-tree provider
     // (the plugin catalog owns it now) and the catalog plugin already carries the retain_async
     // fix. A stray hindsight patch would fail `git apply` at build time.
