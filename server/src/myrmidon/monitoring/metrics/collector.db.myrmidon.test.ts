@@ -44,7 +44,6 @@ describeEmbeddedPostgres("metrics collector", () => {
     resetStaleBlockSignals();
     resetTracingHealthSignals();
     await db.delete(litellmCostEvents);
-    await db.delete(agentWakeupRequests);
     await db.delete(issueClaims);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
