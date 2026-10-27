@@ -109,7 +109,6 @@ export async function createFleetSite(db: Db, input: FleetSiteInsert): Promise<F
       clientCertSecretKey: input.clientCertSecretKey ?? null,
       clientCertNotAfter: input.clientCertNotAfter ?? null,
       clientCertFingerprint: input.clientCertFingerprint ?? null,
-      caCertFingerprint: input.caCertFingerprint ?? null,
       certRotatedAt: input.certRotatedAt ?? null,
       status: input.status ?? "active",
       capacity: input.capacity ?? { maxCpus: 8, maxMemoryMb: 32768 },
@@ -154,6 +153,7 @@ export async function updateFleetSite(
   if (patch.clientCert !== undefined) updateData.clientCert = patch.clientCert;
   if (patch.clientCertSecretKey !== undefined) updateData.clientCertSecretKey = patch.clientCertSecretKey;
   if (patch.clientCertNotAfter !== undefined) updateData.clientCertNotAfter = patch.clientCertNotAfter;
+  if (patch.clientCertFingerprint !== undefined) updateData.clientCertFingerprint = patch.clientCertFingerprint;
   if (patch.certRotatedAt !== undefined) updateData.certRotatedAt = patch.certRotatedAt;
   if (patch.status !== undefined) updateData.status = patch.status;
   if (patch.capacity !== undefined) updateData.capacity = patch.capacity;

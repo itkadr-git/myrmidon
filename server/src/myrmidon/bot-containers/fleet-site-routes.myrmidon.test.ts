@@ -76,7 +76,10 @@ function harness(
     secretExists: vi.fn(async (_companyId: string, name: string) => secrets.includes(name)),
     writeSecret: vi.fn(async (_companyId: string, _name: string, _value: string) => undefined),
     refreshRegistry: vi.fn(),
-    updateSite: vi.fn(async () => undefined),
+    updateSite: vi.fn(async (companyId: string, name: string, patch: Partial<FleetSite>) => {
+      const row = rows.find((site) => site.companyId === companyId && site.name === name);
+      if (row) Object.assign(row, patch);
+    }),
     readClientCertificate: vi.fn(async () => null),
   };
   const app = express();
@@ -141,23 +144,19 @@ describe("fleet site enroll routes", () => {
     const ca = generateSiteCa();
     const client = issueSiteClientCertificate(ca, "test-site", new Date(Date.now() - 89 * 86_400_000));
     const { app, deps } = harness(undefined, { siteCa: ca });
+    const callsBeforeRotation = deps.writeSecret.mock.calls.length;
     await request(app).post(path).send(body()).expect(201);
     const site = deps.createSite.mock.calls[0]![0] as unknown as FleetSite;
     site.clientCertNotAfter = new Date(Date.now() + 86_400_000);
     deps.readClientCertificate.mockResolvedValue(client.cert);
     const response = await request(app).get(path).expect(200);
-    expect(deps.writeSecret).toHaveBeenCalledTimes(2);
-    expect(deps.writeSecret).toHaveBeenLastCalledWith(
-      COMPANY_A,
-      "myrmidon-site-client-myr-vm1",
-      expect.stringContaining("CERTIFICATE"),
-    );
-    expect(deps.updateSite).toHaveBeenCalledWith(
-      COMPANY_A,
-      "myr-vm1",
-      expect.objectContaining({ clientCertFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) }),
-    );
+    expect(deps.writeSecret).toHaveBeenCalledTimes(callsBeforeRotation + 2);
+    expect(deps.writeSecret).toHaveBeenLastCalledWith(COMPANY_A, "myrmidon-site-client-myr-vm1", expect.stringContaining("CERTIFICATE"));
+    expect(deps.updateSite).toHaveBeenCalledWith(COMPANY_A, "myr-vm1", expect.objectContaining({
+      clientCertFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    }));
     expect(response.body.sites[0].clientCertFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(deps.listSites.mock.calls.length).toBeGreaterThan(1);
   });
 
   it("rejects http, paths and credentials in the url", async () => {

@@ -28709,6 +28709,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "client_cert_fingerprint": {
+          "name": "client_cert_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "status": {
           "name": "status",
           "type": "text",

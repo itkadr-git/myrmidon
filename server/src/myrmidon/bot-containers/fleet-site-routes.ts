@@ -266,7 +266,7 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
     const issuedAt = new Date(client.notAfter.getTime() - SITE_CLIENT_CERT_VALIDITY_DAYS * 86_400_000);
     await deps.writeSecret(companyId, clientRef, JSON.stringify({ cert: client.cert, key: client.key }));
     const clientCertSecretKey = clientRef;
-    const clientCert = { error: null, notAfter: client.notAfter };
+    const clientCert = { ...client, error: null };
 
     const profile: FleetSite["profile"] = {
       gatewayPortStart: body.gatewayPortStart,
