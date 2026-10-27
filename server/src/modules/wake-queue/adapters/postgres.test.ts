@@ -714,6 +714,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const wakeIdA = await seedDeferredWake({ companyId, agentId, issueId });
     const wakeIdB = await seedDeferredWake({ companyId, agentId, issueId });
     const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId }, status: "succeeded" });
+    const finalizedRunIds: string[] = [];
     const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
     await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (locked, ports) => {
       expect(locked.primaryIssue.issueRole).toBe("engineer");

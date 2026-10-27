@@ -593,8 +593,9 @@ describe("releaseIssueExecution", () => {
       findInvokableAgent: vi.fn(async () => ({ ...AGENT, role: agentRole })),
     });
     const issue = { ...ISSUE, issueRole };
+    const host = createFakeHost();
     const release = createReleaseIssueExecution({
-      issueLock: createFakeIssueLock(createFakeHost(), transaction, issue),
+      issueLock: createFakeIssueLock(host, transaction, issue),
       recovery: createFakeRecovery(),
     });
 
@@ -604,14 +605,18 @@ describe("releaseIssueExecution", () => {
     if (promoted) {
       expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledTimes(1);
       expect(transaction.finalizePromotedWake).toHaveBeenCalledTimes(1);
-    } else {
-      expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({
-        wakeId: candidate.id,
-        reason: "Deferred continuation skipped because agent and issue roles differ",
-      }));
-      expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
-      expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+      expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+      return;
     }
+
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledTimes(1);
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({
+      wakeId: candidate.id,
+      reason: "Deferred continuation skipped because agent and issue roles differ",
+    }));
+    expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+    expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+    expect(host.resolveResponsibleUserId).not.toHaveBeenCalled();
   });
 
   it("stops the loop after the first promotion", async () => {
