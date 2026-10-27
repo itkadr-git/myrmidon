@@ -8,9 +8,10 @@ function simulateWindow(
   windowMs: number,
   requestCount: number,
   maxContinuations = MAX_EVENTS,
+  initialEvents: number[] = [],
 ): number[] {
-  const acceptedAt: number[] = [];
-  let time = 0;
+  const acceptedAt = [...initialEvents];
+  let time = acceptedAt.at(-1) ?? 0;
 
   for (let request = 0; request < requestCount; request += 1) {
     const recent = acceptedAt.filter((eventAt) => eventAt > time - windowMs);
@@ -60,10 +61,10 @@ describe("nextContinuationDelay", () => {
   it("never caps the mandatory window wait when the continuation budget is exhausted", () => {
     const windowMs = 10_000;
     const maxContinuations = 4;
-    const events = simulateWindow(windowMs, maxContinuations + 1, maxContinuations);
+    const events = simulateWindow(windowMs, 1, maxContinuations, [0, 2_500, 5_000, 7_500]);
 
     expect(nextContinuationDelay({ recentCount: maxContinuations, windowMs, maxContinuations, maxDelayMs: 2_000 })).toBe(windowMs);
-    expect(events[maxContinuations]).toBe(windowMs);
+    expect(events[maxContinuations]).toBe(17_500);
   });
 
   it("returns zero for NaN and negative inputs", () => {
