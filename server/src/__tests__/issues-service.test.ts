@@ -3002,6 +3002,36 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await tempDb?.cleanup();
   });
 
+  it("inherits development execution policy only for opted-in projects", async () => {
+    const companyId = randomUUID();
+    const developmentProjectId = randomUUID();
+    const regularProjectId = randomUUID();
+    const developmentPolicy = { mode: "normal" as const, commentRequired: false, stages: [] };
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values([
+      {
+        id: developmentProjectId,
+        companyId,
+        name: "Development project",
+        status: "in_progress",
+        developmentProcess: { enabled: true, executionPolicy: developmentPolicy, pipelineId: null },
+      },
+      { id: regularProjectId, companyId, name: "Regular project", status: "in_progress" },
+    ]);
+
+    const developmentIssue = await svc.create(companyId, { projectId: developmentProjectId, title: "Development task" });
+    const regularIssue = await svc.create(companyId, { projectId: regularProjectId, title: "Regular task" });
+
+    expect(developmentIssue.executionPolicy).toMatchObject(developmentPolicy);
+    expect(regularIssue.executionPolicy).toBeNull();
+  });
+
   it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
