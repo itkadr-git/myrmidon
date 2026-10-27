@@ -28,7 +28,7 @@ if (!support.supported && process.env.CI) throw new Error(`Postgres acceptance m
       ...dependents.map((id) => ({ id, companyId, title: "Held task", status: "blocked" })),
     ]);
     await db.insert(issueRelations).values(dependents.map((id) => ({
-      companyId, issueId: rootId, relatedIssueId: id, type: "blocks",
+      companyId, issueId: rootId, relatedIssueId: id, type: "blocks" as const,
     })));
   }, 60_000);
   afterAll(async () => {
