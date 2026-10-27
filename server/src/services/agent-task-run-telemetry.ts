@@ -216,7 +216,7 @@ function resolveDurationSeconds(run: HeartbeatRun, now: Date): number | undefine
 async function buildRunTelemetryForDb(db: Db, run: HeartbeatRun) {
   const context = parseObject(run.contextSnapshot);
   const issueId = readNonEmptyString(context.issueId) ?? run.nativeIssueId;
-  const [agent, generalSettings, wakeup, issueRow, workProducts, runStatusDecision, litellmCosts] = await Promise.all([
+  const [agent, generalSettings, wakeup, issueRow, workProducts, runStatusDecision, gatewayCalls] = await Promise.all([
     db.select({ role: agents.role, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
       .from(agents).where(eq(agents.id, run.agentId)).then((rows) => rows[0] ?? null),
     instanceSettingsService(db).getGeneral().catch(() => null),
