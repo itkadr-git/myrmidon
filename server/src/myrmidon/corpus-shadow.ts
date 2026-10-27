@@ -25,10 +25,10 @@ export interface CorpusShadowSearch {
   search(query: CorpusShadowSearchQuery): Promise<CorpusShadowSearchHit[]>;
 }
 
-/** The no-op default: part A must not block on the unmerged implementation. */
+/** Fail-closed fallback: report a missing SearchIndex instead of recording fake empty hits. */
 export const noOpCorpusShadowSearch: CorpusShadowSearch = {
   async search() {
-    return [];
+    throw new Error("no-op corpus shadow search is not configured");
   },
 };
 
