@@ -82,7 +82,6 @@ describe("issue done pull-request gate", () => {
         .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [{ companyId }]) })) })
         .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [staleProduct]) })) }),
     } as never;
-
     await expect(assertIssueDoneSnapshotUnchanged(tx, companyId, issueId, snapshot, liveSnapshot)).resolves.toBeUndefined();
   });
 
