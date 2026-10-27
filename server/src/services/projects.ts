@@ -20,6 +20,7 @@ import {
   type ProjectBudgetSummary,
   type ProjectCodebase,
   type ProjectExecutionWorkspacePolicy,
+  type ProjectDevelopmentProcess,
   type ProjectGoalRef,
   type ProjectManagedByPlugin,
   type ProjectWorkspaceRuntimeConfig,
@@ -32,6 +33,7 @@ import { unprocessable } from "../errors.js";
 import { createCasteStore } from "../myrmidon/castes/store.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import { normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 
@@ -58,11 +60,12 @@ type CreateWorkspaceInput = {
 };
 type UpdateWorkspaceInput = Partial<CreateWorkspaceInput>;
 
-interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> {
+interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy" | "developmentProcess"> {
   urlKey: string;
   goalIds: string[];
   goals: ProjectGoalRef[];
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  developmentProcess: ProjectDevelopmentProcess | null;
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
@@ -115,6 +118,7 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
       goalIds: g.map((x) => x.id),
       goals: g,
       executionWorkspacePolicy: parseProjectExecutionWorkspacePolicy(r.executionWorkspacePolicy),
+      developmentProcess: (r.developmentProcess as ProjectDevelopmentProcess | null) ?? null,
     } as ProjectWithGoals;
   });
 }
@@ -593,6 +597,12 @@ export function projectService(db: Db) {
     data: Omit<typeof projects.$inferInsert, "companyId"> & { goalIds?: string[] },
   ): Promise<ProjectWithGoals> => {
     const { goalIds: inputGoalIds, ...projectData } = data;
+    if (projectData.developmentProcess?.enabled) {
+      projectData.developmentProcess = {
+        ...projectData.developmentProcess,
+        executionPolicy: normalizeIssueExecutionPolicy(projectData.developmentProcess.executionPolicy),
+      };
+    }
     const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
     if (ids && ids.length > 0) await assertGoalsBelongToCompany(db, companyId, ids);
     await assertProjectDefaultCasteExists(companyId, projectData.defaultCasteKey);
