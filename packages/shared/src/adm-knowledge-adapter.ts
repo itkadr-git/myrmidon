@@ -63,11 +63,59 @@ export interface AdmKnowledgeItem {
   [key: string]: unknown;
 }
 
+export type AdmWriteResult = {
+  itemId: string;
+  revisionId: string;
+  status: "draft" | "proposed" | "published";
+};
+
+export interface AdmKnowledgeWritePort {
+  proposeRule(input: { slug: string; title: string; summary: string; body: string; sourceRef: string; baseRevisionId?: string; idempotencyKey: string }): Promise<AdmWriteResult>;
+  writeLesson(input: { slug: string; title: string; summary: string; body: string; sourceRef: string; baseRevisionId?: string; idempotencyKey: string }): Promise<AdmWriteResult>;
+}
+
 export interface AdmKnowledgeRestPort {
   search(query: string, options: { space: string; limit: number }): Promise<readonly AdmKnowledgeItem[]>;
   list(options: { space: string; kind: string; status: "published"; limit: number }): Promise<readonly AdmKnowledgeItem[]>;
   read(id: string): Promise<AdmKnowledgeItem | null>;
+  proposeRule?: AdmKnowledgeWritePort["proposeRule"];
+  writeLesson?: AdmKnowledgeWritePort["writeLesson"];
 }
+
+export type AdmConnectorMetrics = (event: { kind: "session_start" | "prompt"; bytesAdded: number; sessionBytes: number }) => void;
+
+/** Enforces the ADM context contract without loading policy bodies. */
+export class AdmContextBudget {
+  private readonly emitted = new Set<string>();
+  private sessionBytes = 0;
+  constructor(private readonly sessionLimit = 12 * 1024, private readonly promptLimit = 2 * 1024, private readonly metrics?: AdmConnectorMetrics) {}
+  sessionStart(items: readonly AdmKnowledgeMetadata[]): string {
+    return this.emit(JSON.stringify(items.map(({ slug, revision_id, title, summary, triggers }) => ({ slug, revision_id, title, summary, triggers }))), this.sessionLimit, "session_start");
+  }
+  prompt(items: readonly AdmKnowledgeMetadata[], trigger: string): string {
+    const selected = items.filter((item) => item.triggers.includes(trigger as never)).filter((item) => !this.emitted.has(`${item.slug}:${item.revision_id}`));
+    const output = this.emit(JSON.stringify(selected.map(({ slug, revision_id, title, summary }) => ({ slug, revision_id, title, summary }))), this.promptLimit, "prompt");
+    if (output) selected.forEach((item) => this.emitted.add(`${item.slug}:${item.revision_id}`));
+    return output;
+  }
+  private emit(value: string, limit: number, kind: "session_start" | "prompt"): string {
+    const bytes = Buffer.byteLength(value, "utf8");
+    if (bytes > limit || this.sessionBytes + bytes > this.sessionLimit) { this.metrics?.({ kind, bytesAdded: 0, sessionBytes: this.sessionBytes }); return ""; }
+    this.sessionBytes += bytes;
+    this.metrics?.({ kind, bytesAdded: bytes, sessionBytes: this.sessionBytes });
+    return value;
+  }
+}
+
+function writePort(rest: AdmKnowledgeRestPort): AdmKnowledgeWritePort {
+  if (typeof rest.proposeRule !== "function" || typeof rest.writeLesson !== "function") throw new AdmConnectorError("ADM_FORBIDDEN", "ADM write operations are not available");
+  return { proposeRule: rest.proposeRule, writeLesson: rest.writeLesson };
+}
+
+function assertIdempotencyKey(key: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$/.test(key)) throw new AdmConnectorError("ADM_INVALID_METADATA", "A stable idempotency key is required");
+}
+
 
 export class AdmConnectorError extends Error {
   constructor(readonly code: AdmConnectorCode, message: string, options?: ErrorOptions) {
@@ -102,6 +150,30 @@ function assertNamespaceItem(item: AdmKnowledgeItem, namespace: AdmKnowledgeName
 /** Thin REST adapter: deterministic selection stays in connector code; reads use stable item IDs. */
 export function createAdmKnowledgeAdapter(rest: AdmKnowledgeRestPort) {
   return {
+    async proposeRule(input: Parameters<AdmKnowledgeWritePort["proposeRule"]>[0]): Promise<AdmWriteResult> {
+      assertIdempotencyKey(input.idempotencyKey);
+      if (!input.slug.startsWith(ADM_KNOWLEDGE_SPACES.policy.prefix) && !input.slug.startsWith(ADM_KNOWLEDGE_SPACES.trigger.prefix)) {
+        throw new AdmConnectorError("ADM_INVALID_METADATA", "Rules must use an ADM policy or trigger namespace");
+      }
+      try {
+        const result = await writePort(rest).proposeRule(input);
+        const published = await rest.read(result.itemId);
+        if (result.status === "published" || published?.status === "published") throw new AdmConnectorError("ADM_FORBIDDEN", "Rules must not be self-published");
+        return result;
+      } catch (error) { throw mapError(error); }
+    },
+    async writeLesson(input: Parameters<AdmKnowledgeWritePort["writeLesson"]>[0]): Promise<AdmWriteResult> {
+      assertIdempotencyKey(input.idempotencyKey);
+      if (!input.slug.startsWith(ADM_KNOWLEDGE_SPACES.lessons.prefix)) throw new AdmConnectorError("ADM_INVALID_METADATA", "Lessons must use the ADM lessons namespace");
+      try {
+        const result = await writePort(rest).writeLesson(input);
+        const published = await rest.read(result.itemId);
+        if (!published || published.status !== "published" || published.deliveredRevisionId !== result.revisionId) {
+          throw new AdmConnectorError("ADM_UPSTREAM_UNAVAILABLE", "Published lesson could not be verified by read-back");
+        }
+        return result;
+      } catch (error) { throw mapError(error); }
+    },
     async search(query: string, namespace: AdmKnowledgeNamespace, limit = 50): Promise<AdmKnowledgeItem[]> {
       if (!query.trim()) throw new AdmConnectorError("ADM_INVALID_METADATA", "Search query must not be empty");
       try {
