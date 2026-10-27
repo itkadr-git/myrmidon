@@ -1251,7 +1251,10 @@ async function openTaskIdsOfAgents(
   const blockedIssueRows = relatedIds.length === 0
     ? [] as Array<{ issueId: string }>
     : await db
-        .select({ issueId: issueRelations.relatedIssueId })
+        .select({
+          issueId: issueRelations.relatedIssueId,
+          blockerIssueId: issueRelations.issueId,
+        })
         .from(issueRelations)
         .innerJoin(
           issues,
@@ -1280,7 +1283,11 @@ async function openTaskIdsOfAgents(
         ...(agentId ? [eq(issueClaims.agentId, agentId)] : []),
       ),
     );
-  const blockedIssueIds = new Set(blockedIssueRows.map((row) => row.issueId));
+  const blockedIssueIds = new Set(
+    blockedIssueRows
+      .filter((row) => assignedIds.has(row.blockerIssueId))
+      .map((row) => row.issueId),
+  );
   const out = new Map<string, { assigned: Set<string>; leased: Set<string> }>();
   const slot = (id: string) => {
     let entry = out.get(id);

@@ -5551,6 +5551,7 @@ async function listIssueBlockedInboxAttentionMap(
           and(
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
+            inArray(issueRelations.relatedIssueId, rowIssueIds),
           ),
         ),
       dbOrTx
