@@ -73,10 +73,19 @@ export interface DashboardView {
   containers: ContainerReading[];
   litellm: LiteLlmReading | null;
   vps: VpsReading | null;
+  blockerPanels: BlockerDashboardData | null;
+}
+
+export interface BlockerDashboardData {
+  blockedAgeSeconds: number | null;
+  rootFanout: Array<{ root: string; fanout: number }>;
+  missingFields: number | null;
+  terminal: number | null;
+  fanoutLimit: number;
 }
 
 export function emptyDashboardView(generatedAt: string): DashboardView {
-  return { ok: false, generatedAt, sources: [], hosts: [], containers: [], litellm: null, vps: null };
+  return { ok: false, generatedAt, sources: [], hosts: [], containers: [], litellm: null, vps: null, blockerPanels: null };
 }
 
 /**
