@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { agents, companies, issueRecoveryActions, issueRelations, issues } from "@myrmidon/db";
 import { recoveryFactoryRequestSchema } from "@myrmidon/shared";
@@ -159,15 +159,22 @@ export function issueRecoveryActionService(db: Db, metrics?: RecoveryFactoryMetr
         evidence: input.evidence,
         nextAction,
         wakePolicy: { owner: input.owner, nextCheckAt: input.nextCheckAt },
-      }).onConflictDoNothing({
-        target: [issueRecoveryActions.companyId, issueRecoveryActions.dedupeKey],
-        where: sql`${issueRecoveryActions.status} in ('active', 'escalated') and ${issueRecoveryActions.dedupeKey} is not null`,
-      }).returning();
+      // No conflict target: PostgreSQL must arbitrate both active unique indexes,
+      // not just dedupe_key (the fingerprint index can win the concurrent race).
+      }).onConflictDoNothing().returning();
       if (!action) {
-        // A separate statement sees the winner after ON CONFLICT waited for its commit.
+        // A separate READ COMMITTED statement sees the committed winner under
+        // either identity, including legacy actions without a dedupe_key.
         const [existing] = await tx.select().from(issueRecoveryActions).where(and(
           eq(issueRecoveryActions.companyId, source.companyId),
-          eq(issueRecoveryActions.dedupeKey, input.dedupeKey),
+          or(
+            eq(issueRecoveryActions.dedupeKey, input.dedupeKey),
+            and(
+              eq(issueRecoveryActions.sourceIssueId, source.id),
+              eq(issueRecoveryActions.cause, input.kind),
+              eq(issueRecoveryActions.fingerprint, input.dedupeKey),
+            ),
+          ),
           inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
         ));
         if (!existing) throw new Error("Recovery action changed while deduplicating; retry request");

@@ -36,7 +36,7 @@ describePg("ensureRecoveryIssue PostgreSQL", () => {
     return { companyId, ownerId, request, metrics };
   }
 
-  it("creates exactly one issue/action and blocker across independent concurrent callers", async () => {
+  it.each(Array.from({ length: 10 }, (_, i) => i))("creates exactly one issue/action and blocker across independent concurrent callers (round %i)", async () => {
     const { companyId, ownerId, request, metrics } = await fixture();
     const before = Date.now();
     const results = await Promise.all([
@@ -62,6 +62,29 @@ describePg("ensureRecoveryIssue PostgreSQL", () => {
     expect(edges[0]).toMatchObject({ type: "blocks", issueId: results[0].recoveryIssueId, relatedIssueId: request.sourceIssueId });
     expect(metrics.created).toHaveBeenCalledExactlyOnceWith(request.kind);
     expect(metrics.deduped).toHaveBeenCalledExactlyOnceWith(request.kind);
+  });
+
+  it("deduplicates a fingerprint-only legacy action without allocating another issue", async () => {
+    const { companyId, request, metrics } = await fixture();
+    const original = await issueRecoveryActionService(db).ensureRecoveryIssue(request);
+    // Legacy writers do not populate dedupe_key. Only the fingerprint index
+    // conflicts here, so a dedupe-key-only arbiter cannot pass this regression.
+    await db.update(issueRecoveryActions).set({ dedupeKey: null })
+      .where(eq(issueRecoveryActions.id, original.recoveryActionId));
+    const results = await Promise.all([
+      issueRecoveryActionService(db, metrics).ensureRecoveryIssue(request),
+      issueRecoveryActionService(db, metrics).ensureRecoveryIssue(request),
+    ]);
+    expect(results).toEqual([0, 1].map(() => ({ ...original, outcome: "deduped" })));
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId))).toHaveLength(1);
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(2);
+    expect(await db.select().from(issueRelations).where(eq(issueRelations.companyId, companyId))).toHaveLength(1);
+    const [company] = await db.select().from(companies).where(eq(companies.id, companyId));
+    expect(company.issueCounter).toBe(8);
+    expect(metrics.created).not.toHaveBeenCalled();
+    expect(metrics.deduped).toHaveBeenCalledTimes(2);
+    expect(metrics.deduped).toHaveBeenNthCalledWith(1, request.kind);
+    expect(metrics.deduped).toHaveBeenNthCalledWith(2, request.kind);
   });
 
   it.each(["owner", "slaMinutes"] as const)("rejects missing %s without writes or metrics", async (field) => {
