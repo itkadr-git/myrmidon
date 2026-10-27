@@ -15,6 +15,7 @@ import {
   seedCompanyWithBoardAccess,
   useEmbeddedPostgres,
 } from "./helpers/route-test-harness.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { readReviewRoutingSignals, resetReviewRoutingSignals } from "../myrmidon/review-routing/attention.js";
@@ -27,10 +28,11 @@ const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
     await db.transaction(async (tx) => {
       // Freeze writers to every table whose rows are drained below. The lock
       // mode conflicts with INSERT on these tables, so no dependent wake/activity
-      // row can appear between cleanup statements and the agent delete.
+      // row can appear during teardown.
       await tx.execute(
         sql`LOCK TABLE activity_log, agent_wakeup_requests, issues, agents IN SHARE ROW EXCLUSIVE MODE`,
       );
+      await drainHeartbeatRunsToQuiescence(tx as typeof db, heartbeatService(ctx.db));
       await tx.delete(agentWakeupRequests);
       await tx.delete(activityLog);
       await tx.delete(issues);

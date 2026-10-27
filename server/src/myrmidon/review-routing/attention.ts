@@ -76,19 +76,19 @@ function signalKey(signal: ReviewRoutingSignal): string {
  */
 export function replaceReviewRoutingSignals(companyId: string, next: ReviewRoutingSignal[]): void {
   const previous = signalsByCompany.get(companyId);
+  const immediate = immediateNoReviewerByCompany.get(companyId);
   const byKey = new Map<string, ReviewRoutingSignal>();
   for (const signal of next) {
     const key = signalKey(signal);
-    const before = previous?.get(key);
+    const before = immediate?.get(key) ?? previous?.get(key);
     byKey.set(key, before ? { ...signal, since: before.since } : signal);
   }
-  const immediate = immediateNoReviewerByCompany.get(companyId);
-  for (const [key, signal] of immediate ?? []) {
+  // A completed sweep is authoritative: replace the visible snapshot and drop
+  // immediate route overlays that are absent from it. Keeping a second overlay
+  // out of readReviewRoutingSignals prevents stale sweep entries resurfacing
+  // after a route has explicitly cleared a signal.
+  for (const key of immediate?.keys() ?? []) {
     if (!byKey.has(key)) immediate?.delete(key);
-    else {
-      const current = byKey.get(key)!;
-      byKey.set(key, { ...current, since: signal.since });
-    }
   }
   if (immediate?.size === 0) immediateNoReviewerByCompany.delete(companyId);
   if (byKey.size === 0) signalsByCompany.delete(companyId);
