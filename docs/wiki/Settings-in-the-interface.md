@@ -176,7 +176,7 @@ feed, editable live, applied on the feed's next build without a restart:
 | Setting | What it bounds | Default |
 |---|---|---|
 | Failed-run horizon | How far back the feed looks for an unresolved failed or timed-out run | `7` days |
-| Feed cache TTL | How long the feed reuses the snapshot it built per company | `45` s |
+| Feed cache TTL | How long the feed reuses the snapshot it built per company | `60` s |
 
 The horizon accepts whole days from `1` to `365`; the TTL accepts whole
 seconds from `0` to `300`, where `0` turns the cache off (the feed is rebuilt
