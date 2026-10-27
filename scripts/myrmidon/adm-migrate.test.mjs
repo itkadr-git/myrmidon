@@ -100,11 +100,15 @@ test('gitleaks integration removes detected credentials (CI installs scanner)', 
   const root = fixture();
   try {
     // Synthetic provider-shaped value assembled in memory, never a real credential.
-    const value = 'AKIA' + 'Q'.repeat(16);
+    const value = 'AKIA' + 'IOSFODNN7EXAMPLE0';
     writeFileSync(join(root, 'memory/reference-secret.md'), '# Credentials\naws_access_key_id = ' + value);
     const plan = buildMigration(root);
     assert.ok(plan.report.redactions.length > 0);
     assert.ok(!JSON.stringify(plan).includes(value));
     assert.deepEqual(gitleaksScan(JSON.stringify(plan)), []);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally {
+    process.env.PATH = previousPath;
+    rmSync(scannerDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
 });
