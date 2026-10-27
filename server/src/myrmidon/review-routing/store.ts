@@ -25,7 +25,6 @@ import {
   runIdentityContexts,
   type Db,
 } from "@myrmidon/db";
-import { isAgentStatusInvokable } from "@myrmidon/shared";
 import {
   REVIEW_ROUTING_ASSIGNED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,

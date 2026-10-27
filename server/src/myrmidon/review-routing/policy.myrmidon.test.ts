@@ -17,6 +17,7 @@ import {
   pickPrReviewer,
   pickReviewer,
   readPendingAgentReview,
+  type ReviewerCandidate,
   type RoutingIssue,
 } from "./policy.js";
 import {
@@ -102,10 +103,10 @@ describe("issueNeedsReviewer", () => {
 });
 
 describe("pickReviewer", () => {
-  const candidates = [
+  const candidates: ReviewerCandidate[] = [
     { id: REV_B, role: "reviewer", load: 1 },
     { id: REV_A, role: "reviewer", load: 1, invokable: false },
-    { id: AUTHOR, role: "reviewer", invokable: true },
+    { id: AUTHOR, role: "reviewer", load: 0, invokable: true },
     { id: ASSIGNEE, role: "reviewer", load: 0, invokable: true },
     { id: "cccccccc-0000-4000-8000-000000000001", role: "reviewer", load: 4, invokable: true },
   ];
