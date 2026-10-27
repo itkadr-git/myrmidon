@@ -74,6 +74,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     });
     await db.insert(issues).values({ id: issueId, companyId, title: "PR task", status: "in_progress", assigneeAgentId: agentId });
     await db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", externalId: "paperclipai/paperclip#pull/123", title: "PR #123", status: "open", metadata: { repository: "paperclipai/paperclip", number: 123 } });
+    await db.insert(externalObjects).values({ companyId, providerKey: "github", objectType: "pull_request", externalId: "paperclipai/paperclip#pull/123", statusKey: "open", statusCategory: "open", statusTone: "info", isTerminal: false, data: { provider: "github", owner: "paperclipai", repo: "paperclip", number: 123, state: "open" } });
     const events = [false, true].map((merged, i) => ({
       id: `delivery-pr-close-${i}`, provider: "github" as const, event: "pull_request", action: "closed", installationId: "101", repositoryId: "99", createdAt: "2026-09-04T12:00:00.000Z", bindingIds: [`${grantId}_101`],
       payload: { repository: "paperclipai/paperclip", number: 123, state: "closed", merged, mergedAt: merged ? "2026-09-04T11:59:00.000Z" : null, updatedAt: "2026-09-04T12:00:00.000Z", url: "https://github.com/paperclipai/paperclip/pull/123" },
