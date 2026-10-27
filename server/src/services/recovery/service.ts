@@ -37,10 +37,15 @@ import {
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+  buildContinuationKey,
   requiresExecutionReconciliation,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
 } from "@myrmidon/shared";
+import {
+  releaseContinuationKey,
+  tryClaimContinuationKey,
+} from "../continuation-dedupe.js";
 import {
   agents,
   agentTaskSessions,
@@ -1980,7 +1985,9 @@ export function recoveryService(
 
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
+    companyId: string;
     agentId: string;
+    continuationHead?: string;
     reason:
       | "issue_assignment_recovery"
       | "issue_continuation_needed"
@@ -2057,45 +2064,87 @@ export function recoveryService(
       )
         return null;
     }
-    const queued = await deps.enqueueWakeup(input.agentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: input.reason,
-      idempotencyKey: input.idempotencyKey ?? undefined,
-      // The sweep can combine an old in-progress issue snapshot with a newer
-      // successful run. Validate eligibility under the enqueue issue lock so
-      // completion or reassignment cannot create a redundant continuation.
-      ...(input.source === "issue.productive_terminal_continuation_recovery"
-        ? {
-            issueStateGuard: {
-              statuses: ["in_progress"],
-              assigneeAgentId: input.agentId,
-            },
-          }
-        : {}),
-      payload: withRecoveryContext(
-        {
-          issueId: input.issueId,
-          ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-          ...(input.extraContext ?? {}),
-        },
-        "normal_model",
-      ),
-      requestedByActorType: "system",
-      requestedByActorId: null,
-      contextSnapshot: withRecoveryContext(
-        {
-          issueId: input.issueId,
-          taskId: input.issueId,
-          wakeReason: input.reason,
-          retryReason: input.retryReason,
-          source: input.source,
-          ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-          ...(input.extraContext ?? {}),
-        },
-        "normal_model",
-      ),
-    });
+    let continuationClaimKey: string | null = null;
+    if (input.reason === "issue_continuation_needed") {
+      const key = buildContinuationKey({
+        issueId: input.issueId,
+        event: "issue_continuation_needed",
+        head: input.continuationHead ?? "unversioned",
+      });
+      const claimed = await tryClaimContinuationKey(db, {
+        companyId: input.companyId,
+        issueId: input.issueId,
+        key,
+        // Recovery runs without a concrete run head can recur for the same
+        // issue indefinitely; don't suppress those retries for a full day.
+        ttl:
+          !input.continuationHead ||
+          input.source === "issue.continuation_recovery" ||
+          input.source === "issue.interaction_continuation_recovery" ||
+          input.source === STRANDED_AUTO_POLICY_RETRY_SOURCE
+            ? 60 * 1_000
+            : 24 * 60 * 60 * 1_000,
+      });
+      if (claimed === "deduped") return null;
+      continuationClaimKey = key;
+    }
+
+    let queued: typeof heartbeatRuns.$inferSelect | null;
+    try {
+      queued = await deps.enqueueWakeup(input.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: input.reason,
+        idempotencyKey: input.idempotencyKey ?? undefined,
+        // The sweep can combine an old in-progress issue snapshot with a newer
+        // successful run. Validate eligibility under the enqueue issue lock so
+        // completion or reassignment cannot create a redundant continuation.
+        ...(input.source === "issue.productive_terminal_continuation_recovery"
+          ? {
+              issueStateGuard: {
+                statuses: ["in_progress"],
+                assigneeAgentId: input.agentId,
+              },
+            }
+          : {}),
+        payload: withRecoveryContext(
+          {
+            issueId: input.issueId,
+            ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(input.extraContext ?? {}),
+          },
+          "normal_model",
+        ),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: withRecoveryContext(
+          {
+            issueId: input.issueId,
+            taskId: input.issueId,
+            wakeReason: input.reason,
+            retryReason: input.retryReason,
+            source: input.source,
+            ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(input.extraContext ?? {}),
+          },
+          "normal_model",
+        ),
+      });
+    } catch (error) {
+      if (continuationClaimKey) {
+        await releaseContinuationKey(db, {
+          companyId: input.companyId,
+          key: continuationClaimKey,
+        });
+      }
+      throw error;
+    }
+    if (!queued && continuationClaimKey) {
+      await releaseContinuationKey(db, {
+        companyId: input.companyId,
+        key: continuationClaimKey,
+      });
+    }
 
     if (queued && input.retryOfRunId) {
       return db
@@ -4063,7 +4112,6 @@ export function recoveryService(
     if (
       readStrandedAutoPolicyEnabled() &&
       strandedAutoPolicyLatestRun?.status === "succeeded" &&
-      !input.rerouteToSharedQueue &&
       isStrandedAutoPolicyCause(recoveryCause) &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress") &&
       input.issue.assigneeAgentId &&
@@ -4174,7 +4222,9 @@ export function recoveryService(
         try {
           queued = await enqueueStrandedIssueRecovery({
             issueId: input.issue.id,
+            companyId: input.issue.companyId,
             agentId: assigneeAgentId,
+            continuationHead: latestRun.id,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
             source: STRANDED_AUTO_POLICY_RETRY_SOURCE,
@@ -5732,7 +5782,11 @@ export function recoveryService(
 
           const queued = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
+            companyId: issue.companyId,
             agentId,
+            continuationHead:
+              latestPostResolutionRun?.id ??
+              acceptedContinuationInteraction.id,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
             source: "issue.interaction_continuation_recovery",
@@ -5925,6 +5979,7 @@ export function recoveryService(
         // If participant has a live run somewhere, just enqueue a recovery wake instead of escalating
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId: participantAgentId,
           reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
@@ -6023,6 +6078,7 @@ export function recoveryService(
 
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId,
           reason: "issue_assignment_recovery",
           retryReason: "assignment_recovery",
@@ -6144,7 +6200,9 @@ export function recoveryService(
 
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId,
+          continuationHead: successfulRun.id,
           reason: "issue_continuation_needed",
           retryReason: "issue_continuation_needed",
           source: "issue.productive_terminal_continuation_recovery",
@@ -6267,7 +6325,9 @@ export function recoveryService(
 
       const queued = await enqueueStrandedIssueRecovery({
         issueId: issue.id,
+        companyId: issue.companyId,
         agentId,
+        continuationHead: latestRun?.id ?? issue.checkoutRunId ?? undefined,
         reason: "issue_continuation_needed",
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",

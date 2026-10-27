@@ -10100,6 +10100,7 @@ export function issueRoutes(
             source: "automation",
             triggerDetail: "system",
             reason: "issue_recovery_action_restored",
+            idempotencyKey: `recovery_resolved:${result.recoveryAction.id}`,
             payload: {
               issueId: result.issue.id,
               recoveryActionId: result.recoveryAction.id,
@@ -13928,22 +13929,52 @@ export function issueRoutes(
         req.body.executionPolicy !== undefined && monitorChanged,
       );
 
+      const transitionIssue: IssueRouteSnapshot & {
+        assigneeAgentRole?: string | null;
+        executionReviewParticipantAgentIds?: string[];
+        defaultEscalationAgentIds?: string[];
+      } = { ...existing };
+      Object.assign(
+        transitionIssue,
+        await withDefaultEscalationChain(db, existing, nextExecutionPolicy),
+      );
+      const reviewParticipantAgentIds = nextExecutionPolicy
+        ? summarizeExecutionParticipants(nextExecutionPolicy, "review").flatMap(
+            (participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
+          )
+        : [];
+      transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
+      // Role is only needed when the issue enters or leaves review (return-assignee choice); skip the lookup otherwise.
+      if (
+        nextExecutionPolicy === null &&
+        existing.assigneeAgentId &&
+        (existing.status === "in_review" || updateFields.status === "in_review")
+      ) {
+        transitionIssue.assigneeAgentRole =
+          (await agentsSvc.getById(existing.assigneeAgentId))?.role ?? null;
+      }
+      const explicitAssigneePatch = {
+        // Use the resolved agent id: req.body may carry a shortname that
+        // normalizeIssueAssigneeAgentReference already resolved above.
+        assigneeAgentId:
+          req.body.assigneeAgentId === undefined
+            ? undefined
+            : (normalizedAssigneeAgentId ?? null),
+        assigneeUserId:
+          req.body.assigneeUserId === undefined
+            ? undefined
+            : (updateFields.assigneeUserId as string | null),
+      };
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
-        issue: await withDefaultEscalationChain(db, existing, nextExecutionPolicy),
+        issue: transitionIssue,
         policy: nextExecutionPolicy,
         previousPolicy: previousExecutionPolicy,
         requestedStatus:
           typeof updateFields.status === "string"
             ? updateFields.status
             : undefined,
-        requestedAssigneePatch: {
-          assigneeAgentId: normalizedAssigneeAgentId,
-          assigneeUserId:
-            req.body.assigneeUserId === undefined
-              ? undefined
-              : (req.body.assigneeUserId as string | null),
-        },
+        requestedAssigneePatch: explicitAssigneePatch,
         actor: {
           agentId: actor.agentId ?? null,
           userId: actor.actorType === "user" ? actor.actorId : null,
@@ -14315,14 +14346,12 @@ export function issueRoutes(
       const persistReviewActivityTransactionally =
         enteringReviewRequested || Boolean(reviewInteractionId);
 
-      const nextAssigneeAgentId =
-        updateFields.assigneeAgentId === undefined
-          ? existing.assigneeAgentId
-          : (updateFields.assigneeAgentId as string | null);
-      const nextAssigneeUserId =
+      const requestedAssigneeUserId =
         updateFields.assigneeUserId === undefined
           ? existing.assigneeUserId
           : (updateFields.assigneeUserId as string | null);
+      const nextAssigneeAgentId = requestedAssigneeAgentId;
+      const nextAssigneeUserId = requestedAssigneeUserId;
       const assigneeWillChange =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
         nextAssigneeUserId !== existing.assigneeUserId;
@@ -14757,6 +14786,10 @@ export function issueRoutes(
         updateFields.status === "done";
       const shouldCollectTerminalIssueActions =
         updateFields.status === "done" || updateFields.status === "cancelled";
+      const closesRecoveryIssue =
+        shouldCollectTerminalIssueActions &&
+        existing.status !== updateFields.status &&
+        existing.originKind === "stranded_issue_recovery";
       // myrmidon(HOLD-READY): a possible board unblock of an issue that has
       // a settled replay hold runs the update in a transaction, so the hold
       // is cleared atomically with it.
@@ -14929,21 +14962,77 @@ export function issueRoutes(
       const attachmentCommentSourceTrust = commentAttachmentIds?.length
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
+      const exitingReviewWithExplicitAssignee =
+        existing.status === "in_review" &&
+        updateFields.status !== undefined &&
+        updateFields.status !== "in_review" &&
+        (req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined);
       const shouldUseTransactionalIssueUpdate =
-        Boolean(commentAttachmentIds?.length) ||
-        Boolean(decision) ||
-        shouldRelayStop ||
-        enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
-        persistReviewActivityTransactionally ||
-        ((updateFields.status === "in_review" || existing.status === "in_review") &&
-          assigneeWillChange) ||
-        reviewPolicySensitiveMutationRequested ||
-        humanUnblockPossible ||
-        // myrmidon(HANDOFF-CAS): the guarded commit needs the row lock.
-        handoffGuarded;
+        closesRecoveryIssue ||
+          Boolean(commentAttachmentIds?.length) ||
+          Boolean(decision) ||
+          shouldRelayStop ||
+          enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
+          persistReviewActivityTransactionally ||
+          ((updateFields.status === "in_review" || existing.status === "in_review") &&
+            assigneeWillChange) ||
+          exitingReviewWithExplicitAssignee ||
+          reviewPolicySensitiveMutationRequested ||
+          humanUnblockPossible ||
+          // myrmidon(HANDOFF-CAS): the guarded commit needs the row lock.
+          handoffGuarded;
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            const lockedExisting = await svc.getByIdForUpdate(id, tx);
+            if (!lockedExisting) return null;
+            const lockedReviewParticipants = nextExecutionPolicy
+              ? summarizeExecutionParticipants(nextExecutionPolicy, "review").flatMap(
+                  (participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
+                )
+              : [];
+            const lockedTransitionIssue: typeof transitionIssue = {
+              ...existing,
+              ...lockedExisting,
+              assigneeAgentRole: undefined,
+              executionReviewParticipantAgentIds: lockedReviewParticipants,
+            };
+            if (
+              nextExecutionPolicy === null &&
+              lockedExisting.assigneeAgentId &&
+              (lockedExisting.status === "in_review" || updateFields.status === "in_review")
+            ) {
+              lockedTransitionIssue.assigneeAgentRole =
+                (await agentsSvc.getById(lockedExisting.assigneeAgentId))?.role ?? null;
+            }
+            const lockedTransition = applyIssueExecutionPolicyTransition({
+              issue: lockedTransitionIssue,
+              policy: nextExecutionPolicy,
+              previousPolicy: previousExecutionPolicy,
+              requestedStatus: updateFields.status,
+              requestedAssigneePatch: explicitAssigneePatch,
+              actor: {
+                agentId: actor.agentId ?? null,
+                userId: actor.actorType === "user" ? actor.actorId : null,
+              },
+              allowBoardOverride: req.actor.type === "board",
+              commentBody,
+              reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
+              monitorExplicitlyUpdated:
+                req.body.executionPolicy !== undefined && monitorChanged,
+            });
+            Object.assign(updateFields, lockedTransition.patch);
+            const lockedDecisionId = lockedTransition.decision ? randomUUID() : null;
+            if (lockedDecisionId) {
+              const nextExecutionState = updateFields.executionState as Record<string, unknown> | null | undefined;
+              if (!nextExecutionState || typeof nextExecutionState !== "object") {
+                throw new Error("Execution policy decision patch is missing executionState");
+              }
+              updateFields.executionState = {
+                ...nextExecutionState,
+                lastDecisionId: lockedDecisionId,
+              };
+            }
             // myrmidon(HANDOFF-CAS): the authoritative compare — re-read the
             // row under SELECT ... FOR UPDATE, re-check CAS expectations and
             // the stopped-run fence (executionRunId unchanged, no live run)
@@ -15964,6 +16053,97 @@ export function issueRoutes(
         requestedByActorId: actor.actorId,
       });
 
+      if (closesRecoveryIssue) {
+        try {
+          const recoveryWake = await db.transaction(async (tx) => {
+            const [recoveryAction] = await tx
+              .select()
+              .from(issueRecoveryActions)
+              .where(and(
+                eq(issueRecoveryActions.companyId, issue.companyId),
+                eq(issueRecoveryActions.recoveryIssueId, issue.id),
+                inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              ))
+              .for("update");
+            if (!recoveryAction) return null;
+
+            const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+              companyId: issue.companyId,
+              sourceIssueId: recoveryAction.sourceIssueId,
+              actionId: recoveryAction.id,
+              status: issue.status === "cancelled" ? "cancelled" : "resolved",
+              outcome: issue.status === "cancelled" ? "cancelled" : "restored",
+              resolutionNote: null,
+            }, tx);
+            if (!resolved) return null;
+            const [sourceIssue] = await tx
+              .select()
+              .from(issueRows)
+              .where(and(
+                eq(issueRows.id, recoveryAction.sourceIssueId),
+                eq(issueRows.companyId, issue.companyId),
+              ))
+              .for("update");
+            if (sourceIssue && sourceIssue.status === "blocked") {
+              const remainingBlockers = await tx
+                .select({ blockerIssueId: issueRelations.issueId })
+                .from(issueRelations)
+                .where(and(
+                  eq(issueRelations.companyId, issue.companyId),
+                  eq(issueRelations.relatedIssueId, recoveryAction.sourceIssueId),
+                  eq(issueRelations.type, "blocks"),
+                ));
+              const blockerIds = remainingBlockers
+                .map(({ blockerIssueId }) => blockerIssueId)
+                .filter((blockerId) => blockerId !== issue.id);
+              await svc.update(recoveryAction.sourceIssueId, {
+                status: blockerIds.length ? "blocked" : "todo",
+                blockedByIssueIds: blockerIds,
+                assigneeAgentId: recoveryAction.returnOwnerAgentId,
+                assigneeUserId: null,
+              }, tx);
+            }
+            return resolved.returnOwnerAgentId
+              ? {
+                  agentId: resolved.returnOwnerAgentId,
+                  actionId: resolved.id,
+                  sourceIssueId: resolved.sourceIssueId,
+                  outcome: resolved.outcome,
+                }
+              : null;
+          });
+          if (recoveryWake) {
+            await enqueueRecoveryActionWakeup(recoveryWake.agentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_recovery_action_restored",
+              idempotencyKey: `recovery_resolved:${recoveryWake.actionId}`,
+              requestedByActorType: "system",
+              requestedByActorId: "recovery_issue_closed",
+              payload: {
+                issueId: recoveryWake.sourceIssueId,
+                recoveryIssueId: issue.id,
+                recoveryActionId: recoveryWake.actionId,
+                outcome: recoveryWake.outcome,
+              },
+              contextSnapshot: {
+                issueId: recoveryWake.sourceIssueId,
+                taskId: recoveryWake.sourceIssueId,
+                recoveryIssueId: issue.id,
+                recoveryActionId: recoveryWake.actionId,
+                source: "issue.recovery_closed",
+                wakeReason: "issue_recovery_action_restored",
+              },
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id },
+            "failed to resolve recovery action after recovery issue closure",
+          );
+        }
+      }
+
       // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
       void (async () => {
         type WakeupRequest = NonNullable<
@@ -16254,6 +16434,7 @@ export function issueRoutes(
             });
           }
         }
+
 
         const becameDone =
           existing.status !== "done" && issue.status === "done";

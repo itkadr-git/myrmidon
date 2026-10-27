@@ -71,6 +71,7 @@ rate is visible as a number, not a feeling.
 
 ## In detail
 
+- [Knowledge seed corpus: decisions and product reference](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/knowledge-seed.md)
 - [Foraging: knowledge gathering from approved sources](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/foraging.md)
 - [Reference-task evals and the LLM judge](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/reference-task-evals.md)
 - [Evals: cross-family judge selection](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/evals-judge-family-selection.md)
