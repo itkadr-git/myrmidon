@@ -300,37 +300,20 @@
       }
     },
     {
-      "id": "18-terminal-foreground-heartbeat",
+      "id": "18-terminal-foreground-defaults",
       "kind": "patch",
-      "patch": "docker/bot-runtime/patches/18-terminal-foreground-heartbeat.patch",
+      "patch": "docker/bot-runtime/patches/18-terminal-foreground-defaults.patch",
       "files": [
         "tools/terminal_tool.py"
       ],
-      "reason": "Foreground calls may carry heartbeat=60 as a provider-materialized schema default. Heartbeat has no meaning without a tracked process, so normalize it to zero while continuing to reject foreground notification intent.",
-      "dropCondition": "Upstream drops positive foreground heartbeat before dispatch and describes heartbeat as background-only; check _handle_terminal and TERMINAL_SCHEMA in tools/terminal_tool.py.",
+      "reason": "Claude models fill every advertised terminal parameter with its default (heartbeat=60, notify=false) on each call; upstream rejected any of them on a foreground run, so every terminal call of such a bot failed and the run looped. On a foreground call heartbeat is now dropped and only a real notify/notify_on_complete/watch_patterns request is rejected.",
+      "dropCondition": "Upstream ignores background-only defaults on a foreground terminal call.",
       "offer": null,
-      "offerNote": "No offer submitted; this is a release-blocking runtime defect fix.",
+      "offerNote": "Not offered yet.",
       "probe": {
         "source": "hermes",
         "path": "tools/terminal_tool.py",
-        "upstreamMarker": "Ignored on foreground commands"
-      }
-    },
-    {
-      "id": "19-terminal-foreground-heartbeat-regression-test",
-      "kind": "patch",
-      "patch": "docker/bot-runtime/patches/19-terminal-foreground-heartbeat-test.patch",
-      "files": [
-        "tests/tools/test_process_heartbeat.py"
-      ],
-      "reason": "Pin dispatch behavior: heartbeat=60, notify=false, pty=false succeeds as foreground with heartbeat zero, while notify=true is still rejected.",
-      "dropCondition": "Same as delta 18; upstream carries an equivalent regression test in tests/tools/test_process_heartbeat.py.",
-      "offer": null,
-      "offerNote": "No offer submitted; test is carried alongside the runtime fix.",
-      "probe": {
-        "source": "hermes",
-        "path": "tests/tools/test_process_heartbeat.py",
-        "upstreamMarker": "foreground_drops_it"
+        "upstreamMarker": "foreground.{0,80}(ignor|drop)"
       }
     }
   ]
