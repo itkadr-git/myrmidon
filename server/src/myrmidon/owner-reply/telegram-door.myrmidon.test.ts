@@ -113,13 +113,15 @@ describe("handleTelegramOwnerReply", () => {
     expect(askWhichCard).not.toHaveBeenCalled();
   });
 
-  it("stays out of the way outside the via_bot mode", async () => {
-    const { deps, resolveCard } = setup([confirmation("ix-1")]);
-    const outcome = await handleTelegramOwnerReply(
-      { ...deps, readMode: async () => "all" as never },
-      { ...base, text: "да", loadReplied: null },
-    );
-    expect(outcome.outcome).toBe("skipped_mode");
-    expect(resolveCard).not.toHaveBeenCalled();
+  it("accepts published owner decisions in owner_decisions_only and all modes", async () => {
+    for (const mode of ["owner_decisions_only", "all"] as const) {
+      const { deps, resolveCard } = setup([confirmation("ix-1")]);
+      const outcome = await handleTelegramOwnerReply(
+        { ...deps, readMode: async () => mode },
+        { ...base, text: "да", loadReplied: null },
+      );
+      expect(outcome).toMatchObject({ outcome: "resolved", interactionId: "ix-1" });
+      expect(resolveCard).toHaveBeenCalledTimes(1);
+    }
   });
 });

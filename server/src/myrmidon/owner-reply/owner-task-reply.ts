@@ -121,8 +121,15 @@ export async function handleOwnerTextReply(
   const text = input.text.trim();
   if (text.length === 0) return { outcome: "no_card" };
   try {
+    // Telegram inbound replies are valid for every owner-delivery mode. The
+    // mode controls which publications are created, not whether an already
+    // published owner decision may be answered. Keeping this consumer open is
+    // required for `owner_decisions_only` and `all`; silently skipping here
+    // leaves legitimate non-via_bot publications stranded on the board.
     const mode = await deps.readMode();
-    if (mode !== "via_bot") return { outcome: "skipped_mode", mode };
+    if (!["via_bot", "owner_decisions_only", "all"].includes(mode)) {
+      return { outcome: "skipped_mode", mode };
+    }
 
     const at = input.at ?? new Date();
     const issueId = input.issueId ?? null;
