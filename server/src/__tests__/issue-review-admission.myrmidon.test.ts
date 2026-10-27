@@ -25,14 +25,14 @@ import { readReviewRoutingSignals, resetReviewRoutingSignals } from "../myrmidon
 
 const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
   resetEach: async (db) => {
+    // Await background wake/run handlers before taking table locks: a handler
+    // may need those relations while it finishes its transaction.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.transaction(async (tx) => {
-      // Freeze writers to every table whose rows are drained below. The lock
-      // mode conflicts with INSERT on these tables, so no dependent wake/activity
-      // row can appear during teardown.
+      // Prevent new wake/activity writers while deleting their rows and issues.
       await tx.execute(
         sql`LOCK TABLE activity_log, agent_wakeup_requests, issues, agents IN SHARE ROW EXCLUSIVE MODE`,
       );
-      await drainHeartbeatRunsToQuiescence(tx as typeof db, heartbeatService(ctx.db));
       await tx.delete(agentWakeupRequests);
       await tx.delete(activityLog);
       await tx.delete(issues);
