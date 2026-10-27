@@ -1201,7 +1201,7 @@ describe("agent live run routes", () => {
       }));
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
         requestedByActorType: "user", requestedByActorId: "operator", failedRunId: failedChatRunId,
-        payload: { issueId: failedChatIssueId },
+        payload: { issueId: failedChatIssueId, eventRevision: retryIssueRevisionIso },
       }));
     });
 
