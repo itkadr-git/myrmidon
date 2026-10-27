@@ -982,6 +982,31 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(actions).toHaveLength(0);
     });
 
+    it("keeps a no-PR issue in progress with one wake while the retry budget remains", async () => {
+      const { companyId, coderId, sourceIssue } = await seedCompany();
+      const enqueueWakeup = fakeRetryWakeEnqueue({ companyId });
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      // Start with no prior tagged retries and recover once; replay is covered separately.
+      const updated = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: await succeededRun({ companyId, agentId: coderId }),
+        recoveryCause: "successful_run_missing_state",
+      });
+
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+        reason: "issue_continuation_needed",
+      }));
+      expect(updated?.status).toBe("in_progress");
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      expect(persisted?.status).toBe("in_progress");
+      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.blockerMetadata).toBeNull();
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id))).toHaveLength(0);
+    });
+
     it("keeps a no-PR issue in progress with one wake when a replay reaches the daily cap", async () => {
       const { companyId, coderId, sourceIssue } = await seedCompany();
       await seedStrandedAutoPolicyRetryRun({ companyId, agentId: coderId, issueId: sourceIssue.id });
