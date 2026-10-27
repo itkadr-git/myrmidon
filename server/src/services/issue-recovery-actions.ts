@@ -1,6 +1,8 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
-import { issueRecoveryActions } from "@myrmidon/db";
+import { agents, companies, issueRecoveryActions, issueRelations, issues } from "@myrmidon/db";
+import { recoveryFactoryRequestSchema } from "@myrmidon/shared";
+import type { RecoveryFactoryMetrics, RecoveryFactoryRequest, RecoveryFactoryResult } from "@myrmidon/shared";
 import type {
   IssueRecoveryAction,
   IssueRecoveryActionKind,
@@ -122,7 +124,88 @@ function isUniqueRecoveryActionConflict(error: unknown) {
   );
 }
 
-export function issueRecoveryActionService(db: Db) {
+export function issueRecoveryActionService(db: Db, metrics?: RecoveryFactoryMetrics) {
+  async function ensureRecoveryIssue(request: RecoveryFactoryRequest): Promise<RecoveryFactoryResult> {
+    const input = recoveryFactoryRequestSchema.parse(request);
+    const result = await db.transaction(async (tx): Promise<RecoveryFactoryResult> => {
+      const [source] = await tx.select().from(issues).where(eq(issues.id, input.sourceIssueId));
+      if (!source) throw new Error("Recovery source issue not found");
+      const ownerAgentId = "agentId" in input.owner ? input.owner.agentId : null;
+      const ownerUserId = "userId" in input.owner ? input.owner.userId : null;
+      const ownerQueue = "serviceQueue" in input.owner ? input.owner.serviceQueue : null;
+      if (ownerAgentId) {
+        const [owner] = await tx.select({ id: agents.id }).from(agents).where(and(
+          eq(agents.id, ownerAgentId), eq(agents.companyId, source.companyId),
+        ));
+        if (!owner) throw new Error("Recovery owner must belong to the source company");
+      }
+      const now = new Date();
+      const slaDueAt = new Date(now.getTime() + input.slaMinutes * 60_000);
+      const nextAction = input.runbookRef ?? `Resolve ${input.kind} for ${source.identifier ?? source.id}`;
+      const [action] = await tx.insert(issueRecoveryActions).values({
+        companyId: source.companyId,
+        sourceIssueId: source.id,
+        kind: input.kind,
+        cause: input.kind,
+        fingerprint: input.dedupeKey,
+        dedupeKey: input.dedupeKey,
+        ownerType: ownerAgentId ? "agent" : ownerUserId ? "user" : "system",
+        ownerAgentId,
+        ownerUserId,
+        ownerQueue,
+        slaDueAt,
+        nextCheckAt: new Date(input.nextCheckAt),
+        runbookRef: input.runbookRef,
+        evidence: input.evidence,
+        nextAction,
+        wakePolicy: { owner: input.owner, nextCheckAt: input.nextCheckAt },
+      }).onConflictDoNothing({
+        target: [issueRecoveryActions.companyId, issueRecoveryActions.dedupeKey],
+        targetWhere: sql`${issueRecoveryActions.status} in ('active', 'escalated') and ${issueRecoveryActions.dedupeKey} is not null`,
+      }).returning();
+      if (!action) {
+        // A separate statement sees the winner after ON CONFLICT waited for its commit.
+        const [existing] = await tx.select().from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, source.companyId),
+          eq(issueRecoveryActions.dedupeKey, input.dedupeKey),
+          inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+        ));
+        if (!existing) throw new Error("Recovery action changed while deduplicating; retry request");
+        return { outcome: "deduped", recoveryActionId: existing.id, recoveryIssueId: existing.recoveryIssueId };
+      }
+      const [maxRow] = await tx.select({ max: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
+        .from(issues).where(eq(issues.companyId, source.companyId));
+      const [company] = await tx.update(companies).set({
+        issueCounter: sql`greatest(${companies.issueCounter}, ${maxRow.max}) + 1`,
+      }).where(eq(companies.id, source.companyId)).returning();
+      const [recovery] = await tx.insert(issues).values({
+        companyId: source.companyId,
+        projectId: source.projectId,
+        goalId: source.goalId,
+        title: `Recovery: ${input.kind} - ${source.identifier ?? source.id}`,
+        description: nextAction,
+        status: "todo",
+        priority: source.priority,
+        assigneeAgentId: ownerAgentId,
+        assigneeUserId: ownerUserId,
+        issueNumber: company.issueCounter,
+        identifier: `${company.issuePrefix}-${company.issueCounter}`,
+        originKind: "recovery_factory",
+        originId: action.id,
+        originFingerprint: input.dedupeKey,
+      }).returning();
+      await tx.insert(issueRelations).values({
+        companyId: source.companyId, issueId: recovery.id, relatedIssueId: source.id, type: "blocks",
+      });
+      await tx.update(issueRecoveryActions).set({ recoveryIssueId: recovery.id })
+        .where(eq(issueRecoveryActions.id, action.id));
+      return { outcome: "created", recoveryActionId: action.id, recoveryIssueId: recovery.id };
+    });
+    // Only committed outcomes count, including when a later write rolls back.
+    metrics?.[result.outcome](input.kind);
+    return result;
+  }
+
   const upsertQueues = new Map<string, Promise<void>>();
 
   async function runExclusiveUpsert<T>(
@@ -499,6 +582,7 @@ export function issueRecoveryActionService(db: Db) {
   }
 
   return {
+    ensureRecoveryIssue,
     getActiveForIssue,
     listActiveForIssues,
     resolveActiveForIssue,
