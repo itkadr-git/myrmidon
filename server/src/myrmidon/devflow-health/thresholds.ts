@@ -1,4 +1,3 @@
-import type { InferSelectModel } from "drizzle-orm";
 
 export const DEVFLOW_HEALTH_SETTINGS_KEY = "devflowHealth" as const;
 export const DEFAULT_DEVFLOW_THRESHOLDS_MS = {
