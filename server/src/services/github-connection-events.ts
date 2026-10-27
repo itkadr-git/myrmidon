@@ -355,13 +355,15 @@ export function githubConnectionEventService(
           && (number === snapshot.number || externalId?.toLowerCase() === snapshot.externalId.toLowerCase());
       });
       if (matching && matching.issue.status !== "done" && matching.issue.status !== "cancelled") {
-        await issueService(db).update(matching.issue.id, {
-          status: "done",
-          completedAt: now(),
-          actorAgentId: null,
-          actorUserId: null,
-          companyGuard: companyId,
-        }, db);
+        await db.transaction(async (tx) => {
+          await issueService(db).update(matching.issue.id, {
+            status: "done",
+            completedAt: now(),
+            actorAgentId: null,
+            actorUserId: null,
+            companyGuard: companyId,
+          }, tx);
+        });
       }
       await issueThreadInteractionService(db, { wakeup: options.wakeup })
         .sweepMergedPullRequestConfirmations([{
