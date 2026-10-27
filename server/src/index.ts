@@ -1605,6 +1605,7 @@ async function startServerWithDatabaseTeardown(
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let taskPrSyncRunner: (() => void) | null = null;
+  let taskPrSyncSchedulerStop: (() => void) | null = null;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   let runContextColumnsBackfill: { stop(): void } | null = null; // OPE-5007 П2
 
@@ -1895,6 +1896,7 @@ async function startServerWithDatabaseTeardown(
       if (heartbeatSchedulerStopped || !leaderLeaseManager.isLeader("scheduler")) return;
       scheduleTaskPrSyncSweep();
     };
+    taskPrSyncSchedulerStop = scheduleTaskPrSyncSweep.stop;
     taskPrSyncRunner();
   }
   // myrmidon(STALE-BLOCK): the periodic watchdog that lifts dead blocked
@@ -3018,15 +3020,12 @@ async function startServerWithDatabaseTeardown(
     stopTracingAttentionSweep(); // myrmidon(TRACING-HEALTH)
     stopModelProviderPoolSweep(); // myrmidon(1.6.6 OPE-7198)
     stopBotCanary(); // myrmidon(R5-B)
+    taskPrSyncSchedulerStop?.();
+    taskPrSyncSchedulerStop = null;
     if (heartbeatSchedulerInterval) {
       clearInterval(heartbeatSchedulerInterval);
       heartbeatSchedulerInterval = null;
     }
-    if (taskPrSyncTimer) {
-      clearInterval(taskPrSyncTimer);
-      taskPrSyncTimer = null;
-    }
-
     // myrmidon(PROCS-1.7, design OPE-5394 §5.3): release the leader leases
     // right after the timers stop so a standby takes over within one renewal
     // tick (≤ 1 s handover at a graceful shutdown).
