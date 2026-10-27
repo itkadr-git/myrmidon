@@ -57,6 +57,7 @@ import {
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
+  issueWorkProducts,
   issueComments,
   issueApprovals,
   issueRecoveryActions,
@@ -4166,7 +4167,17 @@ export function recoveryService(
         managerAgentId,
         escalationAgentId,
         targetIsAdm,
-        hasExecutionWorkflow: issueHasExistingExecutionWorkflow(input.issue),
+        hasExecutionWorkflow: issueHasExistingExecutionWorkflow({
+          ...input.issue,
+          hasOpenPullRequest: Boolean(await db.query.issueWorkProducts.findFirst({
+            where: and(
+              eq(issueWorkProducts.issueId, input.issue.id),
+              eq(issueWorkProducts.type, "pull_request"),
+              eq(issueWorkProducts.status, "open"),
+            ),
+            columns: { id: true },
+          })),
+        }),
         assigneePaused,
       });
 

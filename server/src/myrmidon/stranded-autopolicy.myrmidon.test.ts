@@ -272,6 +272,11 @@ describe("issueHasExistingExecutionWorkflow", () => {
     expect(issueHasExistingExecutionWorkflow({ executionPolicy: null, executionState: null })).toBe(false);
   });
 
+  it("treats an open pull request as an existing execution workflow", () => {
+    expect(issueHasExistingExecutionWorkflow({ hasOpenPullRequest: true })).toBe(true);
+    expect(issueHasExistingExecutionWorkflow({ hasOpenPullRequest: false })).toBe(false);
+  });
+
   it("is true when an execution policy already has configured stages, even before any stage has started", () => {
     // An owner-configured approval policy sits on the issue from creation but
     // only *runs* on a transition to in_review/done
