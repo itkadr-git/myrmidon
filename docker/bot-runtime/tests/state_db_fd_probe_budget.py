@@ -94,17 +94,13 @@ def main(argv):
         # which is what makes the sidecar identity unrecordable (see the module comment).
         target = home / "data" / "state.db"
         target.parent.mkdir(parents=True, exist_ok=True)
-        def initialize_database():
-            # Writer construction is intentionally off-loop; the burst below measures
-            # event-loop latency after the worker-owned connection is ready.
-            seed = state.SessionDB(target)
-            seed._write_sql("CREATE TABLE IF NOT EXISTS probe (x INTEGER)")
-            seed.close()
-            return state.SessionDB(link)
-
+        seed = state.SessionDB(target)
+        seed._write_sql("CREATE TABLE IF NOT EXISTS probe (x INTEGER)")
+        seed.close()
         link = home / "state.db"
         link.symlink_to(target)
-        db = asyncio.run(asyncio.to_thread(initialize_database))
+
+        db = state.SessionDB(link)
         db._write_sql("INSERT INTO probe (x) VALUES (0)")
         if not db._wal_active:
             sys.exit(f"FAIL: state.db did not end up in WAL (open fds={open_fds})")
