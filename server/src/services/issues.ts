@@ -5809,18 +5809,17 @@ async function listIssueBlockedInboxAttentionMap(
       if (sourceId) recoveryIssueBySourceId.set(sourceId, recovery);
     }
   }
-  const [recoveryIssues, findings] = await Promise.all([
-    dbOrTx
-      .select()
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, companyId),
-          inArray(issues.originKind, [...BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS]),
-          notInArray(issues.status, [...BLOCKED_INBOX_TERMINAL_STATUSES]),
-        ),
+  const recoveryIssues = await dbOrTx
+    .select()
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        inArray(issues.originKind, [...BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS]),
+        notInArray(issues.status, [...BLOCKED_INBOX_TERMINAL_STATUSES]),
       ),
-    Promise.resolve(classifyIssueGraphLiveness({
+    );
+  const findings = classifyIssueGraphLiveness({
     issues: graphIssues.map((issue) => ({
       id: issue.id,
       companyId: issue.companyId,
