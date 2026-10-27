@@ -546,8 +546,9 @@ async function claimTaskForAgent(
         .from(issues)
         .where(
           and(
-            eq(issues.id, target.issueId),
             eq(issues.companyId, companyId),
+            ...readyQueueConditions(txDb, companyId),
+            eq(issues.id, target.issueId),
             // Revalidate scope after locking the issue. The pool/membership
             // reads are advisory; only this predicate protects the write.
             projectScopedClaimGate(target.agentId),
@@ -814,6 +815,12 @@ export async function matchIssue(
   if (!row?.companyId) return null;
   if (row.assigneeAgentId) return null;
   if (!(SWARM_CLAIM_QUEUE_ISSUE_STATUSES as readonly string[]).includes(row.status)) return null;
+  const [ready] = await deps.db
+    .select({ id: issues.id })
+    .from(issues)
+    .where(and(...readyQueueConditions(deps.db, row.companyId), eq(issues.id, issueId)))
+    .limit(1);
+  if (!ready) return null;
   if (await isCooling(deps, row.companyId, issueId)) return null;
 
   const castes = await casteDirectoryOf(deps, row.companyId);
