@@ -18,7 +18,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
-import { collectMetricsSnapshot, runMetricsSelfCheck, METRIC_FAMILIES } from "./metrics.js";
+import { collectMetricsSnapshot, renderMetricsText, runMetricsSelfCheck, METRIC_FAMILIES } from "./metrics.js";
 import { recordSwarmClaimSignal, resetSwarmClaimSignals } from "./swarm-signals.js";
 import { resetStaleBlockSignals, recordStaleBlockSignal } from "../../stale-block/attention.js";
 import { resetTracingHealthSignals } from "../../tracing-health/attention.js";
@@ -99,6 +99,7 @@ describeEmbeddedPostgres("metrics collector", () => {
       status: input.status,
       startedAt: input.startedAt ?? null,
       finishedAt: input.finishedAt ?? null,
+      livenessState: input.livenessState ?? null,
     });
     return runId;
   }
@@ -127,6 +128,24 @@ describeEmbeddedPostgres("metrics collector", () => {
     expect(snapshot.runsFailedTotal).toBe(1);
     expect(snapshot.runsFailedWindow).toBe(1);
     expect(snapshot.scrapeErrors).toBe(0);
+  });
+
+  it("exports empty-response run counts by agent to the monitoring scrape", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "engineer");
+    await seedRun(companyId, agentId, {
+      status: "succeeded",
+      finishedAt: NOW,
+      livenessState: "empty_response",
+    });
+    const snapshot = await collectMetricsSnapshot({
+      db,
+      now: () => NOW,
+      errorWindowSec: 3600,
+      latencyWindowSec: 3600,
+    });
+    const exposition = renderMetricsText(snapshot);
+    expect(exposition).toContain(`myrmidon_empty_runs_total{role="all",agent_id="${agentId}"} 1`);
   });
 
   it("counts failed runs only inside the error window", async () => {
