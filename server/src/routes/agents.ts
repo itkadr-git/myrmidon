@@ -6367,6 +6367,11 @@ function getActorIdentityPart(req: Request): string {
             : [],
         ),
       );
+      if (issueId) {
+        const issue = await issueService(db).getById(issueId);
+        if (!issue || issue.companyId !== agent.companyId) throw notFound("Task not found");
+        wakePayload.eventRevision = issue.updatedAt.toISOString();
+      }
     }
     // myrmidon(WAKE-BIND): a wake must always carry its task. Accept the
     // documented top-level issueId, and for a manual wake with no issue at all

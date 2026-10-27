@@ -21588,6 +21588,7 @@ export function heartbeatService(
     const key = opts.idempotencyKey ??
       `issue-review-admission:${resolvedIssueId ?? "unknown"}:${agentId}`;
     await tx.insert(agentWakeupRequests).values({
+      companyId: resolvedCompanyId,
       agentId,
       source,
       triggerDetail: opts.triggerDetail ?? null,
