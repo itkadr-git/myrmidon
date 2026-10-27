@@ -610,7 +610,9 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     const suggestion = await store.suggest(companyId, BOT, { companyId, body: "add deploy note", rationale: "seen in run", targetSlug: "t", sourceKind: "run", sourceRef: "run-9" });
     expect(suggestion.status).toBe("pending");
     expect(suggestion.targetItemId).not.toBeNull();
-    expect((await store.listSuggestions(companyId, "pending")).length).toBe(1);
+    const pending = await store.listSuggestions(companyId, "pending");
+    expect(pending.length).toBe(1);
+    expect(pending[0]).toMatchObject({ rationale: "seen in run", sourceKind: "run", sourceRef: "run-9" });
 
     await store.decideSuggestion(companyId, OWNER, { suggestionId: suggestion.id, companyId, decision: "accepted" });
     await store.decideSuggestion(companyId, OWNER, { suggestionId: suggestion.id, companyId, decision: "declined" }).catch((e) => {
