@@ -304,7 +304,7 @@ export function resolveRecoveryOwner(input: ResolveRecoveryOwnerInput): ResolveR
         ? candidate.projectId.trim()
         : null;
       const candidateProjectIds = Array.isArray(candidate.projectIds)
-        ? candidate.projectIds.map((p) => String(p).trim()).filter((p) => p.length > 0)
+        ? candidate.projectIds.map((p: string) => String(p).trim()).filter((p: string) => p.length > 0)
         : [];
       const hasSpecificProject = candidateProjectId !== null || candidateProjectIds.length > 0;
       if (hasSpecificProject) {
@@ -325,7 +325,7 @@ export function resolveRecoveryOwner(input: ResolveRecoveryOwnerInput): ResolveR
       title: (candidate.title ?? "").trim().toLowerCase(),
       projectId: candidate.projectId?.trim() || null,
       projectIds: Array.isArray(candidate.projectIds)
-        ? candidate.projectIds.map((p) => String(p).trim()).filter((p) => p.length > 0)
+        ? candidate.projectIds.map((p: string) => String(p).trim()).filter((p: string) => p.length > 0)
         : [],
       reportsTo: candidate.reportsTo?.trim() || null,
       isManager: resolved.ownerKind === "agentId" && "agentId" in resolved.owner
