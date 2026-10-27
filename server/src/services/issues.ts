@@ -6145,6 +6145,17 @@ async function listIssueBlockedInboxAttentionMap(
           state: "recovery_open",
           reason: finding.state,
           severity: "medium",
+          stoppedSinceAt: row.createdAt,
+          owner: {
+            type: row.assigneeAgentId
+              ? "agent"
+              : row.assigneeUserId
+                ? "user"
+                : "unknown",
+            agentId: row.assigneeAgentId,
+            userId: row.assigneeUserId,
+            label: null,
+          },
           action: {
             label: "Review existing recovery issue",
             detail: "Update the existing recovery issue rather than creating another one.",
