@@ -21575,6 +21575,8 @@ export function heartbeatService(
       readNonEmptyString(contextSnapshot.issueId) ??
       readNonEmptyString(payload?.issueId) ??
       readNonEmptyString(payload?.taskId);
+    const key = opts.idempotencyKey ??
+      `issue-review-admission:${resolvedIssueId ?? "unknown"}:${agentId}`;
     if (resolvedIssueId && !payload?.eventRevision) {
       const eventRevision = await tx.select({ updatedAt: issues.updatedAt }).from(issues)
         .where(and(eq(issues.companyId, resolvedCompanyId), eq(issues.id, resolvedIssueId)))
@@ -21585,8 +21587,6 @@ export function heartbeatService(
         contextSnapshot.eventRevision = eventRevision;
       }
     }
-    const key = opts.idempotencyKey ??
-      `issue-review-admission:${resolvedIssueId ?? "unknown"}:${agentId}`;
     await tx.insert(agentWakeupRequests).values({
       companyId: resolvedCompanyId,
       agentId,
