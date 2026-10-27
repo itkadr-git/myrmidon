@@ -112,6 +112,11 @@ describe("fleet site enroll routes", () => {
     const { app, deps } = harness(undefined, { siteCa: ca });
     const response = await request(app).post(path).send(body()).expect(201);
     expect(deps.writeSecret).toHaveBeenCalledWith(COMPANY_A, "myrmidon-site-ca", JSON.stringify({ cert: ca.cert, key: ca.key }));
+    expect(deps.writeSecret).toHaveBeenCalledWith(
+      COMPANY_A,
+      "myrmidon-site-client-myr-vm1",
+      expect.stringContaining("CERTIFICATE"),
+    );
     const returned = JSON.stringify(response.body);
     expect(returned).not.toContain("PRIVATE KEY");
     expect(returned).not.toContain("privateKey");

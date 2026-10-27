@@ -16,7 +16,7 @@ describe("site client PKI", () => {
     expect(clientCert.verify(caCert.publicKey)).toBe(true);
     expect(clientCert.ca).toBe(false);
     expect(clientCert.checkIssued(caCert)).toBe(true);
-    expect(clientCert.validFrom).toBe(new Date(now.getTime() - 60_000).toISOString().replace("T", " ").replace(".000Z", "Z"));
+    expect(clientCert.validFrom).toBe("Oct 24 23:59:00 2026 GMT");
     expect(client.notAfter.getTime() - now.getTime()).toBe(SITE_CLIENT_CERT_VALIDITY_DAYS * 86_400_000);
     expect(client.fingerprint).toHaveLength(64);
     expect(ca.key).not.toContain(client.key);
