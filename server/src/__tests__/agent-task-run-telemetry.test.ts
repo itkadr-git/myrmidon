@@ -358,7 +358,7 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
       modelCallCountSource: "gateway_count",
       gatewaySpendCents: 7,
       apiEquivalentCostUsd: 0.000025,
-      outcomeCategory: null,
+      outcomeCategory: "nothing",
     });
   });
 
@@ -426,7 +426,7 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
     await emitAgentTaskRun(db, unfinishedRun);
     const [unfinishedResult] = await db.select({ resultJson: heartbeatRuns.resultJson })
       .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect((unfinishedResult.resultJson as any).runTelemetry.outcomeCategory).toBeNull();
+    expect((unfinishedResult.resultJson as any).runTelemetry.outcomeCategory).toBe("nothing");
 
     await emitAgentTaskRun(db, run);
     const [emptyResult] = await db.select({ resultJson: heartbeatRuns.resultJson })
