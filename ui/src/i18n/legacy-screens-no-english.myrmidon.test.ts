@@ -105,9 +105,37 @@ describe("legacy screens carry no English literals", () => {
 
 // guarded/*.txt: the stronger rule (multi-line JSX text, {"..."} literals,
 // alt/aria/title/label/placeholder/tooltip attributes with any letter).
-describe("guarded files carry no English literals", () => {
 
+describe("guarded files carry no English literals", () => {
   it("guarded lists name only .tsx files under ui/src", () => {
+    expect(guardedFromLists.filter((rel) => !rel.endsWith(".tsx") || rel.startsWith("/") || rel.includes(".."))).toEqual([]);
+  });
+
+  it("catches hard-coded English in a ternary code branch but ignores identifiers and i18n keys", () => {
+    expect(findEnglishLiterals('{ready ? "Ready to run" : t("area.jobs.waiting")}')).toEqual([
+      { line: 1, kind: "literal", text: "Ready to run" },
+    ]);
+  });
+
+  it("scans all shipped and example plugin UI entry files", () => {
+    const pluginUiFiles = readdirSync(join(UI_ROOT, "../../packages/plugins"), { recursive: true })
+      .filter((path): path is string => typeof path === "string" && /^((examples\/[^/]+)|([^/]+))\/src\/ui\/.*\.tsx?$/.test(path))
+      .map((path) => join(UI_ROOT, "../../packages/plugins", path))
+      .filter((path) => !path.includes("/sdk/src/ui/"));
+    expect(pluginUiFiles.length).toBeGreaterThan(0);
+    const offenders = pluginUiFiles.flatMap((path) =>
+      findEnglishLiterals(readFileSync(path, "utf8")).map((o) => `${path}:line ${o.line}: ${o.kind} "${o.text}"`),
+    );
+    expect(offenders, "expected no hard-coded English UI copy in plugin UI files").toEqual([]);
+  });
+
+
+  it("detects a deliberately untranslated plugin JSX string", () => {
+    expect(findEnglishLiterals('<button>Intentionally untranslated</button>')).toEqual([
+      { line: 1, kind: "text", text: "Intentionally untranslated" },
+    ]);
+  });
+
     expect(guardedFromLists.filter((rel) => !rel.endsWith(".tsx") || rel.startsWith("/") || rel.includes(".."))).toEqual([]);
   });
 

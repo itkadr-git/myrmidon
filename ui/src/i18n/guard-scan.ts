@@ -85,6 +85,17 @@ export function findEnglishLiterals(source: string): GuardOffender[] {
     offenders.push({ line: lineOf(code, match.index!), kind: "attr", text: `${match[1]}="${match[3]}"` });
   }
 
+  const codeOnly = code
+    .replace(/<[^>]*>/g, (value) => value.replace(/[^\n]/g, " "))
+    .replace(/\b(?:i18n\.)?t\(\s*(["'`])(?:\\.|(?!\1)[^\\])*\1(?:\s*,[^)]*)?\)/g, (value) => value.replace(/[^\n]/g, " "))
+    .replace(/(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)/g, (value) => value.replace(/[^\n]/g, " "));
+  const codeLiteralRe = /\b[A-Za-z_$][\w$]*\s*\?\s*(["'])([^\\\n]{2,120})\1/g;
+  for (const match of codeOnly.matchAll(codeLiteralRe)) {
+    const text = match[2].trim();
+    if (!/[A-Za-z]{2}/.test(text) || !/\s/.test(text)) continue;
+    offenders.push({ line: lineOf(codeOnly, match.index!), kind: "literal", text });
+  }
+
   return offenders.sort((a, b) => a.line - b.line);
 }
 
