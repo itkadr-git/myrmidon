@@ -48,6 +48,7 @@ import {
   heartbeatRuns,
   issueClaims,
   issues,
+  issueRelations,
   issueWorkProducts,
   type Db,
 } from "@myrmidon/db";
@@ -1225,7 +1226,7 @@ async function openTaskIdsOfAgents(
   companyId: string,
   agentId: string | null,
 ): Promise<Map<string, { assigned: Set<string>; leased: Set<string> }>> {
-  const [assignedRows, leasedRows] = await Promise.all([
+  const [assignedRows, blockedIssueRows, leasedRows] = await Promise.all([
     db
       .select({ agentId: issues.assigneeAgentId, issueId: issues.id })
       .from(issues)
@@ -1239,6 +1240,24 @@ async function openTaskIdsOfAgents(
         ),
       ),
     db
+      .select({ issueId: issueRelations.relatedIssueId })
+      .from(issueRelations)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.id, issueRelations.issueId),
+          eq(issues.companyId, companyId),
+          isNull(issues.hiddenAt),
+          blockerOpenSql("issues.status"),
+        ),
+      )
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      ),
+    db
       .select({ agentId: issueClaims.agentId, issueId: issueClaims.issueId })
       .from(issueClaims)
       .where(
@@ -1249,6 +1268,7 @@ async function openTaskIdsOfAgents(
         ),
       ),
   ]);
+  const blockedIssueIds = new Set(blockedIssueRows.map((row) => row.issueId));
   const out = new Map<string, { assigned: Set<string>; leased: Set<string> }>();
   const slot = (id: string) => {
     let entry = out.get(id);
@@ -1258,7 +1278,9 @@ async function openTaskIdsOfAgents(
     }
     return entry;
   };
-  for (const row of assignedRows) if (row.agentId) slot(row.agentId).assigned.add(row.issueId);
+  for (const row of assignedRows) {
+    if (row.agentId && !blockedIssueIds.has(row.issueId)) slot(row.agentId).assigned.add(row.issueId);
+  }
   for (const row of leasedRows) slot(row.agentId).leased.add(row.issueId);
   return out;
 }
