@@ -517,7 +517,31 @@ describe("execute", () => {
 
   const wsBaseConfig = { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 };
 
-  it("sends configured fallback models to gateway in declared order", async () => {
+  it("keeps the provider's terminal error when every configured fallback also fails", async () => {
+    const ctx = makeCtx({ ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a", "backup-b"] } });
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        const body = JSON.parse(String(init?.body));
+        bodies.push(body);
+        return new Response(JSON.stringify({ run_id: `run-${String(body.model)}`, status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream(["event: run.completed", `data: ${JSON.stringify({ status: "completed", output: "The server is overloaded. Please retry!" })}`, ""].join("\n")), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(ctx);
+    expect(bodies.map((body) => body.model)).toEqual(["primary", "backup-a", "backup-b"]);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.model).toBe("primary");
+    expect(result.summary).toBeUndefined();
+  });
+
+  it("serializes configured fallback models in declared order", async () => {
     const config = { ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a", "backup-b"] } };
     const body = await runAndReadBody(makeCtx(config));
     expect(body.fallback_model).toEqual([
@@ -530,33 +554,28 @@ describe("execute", () => {
     ]);
   });
 
-  it("does not create a fallback gateway run after a completed HTTP-200 overload body", async () => {
-    const config = { ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a"] } };
-    const ctx = makeCtx(config);
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  it("dispatches the configured fallback model after an HTTP-200 overload body", async () => {
+    const ctx = makeCtx({ ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a"] } });
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith("/v1/runs")) {
-        return new Response(JSON.stringify({ run_id: "run-overloaded", status: "started" }), { status: 200 });
+        const body = JSON.parse(String(init?.body));
+        bodies.push(body);
+        return new Response(JSON.stringify({ run_id: `run-${String(body.model)}`, status: "started" }), { status: 200 });
       }
       if (url.endsWith("/events")) {
-        return new Response(sseStream([
-          "event: run.completed",
-          `data: ${JSON.stringify({ status: "completed", output: "The server is (sometimes) overloaded due to high user traffic. Please retry!" })}`,
-          "",
-        ].join("\n")), { status: 200, headers: { "content-type": "text/event-stream" } });
+        const run = url.includes("run-primary") ? "The server is (sometimes) overloaded due to high user traffic. Please retry!" : "fallback answer";
+        return new Response(sseStream(["event: run.completed", `data: ${JSON.stringify({ status: "completed", output: run })}`, ""].join("\n")), { status: 200, headers: { "content-type": "text/event-stream" } });
       }
-      return new Response(JSON.stringify({ status: "completed", output: "The server is (sometimes) overloaded due to high user traffic. Please retry!" }), { status: 200 });
+      return new Response("{}", { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
-
     const result = await execute(ctx);
-
-    const createCalls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/v1/runs"));
-    expect(createCalls).toHaveLength(1);
-    expect(result.errorCode).toBe("hermes_gateway_run_failed");
-    expect(result.errorFamily).toBe("transient_upstream");
-    expect(result.summary).toBeUndefined();
-    expect(result.resultJson).toMatchObject({ result: "", output: "" });
+    expect(bodies.map((body) => body.model)).toEqual(["primary", "backup-a"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.model).toBe("backup-a");
+    expect(result.summary).toBe("fallback answer");
   });
 
   // myrmidon(F06-D): a chat's `/model` and `/think` choice is stored as an issue

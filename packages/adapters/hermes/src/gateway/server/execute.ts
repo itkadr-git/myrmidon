@@ -640,7 +640,8 @@ function buildRunBody(
   const model = nonEmpty(ctx.config.model);
   const provider = nonEmpty(ctx.config.provider);
   const modelOptions = buildModelOptions(ctx.config);
-  const fallbackModels = readGatewayFallbackModels(ctx.config);
+  const fallbackModels = provider ? readGatewayFallbackModels(ctx.config) : [];
+  const modelAttemptId = nonEmpty(ctx.config.modelAttemptId);
   const fallbackModelEntries = fallbackModels
     .map((fallbackModel) => ({ provider, model: fallbackModel }))
     .filter((entry): entry is { provider: string; model: string } => Boolean(entry.provider));
@@ -670,6 +671,7 @@ function buildRunBody(
     ...(provider ? { provider } : {}),
     ...(modelOptions ? { model_options: modelOptions } : {}),
     ...(fallbackModelEntries.length ? { fallback_model: fallbackModelEntries } : {}),
+    ...(modelAttemptId ? { model_attempt_id: modelAttemptId } : {}),
     github_broker: githubBroker,
     workspace: workspaceField,
     github_launcher: githubLauncher,
@@ -1449,6 +1451,8 @@ export function mapFinalResultForTest(input: {
    * gateway answer omits it. Optional so existing test callers that exercise
    * only the result mapping keep their shape. */
   configuredModel?: string | null;
+  /** Overrides payload model metadata for an adapter-dispatched retry attempt. */
+  modelAttemptId?: string | null;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -1507,7 +1511,7 @@ export function mapFinalResultForTest(input: {
     provider: "hermes_gateway",
     // myrmidon(F06-MODEL-TELEMETRY): payload first, configured model last —
     // see extractModel().
-    model: extractModel(payload) ?? nonEmptyModel(input.configuredModel),
+    model: input.modelAttemptId ?? extractModel(payload) ?? nonEmptyModel(input.configuredModel),
     ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
@@ -1932,7 +1936,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // actually reaches this adapter). ctx.runId is unique per attempt, so a
   // `replayed:true` response from Hermes is now only ever a genuine
   // duplicate create for this very attempt; that handling is kept below.
-  const idempotencyKey = ctx.runId;
+  const idempotencyKey = nonEmpty(ctx.config.modelAttemptId) ?? ctx.runId;
   // myrmidon(PERF-DIET-K): the board's session generation for this issue (see
   // server/src/myrmidon/session-generations/); 1 = the vendor's unsuffixed key.
   const sessionGeneration = readSessionGeneration(ctx.config.sessionGeneration);
@@ -2538,8 +2542,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     strategy,
     redactText,
     promptBreakdown,
-    // myrmidon(F06-MODEL-TELEMETRY): the run's own model from the agent card,
-    // used when the gateway's terminal payload names none.
+    modelAttemptId: nonEmpty(ctx.config.modelAttemptId),
     configuredModel: nonEmpty(ctx.config.model),
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
@@ -2582,6 +2585,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
       },
     };
+  }
+  if (finalResult.errorCode === "hermes_gateway_run_failed" &&
+      finalResult.errorFamily === "transient_upstream" && fallbackModels.length > 0) {
+    await ctx.onLog("stderr", `[hermes-gateway] provider_error_as_content; retrying with configured fallback ${fallbackModels[0]}\n`);
+    const fallbackAttemptId = `${ctx.runId}:fallback:${fallbackModels[0]}`;
+    const fallbackResult = await execute({
+      ...ctx,
+      runId: fallbackAttemptId,
+      config: { ...ctx.config, model: fallbackModels[0], models: { fallbacks: fallbackModels.slice(1) }, modelAttemptId: fallbackAttemptId },
+      onDispatch: undefined,
+      onExternalRunId: undefined,
+      onMeta: undefined,
+    });
+    if (fallbackResult.exitCode === 0) return fallbackResult;
+    return { ...fallbackResult, errorFamily: finalResult.errorFamily ?? fallbackResult.errorFamily, resultJson: { ...fallbackResult.resultJson, provider_error_as_content: true } };
   }
   return finalResult;
 }

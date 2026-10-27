@@ -424,6 +424,17 @@ describe("resolveHeartbeatRunResponse", () => {
     });
   });
 
+  it("does not call the issue-comment delivery function for provider error content", async () => {
+    const addComment = vi.fn(async () => ({ id: "should-not-exist" }));
+    const resolved = resolveHeartbeatRunResponse({
+      resultJson: { errorFamily: "transient_upstream", summary: "The server is overloaded. Please retry!", result: "The server is overloaded. Please retry!" },
+      finalAgentMessage: { text: "The server is overloaded. Please retry!", sourceEventId: "event-error", channel: "final" },
+    });
+    if (resolved.decision.commentAction === "create" && resolved.text) await addComment(resolved.text);
+    expect(resolved.decision.commentAction).toBe("none");
+    expect(addComment).not.toHaveBeenCalled();
+  });
+
   it("returns no response instead of an artificial placeholder", () => {
     expect(resolveHeartbeatRunResponse({ resultJson: null })).toMatchObject({
       text: null,
