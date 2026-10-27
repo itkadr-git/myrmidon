@@ -123,12 +123,19 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     }
   });
 
-  it("uses company-aware router wrappers for every shell link and navigation", () => {
+  it("guards every shell source against bypassing company-aware router wrappers", () => {
     const shellDir = join(UI_SRC, "ui2", "shell");
-    for (const file of ["Ui2PhoneNav.tsx", "Ui2Rail.tsx", "Ui2SettingsSidebar.tsx", "Ui2CommanderPalette.tsx"]) {
+    const files = readdirSync(shellDir).filter((file) => /\.(tsx?|jsx?)$/.test(file) && !file.endsWith(".test.ts") && !file.endsWith(".test.tsx"));
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
       const source = readFileSync(join(shellDir, file), "utf8");
-      expect(source, file).toMatch(/from [\"']@\/lib\/router[\"']/);
-      expect(source, file).not.toMatch(/from [\"']react-router-dom[\"']/);
+      const hasRouterImport = /from ["']@\/lib\/router["']/.test(source);
+      const hasDirectRouterImport = /from ["']react-router-dom["']/.test(source);
+      const hasNavigationReference = /\b(?:Link|NavLink|Navigate|useNavigate|useLocation|useParams)\b|\bto\s*=|\bnavigate\s*\(/.test(source);
+      if (hasNavigationReference) {
+        expect(hasRouterImport, file).toBe(true);
+        expect(hasDirectRouterImport, file).toBe(false);
+      }
     }
   });
 
