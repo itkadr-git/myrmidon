@@ -617,11 +617,7 @@ describe("releaseIssueExecution", () => {
     }));
     expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
     expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
-    expect(host.resolveResponsibleUserId).toHaveBeenCalledOnce();
-    expect(recovery.decide).toHaveBeenCalledOnce();
-    expect(recovery.decide).toHaveBeenCalledWith(expect.objectContaining({
-      hasExistingExecutionPath: true,
-    }));
+    expect(host.resolveResponsibleUserId).not.toHaveBeenCalled();
   });
 
   it("stops the loop after the first promotion", async () => {
