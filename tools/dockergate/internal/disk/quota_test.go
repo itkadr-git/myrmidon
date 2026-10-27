@@ -69,6 +69,70 @@ func read(t *testing.T, path string) string {
 	return string(b)
 }
 
+func TestEnsure_RegistersSafeDirectoryAndIsIdempotent(t *testing.T) {
+	q, f := newQuota(t, stateOn)
+	if err := os.MkdirAll(q.VolumeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	botDir := filepath.Join(q.VolumeRoot, qKeyA)
+	if err := os.MkdirAll(botDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id, err := q.Ensure(context.Background(), qKeyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != FirstProjectID {
+		t.Fatalf("project id %d", id)
+	}
+	if got := read(t, q.ProjidFile); got != qKeyA+":1000\n" {
+		t.Fatalf("projid %q", got)
+	}
+	if got := read(t, q.ProjectsFile); got != "1000:"+botDir+"\n" {
+		t.Fatalf("projects %q", got)
+	}
+	if _, err := q.Ensure(context.Background(), qKeyA); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsure_RejectsSymlinkedBotDir(t *testing.T) {
+	q, f := newQuota(t, stateOn)
+	if err := os.MkdirAll(q.VolumeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(q.VolumeRoot, qKeyA)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Ensure(context.Background(), qKeyA); err == nil {
+		t.Fatal("symlinked bot directory accepted")
+	}
+	if len(f.journal()) != 0 {
+		t.Fatalf("unexpected xfs calls %v", f.journal())
+	}
+}
+
+func TestEnsure_RepairsZeroProjectID(t *testing.T) {
+	q, _ := newQuota(t, stateOn)
+	if err := os.MkdirAll(q.VolumeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	botDir := filepath.Join(q.VolumeRoot, qKeyA)
+	if err := os.MkdirAll(botDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(q.ProjidFile, []byte(qKeyA+":0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id, err := q.Ensure(context.Background(), qKeyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != FirstProjectID || read(t, q.ProjidFile) != qKeyA+":1000\n" {
+		t.Fatalf("id=%d projid=%q", id, read(t, q.ProjidFile))
+	}
+}
+
 func TestPut_ValidCallsXfsQuotaWithTheContractArguments(t *testing.T) {
 	q, f := newQuota(t, stateOn)
 	const hard = int64(6442450944)

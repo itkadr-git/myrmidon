@@ -69,6 +69,27 @@ type Result struct {
 	HardBytes int64
 }
 
+// botProjectEnsurer is the minimal registration capability used after bot creation.
+type botProjectEnsurer interface {
+	Ensure(ctx context.Context, botKey string) (int, error)
+}
+
+// diskProjectEnsurer is nil for tests and for configurations that don't enable
+// bot volume project registration.
+var diskProjectEnsurer botProjectEnsurer
+
+// SetDiskProjectEnsurer installs the dockergate disk registration implementation.
+func SetDiskProjectEnsurer(ensurer botProjectEnsurer) { diskProjectEnsurer = ensurer }
+
+// EnsureBotDiskProject registers one bot directory through the audited gate boundary.
+func EnsureBotDiskProject(ctx context.Context, botKey string) error {
+	if diskProjectEnsurer == nil {
+		return nil
+	}
+	_, err := diskProjectEnsurer.Ensure(ctx, botKey)
+	return err
+}
+
 // Quota sets project quotas on the bot volumes.
 type Quota struct {
 	// VolumeRoot is the directory with one subdirectory per bot key.
@@ -104,6 +125,67 @@ func ValidBytes(n int64) bool { return n >= MinQuotaBytes && n <= MaxQuotaBytes 
 // most 1 TiB, so the product does not overflow).
 func softBytes(hard int64) int64 { return hard * 8 / 10 }
 
+// Ensure registers a bot directory in the XFS project tables without setting
+// a quota. It is safe to call after directory creation and on retries.
+func (q *Quota) Ensure(ctx context.Context, botKey string) (int, error) {
+	if !route.IsBotKey(botKey) {
+		return 0, ErrBadKey
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	root, err := filepath.Abs(q.VolumeRoot)
+	if err != nil {
+		return 0, fmt.Errorf("disk: invalid volume root: %w", err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return 0, fmt.Errorf("disk: volume root unavailable: %w", err)
+	}
+	dir := filepath.Join(root, botKey)
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return 0, fmt.Errorf("disk: bot directory unavailable: %w", err)
+	}
+	if !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return 0, fmt.Errorf("disk: bot directory is not a real directory")
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil || resolved != dir {
+		return 0, fmt.Errorf("disk: bot directory path is not canonical")
+	}
+	if err := q.checkEnabled(ctx); err != nil {
+		return 0, err
+	}
+	projid, err := readLines(q.ProjidFile)
+	if err != nil {
+		return 0, fmt.Errorf("disk: read %s: %w", q.ProjidFile, err)
+	}
+	projects, err := readLines(q.ProjectsFile)
+	if err != nil {
+		return 0, fmt.Errorf("disk: read %s: %w", q.ProjectsFile, err)
+	}
+	id := allocate(botKey, projid, projects)
+	idText := strconv.Itoa(id)
+	newProjid, changedA := setLine(projid, func(l string) bool { return lineKey(l) == botKey }, botKey+":"+idText)
+	newProjects, changedB := setLine(projects, func(l string) bool { return lineKey(l) == idText }, idText+":"+dir)
+	if changedA {
+		if err := writeAtomic(q.ProjidFile, joinLines(newProjid)); err != nil {
+			return 0, fmt.Errorf("disk: write %s: %w", q.ProjidFile, err)
+		}
+	}
+	if changedB {
+		if err := writeAtomic(q.ProjectsFile, joinLines(newProjects)); err != nil {
+			return 0, fmt.Errorf("disk: write %s: %w", q.ProjectsFile, err)
+		}
+	}
+	_, err = q.Exec.Run(ctx, q.Binary, "-x", "-c", "project -s -p "+dir+" "+idText, q.VolumeRoot)
+	if err != nil {
+		return 0, fmt.Errorf("disk: xfs_quota: %w", err)
+	}
+	return id, nil
+}
+
 // Put sets the hard limit of the bot's volume to hard bytes and the soft one to 0.8 of
 // it. It is idempotent: the same botKey keeps its project id, the files are not
 // rewritten when they already say the same, and xfs_quota is run again with the
@@ -114,6 +196,9 @@ func (q *Quota) Put(ctx context.Context, botKey string, hard int64) (Result, err
 	}
 	if !ValidBytes(hard) {
 		return Result{}, ErrBadQuota
+	}
+	if _, err := q.Ensure(ctx, botKey); err != nil {
+		return Result{}, err
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()

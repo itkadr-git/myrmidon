@@ -59,11 +59,19 @@ func (f *xfsFake) journal() []string {
 
 // putStub is a DiskQuota with a fixed answer that keeps what it was asked.
 type putStub struct {
-	mu   sync.Mutex
-	res  disk.Result
-	err  error
-	keys []string
-	hard []int64
+	mu         sync.Mutex
+	res        disk.Result
+	err        error
+	keys       []string
+	hard       []int64
+	ensureKeys []string
+}
+
+func (p *putStub) Ensure(_ context.Context, botKey string) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ensureKeys = append(p.ensureKeys, botKey)
+	return disk.FirstProjectID, p.err
 }
 
 func (p *putStub) Put(_ context.Context, botKey string, hard int64) (disk.Result, error) {
@@ -81,6 +89,17 @@ func (p *putStub) asked() int {
 }
 
 func quotaTarget(key string) string { return "/myrmidon/disk/" + key + "/quota" }
+
+func TestA4_BotCreateRegistersDiskProject(t *testing.T) {
+	st := &putStub{}
+	r := newRig(t, withDisk(st))
+	_, body := r.m.FindBody(t, "bot-plain", "")
+	res := r.send("POST", "/v1.45/containers/create?name="+r.name(""), jsonHdr, body)
+	wantStatus(t, res, 201)
+	if !reflect.DeepEqual(st.ensureKeys, []string{r.key()}) {
+		t.Fatalf("registered bot keys %v", st.ensureKeys)
+	}
+}
 
 func TestA15_ValidPutRunsXfsQuotaAndAnswersC5(t *testing.T) {
 	const volumeRoot = "/srv/test-bots"
