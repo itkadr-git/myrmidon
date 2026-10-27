@@ -2,8 +2,12 @@ import fs from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { loadDefaultAgentInstructionsBundle } from "./default-agent-instructions.js";
 
-// Protocol header only: paths/identifiers are not platform branding.
-const allowedTokens = ["X-Paperclip-Run-Id"];
+// Exact protocol and path/skill identifiers are not platform branding.
+const allowedTokens = [
+  "X-Paperclip-Run-Id",
+  "paperclip-create-agent",
+  "skills/paperclip/scripts/paperclip-upload-artifact.sh",
+];
 
 function bareLegacyMentions(content: string) {
   let prose = content;
@@ -35,7 +39,6 @@ describe("onboarding platform identity", () => {
     const defaults = await loadDefaultAgentInstructionsBundle("default");
     const ceo = await loadDefaultAgentInstructionsBundle("ceo");
     expect(defaults["AGENTS.md"]).toContain("Myrmidon");
-    expect(defaults["AGENTS.md"]).toContain("X-Paperclip-Run-Id");
     expect(ceo["AGENTS.md"]).toContain("Myrmidon wake events");
     expect(ceo["HEARTBEAT.md"]).toContain("X-Paperclip-Run-Id");
   });

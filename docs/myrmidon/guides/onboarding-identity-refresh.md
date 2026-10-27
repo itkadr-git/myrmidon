@@ -1,9 +1,10 @@
 # OPE-9335: onboarding identity and persisted instruction refresh
 
 The default and CEO onboarding bundles and the first-task greeting/brief now identify
-Myrmidon. The only legacy token allowed in the onboarding corpus is the literal
-`X-Paperclip-Run-Id` protocol header. The recursive Vitest guard removes that exact
-token before checking all files, case-insensitively; it does not allow an entire line.
+Myrmidon. The exact legacy tokens allowed in the onboarding corpus are the literal
+`X-Paperclip-Run-Id` protocol header, `paperclip-create-agent` skill identifier,
+and `skills/paperclip/scripts/paperclip-upload-artifact.sh` helper path. The recursive Vitest guard removes that exact
+tokens before checking all files, case-insensitively; it does not allow an entire line.
 Hermes identity headings, skill-delivery logs/errors and the gateway skills patch
 use Myrmidon too. API field names, environment variables and directory names stay unchanged.
 
