@@ -13944,7 +13944,12 @@ export function issueRoutes(
           )
         : [];
       transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
-      if (nextExecutionPolicy === null && existing.assigneeAgentId) {
+      // Role is only needed when the issue enters or leaves review (return-assignee choice); skip the lookup otherwise.
+      if (
+        nextExecutionPolicy === null &&
+        existing.assigneeAgentId &&
+        (existing.status === "in_review" || updateFields.status === "in_review")
+      ) {
         transitionIssue.assigneeAgentRole =
           (await agentsSvc.getById(existing.assigneeAgentId))?.role ?? null;
       }
@@ -14971,7 +14976,11 @@ export function issueRoutes(
               assigneeAgentRole: undefined,
               executionReviewParticipantAgentIds: lockedReviewParticipants,
             };
-            if (nextExecutionPolicy === null && lockedExisting.assigneeAgentId) {
+            if (
+              nextExecutionPolicy === null &&
+              lockedExisting.assigneeAgentId &&
+              (lockedExisting.status === "in_review" || updateFields.status === "in_review")
+            ) {
               lockedTransitionIssue.assigneeAgentRole =
                 (await agentsSvc.getById(lockedExisting.assigneeAgentId))?.role ?? null;
             }
