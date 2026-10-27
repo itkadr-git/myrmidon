@@ -13915,6 +13915,9 @@ export function issueRoutes(
         updateFields.executionPolicy !== undefined
           ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
           : previousExecutionPolicy;
+      if (normalizedAssigneeAgentId !== undefined) {
+        updateFields.assigneeAgentId = normalizedAssigneeAgentId;
+      }
       const monitorChanged =
         monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) ===
         false;
