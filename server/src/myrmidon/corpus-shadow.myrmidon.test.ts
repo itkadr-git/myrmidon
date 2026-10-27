@@ -105,6 +105,7 @@ describe("createCorpusShadowRunner", () => {
     // The decision point short-circuits on isEnabled — the module is not called.
     maybeRecordShadowSearchCall({
       runner,
+      companyId: "company-1",
       tool: { name: "mcp.ragflow-1:chat_retrieval", upstreamToolName: "chat_retrieval" },
       execution: { transport: "mcp_remote" },
       result: { content: [] },
@@ -123,6 +124,7 @@ describe("createCorpusShadowRunner", () => {
     const botResult = { content: [{ type: "text", text: "ragflow answer" }] };
     maybeRecordShadowSearchCall({
       runner,
+      companyId: "company-1",
       tool: { name: "mcp.ragflow-1:chat_retrieval", upstreamToolName: "chat_retrieval" },
       execution: { transport: "mcp_remote" },
       result: botResult,
@@ -137,6 +139,7 @@ describe("createCorpusShadowRunner", () => {
     const row = rows[0]!;
     expect(row).toMatchObject({
       botId: "bot-1",
+      companyId: "company-1",
       dataset: "kb-9",
       query: "q",
       ragflowChunkIds: [],
@@ -178,8 +181,13 @@ describe("createCorpusShadowRunner", () => {
     expect(fdb.rows[0]!.moduleChunkIds).toBeNull();
   });
 
-  it("no-op default port answers empty chunk ids", async () => {
-    expect(await noOpCorpusShadowSearch.search({ text: "q" })).toEqual([]);
+  it("no-op fallback is replaced by the production runner and fails closed if used", async () => {
+    await expect(noOpCorpusShadowSearch.search({ companyId: "company-1", text: "q" })).rejects.toThrow("no-op");
+    const { runner, rows } = makeRunner({ enabled: true });
+    runner.recordShadowCall({ plan: { dataset: null, query: "q" }, companyId: "company-1", botId: null, ragflowChunkIds: [], ragflowLatencyMs: 1 });
+    await runner.settle();
+    expect(rows[0]!.moduleError).toContain("no-op");
+    expect(rows[0]!.moduleChunkIds).toBeNull();
   });
 
   it("insert failure never escapes the shadow leg", async () => {
@@ -224,6 +232,7 @@ describe("maybeRecordShadowSearchCall decision gate", () => {
     const record = vi.spyOn(runner, "recordShadowCall");
     const base = {
       runner,
+      companyId: "company-1",
       execution: { transport: "mcp_remote" },
       result: {},
       botId: "b",
