@@ -131,7 +131,6 @@ export function buildRunTelemetry(input: {
     : "not_applicable";
   const retryOfRunId = input.run.retryOfRunId ?? readNonEmptyString(context.retryOfRunId);
   const gatewaySpendCents = input.gatewayCalls.reduce((total, call) => total + Math.max(0, Math.floor(call.costCents)), 0);
-  const wakePayload = input.wakeup?.payload ?? {};
   const wakeReason = readRunDimension(input.wakeup?.reason)
     ?? readRunDimension(context.wakeReason)
     ?? readRunDimension(wakePayload.reason);
