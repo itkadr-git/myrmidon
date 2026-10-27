@@ -10,6 +10,7 @@ export interface BlockedMetricsIssue {
 
 export type BlockedGraphMetricsPort = (companyId: string) => Promise<{
   blockedIssues: readonly BlockedMetricsIssue[];
+  truncated?: { blockedIssues: boolean };
 }>;
 
 export interface BlockedMetricsGroup {
@@ -65,7 +66,11 @@ export async function collectBlockedMetrics(
   companyId: string,
   now = new Date(),
 ): Promise<BlockedMetricsGroup[]> {
-  return computeBlockedMetrics((await loadGraph(companyId)).blockedIssues, now);
+  const graph = await loadGraph(companyId);
+  if (graph.truncated?.blockedIssues) {
+    throw new Error("Blocked metrics snapshot truncated; refusing partial totals");
+  }
+  return computeBlockedMetrics(graph.blockedIssues, now);
 }
 
 /** Standalone exposition seam; registration belongs to the shared collector owner. */
@@ -83,6 +88,7 @@ export function renderBlockedMetrics(groups: readonly BlockedMetricsGroup[]): st
     }
   }
   lines.push(
+    "",
     "# HELP blocked_missing_fields_total Current blocked issues missing each required field.",
     "# TYPE blocked_missing_fields_total gauge",
   );
