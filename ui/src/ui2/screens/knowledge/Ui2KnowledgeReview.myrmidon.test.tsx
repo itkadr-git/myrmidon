@@ -37,9 +37,9 @@ describe("Ui2KnowledgeReview", () => {
   });
 
   it("shows a classifier recommendation and rationale", async () => {
-    http.get.mockResolvedValue({ suggestions: [{ id: "s1", body: "New fact", rationale: "Supported by evidence", sourceRef: "run-1", sourceKind: "run", trust: "internal", status: "pending" }] });
+    http.get.mockResolvedValue({ suggestions: [{ id: "s1", body: "New fact", recommendation: "declined", rationale: "Supported by evidence", sourceRef: "run-1", sourceKind: "run", trust: "internal", status: "pending" }] });
     await render();
-    expect(container.textContent).toContain("Recommendation: Accept");
+    expect(container.textContent).toContain("Recommendation: Reject");
     expect(container.textContent).toContain("Supported by evidence");
   });
 });

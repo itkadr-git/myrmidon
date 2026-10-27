@@ -21,7 +21,7 @@ export function Ui2KnowledgeReview() {
         <Ui2EmptyStateView title={t("ui2.knowledgeReview.empty")} variant="done" /> : null}
       {query.data?.suggestions.map((suggestion) => (
         <Ui2Section key={suggestion.id} title={suggestion.body}>
-          <p className="text-sm">{t("ui2.knowledgeReview.recommendation", { recommendation: suggestion.trust === "external" ? t("ui2.knowledgeReview.reject") : t("ui2.knowledgeReview.accept") })}</p>
+          <p className="text-sm">{t("ui2.knowledgeReview.recommendation", { recommendation: suggestion.recommendation === "declined" ? t("ui2.knowledgeReview.reject") : t("ui2.knowledgeReview.accept") })}</p>
           {suggestion.rationale ? <p className="text-sm text-muted-foreground">{suggestion.rationale}</p> : null}
           {suggestion.sourceRef ? <p className="text-xs text-muted-foreground">{suggestion.sourceKind ? `${suggestion.sourceKind}: ` : ""}{suggestion.sourceRef}</p> : null}
         </Ui2Section>
