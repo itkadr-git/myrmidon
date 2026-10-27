@@ -11,6 +11,9 @@ import {
   issues,
   litellmCostEvents,
   statusDecisions,
+  workAssessments,
+  completionContracts,
+  nativeRunResults,
 } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -72,7 +75,7 @@ describe("buildRunTelemetry", () => {
           sourceEventId: "source-event-7",
           sourceSeq: 7,
           modelCallCount: 4,
-          eventRevision: "2026-10-26T15:59:00.000Z",
+          eventRevision: "2026-10-26T16:00:00.000Z",
         },
       },
       workProducts: [{ type: "artifact" }],
@@ -85,7 +88,7 @@ describe("buildRunTelemetry", () => {
       wakeReason: "issue_commented",
       wakeSource: "on_demand",
       wakeTriggerDetail: "manual",
-      eventRevision: "2026-10-26T15:59:00.000Z",
+      eventRevision: "2026-10-26T16:00:00.000Z",
       sourceEventId: "source-event-7",
       sourceEventSeq: 7,
       parentRunId: "parent-run",
@@ -340,8 +343,8 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
       sourceEventSeq: 12,
       gatewayCallIds: ["gateway-call-12"],
       litellmRequestIds: ["request-12"],
-      modelCallCount: 1,
-      modelCallCountSource: "gateway_count",
+      modelCallCount: null,
+      modelCallCountSource: "unknown",
       gatewaySpendCents: 7,
       apiEquivalentCostUsd: 0.000025,
       outcomeCategory: null,
@@ -365,7 +368,27 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
       wakeupRequestId: null,
     } as unknown as typeof heartbeatRuns.$inferSelect;
     await db.insert(issues).values({ id: issueId, companyId, title: "telemetry outcome test", status: "todo" });
+    const contractId = randomUUID();
+    await db.insert(completionContracts).values({
+      id: contractId, companyId, issueId, revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test",
+      risk: "standard", completionAuthority: "server_arbiter",
+      incompleteCriteriaPolicy: "preserve_non_terminal", contractJson: {},
+      canonicalSha256: randomUUID(), createdByActorType: "system", createdByActorId: "test",
+    });
+    const resultId = randomUUID();
+    await db.insert(nativeRunResults).values({
+      id: resultId, companyId, issueId, runId, completionContractId: contractId,
+      serverFingerprint: randomUUID(), schemaStatus: "valid", resultJson: {},
+      canonicalSha256: randomUUID(),
+    });
     const assessmentId = randomUUID();
+    await db.insert(workAssessments).values({
+      id: assessmentId, companyId, issueId, runId, contractId, resultId,
+      triggerKind: "test", triggerActorCompanyId: companyId,
+      priorIssueStatus: "todo", priorStatusVersion: 0,
+      policyVersion: "test", assessmentJson: {}, inputDigest: randomUUID(),
+    });
     await db.insert(statusDecisions).values({
       id: randomUUID(), companyId, issueId, runId, assessmentId,
       decisionVersion: 1, policyVersion: "test", fromStatus: "todo", toStatus: "in_progress",
