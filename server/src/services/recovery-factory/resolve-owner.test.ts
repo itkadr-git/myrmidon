@@ -401,6 +401,15 @@ describe("resolveRecoveryOwner", () => {
   });
 
   describe("operator_action: user owners and serviceQueue support", () => {
+    it("rejects isUser candidates without a userId instead of treating their id as an agent", () => {
+      expect(() =>
+        resolveRecoveryOwner({
+          kind: "operator_action",
+          candidates: [{ id: "usr-without-user-id", isUser: true, role: "operator" }],
+        }),
+      ).toThrow(RecoveryOwnerUnresolvedError);
+    });
+
     it("allows user owner for operator_action when no agent operator is present", () => {
       const poolWithUserOp: RecoveryOwnerCandidate[] = [
         { id: "usr-admin-1", userId: "usr-admin-1", role: "operator", isUser: true },

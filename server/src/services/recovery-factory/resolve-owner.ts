@@ -96,7 +96,7 @@ function resolveCandidateOwner(
     : null;
   const userId = [candidate.userId, candidate.assigneeUserId]
     .find((value) => typeof value === "string" && value.trim().length > 0)?.trim() ?? null;
-  const agentId = (candidate.agentId ?? candidate.id)?.trim() || null;
+  const agentId = candidate.isUser === true ? null : (candidate.agentId ?? candidate.id)?.trim() || null;
   const hasUser = candidate.isUser === true || userId !== null;
   const identityCount = Number(serviceQueue !== null) + Number(hasUser) + Number(agentId !== null);
   if (identityCount !== 1) return null;
