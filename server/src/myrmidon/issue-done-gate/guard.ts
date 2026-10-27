@@ -102,18 +102,23 @@ export async function inspectIssueDonePullRequests(
               );
             }
           }
+          const refreshedProduct = {
+            ...product,
+            status: replacementState,
+            metadata: { ...metadata, state: replacementState, draft: false },
+          };
           return {
-            product,
+            product: refreshedProduct,
             state: replacementState === "merged" ? "merged" as const : "closed" as const,
-            url: product.url,
+            url: refreshedProduct.url,
           };
         }
       }
       const state = details.workProductState ?? "unknown";
+      const metadata = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
+        ? product.metadata as Record<string, unknown>
+        : {};
       if (state === "merged" || state === "closed") {
-        const metadata = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
-          ? product.metadata as Record<string, unknown>
-          : {};
         try {
           await db.update(issueWorkProducts).set({
             status: state,
@@ -126,10 +131,15 @@ export async function inspectIssueDonePullRequests(
           );
         }
       }
+      const refreshedProduct = {
+        ...product,
+        status: state,
+        metadata: { ...metadata, state, draft: false },
+      };
       return {
-        product,
+        product: refreshedProduct,
         state,
-        url: product.url,
+        url: refreshedProduct.url,
         ...(details.access === "denied" ? { accessDenied: true as const } : {}),
       };
     } catch (err) {
