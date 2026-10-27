@@ -62,6 +62,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
     hasActiveRoutineContinuation: false,
+    hasOpenPullRequestWaitingForCi: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
     ...overrides,
@@ -250,6 +251,13 @@ describe("successful run handoff decision", () => {
     ).toEqual({
       kind: "skip",
       reason: "recovery action run owns its own follow-up path",
+    });
+  });
+
+  it("does not wake an assigned issue while its open PR waits for the CI/review event", () => {
+    expect(decide({ hasOpenPullRequestWaitingForCi: true })).toEqual({
+      kind: "skip",
+      reason: "open pull request is waiting for CI/review external event",
     });
   });
 

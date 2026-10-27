@@ -356,6 +356,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         if (!product) continue;
         const head = await deps.prResolver.resolve({ companyId, repository: product.repository, number: product.number });
         result.prScanned += 1;
+        if (head.reviewDecision !== null) continue;
         if (!shouldRouteOpenPrToReview(head)) continue;
         const [reviewerRows, boardLoad, openReviewLoad] = await Promise.all([
           deps.store.listReviewerAgents(companyId, settings.reviewerRoles),
