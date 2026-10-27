@@ -87,9 +87,8 @@ export function findEnglishLiterals(source: string): GuardOffender[] {
 
   const codeOnly = code
     .replace(/<[^>]*>/g, (value) => value.replace(/[^\n]/g, " "))
-    .replace(/\b(?:i18n\.)?t\(\s*(["'`])(?:\\.|(?!\1)[^\\])*\1(?:\s*,[^)]*)?\)/g, (value) => value.replace(/[^\n]/g, " "))
-    .replace(/(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)/g, (value) => value.replace(/[^\n]/g, " "));
-  const codeLiteralRe = /\b[A-Za-z_$][\w$]*\s*\?\s*(["'])([^\\\n]{2,120})\1/g;
+    .replace(/\b(?:i18n\.)?t\(\s*(["'`])(?:\\.|(?!\1)[^\\])*\1(?:\s*,[^)]*)?\)/g, (value) => value.replace(/[^\n]/g, " "));
+  const codeLiteralRe = /(?:\b[A-Za-z_$][\w$]*\s*\?\s*|:\s*)(["'])([^\\\n]{2,120})\1/g;
   for (const match of codeOnly.matchAll(codeLiteralRe)) {
     const text = match[2].trim();
     if (!/[A-Za-z]{2}/.test(text) || !/\s/.test(text)) continue;
