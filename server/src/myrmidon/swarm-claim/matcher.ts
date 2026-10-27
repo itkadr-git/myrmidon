@@ -1247,39 +1247,37 @@ async function openTaskIdsOfAgents(
       ),
     );
   const relatedIds = assignedRows.map((row) => row.issueId);
-  const [blockedIssueRows, leasedRows] = await Promise.all([
-    relatedIds.length === 0
-      ? Promise.resolve([] as Array<{ issueId: string }>)
-      : db
-          .select({ issueId: issueRelations.relatedIssueId })
-          .from(issueRelations)
-          .innerJoin(
-            issues,
-            and(
-              eq(issues.id, issueRelations.issueId),
-              eq(issues.companyId, companyId),
-              isNull(issues.hiddenAt),
-              blockerOpenSql("issues.status"),
-            ),
-          )
-          .where(
-            and(
-              eq(issueRelations.companyId, companyId),
-              eq(issueRelations.type, "blocks"),
-              inArray(issueRelations.relatedIssueId, relatedIds),
-            ),
+  const blockedIssueRows = relatedIds.length === 0
+    ? [] as Array<{ issueId: string }>
+    : await db
+        .select({ issueId: issueRelations.relatedIssueId })
+        .from(issueRelations)
+        .innerJoin(
+          issues,
+          and(
+            eq(issues.id, issueRelations.issueId),
+            eq(issues.companyId, companyId),
+            isNull(issues.hiddenAt),
+            blockerOpenSql("issues.status"),
           ),
-    db
-      .select({ agentId: issueClaims.agentId, issueId: issueClaims.issueId })
-      .from(issueClaims)
-      .where(
-        and(
-          eq(issueClaims.companyId, companyId),
-          isNull(issueClaims.releasedAt),
-          ...(agentId ? [eq(issueClaims.agentId, agentId)] : []),
-        ),
+        )
+        .where(
+          and(
+            eq(issueRelations.companyId, companyId),
+            eq(issueRelations.type, "blocks"),
+            inArray(issueRelations.relatedIssueId, relatedIds),
+          ),
+        );
+  const leasedRows = await db
+    .select({ agentId: issueClaims.agentId, issueId: issueClaims.issueId })
+    .from(issueClaims)
+    .where(
+      and(
+        eq(issueClaims.companyId, companyId),
+        isNull(issueClaims.releasedAt),
+        ...(agentId ? [eq(issueClaims.agentId, agentId)] : []),
       ),
-  ]);
+    );
   const blockedIssueIds = new Set(blockedIssueRows.map((row) => row.issueId));
   const out = new Map<string, { assigned: Set<string>; leased: Set<string> }>();
   const slot = (id: string) => {

@@ -3793,7 +3793,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.projectId).toBe(projectId);
     expect(child.goalId).toBe(goalId);
     expect(child.requestDepth).toBe(2);
-    expect(child.assigneeAgentId).toBeNull();
+    expect(child.assigneeAgentId).toBe(assigneeAgentId);
 
     await db
       .update(issues)

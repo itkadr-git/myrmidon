@@ -565,7 +565,11 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       !issue.blockedTransitionAt ||
       nowMs - (readDateMs(issue.blockedTransitionAt) ?? nowMs) <
         UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS ||
-      hasExplicitWaitingPath(issue)
+      hasScheduledIssueMonitorPath(issue, nowMs) ||
+      hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
+      hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
+      hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
+      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues)
     ) {
       continue;
     }
