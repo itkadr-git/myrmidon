@@ -14663,6 +14663,47 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
   }
 
+  async function settleConsumedTelegramOwnerReply(deliveryId: string) {
+    await db.transaction(async (tx) => {
+      const now = new Date();
+      const [delivery] = await tx
+        .select({ id: chatDeliveries.id, state: chatDeliveries.state })
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.id, deliveryId))
+        .limit(1);
+      if (!delivery || delivery.state === "processed") return;
+      await tx
+        .update(chatActions)
+        .set({
+          status: "cancelled",
+          result: { code: "telegram_owner_reply_consumed" },
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(chatActions.deliveryId, deliveryId),
+            eq(chatActions.kind, "inbound_wakeup"),
+            eq(chatActions.status, "preparing"),
+          ),
+        );
+      await tx
+        .update(chatDeliveries)
+        .set({
+          state: "processed",
+          processedAt: now,
+          redactedError: "telegram_owner_reply_consumed",
+          nextAttemptAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(chatDeliveries.id, deliveryId),
+            eq(chatDeliveries.state, "processing"),
+          ),
+        );
+    });
+  }
+
   async function settleRejectedInboundWakeups(onlyDeliveryId?: string) {
     await db
       .update(chatActions)
@@ -17360,6 +17401,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // owner. A reply to a bot message is bound to the cards that message
       // explained; with no reply, one open card closes and several are asked
       // about. Never throws; the message still reaches the agent as usual.
+      let telegramOwnerReplyConsumed = false;
       if (
         actorUserId &&
         x8Dm.applies &&
@@ -17368,7 +17410,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         comment.body
       ) {
         const replyTarget = telegramReplyTargetMessageId(message.raw);
-        await handleTelegramOwnerReply(createOwnerReplyDeps(db), {
+        const ownerReplyOutcome = await handleTelegramOwnerReply(createOwnerReplyDeps(db), {
           companyId: endpoint.companyId,
           ownerUserId: actorUserId,
           agentId: endpoint.assignedAgentId,
@@ -17388,6 +17430,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 })
             : null,
         });
+        telegramOwnerReplyConsumed =
+          Boolean(replyTarget) &&
+          (ownerReplyOutcome.outcome === "resolved" ||
+            ownerReplyOutcome.outcome === "asked_which_card" ||
+            ownerReplyOutcome.outcome === "no_card");
       }
       // myrmidon(X8b): resume a paused bridged conversation on a literal
       // "/new" comment (the web /new route does the same), and deliver any
@@ -17461,6 +17508,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // concurrent ingress transaction is a rolled-back, transient refusal:
       // retry it here instead of failing the delivery into a >=2s durable
       // backoff that also burns one of its five attempts.
+      if (telegramOwnerReplyConsumed) {
+        // A reply consumed by the owner-reply door already performed the
+        // authoritative continuation. Do not create a second ordinary X8b
+        // wake for the same Telegram delivery.
+        await settleConsumedTelegramOwnerReply(activeDelivery.id);
+        sendOmissionNotice?.();
+        return;
+      }
       await retryChatControlAdmission(() =>
         acceptInboundWakeup(activeDelivery.id, attachmentResult),
       );
