@@ -180,6 +180,14 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'taskKey')`,
       table.createdAt.desc(),
     ),
+    // myrmidon(DB-CARE): valuesForIssue resolves runs by the nested Paperclip
+    // issue id and reads the newest run first; the partial sibling does not
+    // cover this ordered lookup.
+    companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx").on(
+      table.companyId,
+      sql`((${table.contextSnapshot} -> 'paperclipIssue') ->> 'id')`,
+      table.createdAt.desc(),
+    ),
     // myrmidon(HEARTBEAT-POLL): driver index for the run-ownership probe
     // (server/src/services/conversation-continuation.ts,
     // getConversationOwnershipBlocker). That probe asks one question on every
@@ -196,6 +204,14 @@ export const heartbeatRuns = pgTable(
       table.createdAt.desc(),
       table.id.desc(),
     ).where(sql`${table.runtimeMode} = 'legacy' and ${table.status} in ('failed', 'timed_out', 'interrupted', 'cancelled')`),
+    // myrmidon(DB-CARE): migration 0302 creates this coalesce expression index;
+    // keep the schema inventory aligned with that existing managed index.
+    companyIssueCoalesceCreatedIdx: index("heartbeat_runs_company_issue_coalesce_created_idx").on(
+      table.companyId,
+      sql`(coalesce(${table.nativeIssueId}::text, ${table.contextSnapshot} ->> 'issueId'))`,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ),
     // myrmidon(DB-AUDIT-INDEXES): attention-feed lookup (server/src/services/
     // attention.ts) filters company + agent id + created_at window. The only
     // agent-keyed index is on started_at, so the planner scanned that index and

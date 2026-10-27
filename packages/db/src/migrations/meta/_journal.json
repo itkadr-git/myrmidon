@@ -2508,6 +2508,13 @@
       "when": 1793000000000,
       "tag": "0420_issue_recovery_actions_dedupe_sla",
       "breakpoints": true
+    },
+    {
+      "idx": 421,
+      "version": "7",
+      "when": 1793001000000,
+      "tag": "0421_db_care_heartbeat_runs_ctx_paperclip_issue_created",
+      "breakpoints": true
     }
   ]
 }
