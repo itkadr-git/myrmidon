@@ -431,6 +431,11 @@ export const en = {
         status: "Owner · Web",
       },
       chip: {
+        runs: "{{running}} runs",
+        runsFailed: "{{running}} runs · {{failed}} failed today",
+        spend: "{{spend}} of {{budget}}",
+        empty: "—",
+        waitingUnavailable: "Waiting count unavailable",
         colony: "{{active}} of {{total}}",
         fleet: "Fleet",
         fleetAttention: "Fleet: 1 attention",
@@ -925,6 +930,11 @@ export type Ui2Catalog = {
       status: string;
     },
     chip: {
+      runs: string;
+      runsFailed: string;
+      spend: string;
+      empty: string;
+      waitingUnavailable: string;
       colony: string;
       fleet: string;
       fleetAttention: string;

@@ -1,11 +1,27 @@
 // ui/src/ui2/i18n/Ui2I18n.tsx
 //
-// myrmidon(UI2): the language provider for the ui2 tree. The persistence
-// model is intentionally minimal for the first slice: the chosen locale is
-// stored client-side (`localStorage`, key `myrmidon.ui2.locale`) and applied
-// on mount before the first paint of a ui2 screen. Server-side per-user
-// persistence is the i18n part's scope; when that lands, this provider's
-// `readStoredLocale` is the single seam to swap for an API read.
+// myrmidon(UI2): the language provider for the ui2 tree.
+//
+// myrmidon(UI-2.0 Wave A part 2, owner decision 03.10): the language choice
+// now owns the WHOLE shell, not just the flat screen catalog:
+//   - `setLocale` applies the locale to the vendor i18next instance
+//     (`i18n.changeLanguage`) so the shell components that read vendor
+//     `useTranslation` (top bar, rail, phone nav) re-render in the new
+//     language WITHOUT a reload;
+//   - the choice persists twice: localStorage (mirror, survives reload
+//     before the request resolves) and the server preference
+//     (`GET/PUT /api/myrmidon/ui2/language/me`, survives re-login and
+//     follows the user across browsers);
+//   - on mount the server preference wins over the local mirror — a new
+//     user (no row) resolves to "en", the instance default (owner decision
+//     03.10: язык оболочки по умолчанию — английский);
+//   - the `lang` attribute goes on the `.myr-ui2` root (font contract with
+//     the shell theme, keyed on [lang="ru"]);
+//   - cross-tab sync via the storage event.
+//
+// The provider stays route-scoped (routes.tsx wraps each screen); the
+// server load is a module-level single-flight so navigating between routes
+// does not refetch, and StrictMode double-mounts share one request.
 
 import {
   createContext,
@@ -13,10 +29,13 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
-import { flattenCatalog } from "@myrmidon/shared";
+import { i18n } from "@/i18n";
+import { ui2LanguageApi } from "./api";
+import { registerUi2Catalogs } from "./index";
 import {
   UI2_DEFAULT_LOCALE,
   UI2_LOCALES,
@@ -25,133 +44,73 @@ import {
   type Ui2Locale,
   type Ui2MessageKey,
 } from "./locales";
-import { setAppLanguage } from "@/i18n/myrmidon-i18n";
 
-const STORAGE_KEY = "myrmidon.ui2.locale";
-
-const customCatalogRegistry: Record<string, Record<string, string>> = {};
-const customLocalesSet = new Set<string>();
-
-export function getRegisteredCustomLocales(): string[] {
-  return Array.from(customLocalesSet);
-}
+/** Legacy mirror key (kept so existing choices survive) and the shared one. */
+const STORAGE_KEYS = ["myrmidon.ui2.locale", "myrmidon:ui2:language"] as const;
 
 export function isUi2Locale(value: unknown): value is Ui2Locale {
-  return (
-    typeof value === "string" &&
-    ((UI2_LOCALES as readonly string[]).includes(value) || customLocalesSet.has(value))
-  );
-}
-
-export function applyCustomCatalog(
-  targetLocale: string,
-  catalog: Record<string, unknown>,
-  andSwitch = true,
-): void {
-  const { entries } = flattenCatalog(catalog);
-  const flatRecord: Record<string, string> = {};
-  for (const [k, v] of entries) {
-    flatRecord[k] = v;
-  }
-
-  customCatalogRegistry[targetLocale] = {
-    ...(customCatalogRegistry[targetLocale] || {}),
-    ...flatRecord,
-  };
-  customLocalesSet.add(targetLocale);
-
-  if (!ui2Messages[targetLocale as Ui2Locale]) {
-    (ui2Messages as unknown as Record<string, Record<string, string>>)[targetLocale] = {
-      ...ui2Messages.en,
-      ...flatRecord,
-    };
-  } else {
-    Object.assign(ui2Messages[targetLocale as Ui2Locale], flatRecord);
-  }
-
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const i18next = (window as any).i18next;
-    if (i18next && typeof i18next.addResourceBundle === "function") {
-      i18next.addResourceBundle(targetLocale, "ui2", catalog, true, true);
-      i18next.addResourceBundle(targetLocale, "translation", catalog, true, true);
-    }
-  } catch {
-    // ignore
-  }
-
-  if (andSwitch) {
-    persistLocale(targetLocale as Ui2Locale);
-    try {
-      window.localStorage.setItem("myrmidon:ui-language", targetLocale);
-    } catch {}
-    if (typeof document !== "undefined") {
-      const root = document.querySelector<HTMLElement>(".myr-ui2") ?? document.documentElement;
-      if (root) root.setAttribute("lang", targetLocale);
-    }
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const i18next = (window as any).i18next;
-      if (i18next && typeof i18next.changeLanguage === "function") {
-        void i18next.changeLanguage(targetLocale);
-      }
-    } catch {}
-  }
-
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(
-      new CustomEvent("myrmidon:locale-applied", {
-        detail: { locale: targetLocale, andSwitch },
-      }),
-    );
-  }
-}
-
-const APP_LANGUAGE_STORAGE_KEY = "myrmidon:ui-language";
-
-/**
- * The language chosen for the whole interface (`myrmidon:ui-language`). The
- * ui2 screens used to start in English whatever the owner had picked, because
- * they only looked at their own key; the app-wide choice is the fallback when ui2 has none of its own.
- */
-export function readAppLanguage(): Ui2Locale | null {
-  try {
-    const raw = window.localStorage.getItem(APP_LANGUAGE_STORAGE_KEY);
-    return isUi2Locale(raw) ? raw : null;
-  } catch {
-    return null;
-  }
+  return typeof value === "string" && (UI2_LOCALES as readonly string[]).includes(value);
 }
 
 /** Read the stored locale without crashing on private-mode/quota failures. */
 export function readStoredLocale(): Ui2Locale | null {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY) ?? window.localStorage.getItem(APP_LANGUAGE_STORAGE_KEY);
-    return isUi2Locale(raw) ? raw : null;
+    for (const key of STORAGE_KEYS) {
+      const raw = window.localStorage.getItem(key);
+      if (isUi2Locale(raw)) return raw;
+    }
   } catch {
-    return null;
+    // localStorage unavailable — rely on the server preference.
   }
+  return null;
 }
 
 function persistLocale(locale: Ui2Locale): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, locale);
-    window.localStorage.setItem(APP_LANGUAGE_STORAGE_KEY, locale);
-    window.localStorage.setItem("myrmidon:ui2:language", locale);
-  } catch {
-    // The choice still applies for this session.
+  for (const key of STORAGE_KEYS) {
+    try {
+      window.localStorage.setItem(key, locale);
+    } catch {
+      // The choice still applies for this session.
+    }
   }
+}
+
+/**
+ * Apply a locale to everything outside this provider's React tree: the
+ * vendor i18next instance (shell copy), the ui2 namespace catalogs on it,
+ * and the `lang` attribute (RU display-font contract).
+ */
+function applyLocaleToShell(locale: Ui2Locale): void {
+  registerUi2Catalogs();
+  const root =
+    (typeof document !== "undefined" &&
+      (document.querySelector<HTMLElement>(".myr-ui2") ?? document.documentElement)) ||
+    null;
+  if (root) root.setAttribute("lang", locale);
+  if (i18n.language !== locale) void i18n.changeLanguage(locale);
+}
+
+/** Single-flight server preference load (module level: one GET per page). */
+let serverPreferencePromise: Promise<Ui2Locale | null> | null = null;
+function loadServerPreference(): Promise<Ui2Locale | null> {
+  if (!serverPreferencePromise) {
+    serverPreferencePromise = ui2LanguageApi
+      .get()
+      .then((preference) => (isUi2Locale(preference?.language) ? preference.language : null))
+      .catch(() => null);
+  }
+  return serverPreferencePromise;
+}
+
+/** Test seam: clear the module-level single-flight so each test owns its
+ * own mocked GET. Never called by production code. */
+export function resetUi2ServerPreferenceCacheForTests(): void {
+  serverPreferencePromise = null;
 }
 
 export interface Ui2I18nContextValue {
   locale: Ui2Locale;
-  setLocale: (locale: Ui2Locale | string) => void | Promise<void>;
-  availableLocales: string[];
-  applyCustomCatalog: (
-    targetLocale: string,
-    catalog: Record<string, unknown>,
-    andSwitch?: boolean,
-  ) => void;
+  setLocale: (locale: Ui2Locale) => void;
   t: (key: Ui2MessageKey, values?: Record<string, string | number>) => string;
 }
 
@@ -159,66 +118,77 @@ const Ui2I18nContext = createContext<Ui2I18nContextValue | null>(null);
 
 export function Ui2I18nProvider({
   children,
-  initialLocale,
+  initialLocale = readStoredLocale() ?? UI2_DEFAULT_LOCALE,
 }: {
-  children?: ReactNode;
+  children: ReactNode;
   initialLocale?: Ui2Locale;
 }) {
-  const [locale, setLocaleState] = useState<Ui2Locale>(
-    () => initialLocale ?? readStoredLocale() ?? readAppLanguage() ?? UI2_DEFAULT_LOCALE,
-  );
-  const [customRevision, setCustomRevision] = useState(0);
+  const [locale, setLocaleState] = useState<Ui2Locale>(initialLocale);
+  // Once the user has chosen a language in this session, a late server
+  // response must not overwrite their choice.
+  const userSwitched = useRef(false);
 
+  // Apply the starting locale to the shell immediately (first paint).
   useEffect(() => {
-    const syncLocale = (event: StorageEvent) => {
-      if (event.key !== STORAGE_KEY && event.key !== APP_LANGUAGE_STORAGE_KEY) return;
-      const next = isUi2Locale(event.newValue) ? event.newValue : null;
-      if (next) setLocaleState(next);
-    };
-    window.addEventListener("storage", syncLocale);
-    return () => window.removeEventListener("storage", syncLocale);
+    applyLocaleToShell(locale);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Load the server preference once: it wins over the local mirror — but
+  // only until the user switches in this session. A new user (no row)
+  // resolves to "en", the instance default.
   useEffect(() => {
-    const onLocaleApplied = (event: Event) => {
-      const ce = event as CustomEvent<{ locale: string; andSwitch?: boolean }>;
-      setCustomRevision((rev) => rev + 1);
-      if (ce.detail?.locale && ce.detail?.andSwitch) {
-        setLocaleState(ce.detail.locale as Ui2Locale);
-      }
+    let active = true;
+    void loadServerPreference().then((serverLocale) => {
+      if (!active || userSwitched.current || !serverLocale) return;
+      if (serverLocale === locale) return;
+      setLocaleState(serverLocale);
+      persistLocale(serverLocale);
+      applyLocaleToShell(serverLocale);
+    });
+    return () => {
+      active = false;
     };
-    window.addEventListener("myrmidon:locale-applied", onLocaleApplied);
-    return () => window.removeEventListener("myrmidon:locale-applied", onLocaleApplied);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const setLocale = useCallback((next: Ui2Locale | string) => {
-    const normalized = next as Ui2Locale;
-    persistLocale(normalized);
-    setLocaleState(normalized);
-    return setAppLanguage(normalized);
+  // Cross-tab sync: another tab switched the language.
+  useEffect(() => {
+    function handleStorage(event: StorageEvent) {
+      if (!(STORAGE_KEYS as readonly string[]).includes(event.key ?? "")) return;
+      if (!isUi2Locale(event.newValue)) return;
+      const next = event.newValue;
+      setLocaleState((current: Ui2Locale) => {
+        if (current === next) return current;
+        applyLocaleToShell(next);
+        return next;
+      });
+    }
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
   }, []);
 
-  const availableLocales = useMemo(() => {
-    return Array.from(new Set([...UI2_LOCALES, ...Array.from(customLocalesSet)]));
-  }, [customRevision]);
+  const setLocale = useCallback((next: Ui2Locale) => {
+    userSwitched.current = true;
+    serverPreferencePromise = Promise.resolve(next);
+    persistLocale(next);
+    applyLocaleToShell(next);
+    setLocaleState(next);
+    // Persist the personal choice on the server (survives re-login and
+    // other browsers). Failure keeps the local choice applied.
+    void ui2LanguageApi.put(next).catch(() => undefined);
+  }, []);
 
   const value = useMemo<Ui2I18nContextValue>(
     () => ({
       locale,
       setLocale,
-      availableLocales,
-      applyCustomCatalog,
       t: (key, values) => {
-        const custom = customCatalogRegistry[locale];
-        const template =
-          custom?.[key] ??
-          ui2Messages[locale]?.[key] ??
-          ui2Messages[UI2_DEFAULT_LOCALE]?.[key] ??
-          key;
+        const template = ui2Messages[locale][key] ?? ui2Messages[UI2_DEFAULT_LOCALE][key] ?? key;
         return formatUi2Message(template, values);
       },
     }),
-    [locale, setLocale, availableLocales],
+    [locale, setLocale],
   );
 
   return <Ui2I18nContext.Provider value={value}>{children}</Ui2I18nContext.Provider>;
@@ -228,8 +198,4 @@ export function useUi2I18n(): Ui2I18nContextValue {
   const ctx = useContext(Ui2I18nContext);
   if (!ctx) throw new Error("useUi2I18n requires a Ui2I18nProvider ancestor");
   return ctx;
-}
-
-export function useUi2I18nOptional(): Ui2I18nContextValue | null {
-  return useContext(Ui2I18nContext);
 }
