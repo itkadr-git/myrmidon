@@ -1731,7 +1731,6 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
       expect.objectContaining({ title: "Updated after commit" }),
-      expect.anything(),
     );
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       issueId,
@@ -1886,7 +1885,6 @@ describe("agent issue mutation checkout ownership", () => {
         // myrmidon(STALE-BLOCK): the request now carries a reasonRef (see send above).
         unblockDescriptor: { owner: "board", action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
       }),
-      expect.anything(),
     );
   });
 
@@ -2833,7 +2831,7 @@ describe("agent issue mutation checkout ownership", () => {
       );
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
-      expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status }), expect.anything());
+      expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status }));
     });
 
     it("lets a watchdog run transition a watched issue to in_review with a live review path", async () => {
@@ -3029,7 +3027,6 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).toHaveBeenCalledWith(
         issueId,
         expect.objectContaining({ assigneeAgentId: peerAgentId }),
-        expect.anything(),
       );
     });
 
