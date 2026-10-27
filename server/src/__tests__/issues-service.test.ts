@@ -3008,7 +3008,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     const regularProjectId = randomUUID();
     const developmentPolicy = {
       mode: "normal" as const,
-      commentRequired: false,
+      commentRequired: true,
       stages: [{ type: "review" as const, participants: [{ type: "agent" as const, agentId: randomUUID() }] }],
     };
 
