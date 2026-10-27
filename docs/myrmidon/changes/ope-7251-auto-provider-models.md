@@ -20,4 +20,3 @@ settings-section: Track 6 — security and models
 
 ## settings-en
 
-| `MYRMIDON_DISABLED_MODEL_SENTINEL` | OPE-7257 | `__myrmidon_disabled__` | Unregistered gateway model alias used when an agent's enabled-model allowlist becomes empty. LiteLLM treats `/key/update` with `models: []` as removal of restrictions, so the sentinel keeps the key denied until a non-empty allowlist is applied. The alias must remain absent from registered gateway models. | Internal safety value; do not register or expose as a selectable model. |
