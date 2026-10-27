@@ -5,12 +5,13 @@
 import { describe, expect, it } from "vitest";
 import {
   METRIC_FAMILIES,
-  formatSampleValue,
+  escapeLabelValue,
   percentile,
   renderMetricsText,
   type MetricsSnapshot,
 } from "./metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
+import { BLOCKER_DASHBOARD_PANELS } from "../../../../../ui/src/lib/blockerDashboardPanels.js";
 import { computeBlockedMetrics, renderBlockedMetrics } from "./blocked.js";
 import { renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
 
