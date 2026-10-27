@@ -235,9 +235,14 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    await db.delete(statusDecisions);
+    await db.delete(workAssessments);
+    await db.delete(nativeRunResults);
+    await db.delete(completionContracts);
     await db.delete(litellmCostEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -293,9 +298,14 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
       source: "automation",
       triggerDetail: "callback",
       reason: "issue_commented",
-      payload: { issueId, sourceEventId: "comment-12", sourceSeq: 12, eventRevision: issueUpdatedAt.toISOString() },
       status: "completed",
       runId,
+      payload: {
+        issueId,
+        sourceEventId: "comment-12",
+        sourceSeq: 12,
+        eventRevision: issueUpdatedAt.toISOString(),
+      },
     });
     await db.insert(heartbeatRuns).values({
       id: runId,
