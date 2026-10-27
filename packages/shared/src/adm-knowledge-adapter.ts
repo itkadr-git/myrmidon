@@ -1,3 +1,5 @@
+import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { z } from "zod";
 
 /** ADM's stable namespaces and the corresponding Myrmidon knowledge kinds. */
@@ -84,32 +86,80 @@ export interface AdmKnowledgeRestPort {
 
 export type AdmConnectorMetrics = (event: { kind: "session_start" | "prompt"; bytesAdded: number; sessionBytes: number }) => void;
 
+export interface AdmContextBudgetOptions {
+  sessionId?: string;
+  statePath?: string;
+}
+
 /** Enforces the ADM context contract without loading policy bodies. */
 export class AdmContextBudget {
   private readonly emitted = new Set<string>();
   private sessionBytes = 0;
-  constructor(private readonly sessionLimit = 12 * 1024, private readonly promptLimit = 2 * 1024, private readonly metrics?: AdmConnectorMetrics) {}
+  private readonly sessionId: string;
+  private readonly statePath?: string;
+  constructor(
+    private readonly sessionLimit = 12 * 1024,
+    private readonly promptLimit = 2 * 1024,
+    private readonly metrics?: AdmConnectorMetrics,
+    options: AdmContextBudgetOptions = {},
+  ) {
+    this.sessionId = options.sessionId ?? "default";
+    this.statePath = options.statePath;
+    this.restoreState();
+  }
   sessionStart(items: readonly AdmKnowledgeMetadata[]): string {
-    return this.emit(JSON.stringify(items.map(({ slug, revision_id, title, summary, triggers }) => ({ slug, revision_id, title, summary, triggers }))), this.sessionLimit, "session_start");
+    const compact = items.map(({ slug, revision_id, title, summary, triggers }) => ({
+      slug, revision_id, title: title.slice(0, 160), summary: summary.slice(0, 300), triggers,
+    }));
+    return this.emit(JSON.stringify(compact), this.sessionLimit, "session_start");
   }
   prompt(items: readonly AdmKnowledgeMetadata[], trigger: string): string {
-    const selected = items.filter((item) => item.triggers.includes(trigger as never)).filter((item) => !this.emitted.has(`${item.slug}:${item.revision_id}`));
-    const output = this.emit(JSON.stringify(selected.map(({ slug, revision_id, title, summary }) => ({ slug, revision_id, title, summary }))), this.promptLimit, "prompt");
-    if (output) selected.forEach((item) => this.emitted.add(`${item.slug}:${item.revision_id}`));
+    const selected = items.filter((item) => item.triggers.includes(trigger as never))
+      .filter((item) => !this.emitted.has(`${item.slug}:${item.revision_id}`));
+    if (selected.length === 0) {
+      this.metrics?.({ kind: "prompt", bytesAdded: 0, sessionBytes: this.sessionBytes });
+      return "";
+    }
+    const output = this.emit(JSON.stringify(selected.map(({ slug, revision_id, title, summary }) => ({
+      slug, revision_id, title: title.slice(0, 160), summary: summary.slice(0, 300),
+    }))), this.promptLimit, "prompt");
+    if (output) {
+      selected.forEach((item) => this.emitted.add(`${item.slug}:${item.revision_id}`));
+      this.persistState();
+    }
     return output;
   }
+  restoreAfterCompaction(): void { this.restoreState(); }
   private emit(value: string, limit: number, kind: "session_start" | "prompt"): string {
     const bytes = Buffer.byteLength(value, "utf8");
-    if (bytes > limit || this.sessionBytes + bytes > this.sessionLimit) { this.metrics?.({ kind, bytesAdded: 0, sessionBytes: this.sessionBytes }); return ""; }
+    if (bytes > limit || this.sessionBytes + bytes > this.sessionLimit) {
+      this.metrics?.({ kind, bytesAdded: 0, sessionBytes: this.sessionBytes });
+      return "";
+    }
     this.sessionBytes += bytes;
     this.metrics?.({ kind, bytesAdded: bytes, sessionBytes: this.sessionBytes });
     return value;
   }
+  private restoreState(): void {
+    if (!this.statePath) return;
+    try {
+      const state = JSON.parse(readFileSync(this.statePath, "utf8")) as { sessionId?: string; emitted?: string[] };
+      if (state.sessionId === this.sessionId) state.emitted?.forEach((key) => this.emitted.add(key));
+    } catch { /* missing or corrupt state is treated as a fresh session */ }
+  }
+  private persistState(): void {
+    if (!this.statePath) return;
+    try {
+      mkdirSync(dirname(this.statePath), { recursive: true });
+      writeFileSync(this.statePath, JSON.stringify({ sessionId: this.sessionId, emitted: [...this.emitted] }));
+    } catch { /* delivery remains usable if state persistence fails */ }
+  }
 }
 
-function writePort(rest: AdmKnowledgeRestPort): AdmKnowledgeWritePort {
-  if (typeof rest.proposeRule !== "function" || typeof rest.writeLesson !== "function") throw new AdmConnectorError("ADM_FORBIDDEN", "ADM write operations are not available");
-  return { proposeRule: rest.proposeRule, writeLesson: rest.writeLesson };
+function requireWrite<T extends keyof AdmKnowledgeWritePort>(rest: AdmKnowledgeRestPort, operation: T): AdmKnowledgeWritePort[T] {
+  const fn = rest[operation];
+  if (typeof fn !== "function") throw new AdmConnectorError("ADM_FORBIDDEN", `ADM ${operation} operation is not available`);
+  return fn as AdmKnowledgeWritePort[T];
 }
 
 function assertIdempotencyKey(key: string): void {
@@ -156,7 +206,7 @@ export function createAdmKnowledgeAdapter(rest: AdmKnowledgeRestPort) {
         throw new AdmConnectorError("ADM_INVALID_METADATA", "Rules must use an ADM policy or trigger namespace");
       }
       try {
-        const result = await writePort(rest).proposeRule(input);
+        const result = await requireWrite(rest, "proposeRule")(input);
         const published = await rest.read(result.itemId);
         if (result.status === "published" || published?.status === "published") throw new AdmConnectorError("ADM_FORBIDDEN", "Rules must not be self-published");
         return result;
@@ -166,7 +216,7 @@ export function createAdmKnowledgeAdapter(rest: AdmKnowledgeRestPort) {
       assertIdempotencyKey(input.idempotencyKey);
       if (!input.slug.startsWith(ADM_KNOWLEDGE_SPACES.lessons.prefix)) throw new AdmConnectorError("ADM_INVALID_METADATA", "Lessons must use the ADM lessons namespace");
       try {
-        const result = await writePort(rest).writeLesson(input);
+        const result = await requireWrite(rest, "writeLesson")(input);
         const published = await rest.read(result.itemId);
         if (!published || published.status !== "published" || published.deliveredRevisionId !== result.revisionId) {
           throw new AdmConnectorError("ADM_UPSTREAM_UNAVAILABLE", "Published lesson could not be verified by read-back");
