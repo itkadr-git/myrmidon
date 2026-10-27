@@ -17,20 +17,50 @@ describe("company routes", () => {
       [...block.matchAll(/path="([a-z][a-z0-9-]*)/g)].map(([, root]) => root!),
     );
     const routeRoots = roots(routeBlock!);
-    const boardRouteRoots = new Set([...routeRoots].filter((root) => !["runs", "budgets"].includes(root)));
-    for (const root of ["onboarding", "plugins", "tests", "status-cards", "review-queue", "learnings", "dev", "instance", "chat-identity", "ux-lab"]) {
-      boardRouteRoots.delete(root);
-    }
+    const allowedUnregisteredRoots = new Set([
+      "runs",
+      "budgets",
+      "onboarding",
+      "plugins",
+      "tests",
+      "status-cards",
+      "review-queue",
+      "learnings",
+      "dev",
+      "instance",
+      "chat-identity",
+      "ux-lab",
+      "fleet",
+      "commander-chat",
+      "knowledge",
+    ]);
+    const boardRouteRoots = new Set([...routeRoots].filter((root) => !allowedUnregisteredRoots.has(root)));
     const source = readFileSync(fileURLToPath(new URL("./company-routes.ts", import.meta.url)), "utf8");
     const rootsBlock = source.match(/const BOARD_ROUTE_ROOTS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
     expect(rootsBlock).toBeDefined();
     const listedRoots = new Set([...rootsBlock!.matchAll(/"([a-z][a-z0-9-]*)"/g)].map(([, root]) => root!));
+    const unregisteredShellRoots = new Set(["fleet", "commander-chat", "knowledge"]);
+    for (const root of unregisteredShellRoots) {
+      boardRouteRoots.add(root);
+    }
 
     expect([...listedRoots].filter((root) => !boardRouteRoots.has(root))).toEqual([]);
     expect([...boardRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
   });
 
-  it.each(["swarm-claim", "foraging", "quality", "status", "cases", "pipelines", "stack", "wiki"])(
+  it.each([
+    "swarm-claim",
+    "foraging",
+    "quality",
+    "status",
+    "cases",
+    "pipelines",
+    "stack",
+    "wiki",
+    "fleet",
+    "commander-chat",
+    "knowledge",
+  ])(
     "scopes the Myrmidon %s menu route to the current company",
     (root) => {
       const pathname = `/${root}`;
