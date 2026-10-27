@@ -7146,10 +7146,12 @@ function getActorIdentityPart(req: Request): string {
         ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
         : null,
     ]);
+    const wakeReason = typeof req.query.wakeReason === "string" ? req.query.wakeReason : undefined;
+    const hasResult = req.query.hasResult === "true" || req.query.hasResult === "1";
     // Compute the validator before fetching and redacting the response body.
-    const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
+    const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, wakeReason, hasResult);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary, wakeReason, hasResult });
     const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
     res.json(redactedRuns);
   });

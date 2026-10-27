@@ -32166,6 +32166,8 @@ export function heartbeatService(
       limit?: number,
       summary?: boolean,
       actorShape?: string,
+      wakeReason?: string,
+      hasResult = false,
     ): Promise<string> => {
       const [agg] = await db
         .select({
@@ -32174,12 +32176,14 @@ export function heartbeatService(
         })
         .from(heartbeatRuns)
         .where(
-          agentId
-            ? and(
-                eq(heartbeatRuns.companyId, companyId),
-                eq(heartbeatRuns.agentId, agentId),
-              )
-            : eq(heartbeatRuns.companyId, companyId),
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+            wakeReason
+              ? sql`(${heartbeatRuns.contextWakeReason} = ${wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${wakeReason})`
+              : sql`true`,
+            hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+          ),
         );
       return versionKeyEtag("heartbeat-runs-list", [
         companyId,
@@ -32187,6 +32191,8 @@ export function heartbeatService(
         limit ?? "default",
         summary ? "summary" : "full",
         actorShape ?? "all",
+        wakeReason ?? "all",
+        hasResult ? "with-result" : "all-results",
         agg?.rowCount ?? 0,
         agg?.maxUpdatedAt ?? null,
       ]);
@@ -32195,7 +32201,7 @@ export function heartbeatService(
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean } = {},
+      options: { summary?: boolean; wakeReason?: string; hasResult?: boolean } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
@@ -32220,12 +32226,16 @@ export function heartbeatService(
         )
         .from(heartbeatRuns)
         .where(
-          agentId
-            ? and(
-                eq(heartbeatRuns.companyId, companyId),
-                eq(heartbeatRuns.agentId, agentId),
-              )
-            : eq(heartbeatRuns.companyId, companyId),
+          and(
+            agentId
+              ? eq(heartbeatRuns.companyId, companyId)
+              : eq(heartbeatRuns.companyId, companyId),
+            agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+            options.wakeReason
+              ? sql`(${heartbeatRuns.contextWakeReason} = ${options.wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${options.wakeReason})`
+              : sql`true`,
+            options.hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+          ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 
