@@ -9,13 +9,18 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentTaskSessions,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueExecutionDecisions,
   issueRelations,
+  issueThreadInteractions,
+  issueWatchdogs,
   issues,
 } from "@myrmidon/db";
 import {
@@ -65,9 +70,14 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(activityLog);
-    await db.delete(issues);
+    await db.delete(issueExecutionDecisions);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueWatchdogs);
+    await db.delete(agentTaskSessions);
+    await db.delete(agentWakeupRequests);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
