@@ -5,7 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
-  agentWakeupRequests,
+  heartbeatRunEvents,
   heartbeatRuns,
   issues,
 } from "@myrmidon/db";
@@ -34,6 +34,7 @@ const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
       await tx.execute(
         sql`LOCK TABLE activity_log, agent_wakeup_requests, issues, agents IN SHARE ROW EXCLUSIVE MODE`,
       );
+      await tx.delete(heartbeatRunEvents);
       await tx.delete(heartbeatRuns);
       await tx.delete(agentWakeupRequests);
       await tx.delete(activityLog);
