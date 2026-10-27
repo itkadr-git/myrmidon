@@ -695,10 +695,7 @@ index c9df2f9..adecf5a 100644
 +        cache = self._db_handle_cache
 +        async def opener():
 +            return await acquire_async(path, deferred=True)
-+        db = await cache.get_async(path, opener, non_cacheable=_is_live_system_guard)
-+        if db is not None:
-+            self._db_handles[path] = db
-+        return db
++        return await cache.get_async(path, opener, non_cacheable=_is_live_system_guard)
 +
 +    async def _ensure_loaded_async(self) -> None:
 +        await self._routing_db_async()
@@ -1076,6 +1073,57 @@ index f3f4ed8..19a0a81 100644
 +        iter_deleted_sqlite_sidecar_holders(tmp_path / "state.db")
 +
 +
+diff --git a/tests/gateway/test_session_db_handle_shutdown.py b/tests/gateway/test_session_db_handle_shutdown.py
+new file mode 100644
+--- /dev/null
++++ b/tests/gateway/test_session_db_handle_shutdown.py
+@@ -0,0 +1,36 @@
++import asyncio
++from pathlib import Path
++
++from gateway.session_persistence import SessionPersistenceMixin
++
++
++class _Handle:
++    closed = False
++
++    def close(self):
++        self.closed = True
++
++
++class _Cache:
++    def __init__(self, handles):
++        self.handles = handles
++
++    async def get_async(self, path, opener, **_kwargs):
++        handle = await opener()
++        self.handles[path] = handle
++        self.handles.clear()
++        handle.close()
++        return handle
++
++
++def test_async_open_does_not_reinsert_after_shutdown():
++    async def run():
++        handles = {}
++        store = SessionPersistenceMixin.__new__(SessionPersistenceMixin)
++        store._db_handles = handles
++        store._db_handle_cache = _Cache(handles)
++        import hermes_state_registry
++        original = hermes_state_registry.acquire_async
++        hermes_state_registry.acquire_async = lambda *_a, **_k: _resolved(_Handle())
++        try:
++            result = await store._open_session_db_for_path_async(Path("state.db"))
++        finally:
++            hermes_state_registry.acquire_async = original
++        assert result.closed
++        assert handles == {}
++    asyncio.run(run())
++
++
++async def _resolved(value):
++    return value
+
  @pytest.mark.skipif(
      not sys.platform.startswith("linux"),
      reason="deleted-WAL /proc scan is Linux-only",
