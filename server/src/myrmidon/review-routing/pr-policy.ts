@@ -6,7 +6,7 @@
 import { REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY, REVIEW_ROUTING_PR_KIND_METADATA_KEY } from "@myrmidon/shared";
 
 /** The per-head CI/review state the github.ts resolver reads off GitHub. */
-export type PullRequestHeadCiState = "green" | "not_green" | "unknown";
+export type PullRequestHeadCiState = "green" | "not_green" | "unknown" | "pending";
 export type PullRequestReviewDecision = "APPROVED" | "CHANGES_REQUESTED" | "BLOCKED" | null;
 
 export interface PrRef {
@@ -39,7 +39,7 @@ export function shouldHandOffDeliveringPr(head: PullRequestHeadState): boolean {
 
 /** In-progress work can wait for CI/review once its open PR is conflict-free. */
 export function shouldRouteOpenPrToReview(head: PullRequestHeadState): boolean {
-  return head.open && !head.draft && !head.fetchFailed && head.mergeable === true && head.ci !== "not_green";
+  return head.open && !head.draft && !head.fetchFailed && head.mergeable === true && (head.ci === "pending" || head.ci === "green");
 }
 
 /** The board-side view of an open pr-routing task, for coverage and supersede. */

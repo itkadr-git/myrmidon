@@ -296,20 +296,22 @@ describe("pickPrReviewer", () => {
 });
 
 describe("PR lane triggers (pr-policy)", () => {
-  it("routes existing PR work to review while CI is pending, but not failed or unsafe PRs", () => {
+  it("routes existing PR work to review while CI is pending or green, but not failed or unsafe PRs", () => {
     expect(shouldRouteOpenPrToReview(head({ ci: "pending" }))).toBe(true);
     expect(shouldRouteOpenPrToReview(head({ ci: "green" }))).toBe(true);
     expect(shouldRouteOpenPrToReview(head({ ci: "not_green" }))).toBe(false);
-    expect(shouldRouteOpenPrToReview(head({ ci: "unknown" }))).toBe(true);
+    expect(shouldRouteOpenPrToReview(head({ ci: "unknown" }))).toBe(false);
     expect(shouldRouteOpenPrToReview(head({ draft: true }))).toBe(false);
     expect(shouldRouteOpenPrToReview(head({ mergeable: false }))).toBe(false);
     expect(shouldRouteOpenPrToReview(head({ mergeable: null }))).toBe(false);
   });
+
   it("requires resolved mergeability before routing a PR", () => {
     expect(reviewTaskDueForHead(head({ mergeable: null }))).toBe(false);
     expect(reviewTaskDueForHead(head({ mergeable: false }))).toBe(false);
     expect(stewardTaskDueForHead(head({ mergeable: null, reviewDecision: "APPROVED" }))).toBe(false);
   });
+
   it("fires on a green head with no verdict", () => {
     expect(reviewTaskDueForHead(head())).toBe(true);
   });

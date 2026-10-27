@@ -61,9 +61,9 @@ function resolverFor(
 }
 
 describe("CI state parsing", () => {
-  it("counts success and a status-less repo as green", () => {
+  it("distinguishes pending from failed statuses and treats a status-less repo as green", () => {
     expect(pullRequestCiStateFromStatusPayload({ state: "success" })).toBe("green");
-    expect(pullRequestCiStateFromStatusPayload({ state: "pending", statuses: [] })).toBe("not_green");
+    expect(pullRequestCiStateFromStatusPayload({ state: "pending", statuses: [] })).toBe("pending");
     expect(pullRequestCiStateFromStatusPayload({ statuses: [] })).toBe("green");
     expect(pullRequestCiStateFromStatusPayload({ state: "failure" })).toBe("not_green");
     expect(pullRequestCiStateFromStatusPayload({ state: "error" })).toBe("not_green");
