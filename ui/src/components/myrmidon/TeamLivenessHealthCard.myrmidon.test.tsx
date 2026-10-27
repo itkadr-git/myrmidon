@@ -92,7 +92,7 @@ describe("metricLines", () => {
       "autoResumeExhaustions",
       "wakes",
       "stalledRuns",
-      "emptyRunsByAgent",
+      "emptyRuns",
     ]);
   });
 });
