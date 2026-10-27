@@ -60,11 +60,11 @@ describe("site-agent client memoryExport", () => {
     const baseUrl = await serve((req, res) => {
       seen = { method: req.method, url: req.url, auth: req.headers.authorization };
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ logs: "line 1\nline 2\n" }));
+      res.end(JSON.stringify({ logs: "line one\nline two\n" }));
     });
-    const logs = await createSiteAgentClient({ baseUrl, token: "tok" }).botLogs("work-qa");
-    expect(logs).toBe("line 1\nline 2\n");
-    expect(seen).toEqual({ method: "GET", url: "/v1/bots/work-qa/logs", auth: "Bearer tok" });
+    const logs = await createSiteAgentClient({ baseUrl, token: "tok" }).logs("work-qa", 2);
+    expect(logs).toBe("line one\nline two\n");
+    expect(seen).toEqual({ method: "GET", url: "/v1/bots/work-qa/logs?tail=2", auth: "Bearer tok" });
   });
 
   it("rejects a log answer that is an error or not the logs contract", async () => {
@@ -77,5 +77,41 @@ describe("site-agent client memoryExport", () => {
     );
     const odd = await serve((_req, res) => res.end("<html>"));
     await expect(createSiteAgentClient({ baseUrl: odd }).botLogs("work-qa")).rejects.toThrow("not the logs contract");
+  });
+
+  it("fetches bounded logs from the authenticated site-agent endpoint", async () => {
+    let seen: { method?: string; url?: string; auth?: string } = {};
+    const baseUrl = await serve((req, res) => {
+      seen = { method: req.method, url: req.url, auth: req.headers.authorization };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ logs: "line one\nline two\n" }));
+    });
+    const client = createSiteAgentClient({ baseUrl, token: "tok" });
+    await expect(client.logs("work-qa", 25)).resolves.toBe("line one\nline two\n");
+    expect(seen).toEqual({ method: "GET", url: "/v1/bots/work-qa/logs?tail=25", auth: "Bearer tok" });
+    await expect(client.logs("work-qa", 0)).rejects.toThrow("tail must be between 1 and 1000");
+  });
+
+  it("returns an error for a rejected or malformed log response", async () => {
+    const refused = await serve((_req, res) => {
+      res.writeHead(403);
+      res.end("bot_not_enrolled");
+    });
+    await expect(createSiteAgentClient({ baseUrl: refused }).botLogs("work-qa")).rejects.toThrow(
+      "Site-agent logs work-qa failed with 403: bot_not_enrolled",
+    );
+    const odd = await serve((_req, res) => res.end("<html>"));
+    await expect(createSiteAgentClient({ baseUrl: odd }).botLogs("work-qa")).rejects.toThrow("not the logs contract");
+  });
+
+  it("keeps the legacy botLogs call on the bounded logs endpoint", async () => {
+    let seen = "";
+    const baseUrl = await serve((req, res) => {
+      seen = `${req.method} ${req.url}`;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ logs: "line one\n" }));
+    });
+    await expect(createSiteAgentClient({ baseUrl, token: "tok" }).logs("work-qa", 100)).resolves.toBe("line one\n");
+    expect(seen).toBe("GET /v1/bots/work-qa/logs?tail=100");
   });
 });

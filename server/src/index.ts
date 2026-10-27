@@ -8,6 +8,7 @@ import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
+import { getActiveFleetClientManager } from "./myrmidon/bot-containers/site-registry.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
@@ -1223,6 +1224,7 @@ async function startServerWithDatabaseTeardown(
   await startProcessesSettings(db as any, processSupervisor);
   configureCorpusAdapters(db as any, config);
   const app = await createApp(db as any, {
+    fleetClientManager: getActiveFleetClientManager,
     uiMode,
     serverPort: listenPort,
     // myrmidon(PROCS-1.1): an api process serves the board surface and nothing
@@ -2277,11 +2279,13 @@ async function startServerWithDatabaseTeardown(
     startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
     // myrmidon(1.6.6 REMOTE-SITES-T4): the site-monitor lane finalizes the runs of a lost site through the heartbeat service of this process.
     if (heartbeat && processRoleProfile.runsBackground) registerSiteLostRunFinalizer(heartbeat.finalizeSiteLostRun);
-    startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
-    // Initialize IDLE-STOP service after bot containers (needs the driver from runtime)
-    const botContainerRuntime = getBotContainerRuntime();
-    if (botContainerRuntime) {
-      await initializeIdleStopService(botContainerRuntime.driver, db as any);
+    if (processRoleProfile.runsBackground) {
+      startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
+      // Initialize IDLE-STOP service after bot containers (needs the driver from runtime)
+      const botContainerRuntime = getBotContainerRuntime();
+      if (botContainerRuntime) {
+        await initializeIdleStopService(botContainerRuntime.driver, db as any);
+      }
     }
     runContextColumnsBackfill = startRunContextColumnsBackfill(db as any, logger); // OPE-5007 П2: batched, per-batch-commit fill of the thin run-context columns (the migration only adds them)
     startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set

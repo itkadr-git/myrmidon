@@ -52,6 +52,7 @@ export const MAX_FAST_FILES_PER_PACKAGE = 60;
 export const SHARED_GUARD_TESTS = [
   "server/src/__tests__/app-private-hostname-gate.test.ts",
   "server/src/myrmidon/channel-connectors/bridge/bridge.myrmidon.test.ts",
+  "server/src/embedded-postgres-owner.test.ts",
   "server/src/myrmidon/flags-killswitch.myrmidon.test.ts",
   "server/src/myrmidon/monitoring/alerts/guard.myrmidon.test.ts",
   "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts",
