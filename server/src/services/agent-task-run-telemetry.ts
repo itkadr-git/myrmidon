@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import {
   agentWakeupRequests,
   agents,
@@ -216,7 +216,7 @@ function resolveDurationSeconds(run: HeartbeatRun, now: Date): number | undefine
 async function buildRunTelemetryForDb(db: Db, run: HeartbeatRun) {
   const context = parseObject(run.contextSnapshot);
   const issueId = readNonEmptyString(context.issueId) ?? run.nativeIssueId;
-  const [agent, generalSettings, wakeup, issueRow, workProducts, gatewayCalls, runStatusDecision, litellmCosts] = await Promise.all([
+  const [agent, generalSettings, wakeup, issueRow, workProducts, runStatusDecision, litellmCosts] = await Promise.all([
     db.select({ role: agents.role, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
       .from(agents).where(eq(agents.id, run.agentId)).then((rows) => rows[0] ?? null),
     instanceSettingsService(db).getGeneral().catch(() => null),
@@ -255,7 +255,7 @@ async function buildRunTelemetryForDb(db: Db, run: HeartbeatRun) {
           eq(issueComments.companyId, run.companyId),
           eq(issueComments.issueId, issueId),
           eq(issueComments.createdByRunId, run.id),
-          eq(issueComments.deletedAt, null),
+          isNull(issueComments.deletedAt),
         )).limit(1)
     : [];
   const fallbackFinished = !!run.startedAt && !!run.finishedAt;
