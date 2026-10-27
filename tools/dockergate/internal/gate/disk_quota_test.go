@@ -88,6 +88,12 @@ func (p *putStub) asked() int {
 	return len(p.keys)
 }
 
+func (p *putStub) ensured() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.ensureKeys...)
+}
+
 func quotaTarget(key string) string { return "/myrmidon/disk/" + key + "/quota" }
 
 func TestA4_BotCreateRegistersDiskProject(t *testing.T) {
@@ -96,8 +102,33 @@ func TestA4_BotCreateRegistersDiskProject(t *testing.T) {
 	_, body := r.m.FindBody(t, "bot-plain", "")
 	res := r.send("POST", "/v1.45/containers/create?name="+r.name(""), jsonHdr, body)
 	wantStatus(t, res, 201)
-	if !reflect.DeepEqual(st.ensureKeys, []string{r.key()}) {
-		t.Fatalf("registered bot keys %v", st.ensureKeys)
+	if got := st.ensured(); !reflect.DeepEqual(got, []string{r.key()}) {
+		t.Fatalf("registered bot keys %v", got)
+	}
+	if st.asked() != 0 {
+		t.Fatal("create called quota PUT")
+	}
+}
+
+func TestA4_NextCreateDoesNotRegisterDiskProject(t *testing.T) {
+	st := &putStub{}
+	r := newRig(t, withDisk(st))
+	_, body := r.m.FindBody(t, "bot-plain", "")
+	res := r.send("POST", "/v1.45/containers/create?name="+r.name("-next"), jsonHdr, body)
+	wantStatus(t, res, 201)
+	if got := st.ensured(); len(got) != 0 {
+		t.Fatalf("next-container create registered projects %v", got)
+	}
+}
+
+func TestA4_ProjectRegistrationFailureDoesNotReturnCreatedResponse(t *testing.T) {
+	st := &putStub{err: disk.ErrQuotaUnavailable}
+	r := newRig(t, withDisk(st))
+	_, body := r.m.FindBody(t, "bot-plain", "")
+	res := r.send("POST", "/v1.45/containers/create?name="+r.name(""), jsonHdr, body)
+	wantDeny(t, res, deny.UpstreamError)
+	if got := st.ensured(); !reflect.DeepEqual(got, []string{r.key()}) {
+		t.Fatalf("registered bot keys %v", got)
 	}
 }
 

@@ -53,8 +53,12 @@ func (f *fakeExec) journal() []string {
 func newQuota(t *testing.T, state string) (*Quota, *fakeExec) {
 	t.Helper()
 	dir := t.TempDir()
+	volumeRoot := filepath.Join(dir, "bots")
+	if err := os.MkdirAll(volumeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	f := &fakeExec{state: state}
-	q := NewQuota(root, f)
+	q := NewQuota(volumeRoot, f)
 	q.ProjectsFile = filepath.Join(dir, "projects")
 	q.ProjidFile = filepath.Join(dir, "projid")
 	return q, f
@@ -101,10 +105,13 @@ func TestEnsure_RejectsSymlinkedBotDir(t *testing.T) {
 	if err := os.MkdirAll(q.VolumeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(t.TempDir(), filepath.Join(q.VolumeRoot, qKeyA)); err != nil {
+	if err := os.MkdirAll(filepath.Join(q.VolumeRoot, qKeyA), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := q.Ensure(context.Background(), qKeyA); err == nil {
+	if err := os.Symlink(t.TempDir(), filepath.Join(q.VolumeRoot, qKeyA+"-link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Ensure(context.Background(), qKeyA+"-link"); err == nil {
 		t.Fatal("symlinked bot directory accepted")
 	}
 	if len(f.journal()) != 0 {
@@ -143,6 +150,7 @@ func TestPut_ValidCallsXfsQuotaWithTheContractArguments(t *testing.T) {
 	if res.ProjectID != FirstProjectID || res.HardBytes != hard {
 		t.Fatalf("result %+v", res)
 	}
+	root := q.VolumeRoot
 	want := []string{
 		"xfs_quota|-x|-c|state -p|" + root,
 		"xfs_quota|-x|-c|project -s -p " + root + "/" + qKeyA + " 1000|-c|limit -p bhard=6442450944 bsoft=5153960755 1000|" + root,
@@ -306,7 +314,13 @@ func TestPut_ExistingFilesAreKeptAndIDsNotReused(t *testing.T) {
 
 func TestPut_ExistingNameKeepsItsID(t *testing.T) {
 	q, _ := newQuota(t, stateOn)
-	if err := os.WriteFile(q.ProjidFile, []byte("other:2000\n"+qKeyA+":1234\n"), 0o644); err != nil {
+	if err := os.MkdirAll(q.VolumeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(q.VolumeRoot, qKeyA), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(q.ProjidFile, []byte(qKeyA+":0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	res, err := q.Put(context.Background(), qKeyA, MinQuotaBytes)
