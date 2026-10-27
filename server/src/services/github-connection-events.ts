@@ -20,6 +20,7 @@ import {
   type PaperclipCloudConnector,
   type SealedConnectorEvents,
 } from "./paperclip-cloud-connector.js";
+import { issueService } from "./issues.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
@@ -336,6 +337,29 @@ export function githubConnectionEventService(
       sql`lower(${externalObjects.externalId}) = lower(${snapshot.externalId})`,
     ));
     if (snapshot.merged && event.action === "closed") {
+      const products = await db.select({ product: issueWorkProducts, issue: issues })
+        .from(issueWorkProducts)
+        .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
+        .where(and(
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.type, "pull_request"),
+          eq(issueWorkProducts.provider, "github"),
+        ));
+      const matching = products.find(({ product }) => {
+        const metadata = record(product.metadata);
+        const repository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
+        const number = positiveInteger(metadata.number) ?? Number(product.externalId);
+        return repository?.toLowerCase() === `${snapshot.owner}/${snapshot.repo}`.toLowerCase()
+          && (number === snapshot.number || product.externalId.toLowerCase() === snapshot.externalId.toLowerCase());
+      });
+      if (matching && matching.issue.status !== "done" && matching.issue.status !== "cancelled") {
+        await issueService(db).update(matching.issue.id, {
+          status: "done",
+          completedAt: now(),
+          actorAgentId: null,
+          actorUserId: null,
+        }, db, undefined, undefined, { companyGuard: companyId });
+      }
       await issueThreadInteractionService(db, { wakeup: options.wakeup })
         .sweepMergedPullRequestConfirmations([{
           companyId,

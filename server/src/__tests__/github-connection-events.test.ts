@@ -51,6 +51,26 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     await tempDb?.cleanup();
   });
 
+  it("completes the linked issue only when a closed PR is merged", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "GHE" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "worker", role: "engineer" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "PR task", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", externalId: "paperclipai/paperclip#pull/123", title: "PR #123", status: "open", metadata: { repository: "paperclipai/paperclip", number: 123 } });
+    const events = [false, true].map((merged, i) => ({
+      id: `delivery-pr-close-${i}`, provider: "github" as const, event: "pull_request", action: "closed", installationId: "101", repositoryId: "99", createdAt: "2026-09-04T12:00:00.000Z", bindingIds: [],
+      payload: { repository: "paperclipai/paperclip", number: 123, state: "closed", merged, mergedAt: merged ? "2026-09-04T11:59:00.000Z" : null, updatedAt: "2026-09-04T12:00:00.000Z", url: "https://github.com/paperclipai/paperclip/pull/123" },
+    }));
+    const connector = { getCapabilities: vi.fn(async () => ["github.code" as const]), startAuthorization: *** claim: vi.fn(), refresh: vi.fn(), revoke: vi.fn(), setWebhookBinding: vi.fn(async () => undefined), leaseEvents: vi.fn(async () => ({ leaseId: randomUUID(), events: [events.shift()!] })), acknowledgeEvents: vi.fn(async () => 1) } as unknown as PaperclipCloudConnector;
+    const service = githubConnectionEventService(db, { connector });
+    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_progress");
+    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("done");
+  });
+
   it("applies a normalized merged PR once, updates the snapshot, and acknowledges Cloud", async () => {
     const companyId = randomUUID();
     const userId = `github-owner-${randomUUID()}`;
