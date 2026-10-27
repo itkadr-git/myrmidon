@@ -161,7 +161,7 @@ export function issueRecoveryActionService(db: Db, metrics?: RecoveryFactoryMetr
         wakePolicy: { owner: input.owner, nextCheckAt: input.nextCheckAt },
       }).onConflictDoNothing({
         target: [issueRecoveryActions.companyId, issueRecoveryActions.dedupeKey],
-        targetWhere: sql`${issueRecoveryActions.status} in ('active', 'escalated') and ${issueRecoveryActions.dedupeKey} is not null`,
+        where: sql`${issueRecoveryActions.status} in ('active', 'escalated') and ${issueRecoveryActions.dedupeKey} is not null`,
       }).returning();
       if (!action) {
         // A separate statement sees the winner after ON CONFLICT waited for its commit.
