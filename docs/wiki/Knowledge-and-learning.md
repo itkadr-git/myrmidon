@@ -71,7 +71,7 @@ rate is visible as a number, not a feeling.
 
 ## ADM archive migration
 
-The opt-in ADM migration command produces a deterministic dry-run before any import. It requires explicit policy summaries and fails closed on scanner errors. Import creates drafts and submits rules for review; it never publishes them. The REST hook delivers bounded summaries with session dedup and byte metrics. It is not installed in production by the migration command. See the [EN/RU operator guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/adm-knowledge-migration.md) for environment variables, apply and rollback.
+The opt-in ADM migration command produces a deterministic dry-run before any import. It requires explicit policy summaries and fails closed on scanner errors. Import creates drafts and submits rules for review; it never publishes them. The REST hook delivers bounded summaries with session dedup and byte metrics. It is not installed in production by the migration command. See the [EN/RU operator guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/adm-knowledge-migration.md) for environment variables, apply and rollback.
 
 ## In detail
 
