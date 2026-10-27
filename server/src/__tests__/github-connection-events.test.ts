@@ -84,7 +84,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     const service = githubConnectionEventService(db, { connector, now: () => currentTime });
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_progress");
-    currentTime = new Date("2026-09-04T12:00:11.000Z");
+    currentTime = new Date("2026-09-04T12:00:16.000Z");
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("done");
   });
