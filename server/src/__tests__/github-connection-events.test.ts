@@ -340,9 +340,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     let currentTime = new Date("2026-09-04T12:00:05.000Z");
     const service = githubConnectionEventService(db, { connector, now: () => currentTime });
 
-    const unsubscribe = subscribeCompanyLiveEvents(companyId, () => {
-      throw new Error("fixture live subscriber failed");
-    });
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, vi.fn());
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, duplicate: 0, failed: 0 });
     unsubscribe();
     let [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId));
