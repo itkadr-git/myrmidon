@@ -13946,10 +13946,12 @@ export function issueRoutes(
           (await agentsSvc.getById(existing.assigneeAgentId))?.role ?? null;
       }
       const explicitAssigneePatch = {
+        // Use the resolved agent id: req.body may carry a shortname that
+        // normalizeIssueAssigneeAgentReference already resolved above.
         assigneeAgentId:
           req.body.assigneeAgentId === undefined
             ? undefined
-            : (updateFields.assigneeAgentId as string | null),
+            : (normalizedAssigneeAgentId ?? null),
         assigneeUserId:
           req.body.assigneeUserId === undefined
             ? undefined
