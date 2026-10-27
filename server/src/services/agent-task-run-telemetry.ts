@@ -58,7 +58,7 @@ function readModelCallCount(value: unknown): number | null {
 }
 
 export function buildRunTelemetry(input: {
-  run: Pick<HeartbeatRun, "id" | "agentId" | "invocationSource" | "triggerDetail" | "retryOfRunId" | "nativeIssueId" | "contextSnapshot" | "usageJson" | "resultJson" | "startedAt" | "finishedAt">;
+  run: Pick<HeartbeatRun, "id" | "agentId" | "invocationSource" | "triggerDetail" | "retryOfRunId" | "nativeIssueId" | "contextSnapshot" | "usageJson" | "resultJson" | "startedAt" | "finishedAt" | "wakeupRequestId" | "companyId">;
   gatewayCalls: Array<{ requestId: string | null; costCents: number }>;
   modelApiPricing?: unknown;
   workProducts: RunWorkProduct[];
