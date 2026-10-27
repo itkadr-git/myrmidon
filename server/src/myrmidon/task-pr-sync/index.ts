@@ -20,6 +20,7 @@ export function createTaskPrSyncScheduler(input: {
   db: Db;
   track: (work: Promise<unknown>) => void;
   env?: NodeJS.ProcessEnv;
+  isLeader?: () => boolean;
 }): (() => void) & { stop: () => void } {
   // The resolver is built on first use, so importing this module does not drag
   // the GitHub credential path into the entry point's static import graph (a
@@ -38,6 +39,7 @@ export function createTaskPrSyncScheduler(input: {
     env: input.env,
   });
   const run = () => {
+    if (input.isLeader && !input.isLeader()) return;
     input.track(
       sweep
         .sweep()
@@ -51,5 +53,6 @@ export function createTaskPrSyncScheduler(input: {
         }),
     );
   };
-  return Object.assign(run, { stop: () => {} });
+  const timer = setInterval(run, readTaskPrSyncSettings(input.env).pollMs);
+  return Object.assign(run, { stop: () => clearInterval(timer) });
 }

@@ -1605,7 +1605,6 @@ async function startServerWithDatabaseTeardown(
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let taskPrSyncRunner: (() => void) | null = null;
-  let taskPrSyncTimer: ReturnType<typeof setInterval> | null = null;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   let runContextColumnsBackfill: { stop(): void } | null = null; // OPE-5007 П2
 
@@ -1869,7 +1868,12 @@ async function startServerWithDatabaseTeardown(
   // the existing resolver, and settles the task (status done, one comment with the
   // PR refs / merge sha / time) once every PR is merged — or returns it to the
   // assignee when a PR was closed without merging.
-  const scheduleTaskPrSyncSweep = createTaskPrSyncScheduler({ db: db as any, track: trackTaskPrSyncWork, env: process.env });
+  const scheduleTaskPrSyncSweep = createTaskPrSyncScheduler({
+    db: db as any,
+    track: trackTaskPrSyncWork,
+    env: process.env,
+    isLeader: () => !heartbeatSchedulerStopped && leaderLeaseManager.isLeader("scheduler"),
+  });
   let lastClosedTaskReconcileAt = 0;
   const closedTaskReconcileIntervalMs = 24 * 60 * 60_000;
   const closedTaskReconcileInterval = backgroundInterval(() => {
@@ -1891,7 +1895,6 @@ async function startServerWithDatabaseTeardown(
       if (heartbeatSchedulerStopped || !leaderLeaseManager.isLeader("scheduler")) return;
       scheduleTaskPrSyncSweep();
     };
-    taskPrSyncTimer = backgroundInterval(taskPrSyncRunner, readTaskPrSyncSettings(process.env).pollMs);
     taskPrSyncRunner();
   }
   // myrmidon(STALE-BLOCK): the periodic watchdog that lifts dead blocked
@@ -2987,10 +2990,7 @@ async function startServerWithDatabaseTeardown(
     logger.info({ signal }, `myrmidon(OPE-9107): shutdown started (runtime pid ${process.pid})`);
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
-    if (taskPrSyncTimer) {
-      clearInterval(taskPrSyncTimer);
-      taskPrSyncTimer = null;
-    }
+    scheduleTaskPrSyncSweep.stop();
     clearInterval(closedTaskReconcileInterval);
     if (executionControlInterval) clearInterval(executionControlInterval);
     runContextColumnsBackfill?.stop(); // OPE-5007 П2

@@ -250,6 +250,19 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     expect(product!.status).toBe("merged");
   });
 
+  it("keeps a merged PR's work product settled without closing a backlog issue", async () => {
+    const seeded = await seed({ status: "backlog", products: [{ number: 75 }] });
+    const sweep = sweepFor(fakeResolver({ 75: "merged" }));
+
+    const result = await sweep.sweep({ settings: SETTINGS, force: true });
+
+    expect(result).toMatchObject({ scanned: 1, settled: 0, skipped: 1 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("backlog");
+    const [product] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, seeded.issueId));
+    expect(product!.status).toBe("merged");
+  });
+
   it("reconciles closed tasks' open products even when another PR is already merged", async () => {
     const seeded = await seed({ status: "done", products: [{ number: 73, status: "merged" }, { number: 74, status: "open" }] });
     const resolver = fakeResolver({ 74: "closed" });
