@@ -22,6 +22,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueLabels,
+  issueWorkProducts,
   issues,
   labels,
   projects,
@@ -351,6 +352,24 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
       // The two ends of the contract, not only agreement with the helper.
       expect(sqlOrder[0]).toBe(p0Preemption ? f : e);
     }
+  });
+
+  it("matcher excludes issues waiting on an open GitHub pull request", async () => {
+    const { companyId } = await seedCompany();
+    const waitingId = await seedIssue(companyId, { status: "in_review", assigneeAgentId: null });
+    const readyId = await seedIssue(companyId, { title: "next task", status: "todo", assigneeAgentId: null });
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId: waitingId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR waiting for CI",
+      status: "open",
+    });
+
+    const pairs = await listIdleRolePairs(db, companyId);
+    const engineerQueue = pairs.find((pair) => pair.role === "engineer")?.queue ?? [];
+    expect(engineerQueue.map((entry) => entry.issueId)).toEqual([readyId]);
   });
 
   it("the routing sends each task to exactly one caste, and the matcher pools read the same routing", async () => {
