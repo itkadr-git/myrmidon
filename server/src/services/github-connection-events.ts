@@ -348,9 +348,11 @@ export function githubConnectionEventService(
       const matching = products.find(({ product }) => {
         const metadata = record(product.metadata);
         const repository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
-        const number = positiveInteger(metadata.number) ?? Number(product.externalId);
+        const externalId = product.externalId;
+        const number = positiveInteger(metadata.number)
+          ?? (externalId ? Number(externalId.match(/#pull\/(\d+)$/i)?.[1]) : NaN);
         return repository?.toLowerCase() === `${snapshot.owner}/${snapshot.repo}`.toLowerCase()
-          && (number === snapshot.number || product.externalId.toLowerCase() === snapshot.externalId.toLowerCase());
+          && (number === snapshot.number || externalId?.toLowerCase() === snapshot.externalId.toLowerCase());
       });
       if (matching && matching.issue.status !== "done" && matching.issue.status !== "cancelled") {
         await issueService(db).update(matching.issue.id, {
