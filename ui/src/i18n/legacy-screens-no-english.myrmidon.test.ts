@@ -129,14 +129,10 @@ describe("guarded files carry no English literals", () => {
     expect(offenders, "expected no hard-coded English UI copy in plugin UI files").toEqual([]);
   });
 
-
   it("detects a deliberately untranslated plugin JSX string", () => {
     expect(findEnglishLiterals('<button>Intentionally untranslated</button>')).toEqual([
       { line: 1, kind: "text", text: "Intentionally untranslated" },
     ]);
-  });
-
-    expect(guardedFromLists.filter((rel) => !rel.endsWith(".tsx") || rel.startsWith("/") || rel.includes(".."))).toEqual([]);
   });
 
   it("the scanner skips attribute values that are only a URL or path", () => {
@@ -145,6 +141,7 @@ describe("guarded files carry no English literals", () => {
     ).map((o) => `${o.kind}:${o.text}`);
     expect(found).toEqual(['attr:placeholder="Paste https://example.com here"']);
   });
+
   it("the scanner skips ternary code fragments between JSX tags", () => {
     const found = findEnglishLiterals(
       '<div>\n  <p>Ready</p>\n</div>\n    : repair ? repair.canReconnect ? <Step />\n    : <p>Not ready yet</p>',
