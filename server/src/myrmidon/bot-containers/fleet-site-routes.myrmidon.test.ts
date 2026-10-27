@@ -80,7 +80,7 @@ function harness(
       const row = rows.find((site) => site.companyId === companyId && site.name === name);
       if (row) Object.assign(row, patch);
     }),
-    readClientCertificate: vi.fn(async () => null),
+    readClientCertificate: vi.fn(async (_companyId: string, _name: string): Promise<string | null> => null),
   };
   const app = express();
   app.use((req, _res, next) => {
