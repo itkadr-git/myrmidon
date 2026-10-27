@@ -313,11 +313,11 @@ export function githubConnectionEventService(
     });
   }
 
-  async function applyPullRequestEvent(companyId: string, event: LeasedEvent) {
+  async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent) {
     const snapshot = githubSnapshotUpdate(event.payload);
     if (!snapshot) return;
     const appliedAt = now();
-    await db.update(externalObjects).set({
+    await database.update(externalObjects).set({
       statusKey: snapshot.statusKey,
       statusLabel: snapshot.statusLabel,
       statusCategory: snapshot.statusCategory,
@@ -337,7 +337,7 @@ export function githubConnectionEventService(
       sql`lower(${externalObjects.externalId}) = lower(${snapshot.externalId})`,
     ));
     if (snapshot.merged && event.action === "closed") {
-      const products = await db.select({ product: issueWorkProducts, issue: issues })
+      const products = await database.select({ product: issueWorkProducts, issue: issues })
         .from(issueWorkProducts)
         .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
         .where(and(
@@ -355,17 +355,15 @@ export function githubConnectionEventService(
           && (number === snapshot.number || externalId?.toLowerCase() === snapshot.externalId.toLowerCase());
       });
       if (matching && matching.issue.status !== "done" && matching.issue.status !== "cancelled") {
-        await db.transaction(async (tx) => {
-          await issueService(db).update(matching.issue.id, {
-            status: "done",
-            completedAt: now(),
-            actorAgentId: null,
-            actorUserId: null,
-            companyGuard: companyId,
-          }, tx);
+        await issueService(database).update(matching.issue.id, {
+          status: "done",
+          completedAt: now(),
+          actorAgentId: null,
+          actorUserId: null,
+          companyGuard: companyId,
         });
       }
-      await issueThreadInteractionService(db, { wakeup: options.wakeup })
+      await issueThreadInteractionService(database, { wakeup: options.wakeup })
         .sweepMergedPullRequestConfirmations([{
           companyId,
           owner: snapshot.owner,
@@ -476,7 +474,7 @@ export function githubConnectionEventService(
     const postCommitPublications: ActivityPublication[] = [];
     try {
       const applyAndFinalize = async (database: Db) => {
-        if (event.event === "pull_request") await applyPullRequestEvent(companyId, normalizedEvent);
+        if (event.event === "pull_request") await applyPullRequestEvent(database, companyId, normalizedEvent);
         await applyCiCompletionEvent(companyId, normalizedEvent);
         if (event.event === "installation" || event.event === "installation_repositories") {
           for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
@@ -529,7 +527,7 @@ export function githubConnectionEventService(
           },
         }, postCommitPublications);
       };
-      if (event.event === "installation" || event.event === "installation_repositories") {
+      if (event.event === "pull_request" || event.event === "workflow_run" || event.event === "check_suite" || event.event === "installation" || event.event === "installation_repositories") {
         await db.transaction(async (tx) => applyAndFinalize(tx as unknown as Db));
       } else {
         await applyAndFinalize(db);
