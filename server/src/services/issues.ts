@@ -9383,7 +9383,7 @@ export function issueService(db: Db) {
       await assertExecutionTaskParent(db, parent.companyId, parent.id);
 
       if (
-        !data.assigneeAgentId &&
+        data.assigneeAgentId === undefined &&
         data.assigneeUserId == null &&
         (data.status === undefined || data.status === "todo" || data.status === "blocked")
       ) {
