@@ -49,7 +49,6 @@ import {
   issueClaims,
   issueRelations,
   issues,
-  issueWorkProducts,
   type Db,
 } from "@myrmidon/db";
 import {
@@ -1520,14 +1519,7 @@ function readyQueueConditions(db: Db, companyId: string): SQL[] {
     )`,
     // myrmidon(HOLD-READY): not held by an execution hold (see idle-pickup.ts).
     issueHasNoExecutionHold(db),
-    sql`not exists (
-      select 1 from issue_work_products iwp
-      where iwp.company_id = ${issues.companyId}
-        and iwp.issue_id = ${issues.id}
-        and iwp.type = 'pull_request'
-        and iwp.provider = 'github'
-        and iwp.status = 'open'
-    )`,
+
     // A task that is already covered — a live lease, or a wake in flight
     // (not parked on a hold) — is being worked on and is not a queue
     // candidate; the pool is what is genuinely waiting.
