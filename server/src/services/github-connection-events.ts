@@ -358,7 +358,8 @@ export function githubConnectionEventService(
           completedAt: now(),
           actorAgentId: null,
           actorUserId: null,
-        }, db, undefined, undefined, { companyGuard: companyId });
+          companyGuard: companyId,
+        }, db);
       }
       await issueThreadInteractionService(db, { wakeup: options.wakeup })
         .sweepMergedPullRequestConfirmations([{
