@@ -14,9 +14,9 @@ const dockerfile = fs.readFileSync(path.join(IMAGE_DIR, "Dockerfile"), "utf8");
 const workflow = fs.readFileSync(path.join(ROOT, ".github/workflows/myrmidon-bot-image.yml"), "utf8");
 
 it("pins the async writer-acquire scanner fail-closed patch", () => {
-  const patch = fs.readFileSync(path.join(IMAGE_DIR, "patches/18-async-writer-acquire.patch"), "utf8");
+  const patch = fs.readFileSync(path.join(IMAGE_DIR, "patches/19-async-writer-acquire.patch"), "utf8");
   const registry = JSON.parse(fs.readFileSync(path.join(ROOT, "scripts/myrmidon/hermes-upstream/deltas.json"), "utf8"));
-  const delta = registry.deltas.find((item) => item.id === "18-async-state-db-writer-acquire");
+  const delta = registry.deltas.find((item) => item.id === "19-async-state-db-writer-acquire");
   assert.ok(delta, "writer acquire delta must be registered");
   assert.match(patch, /SidecarScanIncompleteError/);
   assert.match(patch, /raise SidecarScanIncompleteError/);
@@ -333,7 +333,7 @@ describe("docker/bot-runtime/patches/", () => {
       // Comments in code are English (CONVENTIONS.md §8); a Cyrillic comment means a
       // reference-checkout patch was copied instead of rewritten.
       assert.doesNotMatch(patch, /[\u0400-\u04FF]/, `${file} must be written in English`);
-      if (file === "18-async-writer-acquire.patch") {
+      if (file === "19-async-writer-acquire.patch") {
         assert.match(patch, /class SidecarScanIncompleteError/);
         assert.match(patch, /async def acquire_async/);
         assert.match(patch, /close_all_db_handles_async/);

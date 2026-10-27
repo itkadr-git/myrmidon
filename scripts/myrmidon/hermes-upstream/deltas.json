@@ -300,9 +300,26 @@
       }
     },
     {
-      "id": "18-async-state-db-writer-acquire",
+      "id": "18-terminal-foreground-defaults",
       "kind": "patch",
-      "patch": "docker/bot-runtime/patches/18-async-writer-acquire.patch",
+      "patch": "docker/bot-runtime/patches/18-terminal-foreground-defaults.patch",
+      "files": [
+        "tools/terminal_tool.py"
+      ],
+      "reason": "Claude models fill every advertised terminal parameter with its default (heartbeat=60, notify=false) on each call; upstream rejected any of them on a foreground run, so every terminal call of such a bot failed and the run looped. On a foreground call heartbeat is now dropped and only a real notify/notify_on_complete/watch_patterns request is rejected.",
+      "dropCondition": "Upstream ignores background-only defaults on a foreground terminal call.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "tools/terminal_tool.py",
+        "upstreamMarker": "foreground.{0,80}(ignor|drop)"
+      }
+    },
+    {
+      "id": "19-async-state-db-writer-acquire",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/19-async-writer-acquire.patch",
       "files": [
         "hermes_state_dbfile.py",
         "hermes_state_errors.py",
