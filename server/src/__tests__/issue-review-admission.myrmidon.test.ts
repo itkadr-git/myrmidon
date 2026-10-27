@@ -6,6 +6,7 @@ import {
   activityLog,
   agents,
   agentWakeupRequests,
+  heartbeatRuns,
   issues,
 } from "@myrmidon/db";
 import {
@@ -33,6 +34,7 @@ const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
       await tx.execute(
         sql`LOCK TABLE activity_log, agent_wakeup_requests, issues, agents IN SHARE ROW EXCLUSIVE MODE`,
       );
+      await tx.delete(heartbeatRuns);
       await tx.delete(agentWakeupRequests);
       await tx.delete(activityLog);
       await tx.delete(issues);
