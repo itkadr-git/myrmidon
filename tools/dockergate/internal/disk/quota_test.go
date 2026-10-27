@@ -70,7 +70,7 @@ func read(t *testing.T, path string) string {
 }
 
 func TestEnsure_RegistersSafeDirectoryAndIsIdempotent(t *testing.T) {
-	q, f := newQuota(t, stateOn)
+	q, _ := newQuota(t, stateOn)
 	if err := os.MkdirAll(q.VolumeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
