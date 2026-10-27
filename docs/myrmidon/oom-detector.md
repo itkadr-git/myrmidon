@@ -10,6 +10,6 @@ Docker inspect does NOT capture all child-process cgroup OOM kills while the con
 
 Recovery factory resource.oom integration remains OPE-8337's gate; this PR does not relabel interrupted runs. Fleet/agent UI, rolling-window thresholds, host-aware memory sizing and confirmed recommendation application are not delivered here. Recommendation is evidence-only; no automatic or one-click limit change is enabled.
 
-The focused CI workflow exercises evidence validation, durable-store boundary behavior (mocked transaction), and dockergate trimming. It is NOT a real database concurrency test or an artificial-container-OOM integration test. Those remain acceptance gates; no skipped/mock test is claimed as production acceptance.
+The existing affected-test CI lane exercises evidence validation and durable-store boundary behavior (mocked transaction); dockergate's existing Go CI lane exercises trimming. A dedicated focused workflow could not be pushed because the GitHub broker lacks workflows permission; no privilege change was attempted. It is NOT a real database concurrency test or an artificial-container-OOM integration test. Those remain acceptance gates; no skipped/mock test is claimed as production acceptance.
 
 ADM: after full event transport and recovery integration land, run an isolated artificial OOM container, verify event/run/recommendation linkage, then compare event totals with journalctl -k over the same window. No production limits should be changed for this check.
