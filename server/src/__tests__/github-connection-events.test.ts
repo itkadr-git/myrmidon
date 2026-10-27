@@ -64,9 +64,11 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       payload: { repository: "paperclipai/paperclip", number: 123, state: "closed", merged, mergedAt: merged ? "2026-09-04T11:59:00.000Z" : null, updatedAt: "2026-09-04T12:00:00.000Z", url: "https://github.com/paperclipai/paperclip/pull/123" },
     }));
     const connector = { getCapabilities: vi.fn(async () => ["github.code" as const]), startAuthorization: vi.fn(), claim: vi.fn(), refresh: vi.fn(), revoke: vi.fn(), setWebhookBinding: vi.fn(async () => undefined), leaseEvents: vi.fn(async () => ({ leaseId: randomUUID(), events: [events.shift()!] })), acknowledgeEvents: vi.fn(async () => 1) } as unknown as PaperclipCloudConnector;
-    const service = githubConnectionEventService(db, { connector });
+    let currentTime = new Date("2026-09-04T12:00:05.000Z");
+    const service = githubConnectionEventService(db, { connector, now: () => currentTime });
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_progress");
+    currentTime = new Date("2026-09-04T12:00:11.000Z");
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("done");
   });
