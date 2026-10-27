@@ -170,6 +170,7 @@ describe("buildRunTelemetry", () => {
     const telemetry = buildRunTelemetry({
       ...baseInput,
       run: { ...baseInput.run, contextSnapshot: { issueId: "issue-1" } },
+      issueUpdatedAt: new Date("2026-10-26T16:00:00.000Z"),
     });
     expect(telemetry.eventRevision).toBe("2026-10-26T16:00:00.000Z");
   });
@@ -353,8 +354,8 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
       sourceEventSeq: 12,
       gatewayCallIds: ["gateway-call-12"],
       litellmRequestIds: ["request-12"],
-      modelCallCount: null,
-      modelCallCountSource: "unknown",
+      modelCallCount: 2,
+      modelCallCountSource: "gateway_count",
       gatewaySpendCents: 7,
       apiEquivalentCostUsd: 0.000025,
       outcomeCategory: null,
@@ -383,7 +384,10 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
       incompleteCriteriaPolicy: "preserve_non_terminal", contractJson: {},
       canonicalSha256: randomUUID(), createdByActorType: "system", createdByActorId: "test",
     });
-    await db.update(heartbeatRuns).set({ completionContractId: contractId }).where(eq(heartbeatRuns.id, runId));
+    await db.update(heartbeatRuns).set({
+      nativeIssueId: issueId,
+      completionContractId: contractId,
+    }).where(eq(heartbeatRuns.id, runId));
     const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0]!);
     const resultId = randomUUID();

@@ -74,16 +74,18 @@ export function buildRunTelemetry(input: {
   const context = parseObject(input.run.contextSnapshot);
   const usage = parseObject(input.run.usageJson);
   const result = parseObject(input.run.resultJson);
-  const gatewayResultIds = Array.isArray(result.gatewayCallIds)
-    ? result.gatewayCallIds.map((value) => readRunEventId(value)).filter((value): value is string => value !== null)
-    : [];
-  const litellmResultIds = Array.isArray(result.litellmRequestIds)
-    ? result.litellmRequestIds.map((value) => readRunEventId(value)).filter((value): value is string => value !== null)
-    : [];
+  const wakePayload = input.wakeup?.payload ?? {};
+  const gatewayResultIds = [result.gatewayCallIds, wakePayload.gatewayCallIds]
+    .flatMap((ids) => Array.isArray(ids) ? ids : [])
+    .map((value) => readRunEventId(value))
+    .filter((value): value is string => value !== null);
+  const litellmResultIds = [result.litellmRequestIds, wakePayload.litellmRequestIds]
+    .flatMap((ids) => Array.isArray(ids) ? ids : [])
+    .map((value) => readRunEventId(value))
+    .filter((value): value is string => value !== null);
   const spendCallIds = input.gatewayCalls.map((call) => readRunEventId(call.requestId)).filter((value): value is string => value !== null);
   const gatewayCallIds = [...new Set(gatewayResultIds)];
   const litellmRequestIds = [...new Set([...litellmResultIds, ...spendCallIds])];
-  const wakePayload = input.wakeup?.payload ?? {};
   const reportedCallCount = readModelCallCount(result)
     ?? readModelCallCount({ modelCallCount: result.gatewayModelCallCount })
     ?? readModelCallCount(wakePayload)
