@@ -312,8 +312,8 @@
       "offerNote": "Not offered yet.",
       "probe": {
         "source": "hermes",
-        "path": "model_tools.py",
-        "upstreamMarker": "disabled_tools\\b"
+        "path": "tools/terminal_tool.py",
+        "upstreamMarker": "foreground.{0,80}(ignor|drop)"
       }
     }
   ]
