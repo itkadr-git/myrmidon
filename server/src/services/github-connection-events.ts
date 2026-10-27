@@ -362,7 +362,7 @@ export function githubConnectionEventService(
           eq(issueWorkProducts.id, matching.product.id),
           eq(issueWorkProducts.companyId, companyId),
         ));
-        await issueService(database).update(matching.issue.id, {
+        await issueService(db).update(matching.issue.id, {
           status: "done",
           completedAt: now(),
           actorAgentId: null,
