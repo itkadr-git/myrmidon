@@ -28306,7 +28306,7 @@ export function heartbeatService(
                   select 1 from issue_blockers ib join issues blocker on blocker.id = ib.blocker_issue_id
                   where ib.issue_id = ${issues.id} and ${blockerOpenSql('blocker.status')}
                 )`,
-                sql`${issues.executionState} ->> 'status' = 'waiting'`,
+                sql`${issues.executionState} ->> 'status' in ('pending', 'waiting')`,
                 sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
                 sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
                 sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${releasedRun.agentId}`,
