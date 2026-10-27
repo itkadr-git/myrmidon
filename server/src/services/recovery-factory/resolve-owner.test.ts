@@ -461,6 +461,28 @@ describe("resolveRecoveryOwner", () => {
 
       expect(result.owner).toHaveProperty("serviceQueue", "ops-fallback");
     });
+
+    it("rejects malformed fallback queue identifiers", () => {
+      expect(() => resolveRecoveryOwner({
+        kind: "operator_action",
+        candidates: [],
+        serviceQueue: "../other-tenant",
+      })).toThrow(RecoveryOwnerUnresolvedError);
+    });
+
+    it("rejects candidates that combine multiple owner identities", () => {
+      expect(() => resolveRecoveryOwner({
+        kind: "operator_action",
+        candidates: [{ id: "agent-1", userId: "user-1", serviceQueue: "ops" }],
+      })).toThrow(RecoveryOwnerUnresolvedError);
+    });
+
+    it("rejects a user candidate without a user identifier", () => {
+      expect(() => resolveRecoveryOwner({
+        kind: "operator_action",
+        candidates: [{ id: "agent-1", isUser: true, role: "operator" }],
+      })).toThrow(RecoveryOwnerUnresolvedError);
+    });
   });
 
   describe("Criterion 4: Deterministic outcome regardless of input candidate order", () => {

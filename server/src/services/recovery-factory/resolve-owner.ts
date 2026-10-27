@@ -91,37 +91,25 @@ function resolveCandidateOwner(
   candidate: RecoveryOwnerCandidate,
   isOperatorAction: boolean,
 ): { owner: RecoveryFactoryOwner; ownerKind: CandidateOwnerKind } | null {
-  if (
-    typeof candidate.serviceQueue === "string" &&
-    candidate.serviceQueue.trim().length > 0
-  ) {
+  const serviceQueue = typeof candidate.serviceQueue === "string" && candidate.serviceQueue.trim().length > 0
+    ? candidate.serviceQueue.trim()
+    : null;
+  const userId = [candidate.userId, candidate.assigneeUserId]
+    .find((value) => typeof value === "string" && value.trim().length > 0)?.trim() ?? null;
+  const agentId = (candidate.agentId ?? candidate.id)?.trim() || null;
+  const hasUser = candidate.isUser === true || userId !== null;
+  const identityCount = Number(serviceQueue !== null) + Number(hasUser) + Number(agentId !== null);
+  if (identityCount !== 1) return null;
+
+  if (serviceQueue !== null) {
     if (!isOperatorAction) return null;
-    return {
-      owner: { serviceQueue: candidate.serviceQueue.trim() },
-      ownerKind: "serviceQueue",
-    };
+    return { owner: { serviceQueue }, ownerKind: "serviceQueue" };
   }
-
-  if (isUserCandidate(candidate)) {
-    if (!isOperatorAction) return null;
-    const userId = (candidate.userId ?? candidate.assigneeUserId ?? candidate.id)?.trim();
-    if (userId && userId.length > 0) {
-      return {
-        owner: { userId },
-        ownerKind: "userId",
-      };
-    }
-    return null;
+  if (hasUser) {
+    if (!isOperatorAction || !userId) return null;
+    return { owner: { userId }, ownerKind: "userId" };
   }
-
-  const agentId = (candidate.agentId ?? candidate.id)?.trim();
-  if (agentId && agentId.length > 0) {
-    return {
-      owner: { agentId },
-      ownerKind: "agentId",
-    };
-  }
-
+  if (agentId) return { owner: { agentId }, ownerKind: "agentId" };
   return null;
 }
 
@@ -231,6 +219,13 @@ export function resolveRecoveryOwner(input: ResolveRecoveryOwnerInput): ResolveR
         projectId: input.projectId ?? null,
       },
     );
+  }
+
+  if (kind === "operator_action" && input.serviceQueue !== undefined && input.serviceQueue !== null) {
+    const queue = input.serviceQueue.trim();
+    if (!/^[a-z0-9][a-z0-9_.:-]*$/i.test(queue)) {
+      throw new RecoveryOwnerUnresolvedError("Invalid operator_action serviceQueue", { kind, projectId: input.projectId ?? null });
+    }
   }
 
   const rawCandidates = input.candidates;
@@ -353,7 +348,7 @@ export function resolveRecoveryOwner(input: ResolveRecoveryOwnerInput): ResolveR
     if (
       isOperatorAction &&
       typeof input.serviceQueue === "string" &&
-      input.serviceQueue.trim().length > 0
+      /^[a-z0-9][a-z0-9_.:-]*$/i.test(input.serviceQueue.trim())
     ) {
       return {
         owner: { serviceQueue: input.serviceQueue.trim() },
