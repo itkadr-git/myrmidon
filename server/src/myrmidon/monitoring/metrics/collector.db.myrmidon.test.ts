@@ -100,6 +100,7 @@ describeEmbeddedPostgres("metrics collector", () => {
       startedAt: input.startedAt ?? null,
       finishedAt: input.finishedAt ?? null,
       livenessState: input.livenessState ?? null,
+      livenessReason: input.livenessReason ?? null,
     });
     return runId;
   }
@@ -137,6 +138,7 @@ describeEmbeddedPostgres("metrics collector", () => {
       status: "succeeded",
       finishedAt: NOW,
       livenessState: "empty_response",
+      livenessReason: "Run succeeded without useful output",
     });
     const snapshot = await collectMetricsSnapshot({
       db,

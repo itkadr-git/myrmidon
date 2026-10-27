@@ -353,7 +353,8 @@ async function readEmptyRunsByAgent(db: Db, windowStart: Date): Promise<Array<{ 
     .where(
       and(
         eq(heartbeatRuns.status, "succeeded"),
-        eq(heartbeatRuns.livenessState, "empty_response"),
+        sql`${heartbeatRuns.livenessState} in ('empty_response', 'plan_only')`,
+        sql`${heartbeatRuns.livenessReason} ilike 'Run succeeded without useful output%'`,
         gte(heartbeatRuns.finishedAt, windowStart),
       ),
     )

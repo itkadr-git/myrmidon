@@ -128,12 +128,13 @@ describeEmbeddedPostgres("team liveness metrics", () => {
     });
   }
 
-  async function recordCommentOnlyRun(companyId: string, agentId: string, at: Date) {
+  async function recordEmptyRun(companyId: string, agentId: string, at: Date) {
     await db.insert(heartbeatRuns).values({
       companyId,
       agentId,
       status: "succeeded",
       livenessState: "empty_response",
+      livenessReason: "Run succeeded without useful output",
       finishedAt: at,
       updatedAt: at,
     });
@@ -156,7 +157,7 @@ describeEmbeddedPostgres("team liveness metrics", () => {
     await recordWake(companyId, agentId, new Date(now.getTime() - 30 * 60 * 1000));
     await recordWake(companyId, agentId, new Date(now.getTime() - 25 * hour));
     await recordStall(companyId, agentId, new Date(now.getTime() - 60 * 1000));
-    await recordCommentOnlyRun(companyId, agentId, new Date(now.getTime() - 30 * 60 * 1000));
+    await recordEmptyRun(companyId, agentId, new Date(now.getTime() - 30 * 60 * 1000));
 
     const metrics = await readTeamLivenessMetrics(db, companyId, now);
 
@@ -195,7 +196,7 @@ describeEmbeddedPostgres("team liveness metrics", () => {
     const now = new Date("2026-10-05T12:00:00.000Z");
     const companyId = await seedCompany("company-quiet");
     const agentId = await seedAgent(companyId);
-    await recordCommentOnlyRun(companyId, agentId, new Date(now.getTime() - 25 * 60 * 60 * 1000));
+    await recordEmptyRun(companyId, agentId, new Date(now.getTime() - 25 * 60 * 60 * 1000));
 
     const metrics = await readTeamLivenessMetrics(db, companyId, now);
 
