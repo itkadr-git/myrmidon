@@ -36,7 +36,7 @@ export interface TeamLivenessMetrics {
   wakes: number;
   /** Runs progress-based run liveness interrupted. */
   stalledRuns: number;
-  /** Successful runs whose only durable issue evidence was an agent comment. */
+  /** Successful runs classified empty_response/plan_only by liveness; this is a proxy, not a comment-only action audit. */
   emptyRunsByAgent: Array<{ agentId: string; count: number }>;
 }
 
