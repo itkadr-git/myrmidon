@@ -5589,6 +5589,20 @@ async function listIssueBlockedInboxAttentionMap(
     reportsTo: string | null;
   }>;
   const graphIssueIds = graphIssues.map((issue) => issue.id);
+  const graphRelationIssueIds = new Set(
+    graphRelations.flatMap((relation) => [
+      relation.blockerIssueId,
+      relation.blockedIssueId,
+    ]),
+  );
+  const graphRelevantIssues = graphIssues.filter(
+    (issue) =>
+      rowIssueIds.includes(issue.id) ||
+      graphRelationIssueIds.has(issue.id) ||
+      BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS.includes(
+        issue.originKind as (typeof BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS)[number],
+      ),
+  );
   const initialRowsById = new Map(issueRows.map((row) => [row.id, row]));
   for (const row of graphIssues) {
     const exposed = initialRowsById.get(row.id);
@@ -5821,7 +5835,7 @@ async function listIssueBlockedInboxAttentionMap(
       ),
     );
   const findings = classifyIssueGraphLiveness({
-    issues: graphIssues.map((issue) => ({
+    issues: graphRelevantIssues.map((issue) => ({
       id: issue.id,
       companyId: issue.companyId,
       identifier: issue.identifier,
