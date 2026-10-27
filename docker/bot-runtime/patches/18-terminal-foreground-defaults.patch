@@ -1,0 +1,16 @@
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -1445,7 +1445,11 @@
+     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
+         return tool_error("heartbeat must be a whole number of seconds (min 60).")
+     if not args.get("background", False):
+-        if notify or watch_patterns or notify_on_complete or heartbeat:
++        # myrmidon(G1): models (Claude) fill every advertised parameter with its default
++        # (heartbeat=60, notify=false) on every call; on a foreground run those are no-ops,
++        # so drop heartbeat and only reject a real notify/watch request (OPE-9621).
++        heartbeat = 0
++        if notify or watch_patterns or notify_on_complete:
+             return tool_error(
+                 "notify/heartbeat only apply to background commands (foreground "
+                 "results return directly). Either drop them, or run as "
