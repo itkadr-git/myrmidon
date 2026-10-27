@@ -103,11 +103,22 @@ describe("ADM knowledge REST adapter", () => {
     const budget = new AdmContextBudget(12 * 1024, 2 * 1024, (event) => metrics.push(event));
     const metadata: AdmKnowledgeMetadata[] = [{ schema_version: 1, slug: policy.slug, kind: "rule", title: policy.title, summary: policy.summary ?? "", tags: [], triggers: ["deploy"], priority: 1, owner: "owner", source_ref: "test", sensitivity: "internal", status: "published", revision_id: "r1", updated_at: policy.updatedAt, approver_kind: "owner" }];
     expect(budget.sessionStart(metadata)).not.toContain("body");
-    expect(budget.prompt(metadata, "incident")).toBe("[]");
+    expect(budget.prompt(metadata, "incident")).toBe("");
     expect(budget.prompt(metadata, "deploy")).not.toBe("[]");
-    expect(budget.prompt(metadata, "deploy")).toBe("[]");
+    expect(budget.prompt(metadata, "deploy")).toBe("");
     expect(metrics.some((event) => event.bytesAdded > 0)).toBe(true);
   });
+  it("persists slug+revision dedupe per session across compaction", () => {
+    const statePath = "/data/hermes/cache/scratch/adm-budget-state-test.json";
+    const metadata: AdmKnowledgeMetadata[] = [{ schema_version: 1, slug: policy.slug, kind: "rule", title: policy.title, summary: policy.summary ?? "", tags: [], triggers: ["deploy"], priority: 1, owner: "owner", source_ref: "test", sensitivity: "internal", status: "published", revision_id: "r1", updated_at: policy.updatedAt, approver_kind: "owner" }];
+    const first = new AdmContextBudget(12 * 1024, 2 * 1024, undefined, { sessionId: "session-1", statePath });
+    expect(first.prompt(metadata, "deploy")).not.toBe("");
+    const resumed = new AdmContextBudget(12 * 1024, 2 * 1024, undefined, { sessionId: "session-1", statePath });
+    expect(resumed.prompt(metadata, "deploy")).toBe("");
+    const otherSession = new AdmContextBudget(12 * 1024, 2 * 1024, undefined, { sessionId: "session-2", statePath });
+    expect(otherSession.prompt(metadata, "deploy")).not.toBe("");
+  });
+
   it("maps REST failures to stable connector error codes without leaking upstream messages", async () => {
     const upstream = Object.assign(new Error("secret token must not escape"), { status: 429 });
     const adapter = createAdmKnowledgeAdapter(rest({ list: vi.fn(async () => { throw upstream; }) }));
