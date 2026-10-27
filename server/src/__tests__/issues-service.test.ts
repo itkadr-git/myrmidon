@@ -3868,6 +3868,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       title: "Accepted plan parent",
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId: null,
       executionWorkspaceSettings: {
         mode: "isolated_workspace",
         environmentId,
@@ -3883,6 +3884,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       title: "Accepted plan child",
       status: "todo",
       priority: "medium",
+      assigneeAgentId: null,
       executionWorkspaceInheritanceMode: "strategy_only",
     });
 

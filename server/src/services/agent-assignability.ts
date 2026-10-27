@@ -101,28 +101,36 @@ function assignmentReasonFromHealth(health: AgentOrgChainHealth): AgentAssignmen
   return "ancestor_missing";
 }
 
+type ParentAssigneeForChild = {
+  assigneeAgentId: string | null;
+  casteKey: string | null;
+};
+
 export async function resolveParentAssigneeForChild(
   db: Db,
   companyId: string,
   parentIssueId: string | null | undefined,
   childCasteKey: string | null | undefined,
+  parent?: ParentAssigneeForChild | null,
 ): Promise<string | null> {
   if (!parentIssueId || childCasteKey) return null;
-  const [parent] = await db
-    .select({ assigneeAgentId: issueTable.assigneeAgentId, casteKey: issueTable.casteKey })
-    .from(issueTable)
-    .where(and(eq(issueTable.companyId, companyId), eq(issueTable.id, parentIssueId)))
-    .limit(1);
-  if (!parent?.assigneeAgentId || parent.casteKey) return null;
+  const parentRecord = parent === undefined
+    ? (await db
+        .select({ assigneeAgentId: issueTable.assigneeAgentId, casteKey: issueTable.casteKey })
+        .from(issueTable)
+        .where(and(eq(issueTable.companyId, companyId), eq(issueTable.id, parentIssueId)))
+        .limit(1))[0]
+    : parent;
+  if (!parentRecord?.assigneeAgentId || parentRecord.casteKey) return null;
   const [parentAgent] = await db
     .select({ role: agents.role, companyId: agents.companyId })
     .from(agents)
-    .where(eq(agents.id, parent.assigneeAgentId))
+    .where(eq(agents.id, parentRecord.assigneeAgentId))
     .limit(1);
   if (!parentAgent || parentAgent.companyId !== companyId || parentAgent.role !== "engineer") {
     return null;
   }
-  return parent.assigneeAgentId;
+  return parentRecord.assigneeAgentId;
 }
 
 export async function assertAssignableAgent(

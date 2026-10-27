@@ -1246,7 +1246,8 @@ async function openTaskIdsOfAgents(
         ...(agentId ? [eq(issues.assigneeAgentId, agentId)] : []),
       ),
     );
-  const relatedIds = assignedRows.map((row) => row.issueId);
+  const assignedIds = new Set(assignedRows.map((row) => row.issueId));
+  const relatedIds = [...assignedIds];
   const blockedIssueRows = relatedIds.length === 0
     ? [] as Array<{ issueId: string }>
     : await db
@@ -1266,6 +1267,7 @@ async function openTaskIdsOfAgents(
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, relatedIds),
+            inArray(issueRelations.issueId, relatedIds),
           ),
         );
   const leasedRows = await db

@@ -9392,6 +9392,7 @@ export function issueService(db: Db) {
           parent.companyId,
           parent.id,
           data.casteKey,
+          parent,
         );
         if (inheritedAssignee) data = { ...data, assigneeAgentId: inheritedAssignee };
       }
@@ -9456,6 +9457,16 @@ export function issueService(db: Db) {
 
       const inheritStrategyOnly =
         executionWorkspaceInheritanceMode === "strategy_only";
+      const inheritedAssignee = await resolveParentAssigneeForChild(
+        db,
+        parent.companyId,
+        parent.id,
+        issueData.casteKey,
+        parent,
+      );
+      if (inheritedAssignee && issueData.assigneeAgentId === undefined) {
+        issueData.assigneeAgentId = inheritedAssignee;
+      }
       // A child may target another project. Parent workspace identity is only
       // valid inside the parent's project, so do not forward it across that
       // boundary; create() then resolves the target project's own workspaces.
