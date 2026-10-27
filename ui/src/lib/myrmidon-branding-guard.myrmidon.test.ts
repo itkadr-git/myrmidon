@@ -265,6 +265,24 @@ describe("myrmidon(B1a): no paperclip artwork is rendered", () => {
   });
 });
 
+describe("Myrmidon first-party UI destinations", () => {
+  it.each([
+    "components/SidebarAccountMenu.tsx",
+    "components/SidebarAccountMenu.production.tsx",
+    "pages/IssueDetail.tsx",
+    "pages/InstanceGeneralSettings.tsx",
+    "lib/myrmidon-links.ts",
+    "bootstrapSetup.ts",
+  ])("%s has no upstream product destinations or bootstrap command", (rel) => {
+    const source = readFileSync(path.join(UI_SRC, rel), "utf8");
+    expect(source).not.toMatch(/https?:\/\/(?:docs\.)?paperclip\.ing\b/i);
+    expect(source).not.toMatch(/npx\s+paperclipai\s+auth\s+bootstrap/i);
+    if (rel.startsWith("components/") || rel.startsWith("pages/")) {
+      expect(source).toContain('from "@/lib/myrmidon-links"');
+    }
+  });
+});
+
 describe("myrmidon(B1a): company export README names Myrmidon, not the upstream site", () => {
   it("CompanyExport.tsx has no link to the upstream project site and signs as the exporting product", () => {
     const source = readFileSync(path.join(UI_SRC, "pages", "CompanyExport.tsx"), "utf-8");

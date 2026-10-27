@@ -161,7 +161,7 @@ describe("CloudAccessGate", () => {
 
     expect(container.textContent).toContain("Finish setting up this Myrmidon");
     expect(container.textContent).toContain("Sign in / Create account");
-    expect(container.textContent).toContain("npx paperclipai auth bootstrap-ceo");
+    expect(container.textContent).toContain("npx myrmidon auth bootstrap-ceo");
     expect(mockAccessApi.getCurrentBoardAccess).not.toHaveBeenCalled();
 
     unmountRoot(root);

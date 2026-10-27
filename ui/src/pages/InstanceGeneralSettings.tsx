@@ -1,3 +1,4 @@
+import { FEEDBACK_TERMS_URL } from "@/lib/myrmidon-links";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@myrmidon/shared";
@@ -53,7 +54,6 @@ import { Trans } from "react-i18next"; // myrmidon(UI-RU)
 // and has no runtime effect.
 type BackupRetentionSettings = BackupRetentionPolicy & { keepLastOnly?: boolean };
 
-const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function InstanceGeneralSettings({ embedded = false }: { embedded?: boolean }) {
   const { t, i18n } = useTranslation(); // myrmidon(UI-RU)

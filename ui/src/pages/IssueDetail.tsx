@@ -1,4 +1,5 @@
 // myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
+import { FEEDBACK_TERMS_URL } from "@/lib/myrmidon-links";
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
 // myrmidon(UI-RU): task detail copy runs through the fork i18n catalog.
@@ -433,9 +434,6 @@ function buildPlanDecisionResponseText(
   return reason ? `Requested changes\n\n${reason}` : "Requested changes";
 }
 
-const FEEDBACK_TERMS_URL =
-  import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() ||
-  "https://paperclip.ing/tos";
 const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE * 3;
 const JUMP_TO_LATEST_MAX_COMMENT_PAGES = 10;
 function treeControlPreviewErrorCopy(error: unknown): string {
