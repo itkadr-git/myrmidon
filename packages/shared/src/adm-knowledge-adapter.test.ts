@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAdmKnowledgeAdapter, type AdmKnowledgeItem, type AdmKnowledgeRestPort } from "./adm-knowledge-adapter.js";
+import {
+  AdmContextBudget,
+  createAdmKnowledgeAdapter,
+  type AdmKnowledgeItem,
+  type AdmKnowledgeRestPort,
+} from "./adm-knowledge-adapter.js";
 
 const policy: AdmKnowledgeItem = {
   id: "stable-item-id",
@@ -59,6 +64,49 @@ describe("ADM knowledge REST adapter", () => {
     expect(() => adapter.validateMetadata({ ...valid, triggers: ["unknown"] })).toThrow(/invalid/i);
   });
 
+  it("proposes rules without allowing self-publication and preserves the idempotency key", async () => {
+    const api = rest({ read: vi.fn(async () => ({ ...policy, status: "proposed" })) });
+    const result = await createAdmKnowledgeAdapter(api).proposeRule({
+      slug: policy.slug, title: policy.title, summary: policy.summary ?? "", body: "Never deploy without approval.",
+      sourceRef: "OPE-9262", idempotencyKey: "ope-9262:rule:1",
+    });
+    expect(result.status).toBe("proposed");
+    expect(api.proposeRule).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "ope-9262:rule:1" }));
+    expect(api.read).toHaveBeenCalledWith(policy.id);
+    await expect(createAdmKnowledgeAdapter(rest()).proposeRule({
+      slug: policy.slug, title: policy.title, summary: "", body: "body", sourceRef: "test", idempotencyKey: "bad",
+    })).rejects.toMatchObject({ code: "ADM_INVALID_METADATA" });
+  });
+
+  it("rejects a published rule response", async () => {
+    const api = rest({
+      proposeRule: vi.fn(async () => ({ itemId: policy.id, revisionId: "r1", status: "published" as const })),
+    });
+    await expect(createAdmKnowledgeAdapter(api).proposeRule({
+      slug: policy.slug, title: policy.title, summary: "", body: "body", sourceRef: "test", idempotencyKey: "ope-9262:rule:2",
+    })).rejects.toMatchObject({ code: "ADM_FORBIDDEN" });
+  });
+
+  it("requires lesson publication read-back", async () => {
+    const lesson = { ...policy, id: "lesson-id", slug: "adm/lessons/deploy", kind: "wiki", deliveredRevisionId: "lesson-r1" };
+    const api = rest({ read: vi.fn(async () => lesson) });
+    const result = await createAdmKnowledgeAdapter(api).writeLesson({
+      slug: lesson.slug, title: "Lesson", summary: "", body: "Observed.", sourceRef: "test", idempotencyKey: "ope-9262:lesson:1",
+    });
+    expect(result.status).toBe("published");
+    expect(api.read).toHaveBeenCalledWith(lesson.id);
+  });
+
+  it("enforces context budgets, trigger filtering, deduplication, and byte metrics", () => {
+    const metrics: Array<{ bytesAdded: number; sessionBytes: number }> = [];
+    const budget = new AdmContextBudget(12 * 1024, 2 * 1024, (event) => metrics.push(event));
+    const metadata = [{ schema_version: 1, slug: policy.slug, kind: "rule", title: policy.title, summary: policy.summary ?? "", tags: [], triggers: ["deploy"], priority: 1, owner: "owner", source_ref: "test", sensitivity: "internal", status: "published", revision_id: "r1", updated_at: policy.updatedAt, approver_kind: "owner" as const }];
+    expect(budget.sessionStart(metadata)).not.toContain("body");
+    expect(budget.prompt(metadata, "incident")).toBe("[]");
+    expect(budget.prompt(metadata, "deploy")).not.toBe("[]");
+    expect(budget.prompt(metadata, "deploy")).toBe("[]");
+    expect(metrics.some((event) => event.bytesAdded > 0)).toBe(true);
+  });
   it("maps REST failures to stable connector error codes without leaking upstream messages", async () => {
     const upstream = Object.assign(new Error("secret token must not escape"), { status: 429 });
     const adapter = createAdmKnowledgeAdapter(rest({ list: vi.fn(async () => { throw upstream; }) }));
