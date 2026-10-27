@@ -60,7 +60,7 @@ describe("nextContinuationDelay", () => {
   it("never caps the mandatory window wait when the continuation budget is exhausted", () => {
     const windowMs = 10_000;
     const maxContinuations = 4;
-    const events = simulateWindow(windowMs, maxContinuations + 1);
+    const events = simulateWindow(windowMs, maxContinuations + 1, maxContinuations);
 
     expect(nextContinuationDelay({ recentCount: maxContinuations, windowMs, maxContinuations, maxDelayMs: 2_000 })).toBe(windowMs);
     expect(events[maxContinuations]).toBe(windowMs);
