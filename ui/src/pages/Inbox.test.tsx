@@ -160,8 +160,8 @@ import {
 } from "./Inbox";
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, className, ...props }: ComponentProps<"a">) => (
-    <a className={className} {...props}>{children}</a>
+  Link: ({ children, className, to, ...props }: ComponentProps<"a"> & { to?: string }) => (
+    <a className={className} href={to} {...props}>{children}</a>
   ),
   useLocation: () => routerMock.location,
   useNavigate: () => routerMock.navigate,
@@ -352,6 +352,7 @@ function resetInboxApiMocks() {
   routerMock.location.search = "";
   routerMock.location.hash = "";
   routerMock.navigate.mockReset();
+  apiMocks.knowledgeSuggestions.mockResolvedValue([]);
   apiMocks.approvalsList.mockResolvedValue([]);
   apiMocks.joinRequestsList.mockResolvedValue([]);
   apiMocks.userDirectoryList.mockResolvedValue({ users: [] });
@@ -398,7 +399,7 @@ describe("Inbox toolbar", () => {
 
   it.each([true, false])("shows knowledge suggestions and links to review (streamlined=%s)", async (streamlined) => {
     routerMock.location.pathname = "/inbox/all";
-    apiMocks.experimentalSettings.mockResolvedValue({ streamlinedDrilldown: streamlined });
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlined, enableIsolatedWorkspaces: false });
     saveInboxFilterPreferences("company-1", { ...loadInboxFilterPreferences("company-1"), allCategoryFilter: "knowledge" });
     apiMocks.issuesList.mockResolvedValue([createIssue({ title: "Task hidden by knowledge filter" })]);
     apiMocks.knowledgeSuggestions.mockResolvedValue([{ id: "suggestion-1", body: "Reusable knowledge proposal", status: "pending", trust: null, targetItemId: null, createdAt: "2026-10-27T00:00:00Z" }]);
