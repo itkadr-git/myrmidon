@@ -153,7 +153,7 @@ export function createGitHubPrHeadResolver(input: {
     });
 
   /** (company|repo|number|headSha) -> the status read for that exact head. */
-  const headCache = new Map<string, { ci: "green" | "not_green"; cachedAtMs: number }>();
+  const headCache = new Map<string, { ci: PullRequestHeadState["ci"]; cachedAtMs: number }>();
 
   function ghHeaders(token: string): Record<string, string> {
     return {

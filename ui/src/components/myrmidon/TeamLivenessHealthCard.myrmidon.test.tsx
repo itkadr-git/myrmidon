@@ -23,6 +23,7 @@ const metrics: TeamLivenessMetrics = {
   autoResumeExhaustions: 2,
   wakes: 41,
   stalledRuns: 3,
+  emptyRunsByAgent: [],
 };
 
 let container: HTMLDivElement;

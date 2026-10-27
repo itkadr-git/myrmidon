@@ -322,6 +322,7 @@ describe("metrics endpoint routes", () => {
       runsQueued: 0,
       runsFailedTotal: 0,
       runsFailedWindow: 0,
+      emptyRunsByAgent: [],
       runDurationSecondsP50: null,
       runDurationSecondsP95: null,
       roleQueueTasks: [],

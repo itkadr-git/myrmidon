@@ -87,6 +87,8 @@ describeEmbeddedPostgres("metrics collector", () => {
       status: string;
       startedAt?: Date;
       finishedAt?: Date;
+      livenessState?: string | null;
+      livenessReason?: string | null;
     },
   ) {
     const runId = randomUUID();
