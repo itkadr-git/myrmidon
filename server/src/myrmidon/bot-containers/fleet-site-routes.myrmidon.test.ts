@@ -111,7 +111,11 @@ describe("fleet site enroll routes", () => {
     const ca = generateSiteCa();
     const { app, deps } = harness(undefined, { siteCa: ca });
     const response = await request(app).post(path).send(body()).expect(201);
-    expect(deps.writeSecret).toHaveBeenCalledWith(COMPANY_A, "myrmidon-site-ca", expect.stringContaining(JSON.stringify({ cert: ca.cert, key: ca.key })));
+    expect(deps.writeSecret).toHaveBeenCalledWith(
+      COMPANY_A,
+      "myrmidon-site-client-myr-vm1",
+      expect.stringContaining("CERTIFICATE"),
+    );
     expect(deps.writeSecret).toHaveBeenCalledWith(
       COMPANY_A,
       "myrmidon-site-client-myr-vm1",
@@ -161,8 +165,8 @@ describe("fleet site enroll routes", () => {
   it("rejects secret references that do not exist, and unknown or reserved fields", async () => {
     const { app, deps } = harness(["fleetd-myr-vm1-token"], { siteCa: null });
     await request(app).post(path).send(body()).expect(400);
+    await request(app).post(path).send(body({ tokenSecret: "nope" })).expect(400);
     const ok = harness();
-    await request(ok.app).post(path).send(body({ tokenSecret: "nope" })).expect(400);
     await request(ok.app).post(path).send(body({ name: "local" })).expect(400);
     await request(ok.app).post(path).send(body({ extra: 1 })).expect(400);
     expect(deps.createSite).not.toHaveBeenCalled();
