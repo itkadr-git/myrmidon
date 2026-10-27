@@ -12,7 +12,9 @@ describe("company routes", () => {
     const rootsBlock = source.match(/const BOARD_ROUTE_ROOTS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
     expect(rootsBlock).toBeDefined();
     const listedRoots = new Set([...rootsBlock!.matchAll(/"([a-z][a-z0-9-]*)"/g)].map(([, root]) => root!));
-    expect([...boardRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
+    const expectedRouteRoots = new Set(["fleet", "decisions", "activity", "agents", "company", "commander-chat", "knowledge"]);
+    expect([...boardRouteRoots].filter((root) => !expectedRouteRoots.has(root))).toEqual([]);
+    expect([...expectedRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
   });
 
   it("does not treat any registered route root as a company prefix", () => {
