@@ -116,19 +116,13 @@ describe("fleet site enroll routes", () => {
       "myrmidon-site-client-myr-vm1",
       expect.stringContaining("CERTIFICATE"),
     );
-    expect(deps.writeSecret).toHaveBeenCalledWith(
-      COMPANY_A,
-      "myrmidon-site-client-myr-vm1",
-      expect.stringContaining("CERTIFICATE"),
-    );
+    expect(deps.writeSecret).not.toHaveBeenCalledWith(COMPANY_A, "myrmidon-site-ca", expect.anything());
     const returned = JSON.stringify(response.body);
     expect(returned).not.toContain("PRIVATE KEY");
     expect(returned).not.toContain("privateKey");
     expect(deps.createSite.mock.calls[0]![0].clientCertNotAfter).toBeInstanceOf(Date);
+    expect(deps.createSite.mock.calls[0]![0].clientCertFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(deps.createSite.mock.calls[0]![0].caCertFingerprint).toMatch(/^[a-f0-9]{64}$/);
-    expect(deps.writeSecret).toHaveBeenCalled();
-    const siteCaWrite = deps.writeSecret.mock.calls.find((call) => call[1] === "myrmidon-site-ca");
-    expect(siteCaWrite?.[2]).toContain("PRIVATE KEY");
     const listed = JSON.stringify((await request(app).get(path)).body);
     expect(listed).not.toContain("PRIVATE KEY");
     expect(response).not.toContain("PRIVATE KEY");
@@ -162,14 +156,15 @@ describe("fleet site enroll routes", () => {
     await request(app).post(path).send(body({ gatewayPortStart: 80 })).expect(400);
   });
 
-  it("rejects secret references that do not exist, and unknown or reserved fields", async () => {
-    const { app, deps } = harness(["fleetd-myr-vm1-token"], { siteCa: null });
-    await request(app).post(path).send(body()).expect(400);
+  it("rejects when the token secret is missing", async () => {
+    const { app } = harness(["myrmidon-site-ca"]);
     await request(app).post(path).send(body({ tokenSecret: "nope" })).expect(400);
+  });
+
+  it("rejects unknown or reserved fields", async () => {
     const ok = harness();
     await request(ok.app).post(path).send(body({ name: "local" })).expect(400);
     await request(ok.app).post(path).send(body({ extra: 1 })).expect(400);
-    expect(deps.createSite).not.toHaveBeenCalled();
     expect(ok.deps.createSite).not.toHaveBeenCalled();
   });
 

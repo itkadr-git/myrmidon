@@ -153,6 +153,7 @@ function publicSite(site: FleetSite) {
     tokenSecret: site.tokenSecret ?? null,
     clientCertSecretKey: site.clientCertSecretKey ?? null,
     clientCertNotAfter: site.clientCertNotAfter ? new Date(site.clientCertNotAfter).toISOString() : null,
+    clientCertFingerprint: site.clientCertFingerprint ?? null,
     certRotatedAt: site.certRotatedAt ? new Date(site.certRotatedAt).toISOString() : null,
     caCertFingerprint: site.caCertFingerprint ?? null,
     capacity: site.capacity,
@@ -203,6 +204,7 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
       await deps.writeSecret(companyId, site.clientCertSecretKey, JSON.stringify({ cert: client.cert, key: client.key }));
       await deps.updateSite(companyId, site.name, {
         clientCertNotAfter: client.notAfter,
+        clientCertFingerprint: client.fingerprint,
         certRotatedAt: new Date(),
       });
       deps.refreshRegistry();
@@ -283,7 +285,8 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
       caCert: ca.cert,
       caCertFingerprint: fingerprint,
       clientCertSecretKey,
-      clientCertNotAfter: clientCert.notAfter,
+      clientCertNotAfter: client.notAfter,
+      clientCertFingerprint: clientCert.fingerprint,
       certRotatedAt: issuedAt,
       status: "active",
       capacity: body.capacity,

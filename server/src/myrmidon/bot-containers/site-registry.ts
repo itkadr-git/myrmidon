@@ -42,6 +42,7 @@ export interface FleetSite {
   clientCert?: string | null;
   clientCertSecretKey?: string | null;
   clientCertNotAfter?: Date | null;
+  clientCertFingerprint?: string | null;
   status: string;
   capacity: FleetSiteCapacity;
   profile: FleetSiteProfile;
@@ -65,6 +66,7 @@ export interface FleetSiteInsert {
   clientCert?: string | null;
   clientCertSecretKey?: string | null;
   clientCertNotAfter?: Date | null;
+  clientCertFingerprint?: string | null;
   certRotatedAt?: Date | null;
   status?: string;
   capacity?: FleetSiteCapacity;
@@ -106,6 +108,7 @@ export async function createFleetSite(db: Db, input: FleetSiteInsert): Promise<F
       clientCert: input.clientCert ?? null,
       clientCertSecretKey: input.clientCertSecretKey ?? null,
       clientCertNotAfter: input.clientCertNotAfter ?? null,
+      clientCertFingerprint: input.clientCertFingerprint ?? null,
       certRotatedAt: input.certRotatedAt ?? null,
       status: input.status ?? "active",
       capacity: input.capacity ?? { maxCpus: 8, maxMemoryMb: 32768 },
