@@ -355,6 +355,13 @@ export function githubConnectionEventService(
           && (number === snapshot.number || externalId?.toLowerCase() === snapshot.externalId.toLowerCase());
       });
       if (matching && matching.issue.status !== "done" && matching.issue.status !== "cancelled") {
+        await database.update(issueWorkProducts).set({
+          status: "merged",
+          updatedAt: appliedAt,
+        }).where(and(
+          eq(issueWorkProducts.id, matching.product.id),
+          eq(issueWorkProducts.companyId, companyId),
+        ));
         await issueService(database).update(matching.issue.id, {
           status: "done",
           completedAt: now(),
