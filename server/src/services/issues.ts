@@ -9991,7 +9991,7 @@ export function issueService(db: Db) {
           developmentProcess.executionPolicy
         ) {
           issueData.executionPolicy = normalizeIssueExecutionPolicy(
-            developmentProcess.executionPolicy,
+            developmentProcess.executionPolicy as Parameters<typeof normalizeIssueExecutionPolicy>[0],
           );
         }
         if (
