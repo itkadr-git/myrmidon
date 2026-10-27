@@ -90,10 +90,12 @@ export function findEnglishLiterals(source: string): GuardOffender[] {
     .replace(/\b(?:i18n\.)?t\(\s*(["'`])(?:\\.|(?!\1)[^\\])*\1(?:\s*,[^)]*)?\)/g, (value) => value.replace(/[^\n]/g, " "));
   // Only inspect the consequent of a ternary here. A colon also appears in
   // TypeScript unions and object/type data, which are not rendered UI copy.
-  const codeLiteralRe = /\b[A-Za-z_$][\w$]*\s*\?\s*(["'])([^\\\n]{2,120})\1/g;
+  const codeLiteralRe = /\b[A-Za-z_$][\w$]*\s*\?\s*(["'])([^\\\n]{2,120})\1\s*:\s*(?:["'])(?:[^\\\n]*)(?:["'])/g;
   for (const match of codeOnly.matchAll(codeLiteralRe)) {
     const text = match[2].trim();
     if (!/[A-Za-z]{2}/.test(text) || !/\s/.test(text)) continue;
+    if (/^(?:https?:\/\/|\/)/i.test(text)) continue;
+    if (/^(?:[A-Za-z0-9_-]+\s*)+$/.test(text) && /(?:^|\s)(?:text|bg|border|flex|grid|items|justify|rounded|p|m|gap|w|h)-/.test(text)) continue;
     offenders.push({ line: lineOf(codeOnly, match.index!), kind: "literal", text });
   }
 

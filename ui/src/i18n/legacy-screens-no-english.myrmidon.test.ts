@@ -116,6 +116,16 @@ describe("guarded files carry no English literals", () => {
     ]);
   });
 
+  it("ignores data and class strings in ternary expressions while catching user-facing copy", () => {
+    expect(findEnglishLiterals([
+      'const route = allowed ? "access" : "gallery";',
+      'const url = local ? "https://local.example" : "https://remote.example";',
+      'const classes = active ? "text-sm font-bold" : "text-xs";',
+      'const label = ready ? "Ready to run" : "Waiting for approval";',
+    ].join("\n"))).toEqual([
+      { line: 4, kind: "literal", text: "Ready to run" },
+    ]);
+  });
   it("scans all shipped and example plugin UI entry files", () => {
     const pluginUiFiles = readdirSync(join(UI_ROOT, "../../packages/plugins"), { recursive: true })
       .filter((path): path is string => typeof path === "string" && /^((examples\/[^/]+)|([^/]+))\/src\/ui\/.*\.tsx?$/.test(path))
