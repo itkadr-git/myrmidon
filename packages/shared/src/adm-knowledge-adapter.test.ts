@@ -3,6 +3,7 @@ import {
   AdmContextBudget,
   createAdmKnowledgeAdapter,
   type AdmKnowledgeItem,
+  type AdmKnowledgeMetadata,
   type AdmKnowledgeRestPort,
 } from "./adm-knowledge-adapter.js";
 
@@ -100,7 +101,7 @@ describe("ADM knowledge REST adapter", () => {
   it("enforces context budgets, trigger filtering, deduplication, and byte metrics", () => {
     const metrics: Array<{ bytesAdded: number; sessionBytes: number }> = [];
     const budget = new AdmContextBudget(12 * 1024, 2 * 1024, (event) => metrics.push(event));
-    const metadata = [{ schema_version: 1, slug: policy.slug, kind: "rule", title: policy.title, summary: policy.summary ?? "", tags: [], triggers: ["deploy"], priority: 1, owner: "owner", source_ref: "test", sensitivity: "internal", status: "published", revision_id: "r1", updated_at: policy.updatedAt, approver_kind: "owner" as const }];
+    const metadata: AdmKnowledgeMetadata[] = [{ schema_version: 1, slug: policy.slug, kind: "rule", title: policy.title, summary: policy.summary ?? "", tags: [], triggers: ["deploy"], priority: 1, owner: "owner", source_ref: "test", sensitivity: "internal", status: "published", revision_id: "r1", updated_at: policy.updatedAt, approver_kind: "owner" }];
     expect(budget.sessionStart(metadata)).not.toContain("body");
     expect(budget.prompt(metadata, "incident")).toBe("[]");
     expect(budget.prompt(metadata, "deploy")).not.toBe("[]");
