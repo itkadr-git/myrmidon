@@ -7413,15 +7413,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         releaseAdapter();
         await heartbeat.drainActiveRunExecutions();
         const settledRun = await heartbeat.getRun(runId);
+        const { runTelemetry: _settledRunTelemetry, ...settledResultJson } =
+          (settledRun?.resultJson ?? {}) as Record<string, unknown>;
+        const { runTelemetry: _stoppedRunTelemetry, ...stoppedResultJson } =
+          (result.run!.resultJson ?? {}) as Record<string, unknown>;
         expect({
           status: settledRun?.status,
           errorCode: settledRun?.errorCode,
-          resultJson: settledRun?.resultJson,
+          resultJson: settledResultJson,
           finishedAt: settledRun?.finishedAt,
         }).toEqual({
           status: result.run!.status,
           errorCode: result.run!.errorCode,
-          resultJson: result.run!.resultJson,
+          resultJson: stoppedResultJson,
           finishedAt: result.run!.finishedAt,
         });
       } finally {

@@ -9664,10 +9664,16 @@ export function heartbeatService(
           effect.previousStatus !== effect.status
         ) {
           clearHeartbeatRunRuntimeStatus(effect.runId);
-          void emitAgentTaskRunById(db, {
-            runId: effect.runId,
-            companyId: effect.companyId,
-          });
+          void (async () => {
+            await refreshRunTelemetrySnapshot(db, {
+              runId: effect.runId,
+              companyId: effect.companyId,
+            });
+            await emitAgentTaskRunById(db, {
+              runId: effect.runId,
+              companyId: effect.companyId,
+            });
+          })();
         }
       }
     }
