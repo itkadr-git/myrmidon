@@ -39,6 +39,13 @@ describe("blocked metrics", () => {
     expect(text.match(/# TYPE blocked_missing_fields_total gauge/g)).toHaveLength(1);
   });
 
+  it("refuses truncated snapshots instead of reporting partial company totals", async () => {
+    await expect(collectBlockedMetrics(async () => ({
+      blockedIssues: blockedMetricsFixture,
+      truncated: { blockedIssues: true },
+    }), "company-a", now)).rejects.toThrow("snapshot truncated");
+  });
+
   it("ignores non-blocked rows, excludes unknown dates and clamps future transitions", () => {
     const groups = computeBlockedMetrics([
       { ...row("done", 999, complete), status: "done" },
