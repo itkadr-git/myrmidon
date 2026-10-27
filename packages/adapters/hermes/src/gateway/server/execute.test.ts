@@ -1347,7 +1347,7 @@ describe("mapFinalResultForTest", () => {
       sessionKey: null,
       strategy: "issue",
     });
-    expect(result.resultJson?.modelCallCount).toBeUndefined();
+    expect(result.resultJson?.modelCallCount).toBeNull();
     expect(result.resultJson?.modelCallCountSource).toBe("unknown");
   });
 
@@ -1408,8 +1408,10 @@ describe("mapFinalResultForTest", () => {
       sessionKey: null,
       strategy: "issue",
     });
-    expect(result.resultJson?.gatewayCallIds).toEqual(ids);
-    expect(result.resultJson?.litellmRequestIds).toEqual(ids.map((id) => `req-${id}`));
+    expect(result.resultJson?.gatewayCallIds).toEqual(ids.slice(0, 500));
+    expect(result.resultJson?.gatewayCallIdsTruncated).toBe(true);
+    expect(result.resultJson?.litellmRequestIds).toEqual(ids.map((id) => `req-${id}`).slice(0, 500));
+    expect(result.resultJson?.litellmRequestIdsTruncated).toBe(true);
     expect(result.resultJson?.modelCallCount).toBeUndefined();
   });
   it("counts gateway output call entries when the response has no count metadata", () => {
