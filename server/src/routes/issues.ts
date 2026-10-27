@@ -13930,7 +13930,13 @@ export function issueRoutes(
 
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
-        issue: await withDefaultEscalationChain(db, existing, nextExecutionPolicy),
+        issue: {
+          ...await withDefaultEscalationChain(db, existing, nextExecutionPolicy),
+          rawExecutionPolicy:
+            existing.executionPolicy && typeof existing.executionPolicy === "object"
+              ? existing.executionPolicy as Record<string, unknown>
+              : null,
+        },
         policy: nextExecutionPolicy,
         previousPolicy: previousExecutionPolicy,
         requestedStatus:

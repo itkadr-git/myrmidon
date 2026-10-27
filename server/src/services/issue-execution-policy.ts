@@ -36,6 +36,8 @@ type IssueLike = AssigneeLike & {
    */
   defaultEscalationAgentIds?: string[] | null;
   executionPolicy?: IssueExecutionPolicy | Record<string, unknown> | null;
+  /** Raw stored value, which may contain pre-normalization legacy fields. */
+  rawExecutionPolicy?: Record<string, unknown> | null;
   executionState?: IssueExecutionState | Record<string, unknown> | null;
   monitorNextCheckAt?: Date | null;
   monitorWakeRequestedAt?: Date | null;
@@ -1539,6 +1541,11 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
   const stageResult = applyIssueExecutionStageTransition(input);
   const monitorPatch = applyMonitorTransition(input, stageResult.patch);
   Object.assign(stageResult.patch, monitorPatch);
+  // Normalize legacy persisted policy data on every issue PATCH, including
+  // mutations that do not explicitly include executionPolicy.
+  if (input.rawExecutionPolicy?.mode === "sequential" && stageResult.patch.executionPolicy === undefined) {
+    stageResult.patch.executionPolicy = input.policy ?? normalizeIssueExecutionPolicy(input.rawExecutionPolicy);
+  }
   return stageResult;
 }
 
