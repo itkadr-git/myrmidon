@@ -131,7 +131,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const limitRootId = randomUUID();
       await db.insert(issues).values({ id: limitRootId, companyId: limitCompanyId, title: "Root", status: "todo" });
       await db.insert(issueRelations).values(ids.map((id) => ({
-        companyId: limitCompanyId, issueId: limitRootId, relatedIssueId: id, type: "blocks",
+        companyId: limitCompanyId, issueId: limitRootId, relatedIssueId: id, type: "blocks" as const,
       })));
       queries.length = 0;
       const withEdges = await loadBlockedGraph(observedDb, limitCompanyId);
