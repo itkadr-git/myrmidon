@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { OwnerReplyCard } from "./parse-owner-reply.js";
 import type { PendingOwnerCard } from "./pending-owner-cards.js";
 import type { OwnerReplyDeps } from "./owner-task-reply.js";
-import { handleTelegramOwnerReply, narrowCardsToReply } from "./telegram-door.js";
+import { handleTelegramOwnerReply, narrowCardsToReply, shouldSuppressTelegramOwnerWake } from "./telegram-door.js";
 
 const OWNER = "user-owner";
 const COMPANY = "company-1";
@@ -111,6 +111,18 @@ describe("handleTelegramOwnerReply", () => {
     expect(outcome).toEqual({ outcome: "no_card" });
     expect(resolveCard).not.toHaveBeenCalled();
     expect(askWhichCard).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["resolved", { outcome: "resolved", interactionId: "ix-1", action: "accept", status: "accepted" }, false, true],
+    ["multi-card clarification", { outcome: "asked_which_card", interactionIds: ["ix-1", "ix-2"] }, false, true],
+    ["stale explicit reply", { outcome: "no_card" }, true, true],
+    ["unmatched no-reply", { outcome: "no_card" }, false, false],
+    ["ambiguous answer", { outcome: "kept_pending", interactionId: "ix-1", reason: "ambiguous", status: "pending" }, true, false],
+    ["failed resolution", { outcome: "failed", error: "failure" }, true, false],
+    ["non-via-bot mode skipped", { outcome: "skipped_mode", mode: "via_bot" }, true, false],
+  ] as const)("wake settlement: %s", (_label, outcome, hasReplyTarget, expected) => {
+    expect(shouldSuppressTelegramOwnerWake(outcome, hasReplyTarget)).toBe(expected);
   });
 
   it("accepts published owner decisions in owner_decisions_only and all modes", async () => {

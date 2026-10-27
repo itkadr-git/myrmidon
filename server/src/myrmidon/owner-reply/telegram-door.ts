@@ -78,6 +78,17 @@ export async function loadRepliedInteractionIds(
   return explanations.find((entry) => entry.commentId === link.commentId)?.interactionIds ?? [];
 }
 
+export function shouldSuppressTelegramOwnerWake(
+  outcome: OwnerReplyOutcome,
+  hasReplyTarget: boolean,
+): boolean {
+  return (
+    outcome.outcome === "resolved" ||
+    outcome.outcome === "asked_which_card" ||
+    (hasReplyTarget && outcome.outcome === "no_card")
+  );
+}
+
 /**
  * Closes (or keeps pending, or asks about) the owner's card for one inbound
  * Telegram message. Never throws: a defect keeps the card pending and the

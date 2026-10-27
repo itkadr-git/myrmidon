@@ -306,7 +306,8 @@ import { createOwnerReplyDeps } from "../myrmidon/owner-reply/owner-reply-execut
 import {
   handleTelegramOwnerReply,
   loadRepliedInteractionIds,
-} from "../myrmidon/owner-reply/telegram-door.js";
+  shouldSuppressTelegramOwnerWake,
+} from "../myrmidon/owner-reply/index.js";
 import {
   authorizeNativeChatReviewPresentation,
   NativeChatReviewPresentationContentionError,
@@ -17430,11 +17431,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 })
             : null,
         });
-        telegramOwnerReplyConsumed =
-          Boolean(replyTarget) &&
-          (ownerReplyOutcome.outcome === "resolved" ||
-            ownerReplyOutcome.outcome === "asked_which_card" ||
-            ownerReplyOutcome.outcome === "no_card");
+        telegramOwnerReplyConsumed = shouldSuppressTelegramOwnerWake(
+          ownerReplyOutcome,
+          Boolean(replyTarget),
+        );
       }
       // myrmidon(X8b): resume a paused bridged conversation on a literal
       // "/new" comment (the web /new route does the same), and deliver any
