@@ -96,8 +96,13 @@ export function buildRunTelemetry(input: {
         ? litellmRequestIds.length
         : null;
   const modelCallCount = explicitCallCount ?? inferredCallCount;
+  const inferredCallCountSource = gatewayCallIds.length > 0 && litellmRequestIds.length === 0
+    ? "gateway_call_ids"
+    : gatewayCallIds.length === 0 && litellmRequestIds.length > 0
+      ? "litellm_request_ids"
+      : null;
   const modelCallCountSource = readRunDimension(result.modelCallCountSource)
-    ?? (explicitCallCount !== null ? "gateway_count" : inferredCallCount !== null ? "inferred_call_ids" : "unknown");
+    ?? (explicitCallCount !== null ? "gateway_count" : inferredCallCountSource ?? "unknown");
   const model = readNonEmptyString(usage.model) ?? readNonEmptyString(result.model);
   const billingType = readNonEmptyString(usage.billingType) ?? readNonEmptyString(usage.billing_type);
   const artifactCount = input.workProducts.filter((product) => product.type === "artifact").length;

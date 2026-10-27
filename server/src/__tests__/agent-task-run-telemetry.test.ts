@@ -137,6 +137,23 @@ describe("buildRunTelemetry", () => {
     expect(telemetry.modelCallCountSource).toBe("unknown");
   });
 
+  it("identifies a single call-ID namespace used as a count proxy", () => {
+    const gateway = buildRunTelemetry({
+      ...baseInput,
+      run: { ...baseInput.run, resultJson: { gatewayCallIds: ["gw-a", "gw-b"] } },
+      gatewayCalls: [],
+    });
+    expect(gateway.modelCallCount).toBe(2);
+    expect(gateway.modelCallCountSource).toBe("gateway_call_ids");
+
+    const litellm = buildRunTelemetry({
+      ...baseInput,
+      gatewayCalls: [{ requestId: "req-a", costCents: 1 }],
+    });
+    expect(litellm.modelCallCount).toBe(1);
+    expect(litellm.modelCallCountSource).toBe("litellm_request_ids");
+  });
+
   it("prefers immutable wake revision to issue timestamp from later in the run", () => {
     const telemetry = buildRunTelemetry({
       ...baseInput,
