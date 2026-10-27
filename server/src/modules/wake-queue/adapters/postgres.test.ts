@@ -720,7 +720,8 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(locked.primaryIssue.issueRole).toBe("engineer");
       expect(await ports.transaction.findIssue({ companyId, issueId })).toMatchObject({ issueRole: "engineer" });
       const deferredAgent = await ports.transaction.findInvokableAgent({ companyId, agentId });
-      expect(deferredAgent?.role).toBe("engineer");
+      if (!deferredAgent) throw new Error("Expected seeded agent to be invokable");
+      expect(deferredAgent.role).toBe("engineer");
       const finalize = async (wakeId: string) => {
         const promoted = await ports.transaction.finalizePromotedWake({
           companyId,

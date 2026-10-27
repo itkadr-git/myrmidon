@@ -593,15 +593,16 @@ describe("releaseIssueExecution", () => {
       findInvokableAgent: vi.fn(async () => ({ ...AGENT, role: agentRole })),
     });
     const issue = { ...ISSUE, issueRole };
+    const recovery = createFakeRecovery();
     const host = createFakeHost();
     const release = createReleaseIssueExecution({
       issueLock: createFakeIssueLock(host, transaction, issue),
-      recovery: createFakeRecovery(),
+      recovery,
     });
 
     const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
 
-    expect(result.outcome.kind).toBe(promoted ? "promoted" : "released");
+    expect(result.outcome.kind).toBe(promoted ? "promoted" : "queued_recovery");
     if (promoted) {
       expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledTimes(1);
       expect(transaction.finalizePromotedWake).toHaveBeenCalledTimes(1);
@@ -616,7 +617,11 @@ describe("releaseIssueExecution", () => {
     }));
     expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
     expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
-    expect(host.resolveResponsibleUserId).not.toHaveBeenCalled();
+    expect(host.resolveResponsibleUserId).toHaveBeenCalledOnce();
+    expect(recovery.decide).toHaveBeenCalledOnce();
+    expect(recovery.decide).toHaveBeenCalledWith(expect.objectContaining({
+      hasExistingExecutionPath: true,
+    }));
   });
 
   it("stops the loop after the first promotion", async () => {
