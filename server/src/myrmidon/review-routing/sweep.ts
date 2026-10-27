@@ -216,6 +216,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       reviewerPool = agentRows.map((agent) => ({ id: agent.id, role: agent.role, load: load.get(agent.id) ?? 0 }));
       return reviewerPool;
     };
+    const pool = globalPool;
     const bumpLoad = (agentId: string, delta: number) => {
       for (const pool of [reviewerPool, ...managerChains.values()]) {
         const candidate = pool?.find((entry) => entry.id === agentId);

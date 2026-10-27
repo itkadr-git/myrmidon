@@ -145,7 +145,7 @@ describe("assignment", () => {
       managerChain: new Map([[ASSIGNEE, [
         { id: REV_A, role: "reviewer" },
         { id: REV_B, role: "reviewer" },
-      ]]),
+      ]]]),
       reviewers: [{ id: REV_B, role: "reviewer" }],
     });
     t.fixture.rows.set("manager-chain", row("manager-chain"));
