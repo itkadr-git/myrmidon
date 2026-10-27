@@ -21587,7 +21587,7 @@ export function heartbeatService(
         contextSnapshot.eventRevision = eventRevision;
       }
     }
-    await tx.insert(agentWakeupRequests).values({
+    const request: typeof agentWakeupRequests.$inferInsert = {
       companyId: resolvedCompanyId,
       agentId,
       source,
@@ -21599,7 +21599,8 @@ export function heartbeatService(
       requestedByActorType: opts.requestedByActorType ?? null,
       requestedByActorId: opts.requestedByActorId ?? null,
       idempotencyKey: key,
-    });
+    };
+    await tx.insert(agentWakeupRequests).values(request);
     return { created: true };
   }
 
