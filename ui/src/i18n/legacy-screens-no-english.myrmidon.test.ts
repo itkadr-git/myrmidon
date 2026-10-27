@@ -122,9 +122,6 @@ describe("guarded files carry no English literals", () => {
       .map((path) => join(UI_ROOT, "../../packages/plugins", path))
       .filter((path) => !path.includes("/sdk/src/ui/"));
     expect(pluginUiFiles.length).toBeGreaterThan(0);
-    const offenders = pluginUiFiles.flatMap((path) =>
-      findEnglishLiterals(readFileSync(path, "utf8")).map((o) => `${path}:line ${o.line}: ${o.kind} "${o.text}"`),
-    );
     const expectedLegacyEnglishFiles = new Set([
       "plugin-llm-wiki/src/ui/app.tsx",
       "plugin-workspace-diff/src/ui/index.tsx",
@@ -135,6 +132,9 @@ describe("guarded files carry no English literals", () => {
       "examples/plugin-kitchen-sink-example/src/ui/index.tsx",
       "examples/plugin-orchestration-smoke-example/src/ui/index.tsx",
     ]);
+    const offenders = pluginUiFiles.flatMap((path) =>
+      findEnglishLiterals(readFileSync(path, "utf8")).map((o) => `${path}:line ${o.line}: ${o.kind} "${o.text}"`),
+    );
     const allowlistedOffenders = offenders.filter((item) =>
       [...expectedLegacyEnglishFiles].some((file) => item.includes(`/packages/plugins/${file}:`)),
     );
