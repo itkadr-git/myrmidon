@@ -146,9 +146,9 @@ function createProjectApp() {
   return projectServer;
 }
 
-function createIssueApp() {
-  issueServer ??= buildApp((expressApp) => {
-    expressApp.use("/api", issueRoutes({} as any, {} as any));
+function createIssueApp(db: unknown = {} as any) {
+  issueServer = buildApp((expressApp) => {
+    expressApp.use("/api", issueRoutes(db as any, {} as any));
   }).listen(0);
   return issueServer;
 }
