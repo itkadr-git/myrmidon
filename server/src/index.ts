@@ -200,7 +200,7 @@ import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall 
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
-import { createTaskPrSyncScheduler, readTaskPrSyncSettings, reconcileClosedIssuePullRequests } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
+import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
 import { createStaleBlockScheduler, createRecoveryLivenessEventReader } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import { createOwnerCardTtlScheduler } from "./myrmidon/owner-reply/index.js"; // myrmidon(1.6.5-F21-B)
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
