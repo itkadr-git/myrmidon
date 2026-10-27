@@ -255,7 +255,7 @@ export function githubConnectionEventService(
     return bindingRows(rows);
   }
 
-  async function applyCiCompletionEvent(companyId: string, event: LeasedEvent) {
+  async function applyCiCompletionEvent(companyId: string, event: LeasedEvent, database: Db = db) {
     if (!options.assignmentWakeup || (event.event !== "workflow_run" && event.event !== "check_suite")) return;
     const payload = normalizeLeasedPayload(event);
     const status = stringValue(payload.status);
@@ -268,7 +268,7 @@ export function githubConnectionEventService(
     const runId = identifier(payload.runId) ?? identifier(payload.checkSuiteId) ?? event.id;
     if (!repository || !pullRequestNumber || !headSha) return;
 
-    const products = await db.select({ product: issueWorkProducts, issue: issues })
+    const products = await database.select({ product: issueWorkProducts, issue: issues })
       .from(issueWorkProducts)
       .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
       .where(and(
@@ -475,7 +475,7 @@ export function githubConnectionEventService(
     try {
       const applyAndFinalize = async (database: Db) => {
         if (event.event === "pull_request") await applyPullRequestEvent(database, companyId, normalizedEvent);
-        await applyCiCompletionEvent(companyId, normalizedEvent);
+        await applyCiCompletionEvent(companyId, normalizedEvent, database);
         if (event.event === "installation" || event.event === "installation_repositories") {
           for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
         } else {
