@@ -20125,6 +20125,7 @@ export function heartbeatService(
       and(eq(companies.id, agentWakeupRequests.companyId), eq(companies.status, "active"))).where(and(
       eq(agentWakeupRequests.status, "deferred_issue_execution"),
       isNull(agentWakeupRequests.runId),
+      sql`${agentWakeupRequests.payload}->'executionWait' is null`,
       lt(agentWakeupRequests.requestedAt, staleCutoff),
       lt(agentWakeupRequests.createdAt, staleCutoff),
       sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
@@ -20158,6 +20159,7 @@ export function heartbeatService(
       eq(agentWakeupRequests.status, "deferred_issue_execution"),
       isNull(agentWakeupRequests.runId),
       lte(agentWakeupRequests.requestedAt, new Date(now - 10 * 60_000)),
+      sql`${agentWakeupRequests.payload}->'executionWait' is null`,
       exists(db.select({ id: issues.id }).from(issues).where(and(
         eq(issues.companyId, agentWakeupRequests.companyId),
         sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
