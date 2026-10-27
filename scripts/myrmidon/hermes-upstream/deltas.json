@@ -298,6 +298,40 @@
         "path": "model_tools.py",
         "upstreamMarker": "disabled_tools\\b"
       }
+    },
+    {
+      "id": "18-terminal-foreground-heartbeat",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/18-terminal-foreground-heartbeat.patch",
+      "files": [
+        "tools/terminal_tool.py"
+      ],
+      "reason": "Foreground calls may carry heartbeat=60 as a provider-materialized schema default. Heartbeat has no meaning without a tracked process, so normalize it to zero while continuing to reject foreground notification intent.",
+      "dropCondition": "Upstream drops positive foreground heartbeat before dispatch and describes heartbeat as background-only; check _handle_terminal and TERMINAL_SCHEMA in tools/terminal_tool.py.",
+      "offer": null,
+      "offerNote": "No offer submitted; this is a release-blocking runtime defect fix.",
+      "probe": {
+        "source": "hermes",
+        "path": "tools/terminal_tool.py",
+        "upstreamMarker": "Ignored on foreground commands"
+      }
+    },
+    {
+      "id": "19-terminal-foreground-heartbeat-regression-test",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/19-terminal-foreground-heartbeat-test.patch",
+      "files": [
+        "tests/tools/test_process_heartbeat.py"
+      ],
+      "reason": "Pin dispatch behavior: heartbeat=60, notify=false, pty=false succeeds as foreground with heartbeat zero, while notify=true is still rejected.",
+      "dropCondition": "Same as delta 18; upstream carries an equivalent regression test in tests/tools/test_process_heartbeat.py.",
+      "offer": null,
+      "offerNote": "No offer submitted; test is carried alongside the runtime fix.",
+      "probe": {
+        "source": "hermes",
+        "path": "tests/tools/test_process_heartbeat.py",
+        "upstreamMarker": "foreground_drops_it"
+      }
     }
   ]
 }

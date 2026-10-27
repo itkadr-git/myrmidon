@@ -1,0 +1,34 @@
+diff --git a/tests/tools/test_process_heartbeat.py b/tests/tools/test_process_heartbeat.py
+--- a/tests/tools/test_process_heartbeat.py
++++ b/tests/tools/test_process_heartbeat.py
+@@ -63,19 +63,26 @@
+                            timeout=2.5)
+ 
+ 
+-def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monkeypatch):
++def test_terminal_dispatch_heartbeat_implies_notify_and_foreground_drops_it(monkeypatch):
++    # myrmidon(G1): pin the provider-materialized foreground argument shape.
+     from tools import terminal_tool as tt
+ 
+     captured = {}
+ 
+     def fake_terminal_tool(**kwargs):
+         captured.update(kwargs)
+-        return json.dumps({"output": "Background process started", "session_id": "proc_x", "exit_code": 0})
++        return json.dumps({"output": "Command completed", "exit_code": 0})
+ 
+     monkeypatch.setattr(tt, "terminal_tool", fake_terminal_tool)
+     dispatch = tt._handle_terminal
+-    fg = json.loads(dispatch({"command": "sleep 1", "heartbeat": 120}))
+-    assert fg.get("error") and "background" in fg["error"]
++    fg = json.loads(dispatch({"command": "printf hello", "background": False, "heartbeat": 60, "notify": False, "pty": False}))
++    assert not fg.get("error")
++    assert captured["background"] is False and captured["heartbeat"] == 0
++    assert captured["notify_on_complete"] is False and captured["watch_patterns"] is None
++
++    captured.clear()
++    fg_notify = json.loads(dispatch({"command": "printf hello", "notify": True}))
++    assert fg_notify.get("error") and "background" in fg_notify["error"] and not captured
+ 
+     bg = json.loads(dispatch({"command": "sleep 1", "background": True, "heartbeat": 120}))
+     assert "error" not in bg or not bg["error"]

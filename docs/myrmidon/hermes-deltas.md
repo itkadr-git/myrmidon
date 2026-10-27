@@ -107,3 +107,7 @@ When an offer is merged upstream (or into the plugin), the delta is dropped in a
 separate change: remove the patch file, the registry row and the row here, and bump
 the pin if the fix is only in a newer tag. That keeps the list short over time,
 which is the point.
+
+## Terminal foreground heartbeat (OPE-9621)
+
+The image carries deltas 18 and 19 for the Hermes terminal dispatcher. Foreground calls drop heartbeat (which has no meaning without a tracked process), including provider-supplied `heartbeat=60` and `notify=false` defaults; true `notify`, `notify_on_complete`, and nonempty `watch_patterns` remain a clear error. The schema directs callers to use heartbeat only with `background=true` and omit it by default. The build-time regression test pins both the accepted default-filled foreground call and the rejected notification intent. Drop these patches when the pinned upstream tag contains the equivalent implementation and test.
