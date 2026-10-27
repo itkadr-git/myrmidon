@@ -128,6 +128,19 @@ describe("guarded files carry no English literals", () => {
     expect(offenders, "expected no hard-coded English UI copy in plugin UI files").toEqual([]);
   });
 
+  it("scans web application UI sources when present", () => {
+    const webRoot = join(UI_ROOT, "../../web");
+    if (!existsSync(webRoot)) return;
+    const webFiles = readdirSync(webRoot, { recursive: true })
+      .filter((path): path is string => typeof path === "string" && /\\.(?:tsx|jsx)$/.test(path))
+      .map((path) => join(webRoot, path));
+    expect(webFiles.length).toBeGreaterThan(0);
+    const offenders = webFiles.flatMap((path) =>
+      findEnglishLiterals(readFileSync(path, "utf8")).map((o) => `${path}:line ${o.line}: ${o.kind} "${o.text}"`),
+    );
+    expect(offenders, "expected no hard-coded English UI copy in web files").toEqual([]);
+  });
+
   it("detects a deliberately untranslated plugin JSX string", () => {
     expect(findEnglishLiterals('<button>Intentionally untranslated</button>')).toEqual([
       { line: 1, kind: "text", text: "Intentionally untranslated" },
