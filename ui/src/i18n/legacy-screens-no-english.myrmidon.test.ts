@@ -149,7 +149,7 @@ describe("guarded files carry no English literals", () => {
     const webRoot = join(UI_ROOT, "../../web");
     if (!existsSync(webRoot)) return;
     const webFiles = readdirSync(webRoot, { recursive: true })
-      .filter((path): path is string => typeof path === "string" && /\\.(?:tsx|jsx)$/.test(path))
+      .filter((path): path is string => typeof path === "string" && /\.(?:tsx|jsx)$/.test(path))
       .map((path) => join(webRoot, path));
     expect(webFiles.length).toBeGreaterThan(0);
     const offenders = webFiles.flatMap((path) =>
