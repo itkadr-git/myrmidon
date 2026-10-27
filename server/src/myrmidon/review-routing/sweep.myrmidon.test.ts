@@ -395,6 +395,7 @@ describe("PR lane (fake store + fake resolver)", () => {
       ci: "green",
       reviewDecision: null,
       fetchFailed: false,
+      mergeable: true,
       title: "Add routing",
       url: "https://github.com/acme/widgets/pull/7",
       authorLogin: "author-a",
