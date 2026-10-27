@@ -30,20 +30,20 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
     const repo = typeof meta.repo === "string" ? meta.repo : typeof meta.repository === "string" ? meta.repository : null;
     const number = Number(meta.number ?? product.externalId);
     if (!repo || !Number.isInteger(number) || number <= 0) continue;
-    const events = await db.select({ payload: connectionEventDeliveries.normalizedPayload, at: connectionEventDeliveries.createdAt })
+    const events = await db.select({ payload: connectionEventDeliveries.normalizedPayload, at: connectionEventDeliveries.providerCreatedAt, receivedAt: connectionEventDeliveries.createdAt })
       .from(connectionEventDeliveries).where(and(eq(connectionEventDeliveries.companyId, companyId),
         inArray(connectionEventDeliveries.event, ["workflow_run", "check_suite"]),
         sql`lower(${connectionEventDeliveries.normalizedPayload}->>'repository') = lower(${repo})`,
         sql`coalesce(${connectionEventDeliveries.normalizedPayload}->>'pullRequestNumber', ${connectionEventDeliveries.normalizedPayload}->>'number') = ${String(number)}`));
-    const since = redCiSince(events.map(({ payload, at }) => ({
+    const since = redCiSince(events.map(({ payload, at, receivedAt }) => ({
       conclusion: typeof payload.conclusion === "string" && (!payload.status || payload.status === "completed") ? payload.conclusion : null,
-      at: at.toISOString(),
+      at: (at ?? receivedAt).toISOString(),
     })));
     if (since) samples.push({ companyId, subjectId: issue.id, subjectKind: "issue", title: issue.title, metric: "redCiMs", since });
   }
   // One card per subject/metric even when a PR has multiple registered products.
   const stored = general?.devflowHealth as Record<string, unknown> | undefined;
-  const thresholds = { ...stored };
+  const thresholds: Record<string, unknown> = { ...stored };
   for (const [metric, envKey] of Object.entries({ engineerIdleMs: "MYRMIDON_DEVFLOW_ENGINEER_IDLE_MS", reviewQueueAgeMs: "MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS", redCiMs: "MYRMIDON_DEVFLOW_RED_CI_MS" })) {
     if (process.env[envKey]?.trim()) thresholds[metric] = Number(process.env[envKey]);
   }
