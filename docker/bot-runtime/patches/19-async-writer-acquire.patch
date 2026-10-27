@@ -414,6 +414,10 @@ index 46e315a..3380716 100644
 +        self._async_tasks: set[asyncio.Task] = set()
 +        self._async_tasks_lock = threading.Lock()
 +        self._accepting_async = True
++        self._accepting_sync = True
++        self._sync_in_flight = 0
++        self._sync_drain_event = threading.Event()
++        self._sync_drain_event.set()
  
      def _is_stale(self, path: Path, unavailable: _Unavailable, generation: int) -> bool:
          """Caller holds ``lock``: True when close_all ran or the slot was replaced mid-open."""
@@ -509,8 +513,29 @@ index 46e315a..3380716 100644
 +            on_recovered()
 +        return handle
 +
-     def get(
-         self, path: Path, opener: Callable[[], Any], *, raise_on_error: bool = False,
++    def get(
++        self, path: Path, opener: Callable[[], Any], *, raise_on_error: bool = False,
++        on_recovered: Callable[[], None] | None = None,
++        non_cacheable: Callable[[Exception], bool] | None = None,
++    ) -> Any:
++        """Admit sync acquisition into the shutdown fence shared with async opens."""
++        with self.lock:
++            if not self._accepting_sync:
++                return None
++            self._sync_in_flight += 1
++            self._sync_drain_event.clear()
++        try:
++            return self._get_sync(
++                path, opener, raise_on_error=raise_on_error,
++                on_recovered=on_recovered, non_cacheable=non_cacheable)
++        finally:
++            with self.lock:
++                self._sync_in_flight -= 1
++                if self._sync_in_flight == 0:
++                    self._sync_drain_event.set()
++
++     def _get_sync(
++         self, path: Path, opener: Callable[[], Any], *, raise_on_error: bool = False,
          on_recovered: Callable[[], None] | None = None,
 @@ -82,7 +176,10 @@ class RecoverableHandleCache:
          with self.lock:
@@ -540,11 +565,13 @@ index 46e315a..3380716 100644
 +        if reject_new:
 +            with self.lock:
 +                self._accepting_async = False
++                self._accepting_sync = False
 +                self._generation += 1
 +        while True:
 +            with self._async_tasks_lock:
 +                pending = tuple(self._async_tasks)
 +            if not pending:
++                await asyncio.to_thread(self._sync_drain_event.wait)
 +                return
 +            await asyncio.gather(*(asyncio.shield(t) for t in pending), return_exceptions=True)
 +
@@ -552,6 +579,7 @@ index 46e315a..3380716 100644
          """Drain cached handles under the lock and close them outside it."""
          with self.lock:
 +            self._accepting_async = False
++            self._accepting_sync = False
              self._generation += 1
              self._close_rejected = close
              handles = list(self.handles.values())
