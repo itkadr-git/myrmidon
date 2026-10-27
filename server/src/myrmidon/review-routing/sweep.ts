@@ -371,14 +371,19 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           maxOpenReviewsPerReviewer: prWatch.maxOpenReviewsPerReviewer,
         });
         if (!picked) continue;
-        const patch = buildReviewRoutingAssignPatch({ issue: row, reviewerAgentId: picked.id });
         const applied = await deps.store.applyPatch({
           issueId: row.id,
           companyId,
           guard: (fresh) => fresh.status === "in_progress" && fresh.assigneeAgentId === row.assigneeAgentId,
-          build: () => patch,
+          build: (fresh) => buildReviewRoutingAssignPatch({ issue: fresh, reviewerAgentId: picked.id }),
         });
         if (!applied) continue;
+        await deps.logActivity({
+          companyId,
+          action: REVIEW_ROUTING_ASSIGNED_ACTION,
+          issueId: row.id,
+          details: { reviewerAgentId: picked.id, reviewerRole: picked.role, reason: "existing_pr_ci_wait", repository: product.repository, pullRequest: product.number, ci: head.ci },
+        });
         await deps.addComment(row.id,
           `Automatic review routing: ${product.repository}#${product.number} is open, non-draft, mergeable, and CI is pending or green. This task is now in review; the original assignee will resume only if changes are requested.`,
           { presentation: notice("PR waiting for CI/review"), metadata: metadataFor({ "Pull request": `${product.repository}#${product.number}`, CI: head.ci, Reviewer: picked.id }) });
