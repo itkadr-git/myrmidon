@@ -1336,9 +1336,19 @@ function parseUsage(value: unknown): UsageSummary | undefined {
   };
 }
 
-function parseGatewayCallIds(value: unknown): { gatewayCallIds: string[]; litellmRequestIds: string[] } {
+function parseGatewayCallIds(value: unknown): {
+  gatewayCallIds: string[];
+  gatewayCallIdsTruncated: boolean;
+  litellmRequestIds: string[];
+  litellmRequestIdsTruncated: boolean;
+} {
   const record = asRecord(value);
-  if (!record) return { gatewayCallIds: [], litellmRequestIds: [] };
+  if (!record) {
+    return {
+      gatewayCallIds: [], gatewayCallIdsTruncated: false,
+      litellmRequestIds: [], litellmRequestIdsTruncated: false,
+    };
+  }
   const usage = asRecord(record.usage);
   const gatewayCallIds = new Set<string>();
   const litellmRequestIds = new Set<string>();
@@ -1359,7 +1369,14 @@ function parseGatewayCallIds(value: unknown): { gatewayCallIds: string[]; litell
       addIds(gatewayCallIds, candidate);
     }
   }
-  return { gatewayCallIds: [...gatewayCallIds], litellmRequestIds: [...litellmRequestIds] };
+  const gatewayCallIdsTruncated = gatewayCallIds.size > 500;
+  const litellmRequestIdsTruncated = litellmRequestIds.size > 500;
+  return {
+    gatewayCallIds: [...gatewayCallIds].slice(0, 500),
+    gatewayCallIdsTruncated,
+    litellmRequestIds: [...litellmRequestIds].slice(0, 500),
+    litellmRequestIdsTruncated,
+  };
 }
 
 function parseModelCallCount(value: unknown): number | null {
@@ -1566,14 +1583,12 @@ export function mapFinalResultForTest(input: {
       output: output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
-      ...(modelCallCount !== null || payloadCallIds.gatewayCallIds.length > 0 || payloadCallIds.litellmRequestIds.length > 0
-        ? {
-            ...(modelCallCount !== null ? { modelCallCount } : {}),
-            modelCallCountSource,
-          }
-        : {}),
+      modelCallCount: modelCallCount,
+      modelCallCountSource,
       gatewayCallIds: payloadCallIds.gatewayCallIds,
+      gatewayCallIdsTruncated: payloadCallIds.gatewayCallIdsTruncated,
       litellmRequestIds: payloadCallIds.litellmRequestIds,
+      litellmRequestIdsTruncated: payloadCallIds.litellmRequestIdsTruncated,
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     },
   };
