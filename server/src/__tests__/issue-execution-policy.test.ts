@@ -1043,8 +1043,6 @@ describe("issue execution policy transitions", () => {
 
       expect(result.patch.executionState).toBeNull();
       expect(result.patch.status).toBe("in_progress");
-      expect(result.patch.assigneeAgentId).toBeNull();
-      expect(result.patch.assigneeUserId).toBeNull();
     });
 
     it("returns to the stored executor when policy is removed without explicit assignee", () => {

@@ -791,6 +791,8 @@ function safeReturnAssignee(
       reviewerIds.includes(principal.agentId ?? "");
   };
   if (!isReviewer(currentAssignee)) return currentAssignee;
+  if (currentAssignee?.type === "agent" &&
+      currentAssignee.agentId === issue.assigneeAgentId && issue.assigneeAgentRole === "reviewer") return null;
   if (!isReviewer(actor)) return actor;
   return null;
 }
@@ -842,7 +844,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     if (existingState) {
       patch.executionState = null;
       if (input.issue.status === "in_review") {
-        if (requestedStatus === undefined) patch.status = "in_progress";
+        patch.status = requestedStatus ?? "in_progress";
         if (requestedAssigneePatchProvided) {
           Object.assign(patch, patchForPrincipal(explicitAssignee));
         } else if (existingState.returnAssignee) {
@@ -852,7 +854,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
             input.issue,
             actor,
           );
-          if (safeAssignee) Object.assign(patch, patchForPrincipal(safeAssignee));
+          if (safeAssignee || !principalsEqual(actor, currentAssignee)) {
+            Object.assign(patch, patchForPrincipal(safeAssignee));
+          }
         } else if (requestedStatus !== undefined && actor) {
           const safeAssignee = safeReturnAssignee(currentAssignee, null, input.issue, actor);
           if (safeAssignee) Object.assign(patch, patchForPrincipal(safeAssignee));
@@ -1268,20 +1272,24 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   if (!pendingStage) return { patch };
 
   // Keep the executor excluded even when it is not a safe return destination.
-  const participantExclusion = existingState?.returnAssignee ?? currentAssignee ?? actor;
-  const returnAssignee = safeReturnAssignee(
-    participantExclusion,
-    pendingStage,
-    input.issue,
-    actor,
-  );
+  const participantExclusion = input.issue.assigneeAgentRole === "reviewer" &&
+    !existingState?.returnAssignee ? null : existingState?.returnAssignee ?? currentAssignee ?? actor;
+  const returnAssignee = canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus })
+    ? participantExclusion
+    : safeReturnAssignee(
+        participantExclusion,
+        pendingStage,
+        input.issue,
+        actor,
+      );
   const skippedStageIds = [...(existingState?.completedStageIds ?? [])];
   let participant = selectStageParticipant(pendingStage, {
     preferred:
       existingState?.status === CHANGES_REQUESTED_STATUS
         ? explicitAssignee ?? existingState.currentParticipant ?? null
         : explicitAssignee,
-    exclude: participantExclusion,
+    exclude: pendingStage.participants.length === 1 &&
+      stageHasParticipant(pendingStage, participantExclusion) ? returnAssignee : participantExclusion,
   });
   while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus })) {
     skippedStageIds.push(pendingStage.id);
