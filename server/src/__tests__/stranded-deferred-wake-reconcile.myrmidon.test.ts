@@ -154,6 +154,7 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
       payload: { issueId },
       status: "deferred_issue_execution",
       requestedAt: longAgo(),
+      createdAt: longAgo(),
       updatedAt: longAgo(),
       ...extra,
     });

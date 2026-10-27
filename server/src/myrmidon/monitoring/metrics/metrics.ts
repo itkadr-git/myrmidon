@@ -580,7 +580,8 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       eq(agentWakeupRequests.status, "deferred_issue_execution"),
       isNull(agentWakeupRequests.runId),
       lt(agentWakeupRequests.requestedAt, new Date(now.getTime() - 30 * 60_000)),
-    )).then((rows) => Number(rows[0]?.total ?? 0)),
+      lt(agentWakeupRequests.createdAt, new Date(now.getTime() - 30 * 60_000)),
+      )).then((rows) => Number(rows[0]?.total ?? 0)),
     0,
   );
   const failedWindow = await guarded(

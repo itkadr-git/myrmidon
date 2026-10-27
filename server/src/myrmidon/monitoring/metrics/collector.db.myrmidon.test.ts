@@ -44,6 +44,7 @@ describeEmbeddedPostgres("metrics collector", () => {
     resetStaleBlockSignals();
     resetTracingHealthSignals();
     await db.delete(litellmCostEvents);
+    await db.delete(agentWakeupRequests);
     await db.delete(issueClaims);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
@@ -109,9 +110,9 @@ describeEmbeddedPostgres("metrics collector", () => {
     const agentId = await seedAgent(companyId, "engineer");
     await db.insert(agentWakeupRequests).values([
       { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "cancelled", requestedAt: new Date(NOW.getTime() - 40 * 60_000) },
-      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 31 * 60_000), runId: randomUUID() },
-      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 31 * 60_000) },
-      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 29 * 60_000) },
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 31 * 60_000), createdAt: new Date(NOW.getTime() - 31 * 60_000), runId: randomUUID() },
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 31 * 60_000), createdAt: new Date(NOW.getTime() - 31 * 60_000) },
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 29 * 60_000), createdAt: new Date(NOW.getTime() - 29 * 60_000) },
     ]);
     const snapshot = await collectMetricsSnapshot({ db, now: () => NOW, errorWindowSec: 3600, latencyWindowSec: 3600 });
     expect(snapshot.deferredIssueExecutionOver30m).toBe(1);
