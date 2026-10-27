@@ -110,7 +110,6 @@ describe("guarded files carry no English literals", () => {
   it("guarded lists name only .tsx files under ui/src", () => {
     expect(guardedFromLists.filter((rel) => !rel.endsWith(".tsx") || rel.startsWith("/") || rel.includes(".."))).toEqual([]);
   });
-
   it("catches hard-coded English in a ternary code branch but ignores identifiers and i18n keys", () => {
     expect(findEnglishLiterals('{ready ? "Ready to run" : t("area.jobs.waiting")}')).toEqual([
       { line: 1, kind: "literal", text: "Ready to run" },
