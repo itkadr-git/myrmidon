@@ -384,7 +384,6 @@ describe("issue activity event routes", () => {
         "createdByUserId": "local-board",
         "description": null,
         "executionPolicy": null,
-        "executionReviewParticipantAgentIds": [],
         "executionState": null,
         "id": "11111111-1111-4111-8111-111111111111",
         "identifier": "PAP-580",
