@@ -73,7 +73,11 @@ export function generateSiteCa(now = new Date()): SiteCaMaterial {
   return { cert, key: pair.privateKey, subject: caName };
 }
 
-export function issueSiteClientCertificate(ca: SiteCaMaterial, commonName: string, now = new Date()): SiteClientMaterial {
+export function issueSiteClientCertificate(
+  ca: SiteCaMaterial,
+  commonName: string,
+  nowOrOptions: Date | { validityDays?: number } = new Date(),
+): SiteClientMaterial {
   const caCert = new X509Certificate(ca.cert);
   const caKey = createPrivateKey(ca.key);
   if (!caCert.checkPrivateKey(caKey)) throw new Error("site CA key does not match its certificate");
@@ -83,8 +87,10 @@ export function issueSiteClientCertificate(ca: SiteCaMaterial, commonName: strin
     publicKeyEncoding: { type: "spki", format: "der" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
+  const now = nowOrOptions instanceof Date ? nowOrOptions : new Date();
+  const validityDays = nowOrOptions instanceof Date ? SITE_CLIENT_CERT_VALIDITY_DAYS : (nowOrOptions.validityDays ?? SITE_CLIENT_CERT_VALIDITY_DAYS);
   const from = new Date(now.getTime() - 60_000);
-  const notAfter = new Date(now.getTime() + SITE_CLIENT_CERT_VALIDITY_DAYS * DAY_MS);
+  const notAfter = new Date(now.getTime() + validityDays * DAY_MS);
   const issuer = new X509Certificate(ca.cert).issuer;
   const issuerName = issuer.includes("myrmidon-site-ca") ? name("myrmidon-site-ca") : name("invalid-site-ca");
   const tbs = makeTbs(randomBytes(16).readUInt32BE(0) || 1, issuerName, name(commonName), pair.publicKey, from, notAfter, false);

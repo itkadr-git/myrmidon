@@ -5,7 +5,7 @@ import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../../middleware/index.js";
 import { fleetSiteRoutes, normalizeFleetdUrl } from "./fleet-site-routes.js";
-import { generateSiteCa } from "./site-client-pki.js";
+import { generateSiteCa, issueSiteClientCertificate } from "./site-client-pki.js";
 import { cleanupTestPki, generateEphemeralTestPki, type TestPkiArtifacts } from "./site-agent-pki.js";
 
 import type { FleetSite, FleetSiteInsert } from "./site-registry.js";
@@ -107,30 +107,57 @@ function body(overrides: Record<string, unknown> = {}) {
 const path = `/companies/${COMPANY_A}/fleet/sites`;
 
 describe("fleet site enroll routes", () => {
-  it("stores only the CA key in a company secret, issues the client cert, and never returns credentials", async () => {
+  it("bootstraps a site CA in a company secret and returns no private key", async () => {
+    const { app, deps } = harness(undefined, { siteCa: null });
+    const response = await request(app).post(path).send(body()).expect(201);
+    const caWrite = deps.writeSecret.mock.calls.find((call) => call[1] === "myrmidon-site-ca");
+    expect(caWrite).toBeDefined();
+    const storedCa = JSON.parse(String(caWrite?.[2])) as { cert: string; key: string };
+    expect(storedCa.cert).toContain("CERTIFICATE");
+    expect(storedCa.key).toContain("PRIVATE KEY");
+    const returned = JSON.stringify(response.body);
+    expect(returned).not.toContain("PRIVATE KEY");
+    expect(returned).not.toContain("privateKey");
+  });
+
+  it("reuses existing site CA and stores client fingerprint without exposing credentials", async () => {
     const ca = generateSiteCa();
     const { app, deps } = harness(undefined, { siteCa: ca });
     const response = await request(app).post(path).send(body()).expect(201);
-    expect(deps.writeSecret).toHaveBeenCalledWith(
+    const site = deps.createSite.mock.calls[0]![0];
+    expect(site.clientCertFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(site.clientCertNotAfter).toBeInstanceOf(Date);
+    expect(site.clientCertNotAfter!.getTime() - Date.now()).toBeGreaterThan(89 * 86_400_000);
+    expect(site.clientCertNotAfter!.getTime() - Date.now()).toBeLessThanOrEqual(90 * 86_400_000);
+    const returned = JSON.stringify(response.body);
+    expect(deps.writeSecret).toHaveBeenCalledTimes(1);
+    expect(deps.writeSecret).toHaveBeenCalledWith(COMPANY_A, "myrmidon-site-client-myr-vm1", expect.stringContaining("CERTIFICATE"));
+    expect(deps.writeSecret).not.toHaveBeenCalledWith(COMPANY_A, "myrmidon-site-ca", expect.anything());
+    expect(returned).not.toContain("PRIVATE KEY");
+    expect(returned).not.toContain("privateKey");
+    expect(JSON.stringify((await request(app).get(path)).body)).not.toContain("PRIVATE KEY");
+  });
+  it("renews an expiring client certificate and updates its fingerprint in the registry", async () => {
+    const ca = generateSiteCa();
+    const client = issueSiteClientCertificate(ca, "test-site", new Date(Date.now() - 89 * 86_400_000));
+    const { app, deps } = harness(undefined, { siteCa: ca });
+    await request(app).post(path).send(body()).expect(201);
+    const site = deps.createSite.mock.calls[0]![0] as unknown as FleetSite;
+    site.clientCertNotAfter = new Date(Date.now() + 86_400_000);
+    deps.readClientCertificate.mockResolvedValue(client.cert);
+    const response = await request(app).get(path).expect(200);
+    expect(deps.writeSecret).toHaveBeenCalledTimes(2);
+    expect(deps.writeSecret).toHaveBeenLastCalledWith(
       COMPANY_A,
       "myrmidon-site-client-myr-vm1",
       expect.stringContaining("CERTIFICATE"),
     );
-    expect(deps.writeSecret).not.toHaveBeenCalledWith(COMPANY_A, "myrmidon-site-ca", expect.anything());
-    const returned = JSON.stringify(response.body);
-    expect(returned).not.toContain("PRIVATE KEY");
-    expect(returned).not.toContain("privateKey");
-    expect(deps.createSite.mock.calls[0]![0].clientCertNotAfter).toBeInstanceOf(Date);
-    expect(deps.createSite.mock.calls[0]![0].clientCertFingerprint).toMatch(/^[a-f0-9]{64}$/);
-    expect(deps.createSite.mock.calls[0]![0].caCertFingerprint).toMatch(/^[a-f0-9]{64}$/);
-    const listed = JSON.stringify((await request(app).get(path)).body);
-    expect(listed).not.toContain("PRIVATE KEY");
-    expect(response).not.toContain("PRIVATE KEY");
-  });
-
-  it("accepts a single combined secret as the client reference", async () => {
-    const { app } = harness(["fleetd-myr-vm1-token", "fleetd-myr-vm1-client"]);
-    await request(app).post(path).send(body()).expect(201);
+    expect(deps.updateSite).toHaveBeenCalledWith(
+      COMPANY_A,
+      "myr-vm1",
+      expect.objectContaining({ clientCertFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+    );
+    expect(response.body.sites[0].clientCertFingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("rejects http, paths and credentials in the url", async () => {
@@ -157,8 +184,9 @@ describe("fleet site enroll routes", () => {
   });
 
   it("rejects when the token secret is missing", async () => {
-    const { app } = harness(["myrmidon-site-ca"]);
-    await request(app).post(path).send(body({ tokenSecret: "nope" })).expect(400);
+    const missingToken = harness(["myrmidon-site-ca"]);
+    await request(missingToken.app).post(path).send(body({ tokenSecret: "nope" })).expect(400);
+    expect(missingToken.deps.createSite).not.toHaveBeenCalled();
   });
 
   it("rejects unknown or reserved fields", async () => {
@@ -190,6 +218,8 @@ describe("fleet site enroll routes", () => {
   it("lets company members and viewers read, but not write", async () => {
     const { app, deps } = harness();
     await request(app).post(path).send(body()).expect(201);
+    const site = deps.createSite.mock.calls[0]![0];
+    expect(site.clientCertFingerprint).toMatch(/^[a-f0-9]{64}$/);
     for (const who of ["member", "viewer"]) {
       await request(app).get(path).set("x-test-actor", who).expect(200);
       await request(app).post(path).set("x-test-actor", who).send(body({ name: "x" })).expect(403);

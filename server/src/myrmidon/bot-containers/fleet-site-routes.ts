@@ -63,17 +63,13 @@ export interface FleetSiteRoutesDeps {
   getSite(companyId: string, name: string): Promise<FleetSite | null>;
   createSite(input: FleetSiteInsert): Promise<FleetSite>;
   deleteSite(companyId: string, name: string): Promise<boolean>;
-  /** Number of bots whose card names this site as container.host. */
   countBotsOnSite(companyId: string, name: string): Promise<number>;
-  /** The CA PEM of a company secret (or null): used to cross-check the enrolled CA. */
   readSecret(companyId: string, name: string): Promise<string | null>;
   readSiteCa(companyId: string): Promise<SiteCaMaterial | null>;
-  /** True when a company secret with this exact name exists. */
   secretExists(companyId: string, name: string): Promise<boolean>;
-  /** Create or replace a company-local secret; never return or log its value. */
   writeSecret(companyId: string, name: string, value: string): Promise<void>;
   refreshRegistry(): void;
-  updateSite(companyId: string, name: string, patch: Partial<Pick<FleetSite, "clientCertNotAfter" | "certRotatedAt">>): Promise<void>;
+  updateSite(companyId: string, name: string, patch: Partial<Pick<FleetSite, "clientCertNotAfter" | "clientCertFingerprint" | "certRotatedAt">>): Promise<void>;
   readClientCertificate(companyId: string, secretName: string): Promise<string | null>;
 }
 
@@ -154,8 +150,8 @@ function publicSite(site: FleetSite) {
     clientCertSecretKey: site.clientCertSecretKey ?? null,
     clientCertNotAfter: site.clientCertNotAfter ? new Date(site.clientCertNotAfter).toISOString() : null,
     clientCertFingerprint: site.clientCertFingerprint ?? null,
-    certRotatedAt: site.certRotatedAt ? new Date(site.certRotatedAt).toISOString() : null,
     caCertFingerprint: site.caCertFingerprint ?? null,
+    certRotatedAt: site.certRotatedAt ? new Date(site.certRotatedAt).toISOString() : null,
     capacity: site.capacity,
     profile: site.profile,
     labels: site.labels ?? {},
@@ -184,11 +180,17 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
       const existingPem = await deps.readClientCertificate(companyId, site.clientCertSecretKey);
       if (!existingPem) continue;
       try {
-        const expiration = new Date(new X509Certificate(existingPem).validTo).getTime();
-        if (site.clientCertNotAfter?.getTime() !== expiration) {
-          await deps.updateSite(companyId, site.name, { clientCertNotAfter: new Date(expiration) });
+        const certificate = new X509Certificate(existingPem);
+        const expiration = new Date(certificate.validTo).getTime();
+        const fingerprint = createHash("sha256").update(certificate.raw).digest("hex");
+        if (site.clientCertNotAfter?.getTime() !== expiration || site.clientCertFingerprint !== fingerprint) {
+          await deps.updateSite(companyId, site.name, {
+            clientCertNotAfter: new Date(expiration),
+            clientCertFingerprint: fingerprint,
+          });
           deps.refreshRegistry();
           site.clientCertNotAfter = new Date(expiration);
+          site.clientCertFingerprint = fingerprint;
         }
       } catch {
         continue;

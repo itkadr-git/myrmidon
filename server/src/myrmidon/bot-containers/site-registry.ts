@@ -109,6 +109,7 @@ export async function createFleetSite(db: Db, input: FleetSiteInsert): Promise<F
       clientCertSecretKey: input.clientCertSecretKey ?? null,
       clientCertNotAfter: input.clientCertNotAfter ?? null,
       clientCertFingerprint: input.clientCertFingerprint ?? null,
+      caCertFingerprint: input.caCertFingerprint ?? null,
       certRotatedAt: input.certRotatedAt ?? null,
       status: input.status ?? "active",
       capacity: input.capacity ?? { maxCpus: 8, maxMemoryMb: 32768 },
