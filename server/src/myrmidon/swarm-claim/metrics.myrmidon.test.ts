@@ -11,6 +11,7 @@ import { insertClaim, releaseClaim } from "./store.js";
 
 import { swarmClaimMetrics } from "./metrics.js";
 import { createSwarmClaimSweeper } from "./sweep.js";
+import { createSwarmSupervisorReleasePort } from "../swarm-claim-supervisor/rebalance.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 let db: Db;
@@ -154,8 +155,9 @@ describeDatabase("swarm claim transaction metrics", () => {
     swarmClaimMetrics.reset();
     const claim = await insertClaim(db, claimInput(agentOne, new Date()));
     expect(claim).not.toBeNull();
-    const input = { claimId: claim!.id, reason: "supervisor_rebalance" };
-    const results = await Promise.all([releaseClaim(db, input), releaseClaim(db, input)]);
+    const port = createSwarmSupervisorReleasePort(db, {});
+    const release = () => port.releaseClaim(companyId, claim!.id, "supervisor_rebalance", new Date());
+    const results = await Promise.all([release(), release()]);
     expect(results.filter(Boolean)).toHaveLength(1);
     expect(swarmClaimMetrics.read().recovered).toEqual({ lease_expired: 0, supervisor_rebalance: 1 });
   }, 30_000);
