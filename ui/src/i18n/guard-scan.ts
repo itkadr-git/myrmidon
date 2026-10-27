@@ -8,10 +8,10 @@
 // textual aria-*, title, label, placeholder, tooltip, message, intro,
 // description, emptyMessage.
 //
-// Does NOT catch (see docs/myrmidon/ui-i18n-extraction.md): template
-// literals, strings built in code, object fields and constants (toast
-// texts, option lists, column titles), ternary branches like
-// {ok ? "Yes" : "No"}, and text in .ts files. Review those by hand.
+// Catches JSX text children, JSX string children, user-visible attributes,
+// and string literals in code outside JSX and translation calls. The latter
+// covers conditional branches and object values while avoiding arbitrary
+// module strings and i18n catalogue keys.
 
 export interface GuardOffender {
   line: number;
