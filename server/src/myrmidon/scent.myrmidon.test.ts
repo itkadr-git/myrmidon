@@ -503,13 +503,15 @@ describe("startScentQueue: no re-entrant ticks", () => {
   });
 });
 
-// No activity-log module mock is needed: queue diagnostics use their injected port.
+// Queue diagnostics use their injected activity-log port.
 
 describe("scent queue: unconfigured contour is visible in the activity log", () => {
-  const previousScentBaseUrl = process.env.MYRMIDON_SCENT_BASE_URL;
-  const previousEvalsBaseUrl = process.env.MYRMIDON_EVALS_BASE_URL;
+  let previousScentBaseUrl: string | undefined;
+  let previousEvalsBaseUrl: string | undefined;
 
   beforeEach(() => {
+    previousScentBaseUrl = process.env.MYRMIDON_SCENT_BASE_URL;
+    previousEvalsBaseUrl = process.env.MYRMIDON_EVALS_BASE_URL;
     // A contour configured via env would skip the park gate entirely and
     // crash the stub db deeper in the tick — force the empty-contour world.
     delete process.env.MYRMIDON_SCENT_BASE_URL;

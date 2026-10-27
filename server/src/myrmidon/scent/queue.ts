@@ -48,7 +48,7 @@ export interface ScentQueuePorts {
   logActivity?: (db: Db, entry: Parameters<typeof logActivity>[1]) => Promise<unknown>;
 }
 
-async function defaultResolveSecret(
+export async function resolveScentSecret(
   db: Db,
   companyId: string,
   secretName: string,
@@ -63,19 +63,6 @@ async function defaultResolveSecret(
   const row = await secrets.getByName(companyId, secretName);
   if (row) return secrets.resolveSecretValue(companyId, row.id, "latest");
   return process.env[secretName] ?? null;
-}
-
-export async function resolveScentKeyConfigured(
-  db: Db,
-  companyId: string,
-  secretName: string,
-  resolveSecret: (db: Db, companyId: string, secretName: string) => Promise<string | null>,
-): Promise<boolean> {
-  try {
-    return Boolean(await resolveSecret(db, companyId, secretName));
-  } catch {
-    return false;
-  }
 }
 
 async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): Promise<void> {
