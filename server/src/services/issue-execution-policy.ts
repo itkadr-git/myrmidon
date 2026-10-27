@@ -1164,10 +1164,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
             };
           }
         }
-        if (input.issue.status === "in_review" && requestedStatus === undefined) {
-          patch.status = "in_progress";
-        }
-        if (!requestedAssigneePatchProvided) {
+        patch.status = "in_progress";
+        if (requestedAssigneePatchProvided) {
+          Object.assign(patch, patchForPrincipal(explicitAssignee));
+        } else {
           const safeAssignee = safeReturnAssignee(
             existingState.returnAssignee,
             activeStage,
@@ -1267,8 +1267,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       : nextPendingStage(input.policy, existingState);
   if (!pendingStage) return { patch };
 
+  // Keep the executor excluded even when it is not a safe return destination.
+  const participantExclusion = existingState?.returnAssignee ?? currentAssignee ?? actor;
   const returnAssignee = safeReturnAssignee(
-    existingState?.returnAssignee ?? currentAssignee,
+    participantExclusion,
     pendingStage,
     input.issue,
     actor,
@@ -1279,9 +1281,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       existingState?.status === CHANGES_REQUESTED_STATUS
         ? explicitAssignee ?? existingState.currentParticipant ?? null
         : explicitAssignee,
-    exclude: returnAssignee,
+    exclude: participantExclusion,
   });
-  while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee, requestedStatus })) {
+  while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus })) {
     skippedStageIds.push(pendingStage.id);
     pendingStage = nextPendingStage(
       input.policy,
@@ -1304,7 +1306,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         existingState?.status === CHANGES_REQUESTED_STATUS
           ? explicitAssignee ?? existingState.currentParticipant ?? null
           : explicitAssignee,
-      exclude: returnAssignee,
+      exclude: participantExclusion,
     });
   }
   if (!participant) {

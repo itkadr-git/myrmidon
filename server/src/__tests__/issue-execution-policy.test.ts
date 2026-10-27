@@ -980,6 +980,8 @@ describe("issue execution policy transitions", () => {
         lastDecisionOutcome: "changes_requested",
       });
       expect(result.decision).toMatchObject({ outcome: "changes_requested" });
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBe(ctoAgentId);
     });
 
     it("preserves an explicitly assigned executor when policy is removed", () => {
