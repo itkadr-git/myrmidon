@@ -128,6 +128,17 @@ describeEmbeddedPostgres("team liveness metrics", () => {
     });
   }
 
+  async function recordCommentOnlyRun(companyId: string, agentId: string, at: Date) {
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "succeeded",
+      livenessState: "empty_response",
+      finishedAt: at,
+      updatedAt: at,
+    });
+  }
+
   it("counts the four sources of one company inside the window", async () => {
     const now = new Date("2026-10-05T12:00:00.000Z");
     const hour = 60 * 60 * 1000;
@@ -145,6 +156,7 @@ describeEmbeddedPostgres("team liveness metrics", () => {
     await recordWake(companyId, agentId, new Date(now.getTime() - 30 * 60 * 1000));
     await recordWake(companyId, agentId, new Date(now.getTime() - 25 * hour));
     await recordStall(companyId, agentId, new Date(now.getTime() - 60 * 1000));
+    await recordCommentOnlyRun(companyId, agentId, new Date(now.getTime() - 30 * 60 * 1000));
 
     const metrics = await readTeamLivenessMetrics(db, companyId, now);
 
@@ -152,6 +164,7 @@ describeEmbeddedPostgres("team liveness metrics", () => {
     expect(metrics.autoResumeExhaustions).toBe(1);
     expect(metrics.wakes).toBe(1);
     expect(metrics.stalledRuns).toBe(1);
+    expect(metrics.emptyRunsByAgent).toEqual([{ agentId, count: 1 }]);
     expect(metrics.windowHours).toBe(24);
     expect(metrics.companyId).toBe(companyId);
     expect(metrics.from).toBe(new Date(now.getTime() - TEAM_LIVENESS_METRIC_WINDOW_MS).toISOString());
@@ -181,6 +194,8 @@ describeEmbeddedPostgres("team liveness metrics", () => {
   it("reads zeros on a quiet day", async () => {
     const now = new Date("2026-10-05T12:00:00.000Z");
     const companyId = await seedCompany("company-quiet");
+    const agentId = await seedAgent(companyId);
+    await recordCommentOnlyRun(companyId, agentId, new Date(now.getTime() - 25 * 60 * 60 * 1000));
 
     const metrics = await readTeamLivenessMetrics(db, companyId, now);
 

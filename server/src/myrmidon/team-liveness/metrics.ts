@@ -14,8 +14,8 @@
 // one company over one window, so the health card and the Prometheus endpoint
 // cannot drift from the behaviour they describe.
 
-import { and, count, eq, gte } from "drizzle-orm";
-import { agentWakeupRequests, type Db } from "@myrmidon/db";
+import { and, count, eq, gte, sql } from "drizzle-orm";
+import { agentWakeupRequests, heartbeatRuns, type Db } from "@myrmidon/db";
 import { autoResumeMetrics } from "../auto-resume.js";
 import { countRunStallInterrupts } from "../run-stall/metrics.js";
 
@@ -36,6 +36,8 @@ export interface TeamLivenessMetrics {
   wakes: number;
   /** Runs progress-based run liveness interrupted. */
   stalledRuns: number;
+  /** Successful runs whose only durable issue evidence was an agent comment. */
+  emptyRunsByAgent: Array<{ agentId: string; count: number }>;
 }
 
 /** How many wake requests the company saw since the given instant. */
@@ -52,6 +54,26 @@ export async function countWakesSince(db: Db, companyId: string, since: Date): P
   return Number(row?.total ?? 0);
 }
 
+export async function countEmptyRunsByAgent(
+  db: Db,
+  companyId: string,
+  since: Date,
+): Promise<Array<{ agentId: string; count: number }>> {
+  const rows = await db
+    .select({ agentId: heartbeatRuns.agentId, total: count() })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "succeeded"),
+        gte(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})`, since.toISOString()),
+        sql`${heartbeatRuns.livenessState} = 'empty_response'`,
+      ),
+    )
+    .groupBy(heartbeatRuns.agentId);
+  return rows.map((row) => ({ agentId: row.agentId, count: Number(row.total) }));
+}
+
 /**
  * The four numbers of the health card, for one company and one window. The
  * three reads run together: the card is a summary and each source is
@@ -64,10 +86,11 @@ export async function readTeamLivenessMetrics(
   windowMs: number = TEAM_LIVENESS_METRIC_WINDOW_MS,
 ): Promise<TeamLivenessMetrics> {
   const from = new Date(now.getTime() - windowMs);
-  const [resumes, wakes, stalledRuns] = await Promise.all([
+  const [resumes, wakes, stalledRuns, emptyRunsByAgent] = await Promise.all([
     autoResumeMetrics(db, companyId, from),
     countWakesSince(db, companyId, from),
     countRunStallInterrupts(db, { companyId, since: from }),
+    countEmptyRunsByAgent(db, companyId, from),
   ]);
   return {
     companyId,
@@ -78,5 +101,6 @@ export async function readTeamLivenessMetrics(
     autoResumeExhaustions: resumes.exhaustions,
     wakes,
     stalledRuns,
+    emptyRunsByAgent,
   };
 }

@@ -62,6 +62,12 @@ export function metricLines(metrics: TeamLivenessMetrics): MetricLine[] {
       value: metrics.stalledRuns,
       hint: i18n.t("area.settings-models-runtime-2.team-liveness-health-card.stalledRuns.hint"),
     },
+    {
+      key: "emptyRuns",
+      label: i18n.t("area.settings-models-runtime-2.team-liveness-health-card.emptyRuns.label"),
+      value: metrics.emptyRunsByAgent.reduce((sum, row) => sum + row.count, 0),
+      hint: i18n.t("area.settings-models-runtime-2.team-liveness-health-card.emptyRuns.hint"),
+    },
   ];
 }
 

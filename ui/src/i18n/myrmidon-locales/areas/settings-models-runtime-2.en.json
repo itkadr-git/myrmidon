@@ -96,6 +96,10 @@
           "label": "Stalled runs",
           "hint": "Runs that stopped making progress and were interrupted"
         },
+        "emptyRuns": {
+          "label": "Comment-only runs",
+          "hint": "Successful runs whose only durable issue evidence was a comment. API includes per-agent counts."
+        },
         "loading": "Loading team liveness...",
         "footnote": "What the board did on its own for this company in the window. A run of \"Resumes given up\" or \"Stalled runs\" means an agent needs a human look; the switches behind all four sit in the Team liveness panel."
       },
