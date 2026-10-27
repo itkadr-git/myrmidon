@@ -3449,6 +3449,7 @@ type IssueBlockerAttentionNode = {
   createdAt: Date;
   updatedAt?: Date | null;
   blockedTransitionAt: Date | null;
+  originKind?: string | null;
   executionRunId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -3467,7 +3468,7 @@ type IssueBlockerAttentionInputNode = Pick<
   | "blockedTransitionAt"
   | "assigneeAgentId"
   | "assigneeUserId"
-> & { executionRunId?: string | null };
+> & { originKind?: string | null; executionRunId?: string | null };
 
 type IssueBlockerAttentionEdge = {
   issueId: string;
@@ -3861,6 +3862,7 @@ async function listIssueBlockerAttentionMap(
           createdAt: issues.createdAt,
           updatedAt: issues.updatedAt,
           blockedTransitionAt: issues.blockedTransitionAt,
+          originKind: issues.originKind,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -3871,6 +3873,8 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
+            // Recovery machinery must not count as source continuation.
+            sql`${issues.originKind} IS DISTINCT FROM 'task_watchdog'`,
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
           ),
@@ -3889,6 +3893,7 @@ async function listIssueBlockerAttentionMap(
           createdAt: issues.createdAt,
           updatedAt: issues.updatedAt,
           blockedTransitionAt: issues.blockedTransitionAt,
+          originKind: issues.originKind,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -3898,6 +3903,7 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
+            sql`${issues.originKind} IS DISTINCT FROM 'task_watchdog'`,
             notInArray(
               issues.status,
               BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES,
@@ -3948,6 +3954,7 @@ async function listIssueBlockerAttentionMap(
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
           blockedTransitionAt: row.blockedTransitionAt,
+          originKind: row.originKind,
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
           assigneeUserId: row.assigneeUserId,
