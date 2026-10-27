@@ -359,7 +359,9 @@ async function main() {
   // during this pass are never evicted: the only copy of someone's work outlives the quota.
   const retention = async ({ startedAt }) => {
     if (!archiveMod || typeof archiveMod.retainPass !== "function") return;
-    const r = archiveMod.retainPass(ARCHIVE_DIR, { startedAt });
+    // Until botd can upload and independently verify a OneDrive receipt, retention
+    // must remain a report-only preview. Never delete the only archive copy here.
+    const r = archiveMod.retainPass(ARCHIVE_DIR, { startedAt, dryRun: true });
     if (!r.ok) throw new Error(r.reason);
     if (r.removed.length > 0) log(`botd: archive retention retired ${r.removed.length} entries (${r.removed.map((x) => x.reason).join(",")}), ${r.remaining} left, ${r.remainingBytes} bytes`);
   };
