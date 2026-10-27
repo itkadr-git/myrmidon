@@ -33,7 +33,7 @@ describe("requiresEngineer", () => {
     expect(requiresEngineer({ executionWorkspacePreference: "isolated_workspace" })).toBe(false);
   });
 
-  it("fails open for unrelated inputs", () => {
+  it("does not infer from unrelated labels or prose signals", () => {
     expect(requiresEngineer({ labels: ["backend"], harnessKind: "custom" })).toBe(false);
   });
 

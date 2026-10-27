@@ -47,12 +47,14 @@ const ISSUE: IssueSnapshot = {
   parentId: null,
   originId: null,
   originRunId: null,
+  issueRole: "engineer",
 };
 
 const AGENT: InvokableAgentSnapshot = {
   id: "deferred-agent",
   companyId: "company-1",
   name: "Deferred Agent",
+  role: "engineer",
   invokable: true,
 };
 
@@ -576,6 +578,40 @@ describe("releaseIssueExecution", () => {
 
     expect(claimOrder).toEqual(["wake-earliest", "wake-latest"]);
     expect(transaction.failDeferredWake).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { label: "skips mismatched reviewer continuation", agentRole: "reviewer", issueRole: "engineer", promoted: false },
+    { label: "allows matching engineer continuation", agentRole: "engineer", issueRole: "engineer", promoted: true },
+    { label: "allows continuation when issue role is null", agentRole: "reviewer", issueRole: null, promoted: true },
+  ])("$label", async ({ agentRole, issueRole, promoted }) => {
+    const candidate = wakeCandidate({ id: "wake-role-check" });
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn()
+        .mockResolvedValueOnce(candidate)
+        .mockResolvedValueOnce(null),
+      findInvokableAgent: vi.fn(async () => ({ ...AGENT, role: agentRole })),
+    });
+    const issue = { ...ISSUE, issueRole };
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, issue),
+      recovery: createFakeRecovery(),
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(result.outcome.kind).toBe(promoted ? "promoted" : "released");
+    if (promoted) {
+      expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledTimes(1);
+      expect(transaction.finalizePromotedWake).toHaveBeenCalledTimes(1);
+    } else {
+      expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({
+        wakeId: candidate.id,
+        reason: "Deferred continuation skipped because agent and issue roles differ",
+      }));
+      expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+      expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+    }
   });
 
   it("stops the loop after the first promotion", async () => {

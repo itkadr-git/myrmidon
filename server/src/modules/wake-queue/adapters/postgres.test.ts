@@ -111,6 +111,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     checkoutRunId?: string | null;
     parentId?: string | null;
     identifier?: string;
+    casteKey?: string | null;
   }): Promise<string> {
     const issueId = input.issueId ?? randomUUID();
     await db.insert(issues).values({
@@ -124,6 +125,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       checkoutRunId: input.checkoutRunId ?? null,
       parentId: input.parentId ?? null,
       identifier: input.identifier,
+      casteKey: input.casteKey ?? null,
     });
     return issueId;
   }
@@ -708,15 +710,16 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   it("guards finalizePromotedWake's own writes against clobbering an already-set execution lock or runId", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
-    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, casteKey: "engineer" });
     const wakeIdA = await seedDeferredWake({ companyId, agentId, issueId });
     const wakeIdB = await seedDeferredWake({ companyId, agentId, issueId });
     const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId }, status: "succeeded" });
-    const deferredAgent = { id: agentId, companyId, name: "CodexCoder", invokable: true };
-
-    const finalizedRunIds: string[] = [];
     const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
     await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (locked, ports) => {
+      expect(locked.primaryIssue.issueRole).toBe("engineer");
+      expect(await ports.transaction.findIssue({ companyId, issueId })).toMatchObject({ issueRole: "engineer" });
+      const deferredAgent = await ports.transaction.findInvokableAgent({ companyId, agentId });
+      expect(deferredAgent?.role).toBe("engineer");
       const finalize = async (wakeId: string) => {
         const promoted = await ports.transaction.finalizePromotedWake({
           companyId,
