@@ -1,6 +1,5 @@
 import { and, eq, lt } from "drizzle-orm";
 import { issueContinuationKeys, type Db } from "@myrmidon/db";
-import { isUniqueViolation } from "../db-errors.js";
 import { continuationDedupeMetrics } from "./continuation-dedupe-metrics.js";
 
 export type ContinuationDedupeOutcome = "created" | "deduped";
@@ -19,11 +18,9 @@ export async function tryClaimContinuationKey(
       issueId: input.issueId,
       expiresAt: new Date(now.getTime() + input.ttl),
     })
-    .returning({ key: issueContinuationKeys.key })
-    .catch((err: unknown) => {
-      if (isUniqueViolation(err, "issue_continuation_keys_company_key_uq") || isUniqueViolation(err)) return [];
-      throw err;
-    });
+    // A duplicate must not abort a caller's enclosing PostgreSQL transaction.
+    .onConflictDoNothing({ target: [issueContinuationKeys.companyId, issueContinuationKeys.key] })
+    .returning({ key: issueContinuationKeys.key });
   const outcome: ContinuationDedupeOutcome = inserted.length ? "created" : "deduped";
   if (outcome === "created") continuationDedupeMetrics.metrics.onContinuationCreated(input.key);
   else continuationDedupeMetrics.metrics.onContinuationDeduped(input.key);

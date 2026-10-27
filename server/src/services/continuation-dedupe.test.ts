@@ -61,6 +61,15 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(storedRows[0]?.issueId).toBe(issueId);
   }, 30_000);
 
+  it("a deduped claim leaves the enclosing transaction usable", async () => {
+    const input = { companyId, issueId, key: `transaction-${randomUUID()}`, ttl: 60_000 };
+    await db.transaction(async (tx) => {
+      expect(await tryClaimContinuationKey(tx as unknown as Db, input)).toBe("created");
+      expect(await tryClaimContinuationKey(tx as unknown as Db, input)).toBe("deduped");
+      expect(await tx.select().from(issues).where(eq(issues.id, issueId))).toHaveLength(1);
+    });
+  });
+
   it("different keys are independent", async () => {
     const key1 = `independent-key-1-${randomUUID()}`;
     const key2 = `independent-key-2-${randomUUID()}`;
