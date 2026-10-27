@@ -1412,7 +1412,7 @@ describe("mapFinalResultForTest", () => {
     expect(result.resultJson?.gatewayCallIdsTruncated).toBe(true);
     expect(result.resultJson?.litellmRequestIds).toEqual(ids.map((id) => `req-${id}`).slice(0, 500));
     expect(result.resultJson?.litellmRequestIdsTruncated).toBe(true);
-    expect(result.resultJson?.modelCallCount).toBeUndefined();
+    expect(result.resultJson?.modelCallCount).toBeNull();
   });
   it("counts gateway output call entries when the response has no count metadata", () => {
     const result = mapFinalResultForTest({
