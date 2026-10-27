@@ -19,6 +19,7 @@ describe("createCorpusShadowSearch", () => {
   });
 
   it("rejects missing company or unknown/ambiguous dataset scope", async () => {
+    search.mockClear();
     const shadow = createCorpusShadowSearch({} as never);
     await expect(shadow.search({ companyId: "", dataset: "contracts", text: "q" })).rejects.toThrow("missing company scope");
     listDatasets.mockResolvedValueOnce([]);
