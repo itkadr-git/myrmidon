@@ -1365,7 +1365,7 @@ describe("mapFinalResultForTest", () => {
     expect(result.resultJson?.modelCallCount).toBe(4);
   });
 
-  it("uses a reported gateway count over incomplete identifiers from either namespace", () => {
+  it("prefers reported gateway count when identifier namespaces are partial", () => {
     const result = mapFinalResultForTest({
       terminal: {
         runId: "run-count-partial",
@@ -1376,7 +1376,7 @@ describe("mapFinalResultForTest", () => {
       sessionKey: null,
       strategy: "issue",
     });
-    expect(result.resultJson?.modelCallCount).toBe(9);
+    expect(result.resultJson?.modelCallCount).toBe(4);
     expect(result.resultJson?.gatewayCallIds).toEqual(["call-a"]);
     expect(result.resultJson?.litellmRequestIds).toEqual(["req-a", "req-b"]);
   });
@@ -1396,7 +1396,7 @@ describe("mapFinalResultForTest", () => {
     expect(result.resultJson?.modelCallCountSource).toBe("gateway_count");
   });
 
-  it("preserves call IDs across both namespaces even beyond 500 IDs", () => {
+  it("does not infer count by adding IDs from distinct namespaces", () => {
     const ids = Array.from({ length: 550 }, (_, index) => `call-${index}`);
     const result = mapFinalResultForTest({
       terminal: {
@@ -1412,6 +1412,17 @@ describe("mapFinalResultForTest", () => {
     expect(result.resultJson?.litellmRequestIds).toEqual(ids.map((id) => `req-${id}`));
     expect(result.resultJson?.modelCallCount).toBeNull();
   });
+  it("counts gateway output call entries when the response has no count metadata", () => {
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-output-count", status: "completed", payload: {} },
+      outputChunks: ["🔧 Calling gpt-6-luna", "🔧 Calling gpt-6.1-sol"],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(2);
+    expect(result.resultJson?.modelCallCountSource).toBe("gateway_metadata");
+  });
+
   it("keeps explicit count when a gateway call ID list is capped", () => {
     const ids = Array.from({ length: 125 }, (_, index) => `call-${index}`);
     const result = mapFinalResultForTest({

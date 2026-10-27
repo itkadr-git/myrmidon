@@ -53,7 +53,6 @@ describe("buildRunTelemetry", () => {
       resultJson: null,
     },
     gatewayCalls: [{ requestId: "gw-1", costCents: 2 }, { requestId: "gw-2", costCents: 3 }],
-    reportedCostCents: 5,
     workProducts: [],
   };
 
@@ -97,7 +96,6 @@ describe("buildRunTelemetry", () => {
       cachedInputTokens: 20,
       outputTokens: 30,
       gatewaySpendCents: 5,
-      reportedCostCents: 5,
       apiEquivalentCostUsd: 0.000025,
       apiEquivalentCostMicros: 25,
       apiEquivalentCostStatus: "estimated",
@@ -109,7 +107,7 @@ describe("buildRunTelemetry", () => {
     expect(telemetry).not.toHaveProperty("commentCount");
   });
 
-  it("preserves gateway IDs separately from LiteLLM spend request IDs", () => {
+  it("preserves explicit gateway count and keeps ID namespaces separate", () => {
     const telemetry = buildRunTelemetry({
       ...baseInput,
       run: {
@@ -124,7 +122,7 @@ describe("buildRunTelemetry", () => {
     expect(telemetry.modelCallCountSource).toBe("gateway_count");
   });
 
-  it("uses max count as fallback for independent gateway and LiteLLM ID namespaces", () => {
+  it("does not infer a total call count by adding distinct ID namespaces", () => {
     const telemetry = buildRunTelemetry({
       ...baseInput,
       wakeup: {
@@ -135,7 +133,7 @@ describe("buildRunTelemetry", () => {
       },
       run: { ...baseInput.run, resultJson: null },
     });
-    expect(telemetry.modelCallCount).toBe(3);
+    expect(telemetry.modelCallCount).toBeNull();
     expect(telemetry.modelCallCountSource).toBe("unknown");
   });
 

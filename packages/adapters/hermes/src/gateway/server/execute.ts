@@ -1381,6 +1381,16 @@ function parseModelCallCount(value: unknown): number | null {
   return null;
 }
 
+function parseOutputCallCount(outputChunks: string[]): number | null {
+  let count = 0;
+  for (const chunk of outputChunks) {
+    for (const line of chunk.split(/\r?\n/)) {
+      if (/^\s*(?:┊\s*)?🔧\s*Calling\s+/.test(line)) count += 1;
+    }
+  }
+  return count > 0 ? Math.min(count, 100_000) : null;
+}
+
 function parseGatewayCallCount(value: unknown): number | null {
   const record = asRecord(value);
   const usage = asRecord(record?.usage);
@@ -1488,8 +1498,9 @@ export function mapFinalResultForTest(input: {
   const payloadCallIds = parseGatewayCallIds(payload);
   const gatewayModelCallCount = parseGatewayCallCount(payload);
   const explicitCallCount = gatewayModelCallCount ?? parseGatewayCallCount(usage);
-  const modelCallCount = explicitCallCount ?? parseModelCallCount(payload);
-  const modelCallCountSource = explicitCallCount !== null ? "gateway_count" : modelCallCount !== null ? "gateway_metadata" : "unknown";
+  const metadataCallCount = parseModelCallCount(payload) ?? parseOutputCallCount(input.outputChunks);
+  const modelCallCount = explicitCallCount ?? metadataCallCount;
+  const modelCallCountSource = explicitCallCount !== null ? "gateway_count" : metadataCallCount !== null ? "gateway_metadata" : "unknown";
   const errorMessage = mapped.errorCode
     ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
