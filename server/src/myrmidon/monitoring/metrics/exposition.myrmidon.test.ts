@@ -12,6 +12,9 @@ import {
   type MetricsSnapshot,
 } from "./metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
+import { BLOCKER_DASHBOARD_PANELS } from "../../../../../ui/src/lib/blockerDashboardPanels";
+import { computeBlockedMetrics, renderBlockedMetrics } from "./blocked.js";
+import { renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
 
 function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
   return {
@@ -324,6 +327,32 @@ describe("prometheus exposition format", () => {
     expect(text).not.toContain("myrmidon_corpus_shadow_ragflow_latency_seconds{");
     expect(text).toContain("# TYPE myrmidon_corpus_shadow_module_latency_seconds summary");
     expect(text).not.toContain("myrmidon_corpus_shadow_module_latency_seconds{");
+  });
+
+  it("registers every dashboard panel source in the live Prometheus exposition", async () => {
+    const panelSources = BLOCKER_DASHBOARD_PANELS.map(({ query }) => query);
+    for (const source of panelSources) {
+      expect(METRIC_FAMILIES, `registered family for dashboard source ${source}`).toContain(source);
+    }
+
+    const blocked = renderBlockedMetrics(computeBlockedMetrics([{
+      id: "blocked-a",
+      status: "blocked",
+      blockedSince: new Date("2026-10-01T00:00:00Z"),
+      blockerMetadata: null,
+    }], new Date("2026-10-02T00:00:00Z")));
+    const roots: BlockerRootMetrics = {
+      companies: [{
+        companyId: "company-a",
+        roots: [{ root: "root-a", fanout: 2 }],
+        terminalCount: 1,
+        rootsOverLimit: 0,
+      }],
+    };
+    const rendered = [blocked, renderBlockerRootMetrics(roots)].join("\\n");
+    for (const source of panelSources) {
+      expect(rendered, `live source ${source}`).toContain(`# TYPE ${source} `);
+    }
   });
 
   it("ends with a newline and separates families with blank lines", () => {
