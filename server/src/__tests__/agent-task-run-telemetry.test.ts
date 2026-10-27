@@ -347,7 +347,7 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
       issueId,
       wakeSource: "automation",
       wakeTriggerDetail: "callback",
-      eventRevision: "2026-10-26T15:59:00.000Z",
+      eventRevision: issueUpdatedAt.toISOString(),
       wakeReason: "issue_commented",
       sourceEventId: "comment-12",
       sourceEventSeq: 12,
@@ -365,18 +365,17 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
     await seedCompanyAndAgent();
     const runId = randomUUID();
     const issueId = randomUUID();
-    const run = {
+    await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
       agentId,
+      invocationSource: "automation",
+      triggerDetail: "manual",
       status: "succeeded",
-      nativeIssueId: issueId,
-      startedAt: new Date(),
-      finishedAt: new Date(),
-      usageJson: null,
       contextSnapshot: { issueId },
-      wakeupRequestId: null,
-    } as unknown as typeof heartbeatRuns.$inferSelect;
+    });
+    const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]!);
     await db.insert(issues).values({ id: issueId, companyId, title: "telemetry outcome test", status: "todo" });
     const contractId = randomUUID();
     await db.insert(completionContracts).values({
