@@ -1358,6 +1358,9 @@ describe("mapFinalResultForTest", () => {
         status: "completed",
         payload: { usage: { model_call_count: 4 }, gateway_call_ids: ["gw-1"] },
       },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
     });
     expect(result.resultJson?.modelCallCount).toBe(4);
   });
@@ -1385,6 +1388,9 @@ describe("mapFinalResultForTest", () => {
         status: "completed",
         payload: { usage: { model_call_count: 4 }, gateway_call_ids: ["call-a"] },
       },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
     });
     expect(result.resultJson?.modelCallCount).toBe(4);
     expect(result.resultJson?.modelCallCountSource).toBe("gateway_count");
@@ -1398,6 +1404,9 @@ describe("mapFinalResultForTest", () => {
         status: "completed",
         payload: { gateway_call_ids: ids, litellm_request_ids: ids.map((id) => `req-${id}`) },
       },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
     });
     expect(result.resultJson?.gatewayCallIds).toEqual(ids);
     expect(result.resultJson?.litellmRequestIds).toEqual(ids.map((id) => `req-${id}`));
@@ -1407,6 +1416,9 @@ describe("mapFinalResultForTest", () => {
     const ids = Array.from({ length: 125 }, (_, index) => `call-${index}`);
     const result = mapFinalResultForTest({
       terminal: { runId: "run-count", status: "completed", payload: { model_call_count: 125, gateway_call_ids: ids } },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
     });
     const resultJson = result.resultJson as Record<string, unknown>;
     expect(resultJson.modelCallCount).toBe(125);
