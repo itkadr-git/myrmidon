@@ -76,6 +76,9 @@ export interface ReviewRoutingStore {
 
   /** Open GitHub pull requests the company has rows for (webhook-fed). */
   listPrCandidates(companyId: string, limit: number): Promise<PrCandidateRow[]>;
+  /** Existing in-progress issues that already have a GitHub PR work product. */
+  listInProgressPrIssues(companyId: string, limit: number): Promise<InReviewIssueRow[]>;
+  findPrWorkProduct(companyId: string, issueId: string): Promise<PrCandidateRow | null>;
   /** Distinct "owner/repo" the instance has ever seen PRs of (rows + work products). */
   listKnownPrRepositories(companyId: string): Promise<string[]>;
   /** Open board tasks this lane created, with their recorded heads. */
@@ -195,6 +198,50 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         identifier: row.identifier,
         title: row.title,
       }));
+    },
+
+    async listInProgressPrIssues(companyId, limit) {
+      const rows = await db
+        .selectDistinct({ issue: issues })
+        .from(issues)
+        .innerJoin(issueWorkProducts, eq(issueWorkProducts.issueId, issues.id))
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.status, "in_progress"),
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.type, "pull_request"),
+          eq(issueWorkProducts.provider, "github"),
+          isNull(issues.hiddenAt),
+          isNull(issues.conversationAgentId),
+          isNull(issues.conversationUserId),
+        ))
+        .orderBy(desc(issues.updatedAt), issues.id)
+        .limit(limit);
+      return rows.map(({ issue: row }) => ({
+        ...toRoutingIssue(row),
+        companyId: row.companyId,
+        identifier: row.identifier,
+        title: row.title,
+      }));
+    },
+
+    async findPrWorkProduct(companyId, issueId) {
+      const [product] = await db.select({ metadata: issueWorkProducts.metadata, title: issueWorkProducts.title, url: issueWorkProducts.url })
+        .from(issueWorkProducts)
+        .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.issueId, issueId),
+          eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github")))
+        .limit(1);
+      const data = product?.metadata;
+      if (!product || !data) return null;
+      const repository = typeof data.repo === "string" && data.repo.includes("/")
+        ? data.repo : repositoryFromParts(data.owner, data.repo);
+      const number = typeof data.number === "number" && Number.isSafeInteger(data.number) ? data.number : null;
+      if (!repository || number === null) return null;
+      return { repository, number, headSha: typeof data[REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY] === "string"
+        ? data[REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY] as string : null,
+        title: product.title, url: product.url,
+        authorLogin: typeof data.authorLogin === "string" ? data.authorLogin : null,
+        baseRef: typeof data.baseRef === "string" ? data.baseRef : null, draft: data.draft === true };
     },
 
     async listReviewerAgents(companyId, roles) {

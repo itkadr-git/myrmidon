@@ -50,16 +50,16 @@ import { logger } from "../../middleware/logger.js";
 import { prSignalSubjectId, replaceReviewRoutingSignals, type ReviewRoutingSignal } from "./attention.js";
 import {
   buildPrRoutingTaskPatch,
-  buildReviewRoutingAssignPatch,
   buildReviewRoutingReassignPatch,
   buildReviewRoutingWakeContext,
   excludedReviewerIds,
   hoursSince,
   isReviewOverdue,
   issueNeedsReviewer,
+  buildReviewRoutingAssignPatch,
   pickPrReviewer,
-  pickReviewer,
   readPendingAgentReview,
+  pickReviewer,
   type ReviewerCandidate,
 } from "./policy.js";
 import {
@@ -68,6 +68,7 @@ import {
   prRoutingTaskDescription,
   prStewardTaskTitle,
   prTaskIsSuperseded,
+  shouldRouteOpenPrToReview,
   reviewTaskDueForHead,
   stewardTaskDueForHead,
 } from "./pr-policy.js";
@@ -348,6 +349,47 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     lastPrLaneAtMs = now.getTime();
 
     const signals: ReviewRoutingSignal[] = [];
+    const existingWork = await deps.store.listInProgressPrIssues(companyId, REVIEW_ROUTING_PR_PAGE_SIZE);
+    for (const row of existingWork) {
+      try {
+        const product = await deps.store.findPrWorkProduct(companyId, row.id);
+        if (!product) continue;
+        const head = await deps.prResolver.resolve({ companyId, repository: product.repository, number: product.number });
+        result.prScanned += 1;
+        if (!shouldRouteOpenPrToReview(head)) continue;
+        const [reviewerRows, boardLoad, openReviewLoad] = await Promise.all([
+          deps.store.listReviewerAgents(companyId, settings.reviewerRoles),
+          deps.store.loadByAgent(companyId),
+          deps.store.openPrTaskLoadByAgent(companyId, "review"),
+        ]);
+        const picked = pickPrReviewer({
+          reviewers: reviewerRows.map((agent) => ({ ...agent, load: 0 })),
+          boardLoadByAgent: boardLoad,
+          openPrLoadByAgent: openReviewLoad,
+          excluded: new Set([row.assigneeAgentId ?? "", row.createdByAgentId ?? ""]),
+          maxLoadPerReviewer: settings.maxLoadPerReviewer,
+          maxOpenReviewsPerReviewer: prWatch.maxOpenReviewsPerReviewer,
+        });
+        if (!picked) continue;
+        const patch = buildReviewRoutingAssignPatch({ issue: row, reviewerAgentId: picked.id });
+        const applied = await deps.store.applyPatch({
+          issueId: row.id,
+          companyId,
+          guard: (fresh) => fresh.status === "in_progress" && fresh.assigneeAgentId === row.assigneeAgentId,
+          build: () => patch,
+        });
+        if (!applied) continue;
+        await deps.addComment(row.id,
+          `Automatic review routing: ${product.repository}#${product.number} is open, non-draft, mergeable, and CI is pending or green. This task is now in review; the original assignee will resume only if changes are requested.`,
+          { presentation: notice("PR waiting for CI/review"), metadata: metadataFor({ "Pull request": `${product.repository}#${product.number}`, CI: head.ci, Reviewer: picked.id }) });
+        await wake(row, picked.id, applied.executionState, "myrmidon_review_routing_pr_wait");
+        result.assigned += 1;
+        result.prTasksCreated += 1;
+      } catch (err) {
+        result.failed += 1;
+        log.warn({ err, issueId: row.id }, "review routing failed to hand off an existing PR task");
+      }
+    }
     // Source (a): webhook-fed rows.
     const candidates = new Map<string, { repository: string; number: number }>();
     for (const row of await deps.store.listPrCandidates(companyId, REVIEW_ROUTING_PR_PAGE_SIZE)) {

@@ -57,6 +57,8 @@ function makeStore(fx: Fixture) {
   return {
     listActiveCompanyIds: async () => [COMPANY],
     listInReviewIssues: async () => [...fx.rows.values()],
+    listInProgressPrIssues: async () => [],
+    findPrWorkProduct: async () => null,
     listReviewerAgents: async (_company: string, roles: readonly string[]) => fx.reviewers.filter((agent) => roles.includes(agent.role)),
     loadByAgent: async () => new Map(fx.load),
     routingHistory: async (_company: string, ids: readonly string[]) => new Map([...fx.history].filter(([id]) => ids.includes(id))),

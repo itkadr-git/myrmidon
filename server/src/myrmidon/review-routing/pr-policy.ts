@@ -37,6 +37,11 @@ export function shouldHandOffDeliveringPr(head: PullRequestHeadState): boolean {
   return head.open && !head.draft && !head.fetchFailed && head.mergeable === true && head.ci === "green";
 }
 
+/** In-progress work can wait for CI/review once its open PR is conflict-free. */
+export function shouldRouteOpenPrToReview(head: PullRequestHeadState): boolean {
+  return head.open && !head.draft && !head.fetchFailed && head.mergeable === true && head.ci !== "not_green";
+}
+
 /** The board-side view of an open pr-routing task, for coverage and supersede. */
 export interface PrRoutedTask {
   issueId: string;
