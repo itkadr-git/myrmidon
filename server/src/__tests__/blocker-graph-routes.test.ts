@@ -106,8 +106,10 @@ describe("blocker graph roots routes", () => {
   });
 
   it("validates computed roots before sending a response", async () => {
-    loadGraph.mockResolvedValue({ edges: [{ blockedId: "invalid", blockerId: "invalid", blockerStatus: "todo" },
-      { blockedId: randomUUID(), blockerId: "invalid", blockerStatus: "todo" }], blockedIssues: [] });
+    // B1 accepts non-UUID IDs, but rejects empty IDs. Keep this graph acyclic.
+    loadGraph.mockResolvedValue({ edges: [
+      { blockedId: randomUUID(), blockerId: "", blockerStatus: "todo" },
+    ], blockedIssues: [] });
     expect((await request(app()).get(url)).status).toBe(500);
   });
 
