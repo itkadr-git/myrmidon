@@ -10,6 +10,11 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Recover and observe deferred issue wakes (OPE-9445)
+
+- Deferred `deferred_issue_execution` wake requests are reconciled on scheduler ticks; once the issue no longer has a live execution lock, the stale deferral is released. Requests older than 30 minutes are cancelled with reason `deferred_issue_execution_expired`, and the agent is woken again for the associated issue. A timer wake is not coalesced into a stale deferral for a different issue.
+- Prometheus gauge `myrmidon_deferred_issue_execution_over_30m{role="all"}` reports the number of deferred issue-execution wake requests older than 30 minutes. This is an operational signal; production acceptance requires observing zero stale requests and timely timer-run creation after deployment.
+
 ## 1.6.6
 
 ### The company agent list ships without adapter_config; the config stays one request away (PERF-DIET G2)
