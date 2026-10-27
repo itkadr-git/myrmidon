@@ -14932,16 +14932,19 @@ export function issueRoutes(
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
       const reviewActivityRequiresTransaction =
-        persistReviewActivityTransactionally ||
-        nextExecutionPolicy === null;
+        persistReviewActivityTransactionally;
+      const exitingReviewWithExplicitAssignee =
+        existing.status === "in_review" &&
+        updateFields.status !== undefined &&
+        updateFields.status !== "in_review" &&
+        (req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined);
       const shouldUseTransactionalIssueUpdate =
         closesRecoveryIssue ||
           Boolean(commentAttachmentIds?.length) ||
           Boolean(decision) ||
           shouldRelayStop ||
           reviewActivityRequiresTransaction || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
-          ((updateFields.status === "in_review" || existing.status === "in_review") &&
-            assigneeWillChange) ||
+          exitingReviewWithExplicitAssignee ||
           reviewPolicySensitiveMutationRequested ||
           humanUnblockPossible ||
           // myrmidon(HANDOFF-CAS): the guarded commit needs the row lock.
