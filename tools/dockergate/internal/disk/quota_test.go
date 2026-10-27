@@ -57,6 +57,12 @@ func newQuota(t *testing.T, state string) (*Quota, *fakeExec) {
 	if err := os.MkdirAll(volumeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(volumeRoot, qKeyA), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(volumeRoot, qKeyB), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	f := &fakeExec{state: state}
 	q := NewQuota(volumeRoot, f)
 	q.ProjectsFile = filepath.Join(dir, "projects")
@@ -345,6 +351,9 @@ func TestPut_QuotaUnavailable(t *testing.T) {
 	for name, f := range cases {
 		q := NewQuota(root, f)
 		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, qKeyA), 0o700); err != nil {
+			t.Fatal(err)
+		}
 		q.ProjectsFile, q.ProjidFile = filepath.Join(dir, "projects"), filepath.Join(dir, "projid")
 		_, err := q.Put(context.Background(), qKeyA, MinQuotaBytes)
 		if !errors.Is(err, ErrQuotaUnavailable) {
