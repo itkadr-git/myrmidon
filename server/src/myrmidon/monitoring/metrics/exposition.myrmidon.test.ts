@@ -11,6 +11,7 @@ import {
   renderMetricsText,
   type MetricsSnapshot,
 } from "./metrics.js";
+import { swarmClaimMetrics } from "../../swarm-claim/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 
 function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
@@ -68,6 +69,26 @@ describe("prometheus exposition format", () => {
       expect(text).toContain('myrmidon_continuation_deduped_total{role="all"} 1');
     } finally {
       continuationDedupeMetrics.reset();
+    }
+  });
+
+  it("exposes claim conflicts and both bounded recovery reasons, including zero", () => {
+    swarmClaimMetrics.reset();
+    try {
+      expect(renderMetricsText(snapshot())).toContain('swarm_lease_recovered_total{role="all",reason="supervisor_rebalance"} 0');
+      swarmClaimMetrics.conflict();
+      swarmClaimMetrics.recover("lease_expired");
+      swarmClaimMetrics.recover("supervisor_rebalance");
+      swarmClaimMetrics.recover("run_finished");
+      const text = renderMetricsText(snapshot());
+      expect(text).toContain("# TYPE swarm_claim_conflicts_total counter");
+      expect(text).toContain('swarm_claim_conflicts_total{role="all"} 1');
+      expect(text).toContain("# TYPE swarm_lease_recovered_total counter");
+      expect(text).toContain('swarm_lease_recovered_total{role="all",reason="lease_expired"} 1');
+      expect(text).toContain('swarm_lease_recovered_total{role="all",reason="supervisor_rebalance"} 1');
+      expect(text).not.toContain('reason="run_finished"');
+    } finally {
+      swarmClaimMetrics.reset();
     }
   });
 
