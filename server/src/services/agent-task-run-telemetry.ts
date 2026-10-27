@@ -265,7 +265,12 @@ async function buildRunTelemetryForDb(db: Db, run: HeartbeatRun) {
           isNull(issueComments.deletedAt),
         )).limit(1)
     : [];
-  const fallbackFinished = !!run.startedAt && !!run.finishedAt;
+  const fallbackFinished = run.status === "succeeded"
+    || run.status === "failed"
+    || run.status === "cancelled"
+    || run.status === "timed_out"
+    || run.status === "interrupted"
+    || (!!run.startedAt && !!run.finishedAt);
   const outcomeCategoryOverride = runStatusDecision
     ? "status"
     : issueCommentsForRun.length > 0
