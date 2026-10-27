@@ -49,7 +49,7 @@ type Actor = Express.Request["actor"];
 let actor: Actor;
 const handedOver: Array<{ actor: Actor; body: unknown; params: Record<string, string> }> = [];
 
-function buildApp() {
+function buildApp(issueRouter?: express.Router) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -58,11 +58,13 @@ function buildApp() {
   });
   const api = express.Router();
   api.use(ownerDeliveryRoutes(fakeDb));
-  // The stand-in for the ordinary interaction routes of the issue router.
-  api.post("/issues/:id/interactions/:interactionId/:action", (req, res) => {
-    handedOver.push({ actor: req.actor, body: req.body, params: req.params as Record<string, string> });
-    res.json({ handedOver: true });
-  });
+  if (issueRouter) api.use(issueRouter);
+  else {
+    api.post("/issues/:id/interactions/:interactionId/:action", (req, res) => {
+      handedOver.push({ actor: req.actor, body: req.body, params: req.params as Record<string, string> });
+      res.json({ handedOver: true });
+    });
+  }
   app.use("/api", api);
   app.use(
     (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -122,6 +124,31 @@ describe("myrmidon(1.6.5-OWNER-VIA-BOT) owner message routes", () => {
       interactionIds: [INTERACTION_ID],
       text: "Explanation for the owner.",
     });
+  });
+
+  it("returns 404 JSON when owner reply resolution targets a missing issue", async () => {
+    mocks.authorizeOwnerReplyResolution.mockResolvedValue({
+      ownerUserId: OWNER_ID,
+      issueId: ISSUE_ID,
+      interactionId: INTERACTION_ID,
+      action: "accept",
+      conversationIssueId: "77777777-7777-4777-8777-777777777777",
+      ownerReplyCommentId: COMMENT_ID,
+    });
+    const issueRouter = express.Router();
+    issueRouter.post("/issues/:id/interactions/:interactionId/:action", (_req, _res, next) => {
+      next(new HttpError(404, "Issue not found"));
+    });
+    const app = buildApp(issueRouter);
+
+    const response = await request(app)
+      .post("/api/myrmidon/owner-message/resolve")
+      .send(resolveBody());
+
+    expect(response.status).toBe(404);
+    expect(response.headers["content-type"]).toMatch(/application\/json/);
+    expect(response.body).toMatchObject({ error: "Issue not found" });
+    expect(handedOver).toEqual([]);
   });
 
   it("is agent-only: a board user can neither write to the owner nor resolve", async () => {
