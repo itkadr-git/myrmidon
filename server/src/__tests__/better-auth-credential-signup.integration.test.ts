@@ -64,6 +64,8 @@ describeEmbeddedPostgres("Better Auth credential sign-up against the real schema
   const originalEnv = {
     secret: process.env.BETTER_AUTH_SECRET,
     rateLimit: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
+    disableSignUp: process.env.MYRMIDON_AUTH_DISABLE_SIGN_UP,
+    legacyDisableSignUp: process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP,
   };
 
   beforeAll(async () => {
@@ -71,6 +73,9 @@ describeEmbeddedPostgres("Better Auth credential sign-up against the real schema
     // The rate limiter is on by default in `authenticated` mode and would score
     // the sign-up and sign-in this suite issues back to back.
     process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED = "false";
+    // Keep the test deterministic even if the runner exports an auth override.
+    delete process.env.MYRMIDON_AUTH_DISABLE_SIGN_UP;
+    delete process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP;
 
     database = await startEmbeddedPostgresTestDatabase("paperclip-better-auth-signup-");
     db = createDb(database.connectionString);
@@ -88,6 +93,10 @@ describeEmbeddedPostgres("Better Auth credential sign-up against the real schema
     else process.env.BETTER_AUTH_SECRET = originalEnv.secret;
     if (originalEnv.rateLimit === undefined) delete process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED;
     else process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED = originalEnv.rateLimit;
+    if (originalEnv.disableSignUp === undefined) delete process.env.MYRMIDON_AUTH_DISABLE_SIGN_UP;
+    else process.env.MYRMIDON_AUTH_DISABLE_SIGN_UP = originalEnv.disableSignUp;
+    if (originalEnv.legacyDisableSignUp === undefined) delete process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP;
+    else process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP = originalEnv.legacyDisableSignUp;
   });
 
   it("creates the user and its credential account, then signs that user in", async () => {
@@ -119,5 +128,19 @@ describeEmbeddedPostgres("Better Auth credential sign-up against the real schema
     expect(signIn.status).toBe(200);
     expect(signIn.body?.user?.email).toBe(EMAIL);
     expect(sessionCookies(signIn).length).toBeGreaterThan(0);
+  });
+
+  it("rejects credential self-registration when signup is not explicitly enabled", async () => {
+    const closedAuth = createBetterAuthInstance(db, { ...testConfig(), authDisableSignUp: true }, [ORIGIN]);
+    const closedApp = express();
+    closedApp.all("/api/auth/{*authPath}", createBetterAuthHandler(closedAuth));
+
+    const response = await request(closedApp)
+      .post("/api/auth/sign-up/email")
+      .set("origin", ORIGIN)
+      .send({ email: "uninvited@example.com", password: PASSWORD, name: "Uninvited" });
+
+    expect(response.status).toBe(403);
+    expect(await db.select().from(authAccounts)).toHaveLength(0);
   });
 });
