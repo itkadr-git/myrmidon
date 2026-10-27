@@ -56,10 +56,12 @@ describe("issue done pull-request gate", () => {
     expect(() => assertStoredIssueDonePullRequestsSettled([product({ id: "wp-live", number: 91, status: "open" })])).toThrowError(/Cannot mark this task done until/);
   });
 
-  it("does not accept a mixed stored set until a merged PR is present", () => {
+  it("does not accept a mixed stored set until every non-closed PR is settled", () => {
     const merged = product({ id: "wp-merged", number: 92, status: "merged" });
     const closed = product({ id: "wp-closed", number: 93, status: "closed" });
+    const open = product({ id: "wp-open", number: 94, status: "open" });
     expect(() => assertStoredIssueDonePullRequestsSettled([merged, closed])).not.toThrow();
+    expect(() => assertStoredIssueDonePullRequestsSettled([merged, closed, open])).toThrowError(/Cannot mark this task done until/);
     expect(() => assertStoredIssueDonePullRequestsSettled([closed])).toThrowError(/Cannot mark this task done until/);
   });
 
