@@ -307,7 +307,11 @@ describe("issue execution policy routes", () => {
     const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(updatePatch.status).toBe("in_review");
     expect(updatePatch.assigneeAgentId).toBe("44444444-4444-4444-8444-444444444444");
-    expect(updatePatch.executionState).toMatchObject({ returnAssignee: null });
+    // The assigned executor (44444…) is a review participant, so it must not be the return target;
+    // the actor who submitted the issue for review (33333…, not a participant) is the last executor (OPE-9487).
+    expect(updatePatch.executionState).toMatchObject({
+      returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+    });
   });
 
   it("keeps an explicit assignee when removing policy from review", async () => {
