@@ -12,7 +12,7 @@ import {
   type MetricsSnapshot,
 } from "./metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
-import { BLOCKER_DASHBOARD_PANELS } from "../../../../../ui/src/lib/blockerDashboardPanels";
+import { BLOCKER_DASHBOARD_PANELS } from "../../../../../ui/src/lib/blockerDashboardPanels.js";
 import { computeBlockedMetrics, renderBlockedMetrics } from "./blocked.js";
 import { renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
 
@@ -349,7 +349,7 @@ describe("prometheus exposition format", () => {
         rootsOverLimit: 0,
       }],
     };
-    const rendered = [blocked, renderBlockerRootMetrics(roots)].join("\\n");
+    const rendered = [blocked, renderBlockerRootMetrics(roots)].join("\n");
     for (const source of panelSources) {
       expect(rendered, `live source ${source}`).toContain(`# TYPE ${source} `);
     }
