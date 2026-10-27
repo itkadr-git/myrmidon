@@ -15,8 +15,8 @@ export function Ui2KnowledgeReview() {
   });
   return (
     <Ui2Page title={t("ui2.knowledgeReview.title")} subtitle={t("ui2.knowledgeReview.subtitle")}>
-      {query.isLoading ? <Ui2SkeletonRows count={3} /> : null}
-      {query.isError ? <Ui2ErrorState title={t("ui2.knowledgeReview.error")} /> : null}
+      {query.isLoading ? <Ui2SkeletonRows rows={3} /> : null}
+      {query.isError ? <Ui2ErrorState message={t("ui2.knowledgeReview.error")} /> : null}
       {query.isSuccess && query.data.suggestions.length === 0 ?
         <Ui2EmptyStateView title={t("ui2.knowledgeReview.empty")} variant="done" /> : null}
       {query.data?.suggestions.map((suggestion) => (
