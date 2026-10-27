@@ -7184,6 +7184,8 @@ function getActorIdentityPart(req: Request): string {
         ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
         : null,
     ]);
+    const wakeReason = typeof req.query.wakeReason === "string" ? req.query.wakeReason : undefined;
+    const hasResult = req.query.hasResult === "true" || req.query.hasResult === "1";
     // Compute the validator before fetching and redacting the response body.
     const vk = (wakeReason !== undefined || hasResult)
       ? await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, wakeReason, hasResult)
