@@ -250,6 +250,8 @@ export const knowledgeSuggestions = pgTable(
     /** Null when the suggestion proposes a brand-new page. */
     targetItemId: uuid("target_item_id"),
     body: text("body").notNull(),
+    /** Explicit classifier disposition; independent of source provenance and review status. */
+    recommendation: text("recommendation").$type<"accepted" | "declined">().notNull(),
     rationale: text("rationale"),
     sourceKind: text("source_kind").$type<KnowledgeSourceKind>(),
     sourceRef: text("source_ref"),

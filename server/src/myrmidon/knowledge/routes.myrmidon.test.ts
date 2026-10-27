@@ -166,13 +166,22 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     const deps = makeDeps();
     const res = await request(app(deps, boardActor)).post(`${base}/propose`).send({
       body: "Add a term",
+      recommendation: "declined",
+      rationale: "Classifier found this duplicates an existing entry.",
       sources: [{ kind: "task", ref: "OPE-1" }],
     });
     expect(res.status).toBe(201);
-    expect(deps.module.suggest).toHaveBeenCalledTimes(1);
+    expect(deps.module.suggest).toHaveBeenCalledWith(
+      expect.objectContaining({ actorType: "user" }),
+      expect.objectContaining({
+        body: "Add a term",
+        recommendation: "declined",
+        rationale: "Classifier found this duplicates an existing entry.",
+      }),
+    );
   });
 
-  it("П3: propose without sources is 422 before the store sees it", async () => {
+  it("П3: propose without classifier verdict or reason is 422 before the store sees it", async () => {
     const deps = makeDeps({ grants: true });
     const res = await request(app(deps, agentActor)).post(`${base}/propose`).send({ body: "No sources here" });
     expect(res.status).toBe(422);

@@ -657,7 +657,8 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
           { actorType: actor.actorType, actorId: actor.actorId },
           {
             body: body.body,
-            rationale: body.title ?? undefined,
+            recommendation: body.recommendation,
+            rationale: body.rationale,
             targetSlug: body.targetSlug ?? undefined,
             sourceKind: body.sources[0]!.kind,
             sourceRef: body.sources[0]!.ref,
