@@ -816,7 +816,7 @@ describe("corpus API: upload, parse and search", () => {
       upload(app, DATASET_ID, "second page", "second.txt"),
       upload(app, DATASET_ID, "third page", "third.txt"),
     ]);
-    expect(uploads.map((response) => response.status)).toEqual([201, 201, 201]);
+    expect(uploads.map((response) => response.status)).toEqual([202, 202, 202]);
 
     let activeParses = 0;
     let peakParses = 0;
