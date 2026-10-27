@@ -466,6 +466,7 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
   for (const relation of input.blockers ?? []) {
     if (relation.companyId !== input.watchdog.companyId) continue;
     if (!includedIdSet.has(relation.blockedIssueId)) continue;
+    if (issuesById.get(relation.blockerIssueId)?.originKind === TASK_WATCHDOG_ORIGIN_KIND) continue;
     const list = blockersByIssueId.get(relation.blockedIssueId) ?? [];
     list.push(relation.blockerIssueId);
     blockersByIssueId.set(relation.blockedIssueId, list);
@@ -1011,9 +1012,13 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           blockedIssueId: issueRelations.relatedIssueId,
         })
         .from(issueRelations)
+        .innerJoin(issues, eq(issues.id, issueRelations.issueId))
         .where(and(
           eq(issueRelations.companyId, companyId),
           eq(issueRelations.type, "blocks"),
+          // A reusable watchdog is recovery machinery, not a material dependency.
+          // Keep other blockers (including those outside the watched subtree).
+          sql`${issues.originKind} IS DISTINCT FROM ${TASK_WATCHDOG_ORIGIN_KIND}`,
           inArray(issueRelations.relatedIssueId, subtreeIssueIds),
         )),
       db
