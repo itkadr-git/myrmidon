@@ -76,7 +76,7 @@ describe("resolveRecoveryOwner", () => {
       expect(result).toBeDefined();
       expect(result.owner).toBeDefined();
       if (kind === "operator_action") {
-        expect(result.owner).toEqual({ serviceQueue: "operator_action" });
+        expect(result.owner).toEqual({ agentId: "agent-operator-1" });
       } else {
         expect(typeof (result.owner as any).agentId).toBe("string");
         expect((result.owner as any).agentId.length).toBeGreaterThan(0);
