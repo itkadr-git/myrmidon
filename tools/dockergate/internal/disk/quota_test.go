@@ -287,6 +287,9 @@ func TestPut_SameRequestTwiceIsIdempotent(t *testing.T) {
 
 func TestPut_ExistingFilesAreKeptAndIDsNotReused(t *testing.T) {
 	q, _ := newQuota(t, stateOn)
+	if err := os.MkdirAll(filepath.Join(q.VolumeRoot, qKeyA), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(q.ProjidFile, []byte("# bots\nlegacy:1500\nsomebody:12\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -320,9 +323,6 @@ func TestPut_ExistingFilesAreKeptAndIDsNotReused(t *testing.T) {
 
 func TestPut_ExistingNameKeepsItsID(t *testing.T) {
 	q, _ := newQuota(t, stateOn)
-	if err := os.MkdirAll(q.VolumeRoot, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.MkdirAll(filepath.Join(q.VolumeRoot, qKeyA), 0o700); err != nil {
 		t.Fatal(err)
 	}
