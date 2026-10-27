@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Offline by default. Import creates drafts/submits rules; never approves or publishes.
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, lstatSync } from 'node:fs';
+import { readFileSync, readdirSync, lstatSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve, relative, basename } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -12,14 +13,24 @@ const triggers = ['ssh', 'deploy', 'paperclip-api', 'incident', 'config-change',
 
 /** Gitleaks stdin mode: no files, logs, or secret values leave the process. */
 export function gitleaksScan(text) {
-  const run = spawnSync('gitleaks', ['stdin', '--no-banner', '--redact=100', '--report-format=json', '--report-path=/dev/stdout', '--exit-code=7'],
-    { input: text, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-  if (run.error || ![0, 7].includes(run.status)) throw new Error('Secret scanner unavailable or failed (install gitleaks >=8.21)');
+  const cwd = mkdtempSync(resolve(tmpdir(), 'adm-scan-'));
+  let run;
+  try {
+    const env = { ...process.env };
+    delete env.GITLEAKS_CONFIG; delete env.GITLEAKS_CONFIG_TOML;
+    const reportPath = resolve(cwd, 'redacted-report.json');
+    run = spawnSync(process.env.ADM_GITLEAKS_BIN || 'gitleaks', ['stdin', '--no-banner', '--redact=100', '--report-format=json', '--report-path=' + reportPath, '--exit-code=7'],
+      { input: text, encoding: 'utf8', cwd, env, maxBuffer: 16 * 1024 * 1024 });
+    if ([0, 7].includes(run.status)) run.stdout = readFileSync(reportPath, 'utf8');
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+  if (run.error || ![0, 7].includes(run.status)) throw new Error(`Secret scanner unavailable or failed (exit ${run.status ?? 'spawn'}; install gitleaks >=8.21)`);
   if (run.status === 0) return [];
   let findings;
   try { findings = JSON.parse(run.stdout); } catch { throw new Error('Invalid secret scanner report'); }
   if (!Array.isArray(findings) || !findings.length) throw new Error('Missing secret scanner findings');
-  return findings.map(f => ({ start: f.StartLine, end: f.EndLine, rule: 'gitleaks' }));
+  // Gitleaks stdin fragments report fragment-relative lines (not source lines).
+  // Conservatively quarantine the entire source rather than redact the wrong line.
+  return findings.map(() => ({ start: 1, end: text.split('\n').length, rule: 'gitleaks' }));
 }
 function redact(text, scan) {
   const lines = text.split('\n');
@@ -82,7 +93,9 @@ export function buildMigration(root, { scan = gitleaksScan } = {}) {
     if (slugs.has(slug)) { report.conflicts.push({ path, slug }); continue; }
     slugs.add(slug);
     const title = [...(normalized.match(/^#\s+(.+)$/m)?.[1] || basename(path, '.md'))].slice(0, 160).join('');
-    const summary = [...normalized.replace(/^---\n[\s\S]*?\n---\n/, '').replace(/[#*`]/g, '').replace(/\s+/g, ' ').trim()].slice(0, 300).join('') || title;
+    const ruleSummary = body.match(/^summary:[ \t]*(.*)$/m)?.[1]?.trim();
+    if (['rule', 'trigger'].includes(category) && (!ruleSummary || [...ruleSummary].length > 300)) throw new Error('Rule summary required (1..300 characters)');
+    const summary = ruleSummary || [...normalized.replace(/^---\n[\s\S]*?\n---\n/, '').replace(/[#*`]/g, '').replace(/\s+/g, ' ').trim()].slice(0, 300).join('') || title;
     const item = { schema_version: 1, slug, kind: ['rule', 'trigger'].includes(category) ? 'rule' : category === 'skill_card' ? 'skill_card' : 'wiki', category, title, summary,
       body: normalized, tags: ['adm', 'migration'], triggers: triggers.filter(t => new RegExp(`(?:^|[^a-z])${t}(?:$|[^a-z])`, 'i').test(path + '\n' + normalized)),
       priority: category === 'rule' ? 100 : 50, owner: 'ADM', source_ref: `file:${path}#sha256=${sha256}`, sensitivity: 'internal', status: 'draft', revision_id: signature,

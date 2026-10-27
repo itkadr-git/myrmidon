@@ -8,8 +8,8 @@ import { buildMigration, applyMigration } from './adm-migrate.mjs';
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'adm-migration-'));
   mkdirSync(join(root, 'memory/policies'), { recursive: true });
-  writeFileSync(join(root, 'CLAUDE.md'), '# Operations\nAlways request approval before deployment.\n');
-  writeFileSync(join(root, 'memory/policies/safety.md'), '# Safety\nNever reveal credentials.\n');
+  writeFileSync(join(root, 'CLAUDE.md'), '---\nsummary: Request approval before deployment.\n---\n# Operations\nAlways request approval before deployment.\n');
+  writeFileSync(join(root, 'memory/policies/safety.md'), 'summary: Never reveal credentials.\n# Safety\nNever reveal credentials.\n');
   writeFileSync(join(root, 'memory/reference.md'), '# Reference\nService catalog.\n');
   return root;
 }
@@ -35,7 +35,7 @@ test('dry run is deterministic, hashed, classified and never writes', () => {
 test('235-source fixture covers dedup, classification, redactions and review findings', () => {
   const root = fixture();
   try {
-    for (let i = 1; i <= 14; i++) writeFileSync(join(root, `memory/policies/policy-${i}.md`), `# Policy ${i}\nDistinct policy ${i}.`);
+    for (let i = 1; i <= 14; i++) writeFileSync(join(root, `memory/policies/policy-${i}.md`), `summary: Distinct policy ${i}.\n# Policy ${i}\nDistinct policy ${i}.`);
     for (let i = 0; i < 218; i++) writeFileSync(join(root, `memory/reference-${i}.md`), `# Catalog ${i}\nEntry ${i}.`);
     assert.equal(buildMigration(root, { scan: cleanScanner }).manifest.length, 235);
     const plan = buildMigration(root, { scan: cleanScanner });
@@ -45,7 +45,7 @@ test('235-source fixture covers dedup, classification, redactions and review fin
     assert.deepEqual(plan, buildMigration(root, { scan: cleanScanner }));
     writeFileSync(join(root, 'memory/copy-reference.md'), readFileSync(join(root, 'memory/reference.md')));
     writeFileSync(join(root, 'memory/unknown.md'), 'Needs human classification');
-    writeFileSync(join(root, 'memory/trigger-deploy.md'), '# Deploy\nDeploy after approval.');
+    writeFileSync(join(root, 'memory/trigger-deploy.md'), 'summary: Deploy after approval.\n# Deploy\nDeploy after approval.');
     writeFileSync(join(root, 'memory/lesson.md'), '# Incident\nRoot cause recorded.');
     writeFileSync(join(root, 'memory/skill.md'), '# Procedure\nStep 1: inspect.');
     writeFileSync(join(root, 'memory/reference-secret.md'), '# Credentials\npassword=' + 'synthetic-value-for-test');
@@ -55,6 +55,20 @@ test('235-source fixture covers dedup, classification, redactions and review fin
     assert.equal(extra.report.redactions.length, 1);
     assert.ok(!JSON.stringify(extra).includes('synthetic-value-for-test'));
     for (const kind of ['trigger', 'lesson', 'skill_card']) assert.equal(extra.report.counts[kind], 1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('policy summary is explicit, nonempty and bounded before SessionStart', () => {
+  const root = fixture();
+  try {
+    for (const prefix of ['', 'summary:   \n', `summary: ${'я'.repeat(301)}\n`]) {
+      writeFileSync(join(root, 'CLAUDE.md'), prefix + '# Policy\nBody cannot substitute for summary.');
+      assert.throws(() => buildMigration(root, { scan: cleanScanner }), /summary required/);
+    }
+    writeFileSync(join(root, 'CLAUDE.md'), `summary: ${'я'.repeat(300)}\n# Policy\nFull body.`);
+    const plan = buildMigration(root, { scan: cleanScanner });
+    assert.equal([...plan.items.find(i => i.provenance.path === 'CLAUDE.md').summary].length, 300);
+    assert.equal(plan.report.budgetExceeded, false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -91,16 +105,20 @@ test('gitleaks integration removes detected credentials (CI installs scanner)', 
   const { gitleaksScan } = await import('./adm-migrate.mjs');
   const scannerDir = mkdtempSync(join(tmpdir(), 'adm-scanner-'));
   const previousPath = process.env.PATH;
-  if (spawnSync('gitleaks', ['version']).error) {
+  const previousBin = process.env.ADM_GITLEAKS_BIN;
+  {
     const archive = join(scannerDir, 'scanner.tar.gz');
     assert.equal(spawnSync('curl', ['-fsSL', 'https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz', '-o', archive]).status, 0);
     assert.equal(spawnSync('tar', ['-xzf', archive, '-C', scannerDir, 'gitleaks']).status, 0);
     process.env.PATH = scannerDir + ':' + previousPath;
+    process.env.ADM_GITLEAKS_BIN = join(scannerDir, 'gitleaks');
+    assert.match(spawnSync(process.env.ADM_GITLEAKS_BIN, ['version'], { encoding: 'utf8' }).stdout, /8\.24\.3/);
   }
   const root = fixture();
   try {
     // Synthetic provider-shaped value assembled in memory, never a real credential.
-    const value = 'AKIA' + 'IOSFODNN7EXAMPLE0';
+    const { randomBytes } = await import('node:crypto');
+    const value = 'ghp_' + randomBytes(18).toString('hex');
     writeFileSync(join(root, 'memory/reference-secret.md'), '# Credentials\naws_access_key_id = ' + value);
     const plan = buildMigration(root);
     assert.ok(plan.report.redactions.length > 0);
@@ -108,6 +126,7 @@ test('gitleaks integration removes detected credentials (CI installs scanner)', 
     assert.deepEqual(gitleaksScan(JSON.stringify(plan)), []);
   } finally {
     process.env.PATH = previousPath;
+    if (previousBin === undefined) delete process.env.ADM_GITLEAKS_BIN; else process.env.ADM_GITLEAKS_BIN = previousBin;
     rmSync(scannerDir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
