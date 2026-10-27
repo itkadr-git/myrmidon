@@ -65,6 +65,19 @@ async function defaultResolveSecret(
   return process.env[secretName] ?? null;
 }
 
+export async function resolveScentKeyConfigured(
+  db: Db,
+  companyId: string,
+  secretName: string,
+  resolveSecret: (db: Db, companyId: string, secretName: string) => Promise<string | null>,
+): Promise<boolean> {
+  try {
+    return Boolean(await resolveSecret(db, companyId, secretName));
+  } catch {
+    return false;
+  }
+}
+
 async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): Promise<void> {
   const general = ports.getGeneral
     ? await ports.getGeneral(db)

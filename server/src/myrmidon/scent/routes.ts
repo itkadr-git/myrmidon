@@ -30,6 +30,7 @@ import { deriveScentAuto } from "./create-hook.js";
 import {
   SCENT_BASE_URL_ENV,
   SCENT_KEY_SECRET_ENV,
+  resolveScentKeyConfigured,
   type ScentQueuePorts,
 } from "./queue.js";
 
@@ -208,7 +209,7 @@ export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
           if (row) return secrets.resolveSecretValue(cid, row.id, "latest");
           return process.env[secret] ?? null;
         });
-      const keyConfigured = Boolean(await resolve(db, companyId, secretName));
+      const keyConfigured = await resolveScentKeyConfigured(db, companyId, secretName, resolve);
       res.json({
         enabled: settings.enabled,
         model: settings.model,

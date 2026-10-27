@@ -21,9 +21,13 @@
 //  8. the settings reader: defaults, stored override, env kill switch.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PgDialect } from "drizzle-orm/pg-core";
+import express from "express";
+import request from "supertest";
+import type { Db } from "@myrmidon/db";
+import type { ScentQueuePorts } from "./scent/queue.js";
+import { myrmidonScentRoutes } from "./scent/routes.js";
+import { errorHandler } from "../middleware/index.js";
 import {
-  DEFAULT_SCENT_SETTINGS,
   defaultStrengthForPriority,
   pickAgentForTask,
   readScentSettings,
@@ -41,10 +45,29 @@ import type {
 } from "./scent/gateway.js";
 import { deriveScentAuto, isUnclassifiableIssue } from "./scent/create-hook.js";
 import { canSpendCall, createScentService } from "./scent/service.js";
-import { runScentQueueTick, SCENT_QUEUE_TICK_MS, startScentQueue } from "./scent/queue.js";
+import { runScentQueueTick, SCENT_QUEUE_TICK_MS, startScentQueue, resolveScentKeyConfigured } from "./scent/queue.js";
 import { issueScentResponseFormat, parseIssueScentContent } from "./scent/gateway.js";
 
 const CASTES = ["engineer", "designer", "marketer"];
+const COMPANY_ID = "00000000-0000-4000-8000-000000000001";
+
+function makeScentStatusApp(db: Db, ports: ScentQueuePorts) {
+  const app = express();
+  app.use((req, _res, next) => {
+    req.actor = {
+      type: "board",
+      source: "local_implicit",
+      userId: "user-a",
+      companyIds: [COMPANY_ID],
+      memberships: [{ companyId: COMPANY_ID, membershipRole: "owner", status: "active" }],
+      isInstanceAdmin: true,
+    };
+    next();
+  });
+  app.use("/api", myrmidonScentRoutes(db, ports));
+  app.use(errorHandler);
+  return app;
+}
 
 const CSS_SCENT: IssueScent = {
   tags: ["css", "button", "ui"],
@@ -480,15 +503,12 @@ describe("startScentQueue: no re-entrant ticks", () => {
   });
 });
 
-// The queue imports logActivity directly; assert its journal through the mock.
-const { unconfiguredJournal } = vi.hoisted(() => ({
-  unconfiguredJournal: vi.fn(async (_db: unknown, _entry: unknown) => undefined),
-}));
-vi.mock("../../services/activity-log.js", () => ({
-  logActivity: unconfiguredJournal,
-}));
+// No activity-log module mock is needed: queue diagnostics use their injected port.
 
 describe("scent queue: unconfigured contour is visible in the activity log", () => {
+  const previousScentBaseUrl = process.env.MYRMIDON_SCENT_BASE_URL;
+  const previousEvalsBaseUrl = process.env.MYRMIDON_EVALS_BASE_URL;
+
   beforeEach(() => {
     // A contour configured via env would skip the park gate entirely and
     // crash the stub db deeper in the tick — force the empty-contour world.
@@ -496,40 +516,81 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     delete process.env.MYRMIDON_EVALS_BASE_URL;
   });
 
+  afterEach(() => {
+    if (previousScentBaseUrl === undefined) delete process.env.MYRMIDON_SCENT_BASE_URL;
+    else process.env.MYRMIDON_SCENT_BASE_URL = previousScentBaseUrl;
+    if (previousEvalsBaseUrl === undefined) delete process.env.MYRMIDON_EVALS_BASE_URL;
+    else process.env.MYRMIDON_EVALS_BASE_URL = previousEvalsBaseUrl;
+  });
+
   it("journals swarm.scent_contour_unconfigured when the contour is empty", async () => {
     // The scenario of the 1.6.5 acceptance: enabled=true, a pending backlog,
     // and a completely empty contour (no base URL, no key). The queue parked
     // silently for a day; the journal entry is the fix's observable.
-    unconfiguredJournal.mockClear();
     const db = {
       execute: async () => [{ n: 0 }], // return a Drizzle-style thenable for the throttle query
     };
+    const logActivity = vi.fn(async () => undefined);
     await runScentQueueTick(db as never, {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       listCompanyIds: async () => ["c1"],
-      resolveSecret: async () => null, // no company secret, no env fallback
-      logActivity: async (_db, entry) => unconfiguredJournal(_db, entry),
+      resolveSecret: async () => null,
+      logActivity,
     });
-    expect(unconfiguredJournal).toHaveBeenCalledTimes(1);
-    const entry = unconfiguredJournal.mock.calls[0][1] as {
-      action: string;
-      details: Record<string, unknown>;
-    };
+    expect(logActivity).toHaveBeenCalledTimes(1);
+    const entry = logActivity.mock.calls[0][0] as { action: string; details: Record<string, unknown> };
     expect(entry.action).toBe("swarm.scent_contour_unconfigured");
     expect(entry.details).toEqual({ baseUrlConfigured: false, keyConfigured: false });
   });
 
   it("stays silent when an entry already exists within the hour (throttle)", async () => {
-    unconfiguredJournal.mockClear();
     const db = {
       execute: async () => [{ n: 1 }], // return a Drizzle-style thenable for the throttle query
     };
+    const logActivity = vi.fn(async () => undefined);
     await runScentQueueTick(db as never, {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       listCompanyIds: async () => ["c1"],
       resolveSecret: async () => null,
-      logActivity: async (_db, entry) => unconfiguredJournal(_db, entry),
+      logActivity,
     });
-    expect(unconfiguredJournal).not.toHaveBeenCalled();
+    expect(logActivity).not.toHaveBeenCalled();
+  });
+
+  it("reports contour, base URL, and key configuration from the status route", async () => {
+    const db = {
+      execute: async () => [{ n: 0 }],
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) }),
+    } as unknown as Db;
+    const resolveSecret = vi.fn(async () => "secret-value");
+    const ports: ScentQueuePorts = {
+      getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      resolveSecret,
+      listCompanyIds: async () => [COMPANY_ID],
+    };
+    const envSnapshot = new Map(
+      ["MYRMIDON_SCENT_BASE_URL", "MYRMIDON_EVALS_BASE_URL", "MYRMIDON_EVALS_API_KEY"].map(
+        (name) => [name, process.env[name]],
+      ),
+    );
+    try {
+      process.env.MYRMIDON_SCENT_BASE_URL = "https://scent.example.test";
+      process.env.MYRMIDON_EVALS_API_KEY = "secret-value";
+      const response = await request(makeScentStatusApp(db, ports)).get(
+        `/api/myrmidon/companies/${COMPANY_ID}/swarm/scent/status`,
+      );
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        contourConfigured: true,
+        baseUrlConfigured: true,
+        keyConfigured: true,
+      });
+      expect(resolveSecret).toHaveBeenCalledTimes(1);
+    } finally {
+      for (const [name, value] of envSnapshot) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 });
