@@ -13295,6 +13295,22 @@ export function heartbeatService(
       livenessState,
       livenessReason: run.livenessReason,
       nextAction: run.nextAction,
+      hasOpenPullRequestWaitingForCi: Boolean(
+        await db
+          .select({ id: issueWorkProducts.id })
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, run.companyId),
+              eq(issueWorkProducts.issueId, issueId),
+              eq(issueWorkProducts.type, "pull_request"),
+              eq(issueWorkProducts.provider, "github"),
+              eq(issueWorkProducts.status, "open"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+      ),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });

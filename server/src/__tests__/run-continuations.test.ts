@@ -91,6 +91,25 @@ describe("run liveness continuations", () => {
     expect(decision.contextSnapshot).not.toHaveProperty("modelProfile");
   });
 
+  it("does not enqueue while an open pull request waits for CI or review", () => {
+    const decision = decideRunLivenessContinuation({
+      run: run(),
+      issue: issue(),
+      agent: agent(),
+      livenessState: "plan_only",
+      livenessReason: "CI is pending",
+      nextAction: null,
+      hasOpenPullRequestWaitingForCi: true,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+    });
+
+    expect(decision).toEqual({
+      kind: "skip",
+      reason: "open pull request is waiting for CI/review external event",
+    });
+  });
+
   it("enqueues the second empty_response continuation", () => {
     const decision = decideRunLivenessContinuation({
       run: run({ continuationAttempt: 1 }),

@@ -211,6 +211,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
           eq(issueWorkProducts.companyId, companyId),
           eq(issueWorkProducts.type, "pull_request"),
           eq(issueWorkProducts.provider, "github"),
+          eq(issueWorkProducts.status, "open"),
           isNull(issues.hiddenAt),
           isNull(issues.conversationAgentId),
           isNull(issues.conversationUserId),
