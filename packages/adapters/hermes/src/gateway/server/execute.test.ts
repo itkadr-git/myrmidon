@@ -541,6 +541,24 @@ describe("execute", () => {
     expect(result.summary).toBeUndefined();
   });
 
+  it("keeps the provider error when all fallback requests fail", async () => {
+    const ctx = makeCtx({ ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a"] } });
+    const requestedModels: unknown[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/v1/runs")) {
+        requestedModels.push(JSON.parse(String(init?.body)).model);
+        return new Response("upstream failure", { status: 503 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(ctx);
+    expect(requestedModels).toEqual(["primary", "backup-a"]);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.model).toBe("primary");
+  });
+
   it("serializes configured fallback models in declared order", async () => {
     const config = { ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a", "backup-b"] } };
     const body = await runAndReadBody(makeCtx(config));

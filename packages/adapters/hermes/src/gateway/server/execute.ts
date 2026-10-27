@@ -2599,7 +2599,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onMeta: undefined,
     });
     if (fallbackResult.exitCode === 0) return fallbackResult;
-    return { ...fallbackResult, errorFamily: finalResult.errorFamily ?? fallbackResult.errorFamily, resultJson: { ...fallbackResult.resultJson, provider_error_as_content: true } };
+    return { ...finalResult, resultJson: { ...finalResult.resultJson, provider_error_as_content: true } };
   }
   return finalResult;
 }
