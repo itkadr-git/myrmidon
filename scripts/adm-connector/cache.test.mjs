@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { AdmCache } from './cache.mjs';
 
 const item = { schema_version: 1, status: 'published', sensitivity: 'internal', kind: 'rule', approver_kind: 'owner', slug: 'adm/policy/change-control', id: 'item-1', revision_id: 'rev-1', title: 'Change control', summary: 'Require approval', body: 'Full policy' };
 async function fixture(t, options = {}) {
-  const profileDir = await mkdtemp(join(tmpdir(), 'adm-cache-test-'));
+  const scratch = process.env.TMPDIR && !/^\/(?:tmp|var\/tmp)(?:\/|$)/.test(process.env.TMPDIR)
+    ? process.env.TMPDIR : join(homedir(), '.cache', 'adm-connector-tests');
+  await mkdir(scratch, { recursive: true, mode: 0o700 });
+  const profileDir = await mkdtemp(join(scratch, 'adm-cache-test-'));
   t.after(() => rm(profileDir, { recursive: true, force: true }));
   return new AdmCache({ profileDir, company: 'company', space: 'adm', integrityKey: 'test-only-integrity-key-32-characters', timeoutMs: 10, ...options });
 }
@@ -125,6 +128,9 @@ test('context budgets, no-match silence, revision dedup and compaction summary',
   const changed = items.map(i => ({ ...i, revision_id: 'rev-2' }));
   assert((await restarted.deliver({ items: changed, phase: 'UserPromptSubmit', triggers: ['deploy'] })).bytes > 0);
   assert(events.some(e => e.name === 'context_bytes' && e.messageBytes === 0));
+  const journal = await readFile(join(cache.directory, 'journal.jsonl'), 'utf8');
+  assert(journal.includes('messageBytes'));
+  assert(!journal.includes('Full policy'));
 });
 test('mandatory policies exceeding context budget fail closed rather than silently disappearing', async t => {
   const { ContextDelivery } = await import('./context.mjs');

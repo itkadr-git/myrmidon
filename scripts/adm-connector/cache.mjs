@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { chmod, mkdir, open, readFile, rename, rm, lstat } from 'node:fs/promises';
+import { appendFileSync, lstatSync, openSync, closeSync, constants } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -24,7 +25,18 @@ export class AdmCache {
     this.file = join(this.directory, 'cache.json');
     this.healthFile = join(this.directory, 'health.json');
   }
-  emit(name, details = {}) { this.metric({ name, ...details }); }
+  emit(name, details = {}) {
+    const event = { name, ...details };
+    // Do not create paths from the logging path. atomic() establishes the private directory.
+    // The first fetch is observable through the callback, then journaled after initialization.
+    try {
+      if (lstatSync(this.directory).isSymbolicLink()) throw new Error('ADM_CACHE_INVALID');
+      const fd = openSync(join(this.directory, 'journal.jsonl'), constants.O_WRONLY | constants.O_APPEND
+        | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+      try { appendFileSync(fd, `${JSON.stringify(event)}\n`); } finally { closeSync(fd); }
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    this.metric(event);
+  }
   async atomic(file, value) {
     // The deployment profile may itself have trusted symlink ancestors.
     // Reject redirection within the profile-owned connector subtree.
@@ -105,6 +117,7 @@ export class AdmCache {
         ]);
         const data = this.envelope(items);
         await this.atomic(this.file, data);
+        this.emit('cache_refresh');
         await this.atomic(this.healthFile, { failures: 0, nextAttempt: 0 });
         return { mode: 'fresh', items: data.items, ageMs: 0, hazardousAllowed: true };
       } catch {
