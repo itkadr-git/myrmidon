@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { loadBlockedGraph } from "./load-edges.js";
+import { BLOCKED_GRAPH_QUERY_LIMIT, loadBlockedGraph } from "./load-edges.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("loadBlockedGraph (P1.10)", () => {
@@ -19,6 +19,7 @@ const support = await getEmbeddedPostgresTestSupport();
   const blockedId = randomUUID();
   const metadataId = randomUUID();
   const freeId = randomUUID();
+  const orphanId = randomUUID();
   const blockedSince = new Date("2026-01-02T03:04:05.000Z");
   const metadata = {
     blockReason: "dependency" as const,
@@ -50,6 +51,8 @@ const support = await getEmbeddedPostgresTestSupport();
         blockedTransitionAt: blockedSince,
       },
       { id: freeId, companyId, title: "Issue without blockers", status: "todo" },
+      { id: orphanId, companyId, title: "Blocked without edges", status: "blocked" },
+      { id: randomUUID(), companyId: otherCompanyId, title: "Other blocked issue", status: "blocked" },
       { id: randomUUID(), companyId: otherCompanyId, title: "Other company blocker", status: "todo" },
     ]);
     await db.insert(issueRelations).values([
@@ -62,10 +65,11 @@ const support = await getEmbeddedPostgresTestSupport();
   }, 60_000);
 
   afterAll(async () => {
+    await db?.$client.end();
     await database?.cleanup();
   }, 60_000);
 
-  it("returns company-scoped open edges and dependent metadata with one edge query", async () => {
+  it("loads all company blocked issues independently of open edges in two queries", async () => {
     const observedQueries: string[] = [];
     const observedDb = createDb(database.connectionString, { onQuery: (query) => observedQueries.push(query) });
     try {
@@ -73,13 +77,16 @@ const support = await getEmbeddedPostgresTestSupport();
       const edgeQueries = observedQueries.filter((query) => /from\s+"?issue_relations"?/i.test(query));
 
       expect(edgeQueries).toHaveLength(1);
+      expect(observedQueries).toHaveLength(2);
       expect(result.edges).toEqual([
         { blockedId, blockerId: rootId, blockerStatus: "todo" },
       ]);
       expect(result.blockedIssues).toEqual([
         { id: blockedId, status: "blocked", blockerMetadata: null, blockedSince: null },
-      ]);
-      expect(result.blockedIssues).not.toContainEqual(expect.objectContaining({ id: metadataId }));
+        { id: metadataId, status: "blocked", blockerMetadata: metadata, blockedSince },
+        { id: orphanId, status: "blocked", blockerMetadata: null, blockedSince: null },
+      ].sort((a, b) => a.id.localeCompare(b.id)));
+      expect(result.truncated).toEqual({ edges: false, blockedIssues: false });
     } finally {
       await observedDb.$client.end();
     }
@@ -101,5 +108,40 @@ const support = await getEmbeddedPostgresTestSupport();
       blockedSince,
     });
     expect(result.blockedIssues).not.toContainEqual(expect.objectContaining({ id: freeId }));
+  });
+
+  it("loads an edge-free company and reports deterministic independent truncation", async () => {
+    const limitCompanyId = randomUUID();
+    await db.insert(companies).values({ id: limitCompanyId, name: "Limit Co", issuePrefix: "LIM" });
+    expect(await loadBlockedGraph(db, limitCompanyId)).toEqual({
+      edges: [], blockedIssues: [], truncated: { edges: false, blockedIssues: false },
+    });
+    const ids = Array.from({ length: BLOCKED_GRAPH_QUERY_LIMIT + 1 }, (_, i) =>
+      `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+    await db.insert(issues).values(ids.map((id) => ({
+      id, companyId: limitCompanyId, title: "Blocked without edge", status: "blocked",
+    })));
+    const queries: string[] = [];
+    const observedDb = createDb(database.connectionString, { onQuery: (query) => queries.push(query) });
+    try {
+      const withoutEdges = await loadBlockedGraph(observedDb, limitCompanyId);
+      expect(withoutEdges.blockedIssues.map((issue) => issue.id)).toEqual(ids.slice(0, BLOCKED_GRAPH_QUERY_LIMIT));
+      expect(withoutEdges.truncated).toEqual({ edges: false, blockedIssues: true });
+      expect(queries).toHaveLength(2);
+      const limitRootId = randomUUID();
+      await db.insert(issues).values({ id: limitRootId, companyId: limitCompanyId, title: "Root", status: "todo" });
+      await db.insert(issueRelations).values(ids.map((id) => ({
+        companyId: limitCompanyId, issueId: limitRootId, relatedIssueId: id, type: "blocks" as const,
+      })));
+      queries.length = 0;
+      const withEdges = await loadBlockedGraph(observedDb, limitCompanyId);
+      expect(withEdges.edges.map((edge) => edge.blockedId)).toEqual(ids.slice(0, BLOCKED_GRAPH_QUERY_LIMIT));
+      expect(withEdges.blockedIssues).toEqual(withoutEdges.blockedIssues);
+      expect(withEdges.truncated).toEqual({ edges: true, blockedIssues: true });
+      expect(queries).toHaveLength(2);
+      expect(queries.filter((query) => /from\s+"?issue_relations"?/i.test(query))).toHaveLength(1);
+    } finally {
+      await observedDb.$client.end();
+    }
   });
 });
