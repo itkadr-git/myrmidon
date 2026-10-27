@@ -99,6 +99,7 @@ export interface IssueLivenessDependencyPathEntry {
   identifier: string | null;
   title: string;
   status: string;
+  blockedTransitionAt: Date | string | null;
 }
 
 export type IssueLivenessOwnerCandidateReason =
@@ -152,6 +153,7 @@ function pathEntry(issue: IssueLivenessIssueInput): IssueLivenessDependencyPathE
     identifier: issue.identifier,
     title: issue.title,
     status: issue.status,
+    blockedTransitionAt: issue.blockedTransitionAt ?? null,
   };
 }
 

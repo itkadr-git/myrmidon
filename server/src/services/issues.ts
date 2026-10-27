@@ -3360,7 +3360,7 @@ function lowTrustBoundaryIssueCondition(
 }
 
 const BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES = ["done", "cancelled"];
-const BLOCKER_ATTENTION_MAX_DEPTH = 8;
+export const BLOCKER_ATTENTION_MAX_DEPTH = 8;
 export const BLOCKER_ATTENTION_MAX_NODES = 2000;
 const BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES = new Set([
   "active",
@@ -3869,6 +3869,7 @@ async function listIssueBlockerAttentionMap(
           status: row.status,
           priority: row.priority,
           createdAt: row.createdAt,
+          blockedTransitionAt: row.blockedTransitionAt,
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
           assigneeUserId: row.assigneeUserId,

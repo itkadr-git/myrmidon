@@ -412,6 +412,7 @@ export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs
 
 export type IssueBlockerAttentionReason =
   | "unassigned_blocked_issue_overdue"
+  | "blocked_by_unassigned_issue"
   | "active_child"
   | "active_dependency"
   | "stalled_review"
