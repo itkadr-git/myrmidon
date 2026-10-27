@@ -80,7 +80,7 @@ describe("issue done pull-request gate", () => {
       execute: vi.fn(async () => undefined),
       select: vi.fn()
         .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [{ companyId }]) })) })
-        .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [staleProduct]) })) }),
+        .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [product({ id: "wp-merged-now", number: 95, status: "merged" })]) })) }),
     } as never;
     await expect(assertIssueDoneSnapshotUnchanged(tx, companyId, issueId, snapshot, liveSnapshot)).resolves.toBeUndefined();
   });
