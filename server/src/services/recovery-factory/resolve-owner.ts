@@ -233,7 +233,7 @@ export function resolveRecoveryOwner(input: ResolveRecoveryOwnerInput): ResolveR
     if (
       kind === "operator_action" &&
       typeof input.serviceQueue === "string" &&
-      input.serviceQueue.trim().length > 0
+      /^[a-z0-9][a-z0-9_.:-]*$/i.test(input.serviceQueue.trim())
     ) {
       const slaMinutes = resolveRecoverySlaMinutes(kind, input.slaOverrides);
       const baseDate = input.now

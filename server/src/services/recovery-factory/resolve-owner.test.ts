@@ -75,8 +75,12 @@ describe("resolveRecoveryOwner", () => {
 
       expect(result).toBeDefined();
       expect(result.owner).toBeDefined();
-      expect(typeof (result.owner as any).agentId).toBe("string");
-      expect((result.owner as any).agentId.length).toBeGreaterThan(0);
+      if (kind === "operator_action") {
+        expect(result.owner).toEqual({ serviceQueue: "operator_action" });
+      } else {
+        expect(typeof (result.owner as any).agentId).toBe("string");
+        expect((result.owner as any).agentId.length).toBeGreaterThan(0);
+      }
       expect(result.slaMinutes).toBe(RECOVERY_SLA_MINUTES_BY_KIND[kind]);
 
       const expectedNextCheckAt = new Date(
@@ -467,6 +471,14 @@ describe("resolveRecoveryOwner", () => {
         kind: "operator_action",
         candidates: [],
         serviceQueue: "../other-tenant",
+      })).toThrow(RecoveryOwnerUnresolvedError);
+    });
+
+    it("rejects malformed fallback queue even when the pool is empty", () => {
+      expect(() => resolveRecoveryOwner({
+        kind: "operator_action",
+        candidates: [],
+        serviceQueue: "bad queue name",
       })).toThrow(RecoveryOwnerUnresolvedError);
     });
 
