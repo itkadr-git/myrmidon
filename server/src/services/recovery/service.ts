@@ -4173,7 +4173,12 @@ export function recoveryService(
             where: and(
               eq(issueWorkProducts.issueId, input.issue.id),
               eq(issueWorkProducts.type, "pull_request"),
-              eq(issueWorkProducts.status, "open"),
+              inArray(issueWorkProducts.status, [
+                "open",
+                "active",
+                "ready_for_review",
+                "approved",
+              ]),
             ),
             columns: { id: true },
           })),

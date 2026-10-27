@@ -272,7 +272,8 @@ describe("issueHasExistingExecutionWorkflow", () => {
     expect(issueHasExistingExecutionWorkflow({ executionPolicy: null, executionState: null })).toBe(false);
   });
 
-  it("treats an open pull request as an existing execution workflow", () => {
+  it("treats an open pull request work product with active status as an existing execution workflow", () => {
+    // Paperclip's linked GitHub PR work product remains `active` while the PR is open.
     expect(issueHasExistingExecutionWorkflow({ hasOpenPullRequest: true })).toBe(true);
     expect(issueHasExistingExecutionWorkflow({ hasOpenPullRequest: false })).toBe(false);
   });
