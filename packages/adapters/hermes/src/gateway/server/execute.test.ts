@@ -1343,6 +1343,9 @@ describe("mapFinalResultForTest", () => {
         status: "completed",
         payload: { gateway_call_ids: ["gw-1", "gw-2"] },
       },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
     });
     expect(result.resultJson?.modelCallCount).toBeNull();
     expect(result.resultJson?.modelCallCountSource).toBe("unknown");
@@ -1366,6 +1369,9 @@ describe("mapFinalResultForTest", () => {
         status: "completed",
         payload: { model_call_count: 4, gateway_call_ids: ["call-a"], litellm_request_ids: ["req-a", "req-b"] },
       },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
     });
     expect(result.resultJson?.modelCallCount).toBe(9);
     expect(result.resultJson?.gatewayCallIds).toEqual(["call-a"]);
