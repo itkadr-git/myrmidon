@@ -2409,3 +2409,62 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
     }
   });
 });
+
+
+describe("plugin worker ownership during concurrent operations", () => {
+  it("serializes concurrent restarts and retires each previous process", async () => {
+    const handle = createPluginWorkerHandle("restart-race", {
+      entrypointPath: MOCK_WORKER_PATH,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "test-inst", hostVersion: "0.1.0" },
+      apiVersion: 1,
+      autoRestart: false,
+      shutdownTimeoutMs: 1_000,
+    });
+    const pids: number[] = [];
+    handle.on("ready", () => { if (handle.pid) pids.push(handle.pid); });
+    try {
+      await handle.start();
+      await Promise.all([handle.restart(), handle.restart()]);
+      expect(handle.status).toBe("running");
+      expect(pids).toHaveLength(3);
+      expect(new Set(pids).size).toBe(3);
+      for (const pid of pids.slice(0, -1)) {
+        expect(() => process.kill(pid, 0)).toThrow();
+      }
+      expect(handle.diagnostics().totalCrashes).toBe(0);
+    } finally {
+      await handle.stop();
+    }
+    for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow();
+  });
+
+  it("waits for startup before stopping and replacing a handle", async () => {
+    const manager = createPluginWorkerManager();
+    const options = {
+      entrypointPath: MOCK_WORKER_PATH,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "test-inst", hostVersion: "0.1.0" },
+      apiVersion: 1,
+      autoRestart: false,
+    };
+    try {
+      const starting = manager.startWorker("replace-race", options);
+      const stopping = manager.stopWorker("replace-race");
+      const replacing = manager.startWorker("replace-race", options);
+      const original = await starting;
+      const originalPid = original.pid!;
+      await stopping;
+      const replacement = await replacing;
+      expect(original.status).toBe("stopped");
+      expect(() => process.kill(originalPid, 0)).toThrow();
+      expect(replacement.status).toBe("running");
+      expect(manager.getWorker("replace-race")).toBe(replacement);
+      expect(manager.diagnostics()).toHaveLength(1);
+    } finally {
+      await manager.stopAll();
+    }
+  });
+});

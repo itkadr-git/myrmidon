@@ -170,6 +170,8 @@ export function createPluginDevWatcher(
   );
 
   function watchPlugin(pluginId: string, packagePath: string): void {
+    // Production upgrades own file replacement; hot reload must not observe rsync.
+    if (process.env.NODE_ENV === "production") return;
     // Don't double-watch
     if (watchers.has(pluginId)) return;
 

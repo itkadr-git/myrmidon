@@ -2936,11 +2936,12 @@ export function createPluginWorkerHandle(
 
     // Handle process exit
     child.on("exit", (code, signal) => {
-      handleProcessExit(code, signal);
+      if (childProcess === child) handleProcessExit(code, signal);
     });
 
     // Handle process errors (e.g. spawn failure)
     child.on("error", (err) => {
+      if (childProcess !== child) return;
       log.error({ err: err.message }, "worker process error");
       if (emitter.listenerCount("error") > 0) {
         emitter.emit("error", { pluginId, error: err });
@@ -3092,7 +3093,10 @@ export function createPluginWorkerHandle(
       backoffTimer = null;
       nextRestartAt = null;
       try {
-        await startInternal();
+        await serializeOperation(async () => {
+          if (!autoRestart || intentionalStop || childProcess) return;
+          await startInternal();
+        });
       } catch (err) {
         log.error(
           { err: err instanceof Error ? err.message : String(err) },
@@ -3114,8 +3118,16 @@ export function createPluginWorkerHandle(
   // Start / Stop
   // -----------------------------------------------------------------------
 
+  let operationTail: Promise<unknown> = Promise.resolve();
+
+  function serializeOperation(operation: () => Promise<void>): Promise<void> {
+    const next = operationTail.catch(() => undefined).then(operation);
+    operationTail = next;
+    return next;
+  }
+
   async function startInternal(): Promise<void> {
-    if (status === "running" || status === "starting") {
+    if (childProcess || status === "running" || status === "starting") {
       throw new Error(`Worker for plugin "${pluginId}" is already ${status}`);
     }
 
@@ -3217,6 +3229,7 @@ export function createPluginWorkerHandle(
 
     if (childProcess) {
       log.error("worker process still alive after SIGKILL — this should not happen");
+      throw new Error(`Worker for plugin "${pluginId}" did not stop`);
     }
 
     setStatus("stopped");
@@ -3428,16 +3441,21 @@ export function createPluginWorkerHandle(
     },
 
     async start() {
-      await startInternal();
+      await serializeOperation(startInternal);
     },
 
     async stop() {
-      await stopInternal();
+      // Cancel recovery immediately, even if a queued operation has not drained.
+      intentionalStop = true;
+      cancelPendingRestart();
+      await serializeOperation(stopInternal);
     },
 
     async restart() {
-      await stopInternal();
-      await startInternal();
+      await serializeOperation(async () => {
+        await stopInternal();
+        await startInternal();
+      });
     },
 
     call<M extends HostToWorkerMethodName>(
@@ -3650,6 +3668,7 @@ export function createPluginWorkerManager(
   const workers = new Map<string, PluginWorkerHandle>();
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
+  const stoppingLocks = new Map<string, Promise<void>>();
   // The one shared, process-scoped aggregate route-slot controller. The manager
   // injects it into every worker handle, so the duplex route ceiling counts every
   // concurrent route across the process, not one agent's setting.
@@ -3662,6 +3681,12 @@ export function createPluginWorkerManager(
       pluginId: string,
       options: WorkerStartOptions,
     ): Promise<PluginWorkerHandle> {
+      const stopping = stoppingLocks.get(pluginId);
+      if (stopping) {
+        await stopping;
+        return this.startWorker(pluginId, options);
+      }
+
       // Mutex: if a start is already in-flight for this plugin, wait for it
       const inFlight = startupLocks.get(pluginId);
       if (inFlight) {
@@ -3720,15 +3745,23 @@ export function createPluginWorkerManager(
     },
 
     async stopWorker(pluginId: string): Promise<void> {
-      const handle = workers.get(pluginId);
-      if (!handle) {
-        log.warn({ pluginId }, "no worker registered for plugin, nothing to stop");
-        return;
-      }
+      const stopping = stoppingLocks.get(pluginId);
+      if (stopping) return stopping;
 
-      log.info({ pluginId }, "stopping plugin worker");
-      await handle.stop();
-      workers.delete(pluginId);
+      const operation = (async () => {
+        await startupLocks.get(pluginId)?.catch(() => undefined);
+        const handle = workers.get(pluginId);
+        if (!handle) return;
+        log.info({ pluginId }, "stopping plugin worker");
+        await handle.stop();
+        if (workers.get(pluginId) === handle) workers.delete(pluginId);
+      })();
+      stoppingLocks.set(pluginId, operation);
+      try {
+        await operation;
+      } finally {
+        if (stoppingLocks.get(pluginId) === operation) stoppingLocks.delete(pluginId);
+      }
     },
 
     getWorker(pluginId: string): PluginWorkerHandle | undefined {

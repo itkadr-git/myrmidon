@@ -179,7 +179,9 @@ You can, but you usually should not. The control-plane host is shared and may be
 
 ## Reload semantics, honestly
 
-Paperclip watches the on-disk plugin package after a local install. The watcher targets the runtime entrypoints declared in the package's `paperclipPlugin` field (`dist/manifest.js`, `dist/worker.js`, `dist/ui/`).
+With `NODE_ENV=production`, file watching is disabled; replace package files completely, then use the upgrade endpoint to restart the plugin.
+
+In non-production environments, Paperclip watches the on-disk plugin package after a local install. The watcher targets the runtime entrypoints declared in the package's `paperclipPlugin` field (`dist/manifest.js`, `dist/worker.js`, `dist/ui/`).
 
 What that means in practice:
 

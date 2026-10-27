@@ -126,4 +126,59 @@ describe("pluginLifecycleManager.restartWorker", () => {
     expect(started).toHaveBeenCalledTimes(1);
     expect(started).toHaveBeenCalledWith({ pluginId: "plugin-1", pluginKey: "example.plugin" });
   });
+
+  it.each(["upgrade", "watcher"] as const)("serializes %s first across route and watcher managers", async (first) => {
+    const db = {};
+    const plugin = { ...pluginRecord, manifestJson: { ...pluginRecord.manifestJson } };
+    mockRegistry.getById.mockImplementation(async () => plugin);
+    mockRegistry.updateStatus.mockImplementation(async (_id, patch) => Object.assign(plugin, patch));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let activeWorkers = 1;
+    let maximumWorkers = 1;
+    let stopped = 0;
+    const unloadSingle = vi.fn(async () => {
+      stopped += 1;
+      if (stopped === 1) {
+        entered();
+        await gate;
+      }
+      activeWorkers -= 1;
+    });
+    const loadSingle = vi.fn(async () => {
+      activeWorkers += 1;
+      maximumWorkers = Math.max(maximumWorkers, activeWorkers);
+      if (activeWorkers > 1) throw new Error("Worker already registered");
+      return { success: true, plugin };
+    });
+    const loader = {
+      hasRuntimeServices: () => true,
+      unloadSingle,
+      loadSingle,
+      clearCache: vi.fn(),
+      upgradePlugin: vi.fn().mockResolvedValue({
+        oldManifest: plugin.manifestJson,
+        newManifest: { ...plugin.manifestJson, version: "1.1.0" },
+        discovered: { version: "1.1.0" },
+      }),
+    } as unknown as PluginLoader;
+    const route = pluginLifecycleManager(db as never, { loader });
+    const watcher = pluginLifecycleManager(db as never, { loader });
+    const upgrade = () => route.upgrade("plugin-1", "1.1.0");
+    const restart = () => watcher.restartWorker("plugin-1");
+    const pendingFirst = first === "upgrade" ? upgrade() : restart();
+    await started;
+    const pendingSecond = first === "upgrade" ? restart() : upgrade();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(unloadSingle).toHaveBeenCalledTimes(1);
+    release();
+    await Promise.all([pendingFirst, pendingSecond]);
+    expect(activeWorkers).toBe(1);
+    expect(maximumWorkers).toBe(1);
+    expect(loadSingle).toHaveBeenCalledTimes(2);
+    expect(plugin.status).toBe("ready");
+  });
 });
