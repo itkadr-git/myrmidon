@@ -135,11 +135,15 @@ describe("createCorpusShadowRunner", () => {
     // Synchronous helper already returned; the bot response object is unchanged.
     expect(botResult).toEqual({ content: [{ type: "text", text: "ragflow answer" }] });
     await runner.settle();
+    expect(search.search).toHaveBeenCalledWith({
+      companyId: "company-1",
+      dataset: "kb-9",
+      text: "q",
+    });
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
     expect(row).toMatchObject({
       botId: "bot-1",
-      companyId: "company-1",
       dataset: "kb-9",
       query: "q",
       ragflowChunkIds: [],
