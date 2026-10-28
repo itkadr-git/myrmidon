@@ -9932,8 +9932,8 @@ export function issueService(db: Db) {
       } = data;
       if (
         issueData.parentId &&
-        !issueData.assigneeAgentId &&
-        issueData.assigneeUserId == null &&
+        issueData.assigneeAgentId === undefined &&
+        issueData.assigneeUserId === undefined &&
         (issueData.status === undefined || issueData.status === "todo" || issueData.status === "blocked")
       ) {
         const inheritedAssignee = await resolveParentAssigneeForChild(

@@ -3891,8 +3891,12 @@ export function issueThreadInteractionService(
             status: "todo",
             workMode: task.workMode ?? "standard",
             priority: task.priority ?? "medium",
-            assigneeAgentId: task.assigneeAgentId ?? null,
-            assigneeUserId: task.assigneeUserId ?? null,
+            ...(task.assigneeAgentId !== undefined
+              ? { assigneeAgentId: task.assigneeAgentId }
+              : {}),
+            ...(task.assigneeUserId !== undefined
+              ? { assigneeUserId: task.assigneeUserId }
+              : {}),
             projectId: task.projectId ?? issue.projectId,
             goalId: task.goalId ?? issue.goalId,
             billingCode: task.billingCode ?? null,
