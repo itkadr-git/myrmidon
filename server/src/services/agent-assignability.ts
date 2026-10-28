@@ -67,7 +67,7 @@ function conflictDetails(input: {
   };
 }
 
-async function getAgent(db: Db, agentId: string): Promise<AssignabilityAgent | null> {
+async function getAgent(db: Db, companyId: string, agentId: string): Promise<AssignabilityAgent | null> {
   return db
     .select({
       id: agents.id,
@@ -141,7 +141,7 @@ export async function assertAssignableAgent(
 ) {
   if (!agentId) return;
   const kind = options.kind ?? "work";
-  const assignee = await getAgent(db, agentId);
+  const assignee = await getAgent(db, companyId, agentId);
   if (!assignee) throw notFound("Assignee agent not found");
   if (assignee.companyId !== companyId) {
     throw unprocessable("Assignee must belong to same company");
