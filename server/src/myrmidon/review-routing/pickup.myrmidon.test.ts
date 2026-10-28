@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { pickupNextReview, type ReviewPickupPorts } from "./pickup.js";
+import { pickupNextReview, type ReviewCandidate, type ReviewPickupPorts } from "./pickup.js";
 
 function fixture() {
   let tail = Promise.resolve();
   let covered = false;
-  const wake = vi.fn(async () => { covered = true; return { id: "wake" }; });
+  const wake = vi.fn(async (_candidate: ReviewCandidate): Promise<unknown> => { covered = true; return { id: "wake" }; });
   const ports: ReviewPickupPorts = {
     serialize: async (work) => {
       const previous = tail;
@@ -49,18 +49,18 @@ describe("review completion pickup", () => {
   it("retries the same oldest review after budget recovers, without a duplicate wake", async () => {
     const { ports, wake } = fixture();
     const admit = wake.getMockImplementation()!;
-    wake.mockImplementationOnce(async () => null as never);
+    wake.mockImplementationOnce(async () => null);
     expect(await pickupNextReview(ports)).toBe(true);
     expect(await ports.hasWorkInFlight()).toBe(false);
     wake.mockImplementation(admit);
     expect(await pickupNextReview(ports)).toBe(true);
     expect(await ports.hasWorkInFlight()).toBe(true);
     expect(await pickupNextReview(ports)).toBe(true);
-    expect(wake.mock.calls.map(([candidate]) => (candidate as { id: string }).id)).toEqual(["old", "old"]);
+    expect(wake.mock.calls.map(([candidate]) => candidate.id)).toEqual(["old", "old"]);
   });
   it("does not skip the oldest review when admission suppresses its wake", async () => {
     const { ports, wake } = fixture();
-    wake.mockImplementation(async () => null as never);
+    wake.mockImplementation(async () => null);
     expect(await pickupNextReview(ports)).toBe(true);
     expect(wake).toHaveBeenCalledTimes(1);
   });
