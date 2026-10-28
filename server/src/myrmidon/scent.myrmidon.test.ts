@@ -50,7 +50,6 @@ import { canSpendCall, createScentService } from "./scent/service.js";
 import { runScentQueueTick, SCENT_QUEUE_TICK_MS, startScentQueue } from "./scent/queue.js";
 import { issueScentResponseFormat, parseIssueScentContent } from "./scent/gateway.js";
 
-const CASTES = ["engineer", "designer", "marketer"];
 const COMPANY_ID = "00000000-0000-4000-8000-000000000001";
 
 function makeScentStatusApp(db: Db, ports: ScentQueuePorts) {
@@ -534,7 +533,10 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     const db = {
       execute: async () => [{ n: 0 }], // return a Drizzle-style thenable for the throttle query
     };
-    const logActivity = vi.fn(async () => undefined);
+    const logActivity = vi.fn(async (
+      _db: Db,
+      _entry: Parameters<NonNullable<ScentQueuePorts["logActivity"]>>[1],
+    ) => undefined);
     await runScentQueueTick(db as never, {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       listCompanyIds: async () => ["c1"],
@@ -551,7 +553,10 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     const db = {
       execute: async () => [{ n: 1 }], // return a Drizzle-style thenable for the throttle query
     };
-    const logActivity = vi.fn(async () => undefined);
+    const logActivity = vi.fn(async (
+      _db: Db,
+      _entry: Parameters<NonNullable<ScentQueuePorts["logActivity"]>>[1],
+    ) => undefined);
     await runScentQueueTick(db as never, {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       listCompanyIds: async () => ["c1"],
@@ -569,8 +574,10 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     const resolveSecret = vi.fn(async () => "secret-value");
     const ports: ScentQueuePorts = {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      logActivity: async () => undefined,
       resolveSecret,
       listCompanyIds: async () => [COMPANY_ID],
+      listMarkupQueue: async () => ({ issueIds: [], agentIds: [], totalPending: 0 }),
     };
     const envSnapshot = new Map(
       ["MYRMIDON_SCENT_BASE_URL", "MYRMIDON_EVALS_BASE_URL", "MYRMIDON_EVALS_API_KEY"].map(
@@ -605,10 +612,12 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     } as unknown as Db;
     const ports: ScentQueuePorts = {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      logActivity: async () => undefined,
       resolveSecret: vi.fn(async () => {
         throw new Error("corrupt cipher");
       }),
       listCompanyIds: async () => [COMPANY_ID],
+      listMarkupQueue: async () => ({ issueIds: [], agentIds: [], totalPending: 0 }),
     };
     const response = await request(makeScentStatusApp(db, ports)).get(
       `/api/myrmidon/companies/${COMPANY_ID}/swarm/scent/status`,
