@@ -3,7 +3,7 @@ import {
   checkIdeasWeeklySLA,
   isIdeasProjectName,
   validateIdeasProjectConstraints,
-} from "./ideas";
+} from "./ideas.js";
 
 describe("validateIdeasProjectConstraints", () => {
   it("recognizes 'Идеи' and 'Ideas' project names", () => {
