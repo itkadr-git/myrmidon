@@ -109,8 +109,17 @@ for (const screen of SCREENS) {
 
       // 3. Russian captions.
       const text = await page.locator("body").innerText();
-      for (const caption of ["Знания", "Дерево знаний", "По тексту", "По смыслу", "Ревизия 1", "Обновлено"]) {
+      for (const caption of ["Знания", "По тексту", "По смыслу", "Ревизия 1", "Обновлено"]) {
         expect(text, `caption "${caption}"`).toContain(caption);
+      }
+      // On phones the tree is intentionally collapsed behind its menu trigger.
+      if (size.width <= 390) {
+        const treeToggle = page.getByRole("button", { name: /дерево|tree/i });
+        await expect(treeToggle).toBeVisible();
+        await treeToggle.click();
+        await expect(page.getByText("Дерево знаний")).toBeVisible();
+      } else {
+        expect(text).toContain("Дерево знаний");
       }
       for (const english of ["Knowledge tree", "Full text", "Semantic", "Search knowledge", "Updated "]) {
         expect(text, `English caption "${english}" must not appear`).not.toContain(english);
