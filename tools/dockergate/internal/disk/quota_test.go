@@ -296,7 +296,13 @@ func TestPut_SameRequestTwiceIsIdempotent(t *testing.T) {
 		t.Error("the files changed on the second put")
 	}
 	j := f.journal()
-	if len(j) != 8 || j[1] != j[3] || j[5] != j[7] {
+	if len(j) != 8 {
+		t.Errorf("%d xfs_quota commands, want eight", len(j))
+	}
+	if len(j) != 8 {
+		t.Errorf("%d xfs_quota commands, want eight", len(j))
+	}
+	if len(j) >= 8 && (j[1] != j[3] || j[5] != j[7]) {
 		t.Errorf("the set command differs between the runs: %q", j)
 	}
 }

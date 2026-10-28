@@ -130,13 +130,18 @@ func softBytes(hard int64) int64 { return hard * 8 / 10 }
 func (q *Quota) Ensure(ctx context.Context, botKey string) (int, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.ensureLocked(ctx, botKey)
+	return q.ensureLocked(ctx, botKey, true)
 }
 
-// ensureLocked reconciles the project tables; the caller must hold q.mu.
-func (q *Quota) ensureLocked(ctx context.Context, botKey string) (int, error) {
+// ensureLocked reconciles the project tables. When locked is false, it acquires
+// q.mu itself. Put passes true to make registration+limit update atomic.
+func (q *Quota) ensureLocked(ctx context.Context, botKey string, locked bool) (int, error) {
 	if !route.IsBotKey(botKey) {
 		return 0, ErrBadKey
+	}
+	if !locked {
+		q.mu.Lock()
+		defer q.mu.Unlock()
 	}
 
 	root, err := filepath.Abs(q.VolumeRoot)
@@ -213,7 +218,7 @@ func (q *Quota) Put(ctx context.Context, botKey string, hard int64) (Result, err
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if _, err := q.ensureLocked(ctx, botKey); err != nil {
+	if _, err := q.ensureLocked(ctx, botKey, true); err != nil {
 		return Result{}, err
 	}
 
