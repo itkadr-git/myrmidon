@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { OwnerReplyCard } from "./parse-owner-reply.js";
 import type { PendingOwnerCard } from "./pending-owner-cards.js";
 import type { OwnerReplyDeps } from "./owner-task-reply.js";
-import { handleTelegramOwnerReply, narrowCardsToReply, shouldSuppressTelegramOwnerWake } from "./telegram-door.js";
+import { handleTelegramOwnerReply, loadRepliedInteractionIds, narrowCardsToReply, shouldSuppressTelegramOwnerWake } from "./telegram-door.js";
 
 const OWNER = "user-owner";
 const COMPANY = "company-1";
@@ -123,6 +123,23 @@ describe("handleTelegramOwnerReply", () => {
     ["non-via-bot mode skipped", { outcome: "skipped_mode", mode: "via_bot" }, true, false],
   ] as const)("wake settlement: %s", (_label, outcome, hasReplyTarget, expected) => {
     expect(shouldSuppressTelegramOwnerWake(outcome, hasReplyTarget)).toBe(expected);
+  });
+
+  it("rejects a reply target from another Telegram chat before consulting links", async () => {
+    const select = vi.fn();
+    const db = { select } as never;
+    await expect(
+      loadRepliedInteractionIds(db, {
+        companyId: COMPANY,
+        endpointId: "endpoint-1",
+        conversationId: "conversation-1",
+        conversationIssueId: "issue-1",
+        conversationExternalId: "telegram:100",
+        agentId: "agent-a",
+        replyToProviderMessageId: "telegram:200:42",
+      }),
+    ).resolves.toEqual([]);
+    expect(select).not.toHaveBeenCalled();
   });
 
   it("accepts published owner decisions in owner_decisions_only and all modes", async () => {

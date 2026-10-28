@@ -17426,6 +17426,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                   endpointId: endpoint.id,
                   conversationId: conversation.id,
                   conversationIssueId: issue.id,
+                  conversationExternalId: conversation.externalThreadId,
                   agentId: endpoint.assignedAgentId,
                   replyToProviderMessageId: replyTarget,
                 })

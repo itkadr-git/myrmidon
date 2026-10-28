@@ -51,10 +51,16 @@ export async function loadRepliedInteractionIds(
     endpointId: string;
     conversationId: string;
     conversationIssueId: string;
+    conversationExternalId: string;
     agentId: string;
     replyToProviderMessageId: string;
   },
 ): Promise<string[]> {
+  if (
+    !input.replyToProviderMessageId.startsWith(`${input.conversationExternalId}:`)
+  ) {
+    return [];
+  }
   const link = await db
     .select({ commentId: chatMessageLinks.commentId })
     .from(chatMessageLinks)
