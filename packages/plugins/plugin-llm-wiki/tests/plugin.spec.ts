@@ -3535,7 +3535,7 @@ Duplicate headings receive stable suffixes.
       companyId: COMPANY_ID,
       wikiId: "default",
       path: "wiki/concepts/original.md",
-      contents: "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters.\n",
+      contents: "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters.",
     })).rejects.toThrow("less than 20% of previous revision");
 
     // 4. Overwrite succeeds when explicit force and reason are provided
@@ -3543,13 +3543,13 @@ Duplicate headings receive stable suffixes.
       companyId: COMPANY_ID,
       wikiId: "default",
       path: "wiki/concepts/original.md",
-      contents: "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters.\n",
+      contents: "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters.",
       force: true,
       reason: "Intentional page reduction for stub",
     });
     expect(forced.data?.hash).toHaveLength(64);
     expect(files.get("wiki/concepts/original.md")).toBe(
-      "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters.\n",
+      "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters",
     );
   });
 
