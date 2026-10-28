@@ -28,6 +28,7 @@ import type { ScentQueuePorts } from "./scent/queue.js";
 import { myrmidonScentRoutes } from "./scent/routes.js";
 import { errorHandler } from "../middleware/index.js";
 import {
+  DEFAULT_SCENT_SETTINGS,
   defaultStrengthForPriority,
   pickAgentForTask,
   readScentSettings,
@@ -45,7 +46,7 @@ import type {
 } from "./scent/gateway.js";
 import { deriveScentAuto, isUnclassifiableIssue } from "./scent/create-hook.js";
 import { canSpendCall, createScentService } from "./scent/service.js";
-import { runScentQueueTick, SCENT_QUEUE_TICK_MS, startScentQueue, resolveScentKeyConfigured } from "./scent/queue.js";
+import { runScentQueueTick, SCENT_QUEUE_TICK_MS, startScentQueue } from "./scent/queue.js";
 import { issueScentResponseFormat, parseIssueScentContent } from "./scent/gateway.js";
 
 const CASTES = ["engineer", "designer", "marketer"];
@@ -594,5 +595,26 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
         else process.env[name] = value;
       }
     }
+  });
+
+  it("fails closed with keyConfigured: false when resolving secret throws", async () => {
+    const db = {
+      execute: async () => [{ n: 0 }],
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) }),
+    } as unknown as Db;
+    const ports: ScentQueuePorts = {
+      getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      resolveSecret: vi.fn(async () => {
+        throw new Error("corrupt cipher");
+      }),
+      listCompanyIds: async () => [COMPANY_ID],
+    };
+    const response = await request(makeScentStatusApp(db, ports)).get(
+      `/api/myrmidon/companies/${COMPANY_ID}/swarm/scent/status`,
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      keyConfigured: false,
+    });
   });
 });
