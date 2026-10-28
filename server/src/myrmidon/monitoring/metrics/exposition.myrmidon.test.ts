@@ -344,12 +344,12 @@ describe("prometheus exposition format", () => {
           blockerMetadata: null,
         }], new Date("2026-10-02T00:00:00Z")),
       }],
-      blockerRoots: [{
+      blockerRoots: { companies: [{
         companyId: "company-a",
         roots: [{ root: "root-a", fanout: 2 }],
         terminalCount: 1,
         rootsOverLimit: 0,
-      }],
+      }] },
     }));
     for (const source of panelSources) {
       expect(text, `rendered metric ${source}`).toContain(`# TYPE ${source} `);
