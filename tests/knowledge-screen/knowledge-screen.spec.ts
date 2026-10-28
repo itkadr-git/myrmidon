@@ -114,7 +114,7 @@ for (const screen of SCREENS) {
       }
       // On phones the tree is intentionally collapsed behind its menu trigger.
       if (size.width <= 390) {
-        const treeToggle = page.getByRole("button", { name: /дерево|tree/i });
+        const treeToggle = page.getByRole("button", { name: /обзор страниц|browse pages/i });
         await expect(treeToggle).toBeVisible();
         await treeToggle.click();
         await expect(page.getByText("Дерево знаний")).toBeVisible();
