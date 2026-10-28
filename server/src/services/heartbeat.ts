@@ -20134,7 +20134,7 @@ export function heartbeatService(
       not(exists(db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, agentWakeupRequests.companyId),
         or(
-          eq(heartbeatRuns.nativeIssueId, sql`${agentWakeupRequests.payload}->>'issueId'`),
+          sql`${heartbeatRuns.nativeIssueId}::text = ${agentWakeupRequests.payload}->>'issueId'`,
           sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${agentWakeupRequests.payload}->>'issueId'`,
           sql`${heartbeatRuns.contextSnapshot}->>'taskId' = ${agentWakeupRequests.payload}->>'issueId'`,
         ),
