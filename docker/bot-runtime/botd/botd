@@ -20,7 +20,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const { execFile } = require("node:child_process");
+const { execFile, spawnSync } = require("node:child_process");
 
 // The board writes the bot's API key and URL (and the botd settings) into the hermes
 // .env, not into the container env botd inherits from the entrypoint: load the keys
@@ -362,6 +362,20 @@ async function main() {
     const r = archiveMod.retainPass(ARCHIVE_DIR, { startedAt });
     if (!r.ok) throw new Error(r.reason);
     if (r.removed.length > 0) log(`botd: archive retention retired ${r.removed.length} entries (${r.removed.map((x) => x.reason).join(",")}), ${r.remaining} left, ${r.remainingBytes} bytes`);
+
+    // Hermes session retention (7 days) & vacuum when idle (OPE-9673):
+    try {
+      const pruneRes = spawnSync("hermes", ["sessions", "prune", "--older-than", "7d", "--yes"], {
+        encoding: "utf8",
+        timeout: 60000,
+      });
+      if (pruneRes.status === 0 && pruneRes.stdout && pruneRes.stdout.trim()) {
+        log(`botd: hermes sessions prune: ${pruneRes.stdout.trim()}`);
+        spawnSync("hermes", ["sessions", "optimize"], { encoding: "utf8", timeout: 120000 });
+      }
+    } catch {
+      // non-fatal if hermes CLI is not available
+    }
   };
 
   const loop = loopMod.createLoop({

@@ -377,6 +377,10 @@ export const BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS = 60 * 1000;
 export const BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS = 24 * 60 * 60 * 1000;
 export const BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS = 15 * 60 * 1000;
 export const BOT_DISK_MAX_GIT_MIRROR_REPOS = 50;
+export const BOT_DISK_DEFAULT_GIT_MIRROR_REPOS: readonly string[] = Object.freeze([
+  "itkadr-git/myrmidon",
+  "itkadr-git/myrmidon-deploy",
+]);
 
 /**
  * myrmidon(1.6.2-BOT-DISK-C): the agent roles (`agents.role`) whose bots get the
@@ -840,7 +844,7 @@ export interface BotDiskLayout {
 export function resolveBotDiskLayout(stored: unknown): BotDiskLayout {
   const values = normalizeStoredBotDiskSettings(stored);
   const repos = values.sharedPackageCachePath
-    ? [...new Set((values.gitMirrorRepos ?? []).map((repo) => repo.toLowerCase()))]
+    ? [...new Set((values.gitMirrorRepos ?? BOT_DISK_DEFAULT_GIT_MIRROR_REPOS).map((repo) => repo.toLowerCase()))]
     : [];
   return {
     ...(values.sharedPackageCachePath ? { sharedPackageCachePath: values.sharedPackageCachePath } : {}),

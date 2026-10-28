@@ -98,6 +98,49 @@ function lastFetchMs(dir) {
   }
 }
 
+function findMirror(parsed, env) {
+  const candidates = [
+    path.join(env.MYRMIDON_GIT_MIRROR_ROOT || "/cache/git", `${parsed.owner}/${parsed.repo}.git`),
+    path.join(env.MYRMIDON_GIT_MIRROR_ROOT || "/cache/git", `${parsed.slug}.git`),
+    env.BOT_SCOPE_GIT_OBJECTS_DIR ? path.join(env.BOT_SCOPE_GIT_OBJECTS_DIR, `${parsed.owner}/${parsed.repo}.git`) : null,
+    path.join(L.homeDir(env), ".myrmidon", "git-objects", `${parsed.owner}/${parsed.repo}.git`),
+  ].filter(Boolean);
+
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, "HEAD")) && fs.existsSync(path.join(c, "objects"))) {
+      return c;
+    }
+  }
+  return null;
+}
+
+function syncMirrorAlternates(env, dir, parsed) {
+  const mirror = findMirror(parsed, env);
+  if (!mirror) return null;
+  const objectsDir = path.join(mirror, "objects");
+  if (!fs.existsSync(objectsDir)) return null;
+
+  const alternatesFile = path.join(dir, "objects", "info", "alternates");
+  const targetLine = `${objectsDir}\n`;
+  let existing = "";
+  try {
+    existing = fs.readFileSync(alternatesFile, "utf8");
+  } catch {
+    // does not exist yet
+  }
+  const lines = existing.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!lines.includes(objectsDir)) {
+    fs.mkdirSync(path.dirname(alternatesFile), { recursive: true });
+    fs.writeFileSync(alternatesFile, existing ? `${existing.trimEnd()}\n${targetLine}` : targetLine, "utf8");
+    try {
+      mustGit(env, dir, ["repack", "-a", "-d", "-l"], EXIT.usage);
+    } catch {
+      // non-fatal if repack fails
+    }
+  }
+  return mirror;
+}
+
 /**
  * Creates the base of owner/repo when absent and fetches it when stale.
  * Returns { path, repo, created, fetched }. Throws MyrWsError (exitCode 2
@@ -128,11 +171,14 @@ function ensureBase(repoInput, opts = {}) {
     try {
       mustGit(env, undefined, ["init", "--bare", "--quiet", dir], EXIT.usage);
       configureBase(env, dir, originUrl(parsed, env));
+      syncMirrorAlternates(env, dir, parsed);
     } catch (e) {
       fs.rmSync(dir, { recursive: true, force: true });
       throw e;
     }
     created = true;
+  } else {
+    syncMirrorAlternates(env, dir, parsed);
   }
 
   // refresh 0 means "always fetch": the stamp is written after the fetch, so
@@ -153,4 +199,4 @@ function ensureBase(repoInput, opts = {}) {
   return { path: dir, repo: parsed.slug, created, fetched };
 }
 
-module.exports = { ensureBase, listBases, MyrWsError, EXIT, FETCH_STAMP };
+module.exports = { ensureBase, listBases, findMirror, syncMirrorAlternates, MyrWsError, EXIT, FETCH_STAMP };

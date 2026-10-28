@@ -1006,7 +1006,7 @@ export function buildHermesProfileInput(source: BotProfileSource, settings: BotP
         : {}),
       ...(source.instanceDefaults?.compression ?? {}),
     },
-    sessionsRetentionDays: source.instanceDefaults?.sessionsRetentionDays,
+    sessionsRetentionDays: source.instanceDefaults?.sessionsRetentionDays ?? 7,
     // myrmidon(MEMORY-CENTRAL-A): MYRMIDON_BOT_LOCAL_MEMORY_OFF is an instance
     // switch read into settings; a hand-built settings object without the
     // field falls back to the caller's own instanceDefaults.

@@ -1054,7 +1054,13 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     // Company skills are delivered per run into Hermes' local skills root.
     // Keep the legacy profile mount empty so Hermes cannot index each skill twice.
     skills: { external_dirs: [] },
-    sessions: { retention_days: input.instanceDefaults.sessionsRetentionDays },
+    sessions: {
+      auto_prune: true,
+      retention_days: input.instanceDefaults.sessionsRetentionDays ?? 7,
+      vacuum_after_prune: true,
+      min_interval_hours: 6,
+      min_vacuum_interval_days: 1,
+    },
     terminal: { cwd: "/workspace" },
   };
   return writeYamlDocument(root);
