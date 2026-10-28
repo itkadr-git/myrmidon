@@ -772,6 +772,159 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(await store.listItems(other)).toEqual([]);
     expect(await store.exportTree(other)).not.toBe(await store.exportTree(companyId));
   });
+
+  // ----------------------------------------------------------------- OPE-9762 write protection
+  describe("OPE-9762 write protection and alert logging over the database and HTTP router", () => {
+    const grade = (membershipRole: string, isInstanceAdmin = false) => ({
+      type: "board",
+      source: "session",
+      userId: `user-${membershipRole}`,
+      isInstanceAdmin,
+      companyIds: [companyId],
+      memberships: [{ companyId, status: "active", membershipRole }],
+    });
+
+    function httpApp(actor: unknown) {
+      const server = express();
+      server.use(express.json());
+      server.use((req, _res, next) => {
+        (req as unknown as { actor: unknown }).actor = actor;
+        next();
+      });
+      server.use("/api", knowledgeRoutes({ moduleFor: (id) => createKnowledgeModule(db, id) }));
+      server.use(errorHandler);
+      return server;
+    }
+
+    it("rejects create containing probe marker without force and logs alert; allows with force+reason", async () => {
+      companyId = await makeCompany();
+      const store = makeStore();
+
+      await expect(
+        store.create({
+          companyId,
+          nestId: companyId,
+          slug: "probe-item",
+          title: "Probe Item",
+          content: "initial creation with __probe marker",
+        }, AGENT),
+      ).rejects.toThrow(/__probe/);
+
+      const alertLogs = await db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "knowledge.write_protection_alert")));
+      expect(alertLogs.length).toBeGreaterThanOrEqual(1);
+      expect((alertLogs[0]!.details as Record<string, unknown>).slug).toBe("probe-item");
+      expect((alertLogs[0]!.details as Record<string, unknown>).action).toBe("create");
+
+      // With force and reason, creation succeeds
+      const created = await store.create({
+        companyId,
+        nestId: companyId,
+        slug: "probe-item",
+        title: "Probe Item",
+        content: "initial creation with __probe marker",
+        force: true,
+        reason: "Legitimate initial probe for testing",
+      }, AGENT);
+      expect(created.slug).toBe("probe-item");
+
+      const overrideLogs = await db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "knowledge.write_protection_overridden")));
+      expect(overrideLogs.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("allows initial creation of short stubs without force (documenting creation exception)", async () => {
+      companyId = await makeCompany();
+      const store = makeStore();
+      const item = await store.create({
+        companyId,
+        nestId: companyId,
+        slug: "short-stub",
+        title: "Short Stub",
+        content: "stub",
+      }, AGENT);
+      expect(item.slug).toBe("short-stub");
+    });
+
+    it("rejects draft overwrite with short probe or truncation without force and logs alert; allows with force+reason", async () => {
+      companyId = await makeCompany();
+      const store = makeStore();
+      await store.create({
+        companyId,
+        nestId: companyId,
+        slug: "doc-page",
+        title: "Doc Page",
+        content: "This is a detailed documentation page with more than twenty characters for testing.",
+      }, AGENT);
+
+      // 1. Single line < 20 chars rejected
+      await expect(
+        store.draft(companyId, "doc-page", { content: "ping" }, AGENT),
+      ).rejects.toThrow(/shorter than 20 characters/);
+
+      // 2. Severe truncation < 20% rejected
+      await expect(
+        store.draft(companyId, "doc-page", { content: "short" }, AGENT),
+      ).rejects.toThrow();
+
+      // Check alert logs in activityLog
+      const alertLogs = await db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "knowledge.write_protection_alert")));
+      expect(alertLogs.length).toBeGreaterThanOrEqual(2);
+      expect((alertLogs[alertLogs.length - 1]!.details as Record<string, unknown>).action).toBe("draft");
+
+      // 3. Allowed with force + reason
+      const draft = await store.draft(
+        companyId,
+        "doc-page",
+        { content: "ping", force: true, reason: "Manual probe update" },
+        AGENT,
+      );
+      expect(draft.currentRevisionNumber).toBe(2);
+
+      const overrideLogs = await db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "knowledge.write_protection_overridden")));
+      expect(overrideLogs.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("HTTP router enforces live write protection and returns 422 with write_protection_rejected", async () => {
+      companyId = await makeCompany();
+      const store = makeStore();
+      await store.create({
+        companyId,
+        nestId: companyId,
+        slug: "router-page",
+        title: "Router Page",
+        content: "This is a detailed article written to test the HTTP router write-protection behavior.",
+      }, AGENT);
+
+      const app = httpApp(grade("owner", true));
+      const draftUrl = `/api/myrmidon/companies/${companyId}/knowledge/items/router-page/draft`;
+
+      // Without force: rejected with 422
+      const res422 = await request(app)
+        .post(draftUrl)
+        .send({ content: "__probe" });
+      expect(res422.status).toBe(422);
+      expect(res422.body.code).toBe("write_protection_rejected");
+      expect(res422.body.error).toMatch(/probe marker/);
+
+      // With force and reason: accepted with 201
+      const res201 = await request(app)
+        .post(draftUrl)
+        .send({ content: "__probe", force: true, reason: "Authorized live probe test" });
+      expect(res201.status).toBe(201);
+      expect(res201.body.revision).toBeDefined();
+    });
+  });
 });
 
 // ----------------------------------------------------------------- hygiene

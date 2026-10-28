@@ -40,6 +40,7 @@ import {
   assertApprovable,
   assertItemTransition,
   assertKnowledgeWriteProtection,
+  type KnowledgeWriteProtectionViolation,
   assertRevisionTransition,
   assertRuleFields,
   assertSingleLine,
@@ -281,7 +282,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
 
   async function mirrorActivity(input: {
     companyId: string;
-    itemId: string;
+    itemId?: string | null;
     slug: string;
     event: string;
     actor: KnowledgeActor;
@@ -293,7 +294,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       actorId: input.actor.actorId ?? input.actor.actorType,
       action: input.event,
       entityType: "knowledge_item",
-      entityId: input.itemId,
+      entityId: input.itemId ?? input.slug,
       agentId: input.actor.actorType === "agent" ? (input.actor.actorId ?? null) : null,
       details: { slug: input.slug, ...input.payload },
     });
@@ -368,12 +369,26 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     assertSingleLine(input.title, "Title");
     if (input.summary != null) assertSingleLine(input.summary, "Summary");
     assertValidTags(input.tags ?? []);
-    assertKnowledgeWriteProtection({
-      newContent: input.content,
-      previousContent: null,
-      force: input.force,
-      reason: input.reason,
-    });
+    let createViolation: KnowledgeWriteProtectionViolation | null = null;
+    try {
+      createViolation = assertKnowledgeWriteProtection({
+        newContent: input.content,
+        previousContent: null,
+        force: input.force,
+        reason: input.reason,
+      });
+    } catch (err) {
+      console.warn(`[KNOWLEDGE_WRITE_PROTECTION_ALERT] Refused create for ${input.slug}: ${(err as Error).message}`);
+      await mirrorActivity({
+        companyId: input.companyId,
+        itemId: input.slug,
+        slug: input.slug,
+        event: "knowledge.write_protection_alert",
+        actor,
+        payload: { slug: input.slug, cause: (err as Error).message, action: "create" },
+      }).catch(() => {});
+      throw err;
+    }
     const lang = normalizeKnowledgeRevisionLang(input.lang);
     if (input.translationOf) throw new KnowledgeDomainError("translation_requires_canonical_item", 400, "A translation revision must be created against an existing knowledge item.");
     const kind = input.kind ?? "note";
@@ -470,6 +485,16 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     });
 
     await mirrorActivity({ companyId: row.companyId, itemId: row.id, slug: row.slug, event: "knowledge.created", actor, payload: { kind: row.kind } });
+    if (createViolation) {
+      await mirrorActivity({
+        companyId: row.companyId,
+        itemId: row.id,
+        slug: row.slug,
+        event: "knowledge.write_protection_overridden",
+        actor,
+        payload: { slug: row.slug, violation: createViolation.kind, reason: input.reason },
+      }).catch(() => {});
+    }
     await reindex(row.nestId, row.id);
     return toItemDto(row);
   }
@@ -492,8 +517,9 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       .orderBy(desc(knowledgeRevisions.revisionNumber))
       .limit(1);
 
+    let draftViolation: KnowledgeWriteProtectionViolation | null = null;
     try {
-      assertKnowledgeWriteProtection({
+      draftViolation = assertKnowledgeWriteProtection({
         newContent: input.content,
         previousContent: latestRevision?.content ?? null,
         force: input.force,
@@ -507,7 +533,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         slug: current.slug,
         event: "knowledge.write_protection_alert",
         actor,
-        payload: { slug: current.slug, cause: (err as Error).message },
+        payload: { slug: current.slug, cause: (err as Error).message, action: "draft" },
       }).catch(() => {});
       throw err;
     }
@@ -591,6 +617,16 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     });
 
     await mirrorActivity({ companyId: row.companyId, itemId: row.id, slug: row.slug, event: "knowledge.draft", actor, payload: {} });
+    if (draftViolation) {
+      await mirrorActivity({
+        companyId: current.companyId,
+        itemId: current.id,
+        slug: current.slug,
+        event: "knowledge.write_protection_overridden",
+        actor,
+        payload: { slug: current.slug, violation: draftViolation.kind, reason: input.reason },
+      }).catch(() => {});
+    }
     return toItemDto(row);
   }
 
