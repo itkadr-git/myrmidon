@@ -3056,6 +3056,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
       executionWorkspaceId,
       executionWorkspacePreference: "reuse_existing",
+      assigneeAgentId,
       executionWorkspaceSettings: {
         mode: "isolated_workspace",
         workspaceRuntime: { profile: "agent" },

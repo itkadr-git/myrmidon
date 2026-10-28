@@ -798,6 +798,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       title: "Invalid review",
       status: "in_review",
       assigneeAgentId: agentId,
+      reviewPolicy: { mode: "agent", participantAgentId: pausedAgentId },
       executionState: {
         status: "pending",
         currentStageId: null,

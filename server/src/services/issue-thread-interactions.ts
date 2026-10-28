@@ -3891,6 +3891,7 @@ export function issueThreadInteractionService(
             status: "todo",
             workMode: task.workMode ?? "standard",
             priority: task.priority ?? "medium",
+            assigneeAgentId: null,
             ...(task.assigneeAgentId !== undefined
               ? { assigneeAgentId: task.assigneeAgentId }
               : {}),

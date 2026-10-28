@@ -1914,6 +1914,8 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
+  /** Internal: createChild already resolved parent assignee inheritance. */
+  parentAssigneeInheritanceResolved?: boolean;
   initialPlan?: string | null;
   labelIds?: string[];
   blockedByIssueIds?: string[];
@@ -4169,7 +4171,7 @@ async function listIssueBlockerAttentionMap(
         sampleStalledBlockerIdentifier: null,
       };
     }
-    if (node.assigneeUserId && node.status !== "cancelled") {
+    if ((node.assigneeUserId || node.assigneeAgentId) && node.status !== "cancelled") {
       return {
         covered: true,
         stalled: false,
@@ -4179,7 +4181,9 @@ async function listIssueBlockerAttentionMap(
     }
     if (node.status === "in_review") {
       const hasWaitingPath =
-        activeIssueIds.has(node.id) || Boolean(node.assigneeUserId);
+        activeIssueIds.has(node.id) ||
+        explicitWaitingIssueIds.has(node.id) ||
+        Boolean(node.assigneeUserId);
       if (hasWaitingPath) {
         return {
           covered: true,
@@ -4308,7 +4312,8 @@ async function listIssueBlockerAttentionMap(
       node.status === "in_progress" ||
       activeIssueIds.has(node.id) ||
       explicitWaitingIssueIds.has(node.id) ||
-      Boolean(node.assigneeUserId)
+      Boolean(node.assigneeUserId) ||
+      Boolean(node.assigneeAgentId)
     )
       return true;
 
@@ -9383,8 +9388,11 @@ export function issueService(db: Db) {
       if (!parent) throw notFound("Parent issue not found");
       await assertExecutionTaskParent(db, parent.companyId, parent.id);
 
+      const childAssigneeWasOmitted = data.assigneeAgentId === undefined;
+      const explicitChildAssignee = data.assigneeAgentId;
+
       if (
-        data.assigneeAgentId === undefined &&
+        childAssigneeWasOmitted &&
         data.assigneeUserId == null &&
         (data.status === undefined || data.status === "todo" || data.status === "blocked")
       ) {
@@ -9396,6 +9404,7 @@ export function issueService(db: Db) {
           parent,
         );
         if (inheritedAssignee) data = { ...data, assigneeAgentId: inheritedAssignee };
+        else data = { ...data, assigneeAgentId: null };
       }
 
       const idempotencyKey = data.idempotencyKey?.trim();
@@ -9465,6 +9474,7 @@ export function issueService(db: Db) {
         issueData.casteKey,
         parent,
       );
+      if (childAssigneeWasOmitted && !inheritedAssignee) issueData.assigneeAgentId = null;
       if (inheritedAssignee && issueData.assigneeAgentId === undefined) {
         issueData.assigneeAgentId = inheritedAssignee;
       }
@@ -9485,6 +9495,7 @@ export function issueService(db: Db) {
           : null;
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
+        parentAssigneeInheritanceResolved: true,
         parentId: parent.id,
         projectId: childProjectId,
         projectWorkspaceId:
@@ -9502,6 +9513,7 @@ export function issueService(db: Db) {
             issueData.requestDepth ?? 0,
           ),
         ),
+        assigneeAgentId: childAssigneeWasOmitted ? (issueData.assigneeAgentId ?? null) : explicitChildAssignee,
         description: appendAcceptanceCriteriaToDescription(
           issueData.description,
           acceptanceCriteria,
@@ -9920,6 +9932,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
         skipExecutionWorkspaceInheritance,
+        parentAssigneeInheritanceResolved,
         watchdog,
         watchdogActorRunId,
         actorRunId,
@@ -9932,8 +9945,9 @@ export function issueService(db: Db) {
       } = data;
       if (
         issueData.parentId &&
+        !parentAssigneeInheritanceResolved &&
         issueData.assigneeAgentId === undefined &&
-        issueData.assigneeUserId === undefined &&
+        issueData.assigneeUserId == null &&
         (issueData.status === undefined || issueData.status === "todo" || issueData.status === "blocked")
       ) {
         const inheritedAssignee = await resolveParentAssigneeForChild(

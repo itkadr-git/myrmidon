@@ -1248,12 +1248,11 @@ async function openTaskIdsOfAgents(
     );
   const assignedIds = new Set(assignedRows.map((row) => row.issueId));
   const relatedIds = [...assignedIds];
-  const blockedIssueRows = relatedIds.length === 0
-    ? [] as Array<{ issueId: string }>
+  const blockedIssueRows: Array<{ issueId: string }> = relatedIds.length === 0
+    ? []
     : await db
         .select({
           issueId: issueRelations.relatedIssueId,
-          blockerIssueId: issueRelations.issueId,
         })
         .from(issueRelations)
         .innerJoin(
