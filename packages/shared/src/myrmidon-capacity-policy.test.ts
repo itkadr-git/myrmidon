@@ -16,7 +16,7 @@ describe("capacity policy contract", () => {
       issueId: `issue-${String(index).padStart(2, "0")}`,
       priority: "normal",
       queuedAt: index,
-      projectId: index < 9 ? "dominant" : null,
+      projectId: index < 6 ? "dominant" : null,
     }));
     const policy = { ...DEFAULT_CAPACITY_POLICY, fairness: { perProjectMaxShare: 0.5 } };
     const first = applyProjectFairness(candidates, policy);

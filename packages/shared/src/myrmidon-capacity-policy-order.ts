@@ -77,9 +77,17 @@ export function orderCandidatesWithPolicy<T extends SwarmQueueCandidate & Capaci
   const starvationOrdered = providerPorts.starvation(scored, ctx.now, effectivePolicy);
   // Fairness must remain the final tie-break for candidates with equal effective priority.
   const fairPosition = new Map(fair.map((candidate, index) => [candidate.issueId, index]));
+  const rank = (candidate: T) => {
+    const ageMs = Math.max(0, new Date(ctx.now).getTime() - new Date(candidate.createdAt ?? 0).getTime());
+    const baseRank = swarmPriorityRank(candidate.priority);
+    return ageMs >= effectivePolicy.starvation.afterMin * 60_000
+      ? Math.max(0, baseRank - effectivePolicy.starvation.promoteBy)
+      : baseRank;
+  };
+
   return {
     ordered: starvationOrdered.sort((left, right) => {
-      const priorityDelta = swarmPriorityRank(left.priority) - swarmPriorityRank(right.priority);
+      const priorityDelta = rank(left) - rank(right);
       if (priorityDelta) return priorityDelta;
       return (fairPosition.get(left.issueId) ?? 0) - (fairPosition.get(right.issueId) ?? 0);
     }),
