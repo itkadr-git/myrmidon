@@ -88,12 +88,6 @@ func TestEnsure_RegistersSafeDirectoryAndIsIdempotent(t *testing.T) {
 	if err := os.MkdirAll(botDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(q.ProjidFile, []byte(qKeyA+":0\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(q.ProjectsFile, []byte("0:"+botDir+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	id, err := q.Ensure(context.Background(), qKeyA)
 	if err != nil {
 		t.Fatal(err)
@@ -146,12 +140,18 @@ func TestEnsure_RepairsZeroProjectID(t *testing.T) {
 	if err := os.WriteFile(q.ProjidFile, []byte(qKeyA+":0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(q.ProjectsFile, []byte("0:"+botDir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	id, err := q.Ensure(context.Background(), qKeyA)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if id != FirstProjectID || read(t, q.ProjidFile) != qKeyA+":1000\n" {
 		t.Fatalf("id=%d projid=%q", id, read(t, q.ProjidFile))
+	}
+	if got := read(t, q.ProjectsFile); got != "1000:"+botDir+"\n" {
+		t.Fatalf("projects %q", got)
 	}
 	calls := f.journal()
 	if len(calls) != 2 || calls[0] != "xfs_quota|-x|-c|state -p|"+q.VolumeRoot || calls[1] != "xfs_quota|-x|-c|project -s -p "+botDir+" 1000|"+q.VolumeRoot {
@@ -339,7 +339,7 @@ func TestPut_ExistingNameKeepsItsID(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(q.VolumeRoot, qKeyA), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(q.ProjidFile, []byte(qKeyA+":0\n"), 0o600); err != nil {
+	if err := os.WriteFile(q.ProjidFile, []byte(qKeyA+":1234\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	res, err := q.Put(context.Background(), qKeyA, MinQuotaBytes)

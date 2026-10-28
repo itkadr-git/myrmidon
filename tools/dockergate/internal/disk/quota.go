@@ -128,11 +128,17 @@ func softBytes(hard int64) int64 { return hard * 8 / 10 }
 // Ensure registers a bot directory in the XFS project tables without setting
 // a quota. It is safe to call after directory creation and on retries.
 func (q *Quota) Ensure(ctx context.Context, botKey string) (int, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.ensureLocked(ctx, botKey)
+}
+
+// ensureLocked reconciles the project tables and applies the project inode state.
+// The caller must hold q.mu because Put uses it to make ensure+limit atomic.
+func (q *Quota) ensureLocked(ctx context.Context, botKey string) (int, error) {
 	if !route.IsBotKey(botKey) {
 		return 0, ErrBadKey
 	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
 
 	root, err := filepath.Abs(q.VolumeRoot)
 	if err != nil {
@@ -206,11 +212,11 @@ func (q *Quota) Put(ctx context.Context, botKey string, hard int64) (Result, err
 	if !ValidBytes(hard) {
 		return Result{}, ErrBadQuota
 	}
-	if _, err := q.Ensure(ctx, botKey); err != nil {
-		return Result{}, err
-	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if _, err := q.ensureLocked(ctx, botKey); err != nil {
+		return Result{}, err
+	}
 
 	if err := q.checkEnabled(ctx); err != nil {
 		return Result{}, err
@@ -224,12 +230,21 @@ func (q *Quota) Put(ctx context.Context, botKey string, hard int64) (Result, err
 	if err != nil {
 		return Result{}, fmt.Errorf("disk: read %s: %w", q.ProjectsFile, err)
 	}
-	id := allocate(botKey, projid, projects)
-	dir := q.VolumeRoot + "/" + botKey
+	id := 0
+	for _, l := range projid {
+		if lineKey(l) == botKey {
+			id, _ = strconv.Atoi(lineValue(l))
+			break
+		}
+	}
+	if id <= 0 {
+		id = allocate(botKey, projid, projects)
+	}
+	dir := filepath.Join(q.VolumeRoot, botKey)
 
 	newProjid, changedA := setLine(projid, func(l string) bool { return lineKey(l) == botKey }, botKey+":"+strconv.Itoa(id))
 	idText := strconv.Itoa(id)
-	newProjects, changedB := setLine(projects, func(l string) bool { return lineKey(l) == idText }, idText+":"+dir)
+	newProjects, changedB := setLine(projects, func(l string) bool { return lineKey(l) == idText || lineValue(l) == dir }, idText+":"+dir)
 	// projid first: a project that is in /etc/projects but has no name is the
 	// worse half-state.
 	if changedA {
@@ -351,7 +366,7 @@ func allocate(botKey string, projid, projects []string) int {
 		if err != nil || id < 0 {
 			continue
 		}
-		if id >= next {
+		if id > 0 && id >= next {
 			next = id + 1
 		}
 		if k == botKey && id > 0 {
