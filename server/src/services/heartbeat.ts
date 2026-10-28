@@ -578,6 +578,7 @@ import {
   buildSuccessfulRunHandoffRequiredNotice,
   decideRunLivenessContinuation,
   decideSuccessfulRunHandoff,
+  isIssueWaitingForPullRequestCi,
   findExistingFinishSuccessfulRunHandoffWake,
   findExistingRunLivenessContinuationWake,
   isSuccessfulRunHandoffValidPathSkip,
@@ -13295,22 +13296,10 @@ export function heartbeatService(
       livenessState,
       livenessReason: run.livenessReason,
       nextAction: run.nextAction,
-      hasOpenPullRequestWaitingForCi: Boolean(
-        await db
-          .select({ id: issueWorkProducts.id })
-          .from(issueWorkProducts)
-          .where(
-            and(
-              eq(issueWorkProducts.companyId, run.companyId),
-              eq(issueWorkProducts.issueId, issueId),
-              eq(issueWorkProducts.type, "pull_request"),
-              eq(issueWorkProducts.provider, "github"),
-              eq(issueWorkProducts.status, "open"),
-            ),
-          )
-          .limit(1)
-          .then((rows) => rows[0] ?? null),
-      ),
+      hasOpenPullRequestWaitingForCi: await isIssueWaitingForPullRequestCi(db, {
+        companyId: run.companyId,
+        issueId,
+      }),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
@@ -13523,7 +13512,7 @@ export function heartbeatService(
       budgetBlock,
       pauseHold,
       activeRoutineContinuation,
-      openPrWorkProduct,
+      hasOpenPullRequestWaitingForCi,
     ] = await Promise.all([
       issue
         ? db
@@ -13670,21 +13659,11 @@ export function heartbeatService(
             .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
       issue
-        ? db
-            .select({ id: issueWorkProducts.id })
-            .from(issueWorkProducts)
-            .where(
-              and(
-                eq(issueWorkProducts.companyId, issue.companyId),
-                eq(issueWorkProducts.issueId, issue.id),
-                eq(issueWorkProducts.type, "pull_request"),
-                eq(issueWorkProducts.provider, "github"),
-                eq(issueWorkProducts.status, "open"),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null)
-        : Promise.resolve(null),
+        ? isIssueWaitingForPullRequestCi(db, {
+            companyId: issue.companyId,
+            issueId: issue.id,
+          })
+        : Promise.resolve(false),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -13706,7 +13685,7 @@ export function heartbeatService(
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
-      hasOpenPullRequestWaitingForCi: Boolean(openPrWorkProduct),
+      hasOpenPullRequestWaitingForCi: Boolean(hasOpenPullRequestWaitingForCi),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });

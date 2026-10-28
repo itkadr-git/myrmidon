@@ -261,6 +261,11 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("wakes an assigned issue when open PR does not wait for CI (e.g. changes requested or CI failed)", () => {
+    const decision = decide({ hasOpenPullRequestWaitingForCi: false });
+    expect(decision.kind).toBe("enqueue");
+  });
+
   it("does not queue when the issue already has a valid disposition", () => {
     expect(decide({ issue: { ...issue, status: "done" } as any })).toEqual({
       kind: "skip",

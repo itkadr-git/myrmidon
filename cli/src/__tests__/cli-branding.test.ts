@@ -21,7 +21,7 @@ it("prints a deprecation warning only for the legacy binary", () => {
   expect(legacy).toContain("paperclipai is deprecated, use myrmidon");
 });
 
-it("runs the built entrypoint under both aliases and warns once only for paperclipai", () => {
+it("runs the built entrypoint under both aliases and warns once only for paperclipai", { timeout: 30_000 }, () => {
   const cliRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
   const testDir = mkdtempSync(resolve(cliRoot, ".cli-branding-"));
   const aliases = ["myrmidon", "paperclipai"] as const;

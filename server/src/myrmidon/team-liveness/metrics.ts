@@ -67,8 +67,28 @@ export async function countEmptyRunsByAgent(
         eq(heartbeatRuns.companyId, companyId),
         eq(heartbeatRuns.status, "succeeded"),
         gte(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})`, since.toISOString()),
-        sql`${heartbeatRuns.livenessState} in ('empty_response', 'plan_only')`,
-        sql`${heartbeatRuns.livenessReason} ilike 'Run succeeded without useful output%'`,
+        sql`(
+          exists (
+            select 1 from issue_comments
+            where issue_comments.created_by_run_id = ${heartbeatRuns.id}
+          )
+          or (
+            ${heartbeatRuns.livenessState} in ('empty_response', 'plan_only')
+            and ${heartbeatRuns.livenessReason} ilike 'Run succeeded without useful output%'
+          )
+        )`,
+        sql`not exists (
+          select 1 from issue_work_products
+          where issue_work_products.created_by_run_id = ${heartbeatRuns.id}
+        )`,
+        sql`not exists (
+          select 1 from activity_log
+          where activity_log.run_id = ${heartbeatRuns.id}
+            and (
+              (activity_log.action = 'issue.updated' and activity_log.details->>'status' is not null)
+              or activity_log.action = 'issue.status_changed'
+            )
+        )`,
       ),
     )
     .groupBy(heartbeatRuns.agentId);

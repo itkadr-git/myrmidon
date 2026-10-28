@@ -97,8 +97,8 @@
           "hint": "Runs that stopped making progress and were interrupted"
         },
         "emptyRuns": {
-          "label": "Runs without useful output",
-          "hint": "Successful runs classified by liveness as empty_response or plan_only; this is a proxy, not a comment-only action audit. API includes per-agent counts."
+          "label": "Empty runs",
+          "hint": "Runs that finished only with a comment and without a commit, PR, or status change. API includes per-agent counts."
         },
         "loading": "Loading team liveness...",
         "footnote": "What the board did on its own for this company in the window. A run of \"Resumes given up\" or \"Stalled runs\" means an agent needs a human look; the switches behind all four sit in the Team liveness panel."

@@ -110,6 +110,22 @@ describe("run liveness continuations", () => {
     });
   });
 
+  it("does not suppress continuation when open PR is not waiting for CI (e.g. changes requested)", () => {
+    const decision = decideRunLivenessContinuation({
+      run: run({ continuationAttempt: 1 }),
+      issue: issue(),
+      agent: agent(),
+      livenessState: "empty_response",
+      livenessReason: "Review requested changes",
+      nextAction: null,
+      hasOpenPullRequestWaitingForCi: false,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+    });
+
+    expect(decision.kind).toBe("enqueue");
+  });
+
   it("enqueues the second empty_response continuation", () => {
     const decision = decideRunLivenessContinuation({
       run: run({ continuationAttempt: 1 }),

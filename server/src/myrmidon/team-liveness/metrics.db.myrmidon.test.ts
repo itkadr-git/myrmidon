@@ -7,6 +7,9 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issueComments,
+  issueWorkProducts,
+  issues,
 } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -90,6 +93,18 @@ describeEmbeddedPostgres("team liveness metrics", () => {
       permissions: {},
     });
     return agentId;
+  }
+
+  async function seedIssue(companyId: string) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    return issueId;
   }
 
   async function recordResume(companyId: string, action: string, at: Date) {
@@ -221,5 +236,98 @@ describeEmbeddedPostgres("team liveness metrics", () => {
     expect(day.windowHours).toBe(24);
     expect(hourWindow.autoResumes).toBe(0);
     expect(hourWindow.windowHours).toBe(1);
+  });
+
+  it("counts comment-only runs and excludes runs with work products or status changes", async () => {
+    const now = new Date("2026-10-05T12:00:00.000Z");
+    const companyId = await seedCompany("company-comment-only");
+    const agentId = await seedAgent(companyId);
+    const issueId = await seedIssue(companyId);
+
+    // Run 1: finished only with comment -> should be counted
+    const run1Id = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: run1Id,
+      companyId,
+      agentId,
+      status: "succeeded",
+      finishedAt: new Date(now.getTime() - 10 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 10 * 60 * 1000),
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      actorType: "agent",
+      actorId: agentId,
+      body: "CI run still in progress",
+      createdByRunId: run1Id,
+      createdAt: new Date(now.getTime() - 10 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 10 * 60 * 1000),
+    });
+
+    // Run 2: comment + work product (e.g. PR/commit) -> excluded
+    const run2Id = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: run2Id,
+      companyId,
+      agentId,
+      status: "succeeded",
+      finishedAt: new Date(now.getTime() - 20 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 20 * 60 * 1000),
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      actorType: "agent",
+      actorId: agentId,
+      body: "Created PR #123",
+      createdByRunId: run2Id,
+      createdAt: new Date(now.getTime() - 20 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 20 * 60 * 1000),
+    });
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #123",
+      status: "open",
+      createdByRunId: run2Id,
+    });
+
+    // Run 3: comment + issue status change in activity_log -> excluded
+    const run3Id = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: run3Id,
+      companyId,
+      agentId,
+      status: "succeeded",
+      finishedAt: new Date(now.getTime() - 30 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 30 * 60 * 1000),
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      actorType: "agent",
+      actorId: agentId,
+      body: "Completed task",
+      createdByRunId: run3Id,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 30 * 60 * 1000),
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      runId: run3Id,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: { status: "done" },
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+    });
+
+    const metrics = await readTeamLivenessMetrics(db, companyId, now);
+    expect(metrics.emptyRunsByAgent).toEqual([{ agentId, count: 1 }]);
   });
 });
