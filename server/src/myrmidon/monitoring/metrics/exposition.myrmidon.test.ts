@@ -6,14 +6,14 @@ import { describe, expect, it } from "vitest";
 import {
   METRIC_FAMILIES,
   escapeLabelValue,
+  formatSampleValue,
   percentile,
   renderMetricsText,
   type MetricsSnapshot,
 } from "./metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 import { BLOCKER_DASHBOARD_PANELS } from "../../../../../ui/src/lib/blockerDashboardPanels.js";
-import { computeBlockedMetrics, renderBlockedMetrics } from "./blocked.js";
-import { renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
+import { computeBlockedMetrics } from "./blocked.js";
 
 function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
   return {
@@ -328,29 +328,32 @@ describe("prometheus exposition format", () => {
     expect(text).not.toContain("myrmidon_corpus_shadow_module_latency_seconds{");
   });
 
-  it("registers every dashboard panel source in the live Prometheus exposition", async () => {
+  it("registers every dashboard panel source in the live Prometheus exposition", () => {
     const panelSources = BLOCKER_DASHBOARD_PANELS.map(({ query }) => query);
     for (const source of panelSources) {
       expect(METRIC_FAMILIES, `registered family for dashboard source ${source}`).toContain(source);
     }
 
-    const blocked = renderBlockedMetrics(computeBlockedMetrics([{
-      id: "blocked-a",
-      status: "blocked",
-      blockedSince: new Date("2026-10-01T00:00:00Z"),
-      blockerMetadata: null,
-    }], new Date("2026-10-02T00:00:00Z")));
-    const roots: BlockerRootMetrics = {
-      companies: [{
+    const text = renderMetricsText(snapshot({
+      blocked: [{
+        companyId: "company-a",
+        groups: computeBlockedMetrics([{
+          id: "blocked-a",
+          status: "blocked",
+          blockedSince: new Date("2026-10-01T00:00:00Z"),
+          blockerMetadata: null,
+        }], new Date("2026-10-02T00:00:00Z")),
+      }],
+      blockerRoots: [{
         companyId: "company-a",
         roots: [{ root: "root-a", fanout: 2 }],
         terminalCount: 1,
         rootsOverLimit: 0,
       }],
-    };
-    const rendered = [blocked, renderBlockerRootMetrics(roots)].join("\n");
+    }));
     for (const source of panelSources) {
-      expect(rendered, `live source ${source}`).toContain(`# TYPE ${source} `);
+      expect(text, `rendered metric ${source}`).toContain(`# TYPE ${source} `);
+      expect(text, `sample for ${source}`).toMatch(new RegExp(`^${source}(?:[{ ]|$)`, "m"));
     }
   });
 
