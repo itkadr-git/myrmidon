@@ -33,13 +33,13 @@ export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: stri
     return (
       <div
         className="myr-ui2"
-        style={{ display: "flex", flexDirection: "column", height: "100dvh", overflowY: "auto" }}
+        style={{ display: "flex", flexDirection: "column", height: "100dvh", overflowY: "hidden" }}
         {...rootProps}
       >
         <Ui2PhoneHeader />
         <main
           data-testid="ui2-main"
-          style={{ flex: 1, minWidth: 0, paddingBottom: "var(--myr-phone-tabbar-height)" }}
+          style={{ flex: 1, minWidth: 0, overflowY: "auto", paddingBottom: "var(--myr-phone-tabbar-height)" }}
         >
           {content}
         </main>
