@@ -26,7 +26,19 @@ export function createHooks({ stateDir, load, log = async () => {} }) {
     const path = `${stateDir}/${createHash('sha256').update(event.session_id).digest('hex')}.json`;
     // Exclusive lock: concurrent submissions must not deliver the same revision twice.
     const lock = `${path}.lock`;
-    await mkdir(lock, { mode: 0o700 });
+    const deadline = Date.now() + 2000;
+    while (true) {
+      try {
+        await mkdir(lock, { mode: 0o700 });
+        break;
+      } catch (err) {
+        if (err.code === 'EEXIST' && Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, 25));
+          continue;
+        }
+        throw err;
+      }
+    }
     try {
       let state = { delivered: [], sessionBytes: 0 };
       try {

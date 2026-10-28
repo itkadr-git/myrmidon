@@ -1,0 +1,1077 @@
+{
+  "benchmarkVersion": "1.0.0",
+  "generatedAt": "2026-10-28T19:29:00.312Z",
+  "dataset": {
+    "totalMessages": 50,
+    "matchedMessageCount": 44,
+    "unmatchedMessageCount": 6
+  },
+  "sessionStart": {
+    "oldBytes": 24200,
+    "oldTokens": 6050,
+    "newBytes": 1020,
+    "newTokens": 299,
+    "newUnder12KiB": true
+  },
+  "totals": {
+    "oldBytes": 59400,
+    "oldTokens": 14850,
+    "newBytes": 3239,
+    "newTokens": 768,
+    "byteSavings": 56161,
+    "byteSavingsPercent": "94.5%",
+    "tokenSavings": 14082,
+    "tokenSavingsPercent": "94.8%"
+  },
+  "contractACompliance": {
+    "newBytesUnderOldBytes": true,
+    "newTokensUnderOldTokens": true,
+    "sessionStartUnder12KiB": true,
+    "allUserPromptsUnder2KiB": true,
+    "zeroInjectionForUnmatched": true,
+    "secretScanClean": true
+  },
+  "messages": [
+    {
+      "id": 1,
+      "timestamp_utc": "2026-10-20T00:00:00+00:00",
+      "promptLength": 130,
+      "matchedTriggers": [],
+      "old": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 24200,
+        "cumulativeTokens": 6050
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 1020,
+        "cumulativeTokens": 299,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 2,
+      "timestamp_utc": "2026-10-20T03:21:36+00:00",
+      "promptLength": 92,
+      "matchedTriggers": [
+        "deploy",
+        "release"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 25000,
+        "cumulativeTokens": 6250
+      },
+      "new": {
+        "bytesAdded": 328,
+        "tokensAdded": 77,
+        "cumulativeBytes": 1348,
+        "cumulativeTokens": 376,
+        "contextInjected": true
+      }
+    },
+    {
+      "id": 3,
+      "timestamp_utc": "2026-10-20T06:43:12+00:00",
+      "promptLength": 71,
+      "matchedTriggers": [
+        "ssh"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 25800,
+        "cumulativeTokens": 6450
+      },
+      "new": {
+        "bytesAdded": 326,
+        "tokensAdded": 62,
+        "cumulativeBytes": 1674,
+        "cumulativeTokens": 438,
+        "contextInjected": true
+      }
+    },
+    {
+      "id": 4,
+      "timestamp_utc": "2026-10-20T10:04:48+00:00",
+      "promptLength": 104,
+      "matchedTriggers": [
+        "paperclip-api"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 26600,
+        "cumulativeTokens": 6650
+      },
+      "new": {
+        "bytesAdded": 319,
+        "tokensAdded": 73,
+        "cumulativeBytes": 1993,
+        "cumulativeTokens": 511,
+        "contextInjected": true
+      }
+    },
+    {
+      "id": 5,
+      "timestamp_utc": "2026-10-20T13:26:24+00:00",
+      "promptLength": 105,
+      "matchedTriggers": [
+        "incident"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 27400,
+        "cumulativeTokens": 6850
+      },
+      "new": {
+        "bytesAdded": 358,
+        "tokensAdded": 63,
+        "cumulativeBytes": 2351,
+        "cumulativeTokens": 574,
+        "contextInjected": true
+      }
+    },
+    {
+      "id": 6,
+      "timestamp_utc": "2026-10-20T16:48:00+00:00",
+      "promptLength": 120,
+      "matchedTriggers": [
+        "owner-message"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 28200,
+        "cumulativeTokens": 7050
+      },
+      "new": {
+        "bytesAdded": 310,
+        "tokensAdded": 54,
+        "cumulativeBytes": 2661,
+        "cumulativeTokens": 628,
+        "contextInjected": true
+      }
+    },
+    {
+      "id": 7,
+      "timestamp_utc": "2026-10-20T20:09:36+00:00",
+      "promptLength": 122,
+      "matchedTriggers": [
+        "config-change"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 29000,
+        "cumulativeTokens": 7250
+      },
+      "new": {
+        "bytesAdded": 278,
+        "tokensAdded": 60,
+        "cumulativeBytes": 2939,
+        "cumulativeTokens": 688,
+        "contextInjected": true
+      }
+    },
+    {
+      "id": 8,
+      "timestamp_utc": "2026-10-20T23:31:12+00:00",
+      "promptLength": 87,
+      "matchedTriggers": [
+        "merge"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 29800,
+        "cumulativeTokens": 7450
+      },
+      "new": {
+        "bytesAdded": 300,
+        "tokensAdded": 80,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": true
+      }
+    },
+    {
+      "id": 9,
+      "timestamp_utc": "2026-10-21T02:52:48+00:00",
+      "promptLength": 103,
+      "matchedTriggers": [],
+      "old": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 29800,
+        "cumulativeTokens": 7450
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 10,
+      "timestamp_utc": "2026-10-21T06:14:24+00:00",
+      "promptLength": 99,
+      "matchedTriggers": [],
+      "old": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 29800,
+        "cumulativeTokens": 7450
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 11,
+      "timestamp_utc": "2026-10-21T09:36:00+00:00",
+      "promptLength": 93,
+      "matchedTriggers": [
+        "deploy"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 30600,
+        "cumulativeTokens": 7650
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 12,
+      "timestamp_utc": "2026-10-21T12:57:36+00:00",
+      "promptLength": 101,
+      "matchedTriggers": [
+        "ssh"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 31400,
+        "cumulativeTokens": 7850
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 13,
+      "timestamp_utc": "2026-10-21T16:19:12+00:00",
+      "promptLength": 101,
+      "matchedTriggers": [
+        "owner-message"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 32200,
+        "cumulativeTokens": 8050
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 14,
+      "timestamp_utc": "2026-10-21T19:40:48+00:00",
+      "promptLength": 68,
+      "matchedTriggers": [
+        "release"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 33000,
+        "cumulativeTokens": 8250
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 15,
+      "timestamp_utc": "2026-10-21T23:02:24+00:00",
+      "promptLength": 102,
+      "matchedTriggers": [
+        "incident"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 33800,
+        "cumulativeTokens": 8450
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 16,
+      "timestamp_utc": "2026-10-22T02:24:00+00:00",
+      "promptLength": 110,
+      "matchedTriggers": [
+        "merge"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 34600,
+        "cumulativeTokens": 8650
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 17,
+      "timestamp_utc": "2026-10-22T05:45:36+00:00",
+      "promptLength": 119,
+      "matchedTriggers": [
+        "paperclip-api"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 35400,
+        "cumulativeTokens": 8850
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 18,
+      "timestamp_utc": "2026-10-22T09:07:12+00:00",
+      "promptLength": 100,
+      "matchedTriggers": [
+        "config-change"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 36200,
+        "cumulativeTokens": 9050
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 19,
+      "timestamp_utc": "2026-10-22T12:28:48+00:00",
+      "promptLength": 102,
+      "matchedTriggers": [],
+      "old": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 36200,
+        "cumulativeTokens": 9050
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 20,
+      "timestamp_utc": "2026-10-22T15:50:24+00:00",
+      "promptLength": 75,
+      "matchedTriggers": [
+        "deploy"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 37000,
+        "cumulativeTokens": 9250
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 21,
+      "timestamp_utc": "2026-10-22T19:12:00+00:00",
+      "promptLength": 91,
+      "matchedTriggers": [
+        "ssh"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 37800,
+        "cumulativeTokens": 9450
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 22,
+      "timestamp_utc": "2026-10-22T22:33:36+00:00",
+      "promptLength": 133,
+      "matchedTriggers": [
+        "owner-message"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 38600,
+        "cumulativeTokens": 9650
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 23,
+      "timestamp_utc": "2026-10-23T01:55:12+00:00",
+      "promptLength": 83,
+      "matchedTriggers": [
+        "incident"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 39400,
+        "cumulativeTokens": 9850
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 24,
+      "timestamp_utc": "2026-10-23T05:16:48+00:00",
+      "promptLength": 79,
+      "matchedTriggers": [
+        "merge"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 40200,
+        "cumulativeTokens": 10050
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 25,
+      "timestamp_utc": "2026-10-23T08:38:24+00:00",
+      "promptLength": 106,
+      "matchedTriggers": [
+        "config-change"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 41000,
+        "cumulativeTokens": 10250
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 26,
+      "timestamp_utc": "2026-10-23T12:00:00+00:00",
+      "promptLength": 73,
+      "matchedTriggers": [
+        "release"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 41800,
+        "cumulativeTokens": 10450
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 27,
+      "timestamp_utc": "2026-10-23T15:21:36+00:00",
+      "promptLength": 69,
+      "matchedTriggers": [
+        "paperclip-api"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 42600,
+        "cumulativeTokens": 10650
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 28,
+      "timestamp_utc": "2026-10-23T18:43:12+00:00",
+      "promptLength": 89,
+      "matchedTriggers": [
+        "owner-message"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 43400,
+        "cumulativeTokens": 10850
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 29,
+      "timestamp_utc": "2026-10-23T22:04:48+00:00",
+      "promptLength": 90,
+      "matchedTriggers": [
+        "ssh"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 44200,
+        "cumulativeTokens": 11050
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 30,
+      "timestamp_utc": "2026-10-24T01:26:24+00:00",
+      "promptLength": 90,
+      "matchedTriggers": [
+        "deploy"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 45000,
+        "cumulativeTokens": 11250
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 31,
+      "timestamp_utc": "2026-10-24T04:48:00+00:00",
+      "promptLength": 102,
+      "matchedTriggers": [
+        "config-change"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 45800,
+        "cumulativeTokens": 11450
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 32,
+      "timestamp_utc": "2026-10-24T08:09:36+00:00",
+      "promptLength": 98,
+      "matchedTriggers": [
+        "merge"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 46600,
+        "cumulativeTokens": 11650
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 33,
+      "timestamp_utc": "2026-10-24T11:31:12+00:00",
+      "promptLength": 93,
+      "matchedTriggers": [
+        "incident"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 47400,
+        "cumulativeTokens": 11850
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 34,
+      "timestamp_utc": "2026-10-24T14:52:48+00:00",
+      "promptLength": 97,
+      "matchedTriggers": [
+        "owner-message"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 48200,
+        "cumulativeTokens": 12050
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 35,
+      "timestamp_utc": "2026-10-24T18:14:24+00:00",
+      "promptLength": 97,
+      "matchedTriggers": [],
+      "old": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 48200,
+        "cumulativeTokens": 12050
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 36,
+      "timestamp_utc": "2026-10-24T21:36:00+00:00",
+      "promptLength": 102,
+      "matchedTriggers": [
+        "release"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 49000,
+        "cumulativeTokens": 12250
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 37,
+      "timestamp_utc": "2026-10-25T00:57:36+00:00",
+      "promptLength": 98,
+      "matchedTriggers": [
+        "ssh"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 49800,
+        "cumulativeTokens": 12450
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 38,
+      "timestamp_utc": "2026-10-25T04:19:12+00:00",
+      "promptLength": 96,
+      "matchedTriggers": [
+        "paperclip-api"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 50600,
+        "cumulativeTokens": 12650
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 39,
+      "timestamp_utc": "2026-10-25T07:40:48+00:00",
+      "promptLength": 71,
+      "matchedTriggers": [
+        "merge"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 51400,
+        "cumulativeTokens": 12850
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 40,
+      "timestamp_utc": "2026-10-25T11:02:24+00:00",
+      "promptLength": 75,
+      "matchedTriggers": [
+        "deploy"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 52200,
+        "cumulativeTokens": 13050
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 41,
+      "timestamp_utc": "2026-10-25T14:24:00+00:00",
+      "promptLength": 109,
+      "matchedTriggers": [
+        "config-change"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 53000,
+        "cumulativeTokens": 13250
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 42,
+      "timestamp_utc": "2026-10-25T17:45:36+00:00",
+      "promptLength": 126,
+      "matchedTriggers": [
+        "incident"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 53800,
+        "cumulativeTokens": 13450
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 43,
+      "timestamp_utc": "2026-10-25T21:07:12+00:00",
+      "promptLength": 144,
+      "matchedTriggers": [
+        "deploy",
+        "owner-message"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 54600,
+        "cumulativeTokens": 13650
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 44,
+      "timestamp_utc": "2026-10-26T00:28:48+00:00",
+      "promptLength": 66,
+      "matchedTriggers": [
+        "release"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 55400,
+        "cumulativeTokens": 13850
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 45,
+      "timestamp_utc": "2026-10-26T03:50:24+00:00",
+      "promptLength": 99,
+      "matchedTriggers": [
+        "ssh"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 56200,
+        "cumulativeTokens": 14050
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 46,
+      "timestamp_utc": "2026-10-26T07:12:00+00:00",
+      "promptLength": 66,
+      "matchedTriggers": [
+        "paperclip-api"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 57000,
+        "cumulativeTokens": 14250
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 47,
+      "timestamp_utc": "2026-10-26T10:33:36+00:00",
+      "promptLength": 63,
+      "matchedTriggers": [
+        "merge"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 57800,
+        "cumulativeTokens": 14450
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 48,
+      "timestamp_utc": "2026-10-26T13:55:12+00:00",
+      "promptLength": 74,
+      "matchedTriggers": [],
+      "old": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 57800,
+        "cumulativeTokens": 14450
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 49,
+      "timestamp_utc": "2026-10-26T17:16:48+00:00",
+      "promptLength": 132,
+      "matchedTriggers": [
+        "owner-message"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 58600,
+        "cumulativeTokens": 14650
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    },
+    {
+      "id": 50,
+      "timestamp_utc": "2026-10-26T20:38:24+00:00",
+      "promptLength": 98,
+      "matchedTriggers": [
+        "deploy",
+        "release"
+      ],
+      "old": {
+        "bytesAdded": 800,
+        "tokensAdded": 200,
+        "cumulativeBytes": 59400,
+        "cumulativeTokens": 14850
+      },
+      "new": {
+        "bytesAdded": 0,
+        "tokensAdded": 0,
+        "cumulativeBytes": 3239,
+        "cumulativeTokens": 768,
+        "contextInjected": false
+      }
+    }
+  ]
+}
