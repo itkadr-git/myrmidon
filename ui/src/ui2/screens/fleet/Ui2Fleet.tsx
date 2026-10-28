@@ -31,11 +31,11 @@ export function Ui2Fleet() {
   const monitoringError = !data?.ok || sourceErrors.length > 0;
   return <Ui2Page title={t("ui2.screens.fleet.title" as never)} subtitle={t("ui2.screens.fleet.subtitle" as never)}>
     {monitoringError ? <Ui2ErrorState message={t("ui2.screens.fleet.monitoringError" as never)} detail={sourceErrors.join(" · ") || t("ui2.screens.fleet.monitoringUnavailable" as never)} /> : null}
-    {data?.blockerPanels ? <Ui2Section title="Blocker graph dashboard">
+    {data?.blockerPanels ? <Ui2Section title={t("ui2.screens.fleet.blockerDashboard" as never)}>
       <Ui2Tiles>{BLOCKER_DASHBOARD_PANELS.filter((panel) => panel.id !== "root_fanout").map((panel) => {
         const value = panel.id === "blocked_age" ? data.blockerPanels?.blockedAgeSeconds : panel.id === "missing_fields" ? data.blockerPanels?.missingFields : data.blockerPanels?.terminal;
         return <Ui2Tile key={panel.id} label={panel.title} value={value == null ? "—" : `${value} ${panel.unit}`} />;
-      })}<Ui2Tile label="Root fan-out" value={`${data.blockerPanels.rootFanout.length} roots`} hint={`Alert above ${data.blockerPanels.fanoutLimit}`} /></Ui2Tiles>
+      })}<Ui2Tile label={t("ui2.screens.fleet.rootFanout" as never)} value={`${data.blockerPanels.rootFanout.length} roots`} hint={`Alert above ${data.blockerPanels.fanoutLimit}`} /></Ui2Tiles>
       {data.blockerPanels.rootFanout.length > 0 ? <div className="flex flex-col divide-y divide-border">{data.blockerPanels.rootFanout.map((root) => <a className="flex justify-between py-2 text-sm hover:underline" href={`/issues/${encodeURIComponent(root.root)}`} key={root.root}><span>{root.root}</span><span className="font-mono">{root.fanout}</span></a>)}</div> : null}
     </Ui2Section> : null}
     <Ui2FleetSites companyId={companyId} sites={sites} loading={sitesQuery.isLoading} failed={sitesQuery.isError} />
