@@ -13,6 +13,7 @@ describe("site client PKI", () => {
     const clientCert = new X509Certificate(client.cert);
 
     expect(caCert.ca).toBe(true);
+    expect(caCert.keyUsage).toContain("keyCertSign");
     expect(caCert.publicKey.asymmetricKeyType).toBe("ec");
     expect(caCert.publicKey.asymmetricKeyDetails?.namedCurve).toBe("prime256v1");
     expect(clientCert.verify(caCert.publicKey)).toBe(true);
