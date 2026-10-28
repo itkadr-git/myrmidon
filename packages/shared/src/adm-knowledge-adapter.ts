@@ -143,15 +143,38 @@ export class AdmContextBudget {
   private restoreState(): void {
     if (!this.statePath) return;
     try {
-      const state = JSON.parse(readFileSync(this.statePath, "utf8")) as { sessionId?: string; emitted?: string[] };
-      if (state.sessionId === this.sessionId) state.emitted?.forEach((key) => this.emitted.add(key));
+      const state = JSON.parse(readFileSync(this.statePath, "utf8")) as {
+        sessionId?: string;
+        emitted?: string[];
+        sessions?: Record<string, string[]>;
+      };
+      const sessionEmitted = state.sessions?.[this.sessionId] ?? (state.sessionId === this.sessionId ? state.emitted : undefined);
+      sessionEmitted?.forEach((key) => this.emitted.add(key));
     } catch { /* missing or corrupt state is treated as a fresh session */ }
   }
   private persistState(): void {
     if (!this.statePath) return;
     try {
       mkdirSync(dirname(this.statePath), { recursive: true });
-      writeFileSync(this.statePath, JSON.stringify({ sessionId: this.sessionId, emitted: [...this.emitted] }));
+      let existingSessions: Record<string, string[]> = {};
+      try {
+        const parsed = JSON.parse(readFileSync(this.statePath, "utf8")) as {
+          sessionId?: string;
+          emitted?: string[];
+          sessions?: Record<string, string[]>;
+        };
+        if (parsed.sessions && typeof parsed.sessions === "object") {
+          existingSessions = { ...parsed.sessions };
+        } else if (parsed.sessionId && parsed.emitted) {
+          existingSessions[parsed.sessionId] = parsed.emitted;
+        }
+      } catch { /* file may not exist yet */ }
+      existingSessions[this.sessionId] = [...this.emitted];
+      writeFileSync(this.statePath, JSON.stringify({
+        sessionId: this.sessionId,
+        emitted: [...this.emitted],
+        sessions: existingSessions,
+      }));
     } catch { /* delivery remains usable if state persistence fails */ }
   }
 }
@@ -211,6 +234,31 @@ export function createAdmKnowledgeAdapter(rest: AdmKnowledgeRestPort) {
         if (result.status === "published" || published?.status === "published") throw new AdmConnectorError("ADM_FORBIDDEN", "Rules must not be self-published");
         return result;
       } catch (error) { throw mapError(error); }
+    },
+    async proposeRuleWithConflictRetry(
+      input: Parameters<AdmKnowledgeWritePort["proposeRule"]>[0] & { itemId?: string },
+      nextIdempotencyKey: string,
+    ): Promise<{ result: AdmWriteResult; diff: string; conflictResolved: boolean }> {
+      assertIdempotencyKey(nextIdempotencyKey);
+      try {
+        const result = await this.proposeRule(input);
+        return { result, diff: "", conflictResolved: false };
+      } catch (error) {
+        if (error instanceof AdmConnectorError && error.code === "ADM_REVISION_CONFLICT") {
+          const itemId = input.itemId ?? (await this.search(input.slug, namespaceOf(input.slug)!)).find((i) => i.slug === input.slug)?.id;
+          if (!itemId) throw error;
+          const latest = await rest.read(itemId);
+          if (!latest) throw new AdmConnectorError("ADM_NOT_FOUND", "Item not found on conflict reread");
+          const diff = `--- base: ${input.baseRevisionId ?? "initial"}\n+++ latest: ${latest.deliveredRevisionId ?? "unknown"}\n- ${latest.summary ?? ""}\n+ ${input.summary}`;
+          const retryResult = await this.proposeRule({
+            ...input,
+            baseRevisionId: latest.deliveredRevisionId ?? undefined,
+            idempotencyKey: nextIdempotencyKey,
+          });
+          return { result: retryResult, diff, conflictResolved: true };
+        }
+        throw error;
+      }
     },
     async writeLesson(input: Parameters<AdmKnowledgeWritePort["writeLesson"]>[0]): Promise<AdmWriteResult> {
       assertIdempotencyKey(input.idempotencyKey);
