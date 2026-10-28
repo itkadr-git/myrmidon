@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   AdmContextBudget,
@@ -22,6 +25,8 @@ function rest(overrides: Partial<AdmKnowledgeRestPort> = {}): AdmKnowledgeRestPo
     search: vi.fn(async () => [policy]),
     list: vi.fn(async () => [policy]),
     read: vi.fn(async () => policy),
+    proposeRule: vi.fn(async () => ({ itemId: policy.id, revisionId: "proposal-revision-id", status: "proposed" as const })),
+    writeLesson: vi.fn(async () => ({ itemId: "lesson-id", revisionId: "lesson-r1", status: "published" as const })),
     ...overrides,
   };
 }
@@ -98,6 +103,67 @@ describe("ADM knowledge REST adapter", () => {
     expect(api.read).toHaveBeenCalledWith(lesson.id);
   });
 
+  it("rejects lesson publication when read-back fails or revision does not match", async () => {
+    const lesson = { ...policy, id: "lesson-id", slug: "adm/lessons/deploy", kind: "wiki", deliveredRevisionId: "lesson-r1" };
+    const missingApi = rest({
+      writeLesson: vi.fn(async () => ({ itemId: lesson.id, revisionId: "lesson-r1", status: "published" as const })),
+      read: vi.fn(async () => null),
+    });
+    await expect(createAdmKnowledgeAdapter(missingApi).writeLesson({
+      slug: lesson.slug, title: "Lesson", summary: "", body: "Observed.", sourceRef: "test", idempotencyKey: "ope-9262:lesson:2",
+    })).rejects.toMatchObject({ code: "ADM_UPSTREAM_UNAVAILABLE" });
+
+    const mismatchApi = rest({
+      writeLesson: vi.fn(async () => ({ itemId: lesson.id, revisionId: "lesson-r1", status: "published" as const })),
+      read: vi.fn(async () => ({ ...lesson, deliveredRevisionId: "stale-revision" })),
+    });
+    await expect(createAdmKnowledgeAdapter(mismatchApi).writeLesson({
+      slug: lesson.slug, title: "Lesson", summary: "", body: "Observed.", sourceRef: "test", idempotencyKey: "ope-9262:lesson:3",
+    })).rejects.toMatchObject({ code: "ADM_UPSTREAM_UNAVAILABLE" });
+  });
+
+  it("handles base-revision conflict by rereading, calculating diff, and reproposing", async () => {
+    let callCount = 0;
+    const latestPolicy: AdmKnowledgeItem = {
+      ...policy,
+      deliveredRevisionId: "rev-2",
+      summary: "Updated deployment policy v2",
+    };
+    const api = rest({
+      read: vi.fn(async (id) => (id === policy.id ? latestPolicy : null)),
+      proposeRule: vi.fn(async () => {
+        callCount++;
+        if (callCount === 1) {
+          const err = new Error("Conflict");
+          Object.assign(err, { status: 409 });
+          throw err;
+        }
+        return { itemId: policy.id, revisionId: "rev-3", status: "proposed" as const };
+      }),
+    });
+    const adapter = createAdmKnowledgeAdapter(api);
+    const result = await adapter.proposeRuleWithConflictRetry({
+      itemId: policy.id,
+      slug: policy.slug,
+      title: policy.title,
+      summary: "Updated deployment policy v3",
+      body: "Never deploy on Friday without owner sign-off.",
+      sourceRef: "OPE-9262",
+      baseRevisionId: "rev-1",
+      idempotencyKey: "ope-9262:rule:conflict-1",
+    }, "ope-9262:rule:conflict-2");
+
+    expect(result.conflictResolved).toBe(true);
+    expect(result.diff).toContain("base: rev-1");
+    expect(result.diff).toContain("latest: rev-2");
+    expect(result.result.status).toBe("proposed");
+    expect(api.proposeRule).toHaveBeenCalledTimes(2);
+    expect(api.proposeRule).toHaveBeenLastCalledWith(expect.objectContaining({
+      baseRevisionId: "rev-2",
+      idempotencyKey: "ope-9262:rule:conflict-2",
+    }));
+  });
+
   it("enforces context budgets, trigger filtering, deduplication, and byte metrics", () => {
     const metrics: Array<{ bytesAdded: number; sessionBytes: number }> = [];
     const budget = new AdmContextBudget(12 * 1024, 2 * 1024, (event) => metrics.push(event));
@@ -109,14 +175,19 @@ describe("ADM knowledge REST adapter", () => {
     expect(metrics.some((event) => event.bytesAdded > 0)).toBe(true);
   });
   it("persists slug+revision dedupe per session across compaction", () => {
-    const statePath = "/data/hermes/cache/scratch/adm-budget-state-test.json";
-    const metadata: AdmKnowledgeMetadata[] = [{ schema_version: 1, slug: policy.slug, kind: "rule", title: policy.title, summary: policy.summary ?? "", tags: [], triggers: ["deploy"], priority: 1, owner: "owner", source_ref: "test", sensitivity: "internal", status: "published", revision_id: "r1", updated_at: policy.updatedAt, approver_kind: "owner" }];
-    const first = new AdmContextBudget(12 * 1024, 2 * 1024, undefined, { sessionId: "session-1", statePath });
-    expect(first.prompt(metadata, "deploy")).not.toBe("");
-    const resumed = new AdmContextBudget(12 * 1024, 2 * 1024, undefined, { sessionId: "session-1", statePath });
-    expect(resumed.prompt(metadata, "deploy")).toBe("");
-    const otherSession = new AdmContextBudget(12 * 1024, 2 * 1024, undefined, { sessionId: "session-2", statePath });
-    expect(otherSession.prompt(metadata, "deploy")).not.toBe("");
+    const tmpDir = mkdtempSync(join(tmpdir(), "adm-state-"));
+    const statePath = join(tmpDir, "adm-budget-state-test.json");
+    try {
+      const metadata: AdmKnowledgeMetadata[] = [{ schema_version: 1, slug: policy.slug, kind: "rule", title: policy.title, summary: policy.summary ?? "", tags: [], triggers: ["deploy"], priority: 1, owner: "owner", source_ref: "test", sensitivity: "internal", status: "published", revision_id: "r1", updated_at: policy.updatedAt, approver_kind: "owner" }];
+      const first = new AdmContextBudget(12 * 1024, 2 * 1024, undefined, { sessionId: "session-1", statePath });
+      expect(first.prompt(metadata, "deploy")).not.toBe("");
+      const resumed = new AdmContextBudget(12 * 1024, 2 * 1024, undefined, { sessionId: "session-1", statePath });
+      expect(resumed.prompt(metadata, "deploy")).toBe("");
+      const otherSession = new AdmContextBudget(12 * 1024, 2 * 1024, undefined, { sessionId: "session-2", statePath });
+      expect(otherSession.prompt(metadata, "deploy")).not.toBe("");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("maps REST failures to stable connector error codes without leaking upstream messages", async () => {
