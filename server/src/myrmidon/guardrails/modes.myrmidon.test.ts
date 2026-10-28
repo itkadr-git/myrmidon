@@ -71,7 +71,7 @@ describeEmbeddedPostgres("myrmidon(1.7-GRD-MODES): enforcement modes integration
     companyId = company.id;
     const engineer = await db
       .insert(agents)
-      .values({ companyId, name: `eng-${randomUUID().slice(0, 6)}`, adapterType: "claude_code", role: "engineer" }
+      .values({ companyId, name: `eng-${randomUUID().slice(0, 6)}`, adapterType: "claude_code", role: "engineer" })
       .returning()
       .then((rows) => rows[0]!);
     engineerAgentId = engineer.id;
