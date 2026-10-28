@@ -22,7 +22,7 @@ import {
   type AutonomyMatrix,
 } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
-import { assertApprovable } from "./domain.js";
+import { assertApprovable, KnowledgeDomainError } from "./domain.js";
 import { knowledgeRoutes, type KnowledgeRoutesDeps } from "./routes.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
@@ -611,5 +611,52 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     expect(
       (await request(app(deps, boardActor)).post(`${base}/items/playbooks/runbook/supersede`).send({ replacementSlug: "playbooks/v2" })).status,
     ).toBe(200);
+  });
+
+  it("OPE-9762: draft write protection rejects truncation or probe without force via 422", async () => {
+    const deps = makeDeps({ grants: true });
+    (deps.module.draft as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new KnowledgeDomainError(
+        "Refusing to write knowledge revision: content is shorter than 20 characters and appears to be a probe marker. Provide force: true and reason to overwrite.",
+        422,
+        "knowledge_write_protected",
+      );
+    });
+    const res = await request(app(deps, agentActor))
+      .post(`${base}/items/glossary/term/draft`)
+      .send({ content: "__probe" });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe("knowledge_write_protected");
+    expect(res.body.error).toMatch(/probe marker/);
+  });
+
+  it("OPE-9762: draft write passes force and reason to the module", async () => {
+    const deps = makeDeps({ grants: true });
+    const res = await request(app(deps, agentActor))
+      .post(`${base}/items/glossary/term/draft`)
+      .send({ content: "__probe", force: true, reason: "intentional probe test" });
+    expect(res.status).toBe(201);
+    expect(deps.module.draft).toHaveBeenCalledWith(
+      "glossary/term",
+      expect.objectContaining({
+        content: "__probe",
+        force: true,
+        reason: "intentional probe test",
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("OPE-9762: rollback route invokes module.rollback with target revision", async () => {
+    const deps = makeDeps({ grants: true });
+    const res = await request(app(deps, agentActor))
+      .post(`${base}/items/glossary/term/rollback`)
+      .send({ toRevisionId: "rev-1" });
+    expect(res.status).toBe(200);
+    expect(deps.module.rollback).toHaveBeenCalledWith(
+      "glossary/term",
+      expect.objectContaining({ actorType: "agent", actorId: AGENT_ID }),
+      { targetRevisionId: "rev-1" },
+    );
   });
 });
