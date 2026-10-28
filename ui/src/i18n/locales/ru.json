@@ -43,7 +43,15 @@
     "idsSummary": "Идентификаторы агентов",
     "summary": "Окон обслуживания: {{count}} в {{rows}} потока(х), {{state}}",
     "row": "{{scope}} ({{state}}) с {{since}}: {{reason}} — окон: {{count}}, в очереди побудок: {{queued}}.",
-    "endsBy": "до {{time}}"
+    "endsBy": "до {{time}}",
+    "scopedBotContainer": "Обновляется контейнер бота {{name}} (~1 мин), остальная доска работает",
+    "scopedBotContainerPrefix": "Обновляется контейнер бота ",
+    "scopedRestOfBoardWorking": " (~1 мин), остальная доска работает",
+    "scopedBotGeneral": "Обслуживается бот {{name}} (~1 мин), остальная доска работает",
+    "scopedBotGeneralPrefix": "Обслуживается бот ",
+    "scopedBotContainersPlural": "Обновляются контейнеры ботов ({{count}}) (~1 мин), остальная доска работает",
+    "scopedBotsGeneralPlural": "Обслуживаются боты ({{count}}) (~1 мин), остальная доска работает",
+    "scopedDepartment": "Обслуживается проект (~1 мин), остальная доска работает"
   },
   "about": {
     "title": "О Myrmidon",
