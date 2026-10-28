@@ -6,10 +6,12 @@ import {
   activityLog,
   agents,
   agentRuntimeState,
+  companySkills,
   heartbeatRunEvents,
   heartbeatRuns,
   agentWakeupRequests,
   agentTaskSessions,
+  issueComments,
   issues,
 } from "@myrmidon/db";
 import {
@@ -35,17 +37,19 @@ const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
     await db.transaction(async (tx) => {
       // Prevent new wake/activity writers while deleting their rows and issues.
       await tx.execute(
-        sql`LOCK TABLE activity_log, agent_runtime_state, agent_task_sessions, agent_wakeup_requests, issues, agents IN SHARE ROW EXCLUSIVE MODE`,
+        sql`LOCK TABLE activity_log, agent_runtime_state, agent_task_sessions, agent_wakeup_requests, issue_comments, issues, agents, company_skills IN SHARE ROW EXCLUSIVE MODE`,
       );
       await tx.delete(heartbeatRunEvents);
       await tx.update(agentTaskSessions).set({ lastRunId: null });
       await tx.delete(activityLog);
       await tx.delete(heartbeatRuns);
       await tx.delete(agentWakeupRequests);
+      await tx.delete(issueComments);
       await tx.delete(issues);
       await tx.delete(agentRuntimeState);
       await tx.delete(agentTaskSessions);
       await tx.delete(agents);
+      await tx.delete(companySkills);
       await resetCompanyIssueFixtures(tx as typeof db);
     });
   },
