@@ -3549,7 +3549,7 @@ Duplicate headings receive stable suffixes.
     });
     expect(forced.data?.hash).toHaveLength(64);
     expect(files.get("wiki/concepts/original.md")).toBe(
-      "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters",
+      "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters.",
     );
   });
 
