@@ -6,7 +6,7 @@ import {
   serializeDeterministicSnapshot,
   validateSnapshot,
   type CapacityPolicySnapshot,
-} from "../../../../scripts/myrmidon/capacity/snapshot.js";
+} from "./capacity-snapshot.js";
 
 const fixtureUrl = new URL("./__fixtures__/capacity-policy-snapshot-1.6.6.json", import.meta.url);
 const rawFixture = readFileSync(fixtureUrl, "utf8");
