@@ -22,7 +22,7 @@
 //   - `exportTree()/importTree()` are canonical: export → import → export is
 //     byte-for-byte identical.
 
-import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   knowledgeEvents,
@@ -39,6 +39,7 @@ import {
   KnowledgeDomainError,
   assertApprovable,
   assertItemTransition,
+  assertKnowledgeWriteProtection,
   assertRevisionTransition,
   assertRuleFields,
   assertSingleLine,
@@ -147,6 +148,8 @@ export interface CreateKnowledgeInput {
   approvalRequired?: boolean;
   approverKind?: string | null;
   sources?: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
+  force?: boolean;
+  reason?: string | null;
 }
 
 export interface DraftKnowledgeInput {
@@ -157,6 +160,8 @@ export interface DraftKnowledgeInput {
   sources?: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
   /** Submit straight to review instead of leaving the revision as draft. */
   submit?: boolean;
+  force?: boolean;
+  reason?: string | null;
 }
 
 export interface ApproveKnowledgeInput {
@@ -363,6 +368,12 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     assertSingleLine(input.title, "Title");
     if (input.summary != null) assertSingleLine(input.summary, "Summary");
     assertValidTags(input.tags ?? []);
+    assertKnowledgeWriteProtection({
+      newContent: input.content,
+      previousContent: null,
+      force: input.force,
+      reason: input.reason,
+    });
     const lang = normalizeKnowledgeRevisionLang(input.lang);
     if (input.translationOf) throw new KnowledgeDomainError("translation_requires_canonical_item", 400, "A translation revision must be created against an existing knowledge item.");
     const kind = input.kind ?? "note";
@@ -473,6 +484,33 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     if (input.changeSummary != null) assertSingleLine(input.changeSummary, "Change summary");
     const lang = normalizeKnowledgeRevisionLang(input.lang);
     const timestamp = now();
+
+    const [latestRevision] = await db
+      .select({ content: knowledgeRevisions.content })
+      .from(knowledgeRevisions)
+      .where(and(eq(knowledgeRevisions.nestId, nestId), eq(knowledgeRevisions.itemId, current.id)))
+      .orderBy(desc(knowledgeRevisions.revisionNumber))
+      .limit(1);
+
+    try {
+      assertKnowledgeWriteProtection({
+        newContent: input.content,
+        previousContent: latestRevision?.content ?? null,
+        force: input.force,
+        reason: input.reason,
+      });
+    } catch (err) {
+      console.warn(`[KNOWLEDGE_WRITE_PROTECTION_ALERT] Refused draft for ${current.slug}: ${(err as Error).message}`);
+      await mirrorActivity({
+        companyId: current.companyId,
+        itemId: current.id,
+        slug: current.slug,
+        event: "knowledge.write_protection_alert",
+        actor,
+        payload: { slug: current.slug, cause: (err as Error).message },
+      }).catch(() => {});
+      throw err;
+    }
 
     const row = await db.transaction(async (tx) => {
       // Lock the item row so concurrent drafts serialize on the revision

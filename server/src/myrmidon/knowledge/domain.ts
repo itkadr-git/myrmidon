@@ -526,3 +526,44 @@ export function createMemorySearchIndex(): SearchIndex & { clear(): void } {
     },
   };
 }
+
+/**
+ * Write protection against truncation and probe markers (OPE-9762).
+ */
+export function assertKnowledgeWriteProtection(input: {
+  newContent: string;
+  previousContent: string | null;
+  force?: boolean;
+  reason?: string | null;
+}): void {
+  const { newContent, previousContent, force, reason } = input;
+  const hasForceAndReason = force === true && typeof reason === "string" && reason.trim().length > 0;
+  if (hasForceAndReason) return;
+
+  const trimmed = newContent.trim();
+  if (newContent.includes("__probe")) {
+    throw new KnowledgeDomainError(
+      "write_protection_rejected",
+      422,
+      "Write rejected: content contains probe marker '__probe'. Pass force: true and a valid reason to override.",
+    );
+  }
+
+  if (!trimmed.includes("\n") && trimmed.length < 20) {
+    throw new KnowledgeDomainError(
+      "write_protection_rejected",
+      422,
+      "Write rejected: single-line content under 20 characters resembles a probe marker. Pass force: true and a valid reason to override.",
+    );
+  }
+
+  if (previousContent !== null && previousContent.length > 0) {
+    if (newContent.length < previousContent.length * 0.2) {
+      throw new KnowledgeDomainError(
+        "write_protection_rejected",
+        422,
+        `Write rejected: new content length (${newContent.length}) is less than 20% of previous revision (${previousContent.length}). Pass force: true and a valid reason to override.`,
+      );
+    }
+  }
+}

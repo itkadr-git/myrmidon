@@ -19,6 +19,7 @@ import {
   assertValidSlug,
   normalizeKnowledgeRevisionLang,
   assertTranslationOf,
+  assertKnowledgeWriteProtection,
   canTransitionItem,
   draftPointerFields,
   extractLinkTargets,
@@ -272,5 +273,56 @@ describe("knowledge domain — canonical markdown tree (export/import)", () => {
     durations.sort((a, b) => a - b);
     const p95 = durations[Math.ceil(durations.length * 0.95) - 1]!;
     expect(p95).toBeLessThan(300);
+  });
+});
+
+describe("knowledge write protection against probe markers and truncations (OPE-9762)", () => {
+  const previousContent = "A".repeat(1000);
+
+  it("rejects probe marker __probe", () => {
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "checking page existence __probe marker",
+        previousContent,
+      }),
+    ).toThrow(/__probe/);
+  });
+
+  it("rejects single line shorter than 20 characters", () => {
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "ping",
+        previousContent,
+      }),
+    ).toThrow(/shorter than 20 characters/);
+  });
+
+  it("rejects new content shorter than 20% of previous revision", () => {
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "A".repeat(150),
+        previousContent,
+      }),
+    ).toThrow(/less than 20%/);
+  });
+
+  it("allows write when force: true and valid reason are provided", () => {
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "ping",
+        previousContent,
+        force: true,
+        reason: "Deliberate test probe",
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "A".repeat(150),
+        previousContent,
+        force: true,
+        reason: "Truncating for rewrite",
+      }),
+    ).not.toThrow();
   });
 });
