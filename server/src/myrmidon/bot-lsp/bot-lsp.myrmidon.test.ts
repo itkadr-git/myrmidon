@@ -95,7 +95,7 @@ describe("myrmidon(BOT-LSP-DEFAULTS) routes: reading", () => {
       codingMode: "limited",
       nonCodingMode: "off",
       idleTimeoutSeconds: 120,
-      tsserverMemoryMb: 384,
+      tsserverMemoryMb: 409,
       excludeRoots: ["**/node_modules/**", "**/dist/**"],
     });
     expect(res.body.counts).toEqual({ off: 0, limited: 0, full: 0 });
@@ -160,7 +160,7 @@ describe("myrmidon(BOT-LSP-DEFAULTS) routes: writing", () => {
     expect(updated).toHaveLength(0);
   });
 
-  it("validates the heap against active containers and rejects when no limit is known", async () => {
+  it("validates the heap against active containers, falling back to default container when none exist", async () => {
     const tooLarge = harness({ containerMemoryMb: [2048, 768] });
     await request(tooLarge.withActor(admin)).patch(URL).send({ tsserverMemoryMb: 308 }).expect(400);
     expect(tooLarge.updated).toHaveLength(0);
@@ -169,9 +169,28 @@ describe("myrmidon(BOT-LSP-DEFAULTS) routes: writing", () => {
     await request(fits.withActor(admin)).patch(URL).send({ tsserverMemoryMb: 307 }).expect(200);
     expect(fits.updated).toHaveLength(1);
 
-    const unavailable = harness({ containerMemoryMb: [] });
-    await request(unavailable.withActor(admin)).patch(URL).send({ tsserverMemoryMb: 409 }).expect(400);
-    expect(unavailable.updated).toHaveLength(0);
+    const emptyContainers = harness({ containerMemoryMb: [] });
+    // Fits within 40% cap of default 1024 MB container (409 MB)
+    await request(emptyContainers.withActor(admin)).patch(URL).send({ tsserverMemoryMb: 384 }).expect(200);
+    expect(emptyContainers.updated).toHaveLength(1);
+
+    // Also allows exactly at default container cap (409 MB)
+    await request(emptyContainers.withActor(admin)).patch(URL).send({ tsserverMemoryMb: 409 }).expect(200);
+    expect(emptyContainers.updated).toHaveLength(2);
+
+    // Rejects when exceeding default container cap (> 409 MB)
+    await request(emptyContainers.withActor(admin)).patch(URL).send({ tsserverMemoryMb: 500 }).expect(400);
+    expect(emptyContainers.updated).toHaveLength(2);
+  });
+
+  it("warns in view when saved tsserverMemoryMb exceeds 40% cap after container limit reduction", async () => {
+    const { app } = harness({
+      initial: { tsserverMemoryMb: 409 },
+      containerMemoryMb: [768],
+    });
+    const res = await request(app).get(URL).expect(200);
+    expect(res.body.warnings).toBeDefined();
+    expect(res.body.warnings?.[0]).toContain("exceeds 40% cap");
   });
 });
 

@@ -56,13 +56,76 @@ export const DEFAULT_BOT_LSP_IDLE_TIMEOUT_SECONDS = 120;
 export const BOT_LSP_IDLE_TIMEOUT_MIN_SECONDS = 30;
 export const BOT_LSP_IDLE_TIMEOUT_MAX_SECONDS = 86_400;
 
-/** tsserver heap cap of the limited mode, MB (`maxTsServerMemory`). */
-// A 1 GiB container shares memory with Hermes and botd. Keep tsserver below
-// 40% of that limit; runtime-derived per-container sizing is tracked separately.
-export const DEFAULT_BOT_LSP_TSSERVER_MEMORY_MB = 384;
+/** Default bot container memory limit (MB) when not configured on a card or when no containers exist. */
+export const DEFAULT_BOT_CONTAINER_MEMORY_MB = 1024;
+
+/**
+ * Maximum fraction of container memory tsserver may take in limited mode.
+ * The remaining 60% is reserved for Hermes (~300 MB) and botd (~100 MB).
+ */
+export const BOT_LSP_MAX_HEAP_RATIO = 0.4;
+export const BOT_LSP_HERMES_BOTD_RESERVE_RATIO = 0.6;
+
+/**
+ * Default tsserver heap cap of the limited mode, MB (`maxTsServerMemory`).
+ * Sized as 40% of standard 1024 MB bot container (409 MB).
+ */
+export const DEFAULT_BOT_LSP_TSSERVER_MEMORY_MB = 409;
 export const DEFAULT_BOT_LSP_EXCLUDE_ROOTS: readonly string[] = ["**/node_modules/**", "**/dist/**"];
 export const BOT_LSP_TSSERVER_MEMORY_MIN_MB = 256;
 export const BOT_LSP_TSSERVER_MEMORY_MAX_MB = 16_384;
+
+/**
+ * Calculates the maximum tsserver heap for a given container memory limit (40% cap).
+ */
+export function maxTsServerMemoryMb(containerMemoryMb: number): number {
+  return Math.floor(containerMemoryMb * BOT_LSP_MAX_HEAP_RATIO);
+}
+
+/**
+ * Calculates adaptive default tsserver heap from container memory limit,
+ * or null if memory is unknown or insufficient for the minimum viable heap (256 MB).
+ */
+export function adaptiveTsServerMemoryMb(containerMemoryMb: number | null | undefined): number | null {
+  if (typeof containerMemoryMb !== "number" || !Number.isFinite(containerMemoryMb) || containerMemoryMb <= 0) {
+    return null;
+  }
+  const cap = maxTsServerMemoryMb(containerMemoryMb);
+  if (cap < BOT_LSP_TSSERVER_MEMORY_MIN_MB) {
+    return null;
+  }
+  return cap;
+}
+
+export type BotLspHeapResolution =
+  | { ok: false; reason: "unknown_memory" }
+  | { ok: false; reason: "insufficient_memory"; cap: number; containerMemoryMb: number }
+  | { ok: true; memoryMb: number; clamped: boolean; adaptive: boolean; configured?: number; cap: number; containerMemoryMb: number };
+
+/**
+ * Resolves the tsserver heap for a container, applying the 40% cap and Hermes/botd reserve.
+ * If configuredHeap is omitted, uses the adaptive default.
+ * If memory is unknown or insufficient (< 640 MB, so cap < 256 MB), returns safe refusal.
+ */
+export function resolveBotLspHeap(
+  containerMemoryMb: number | null | undefined,
+  configuredHeap?: number | null,
+): BotLspHeapResolution {
+  if (typeof containerMemoryMb !== "number" || !Number.isFinite(containerMemoryMb) || containerMemoryMb <= 0) {
+    return { ok: false, reason: "unknown_memory" };
+  }
+  const cap = maxTsServerMemoryMb(containerMemoryMb);
+  if (cap < BOT_LSP_TSSERVER_MEMORY_MIN_MB) {
+    return { ok: false, reason: "insufficient_memory", cap, containerMemoryMb };
+  }
+  if (configuredHeap !== undefined && configuredHeap !== null) {
+    if (configuredHeap > cap) {
+      return { ok: true, memoryMb: cap, clamped: true, adaptive: false, configured: configuredHeap, cap, containerMemoryMb };
+    }
+    return { ok: true, memoryMb: configuredHeap, clamped: false, adaptive: false, cap, containerMemoryMb };
+  }
+  return { ok: true, memoryMb: cap, clamped: false, adaptive: true, cap, containerMemoryMb };
+}
 
 /** Hermes' registry id of the JavaScript/TypeScript server (typescript-language-server). */
 export const BOT_LSP_TYPESCRIPT_SERVER_ID = "typescript";
@@ -170,9 +233,18 @@ function cleanList(value: unknown, keep: (item: string) => boolean): string[] | 
 /**
  * Settings row -> every value in force. A malformed field (a hand-edited row)
  * falls back to its default instead of failing the compile.
+ * When containerMemoryMb is given, the default tsserverMemoryMb is computed
+ * adaptively from container memory (40% cap, reserving 60% for Hermes and botd).
  */
-export function effectiveBotLspSettings(settings: BotLspSettings | undefined | null): EffectiveBotLspSettings {
+export function effectiveBotLspSettings(
+  settings: BotLspSettings | undefined | null,
+  containerMemoryMb?: number | null,
+): EffectiveBotLspSettings {
   const raw = asRecord(settings);
+  const defaultHeap =
+    typeof containerMemoryMb === "number" && Number.isFinite(containerMemoryMb) && containerMemoryMb > 0
+      ? (adaptiveTsServerMemoryMb(containerMemoryMb) ?? DEFAULT_BOT_LSP_TSSERVER_MEMORY_MB)
+      : DEFAULT_BOT_LSP_TSSERVER_MEMORY_MB;
   return {
     codingRoles: cleanList(raw.codingRoles, (key) => ROLE_KEY.test(key)) ?? [...DEFAULT_BOT_LSP_CODING_ROLES],
     codingMode: isBotLspMode(raw.codingMode) ? raw.codingMode : DEFAULT_BOT_LSP_CODING_MODE,
@@ -182,7 +254,7 @@ export function effectiveBotLspSettings(settings: BotLspSettings | undefined | n
       DEFAULT_BOT_LSP_IDLE_TIMEOUT_SECONDS,
     tsserverMemoryMb:
       inRange(raw.tsserverMemoryMb, BOT_LSP_TSSERVER_MEMORY_MIN_MB, BOT_LSP_TSSERVER_MEMORY_MAX_MB) ??
-      DEFAULT_BOT_LSP_TSSERVER_MEMORY_MB,
+      defaultHeap,
     excludeRoots: cleanList(raw.excludeRoots, () => true) ?? [...DEFAULT_BOT_LSP_EXCLUDE_ROOTS],
   };
 }
@@ -248,12 +320,23 @@ export type BotLspHermesBlock = {
 export function botLspHermesBlock(
   mode: BotLspMode,
   settings: BotLspSettings | undefined | null,
+  containerMemoryMb?: number | null,
 ): BotLspHermesBlock | null {
-  const effective = effectiveBotLspSettings(settings);
+  const effective = effectiveBotLspSettings(settings, containerMemoryMb);
   if (mode === "off") return { enabled: false };
   const excludeRoots = effective.excludeRoots.length > 0 ? { excludeRoots: effective.excludeRoots } : {};
   if (mode === "full") {
     return effective.excludeRoots.length > 0 ? { enabled: true, ...excludeRoots } : null;
+  }
+  let maxTsServerMemory: number;
+  if (containerMemoryMb !== undefined) {
+    const heapRes = resolveBotLspHeap(containerMemoryMb, settings?.tsserverMemoryMb);
+    if (!heapRes.ok) {
+      return { enabled: false };
+    }
+    maxTsServerMemory = heapRes.memoryMb;
+  } else {
+    maxTsServerMemory = effective.tsserverMemoryMb;
   }
   return {
     enabled: true,
@@ -263,7 +346,7 @@ export function botLspHermesBlock(
       [BOT_LSP_TYPESCRIPT_SERVER_ID]: {
         initialization_options: {
           disableAutomaticTypingAcquisition: true,
-          maxTsServerMemory: effective.tsserverMemoryMb,
+          maxTsServerMemory,
           tsserver: { useSyntaxServer: "never" },
         },
       },

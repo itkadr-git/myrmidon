@@ -19,7 +19,13 @@ import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@myrmidon/shared";
 // into config.yaml's `delegation` section (and the toolset switch).
 import { PARALLEL_HELPERS_DEFAULT_MODEL_ENV, readParallelHelpersCard, resolveParallelHelpers, type ParallelHelpersSettings } from "@myrmidon/shared";
 // myrmidon(BOT-LSP-DEFAULTS): the language-server mode per role/card.
-import { botLspHermesBlock, resolveBotLsp, type BotLspSettings } from "@myrmidon/shared";
+import {
+  BOT_LSP_TSSERVER_MEMORY_MIN_MB,
+  botLspHermesBlock,
+  resolveBotLsp,
+  resolveBotLspHeap,
+  type BotLspSettings,
+} from "@myrmidon/shared";
 import { BOT_BOARD_GATEWAY_SERVER_NAME } from "./board-gateway.js";
 import type {
   HermesProfileAdapterConfig,
@@ -944,21 +950,33 @@ function buildBotLsp(
   role: string | undefined,
   card: Record<string, unknown>,
   settings: BotLspSettings | undefined,
+  warnings: string[],
 ): HermesProfileLspSettings | undefined {
   const resolved = resolveBotLsp(role, card, settings);
-  const block = botLspHermesBlock(resolved.mode, settings);
-  if (!block) return undefined;
-  const tsserverMemoryMb = block.servers?.typescript?.initialization_options.maxTsServerMemory;
-  if (tsserverMemoryMb !== undefined) {
-    const container = asRecord(card.container);
-    const containerMemoryMb = container.enabled === true && typeof container.memoryMb === "number" && Number.isFinite(container.memoryMb)
+  if (resolved.mode === "off") return { enabled: false };
+  const container = asRecord(card.container);
+  const containerMemoryMb =
+    container.enabled === true && typeof container.memoryMb === "number" && Number.isFinite(container.memoryMb) && container.memoryMb > 0
       ? container.memoryMb
       : null;
-    // The instance default is sized for its smallest active container. Clamp
-    // to this card's 40% budget so a smaller container still compiles.
-    const heapCap = containerMemoryMb === null ? null : Math.floor(containerMemoryMb * 0.4);
-    if (heapCap !== null && tsserverMemoryMb > heapCap) {
-      block.servers!.typescript!.initialization_options.maxTsServerMemory = heapCap;
+  const block = botLspHermesBlock(resolved.mode, settings, containerMemoryMb);
+  if (!block) return undefined;
+  if (resolved.mode === "limited") {
+    const heapRes = resolveBotLspHeap(containerMemoryMb, settings?.tsserverMemoryMb);
+    if (!heapRes.ok) {
+      if (heapRes.reason === "unknown_memory") {
+        warnings.push("lsp: limited language server disabled because container memory limit is unknown");
+      } else {
+        warnings.push(
+          `lsp: limited language server disabled because container memory (${containerMemoryMb} MB) is insufficient for tsserver (minimum heap is ${BOT_LSP_TSSERVER_MEMORY_MIN_MB} MB, 40% cap is ${heapRes.cap} MB)`,
+        );
+      }
+      return { enabled: false };
+    }
+    if (heapRes.clamped) {
+      warnings.push(
+        `lsp: configured tsserver heap (${heapRes.configured} MB) exceeds the 40% container budget (${heapRes.cap} MB for ${containerMemoryMb} MB container); safely clamped to ${heapRes.cap} MB`,
+      );
     }
   }
   return {
@@ -1075,7 +1093,7 @@ export function buildHermesProfileInput(source: BotProfileSource, settings: BotP
     // myrmidon(BOT-LSP-DEFAULTS): role policy + card pin -> the bot's `lsp` block.
     // Resolved here (not in the compiler) for the same reason as the helpers:
     // the pure compiler keeps no settings knowledge.
-    lsp: buildBotLsp(source.role, card, source.botLspSettings),
+    lsp: buildBotLsp(source.role, card, source.botLspSettings, warnings),
     apiServerKey: source.apiServerKey,
     // settings.boardUrl is non-null here: assertBotProfileSettings threw otherwise.
     paperclipApiUrl: settings.boardUrl as string,
