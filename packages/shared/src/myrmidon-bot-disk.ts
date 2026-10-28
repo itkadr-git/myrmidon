@@ -844,7 +844,7 @@ export interface BotDiskLayout {
 export function resolveBotDiskLayout(stored: unknown): BotDiskLayout {
   const values = normalizeStoredBotDiskSettings(stored);
   const repos = values.sharedPackageCachePath
-    ? [...new Set((values.gitMirrorRepos ?? BOT_DISK_DEFAULT_GIT_MIRROR_REPOS).map((repo) => repo.toLowerCase()))]
+    ? [...new Set((values.gitMirrorRepos ?? []).map((repo) => repo.toLowerCase()))]
     : [];
   return {
     ...(values.sharedPackageCachePath ? { sharedPackageCachePath: values.sharedPackageCachePath } : {}),
