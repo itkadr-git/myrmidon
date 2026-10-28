@@ -6,6 +6,19 @@ import { buildDevflowSignals, redCiSince, type DevflowSample, type DevflowSignal
 export async function collectDevflowHealth(db: Db, companyId: string, now = new Date()): Promise<DevflowSignal[]> {
   const [settings] = await db.select({ general: instanceSettings.general }).from(instanceSettings).limit(1);
   const general = settings?.general as Record<string, unknown> | undefined;
+  const stored = general?.devflowHealth as Record<string, unknown> | undefined;
+  const thresholds: Record<string, unknown> = { ...stored };
+  for (const [metric, envKey] of Object.entries({
+    engineerIdleMs: "MYRMIDON_DEVFLOW_ENGINEER_IDLE_MS",
+    reviewQueueAgeMs: "MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS",
+    redCiMs: "MYRMIDON_DEVFLOW_RED_CI_MS",
+  })) {
+    if (process.env[envKey]?.trim()) thresholds[metric] = Number(process.env[envKey]);
+  }
+  if (!stored && Object.keys(thresholds).length === 0) {
+    return [];
+  }
+
   const samples: DevflowSample[] = [];
   const engineers = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.role, "engineer"), eq(agents.status, "idle")));
   for (const agent of engineers) {
@@ -42,11 +55,6 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
     if (since) samples.push({ companyId, subjectId: issue.id, subjectKind: "issue", title: issue.title, metric: "redCiMs", since });
   }
   // One card per subject/metric even when a PR has multiple registered products.
-  const stored = general?.devflowHealth as Record<string, unknown> | undefined;
-  const thresholds: Record<string, unknown> = { ...stored };
-  for (const [metric, envKey] of Object.entries({ engineerIdleMs: "MYRMIDON_DEVFLOW_ENGINEER_IDLE_MS", reviewQueueAgeMs: "MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS", redCiMs: "MYRMIDON_DEVFLOW_RED_CI_MS" })) {
-    if (process.env[envKey]?.trim()) thresholds[metric] = Number(process.env[envKey]);
-  }
   const signals = buildDevflowSignals(samples, thresholds, now);
   return [...new Map(signals.map((s) => [s.dedupKey, s])).values()];
 }
