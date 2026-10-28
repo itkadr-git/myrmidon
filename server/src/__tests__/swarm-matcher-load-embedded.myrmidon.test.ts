@@ -294,7 +294,7 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       const blockedTaskIds = new Set(blockedTasks);
       expect((await openTasksOf(agent)).filter(({ id }) => blockedTaskIds.has(id))).toHaveLength(3);
       expect((await openTasksOf(agent)).some(({ id }) => id === unrelated)).toBe(true);
-      expect((await openLoadByAgent(db, companyId)).get(agent) ?? 0).toBe(0);
+      expect((await openLoadByAgent(db, companyId)).get(agent) ?? 0).toBe(4);
 
       const result = await matchCompany(deps(wakes, { maxActiveTasks: 3 }), companyId);
 

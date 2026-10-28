@@ -1270,7 +1270,6 @@ async function openTaskIdsOfAgents(
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, relatedIds),
-            inArray(issueRelations.issueId, relatedIds),
           ),
         );
   const leasedRows = await db
