@@ -51,6 +51,7 @@ import { runScentQueueTick, SCENT_QUEUE_TICK_MS, startScentQueue } from "./scent
 import { issueScentResponseFormat, parseIssueScentContent } from "./scent/gateway.js";
 
 const COMPANY_ID = "00000000-0000-4000-8000-000000000001";
+const CASTES = ["engineer", "designer", "marketer"];
 
 function makeScentStatusApp(db: Db, ports: ScentQueuePorts) {
   const app = express();
@@ -577,7 +578,6 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
       logActivity: async () => undefined,
       resolveSecret,
       listCompanyIds: async () => [COMPANY_ID],
-      listMarkupQueue: async () => ({ issueIds: [], agentIds: [], totalPending: 0 }),
     };
     const envSnapshot = new Map(
       ["MYRMIDON_SCENT_BASE_URL", "MYRMIDON_EVALS_BASE_URL", "MYRMIDON_EVALS_API_KEY"].map(
@@ -617,7 +617,6 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
         throw new Error("corrupt cipher");
       }),
       listCompanyIds: async () => [COMPANY_ID],
-      listMarkupQueue: async () => ({ issueIds: [], agentIds: [], totalPending: 0 }),
     };
     const response = await request(makeScentStatusApp(db, ports)).get(
       `/api/myrmidon/companies/${COMPANY_ID}/swarm/scent/status`,
