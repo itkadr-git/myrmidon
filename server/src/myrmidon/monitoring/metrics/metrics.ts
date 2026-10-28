@@ -57,6 +57,7 @@ import {
 import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-containers/fleet-site-metrics.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
+import { failedBeforeModelMetrics } from "../../../services/failed-before-model-metrics.js";
 
 // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors —
 // the in-process counter the ingress seam keeps (design section 4 and 7).
@@ -156,6 +157,9 @@ export const METRIC_FAMILIES = [
   // flag off the table stays empty and the families render HELP/TYPE only.
   "myrmidon_corpus_shadow_ragflow_latency_seconds",
   "myrmidon_corpus_shadow_module_latency_seconds",
+
+  // OPE-9476: runs failed before model emitted output
+  "myrmidon_agent_failed_before_model_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -1150,6 +1154,21 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Failover moves of bots off a lost remote site by result, cumulative since boot.",
       "counter",
       fleet ? fleet.movesTotal.map((row) => `myrmidon_fleet_moves_total{result="${escapeLabelValue(row.result)}"} ${formatSampleValue(row.count)}`) : [],
+    ),
+  );
+
+  const failedBeforeModelSamples = Object.entries(failedBeforeModelMetrics.getAll()).map(
+    ([agentId, count]) =>
+      `myrmidon_agent_failed_before_model_total{${R},agent_id="${escapeLabelValue(agentId)}"} ${formatSampleValue(count)}`,
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_agent_failed_before_model_total",
+      "Heartbeat runs that failed before the model response started.",
+      "counter",
+      failedBeforeModelSamples.length > 0
+        ? failedBeforeModelSamples
+        : [`myrmidon_agent_failed_before_model_total{${R}} 0`],
     ),
   );
 

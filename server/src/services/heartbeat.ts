@@ -42,6 +42,7 @@ import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/papercli
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
+import { failedBeforeModelMetrics } from "./failed-before-model-metrics.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 // myrmidon(L2): an explicitly authorized wake ignores a settled "do not
 // replay" hold; see docs/myrmidon/DIVERGENCE.md "L2".
@@ -15477,11 +15478,17 @@ export function heartbeatService(
     // schedule's base delay is the hint itself (clamped to a sane ceiling)
     // instead of the fixed 30s array, and the attempt ceiling is the
     // gateway-busy budget above; the array would run out after two attempts.
+    const isCooldownOrQuota =
+      readHeartbeatRunErrorFamily(run) === "provider_quota" ||
+      Boolean(parseObject(run.resultJson).cooldown);
+    const expFactor = isCooldownOrQuota
+      ? Math.pow(2, Math.max(0, nextAttempt - 1))
+      : 1;
     const hintDelayMs = transientRetryNotBeforeHint
       ? Math.min(
           Math.max(
             0,
-            transientRetryNotBeforeHint.getTime() - now.getTime(),
+            (transientRetryNotBeforeHint.getTime() - now.getTime()) * expFactor,
           ),
           GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS,
         )
@@ -16969,6 +16976,10 @@ export function heartbeatService(
       if (options.excludeRunId) {
         conditions.push(sql`${heartbeatRuns.id} <> ${options.excludeRunId}`);
       }
+      // OPE-9476: runs that failed before the model response started do not consume daily run cap
+      conditions.push(
+        sql`coalesce((${heartbeatRuns.resultJson}->>'failedBeforeModel') = 'true' or (${heartbeatRuns.resultJson}->>'failed_before_model') = 'true', false) = false`,
+      );
       const [row] = await client
         .select({ total: sql<number>`count(*)::integer` })
         .from(heartbeatRuns)
@@ -26872,6 +26883,14 @@ export function heartbeatService(
           }),
           adapterResult.summary ?? null,
         );
+
+        if (
+          persistedResultJson &&
+          (persistedResultJson.failedBeforeModel ||
+            persistedResultJson.failed_before_model)
+        ) {
+          failedBeforeModelMetrics.recordFailure(agent.id);
+        }
 
         const finalRunPatch: Partial<typeof heartbeatRuns.$inferInsert> = {
           finishedAt: new Date(),

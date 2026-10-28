@@ -123,6 +123,7 @@ type ExecutionState = {
    * Initialized at run creation, so a run whose stream never connects still
    * stalls after its full timeoutSec. */
   lastEventAtMs: number;
+  modelResponseStarted: boolean;
 };
 
 type TextRedactor = (value: string) => string;
@@ -826,6 +827,7 @@ function createExecutionState(runId: string): ExecutionState {
     toolPreviews: new Map(),
     lastRuntimeProgressAt: null,
     lastEventAtMs: Date.now(),
+    modelResponseStarted: false,
   };
 }
 
@@ -1046,6 +1048,16 @@ async function reportRuntimeProgress(input: {
   // ("to avoid churning the live event stream"). Tool/reasoning/approval
   // events are comparatively rare and are still reported immediately.
   let throttleKey = false;
+
+  if (
+    eventName === "tool.started" ||
+    eventName === "tool.completed" ||
+    eventName === "message.delta" ||
+    eventName === "message.completed" ||
+    eventName === "reasoning.available"
+  ) {
+    state.modelResponseStarted = true;
+  }
 
   if (eventName === "tool.started" || eventName === "tool.completed") {
     currentToolName = toolNameFromEvent(record);
@@ -1402,6 +1414,55 @@ const HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE = "Connection error.";
 // the recovery classifier blocks the issue instead of scheduling a retry.
 const HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE = "key not allowed";
 
+const HERMES_GATEWAY_COOLDOWN_SIGNATURE_RE =
+  /\b(no deployments available|in cooldown|deployments are in cooldown|deployments.*cooldown|ratelimiterror|rate limit|too many requests|429)\b/i;
+
+function parseRetryAfterSeconds(value: unknown): number | null {
+  if (typeof value === "number" && !Number.isNaN(value) && value > 0) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value.trim());
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+function parseRetryAfterFromText(text: string | null): number | null {
+  if (!text) return null;
+  const match = /(?:retry after|cooldown(?: for)?|retry in|wait) (\d+(?:\.\d+)?)\s*(?:s|sec|seconds)?/i.exec(text);
+  if (match?.[1]) {
+    const parsed = Number(match[1]);
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+function extractCooldownRetryNotBefore(
+  errorMessage: string | null,
+  payload: Record<string, unknown>,
+): string {
+  const retryAfterSec =
+    parseRetryAfterSeconds(payload.retry_after ?? payload.retryAfter) ??
+    parseRetryAfterFromText(errorMessage);
+  if (retryAfterSec !== null && retryAfterSec > 0) {
+    return new Date(Date.now() + retryAfterSec * 1000).toISOString();
+  }
+  return new Date(Date.now() + 60_000).toISOString();
+}
+
+function parseRetryAfterToIso(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const seconds = Number(trimmed);
+  if (!Number.isNaN(seconds) && seconds >= 0) {
+    return new Date(Date.now() + seconds * 1000).toISOString();
+  }
+  const date = new Date(trimmed);
+  if (!Number.isNaN(date.getTime())) {
+    return date.toISOString();
+  }
+  return null;
+}
+
 export function mapFinalResultForTest(input: {
   terminal: TerminalState;
   outputChunks: string[];
@@ -1419,6 +1480,7 @@ export function mapFinalResultForTest(input: {
    * gateway answer omits it. Optional so existing test callers that exercise
    * only the result mapping keep their shape. */
   configuredModel?: string | null;
+  modelResponseStarted?: boolean;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -1430,9 +1492,22 @@ export function mapFinalResultForTest(input: {
   const mapped = terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
-  const errorMessage = mapped.errorCode
-    ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
-    : null;
+  const rawErrorMessage = extractErrorMessage(payload) ?? (mapped.errorCode ? `Hermes run ${input.terminal.status}` : null);
+  const errorMessage = rawErrorMessage ? redactText(rawErrorMessage) : null;
+
+  const modelResponseStarted =
+    input.modelResponseStarted ??
+    (input.outputChunks.length > 0 ||
+      output.length > 0 ||
+      (usage?.outputTokens ?? 0) > 0);
+
+  const isFailed = input.terminal.status === "failed" || mapped.errorCode !== null;
+  const failedBeforeModel = isFailed && !modelResponseStarted;
+
+  const isCooldownOrRateLimit =
+    errorMessage !== null &&
+    HERMES_GATEWAY_COOLDOWN_SIGNATURE_RE.test(errorMessage);
+
   // myrmidon(RECOVERY-HERMES-GATEWAY): see the signature constant above — a
   // failed turn whose message carries the upstream-connection signature is
   // transient, so it is marked for a bounded retry. Any other failed turn
@@ -1455,7 +1530,14 @@ export function mapFinalResultForTest(input: {
         : mapped.errorCode === "hermes_gateway_run_failed" &&
             classifyInputOverflow(errorMessage)
           ? "input_overflow"
-          : null;
+          : isCooldownOrRateLimit
+            ? "provider_quota"
+            : null;
+
+  const retryNotBefore = isCooldownOrRateLimit
+    ? extractCooldownRetryNotBefore(errorMessage, payload)
+    : null;
+
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
@@ -1468,6 +1550,8 @@ export function mapFinalResultForTest(input: {
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(errorFamily ? { errorFamily } : {}),
+    ...(failedBeforeModel ? { failedBeforeModel: true } : {}),
+    ...(retryNotBefore ? { retryNotBefore } : {}),
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
     // myrmidon(TG-REPLY-FULL): the summary is the text the chat bridge delivers to
@@ -1495,6 +1579,11 @@ export function mapFinalResultForTest(input: {
       output: output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
+      modelResponseStarted,
+      failedBeforeModel,
+      ...(failedBeforeModel ? { failed_before_model: true } : {}),
+      ...(isCooldownOrRateLimit ? { cooldown: true } : {}),
+      ...(retryNotBefore ? { retryNotBefore } : {}),
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     },
   };
@@ -1741,17 +1830,41 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
   const errorMessage = code === "hermes_gateway_auth_failed"
     ? `${redactErrorMessage(err, redactText)}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
     : redactErrorMessage(err, redactText);
+  const isCooldown =
+    hermesError.status === 429 ||
+    (errorMessage !== null && HERMES_GATEWAY_COOLDOWN_SIGNATURE_RE.test(errorMessage));
+  const rawRetryNotBefore = hermesError.retryNotBefore;
+  const parsedRetryNotBefore = parseRetryAfterToIso(rawRetryNotBefore);
+  const retryNotBefore =
+    parsedRetryNotBefore ??
+    (isCooldown ? new Date(Date.now() + 60_000).toISOString() : null);
+  const errorFamily =
+    classified?.family ??
+    (isCooldown ? "provider_quota" : code === "hermes_gateway_connect_failed" ? "transient_upstream" : null);
+
   return {
     exitCode: 1,
     signal: null,
     timedOut: false,
     errorCode: code,
-    errorFamily: classified?.family ?? (code === "hermes_gateway_connect_failed" ? "transient_upstream" : null),
-    retryNotBefore: hermesError.retryNotBefore ?? null,
+    errorFamily,
+    retryNotBefore,
     errorMessage,
+    failedBeforeModel: true,
     errorMeta: {
       ...(hermesError.status ? { status: hermesError.status } : {}),
       ...(hermesError.body ? { body: redactForLog(hermesError.body, [], 0, redactText) as Record<string, unknown> } : {}),
+    },
+    resultJson: {
+      status: "failed",
+      errorCode: code,
+      errorFamily,
+      errorMessage,
+      retryNotBefore,
+      modelResponseStarted: false,
+      failedBeforeModel: true,
+      failed_before_model: true,
+      ...(isCooldown ? { cooldown: true } : {}),
     },
   };
 }
@@ -2497,6 +2610,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // myrmidon(F06-MODEL-TELEMETRY): the run's own model from the agent card,
     // used when the gateway's terminal payload names none.
     configuredModel: nonEmpty(ctx.config.model),
+    modelResponseStarted: state.modelResponseStarted,
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
   // the run reached a terminal outcome (whatever it was — a failed turn's
