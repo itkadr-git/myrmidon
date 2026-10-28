@@ -149,6 +149,7 @@
       "project": "Project",
       "workspace": "Workspace",
       "parent": "Parent Task",
+      "topic": "Topic",
       "none": "None"
     },
     "olderThanDay": "Older than a day",
@@ -158,6 +159,7 @@
     "noWorkspaceGroup": "No Workspace",
     "noProjectGroup": "No Project",
     "noParentGroup": "No Parent",
+    "noTopicGroup": "No Topic",
     "unassigned": "Unassigned",
     "loadingMore": "Loading more tasks..."
   },

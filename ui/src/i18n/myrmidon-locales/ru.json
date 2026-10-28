@@ -149,6 +149,7 @@
       "project": "Проект",
       "workspace": "Рабочая область",
       "parent": "Родительская задача",
+      "topic": "По теме",
       "none": "Нет"
     },
     "olderThanDay": "Старше дня",
@@ -158,6 +159,7 @@
     "noWorkspaceGroup": "Без рабочей области",
     "noProjectGroup": "Без проекта",
     "noParentGroup": "Без родителя",
+    "noTopicGroup": "Без темы",
     "unassigned": "Не назначено",
     "loadingMore": "Загрузка задач…"
   },
