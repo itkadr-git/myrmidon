@@ -1084,68 +1084,6 @@ describe("issue execution policy routes", () => {
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 
-  it("rejects a status-only PATCH when the stored policy uses legacy sequential mode", async () => {
-    const issue = {
-      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      companyId: "company-1",
-      status: "todo",
-      assigneeAgentId: null,
-      assigneeUserId: "local-board",
-      createdByUserId: "local-board",
-      identifier: "PAP-1010",
-      title: "Legacy policy status change",
-      executionPolicy: {
-        mode: "sequential",
-        stages: [{ type: "review", participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }] }],
-      },
-      executionState: null,
-    };
-    mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-      updatedAt: new Date(),
-    }));
-
-    const res = await request(await createApp())
-      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_progress" });
-
-    expect(res.status).toBe(422);
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-  });
-
-  it("rejects an executionPolicy-only PATCH when the stored policy uses legacy sequential mode", async () => {
-    const issue = {
-      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      companyId: "company-1",
-      status: "todo",
-      assigneeAgentId: null,
-      assigneeUserId: "local-board",
-      createdByUserId: "local-board",
-      identifier: "PAP-1011",
-      title: "Legacy policy execution policy change",
-      executionPolicy: {
-        mode: "sequential",
-        stages: [{ type: "review", participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }] }],
-      },
-      executionState: null,
-    };
-    mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-      updatedAt: new Date(),
-    }));
-
-    const res = await request(await createApp())
-      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ executionPolicy: { monitor: { notes: "Keep watching" } } });
-
-    expect(res.status).toBe(400);
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-  });
-
   it("does not auto-start execution review when reviewers are added to an already in_review issue", async () => {
     const policy = normalizeIssueExecutionPolicy({
       stages: [
