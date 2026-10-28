@@ -48,7 +48,10 @@ Create `ui/src/i18n/guarded/<area>.txt`: one path per line relative to `ui/src` 
 
 An area is done when all its files are in `guarded/<area>.txt` and these tests are green.
 
-In addition to area files, `legacy-screens-no-english.myrmidon.test.ts` scans all shipped and example plugin UI entry files (`packages/plugins/**/src/ui/**`) and web application sources (`web/**` when present) to catch hard-coded English literals in JSX text and visible attributes.
+In this repository, web application UI sources reside under `ui/src` (React + Vite). The static guard in `legacy-screens-no-english.myrmidon.test.ts` scans:
+- Web application screens and components (`ui/src/pages/**`, `ui/src/components/**`) tracked in `guarded/*.txt` and `SCREENS` (including Swarm supervisor, Foraging, Sidebar, and Maintenance banner).
+- All shipped and example plugin UI entry files (`packages/plugins/**/src/ui/**`).
+- Root `web/` application tree whenever present.
 
 **What the guard does not catch** (check by hand): template literals (`` `Deleted ${name}` ``), strings built in code, object fields and constants (`{ label: "Name" }`), ternary branches (`{ok ? "Yes" : "No"}`), `.ts` files, dynamic keys (`t(`area.x.${k}`)`), a wrong key that happens to exist. Green guard is necessary, not sufficient: grep the files of your area for quoted English before you finish.
 
@@ -122,7 +125,10 @@ Toast, константы, списки опций, заголовки коло�
 
 Область готова, когда все её файлы в `guarded/<area>.txt` и эти тесты зелёные.
 
-Помимо файлов областей, `legacy-screens-no-english.myrmidon.test.ts` проверяет точки входа интерфейса плагинов (`packages/plugins/**/src/ui/**`) и веб-приложения (`web/**` при наличии), выявляя зашитые английские строки в тексте JSX и видимых атрибутах.
+В репозитории Myrmidon исходный код веб-приложения находится в `ui/src` (React + Vite). Статический guard в `legacy-screens-no-english.myrmidon.test.ts` проверяет:
+- Экраны и компоненты веб-приложения (`ui/src/pages/**`, `ui/src/components/**`), отслеживаемые в `guarded/*.txt` и `SCREENS` (включая Swarm supervisor, Foraging, боковое меню и баннер обслуживания).
+- Все файлы интерфейса плагинов (`packages/plugins/**/src/ui/**`).
+- Корневой каталог `web/` при его наличии в дереве.
 
 **Чего guard не ловит** (проверять руками): шаблонные строки (`` `Удалено ${name}` ``), строки, собранные в коде, поля объектов и константы (`{ label: "Name" }`), ветки тернарника (`{ok ? "Yes" : "No"}`), `.ts`-файлы, динамические ключи (`t(`area.x.${k}`)`), неверный ключ, который случайно существует. Зелёный guard необходим, но не достаточен: перед завершением найдите в файлах области английские строки в кавычках.
 

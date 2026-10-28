@@ -142,7 +142,26 @@ describe("guarded files carry no English literals", () => {
     expect(allowlistedOffenders.length).toBeGreaterThan(0);
   });
 
-  it("scans web application UI sources when present and verifies web JSX scanner coverage", () => {
+  it("verifies web application UI source scope and enforces zero English copy in target web screens", () => {
+    // In Myrmidon, web application UI sources reside in ui/src (React + Vite).
+    // The upstream specification referenced web/ and ui plugins; here ui/src is the web root.
+    expect(existsSync(UI_ROOT), "expected web UI directory ui/src to exist").toBe(true);
+
+    // Target web screens and navigation components from OPE-9606 must carry 0 unlocalized English literals
+    const targetWebScreens = [
+      "pages/SwarmSupervisor.tsx",
+      "pages/Foraging.tsx",
+      "components/Sidebar.tsx",
+      "components/myrmidon/MaintenanceBanner.tsx",
+    ];
+    for (const rel of targetWebScreens) {
+      const fullPath = join(UI_ROOT, rel);
+      expect(existsSync(fullPath), `target web screen ${rel} must exist`).toBe(true);
+      const offenders = findEnglishLiterals(readFileSync(fullPath, "utf8"));
+      expect(offenders, `expected 0 unlocalized English JSX literals in web screen ${rel}`).toEqual([]);
+    }
+
+    // When an additional web application root (web/) exists in the tree, scan it as well
     const webRoot = join(REPO_ROOT, "web");
     if (existsSync(webRoot)) {
       const webFiles = readdirSync(webRoot, { recursive: true })
@@ -154,7 +173,7 @@ describe("guarded files carry no English literals", () => {
       expect(offenders, "expected no hard-coded English UI copy in web files").toEqual([]);
     }
 
-    // Explicit behavioral verification: ensure scanner correctly flags visible unlocalized JSX in web UI files
+    // Behavioral verification: ensure scanner correctly flags visible unlocalized JSX in web UI files
     const webSampleUntranslated = '<div className="container"><h1>Dashboard Overview</h1><input placeholder="Search records" /></div>';
     const webSampleTranslated = '<div className="container"><h1>{t("dashboard.title")}</h1><input placeholder={t("dashboard.search")} /></div>';
     expect(findEnglishLiterals(webSampleUntranslated)).toEqual([
