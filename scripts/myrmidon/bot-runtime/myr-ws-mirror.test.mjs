@@ -33,18 +33,20 @@ function getDirSize(dir) {
   return total;
 }
 
-test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushed branch preservation", () => {
+test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushed branch preservation through migration", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "myr-ws-mirror-test-"));
   const mirrorRoot = path.join(tmp, "cache", "git");
   const parsed = { owner: "itkadr-git", repo: "myrmidon" };
+  const upstreamDir = path.join(tmp, "upstream", parsed.owner, `${parsed.repo}.git`);
   const mirrorDir = path.join(mirrorRoot, parsed.owner, `${parsed.repo}.git`);
   const baseDir = path.join(tmp, "bot", "git-base", parsed.owner, `${parsed.repo}.git`);
 
+  fs.mkdirSync(upstreamDir, { recursive: true });
   fs.mkdirSync(mirrorDir, { recursive: true });
   fs.mkdirSync(baseDir, { recursive: true });
 
-  // 1. Initialize bare mirror with upstream commits
-  runGit(["init", "--bare", mirrorDir]);
+  // 1. Initialize upstream central bare repository with release v1
+  runGit(["init", "--bare", upstreamDir]);
   const seedWork = path.join(tmp, "seed-work");
   fs.mkdirSync(seedWork, { recursive: true });
   runGit(["init", seedWork]);
@@ -57,13 +59,16 @@ test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushe
   }
   runGit(["add", "."], seedWork);
   runGit(["commit", "-m", "upstream release v1"], seedWork);
-  runGit(["push", mirrorDir, "HEAD:refs/heads/main"], seedWork);
+  runGit(["push", upstreamDir, "HEAD:refs/heads/main"], seedWork);
+
+  // 2. Provision host-wide bare mirror from upstream
+  runGit(["clone", "--mirror", upstreamDir, mirrorDir]);
   runGit(["repack", "-a", "-d"], mirrorDir);
 
   const mirrorSize = getDirSize(path.join(mirrorDir, "objects"));
   assert.ok(mirrorSize > 1000, `mirror objects should contain repo data, got ${mirrorSize} bytes`);
 
-  // 2. Initialize base repo and link alternates via syncMirrorAlternates
+  // 3. Initialize bot base repo and link alternates via syncMirrorAlternates
   runGit(["init", "--bare", baseDir]);
   const env = {
     ...process.env,
@@ -82,7 +87,7 @@ test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushe
   const altContent = fs.readFileSync(altFile, "utf8").trim();
   assert.strictEqual(altContent, path.join(mirrorDir, "objects"));
 
-  // 3. Verify base own object size is < 100 MB (< 100 KB in this test)
+  // Verify base own object size is < 100 MB (< 100 KB in this test)
   const baseOwnObjectsSize =
     getDirSize(path.join(baseDir, "objects", "pack")) +
     getDirSize(path.join(baseDir, "objects")) -
@@ -90,20 +95,32 @@ test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushe
   const maxBytes = 100 * 1024 * 1024; // 100 MB criterion
   assert.ok(baseOwnObjectsSize < maxBytes, `own object store must be <100MB, got ${baseOwnObjectsSize} bytes`);
 
-  // 4. Create developer workspace with local-only, unpushed work
+  // 4. Create pre-migration developer workspace by cloning directly from UPSTREAM (NOT mirror)
+  // This represents an existing workspace on the bot host created before the shared mirror was available.
   const devWork = path.join(tmp, "workspace", "OPE-1234");
   fs.mkdirSync(devWork, { recursive: true });
-  runGit(["clone", mirrorDir, devWork]);
+  runGit(["clone", upstreamDir, devWork]);
   runGit(["config", "user.name", "Bot Engineer"], devWork);
   runGit(["config", "user.email", "bot@example.com"], devWork);
-  runGit(["checkout", "-b", "myr/feature-unpushed"], devWork);
 
+  // Verify pre-migration state: full independent copy, NO alternates file
+  const preMigrateAltFile = path.join(devWork, ".git", "objects", "info", "alternates");
+  assert.ok(!fs.existsSync(preMigrateAltFile), "pre-migration workspace must not have alternates file");
+  const preMigrateObjectsSize = getDirSize(path.join(devWork, ".git", "objects"));
+  assert.ok(preMigrateObjectsSize > 1000, "pre-migration workspace has full independent objects");
+
+  // Create unpushed branch with unpushed critical work in devWork
+  runGit(["checkout", "-b", "myr/feature-unpushed"], devWork);
   fs.writeFileSync(path.join(devWork, "unpushed_feature.txt"), "local unpushed critical work");
   runGit(["add", "unpushed_feature.txt"], devWork);
   runGit(["commit", "-m", "feat: unpushed local commit"], devWork);
   const unpushedSha = runGit(["rev-parse", "HEAD"], devWork);
 
-  // Assert commit is local only: NOT pushed to mirror, NOT pushed to base
+  // Assert unpushed commit and branch exist ONLY in devWork: NOT in upstream, NOT in mirror, NOT in base
+  assert.throws(
+    () => runGit(["rev-parse", "--verify", "refs/heads/myr/feature-unpushed"], upstreamDir),
+    "unpushed branch must not exist in upstream"
+  );
   assert.throws(
     () => runGit(["rev-parse", "--verify", "refs/heads/myr/feature-unpushed"], mirrorDir),
     "unpushed branch must not exist in mirror"
@@ -113,7 +130,8 @@ test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushe
     "unpushed branch must not exist in base"
   );
 
-  // 5. Migrate developer workspace: sync alternates to mirror and repack (-a -d -l)
+  // 5. Execute production migration on the existing developer workspace:
+  // syncMirrorAlternates discovers mirror, attaches alternates, and runs repack (-a -d -l)
   const wsMigrateResult = syncMirrorAlternates(env, devWork, parsed);
   assert.strictEqual(wsMigrateResult, mirrorDir, "syncMirrorAlternates should configure mirror for workspace");
 
@@ -135,6 +153,10 @@ test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushe
   assert.strictEqual(fsckRes.status, 0, `git fsck failed in migrated workspace: ${fsckRes.stderr}`);
 
   // Confirm branch remains purely local and was never pushed
+  assert.throws(
+    () => runGit(["rev-parse", "--verify", "refs/heads/myr/feature-unpushed"], upstreamDir),
+    "branch must remain local to workspace and unpushed to upstream"
+  );
   assert.throws(
     () => runGit(["rev-parse", "--verify", "refs/heads/myr/feature-unpushed"], mirrorDir),
     "branch must remain local to workspace and unpushed to mirror"
