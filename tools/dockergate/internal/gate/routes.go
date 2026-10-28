@@ -230,9 +230,9 @@ func (rs *reqState) a4(ctx context.Context, st *runtime, rt *route.Route, bot co
 			cancel()
 			if err != nil {
 				rs.g.log.Write(Line{Level: LevelError, Event: "disk_project_register_failed", BotKey: rt.BotKey, Reason: "create"})
-				return deny.New(deny.UpstreamError).WithDetail("disk")
+			} else {
+				rs.g.log.Write(Line{Event: "disk_project_registered", BotKey: rt.BotKey})
 			}
-			rs.g.log.Write(Line{Event: "disk_project_registered", BotKey: rt.BotKey})
 		}
 	}
 	rs.respond(ans)

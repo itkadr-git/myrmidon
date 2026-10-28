@@ -165,10 +165,19 @@ func (q *Quota) Ensure(ctx context.Context, botKey string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("disk: read %s: %w", q.ProjectsFile, err)
 	}
-	id := allocate(botKey, projid, projects)
+	id := 0
+	for _, l := range projid {
+		if lineKey(l) == botKey {
+			id, _ = strconv.Atoi(lineValue(l))
+			break
+		}
+	}
+	if id <= 0 {
+		id = allocate(botKey, projid, projects)
+	}
 	idText := strconv.Itoa(id)
 	newProjid, changedA := setLine(projid, func(l string) bool { return lineKey(l) == botKey }, botKey+":"+idText)
-	newProjects, changedB := setLine(projects, func(l string) bool { return lineKey(l) == idText }, idText+":"+dir)
+	newProjects, changedB := setLine(projects, func(l string) bool { return lineKey(l) == idText || lineValue(l) == dir }, idText+":"+dir)
 	if changedA {
 		if err := writeAtomic(q.ProjidFile, joinLines(newProjid)); err != nil {
 			return 0, fmt.Errorf("disk: write %s: %w", q.ProjidFile, err)
@@ -342,18 +351,18 @@ func allocate(botKey string, projid, projects []string) int {
 		if err != nil || id < 0 {
 			continue
 		}
-		if k == botKey {
-			return id
-		}
 		if id >= next {
 			next = id + 1
+		}
+		if k == botKey && id > 0 {
+			return id
 		}
 	}
 	for _, l := range projects {
 		if lineKey(l) == "" {
 			continue
 		}
-		if id, err := strconv.Atoi(lineKey(l)); err == nil && id >= next {
+		if id, err := strconv.Atoi(lineKey(l)); err == nil && id > 0 && id >= next {
 			next = id + 1
 		}
 	}

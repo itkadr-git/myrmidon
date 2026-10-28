@@ -80,12 +80,18 @@ func read(t *testing.T, path string) string {
 }
 
 func TestEnsure_RegistersSafeDirectoryAndIsIdempotent(t *testing.T) {
-	q, _ := newQuota(t, stateOn)
+	q, f := newQuota(t, stateOn)
 	if err := os.MkdirAll(q.VolumeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	botDir := filepath.Join(q.VolumeRoot, qKeyA)
 	if err := os.MkdirAll(botDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(q.ProjidFile, []byte(qKeyA+":0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(q.ProjectsFile, []byte("0:"+botDir+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	id, err := q.Ensure(context.Background(), qKeyA)
@@ -100,6 +106,9 @@ func TestEnsure_RegistersSafeDirectoryAndIsIdempotent(t *testing.T) {
 	}
 	if got := read(t, q.ProjectsFile); got != "1000:"+botDir+"\n" {
 		t.Fatalf("projects %q", got)
+	}
+	if calls := f.journal(); len(calls) != 2 || calls[0] != "xfs_quota|-x|-c|state -p|"+q.VolumeRoot || calls[1] != "xfs_quota|-x|-c|project -s -p "+botDir+" 1000|"+q.VolumeRoot {
+		t.Fatalf("repair did not use a single project setup command: %q", calls)
 	}
 	if _, err := q.Ensure(context.Background(), qKeyA); err != nil {
 		t.Fatal(err)
@@ -126,7 +135,7 @@ func TestEnsure_RejectsSymlinkedBotDir(t *testing.T) {
 }
 
 func TestEnsure_RepairsZeroProjectID(t *testing.T) {
-	q, _ := newQuota(t, stateOn)
+	q, f := newQuota(t, stateOn)
 	if err := os.MkdirAll(q.VolumeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -143,6 +152,10 @@ func TestEnsure_RepairsZeroProjectID(t *testing.T) {
 	}
 	if id != FirstProjectID || read(t, q.ProjidFile) != qKeyA+":1000\n" {
 		t.Fatalf("id=%d projid=%q", id, read(t, q.ProjidFile))
+	}
+	calls := f.journal()
+	if len(calls) != 2 || calls[0] != "xfs_quota|-x|-c|state -p|"+q.VolumeRoot || calls[1] != "xfs_quota|-x|-c|project -s -p "+botDir+" 1000|"+q.VolumeRoot {
+		t.Fatalf("repair did not initialize the project: %q", calls)
 	}
 }
 

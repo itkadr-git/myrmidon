@@ -121,14 +121,20 @@ func TestA4_NextCreateDoesNotRegisterDiskProject(t *testing.T) {
 	}
 }
 
-func TestA4_ProjectRegistrationFailureDoesNotReturnCreatedResponse(t *testing.T) {
+func TestA4_ProjectRegistrationFailureReturnsCreatedResponseAndAudits(t *testing.T) {
 	st := &putStub{err: disk.ErrQuotaUnavailable}
 	r := newRig(t, withDisk(st))
 	_, body := r.m.FindBody(t, "bot-plain", "")
 	res := r.send("POST", "/v1.45/containers/create?name="+r.name(""), jsonHdr, body)
-	wantDeny(t, res, deny.UpstreamError)
+	wantStatus(t, res, 201)
 	if got := st.ensured(); !reflect.DeepEqual(got, []string{r.key()}) {
 		t.Fatalf("registered bot keys %v", got)
+	}
+	if l := r.lastDecision(); l.Event != "disk_project_register_failed" || l.BotKey != r.key() || l.Reason != "create" {
+		t.Fatalf("missing registration failure audit: %+v", l)
+	}
+	if len(r.d.Calls()) == 0 {
+		t.Fatal("create did not reach Docker")
 	}
 }
 
