@@ -20129,6 +20129,16 @@ export function heartbeatService(
       lt(agentWakeupRequests.requestedAt, staleCutoff),
       lt(agentWakeupRequests.createdAt, staleCutoff),
       sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+      // A stale wake with a matching run is reconciled below (including
+      // terminal runs); expiry is for orphaned deferred executions only.
+      not(exists(db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, agentWakeupRequests.companyId),
+        or(
+          eq(heartbeatRuns.nativeIssueId, sql`${agentWakeupRequests.payload}->>'issueId'`),
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${agentWakeupRequests.payload}->>'issueId'`,
+          sql`${heartbeatRuns.contextSnapshot}->>'taskId' = ${agentWakeupRequests.payload}->>'issueId'`,
+        ),
+      )))),
     )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
     let expired = 0;
     for (const row of staleWakes) {
