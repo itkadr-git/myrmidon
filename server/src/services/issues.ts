@@ -4171,7 +4171,7 @@ async function listIssueBlockerAttentionMap(
         sampleStalledBlockerIdentifier: null,
       };
     }
-    if ((node.assigneeUserId || node.assigneeAgentId) && node.status !== "cancelled") {
+    if (node.assigneeUserId && node.status !== "cancelled") {
       return {
         covered: true,
         stalled: false,

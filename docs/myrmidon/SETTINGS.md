@@ -2537,3 +2537,4 @@ code against FLAGS.md / SETTINGS.md / the change fragments): entries restored fo
 code reads and that were never classified — `MYRMIDON_BOT_SCOPE_SUBDIR` (the bot workspace
 subdirectory, F-12), plus `MYRMIDON_CONTINUATION_MESSAGE_CHARS` and
 `MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS` (continuation-history character budgets, DBC-3). They are not part of the swarm settings and are listed here only for the gate.
+Devflow health thresholds (P1): `MYRMIDON_DEVFLOW_ENGINEER_IDLE_MS`, `MYRMIDON_DEVFLOW_RED_CI_MS`, `MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS`.

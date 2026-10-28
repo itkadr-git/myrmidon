@@ -3056,7 +3056,6 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
       executionWorkspaceId,
       executionWorkspacePreference: "reuse_existing",
-      assigneeAgentId,
       executionWorkspaceSettings: {
         mode: "isolated_workspace",
         workspaceRuntime: { profile: "agent" },
@@ -3806,16 +3805,16 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       casteKey: "engineer",
     });
     expect(reviewParentChild.assigneeAgentId).toBeNull();
-    const inheritedChild = await svc.createChild(parentIssueId, {
-      title: "Eligible child under engineer",
-      status: "todo",
-    });
-    expect(inheritedChild.assigneeAgentId).toBe(assigneeAgentId);
 
     await db
       .update(issues)
       .set({ assigneeAgentId })
       .where(eq(issues.id, parentIssueId));
+    const { issue: inheritedChild } = await svc.createChild(parentIssueId, {
+      title: "Eligible child under engineer",
+      status: "todo",
+    });
+    expect(inheritedChild.assigneeAgentId).toBe(assigneeAgentId);
     expect(child.description).toContain("## Acceptance Criteria");
     expect(child.description).toContain("- Uses the parent issue as parentId");
     expect(child.projectWorkspaceId).toBe(projectWorkspaceId);
