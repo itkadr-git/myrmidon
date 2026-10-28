@@ -12,7 +12,7 @@ import {
   type MetricsSnapshot,
 } from "./metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
-import { BLOCKER_DASHBOARD_PANELS } from "../../../../../ui/src/lib/blockerDashboardPanels.js";
+import { BLOCKER_DASHBOARD_PANELS } from "@myrmidon/shared";
 import { computeBlockedMetrics } from "./blocked.js";
 
 function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
