@@ -113,7 +113,8 @@ func TestA4_BotCreateRegistersDiskProject(t *testing.T) {
 func TestA4_NextCreateDoesNotRegisterDiskProject(t *testing.T) {
 	st := &putStub{}
 	r := newRig(t, withDisk(st))
-	_, body := r.m.FindBody(t, "bot-plain", "")
+	r.seedMain("running")
+	_, body := r.m.FindBody(t, "bot-plain", ".next")
 	res := r.send("POST", "/v1.45/containers/create?name="+r.name(".next"), jsonHdr, body)
 	wantStatus(t, res, 201)
 	if got := st.ensured(); len(got) != 0 {
