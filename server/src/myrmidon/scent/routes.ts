@@ -39,8 +39,9 @@ async function buildService(
   companyId: string,
   ports: ScentQueuePorts,
 ) {
-  const settingsSvc = instanceSettingsService(db);
-  const general = await settingsSvc.getGeneral();
+  const general = ports.getGeneral
+    ? await ports.getGeneral(db)
+    : await instanceSettingsService(db).getGeneral();
   const settings = readScentSettings(
     (general as unknown as Record<string, unknown> | null)?.swarm,
     process.env,
@@ -56,7 +57,9 @@ async function buildService(
     // A broken secret must not make the status endpoint fail; the contour is
     // simply unavailable until the operator repairs the secret.
   }
-  const castes = await createCasteStore({ db }).listCastes(companyId);
+  const castes = ports.listCastes
+    ? await ports.listCastes(db, companyId)
+    : await createCasteStore({ db }).listCastes(companyId);
   const casteKeys = castes.map((c: { key: string }) => c.key);
   const gatewayDeps: ScentGatewayDeps = {
     fetch: ports.fetch ?? globalThis.fetch.bind(globalThis),

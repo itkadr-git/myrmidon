@@ -575,6 +575,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     const resolveSecret = vi.fn(async () => "secret-value");
     const ports = {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      listCastes: async () => CASTES.map((key) => ({ key })),
       logActivity: async () => undefined,
       resolveSecret,
       listCompanyIds: async () => [COMPANY_ID],
@@ -613,6 +614,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     } as unknown as Db;
     const ports = {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      listCastes: async () => CASTES.map((key) => ({ key })),
       logActivity: async () => undefined,
       resolveSecret: vi.fn(async () => {
         throw new Error("corrupt cipher");

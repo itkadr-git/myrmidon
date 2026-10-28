@@ -41,6 +41,8 @@ export interface ScentQueuePorts {
   resolveSecret?: (db: Db, companyId: string, secretName: string) => Promise<string | null>;
   /** Test hook: replace general instance settings lookup. */
   getGeneral?: (db: Db) => Promise<unknown>;
+  /** Test hook: provide the company caste directory without querying the database. */
+  listCastes?: (db: Db, companyId: string) => Promise<Array<{ key: string }>>;
   /** Test hook: replace the company listing (the queue is per-company). */
   listCompanyIds?: () => Promise<string[]>;
   now?: () => number;
