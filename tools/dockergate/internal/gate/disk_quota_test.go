@@ -114,7 +114,7 @@ func TestA4_NextCreateDoesNotRegisterDiskProject(t *testing.T) {
 	st := &putStub{}
 	r := newRig(t, withDisk(st))
 	_, body := r.m.FindBody(t, "bot-plain", "")
-	res := r.send("POST", "/v1.45/containers/create?name="+r.name("-next"), jsonHdr, body)
+	res := r.send("POST", "/v1.45/containers/create?name="+r.name(".next"), jsonHdr, body)
 	wantStatus(t, res, 201)
 	if got := st.ensured(); len(got) != 0 {
 		t.Fatalf("next-container create registered projects %v", got)
@@ -130,8 +130,15 @@ func TestA4_ProjectRegistrationFailureReturnsCreatedResponseAndAudits(t *testing
 	if got := st.ensured(); !reflect.DeepEqual(got, []string{r.key()}) {
 		t.Fatalf("registered bot keys %v", got)
 	}
-	if l := r.lastDecision(); l.Event != "disk_project_register_failed" || l.BotKey != r.key() || l.Reason != "create" {
-		t.Fatalf("missing registration failure audit: %+v", l)
+	var found bool
+	for _, l := range r.log.Lines(t) {
+		if l.Event == "disk_project_register_failed" && l.BotKey == r.key() && l.Reason == "create" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing registration failure audit in log:\n%s", r.log.String())
 	}
 	if len(r.d.Calls()) == 0 {
 		t.Fatal("create did not reach Docker")
