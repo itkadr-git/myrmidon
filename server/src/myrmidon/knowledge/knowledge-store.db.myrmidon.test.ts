@@ -131,15 +131,23 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
   it("a new draft never moves delivered_revision_id (S3)", async () => {
     companyId = await makeCompany();
     const store = makeStore();
-    await store.create({ companyId, nestId: companyId, slug: "page", title: "Page", content: "v1" }, AGENT);
+    await store.create(
+      { companyId, nestId: companyId, slug: "page", title: "Page", content: "Initial page content v1 with more than twenty characters." },
+      AGENT,
+    );
     await store.publish(companyId, "page", AGENT); // notes publish without approval
     const delivered = (await store.get(companyId, "page"))!;
-    expect(delivered.deliveredContent).toBe("v1");
+    expect(delivered.deliveredContent).toBe("Initial page content v1 with more than twenty characters.");
 
-    await store.draft(companyId, "page", { content: "v2 draft" }, AGENT);
+    await store.draft(
+      companyId,
+      "page",
+      { content: "Updated page content v2 draft with more than twenty characters." },
+      AGENT,
+    );
     const after = (await store.get(companyId, "page"))!;
     expect(after.deliveredRevisionId).toBe(delivered.deliveredRevisionId);
-    expect(after.deliveredContent).toBe("v1");
+    expect(after.deliveredContent).toBe("Initial page content v1 with more than twenty characters.");
     expect(after.currentRevisionNumber).toBe(2);
   });
 
@@ -506,10 +514,18 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
   it("rollback copies the target revision and moves the pointer (S5)", async () => {
     companyId = await makeCompany();
     const store = makeStore();
-    await store.create({ companyId, nestId: companyId, slug: "log", title: "Log", content: "r1 good", sources: [{ kind: "pr", ref: "myrmidon#816", note: null }] }, AGENT);
+    await store.create(
+      { companyId, nestId: companyId, slug: "log", title: "Log", content: "Initial revision 1 good content with plenty of text.", sources: [{ kind: "pr", ref: "myrmidon#816", note: null }] },
+      AGENT,
+    );
     await store.publish(companyId, "log", AGENT);
     const r1 = (await store.get(companyId, "log"))!.deliveredRevisionId!;
-    await store.draft(companyId, "log", { content: "r2 bad", submit: true }, AGENT);
+    await store.draft(
+      companyId,
+      "log",
+      { content: "Updated revision 2 bad content with plenty of text.", submit: true },
+      AGENT,
+    );
     await store.publish(companyId, "log", AGENT);
     const r2 = (await store.get(companyId, "log"))!.deliveredRevisionId!;
 
@@ -517,11 +533,11 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(rolled.currentRevisionNumber).toBe(3);
     expect(rolled.deliveredRevisionId).not.toBe(r1); // a copy, not the old row
     const copy = (await store.getRevision(companyId, "log", rolled.deliveredRevisionId!))!;
-    expect(copy.content).toBe("r1 good");
+    expect(copy.content).toBe("Initial revision 1 good content with plenty of text.");
     expect(copy.status).toBe("approved");
     expect(copy.rolledBackFromRevisionId).toBe(r1);
     expect(copy.sources).toEqual([{ kind: "pr", ref: "myrmidon#816", note: null }]); // provenance mirrored
-    expect((await store.get(companyId, "log"))!.deliveredContent).toBe("r1 good");
+    expect((await store.get(companyId, "log"))!.deliveredContent).toBe("Initial revision 1 good content with plenty of text.");
 
     const noop = await store.rollback(companyId, "log", AGENT, { targetRevisionId: rolled.deliveredRevisionId! }).catch((e) => e);
     expect((noop as KnowledgeDomainError).code).toBe("rollback_noop");
