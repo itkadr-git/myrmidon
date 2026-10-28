@@ -94,6 +94,7 @@ import { WipLimitScreen } from "./components/myrmidon/wip-limit/WipLimitScreenCo
 import { OwnerDeliveryScreen } from "./components/myrmidon/owner-delivery/OwnerDeliveryScreenContainer"; // myrmidon(1.6.5-OWNER-DM-FILTER)
 // myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms.
 import { AgentExchangeFeedScreen } from "./components/myrmidon/AgentExchangeFeedScreen"; // myrmidon(1.7-AGENT-EXCHANGE-B)
+import { GuardrailsScreen } from "./components/myrmidon/guardrails/GuardrailsScreenContainer"; // myrmidon(1.7 GRD-MODES)
 import { ReviewRoutingScreen } from "./components/myrmidon/review-routing/ReviewRoutingScreenContainer"; // myrmidon(REVIEW-ROUTING)
 import { CorpusScreen } from "./components/myrmidon/corpus/CorpusScreenContainer"; // myrmidon(1.6.6 CORPUS E)
 import { Ui2KnowledgeCurrentUi } from "./ui2/screens/knowledge/Ui2KnowledgeCurrentUi"; // myrmidon(OPE-9222)
@@ -234,6 +235,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/autonomy" element={<AutonomyMatrixScreen />} /> {/* myrmidon(1.6 AUTONOMY-MATRIX B) */}
       <Route path="company/settings/wip-limit" element={<WipLimitScreen />} /> {/* myrmidon(1.6.1 WIP-LIMIT B) */}
       <Route path="company/settings/owner-delivery" element={<OwnerDeliveryScreen />} /> {/* myrmidon(1.6.5-OWNER-DM-FILTER) */}
+      <Route path="company/settings/guardrails" element={<GuardrailsScreen />} /> {/* myrmidon(1.7 GRD-MODES) */}
       <Route path="company/settings/review-routing" element={<ReviewRoutingScreen />} /> {/* myrmidon(REVIEW-ROUTING) */}
       <Route path="wiki" element={<Ui2KnowledgeCurrentUi />} /> {/* myrmidon(OPE-9222): the Knowledge screen of the current UI */}
       <Route path="wiki/:spaceKey/:slug" element={<Ui2KnowledgeCurrentUi />} />

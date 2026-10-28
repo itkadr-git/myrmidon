@@ -100,6 +100,9 @@ describe("CompanySettingsNav", () => {
     // myrmidon(1.6.6 CORPUS E): the knowledge corpus tab.
     expect(getCompanySettingsTab("/company/settings/corpus")).toBe("corpus");
     expect(getCompanySettingsTab("/PAP/company/settings/corpus")).toBe("corpus");
+    // myrmidon(1.7 GRD-MODES): the Guardrails tab
+    expect(getCompanySettingsTab("/company/settings/guardrails")).toBe("guardrails");
+    expect(getCompanySettingsTab("/PAP/company/settings/guardrails")).toBe("guardrails");
     expect(getCompanySettingsTab("/company/settings/models")).toBe("models");
   });
 

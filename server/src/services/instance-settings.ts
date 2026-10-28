@@ -73,6 +73,8 @@ import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcement/settings.js";
 // myrmidon(SETTINGS-CORE): keep the stored behavior settings across vendor writes of `general`
 import { preserveBehaviorSettingsGeneralKeys } from "../myrmidon/behavior-settings/store.js";
+// myrmidon(1.7-GRD-MODES): keep the stored guardrail enforcement modes across vendor writes of `general`
+import { preserveGuardrailModesGeneralKey } from "../myrmidon/guardrails/modes-settings.js";
 // myrmidon(1.7-DEBATE-ASYM-A): the stored debate engine configuration must
 // survive every vendor general write (it is edited on its own settings panel).
 import { preserveDebateGeneralKey } from "../myrmidon/debates/settings.js";
@@ -335,6 +337,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.browserBridge ? { browserBridge: parsed.data.browserBridge } : {}),
       // myrmidon(1.6.1-WIP-LIMIT-A): the stored WIP limits survive every general write
       ...(parsed.data.wipLimit ? { wipLimit: parsed.data.wipLimit } : {}),
+      // myrmidon(1.7-GRD-MODES): the stored guardrail enforcement modes survive every general write
+      ...(parsed.data.guardrailModes ? { guardrailModes: parsed.data.guardrailModes } : {}),
       // myrmidon(1.6.3 PROMPT-BUDGET B): the stored prompt-budget thresholds
       // (and the optimizer agent id of the advice part) survive every general
       // write — without this line the vendor write path silently drops the key.
@@ -857,6 +861,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
               ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
               ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
+              ...preserveGuardrailModesGeneralKey(current.general), // myrmidon(1.7-GRD-MODES)
               ...preserveOwnerDeliveryGeneralKey(current.general), // myrmidon(1.6.5-OWNER-DM-FILTER)
               // The preserve line above restores the stored value: a patch that carries the key wins.
               ...(patch.ownerDelivery !== undefined ? { ownerDelivery: nextGeneral.ownerDelivery } : {}), // myrmidon(1.6.5-OWNER-DM-FILTER)

@@ -38,6 +38,8 @@ import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
 import type { BridgeLanguageSettings } from "../myrmidon-bridge-language.js";
 // myrmidon(1.6.5-DB-RETENTION): the stored retention settings shape
 import type { DataRetentionSettings, DataRetentionLastRun } from "../myrmidon-data-retention.js";
+// myrmidon(1.7-GRD-MODES): the guardrail enforcement modes stored in instance settings
+import type { GuardrailModesSettings } from "../myrmidon-guardrail-modes.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { OwnerDeliverySettings } from "../myrmidon-owner-delivery.js";
@@ -327,6 +329,12 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   wipLimit?: WipLimitSettings;
+  /**
+   * myrmidon(1.7-GRD-MODES): per-rule guardrail enforcement modes, changed
+   * from `GET`/`PUT /api/myrmidon/companies/:companyId/guardrails/settings`.
+   * Absent means default (flag-only everywhere).
+   */
+  guardrailModes?: GuardrailModesSettings;
   /**
    * myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
    * `GET`/`PUT /api/myrmidon/companies/:companyId/review-routing/settings`.

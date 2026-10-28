@@ -3030,3 +3030,5 @@ export {
 // contract of the recovery factory — how CI, GitHub, myr-ws, devbuild, disk and
 // operator failures ask for a recovery issue with a deterministic dedupe key.
 export * from "./recovery-factory.js";
+// myrmidon(1.7-GRD-MODES): the guardrail enforcement mode contracts
+export * from "./myrmidon-guardrail-modes.js";

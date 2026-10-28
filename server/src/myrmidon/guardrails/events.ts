@@ -15,7 +15,7 @@
 // The output hook (`run-output.ts`) is the only caller for part A; part B
 // (input injection) and later parts reuse recordGuardrailEvent directly.
 
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { guardrailEvents } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
@@ -135,12 +135,26 @@ export async function recordGuardrailEvent(db: Db, input: RecordGuardrailEventIn
   return { id: row.id };
 }
 
-/** Newest-first event list for the board route. */
-export async function listGuardrailEvents(db: Db, companyId: string, limit: number) {
+/**
+ * Newest-first event list for the board route. myrmidon(1.7-GRD-MODES):
+ * optional equality filters (kind, severity, surface, runId) applied in SQL,
+ * so the journal screen can filter without paging through everything.
+ */
+export async function listGuardrailEvents(
+  db: Db,
+  companyId: string,
+  limit: number,
+  filters: { kind?: string; severity?: string; surface?: string; runId?: string } = {},
+) {
+  const conditions = [eq(guardrailEvents.companyId, companyId)];
+  if (filters.kind) conditions.push(eq(guardrailEvents.kind, filters.kind));
+  if (filters.severity) conditions.push(eq(guardrailEvents.severity, filters.severity));
+  if (filters.surface) conditions.push(eq(guardrailEvents.surface, filters.surface));
+  if (filters.runId) conditions.push(eq(guardrailEvents.runId, filters.runId));
   return db
     .select()
     .from(guardrailEvents)
-    .where(eq(guardrailEvents.companyId, companyId))
+    .where(and(...conditions))
     .orderBy(desc(guardrailEvents.occurredAt))
     .limit(limit);
 }
@@ -150,6 +164,11 @@ export async function listGuardrailEvents(db: Db, companyId: string, limit: numb
  * hit. Flag-only — the text is never modified. Returns the report so the
  * caller can decide what to log. Failures never propagate: the guardrail
  * must not break run finalization.
+ *
+ * myrmidon(1.7-GRD-MODES): `modeHint` (optional) only lifts the recorded
+ * severity — flag keeps the 1.6.1 levels, mask records warn, block records
+ * error — so the journal shows what a hit actually DID. The frozen part-A
+ * contract is unchanged for callers that pass no hint.
  */
 export async function recordRunOutputGuardrailEvents(
   db: Db,
@@ -160,6 +179,8 @@ export async function recordRunOutputGuardrailEvents(
     text: string | null;
     now(): Date;
     env?: NodeJS.ProcessEnv;
+    /** myrmidon(1.7-GRD-MODES): the mode the hits were enforced with. */
+    modeHint?: "flag" | "mask" | "block";
   },
 ): Promise<{ recorded: number; total: number; totalSecrets: number; totalPii: number } | null> {
   const settings = readGuardrailOutputSettings(input.env);
@@ -181,13 +202,20 @@ export async function recordRunOutputGuardrailEvents(
       const allIndex = allHits.findIndex((other) => other.span[0] < hit.span[1] && hit.span[0] < other.span[1]);
       if (allIndex < 0) continue;
       const snippet = guardrailSnippet(redacted.text, redacted.spans[allIndex]!, GUARDRAIL_SNIPPET_MAX_CHARS);
+      const baseSeverity = hit.kind === "secret" ? "warn" : "info";
+      const severity =
+        input.modeHint === "block"
+          ? "error"
+          : input.modeHint === "mask"
+            ? "warn"
+            : baseSeverity;
       await recordGuardrailEvent(db, {
         companyId: input.companyId,
         issueId: input.issueId,
         runId: input.runId,
         kind: hit.kind,
         surface: GUARDRAIL_SURFACE_RUN_OUTPUT,
-        severity: hit.kind === "secret" ? "warn" : "info",
+        severity,
         snippet,
         occurredAt: input.now(),
       });
