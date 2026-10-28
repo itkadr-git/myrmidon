@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { X509Certificate } from "node:crypto";
-import { connect, createServer } from "node:tls";
+import { connect, createServer, createSecureContext } from "node:tls";
 import { once } from "node:events";
 import { generateSiteCa, issueSiteClientCertificate, SITE_CLIENT_CERT_VALIDITY_DAYS } from "./site-client-pki.js";
 
@@ -27,6 +27,7 @@ describe("site client PKI", () => {
   it("rejects an expired site client certificate during TLS client authentication", async () => {
     const ca = generateSiteCa();
     const expiredClient = issueSiteClientCertificate(ca, "expired-site", { validityDays: -1 });
+    const clientContext = createSecureContext({ ca: ca.cert, cert: expiredClient.cert, key: expiredClient.key });
     const server = createServer({
       key: ca.key,
       cert: ca.cert,
@@ -42,9 +43,7 @@ describe("site client PKI", () => {
     const client = connect({
       host: "127.0.0.1",
       port: address.port,
-      ca: ca.cert,
-      cert: expiredClient.cert,
-      key: expiredClient.key,
+      secureContext: clientContext,
       rejectUnauthorized: true,
     });
     const outcome = await Promise.race([
