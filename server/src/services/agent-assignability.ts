@@ -77,7 +77,7 @@ async function getAgent(db: Db, agentId: string): Promise<AssignabilityAgent | n
       reportsTo: agents.reportsTo,
     })
     .from(agents)
-    .where(eq(agents.id, agentId))
+    .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
     .then((rows) => rows[0] ?? null);
 }
 
