@@ -199,6 +199,7 @@ import {
   issueWriteDenialResponse,
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
+  validateIdeasProjectConstraints,
 } from "@myrmidon/shared";
 import { trackAgentTaskCompleted } from "@myrmidon/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -12550,6 +12551,25 @@ export function issueRoutes(
           typeof effectiveParentId === "string" ? effectiveParentId : null,
         assigneeAgentId: normalizedAssigneeAgentId ?? null,
       });
+      if (rawCreateBody.projectId) {
+        const [proj] = await db
+          .select({ name: projects.name })
+          .from(projects)
+          .where(eq(projects.id, rawCreateBody.projectId as string))
+          .limit(1);
+        const check = validateIdeasProjectConstraints({
+          projectName: proj?.name,
+          assigneeAgentId: normalizedAssigneeAgentId,
+          assigneeUserId: (rawCreateBody.assigneeUserId as string | null | undefined) ?? null,
+          dueDate: rawCreateBody.dueDate,
+          description: typeof rawCreateBody.description === "string" ? rawCreateBody.description : null,
+          metadata: rawCreateBody.metadata,
+        });
+        if (!check.valid) {
+          res.status(400).json({ error: check.error });
+          return;
+        }
+      }
       const actor = getActorInfo(req);
       const runWorkspaceInheritanceSourceIssueId =
         hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
@@ -13734,6 +13754,33 @@ export function issueRoutes(
               ? req.body.executionWorkspacePreference
               : null,
         });
+      }
+      const targetProjectId =
+        req.body.projectId !== undefined ? (req.body.projectId as string | null) : existing.projectId;
+      if (targetProjectId) {
+        const [proj] = await db
+          .select({ name: projects.name })
+          .from(projects)
+          .where(eq(projects.id, targetProjectId))
+          .limit(1);
+        const check = validateIdeasProjectConstraints({
+          projectName: proj?.name,
+          assigneeAgentId: requestedAssigneeAgentId,
+          assigneeUserId:
+            req.body.assigneeUserId !== undefined
+              ? (req.body.assigneeUserId as string | null)
+              : existing.assigneeUserId,
+          dueDate: req.body.dueDate !== undefined ? req.body.dueDate : existing.dueDate,
+          description:
+            req.body.description !== undefined
+              ? (req.body.description as string | null)
+              : existing.description,
+          metadata: req.body.metadata !== undefined ? req.body.metadata : existing.metadata,
+        });
+        if (!check.valid) {
+          res.status(400).json({ error: check.error });
+          return;
+        }
       }
       const titleOrDescriptionChanged =
         req.body.title !== undefined || req.body.description !== undefined;

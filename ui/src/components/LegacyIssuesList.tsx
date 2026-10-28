@@ -26,6 +26,7 @@ import {
   type SubIssueProgressSummary,
 } from "../lib/issue-detail-subissues";
 import { groupBy } from "../lib/groupBy";
+import { groupIssuesByTopic } from "../lib/issue-grouping";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -1284,21 +1285,7 @@ export function IssuesList({
         }));
     }
     if (viewState.groupBy === "topic") {
-      const labelMap = new Map((labels ?? []).map((l) => [l.id, l.name]));
-      const groups = groupBy(filtered, (i) => i.labelIds?.[0] ?? "__no_topic");
-      return Object.keys(groups)
-        .sort((a, b) => {
-          if (a === "__no_topic") return 1;
-          if (b === "__no_topic") return -1;
-          const labelA = labelMap.get(a) ?? a;
-          const labelB = labelMap.get(b) ?? b;
-          return labelA.localeCompare(labelB);
-        })
-        .map((key) => ({
-          key,
-          label: key === "__no_topic" ? t("tasks.noTopicGroup") : (labelMap.get(key) ?? key.slice(0, 8)),
-          items: groups[key]!,
-        }));
+      return groupIssuesByTopic(filtered, labels, t("tasks.noTopicGroup"));
     }
     // assignee
     const groups = groupBy(
@@ -1634,7 +1621,11 @@ export function IssuesList({
         else defaults.parentId = groupKey;
       }
       else if (viewState.groupBy === "topic" && groupKey !== "__no_topic") {
-        defaults.labelIds = [groupKey];
+        if (groupKey.startsWith("title_topic:")) {
+          defaults.title = `[${group?.label ?? groupKey.slice("title_topic:".length)}] `;
+        } else {
+          defaults.labelIds = [groupKey];
+        }
       }
     }
     return defaults;
