@@ -139,7 +139,7 @@ describeEmbeddedPostgres("myrmidon(1.7-GRD-MODES): routes", () => {
 
   it("PUT settings stores the document for a board actor and echoes it", async () => {
     const res = await request(app)
-      .put(`/api/myrmidon/companies/${companyId}/guardrails/settings`)\
+      .put(`/api/myrmidon/companies/${companyId}/guardrails/settings`)
       .send({ company: { secret: "mask" }, castes: { engineer: { injection: "block" } }, agents: {} });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ company: { secret: "mask" } });

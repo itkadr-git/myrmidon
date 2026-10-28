@@ -155,6 +155,7 @@ describe("CompanySettingsNav", () => {
           { value: "clouds", label: "Clouds" }, // myrmidon(CLOUD-CONNECTOR)
           { value: "autonomy", label: "Autonomy" }, // myrmidon(1.6 AUTONOMY-MATRIX B)
           { value: "wip-limit", label: "WIP limit" }, // myrmidon(1.6.1 WIP-LIMIT B)
+          { value: "guardrails", label: "Guardrails" }, // myrmidon(1.7 GRD-MODES)
           { value: "review-routing", label: "Review routing" }, // myrmidon(REVIEW-ROUTING)
           { value: "budgets", label: "Budgets" }, // myrmidon(1.7 BUDGET-CONFIG D)
 
@@ -211,6 +212,7 @@ describe("CompanySettingsNav", () => {
       "clouds", // myrmidon(CLOUD-CONNECTOR)
       "autonomy", // myrmidon(1.6 AUTONOMY-MATRIX B)
       "wip-limit", // myrmidon(1.6.1 WIP-LIMIT B)
+      "guardrails", // myrmidon(1.7 GRD-MODES)
       "review-routing", // myrmidon(REVIEW-ROUTING)
       "budgets", // myrmidon(1.7 BUDGET-CONFIG D)
 

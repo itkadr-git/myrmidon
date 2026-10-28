@@ -165,7 +165,7 @@ export function GuardrailsScreenView({
           <div className="space-y-2">
             <h3 className="text-sm font-medium">{t("guardrails.companyTitle")}</h3>
             <div className="grid gap-2 sm:grid-cols-3" data-testid="guardrails-company-row">
-              {GUARDRAIL_RULES.map((rule) => (\
+              {GUARDRAIL_RULES.map((rule) => (
                 <div key={rule} className="space-y-1">
                   <Label htmlFor={`guardrail-company-${rule}`}>{ruleLabel(t, rule)}</Label>
                   <Select

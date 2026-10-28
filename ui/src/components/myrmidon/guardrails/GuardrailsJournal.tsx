@@ -106,7 +106,7 @@ export function GuardrailsJournal({
         </div>
       </div>
 
-      {eventsQuery.isError ? (\
+      {eventsQuery.isError ? (
         <p className="text-sm text-destructive" data-testid="guardrails-journal-error">
           {eventsQuery.error instanceof ApiError
             ? eventsQuery.error.message
