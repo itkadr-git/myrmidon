@@ -3,6 +3,7 @@ const FAVICON_BLOCK_END = "<!-- PAPERCLIP_FAVICON_END -->";
 const RUNTIME_BRANDING_BLOCK_START = "<!-- PAPERCLIP_RUNTIME_BRANDING_START -->";
 const RUNTIME_BRANDING_BLOCK_END = "<!-- PAPERCLIP_RUNTIME_BRANDING_END -->";
 
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import { readBuildVersion } from "./build-version.js";
 
 const DEFAULT_FAVICON_LINKS = [
@@ -163,7 +164,7 @@ function createFaviconDataUrl(color: string): string {
 }
 
 export function isWorktreeUiBrandingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return isTruthyEnvValue(env.PAPERCLIP_IN_WORKTREE);
+  return isTruthyEnvValue(readProductEnvFrom(env, "IN_WORKTREE"));
 }
 
 export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): WorktreeUiBranding {
@@ -178,8 +179,8 @@ export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): Wor
     };
   }
 
-  const name = nonEmpty(env.PAPERCLIP_WORKTREE_NAME) ?? nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? "worktree";
-  const color = normalizeHexColor(env.PAPERCLIP_WORKTREE_COLOR) ?? deriveColorFromSeed(name);
+  const name = nonEmpty(readProductEnvFrom(env, "WORKTREE_NAME")) ?? nonEmpty(readProductEnvFrom(env, "INSTANCE_ID")) ?? "worktree";
+  const color = normalizeHexColor(readProductEnvFrom(env, "WORKTREE_COLOR")) ?? deriveColorFromSeed(name);
   const textColor = pickReadableTextColor(color);
 
   return {
@@ -188,7 +189,7 @@ export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): Wor
     color,
     textColor,
     faviconHref: createFaviconDataUrl(color),
-    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID),
+    instanceId: nonEmpty(readProductEnvFrom(env, "INSTANCE_ID")),
   };
 }
 
@@ -198,7 +199,7 @@ export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): Wor
  * reliable refresh is a different URL after every release.
  */
 export function resolveIconVersion(env: NodeJS.ProcessEnv = process.env): string | null {
-  return readBuildVersion({ environmentVersion: env.PAPERCLIP_BUILD_VERSION ?? null });
+  return readBuildVersion({ environmentVersion: readProductEnvFrom(env, "BUILD_VERSION") ?? null });
 }
 
 const ICON_URL_PATTERN = /^\/(?:favicon[\w.-]*\.(?:ico|svg|png)|apple-touch-icon\.png|android-chrome-[\w-]+\.png|site\.webmanifest)$/;

@@ -18,6 +18,8 @@
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
  * @see PLUGIN_SPEC.md §19.0.3 — Bundle Serving
  */
+import { useTranslation } from "@/i18n"; // myrmidon(OPE-9352)
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 import {
   Component,
   createElement,
@@ -36,7 +38,7 @@ import type {
   PluginUiSlotDeclaration,
   PluginUiSlotEntityType,
   PluginUiSlotType,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
 import { accessApi } from "@/api/access"; // myrmidon(PLUGIN-INSTANCE-ADMIN)
@@ -257,11 +259,11 @@ function buildPluginUiUrl(contribution: PluginUiContribution): string {
 /**
  * Import a plugin's UI entry module with bare-specifier rewriting.
  *
- * Plugin bundles are built with `external: ["@paperclipai/plugin-sdk/ui", "react", "react-dom"]`,
+ * Plugin bundles are built with `external: ["@myrmidon/plugin-sdk/ui", "react", "react-dom"]`,
  * so their ESM output contains bare specifier imports like:
  *
  * ```js
- * import { usePluginData } from "@paperclipai/plugin-sdk/ui";
+ * import { usePluginData } from "@myrmidon/plugin-sdk/ui";
  * import React from "react";
  * ```
  *
@@ -380,18 +382,30 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
  * - `import { ... } from "react";`
  * - `import React from "react";`
  * - `import * as React from "react";`
- * - `import { ... } from "@paperclipai/plugin-sdk/ui";`
+ * - `import { ... } from "@myrmidon/plugin-sdk/ui";`
  *
  * Also handles re-exports:
  * - `export { ... } from "react";`
  */
+const PLUGIN_SDK_UI_SPECIFIERS = [
+  "@myrmidon/plugin-sdk/ui",
+  "@myrmidon/plugin-sdk/ui/hooks",
+  "@paperclipai/plugin-sdk/ui",
+  "@paperclipai/plugin-sdk/ui/hooks",
+] as const;
+
 function rewriteBareSpecifiers(source: string): string {
   // Build a mapping of bare specifiers to blob URLs.
   const rewrites: Record<string, string> = {
-    '"@paperclipai/plugin-sdk/ui"': `"${getShimBlobUrl("sdk-ui")}"`,
-    "'@paperclipai/plugin-sdk/ui'": `'${getShimBlobUrl("sdk-ui")}'`,
-    '"@paperclipai/plugin-sdk/ui/hooks"': `"${getShimBlobUrl("sdk-ui")}"`,
-    "'@paperclipai/plugin-sdk/ui/hooks'": `'${getShimBlobUrl("sdk-ui")}'`,
+    // myrmidon(PLUGIN-SDK-ALIAS): plugins built for upstream Paperclip (and
+    // third-party ecosystem plugins) keep `@paperclipai/plugin-sdk/ui` external,
+    // so the legacy names map to the same shim as the `@myrmidon/...` ones.
+    ...Object.fromEntries(
+      PLUGIN_SDK_UI_SPECIFIERS.flatMap((name) => [
+        [`"${name}"`, `"${getShimBlobUrl("sdk-ui")}"`],
+        [`'${name}'`, `'${getShimBlobUrl("sdk-ui")}'`],
+      ]),
+    ),
     '"react/jsx-runtime"': `"${getShimBlobUrl("react/jsx-runtime")}"`,
     "'react/jsx-runtime'": `'${getShimBlobUrl("react/jsx-runtime")}'`,
     '"react-dom/client"': `"${getShimBlobUrl("react-dom/client")}"`,
@@ -463,7 +477,7 @@ async function importPluginModule(url: string): Promise<Record<string, unknown>>
  * exports to the correct `pluginKey:exportName` registry keys.
  *
  * Plugin modules are loaded with bare-specifier rewriting so that imports
- * of `@paperclipai/plugin-sdk/ui`, `react`, and `react-dom` resolve to the
+ * of `@myrmidon/plugin-sdk/ui`, `react`, and `react-dom` resolve to the
  * host-provided implementations via the bridge registry.
  *
  * Web-component registrations still work: if the module has a named export
@@ -843,6 +857,7 @@ export function PluginSlotMount({
   className,
   missingBehavior = "hidden",
 }: PluginSlotMountProps) {
+  const { t } = useTranslation(); // myrmidon(OPE-9352)
   usePluginRegistrySubscription();
   const [, forceRerender] = useState(0);
   const component = resolveRegisteredComponent(slot);
@@ -868,7 +883,7 @@ export function PluginSlotMount({
     if (missingBehavior === "hidden") return null;
     return (
       <div className={cn("rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground", className)}>
-        {slot.pluginDisplayName}: {slot.displayName}
+        {pluginLabel(t, slot.pluginKey, null, slot.pluginDisplayName)}: {pluginLabel(t, slot.pluginKey, slot.id, slot.displayName)} {/* myrmidon(OPE-9352) */}
       </div>
     );
   }

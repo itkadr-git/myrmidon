@@ -20,7 +20,7 @@ tree renders inside the 2.0 frame instead of the vendor layout:
 
 - the desktop rail, top bar and settings side panel replace the vendor
   sidebar;
-- the mobile phone frame (header + five-tab bottom bar) replaces the vendor
+- the mobile phone frame (header + six-tab bottom bar) replaces the vendor
   mobile navigation;
 - the 2.0 screens re-skin the pages they cover (see below).
 
@@ -71,7 +71,7 @@ the whole instance on 2.0, and use `?ui=1` yourself to compare against the
 Desktop (viewport width 768 px and up):
 
 - A 232 px left rail with the Myrmidon logo, three groups of destinations —
-  Observe (Command center, Server fleet, Swarm, Costs, Quality), Decide &
+  Observe (Command center, Agents, Servers, Swarm, Costs, Quality), Decide &
   talk (Wait for me, Commander), Manage (Settings) — a badge on "Wait for me"
   counting decisions awaiting the owner (99+ past ninety-nine), and an owner
   footer showing the company name and the active channel ("Web · now").
@@ -82,13 +82,16 @@ Desktop (viewport width 768 px and up):
   and the "Tell the Commander" entry with a `Ctrl K` hint on it (the shortcut
   itself arrives with the 1.6 chat update; today the palette opens by click),
   and a navy decisions badge next to it.
-- On company settings routes a 10-section settings side panel (General,
-  Members, Access, Secrets, Runs and queue, Budgets, Autonomy, Guardrails,
-  Castes and models, System).
+- On company settings routes a settings side panel with the available sections
+  (General, Members, Access, Secrets, Runs and queue, Budgets, Autonomy,
+  Castes and models, System). Guardrails is temporarily hidden because its
+  screen and route are not implemented yet; it will return when the screen is
+  available. The sidebar contract test checks every displayed path against the
+  App and UI2 route tables.
 
 Mobile (below 768 px): a phone frame — a 56 px header with the logo and
-"Owner · Web" status, and a five-tab bottom bar (Command center / Wait for
-me / Server fleet / Commander / More), tab items 60 px tall with touch
+"Owner · Web" status, and a six-tab bottom bar (Command center / Wait for
+me / Agents / Servers / Commander / More), tab items 60 px tall with touch
 targets of at least 44 px.
 
 Two shell parts are honest stubs for now:
@@ -113,7 +116,8 @@ The 2.0 screens re-skin these surfaces under the flag:
 | Decisions | `decisions` | The decisions page |
 | Costs | `activity/costs` | The costs page |
 | Agent overview | `agents/:agentId/overview` | The agent card |
-| Agents fleet | `agents` | The company agent list |
+| Servers | `fleet` | Monitoring dashboard hosts and services |
+| Agents | `agents` | The company agent list |
 | Runs and queue (settings) | `company/settings/runs-queue` | Instance run limits |
 | System (settings) | `company/settings/system` | Instance system settings |
 | Language (settings) | `company/settings/language` | The UI language setting |

@@ -309,6 +309,9 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
     // inspect; handing it in keeps one pass at one inspect instead of two.
     const drift = probed ? probed.drift : await driver.templateDrift(spec, status);
     const drifted = drift.drifted;
+    const resourceDrift = drift.fields.length > 0 && drift.fields.every(({ field }) =>
+      field === "HostConfig.Memory" || field === "HostConfig.PidsLimit",
+    );
     if (drifted) {
       // Names the field and both values, so a drift is diagnosable from the
       // log alone — the 01.10 incident recreated every bot every pass with a
@@ -317,12 +320,19 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
     }
     // Hashes come only from the applied-state marker; none there means nothing
     // verified applied, which classifies as "restart", never "none".
-    const changeClass = classifyProfileChange({ restartHash: status.restartHash, filesHash: status.filesHash }, profile);
+    const changeClass = classifyProfileChange(
+      { restartHash: status.restartHash, filesHash: status.filesHash, maxConcurrentRuns: status.maxConcurrentRuns },
+      profile,
+    );
 
     if (status.state === "stopped") {
+      const applyDrift = async () => {
+        if (resourceDrift && driver.updateResources) await driver.updateResources(spec);
+        else await driver.recreate(spec);
+      };
       if (status.idleStopped) {
         if (!drifted && changeClass === "none") return { kind: "unchanged" };
-        if (drifted) await driver.recreate(spec);
+        if (drifted) await applyDrift();
         if (changeClass !== "none") await driver.writeProfile(botKey, profile);
         await info("idle-stopped bot container image updated without restart", {
           drifted,
@@ -332,7 +342,7 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
         await backimportBotSkillsIntoCatalog();
         return { kind: "applied_restart" };
       }
-      if (drifted) await driver.recreate(spec);
+      if (drifted) await applyDrift();
       if (changeClass !== "none") await driver.writeProfile(botKey, profile);
       await driver.start(botKey);
       await info("stopped bot container brought up", {
@@ -344,6 +354,18 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
       return { kind: "applied_restart" };
     }
 
+    // Live update only when nothing else needs the gateway down: a restart-class
+    // profile change must still restart (the marker would otherwise be recorded
+    // as applied and the change lost), and so must an unhealthy container (that
+    // state is not "running" and falls through to the paused branch below).
+    if (status.state === "running" && resourceDrift && changeClass !== "restart") {
+      if (driver.updateResources) await driver.updateResources(spec);
+      else await driver.recreate(spec);
+      if (changeClass !== "none") await driver.writeProfile(botKey, profile);
+      await info("bot container resources applied without restart", { drifted, resourceDrift, changeClass });
+      await backimportBotSkillsIntoCatalog();
+      return { kind: "applied_files" };
+    }
     if (status.state === "running" && !drifted) {
       if (changeClass === "none") {
         await backimportBotSkillsIntoCatalog();
@@ -369,6 +391,14 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
         : `bot container profile update (${botKey})`;
     const result = await withAgentPaused({ agentId, botKey, reason, maintenance, drainTimeoutSec, sleep, activity }, async () => {
       if (drifted) {
+        // Resource-only drift on a live container: update in place, then the
+        // restart below still runs (restart-class change or unhealthy state).
+        if (resourceDrift && driver.updateResources) {
+          await driver.updateResources(spec);
+          if (changeClass !== "none") await driver.writeProfile(botKey, profile);
+          await driver.restart(botKey);
+          return;
+        }
         await driver.recreate(spec);
         if (changeClass !== "none") await driver.writeProfile(botKey, profile);
         await driver.start(botKey);

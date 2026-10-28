@@ -10,15 +10,16 @@
 // via the last-run timestamp. A pass whose previous run is still going is
 // skipped, not queued — the M2-A posture.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import type { Logger } from "pino";
 import { logger } from "../../middleware/logger.js";
-import { agentKeySecretName } from "@paperclipai/shared";
+import { agentKeySecretName } from "@myrmidon/shared";
 import { and, eq, ne } from "drizzle-orm";
-import { agents } from "@paperclipai/db";
+import { agents } from "@myrmidon/db";
 import { createLitellmBudgetGatewayPort, type LitellmBudgetGatewayPort } from "./gateway.js";
 import { syncBudgetProjection, type BudgetProjectionSyncDeps } from "./service.js";
 import { readBudgetProjectionSettings, resolveBudgetProjectionRuntime } from "./settings.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 /** The base deps every wiring (sweep, routes, immediate pass) builds on. */
 export function budgetProjectionSyncDeps(
@@ -169,7 +170,7 @@ export function startBudgetProjectionSweep(
     }
   };
 
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void tick().catch(() => {});
   }, 10_000);
   if (typeof timer.unref === "function") timer.unref();
@@ -197,7 +198,7 @@ export function stopBudgetProjectionSweep(): void {
 
 /** The company's newest in_progress issue with an agent assignee — where a divergence signal lands. */
 async function findSignalIssue(db: Db, companyId: string): Promise<{ id: string } | null> {
-  const { issues } = await import("@paperclipai/db");
+  const { issues } = await import("@myrmidon/db");
   const { and, eq, desc, sql } = await import("drizzle-orm");
   const rows = await db
     .select({ id: issues.id })

@@ -27,6 +27,7 @@ COPY server/package.json server/
 COPY ui/package.json ui/
 COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
+COPY packages/corpus/package.json packages/corpus/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/google-sheets-mcp-server/package.json packages/google-sheets-mcp-server/
 COPY packages/kv-demo-mcp-server/package.json packages/kv-demo-mcp-server/
@@ -137,8 +138,8 @@ COPY --from=deps /app /app
 COPY . .
 RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -type f -exec touch -d @0 {} + \
   && touch -d @0 packages/paperclip-runner/rust-toolchain.toml
-RUN pnpm --filter @paperclipai/ui build
-RUN pnpm --filter @paperclipai/plugin-sdk build
+RUN pnpm --filter @myrmidon/ui build
+RUN pnpm --filter @myrmidon/plugin-sdk build
 # The server build runs scripts/write-build-stamp.mjs, which stamps the built
 # commit into dist/build-info.json. The build context has no .git, so the
 # script reads PAPERCLIP_BUILD_COMMIT instead. Docker exposes an ARG to the
@@ -148,7 +149,7 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 # end of its stage. Empty for local `docker build`, which then writes no stamp.
 ARG PAPERCLIP_BUILD_COMMIT=""
 ENV NODE_OPTIONS=--max-old-space-size=4096
-RUN pnpm --filter @paperclipai/server build
+RUN pnpm --filter @myrmidon/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 RUN rm -rf packages/paperclip-runner/runner/target
 

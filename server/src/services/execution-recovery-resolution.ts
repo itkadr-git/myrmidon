@@ -12,13 +12,14 @@ import {
   issues,
   nativeRunFinalizations,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { conflict } from "../errors.js";
+import { recoveryLivenessDescriptor } from "../myrmidon/stale-block/event-keys.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import {
   EXECUTION_RECONCILIATION_CAUSES,
   type ExecutionReconciliation,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isConversation, isSupersededConversationRun } from "./agent-conversations.js";
 // myrmidon(D2): uuid-typed json comparisons for the board DB hot path. See
@@ -568,6 +569,18 @@ export async function settleUnrecoverableExecutions(
             .update(issues)
             .set({
               status: "blocked",
+              // myrmidon(BLOCKED-REASON): a raw projection must carry the reason
+              // too (the reconciliation incident is the liveness oracle). An
+              // already-blocked task keeps the hold it has.
+              ...(task.status !== "blocked"
+                ? {
+                    unblockDescriptor: recoveryLivenessDescriptor(
+                      task.id,
+                      "Inspect the failed execution and reconcile it, then move the task out of blocked.",
+                    ),
+                    blockedTransitionAt: now,
+                  }
+                : {}),
               executionRunId: null,
               checkoutRunId: null,
               updatedAt: now,

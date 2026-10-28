@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { HttpError } from "../errors.js";
 import { HTTP_LOG_REDACT_PATHS } from "../middleware/http-log-redaction.js";
 import { errorHandler } from "../middleware/error-handler.js";
-import { testAdapterEnvironmentSchema } from "@paperclipai/shared";
+import { testAdapterEnvironmentSchema } from "@myrmidon/shared";
 import { createHttpLogger } from "../middleware/logger.js";
 
 describe("HTTP logger redaction", () => {
@@ -334,6 +334,9 @@ describe("HTTP logger redaction", () => {
     expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-openclaw-token"]');
     expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-openclaw-auth"]');
     expect(HTTP_LOG_REDACT_PATHS).toContain(
+      'req.headers["x-paperclip-github-capability"]',
+    );
+    expect(HTTP_LOG_REDACT_PATHS).toContain(
       'req.headers["x-telegram-bot-api-secret-token"]',
     );
     expect(HTTP_LOG_REDACT_PATHS).toContain("reqBody.credentials");
@@ -386,6 +389,7 @@ describe("HTTP logger redaction", () => {
               "x-paperclip-tool-gateway-token": "tool-gateway-canary-8b60",
               "x-openclaw-token": "openclaw-token-canary-3e19",
               "x-openclaw-auth": "openclaw-auth-canary-6a74",
+              "x-paperclip-github-capability": "github-capability-canary-7d25",
             },
           },
           (res) => {
@@ -406,7 +410,7 @@ describe("HTTP logger redaction", () => {
 
     const output = chunks.join("");
     expect(output).not.toMatch(
-      /auth-secret|request-secret|proxy-secret|response-secret|telegram-webhook-canary-534c28|paperclip-api-key-canary-71b3|agent-key-canary-4d0f|tenant-token-canary-9ae1|signature-canary-2c87|hub-signature-canary-5f42|tool-gateway-canary-8b60|openclaw-token-canary-3e19|openclaw-auth-canary-6a74/,
+      /auth-secret|request-secret|proxy-secret|response-secret|telegram-webhook-canary-534c28|paperclip-api-key-canary-71b3|agent-key-canary-4d0f|tenant-token-canary-9ae1|signature-canary-2c87|hub-signature-canary-5f42|tool-gateway-canary-8b60|openclaw-token-canary-3e19|openclaw-auth-canary-6a74|github-capability-canary-7d25/,
     );
 
     const log = JSON.parse(output.trim()) as {
@@ -416,6 +420,7 @@ describe("HTTP logger redaction", () => {
     expect(log.req.headers.authorization).toBe("[Redacted]");
     expect(log.req.headers.cookie).toBe("[Redacted]");
     expect(log.req.headers["set-cookie"]).toBe("[Redacted]");
+    expect(log.req.headers["x-paperclip-github-capability"]).toBe("[Redacted]");
     expect(log.req.headers["x-telegram-bot-api-secret-token"]).toBe(
       "[Redacted]",
     );

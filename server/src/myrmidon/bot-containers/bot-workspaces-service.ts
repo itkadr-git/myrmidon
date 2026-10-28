@@ -26,7 +26,7 @@ import {
   issues,
   projectWorkspaces,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   WS_BOT_DISK_SETTING_DEFAULTS,
   WS_TASK_BRANCH_PREFIX,
@@ -37,7 +37,7 @@ import {
   wsBotDiskSettingsSchema,
   type WsDesiredState,
   type WsDesiredWorkspace,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { effectivePullRequestState, readPullRequestMetadata } from "../task-pr-sync/policy.js";
 import { prStateOf, workspaceStateOf, type WorkspacePrFact } from "./workspace-state.js";
@@ -305,10 +305,12 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
             eq(activityLog.companyId, companyId),
             eq(activityLog.entityType, "issue"),
             eq(activityLog.action, "issue.updated"),
-            gt(activityLog.createdAt, since),
+            // Not bounded by `since`: an old reassigned copy would otherwise become an
+            // unknown key and stay forever (fail-closed cleanup). Bounded by count instead.
             sql`${activityLog.details}->'_previous'->>'assigneeAgentId' = ${agentId}`,
           ),
-        );
+        )
+        .limit(5000);
       const reassignedIds = reassigned.map((r) => r.entityId);
       const selected = {
         id: issues.id,

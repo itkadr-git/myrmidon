@@ -11,6 +11,7 @@ import {
   renderMetricsText,
   type MetricsSnapshot,
 } from "./metrics.js";
+import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 
 function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
   return {
@@ -53,6 +54,23 @@ describe("prometheus exposition format", () => {
     }
   });
 
+  it("renders the created and deduped continuation counters after port calls", () => {
+    continuationDedupeMetrics.reset();
+    try {
+      continuationDedupeMetrics.metrics.onContinuationCreated("created-key");
+      continuationDedupeMetrics.metrics.onContinuationCreated("another-created-key");
+      continuationDedupeMetrics.metrics.onContinuationDeduped("deduped-key");
+
+      const text = renderMetricsText(snapshot());
+      expect(text).toContain("# TYPE myrmidon_continuation_created_total counter");
+      expect(text).toContain('myrmidon_continuation_created_total{role="all"} 2');
+      expect(text).toContain("# TYPE myrmidon_continuation_deduped_total counter");
+      expect(text).toContain('myrmidon_continuation_deduped_total{role="all"} 1');
+    } finally {
+      continuationDedupeMetrics.reset();
+    }
+  });
+
   it("renders exactly one HELP and one TYPE line per family", () => {
     const text = renderMetricsText(snapshot());
     const lines = text.split("\n");
@@ -86,8 +104,9 @@ describe("prometheus exposition format", () => {
     // 9 single-sample families + 2 quantile samples + 3 role pairs = 14,
     // plus the process half (1.6.5-PROCS-Q3): 3 loop quantiles + 1 RSS +
     // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
-    // plus the utilization gauge (1.6.6 PROCS-0.1) = 25.
-    expect(sampleLines).toHaveLength(25);
+    // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
+    // continuation dedupe counters = 27.
+    expect(sampleLines).toHaveLength(27);
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{role="all",quantile="0.99"} 0.13');
@@ -134,6 +153,27 @@ describe("prometheus exposition format", () => {
     expect(text).toContain('myrmidon_board_db_queries_total{role="all",lane="heartbeat_tick"} 0');
     expect(text).toContain('myrmidon_board_lane_busy_seconds_total{role="all",lane="http_route"} 0.0345');
     expect(text).toContain('myrmidon_board_lane_busy_seconds_total{role="all",lane="heartbeat_tick"} 0');
+  });
+
+  // myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy counter renders
+  // every route x outcome, zeros included, with the process role label; without
+  // a read it keeps HELP/TYPE and no samples.
+  it("renders the singleton proxy family with every route and outcome", () => {
+    const text = renderMetricsText(
+      snapshot({
+        role: "api",
+        singletonProxy: [
+          { route: "attention", outcome: "proxied", count: 4 },
+          { route: "attention", outcome: "unavailable", count: 0 },
+        ],
+      }),
+    );
+    expect(text).toContain("# TYPE myrmidon_board_singleton_proxy_total counter");
+    expect(text).toContain('myrmidon_board_singleton_proxy_total{role="api",route="attention",outcome="proxied"} 4');
+    expect(text).toContain('myrmidon_board_singleton_proxy_total{role="api",route="attention",outcome="unavailable"} 0');
+    const bare = renderMetricsText(snapshot());
+    expect(bare).toContain("# HELP myrmidon_board_singleton_proxy_total ");
+    expect(bare).not.toContain("myrmidon_board_singleton_proxy_total{");
   });
 
   it("renders the lane families without samples when no lanes were read", () => {
@@ -189,6 +229,31 @@ describe("prometheus exposition format", () => {
     expect(idle).toContain('myrmidon_chat_ingress_total{path="direct"} 0');
   });
 
+  // myrmidon(1.6.6 TMP-HYGIENE): the run scratch janitor volume.
+  it("renders the run scratch volume, zero included, and no samples when unread", () => {
+    const read = renderMetricsText(
+      snapshot({
+        runScratch: {
+          removedDirsTotal: 2,
+          removedBytesTotal: 2048,
+          remainingDirs: 0,
+          remainingBytes: 0,
+          lastSweepAt: "2026-10-03T12:00:00.000Z",
+        },
+      }),
+    );
+    expect(read).toContain("# TYPE myrmidon_run_scratch_removed_bytes_total counter");
+    expect(read).toContain("\nmyrmidon_run_scratch_removed_dirs_total 2\n");
+    expect(read).toContain("\nmyrmidon_run_scratch_removed_bytes_total 2048\n");
+    expect(read).toContain("# TYPE myrmidon_run_scratch_remaining_bytes gauge");
+    expect(read).toContain("\nmyrmidon_run_scratch_remaining_dirs 0\n");
+    expect(read).toContain("\nmyrmidon_run_scratch_remaining_bytes 0\n");
+
+    const unread = renderMetricsText(snapshot());
+    expect(unread).toContain("# HELP myrmidon_run_scratch_remaining_bytes ");
+    expect(unread).not.toContain("\nmyrmidon_run_scratch_remaining_bytes ");
+  });
+
   it("renders the ingress family without samples when the counter was not read", () => {
     const text = renderMetricsText(snapshot());
 
@@ -230,6 +295,37 @@ describe("prometheus exposition format", () => {
     expect(text).not.toContain('myrmidon_run_duration_seconds{quantile=');
   });
 
+  // myrmidon(1.6.6-CORPUS-SHADOW A): the two shadow-leg summaries. With the
+  // flag off (the default) the collector reads no rows and the families stay
+  // sample-less; with rows in the window both quantiles render per leg.
+  it("renders corpus shadow leg quantiles with the quantile label", () => {
+    const text = renderMetricsText(
+      snapshot({
+        corpusShadowRagflowSecondsP50: 0.41,
+        corpusShadowRagflowSecondsP95: 1.93,
+        corpusShadowModuleSecondsP50: 0.07,
+        corpusShadowModuleSecondsP95: 0.25,
+      }),
+    );
+    expect(text).toContain('myrmidon_corpus_shadow_ragflow_latency_seconds{quantile="0.5"} 0.41');
+    expect(text).toContain('myrmidon_corpus_shadow_ragflow_latency_seconds{quantile="0.95"} 1.93');
+    expect(text).toContain('myrmidon_corpus_shadow_module_latency_seconds{quantile="0.5"} 0.07');
+    expect(text).toContain('myrmidon_corpus_shadow_module_latency_seconds{quantile="0.95"} 0.25');
+    expect(text).toContain("# TYPE myrmidon_corpus_shadow_ragflow_latency_seconds summary");
+    expect(text).toContain("# TYPE myrmidon_corpus_shadow_module_latency_seconds summary");
+  });
+
+  it("keeps corpus shadow families sample-less when no rows were written", () => {
+    // The snapshot fields are optional: the collector zeroes them when the
+    // table is empty, which is exactly the flag-off (byte-for-byte default)
+    // shape the exposition test feeds here by leaving them unset.
+    const text = renderMetricsText(snapshot());
+    expect(text).toContain("# TYPE myrmidon_corpus_shadow_ragflow_latency_seconds summary");
+    expect(text).not.toContain("myrmidon_corpus_shadow_ragflow_latency_seconds{");
+    expect(text).toContain("# TYPE myrmidon_corpus_shadow_module_latency_seconds summary");
+    expect(text).not.toContain("myrmidon_corpus_shadow_module_latency_seconds{");
+  });
+
   it("ends with a newline and separates families with blank lines", () => {
     const text = renderMetricsText(snapshot());
     expect(text.endsWith("\n")).toBe(true);
@@ -266,5 +362,35 @@ describe("prometheus exposition format", () => {
   it("escapeLabelValue round-trips the metacharacters", () => {
     expect(escapeLabelValue('a"b\\c\nd')).toBe('a\\"b\\\\c\\nd');
     expect(escapeLabelValue("plain")).toBe("plain");
+  });
+});
+
+// myrmidon(1.6.6 REMOTE-SITES-T4): the remote-site families.
+describe("remote site families", () => {
+  it("render reachable, last_seen, retries and moves with escaped labels", () => {
+    const text = renderMetricsText(
+      snapshot({
+        fleetSites: {
+          sites: [{ site: 'myr"vm1', reachable: 1, lastSeenSeconds: 5 }, { site: "never", reachable: 0, lastSeenSeconds: null }],
+          retriesTotal: [{ site: "myr-vm1", count: 3 }],
+          movesTotal: [{ result: "done", count: 1 }, { result: "failed", count: 0 }, { result: "unavailable", count: 2 }],
+        },
+      }),
+    );
+    expect(text).toContain("# TYPE myrmidon_fleet_site_reachable gauge");
+    expect(text).toContain('myrmidon_fleet_site_reachable{site="myr\\"vm1"} 1');
+    expect(text).toContain('myrmidon_fleet_site_reachable{site="never"} 0');
+    expect(text).toContain('myrmidon_fleet_site_last_seen_seconds{site="myr\\"vm1"} 5');
+    // A site that never answered has no last-seen sample.
+    expect(text).not.toContain('myrmidon_fleet_site_last_seen_seconds{site="never"}');
+    expect(text).toContain("# TYPE myrmidon_fleet_exec_retries_total counter");
+    expect(text).toContain('myrmidon_fleet_exec_retries_total{site="myr-vm1"} 3');
+    expect(text).toContain('myrmidon_fleet_moves_total{result="unavailable"} 2');
+  });
+
+  it("render HELP and TYPE with no samples when the source is absent", () => {
+    const text = renderMetricsText(snapshot({ fleetSites: null }));
+    expect(text).toContain("# HELP myrmidon_fleet_moves_total ");
+    expect(text).not.toContain("myrmidon_fleet_moves_total{");
   });
 });

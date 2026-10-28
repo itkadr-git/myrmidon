@@ -1,10 +1,11 @@
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
+import { blockerOpenSql } from "./blocker-resolved.js";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this pass obeys, so an operator can change the throttle and the wake
 // budget without restarting the server — a restart drops every run in flight.
-import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
+import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
@@ -48,6 +49,12 @@ export const IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV = "MYRMIDON_IDLE_PICKUP_WAKE_BU
 export const IDLE_PICKUP_WAKE_BATCH_ENV = "MYRMIDON_IDLE_PICKUP_WAKE_BATCH";
 export const IDLE_WAKE_REASON = "idle_pickup";
 export const IDLE_WAKE_IDEMPOTENCY_PREFIX = "idle_pickup";
+/**
+ * myrmidon(1.6.6 OPE-8988): how long a queued wake request without a run still
+ * counts as covering its issue — the window in which its run is being created.
+ * Past it, a request no run carries is an orphan, not work in flight.
+ */
+export const ORPHAN_WAKE_GRACE_SEC = 600;
 
 /** Default: the sweep runs on every scheduler tick (about 30 s), like the other recovery passes. */
 export const DEFAULT_IDLE_PICKUP_INTERVAL_SEC = 30;
@@ -89,6 +96,7 @@ export const IDLE_PICKUP_WAKE_WINDOW_MS = 60_000;
 
 const WAKEABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const IDLE_PICKUP_BOARD_CANCELLATION_SOURCES = new Set(["board_operator", "reassignment"]);
 
 /** Interval in seconds; invalid or too-small values fall back to the default. */
 export function readIdlePickupIntervalSec(env: NodeJS.ProcessEnv = process.env): number {
@@ -246,7 +254,9 @@ export interface IdlePickupIssueCandidate {
   id: string;
   identifier: string | null;
   priority: string | null;
+  status: string;
   blockedTransitionAt: Date | null;
+  executionState: Record<string, unknown> | null;
 }
 
 export interface IdlePickupDeps {
@@ -354,19 +364,24 @@ function issuePriorityRank(priority: string | null | undefined): number {
  * no execution hold (HOLD-READY). The remaining checks (live run, queued wake) need per-issue lookups and
  * run in the loop in `idlePickupForAgent`.
  */
-function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
+export function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
   return db
     .select({
       id: issues.id,
       identifier: issues.identifier,
       priority: issues.priority,
+      status: issues.status,
       blockedTransitionAt: issues.blockedTransitionAt,
+      executionState: issues.executionState,
     })
     .from(issues)
     .where(
       and(
         eq(issues.companyId, companyId),
         eq(issues.assigneeAgentId, agentId),
+        // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): NOT project-gated. A task already
+        // assigned to this agent (by hand or by a gated claim) stays theirs —
+        // the scope applies where a task is handed out (matcher, role queue).
         isNull(issues.assigneeUserId),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
@@ -387,7 +402,7 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status <> 'done'
+            and ${blockerOpenSql('blocker.status')}
         )`,
         // Not a container: an issue with an open child is a plan container,
         // and the children are the real work, not the parent.
@@ -482,6 +497,7 @@ export async function idlePickupForAgent(
         id: heartbeatRuns.id,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         status: heartbeatRuns.status,
+        cancellationSource: sql<string | null>`(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code')`,
         finishedAt: heartbeatRuns.finishedAt,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -497,6 +513,11 @@ export async function idlePickupForAgent(
                 and(
                   eq(heartbeatRuns.status, "succeeded"),
                   sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff.toISOString()}::timestamptz`,
+                ),
+                and(
+                  eq(heartbeatRuns.status, "cancelled"),
+                  sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff.toISOString()}::timestamptz`,
+                  sql`coalesce(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code', '') in ('board_operator', 'reassignment')`,
                 ),
               )
             : inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
@@ -514,27 +535,27 @@ export async function idlePickupForAgent(
       .filter((id): id is string => Boolean(id)),
   );
 
-  // A succeeded run that ended recently on an open issue is not idle work: the
-  // vendor's successful-run-handoff / stranded-recovery machinery owns the next
-  // step for exactly that shape (a disposition is missing, and those paths send
-  // the instructive wake). Waking it again here only races them — and in tests
-  // it turns one background run into a chain that leaks into the next suite.
-  //
-  // myrmidon(IDLE-PICKUP-QUIET): the run is not the whole story — what happened
-  // on the issue after it ended is. A success that moved nothing (no new
-  // comment, nobody asking) leaves nothing to wake for, while a success whose
-  // issue got a new comment meanwhile is work waiting for the agent. The latest
-  // success per issue decides, because its silence is the one that must hold.
-  const recentSuccessesByIssueId = new Map<string, { runId: string; endedAt: Date }>();
+  // Track the latest recent terminal run for each issue. A board/reassignment
+  // cancellation paired with review changes is ready work; other cancellations
+  // remain recent activity and must not cause a wake on every sweep.
+  const recentRunsByIssueId = new Map<
+    string,
+    { runId: string; endedAt: Date; status: string; cancellationSource: string | null }
+  >();
   for (const run of liveRuns) {
-    if (run.status !== "succeeded") continue;
+    if (run.status !== "succeeded" && run.status !== "cancelled") continue;
     const issueId = readNonEmptyString(run.contextSnapshot?.issueId);
     if (!issueId) continue;
     const endedAt = run.finishedAt ?? run.startedAt ?? run.createdAt;
     if (Date.now() - endedAt.getTime() >= recentSuccessWindowMs) continue;
-    const known = recentSuccessesByIssueId.get(issueId);
+    const known = recentRunsByIssueId.get(issueId);
     if (!known || known.endedAt.getTime() < endedAt.getTime()) {
-      recentSuccessesByIssueId.set(issueId, { runId: run.id, endedAt });
+      recentRunsByIssueId.set(issueId, {
+        runId: run.id,
+        endedAt,
+        status: run.status,
+        cancellationSource: run.cancellationSource,
+      });
     }
   }
 
@@ -566,8 +587,22 @@ export async function idlePickupForAgent(
       result.alreadyActive += 1;
       continue;
     }
-    const recentSuccess = recentSuccessesByIssueId.get(candidate.id);
-    if (recentSuccess) {
+    const recentRun = recentRunsByIssueId.get(candidate.id);
+    const executionState = candidate.executionState;
+    const reviewChangesRequested =
+      executionState !== null &&
+      typeof executionState === "object" &&
+      executionState.status === "changes_requested";
+    const boardCancelledLatestRun =
+      recentRun?.status === "cancelled" &&
+      IDLE_PICKUP_BOARD_CANCELLATION_SOURCES.has(recentRun.cancellationSource ?? "");
+    const readyFromReviewCancellation =
+      candidate.status === "in_progress" && boardCancelledLatestRun && reviewChangesRequested;
+    const shouldSuppressRecentRun =
+      recentRun?.status === "succeeded" ||
+      (recentRun?.status === "cancelled" && !readyFromReviewCancellation);
+
+    if (recentRun && shouldSuppressRecentRun) {
       // The issue just had a successful run without a disposition; the
       // successful-run-handoff / stranded-recovery paths own that next step.
       //
@@ -578,8 +613,8 @@ export async function idlePickupForAgent(
       const spokenSinceRun = await issueHasInboundActivitySince(deps.db, {
         companyId: agent.companyId,
         issueId: candidate.id,
-        since: recentSuccess.endedAt,
-        excludeRunId: recentSuccess.runId,
+        since: recentRun.endedAt,
+        excludeRunId: recentRun.runId,
       });
       if (!spokenSinceRun) {
         result.alreadyActive += 1;
@@ -745,6 +780,40 @@ async function hasCoveringWake(
         ]),
         sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
         wakeNotParkedOnExecutionHold(),
+        // myrmidon(1.6.6 OPE-8988): a queued/claimed request covers the issue
+        // only while it is real work in flight — a live run carries it, or it
+        // is a just-queued request whose run is still being created. On prod
+        // 147 queued and 438 claimed requests had no live run at all (the
+        // oldest from August): each one covered its issue forever, so idle
+        // pickup counted the agent "already active" and never woke it.
+        sql`(
+          (
+            -- myrmidon(1.6.6 OPE-8988): a deferred wake waits for the issue's
+            -- execution lock to clear; it covers the issue only while that lock
+            -- is still held, or briefly while the promotion after release is in
+            -- flight. A deferred wake whose lock is long gone was never promoted
+            -- (OPE-8268) and covered its issue forever (prod 24.10: 10 such, the
+            -- oldest a day old). Parked holds (executionWait) are excluded above.
+            ${agentWakeupRequests.status} = 'deferred_issue_execution'
+            and (
+              exists (
+                select 1 from ${issues} li
+                where li.id::text = ${agentWakeupRequests.payload} ->> 'issueId'
+                  and (li.execution_run_id is not null or li.checkout_run_id is not null)
+              )
+              or ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+            )
+          )
+          or exists (
+            select 1 from ${heartbeatRuns} hr
+            where hr.wakeup_request_id = ${agentWakeupRequests.id}
+              and hr.status in ('queued', 'running', 'scheduled_retry')
+          )
+          or (
+            ${agentWakeupRequests.status} = 'queued'
+            and ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+          )
+        )`,
       ),
     )
     .limit(1)

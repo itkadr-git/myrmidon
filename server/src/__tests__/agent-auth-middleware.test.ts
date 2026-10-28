@@ -8,7 +8,7 @@ import {
   agents,
   boardApiKeys,
   heartbeatRuns,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
@@ -226,6 +226,36 @@ describe("agent auth middleware", () => {
       .post("/mcp/gateways/not-a-public-id")
       .set("Authorization", "Bearer pcgw_runtime_token")
       .send({ jsonrpc: "2.0", id: 1, method: "initialize" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("Agent token did not verify");
+  });
+
+  it.each(["/api/myrmidon/monitoring/alerts/webhook", "/api/myrmidon/monitoring/alerts/webhook?source=zabbix"]) (
+    "leaves monitoring webhook bearers for the route handler (%s)",
+    async (path) => {
+      const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+      const app = createApp(db, "authenticated");
+      app.post("/api/myrmidon/monitoring/alerts/webhook", (req, res) => {
+        res.json({ authorization: req.header("authorization") });
+      });
+
+      const res = await request(app).post(path).set("Authorization", "Bearer monitoring-webhook-token");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ authorization: "Bearer monitoring-webhook-token" });
+    },
+  );
+
+  it.each([
+    "/api/myrmidon/monitoring/alerts/webhook/extra",
+    "/api/myrmidon/monitoring/alerts/webhok",
+  ])("does not bypass actor authentication for lookalike monitoring webhook paths (%s)", async (path) => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db, "local_trusted");
+    app.post("/api/myrmidon/monitoring/alerts/webhook/*splat", (_req, res) => res.json({ reached: true }));
+
+    const res = await request(app).post(path).set("Authorization", "Bearer monitoring-webhook-token");
 
     expect(res.status).toBe(401);
     expect(res.body.error).toContain("Agent token did not verify");

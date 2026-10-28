@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import { createHash, randomUUID } from "node:crypto";
+import { pluginOperationIssueOriginKind } from "@myrmidon/shared";
 import type {
   PaperclipPluginManifestV1,
   PluginCapability,
@@ -22,7 +22,7 @@ import type {
   Agent,
   Goal,
   Approval,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type {
   EventFilter,
   PluginContext,
@@ -46,6 +46,7 @@ import type {
   PrincipalType,
 } from "./types.js";
 import { NOOP_PLUGIN_TRACER } from "./types.js";
+import type { WorkerToHostMethods } from "./protocol.js";
 import type {
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
@@ -1849,6 +1850,22 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           originalFilename: attachment.originalFilename ?? null,
           contentBase64,
         };
+      },
+      async uploadAttachment(input: WorkerToHostMethods["issues.uploadAttachment"][0]): Promise<WorkerToHostMethods["issues.uploadAttachment"][1]> {
+        requireCapability(manifest, capabilitySet, "issue.attachments.write");
+        if (!isInCompany(issues.get(input.issueId), input.companyId)) throw new Error(`Issue not found: ${input.issueId}`);
+        const bytes = Buffer.from(input.contentBase64, "base64");
+        if (!bytes.length || bytes.length > 10 * 1024 * 1024 || bytes.toString("base64") !== input.contentBase64 || !["application/pdf", "application/json", "text/plain", "text/markdown", "text/csv", "image/png", "image/jpeg"].includes(input.contentType)) throw new Error("Attachment must use an allowed type and valid base64 within 10 MiB");
+        const attachment: IssueAttachment = {
+          id: randomUUID(), issueId: input.issueId, companyId: input.companyId, contentType: input.contentType,
+          byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"),
+          originalFilename: input.filename, createdAt: new Date(),
+        } as IssueAttachment;
+        const list = issueAttachments.get(input.issueId) ?? [];
+        list.push(attachment);
+        issueAttachments.set(input.issueId, list);
+        attachmentContentById.set(attachment.id, bytes.toString("base64"));
+        return attachment;
       },
       documents: {
         async list(issueId, companyId) {

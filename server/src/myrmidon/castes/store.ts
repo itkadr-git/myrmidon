@@ -15,8 +15,8 @@
 // the same 12 rows.
 
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { BUILTIN_CASTE_SEED, BUILTIN_CASTE_SEED_DEFAULT_KEY } from "@paperclipai/shared";
-import { agentCastes, type Db } from "@paperclipai/db";
+import { BUILTIN_CASTE_SEED, BUILTIN_CASTE_SEED_DEFAULT_KEY } from "@myrmidon/shared";
+import { agentCastes, type Db } from "@myrmidon/db";
 import { conflict, notFound } from "../../errors.js";
 
 export type CasteRow = typeof agentCastes.$inferSelect;
@@ -177,6 +177,7 @@ export function createCasteStore(deps: CasteStoreDeps) {
             defaultModel: null,
             swarmEligible: true,
             maxActiveTasks: null,
+            sensitive: seed.sensitive,
             builtIn: true,
             // The seed flags ONE template caste as the company default, so a
             // fresh company always resolves a caste (design.md §7.1 п.4). The

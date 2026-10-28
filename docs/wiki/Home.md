@@ -22,10 +22,17 @@ needs one. It is an independent product maintained as a fork of
   enforcement, prompt-cost advice, run admission limits.
 - [Knowledge and learning](Knowledge-and-learning) — regulations, foraging
   from approved sources, reference-task evals, quality baselines.
+- [POST-TASK-REFLECT design](../myrmidon/design/post-task-reflect.md)
+  ([Russian](../myrmidon/design/post-task-reflect.ru.md)) — the proposal for
+  capturing reusable role lessons after task outcomes.
 - [Autonomy and guardrails](Safety-and-guardrails) — the role × action
   matrix, injection flagging, emergency stop.
 - [Connectors and tools](Connectors-and-tools) — the browser bridge, MCP
   connectors, cloud storage and Microsoft 365, media and OCR, GitHub.
+
+## Corpus
+
+- [Corpus server integration](../myrmidon/changes/ope-7844-corpus-integration.md) — configuration and end-to-end verification.
 
 ## Getting started
 
@@ -44,6 +51,9 @@ needs one. It is an independent product maintained as a fork of
   with a maintenance window, for experienced administrators.
 - [Operations and maintenance](Server-maintenance) — backups, disk,
   monitoring, maintenance windows and automatic rollback.
+- [Remote execution sites](Remote-execution-sites) — running bot
+  containers on dedicated remote hosts behind `fleetd`: the site-agent
+  API, health states and the rollout runbook.
 
 ## Releases
 

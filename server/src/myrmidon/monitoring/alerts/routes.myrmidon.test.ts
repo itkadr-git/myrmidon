@@ -5,7 +5,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../../middleware/index.js";
 import { monitoringAlertsRoutes } from "./routes.js";
 import type { IssuePorts } from "./service.js";

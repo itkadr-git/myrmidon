@@ -1,45 +1,49 @@
 import { Database, Gauge, ReceiptText } from "lucide-react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "@/i18n";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 
-const SURFACES = [
+const K = "area.costs-budgets-1.accounting-model-card";
+
+const surfaces = (t: TFunction) => [
   {
-    title: "Inference ledger",
-    description: "Request-scoped usage and billed runs from cost_events.",
+    title: t(`${K}.inference.title`),
+    description: t(`${K}.inference.description`),
     icon: Database,
-    points: ["tokens + billed dollars", "provider, biller, model", "subscription and overage aware"],
+    points: [t(`${K}.inference.point1`), t(`${K}.inference.point2`), t(`${K}.inference.point3`)],
     tone: "from-sky-500/12 via-sky-500/6 to-transparent",
   },
   {
-    title: "Finance ledger",
-    description: "Account-level charges that are not one prompt-response pair.",
+    title: t(`${K}.finance.title`),
+    description: t(`${K}.finance.description`),
     icon: ReceiptText,
-    points: ["top-ups, refunds, fees", "Bedrock provisioned or training charges", "credit expiries and adjustments"],
+    points: [t(`${K}.finance.point1`), t(`${K}.finance.point2`), t(`${K}.finance.point3`)],
     tone: "from-amber-500/14 via-amber-500/6 to-transparent",
   },
   {
-    title: "Live quotas",
-    description: "Provider or biller windows that can stop traffic in real time.",
+    title: t(`${K}.quotas.title`),
+    description: t(`${K}.quotas.description`),
     icon: Gauge,
-    points: ["provider quota windows", "biller credit systems", "errors surfaced directly"],
+    points: [t(`${K}.quotas.point1`), t(`${K}.quotas.point2`), t(`${K}.quotas.point3`)],
     tone: "from-emerald-500/14 via-emerald-500/6 to-transparent",
   },
 ] as const;
 
 export function AccountingModelCard() {
+  const { t } = useTranslation();
   return (
     <Card className="relative overflow-hidden border-border/70">
       <div className="absolute inset-0 bg-(image:--gradient-extract-3)" />
       <CardHeader className="relative px-5 pt-5 pb-2">
         <CardTitle className="text-sm font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-          Accounting model
+          {t("area.costs-budgets-1.accounting-model-card.title")}
         </CardTitle>
         <CardDescription className="max-w-2xl text-sm leading-6">
-          Myrmidon now separates request-level inference usage from account-level finance events.
-          That keeps provider reporting honest when the biller is OpenRouter, Cloudflare, Bedrock, or another intermediary.
+          {t("area.costs-budgets-1.accounting-model-card.description")}
         </CardDescription>
       </CardHeader>
       <CardContent className="relative grid gap-3 px-5 pb-5 md:grid-cols-3">
-        {SURFACES.map((surface) => {
+        {surfaces(t).map((surface) => {
           const Icon = surface.icon;
           return (
             <div

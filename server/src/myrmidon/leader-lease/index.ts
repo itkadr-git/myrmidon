@@ -26,7 +26,7 @@
 // (an activity-log entry the attention feed surfaces) and publishes
 // `leader_changed` (§5.4.4).
 
-import { activityLog, boardProcesses, type Db } from "@paperclipai/db";
+import { activityLog, boardProcesses, type Db } from "@myrmidon/db";
 import { lt } from "drizzle-orm";
 import {
   leaderLeaseService,
@@ -36,6 +36,7 @@ import {
 } from "../../services/leader-lease.js";
 import { publishGlobalLiveEvent } from "../../services/live-events.js";
 import { resolveBoardProcessIdentity } from "../process-registry/domain.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 
 const STALE_PROCESS_AGE_MS = 120_000;
@@ -294,7 +295,7 @@ export function createLeaderLeaseManager(
       started = true;
       const tick = () => void readSetting().then(applySetting);
       tick();
-      settingsTimer = setInterval(tick, SETTINGS_POLL_MS);
+      settingsTimer = backgroundInterval(tick, SETTINGS_POLL_MS);
       if (typeof settingsTimer.unref === "function") settingsTimer.unref();
     },
     isLeader(name) {

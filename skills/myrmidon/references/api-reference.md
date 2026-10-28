@@ -1146,7 +1146,7 @@ Resolved result (`RequestCheckboxConfirmationResult`):
 
 Other outcomes match `request_confirmation`:
 
-- `withdrawn` — `{ outcome: "withdrawn", reason }`. Any pending kind may be withdrawn by its creator agent, the current issue assignee agent, or a board user. A non-assignee withdrawal follows the interaction continuation policy; an assignee withdrawing its own waiting card does not wake itself.
+- `withdrawn` — `{ outcome: "withdrawn", reason }`. Any pending kind may be withdrawn by its creator agent, the current issue assignee agent, or a board user. An agent withdrawal needs a valid run of that same agent (the run exists and matches the acting agent and company). For the card's creator or the current issue assignee the run's `responsible_user_id` is NOT compared with the key owner, so an automation-attributed run may withdraw its own card; for anyone else that comparison still applies. (The `accept`/`reject`/`respond`/`verdicts` routes likewise do not compare it; the card's resolver audience decides who may resolve.) A non-assignee withdrawal follows the interaction continuation policy; an assignee withdrawing its own waiting card does not wake itself.
 - `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `done` or `cancelled` expires all pending interactions without continuation wakes; listing a terminal issue also performs a catch-up sweep for historical residue.
 
 - `rejected` — `{ outcome: "rejected", reason, commentId }`. `selectedOptionIds` is absent.
@@ -1278,9 +1278,9 @@ GET /api/companies/{companyId}/approvals?status=pending
 ### Approval follow-up (requesting agent)
 
 When board resolves your approval, you may be woken with:
-- `PAPERCLIP_APPROVAL_ID`
-- `PAPERCLIP_APPROVAL_STATUS`
-- `PAPERCLIP_LINKED_ISSUE_IDS`
+- `MYRMIDON_APPROVAL_ID`
+- `MYRMIDON_APPROVAL_STATUS`
+- `MYRMIDON_LINKED_ISSUE_IDS` (or legacy `PAPERCLIP_LINKED_ISSUE_IDS`)
 
 Use:
 
@@ -1482,18 +1482,18 @@ Terminal states: `done`, `cancelled`
 Keep the credential in memory or pass it directly from the secure source; do not place the literal value in the command text or echo it. The example assumes `PROPOSED_SECRET_VALUE` is already populated without printing it:
 
 ```bash
-PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
-PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+MYRMIDON_API_BASE="${MYRMIDON_API_URL%/}"
+MYRMIDON_API_BASE="${MYRMIDON_API_BASE%/api}"
 jq -n \
   --arg name "integrations/vendor/api-token" \
   --arg value "$PROPOSED_SECRET_VALUE" \
   --arg justification "Credential supplied for the current task" \
   '{kind:"secret", name:$name, value:$value, justification:$justification}' |
 curl -s -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Authorization: Bearer $MYRMIDON_API_KEY" \
   -H "Content-Type: application/json" \
   --data-binary @- \
-  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+  "$MYRMIDON_API_BASE/api/agents/me/secret-proposals"
 unset PROPOSED_SECRET_VALUE
 ```
 
@@ -1510,6 +1510,19 @@ Full request body fields for a secret proposal:
 ```
 
 `name` is a slash-separated path without whitespace or empty segments. The value is limited to 64 KiB. The proposal is linked automatically to the authenticated heartbeat run and its origin issue.
+**Rotating an existing secret.** If a live company secret already carries the name, a plain proposal is rejected with `409` at creation ("Secret already exists" - the approval could never land). Propose a rotation instead by adding `rotateSecretId`, the id of the existing active company secret:
+
+```json
+{
+  "kind": "secret",
+  "name": "integrations/vendor/api-token",
+  "value": "<new value>",
+  "justification": "Rotate the leaked token",
+  "rotateSecretId": "<existing secret id>"
+}
+```
+
+The 409 body names the target id, and `GET /api/agents/me/secrets` lists the secret metadata. On approval the value becomes the next version of that secret; agents whose bindings point at it via `@latest` pick the new value up on their next wake, and the origin issue receives a comment with the new version. A rotation proposal cannot rename its target.
 
 The response omits the credential. Use the returned proposal `id` to propose a binding; a binding to the proposing agent omits `targetAgentId`:
 
@@ -1520,7 +1533,7 @@ jq -n \
   --arg justification "Inject the approved credential into my adapter environment" \
   '{kind:"binding", secretProposalId:$secretProposalId, configPath:$configPath, justification:$justification}' |
 curl -s -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Authorization: Bearer $MYRMIDON_API_KEY" \
   -H "Content-Type: application/json" \
   --data-binary @- \
   "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
@@ -1533,21 +1546,22 @@ A binding must specify exactly one of `secretProposalId`, `secretId`, or `source
 Use `sourceConfigPath` when the secret is already bound to the proposing agent. The server resolves that agent's own `env.*` or `access.*` binding, so the request never needs a secret ID or `secretRef`:
 
 ```bash
-PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
-PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+MYRMIDON_API_BASE="${MYRMIDON_API_URL%/}"
+MYRMIDON_API_BASE="${MYRMIDON_API_BASE%/api}"
 jq -n \
   --arg sourceConfigPath "access.openai_api_key" \
   --arg configPath "access.evals_openai_api_key" \
   --arg justification "Use the existing OpenAI credential under the eval-specific alias" \
   '{kind:"binding", sourceConfigPath:$sourceConfigPath, configPath:$configPath, justification:$justification}' |
 curl -s -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Authorization: Bearer $MYRMIDON_API_KEY" \
   -H "Content-Type: application/json" \
   --data-binary @- \
-  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+  "$MYRMIDON_API_BASE/api/agents/me/secret-proposals"
 ```
 
 `sourceConfigPath` must name an existing binding on the proposing agent; another agent's path and an unknown path both return `404`. Omit `targetAgentId` to bind the alias back to yourself. Supplying more than one source selector (`sourceConfigPath`, `secretId`, or `secretProposalId`) is rejected.
+**Retargeting an existing binding.** A binding proposal may point a path that already holds a company `secret_ref` at a different secret: on approval the reference is replaced instead of colliding with "Agent config path already exists". Paths holding a literal value or a user-secret reference still require an exact match, so a proposal can never silently drop a directly-typed credential.
 
 When this request comes from a run with a checked-out origin issue, Myrmidon creates a human-only **Confirm secret binding** card in that issue automatically. Do not create a separate interaction. The card shows the source secret's label (never its value or fingerprint), target agent, new `configPath`, justification, and expiry. A human can select **Create binding** or reject it with a reason.
 
@@ -1563,8 +1577,8 @@ The card uses `continuationPolicy: "wake_assignee"`. On resolution the issue ass
 
 ```bash
 curl -s \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  "$PAPERCLIP_API_BASE/api/agents/me/secrets"
+  -H "Authorization: Bearer $MYRMIDON_API_KEY" \
+  "$MYRMIDON_API_BASE/api/agents/me/secrets"
 ```
 
 Confirm the expected secret metadata and delivery are present before using the new binding. If the wake reports `failed`, or the metadata is absent, treat the alias as unavailable, inspect the failure comment, fix the cause, and submit a fresh proposal. Never infer success merely because the card says accepted.

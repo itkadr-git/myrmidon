@@ -2,9 +2,10 @@
 // agent card. "All" is the explicit default (the behaviour before this existed);
 // "Listed" is an allow-list of tool names and connection ids, one per line.
 import { useEffect, useState } from "react";
-import { readAgentToolPermissions } from "@paperclipai/shared";
+import { readAgentToolPermissions } from "@myrmidon/shared";
 import type { AgentPermissionUpdate } from "@/api/agents";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 
 function toLines(values: string[]): string {
   return values.join("\n");
@@ -26,6 +27,7 @@ export function AgentToolAccessSection({
   pending: boolean;
   onSave: (update: AgentPermissionUpdate) => void;
 }) {
+  const { t } = useTranslation();
   const stored = readAgentToolPermissions(permissions);
   const [mode, setMode] = useState(stored.mode);
   const [tools, setTools] = useState(toLines(stored.tools));
@@ -42,10 +44,9 @@ export function AgentToolAccessSection({
   return (
     <div className="space-y-3 text-sm" data-testid="agent-tool-access">
       <div className="space-y-1">
-        <div>Tool and connection access</div>
+        <div>{t("area.settings-agent-card.agent-tool-access-section.title")}</div>
         <p className="text-xs text-muted-foreground">
-          All: the agent reaches every tool it could before (default). Listed: only the tools and
-          connections named below; any other call is refused and recorded in the activity log.
+          {t("area.settings-agent-card.agent-tool-access-section.description")}
         </p>
       </div>
       <div className="flex gap-2">
@@ -57,14 +58,14 @@ export function AgentToolAccessSection({
             disabled={pending}
             onClick={() => setMode(value)}
           >
-            {value === "all" ? "All" : "Listed"}
+            {value === "all" ? t("area.settings-agent-card.agent-tool-access-section.modeAll") : t("area.settings-agent-card.agent-tool-access-section.modeListed")}
           </Button>
         ))}
       </div>
       {listed ? (
         <div className="grid gap-3 md:grid-cols-2">
           <label className="space-y-1 text-xs">
-            <span>Allowed tools (one per line)</span>
+            <span>{t("area.settings-agent-card.agent-tool-access-section.toolsLabel")}</span>
             <textarea
               className="w-full min-h-24 rounded-md border border-border bg-transparent p-2 font-mono text-xs"
               value={tools}
@@ -73,7 +74,7 @@ export function AgentToolAccessSection({
             />
           </label>
           <label className="space-y-1 text-xs">
-            <span>Allowed connections (one per line)</span>
+            <span>{t("area.settings-agent-card.agent-tool-access-section.connectionsLabel")}</span>
             <textarea
               className="w-full min-h-24 rounded-md border border-border bg-transparent p-2 font-mono text-xs"
               value={connections}
@@ -96,7 +97,7 @@ export function AgentToolAccessSection({
           })
         }
       >
-        Save tool access
+        {t("area.settings-agent-card.agent-tool-access-section.save")}
       </Button>
     </div>
   );

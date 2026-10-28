@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   activityLog,
   agentRuntimeState,
@@ -14,13 +17,14 @@ import {
   instanceSettings,
   issueRecoveryActions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { heartbeatService } from "../../services/heartbeat.js";
 import { LEGACY_RECOVERY_CAUSE } from "../../services/legacy-execution-recovery.js";
+import { applyRunAdmissionLimits, currentRunAdmissionLimits, resetSharedRunAdmissionForTests } from "../run-admission.js";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "./domain.js";
 import { resetMaintenanceGateCaches } from "./gate.js";
 import { maintenanceHeartbeatPort } from "./index.js";
@@ -30,12 +34,34 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 const ADMIN = { actorType: "user", actorId: "admin-user" };
-const SLOW = "setTimeout(() => process.exit(0), 20000)";
+// Stay alive until the heartbeat cancellation path sends SIGTERM; this makes
+// the maintenance test's lifecycle boundary explicit instead of wall-clock based.
+// The child writes a marker file once its SIGTERM handler is installed: a run
+// row reads `running` before the process exists, so only the marker proves the
+// process is really up and will react to the interrupt.
+const SLOW = "<slow>";
+const slowScript = (marker: string) =>
+  `process.on('SIGTERM', () => process.exit(0)); require('node:fs').writeFileSync(${JSON.stringify(marker)}, '1'); setInterval(() => {}, 1000)`;
 const FAST = "process.exit(0)";
 
 describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const markerDir = mkdtempSync(path.join(tmpdir(), "maintenance-interrupt-ready-"));
+
+  beforeEach(() => {
+    applyRunAdmissionLimits({
+      ...currentRunAdmissionLimits(),
+      maxConcurrentRuns: 5,
+      maxStartsPerMinute: null,
+      minFreeMemoryMb: null,
+      minFreeHostMemoryMb: null,
+      maxHostLoadPercentPerCore: null,
+      maxHostCpuBusyPercent: null,
+      maxHostCpuPsiSomeAvg10: null,
+      maxPerAgentStartSharePercent: 100,
+    });
+  });
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-maintenance-interrupt-");
@@ -68,11 +94,15 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
   });
 
   afterAll(async () => {
+    resetSharedRunAdmissionForTests();
+    rmSync(markerDir, { recursive: true, force: true });
     await tempDb?.cleanup();
   });
 
   /** An agent working on an assigned issue, its run already started. */
-  async function seedIssueRun(script: string) {
+  async function seedIssueRun(requested: string, start = true) {
+    const marker = path.join(markerDir, `${randomUUID()}.ready`);
+    const script = requested === SLOW ? slowScript(marker) : requested;
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -118,8 +148,13 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
         contextSnapshot: { issueId, wakeReason: "issue_assigned" },
       })
       .returning();
-    await heartbeatService(db).resumeQueuedRuns();
-    return { companyId, agentId, issueId, runId: run!.id };
+    if (start) await heartbeatService(db).resumeQueuedRuns();
+    return { companyId, agentId, issueId, runId: run!.id, marker };
+  }
+
+  /** The run row is `running` and its child process has installed its handler. */
+  async function isReady(seed: { runId: string; marker: string }) {
+    return (await run(seed.runId)).status === "running" && existsSync(seed.marker);
   }
 
   async function waitFor(check: () => Promise<boolean>, timeoutMs = 15_000) {
@@ -139,20 +174,47 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
     return rows.filter((r) => r.cause === LEGACY_RECOVERY_CAUSE);
   }
 
-  it("interrupts at the drain timeout without a reconciliation hold and retries after exit", async () => {
-    const { agentId, issueId, runId } = await seedIssueRun(SLOW);
-    await waitFor(async () => (await run(runId)).status === "running");
-
+  it("does not claim a queued run after maintenance starts", async () => {
+    const { runId } = await seedIssueRun(FAST, false);
     const svc = maintenanceService(db, { heartbeat: maintenanceHeartbeatPort(heartbeatService(db)) });
     await svc.enter(
       { scope: { type: "instance" }, reason: "deploy", drainTimeoutSec: 0, onTimeout: "interrupt_and_retry" },
       ADMIN,
     );
+
+    await heartbeatService(db).resumeQueuedRuns();
+    expect((await run(runId)).status).toBe("queued");
+    expect((await svc.status()).instance).toMatchObject({ runningRuns: 0, queuedRuns: 1 });
+  }, 30_000);
+
+  it("interrupts at the drain timeout without a reconciliation hold and retries after exit", async () => {
+    const seed = await seedIssueRun(SLOW);
+    const { agentId, issueId, runId } = seed;
+    await waitFor(() => isReady(seed), 30_000);
+
+    // Keep enter's initial tick inside the grace window. A zero deadline lets
+    // enter race the explicit drain tick below before the child lifecycle is
+    // fully observable; advancing the injected clock makes the boundary
+    // explicit and leaves one owner for the interrupt transition.
+    let clock = Date.now();
+    const svc = maintenanceService(db, {
+      heartbeat: maintenanceHeartbeatPort(heartbeatService(db)),
+      now: () => new Date(clock),
+    });
+    await svc.enter(
+      { scope: { type: "instance" }, reason: "deploy", drainTimeoutSec: 1, onTimeout: "interrupt_and_retry" },
+      ADMIN,
+    );
+    clock += 1_000;
     await svc.tick();
 
     const interrupted = await run(runId);
     expect(interrupted).toMatchObject({ status: "cancelled", errorCode: MAINTENANCE_INTERRUPT_ERROR_CODE });
     expect(await holds(issueId)).toEqual([]);
+    // Cancellation updates the row before the adapter child fully tears down;
+    // wait for that lifecycle barrier, then let the window observe it.
+    await heartbeatService(db).drainActiveRunExecutions();
+    await svc.tick();
     const window = (await svc.status()).instance!;
     expect(window).toMatchObject({ state: "on", interruptedRuns: 1, runningRuns: 0 });
 
@@ -188,7 +250,7 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
     const seeds: Awaited<ReturnType<typeof seedIssueRun>>[] = [];
     for (let i = 0; i < 5; i += 1) seeds.push(await seedIssueRun(SLOW));
     await waitFor(
-      async () => (await Promise.all(seeds.map((s) => run(s.runId)))).every((r) => r.status === "running"),
+      async () => (await Promise.all(seeds.map((s) => isReady(s)))).every(Boolean),
       30_000,
     );
 
@@ -218,6 +280,11 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
     for (let pass = 0; pass < 10 && (await svc.status()).instance?.runningRuns; pass += 1) {
       await svc.tick();
     }
+    // Cancellation updates the row before the adapter child fully tears down.
+    // Wait for that shared lifecycle barrier, then let the window reconcile the
+    // completed interrupts before asserting its state.
+    await heartbeatService(db).drainActiveRunExecutions();
+    await svc.tick();
     expect((await svc.status()).instance).toMatchObject({ interruptedRuns: 5, runningRuns: 0 });
 
     for (const seed of seeds) {
@@ -276,8 +343,9 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
   }, 30_000);
 
   it("keeps the vendor hold for a manual cancel of a started run", async () => {
-    const { issueId, runId } = await seedIssueRun(SLOW);
-    await waitFor(async () => (await run(runId)).status === "running");
+    const seed = await seedIssueRun(SLOW);
+    const { issueId, runId } = seed;
+    await waitFor(() => isReady(seed), 30_000);
     await heartbeatService(db).cancelRun(runId, "Cancelled by operator");
     await heartbeatService(db).drainActiveRunExecutions();
     const cancelled = await run(runId);

@@ -35,7 +35,7 @@ import plugin, {
   __getDaytonaWritableDirsForTest,
   __setDaytonaPluginContextForTest,
 } from "./plugin.js";
-import type { PluginContext } from "@paperclipai/plugin-sdk";
+import type { PluginContext } from "@myrmidon/plugin-sdk";
 import manifest from "./manifest.js";
 import { parseTarVerboseListingLine, splitLinkEntryOnce } from "./file-sync.js";
 

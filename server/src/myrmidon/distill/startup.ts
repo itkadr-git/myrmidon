@@ -7,7 +7,7 @@
 // a daily rhythm by default — so the tick arms on `intervalSec` and the very
 // first pass waits for the interval rather than firing at boot.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { createKnowledgeModule } from "../knowledge/service.js";
@@ -16,6 +16,7 @@ import { runDistillPass } from "./service.js";
 import { resolveDistillSettings } from "./settings.js";
 import { listCompanyIds } from "./raw.js";
 import { secretService } from "../../services/secrets.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 const log = logger.child({ module: "knowledge-distill" });
 
@@ -63,7 +64,7 @@ export function startDistillSweep(db: Db, options: DistillSweepOptions = {}): ()
       // A changed interval re-arms the timer on the next tick.
       if (timer && (timer as unknown as { _idleTimeout?: number })._idleTimeout !== resolved.intervalMs) {
         clearInterval(timer);
-        timer = setInterval(() => void tick(), resolved.intervalMs);
+        timer = backgroundInterval(() => void tick(), resolved.intervalMs);
         if (typeof timer.unref === "function") timer.unref();
       }
       const companyIds = await listCompanyIds(db);
@@ -90,7 +91,7 @@ export function startDistillSweep(db: Db, options: DistillSweepOptions = {}): ()
 
   const arm = (intervalMs: number) => {
     if (timer) clearInterval(timer);
-    timer = setInterval(() => void tick(), intervalMs);
+    timer = backgroundInterval(() => void tick(), intervalMs);
     if (typeof timer.unref === "function") timer.unref();
   };
 

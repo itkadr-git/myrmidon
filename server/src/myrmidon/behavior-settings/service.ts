@@ -17,13 +17,16 @@
 // runs through one queue (see `withBehaviorSettingsTransition`), exactly as the
 // runtime-limits transition does.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
+  behaviorSettingRegistry,
   resolveBehaviorSettings,
   mergeBehaviorSettings,
   type BehaviorSettingsPatch,
   type ResolvedBehaviorSettings,
-} from "@paperclipai/shared";
+  type SettingScope,
+} from "@myrmidon/shared";
+import { badRequest } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import {
@@ -144,6 +147,7 @@ export function behaviorSettingsService(
 
     updateInstance: async (patch, actor) =>
       withBehaviorSettingsTransition(async () => {
+        validatePatchValues(patch, "instance");
         const before = await deps.instanceSettings.readInstance();
         const previous = resolveBehaviorSettings({ stored: before, env });
 
@@ -184,6 +188,7 @@ export function behaviorSettingsService(
 
     updateCompany: async (companyId, patch, actor) =>
       withBehaviorSettingsTransition(async () => {
+        validatePatchValues(patch, "company");
         const before = await deps.instanceSettings.readCompany(companyId);
         const previous = resolveBehaviorSettings({ stored: before, env });
 
@@ -217,6 +222,23 @@ export function behaviorSettingsService(
         return resolveBehaviorSettings({ stored: next, env });
       }),
   };
+}
+
+function validatePatchValues(patch: BehaviorSettingsPatch, expectedScope: SettingScope): void {
+  for (const [key, value] of Object.entries(patch)) {
+    const def = behaviorSettingRegistry.get(key);
+    if (!def) {
+      throw badRequest(`Unknown setting key: '${key}'`);
+    }
+    if (def.scope !== expectedScope) {
+      throw badRequest(
+        `Setting '${key}' has scope '${def.scope}', expected '${expectedScope}'`,
+      );
+    }
+    if (value !== undefined && def.validate(value) === null) {
+      throw badRequest(`Invalid value for setting '${key}'`);
+    }
+  }
 }
 
 function changedSettingKeys(

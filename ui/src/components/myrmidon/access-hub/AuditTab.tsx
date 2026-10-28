@@ -1,4 +1,5 @@
 import { ScrollText } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import { EmptyState } from "@/components/EmptyState";
 import {
   DEFAULT_AUDIT_LIMIT,
@@ -20,6 +21,7 @@ export interface AuditTabViewProps {
  * it. Journal lines carry names and versions — never values.
  */
 export function AuditTabView({ entries, limit = DEFAULT_AUDIT_LIMIT, loading = false, error = null }: AuditTabViewProps) {
+  const { t } = useTranslation();
   const visible = latestAuditEntries(entries, limit);
 
   if (error) {
@@ -34,7 +36,7 @@ export function AuditTabView({ entries, limit = DEFAULT_AUDIT_LIMIT, loading = f
     return (
       <EmptyState
         icon={ScrollText}
-        message="Nothing in the journal yet. Creating, granting, rotating and deploying accesses all land here."
+        message={t("area.access-hub.audit-tab.emptyMessage")}
       />
     );
   }
@@ -44,12 +46,12 @@ export function AuditTabView({ entries, limit = DEFAULT_AUDIT_LIMIT, loading = f
       <table className="w-full border-collapse text-sm">
         <thead>
           <tr className="border-b border-border/60 text-left text-xs text-muted-foreground">
-            <th scope="col" className="py-2 pr-3 font-medium">When</th>
-            <th scope="col" className="py-2 pr-3 font-medium">Actor</th>
-            <th scope="col" className="py-2 pr-3 font-medium">Action</th>
-            <th scope="col" className="py-2 pr-3 font-medium">Access</th>
-            <th scope="col" className="py-2 pr-3 font-medium">Target</th>
-            <th scope="col" className="py-2 pr-3 font-medium">Version</th>
+            <th scope="col" className="py-2 pr-3 font-medium">{t("area.access-hub.audit-tab.columns.when")}</th>
+            <th scope="col" className="py-2 pr-3 font-medium">{t("area.access-hub.audit-tab.columns.actor")}</th>
+            <th scope="col" className="py-2 pr-3 font-medium">{t("area.access-hub.audit-tab.columns.action")}</th>
+            <th scope="col" className="py-2 pr-3 font-medium">{t("area.access-hub.audit-tab.columns.access")}</th>
+            <th scope="col" className="py-2 pr-3 font-medium">{t("area.access-hub.audit-tab.columns.target")}</th>
+            <th scope="col" className="py-2 pr-3 font-medium">{t("area.access-hub.audit-tab.columns.version")}</th>
           </tr>
         </thead>
         <tbody>

@@ -1,4 +1,5 @@
 // myrmidon(UPSTREAM-13539): resolved interaction cards project into the comment queue (wait/steer/interrupt).
+import { isBlockerResolved } from "../myrmidon/blocker-resolved.js";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
@@ -20,7 +21,7 @@ import {
   REASSIGN_UNBLOCK_NOTE,
   type HumanUnblockResult,
 } from "../myrmidon/settled-holds/human-unblock.js";
-import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
+import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@myrmidon/shared";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -48,10 +49,12 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { withDefaultEscalationChain } from "../services/review-escalation-chain.js";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import {
+  companies,
   activityLog,
   agentWakeupRequests,
   agents,
@@ -70,6 +73,7 @@ import {
   issueRelations,
   issueRecoveryActions,
   issueThreadInteractions,
+  labels,
   issues as issueRows,
   issueWorkProducts,
   pipelineCaseIssueLinks,
@@ -77,8 +81,9 @@ import {
   pipelineStages,
   pipelines,
   projectWorkspaces,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
+import { normalizeLabels, requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -167,8 +172,8 @@ import {
   issueWriteDenialResponse,
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
-} from "@paperclipai/shared";
-import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
+} from "@myrmidon/shared";
+import { trackAgentTaskCompleted } from "@myrmidon/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
@@ -182,8 +187,8 @@ import {
   agentService,
   budgetService,
   companySkillService,
-  companyService,
   companySearchService,
+  companyService,
   executionWorkspaceService,
   enrichWorkProductMetadataWithDiff,
   goalService,
@@ -337,6 +342,7 @@ import { parseIssueExecutionWorkspaceSettings } from "../services/execution-work
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
+  buildLowTrustQuarantineNotice,
   isLowTrustQuarantined,
   redactQuarantinedBodyForHigherTrust,
   resolveActorSourceTrustForIssue,
@@ -406,13 +412,31 @@ import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
+// myrmidon(HANDOFF-CAS): guarded agent-to-agent task handoff mechanics for the
+// PATCH /api/issues/{id} path, ported from vendor paperclipai/paperclip#13686.
+import * as handoffCas from "../myrmidon/handoff-cas.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+// Statuses in which a non-engineer may hold a code issue (review, finished).
+const ENGINEER_GATE_EXEMPT_STATUSES = new Set(["in_review", "done", "cancelled"]);
 // myrmidon(STALE-BLOCK): updateIssueSchema now carries a superRefine; zod
 // requires .safeExtend() on refined objects. interrupt was already optional
 // in the shared schema, so the refine is preserved via superRefine here.
 const updateIssueRouteSchema = updateIssueSchema.safeExtend({
   interrupt: z.boolean().optional(),
+  // myrmidon(HANDOFF-CAS): guarded agent-to-agent handoff through the general
+  // PATCH path. When `expectedAssigneeAgentId`/`expectedStatusVersion` are
+  // present and the update changes the assignee, the handoff runs as
+  // compare-and-set: the compare and the commit happen under the row lock, the
+  // old owner's live run must be confirmed stopped before the commit, the
+  // commit writes a `issue.reassigned` receipt, and a failed commit after a
+  // confirmed stop wakes the previous owner back. Requests without these
+  // fields keep the previous behavior. `reason`/`handoffIdempotencyKey` are
+  // only consumed on a guarded handoff and never reach the column patch.
+  expectedAssigneeAgentId: z.string().trim().min(1).nullable().optional(),
+  expectedStatusVersion: z.number().int().nonnegative().optional(),
+  reason: z.string().trim().min(1).max(2000).optional(),
+  handoffIdempotencyKey: z.string().trim().min(1).max(200).optional(),
 });
 const queuedCommentMutationTargetSchema = z.object({
   queueId: z.string().min(1),
@@ -1359,7 +1383,9 @@ function buildIssueBlockerDiagnosticsResponse(input: {
         ...blocker,
         isUnresolved,
         isPendingFinalize,
-        isDependencyReady: blocker.status === "done" && !isPendingFinalize,
+        isDependencyReady:
+          isBlockerResolved(blocker.status) &&
+          !isPendingFinalize,
         flags,
       };
     },
@@ -1434,15 +1460,8 @@ function buildIssueBlockerDiagnosis(input: {
     )} to finish workspace finalization.`;
   }
 
-  const cancelled = input.blockers.find(
-    (blocker) => blocker.status === "cancelled",
-  );
-  if (cancelled) {
-    return `${blockerDiagnosticLabel(input.issue)} is blocked by ${blockerDiagnosticLabel(
-      cancelled,
-    )}, which is cancelled; cancelled blockers do not resolve until the blocker relation is removed or replaced.`;
-  }
-
+  // A cancelled blocker counts as resolved (OPE-8904): it is reported as the
+  // `cancelled_blocker_in_set` flag only and never as the reason for waiting.
   const unresolved = input.blockers.find((blocker) => blocker.isUnresolved);
   if (unresolved) {
     return `${blockerDiagnosticLabel(input.issue)} is blocked by ${blockerDiagnosticLabel(
@@ -1469,19 +1488,68 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES = new Set([
   "automation",
 ]);
 
+// Every wake reason the engine and its enqueue sites write. The projection
+// masks anything else as "other" (issue-wake-diagnostic-reasons-guard.test.ts
+// fails when a writer starts enqueuing a reason that is missing here).
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
-  "issue_assigned",
-  "issue_blockers_resolved",
-  "issue_commented",
-  "issue_comment_mentioned",
-  "issue_dependencies_blocked",
-  "issue_tree_hold_active",
-  "missing_issue_comment",
-  "process_lost_retry",
-  "run_liveness_continuation",
+  "agent.not_invokable",
+  "approval_approved",
+  "budget.blocked",
+  "company.inactive",
+  "email_received",
+  "execution_reconciliation_required",
+  "execution_review_participant_recovery",
+  "execution_review_requested",
+  "finish_successful_run_handoff",
+  "goal_control",
   "heartbeat.disabled",
+  "heartbeat.scheduling_suppressed",
+  "heartbeat.timer.cached_identical_prompt",
   "heartbeat.timer.no_actionable_work",
   "heartbeat.wakeOnDemand.disabled",
+  "heartbeat.worktree_execution_cutoff",
+  "heartbeat_timer",
+  "idle_pickup",
+  "interaction_pending",
+  "issue_assigned",
+  "issue_blockers_resolved",
+  "issue_checked_out",
+  "issue_comment_mentioned",
+  "issue_commented",
+  "issue_dependencies_blocked",
+  "issue_disposition_repair",
+  "issue_execution_deferred",
+  "issue_execution_hold_confirmed",
+  "issue_execution_issue_not_found",
+  "issue_execution_promoted",
+  "issue_execution_same_name",
+  "issue_monitor_recovery",
+  "issue_monitor_recovery_issue",
+  "issue_reassignment_rollback",
+  "issue_recovery_action_restored",
+  "issue_review_path_lost",
+  "issue_rewake_throttled",
+  "issue_state_guard_mismatch",
+  "issue_tree_hold_active",
+  "issue_tree_restored",
+  "issue_tree_resumed",
+  "issue_unblock_requested",
+  "missing_issue_comment",
+  "native_safe_replacement",
+  "pause_resume",
+  "process_lost_retry",
+  "project.token_quota_exceeded",
+  "provider_quota_recovery",
+  "resurrection_execution_reconciliation_required",
+  "retry_failed_run",
+  "run_liveness_continuation",
+  "run_stalled",
+  "skill_test_run_created",
+  "swarm_claim_queue",
+  "task_watchdog_stopped_subtree",
+  "wake_skipped_pr_settle_pending",
+  "worktree_execution_cutoff",
+  "workspace_worktree_requires_project",
 ]);
 
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_STATUSES = new Set([
@@ -1717,15 +1785,6 @@ function buildIssueWakeDiagnosis(input: {
     return `No wake row exists for ${blockerDiagnosticLabel(input.issue)} in the bounded window. ${blockerDiagnosticLabel(
       input.issue,
     )} is waiting for ${blockerDiagnosticLabel(pendingFinalize)} to finish workspace finalization, so issue_blockers_resolved has not fired.`;
-  }
-
-  const cancelled = blockerDiagnostics.blockers.find(
-    (blocker) => blocker.status === "cancelled",
-  );
-  if (cancelled) {
-    return `No wake row exists for ${blockerDiagnosticLabel(input.issue)} in the bounded window. ${blockerDiagnosticLabel(
-      input.issue,
-    )} is blocked by ${blockerDiagnosticLabel(cancelled)}, which is cancelled; cancelled blockers do not fire issue_blockers_resolved.`;
   }
 
   const unresolved = blockerDiagnostics.blockers.find(
@@ -3661,6 +3720,69 @@ export function issueRoutes(
   const documentAnnotationsSvc = documentAnnotationService(db);
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
+  // Gate for code issues (OPE-7776, Q1): an agent that is not an engineer cannot
+  // take an issue that requires one. Humans are never refused, and neither are
+  // issues in review or finished (a reviewer/manager legitimately holds those).
+  // The database-derived signals are fail-open and logged: an unreadable
+  // signal must not turn into a new silent stall (S2 recovery is the backstop).
+  async function assertEngineerForCodeIssue(input: {
+    companyId: string;
+    issue: (typeof issueRows.$inferSelect & { labels?: unknown }) | null;
+    status: string | null | undefined;
+    assigneeAgentId: string | null | undefined;
+    projectId: string | null | undefined;
+    labelIds?: readonly string[];
+    casteKey?: string | null;
+    harnessKind?: string | null;
+    executionWorkspacePreference?: string | null;
+  }): Promise<void> {
+    if (!input.assigneeAgentId) return;
+    if (input.status && ENGINEER_GATE_EXEMPT_STATUSES.has(input.status)) return;
+    const agent = await agentsSvc.getById(input.assigneeAgentId);
+    if (agent?.role === "engineer") return;
+    let issueLabelNames = normalizeLabels(input.issue?.labels);
+    let casteKey = input.casteKey ?? null;
+    let projectDefaultCasteKey: string | null = null;
+    try {
+      if (input.labelIds !== undefined) {
+        issueLabelNames = input.labelIds.length === 0
+          ? []
+          : await db
+              .select({ name: labels.name })
+              .from(labels)
+              .where(and(eq(labels.companyId, input.companyId), inArray(labels.id, [...input.labelIds])))
+              .then((rows) => rows.map((row) => row.name));
+      }
+      // Only explicit signals count: the issue's own caste, else its project's
+      // default. The company-wide default caste (seeded as engineer) is NOT a
+      // signal, otherwise every plain issue would look like a code issue.
+      if (!casteKey) casteKey = input.issue?.casteKey ?? null;
+      if (!casteKey && input.projectId) {
+        projectDefaultCasteKey = (await projectsSvc.getById(input.projectId))?.defaultCasteKey ?? null;
+      }
+    } catch (err) {
+      logger.warn(
+        { err, companyId: input.companyId, issueId: input.issue?.id ?? null },
+        "engineer gate: signal lookup failed, treating signal as absent (fail-open)",
+      );
+    }
+    if (
+      requiresEngineer({
+        labels: issueLabelNames,
+        casteKey,
+        projectDefaultCasteKey,
+        harnessKind: input.harnessKind ?? input.issue?.harnessKind ?? null,
+        executionWorkspacePreference:
+          input.executionWorkspacePreference ?? input.issue?.executionWorkspacePreference ?? null,
+      })
+    ) {
+      throw unprocessable("This issue requires an engineer", {
+        code: "issue_requires_engineer",
+        issueId: input.issue?.id ?? null,
+        assigneeAgentId: input.assigneeAgentId,
+      });
+    }
+  }
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
   const questionResponseDeliveries = questionResponseDeliveryService(db, {
     heartbeat,
@@ -3980,10 +4102,30 @@ export function issueRoutes(
       companyId: string;
       projectId?: string | null;
       executionPolicy?: unknown;
+      responsibleUserId?: string | null;
     },
     actor: ReturnType<typeof getActorInfo>,
+    requirePromotionOwner = false,
   ) {
-    return resolveActorSourceTrustForIssue({ db, issue, actor });
+    const company = await companiesSvc.getById(issue.companyId);
+    const promotionOwnerUserId =
+      issue.responsibleUserId ??
+      (actor.actorType === "user" ? actor.actorId : null) ??
+      company?.defaultResponsibleUserId ??
+      null;
+    const sourceTrust = await resolveActorSourceTrustForIssue({
+      db,
+      issue: { ...issue, responsibleUserId: promotionOwnerUserId },
+      actor,
+      requirePromotionOwner,
+    });
+    if (!sourceTrust || sourceTrust.disposition !== "quarantined") {
+      return sourceTrust;
+    }
+    if (requirePromotionOwner && !promotionOwnerUserId) {
+      throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+    }
+    return { ...sourceTrust, promotionOwnerUserId };
   }
 
   async function assertCrossIssueInfluenceWithinRunCap(
@@ -9740,7 +9882,8 @@ export function issueRoutes(
               lockedIssue.executionPolicy ?? null,
             );
             const transition = applyIssueExecutionPolicyTransition({
-              issue: lockedIssue,
+              // myrmidon(OPE-9031): senior escalation chain for the round limit.
+              issue: await withDefaultEscalationChain(tx as unknown as Db, lockedIssue, executionPolicy),
               policy: executionPolicy,
               previousPolicy: executionPolicy,
               requestedStatus: sourceIssueStatus,
@@ -9753,6 +9896,45 @@ export function issueRoutes(
               commentBody: resolutionNote ?? null,
             });
             Object.assign(updateFields, transition.patch);
+            if (transition.recoveryInteraction) {
+              await issueThreadInteractionService(tx as unknown as Db).create(
+                lockedIssue,
+                {
+                  kind: "ask_user_questions",
+                  idempotencyKey: transition.recoveryInteraction.idempotencyKey,
+                  resolverPolicy: "human_only",
+                  addresseeUserId: lockedIssue.responsibleUserId ?? lockedIssue.createdByUserId ?? null,
+                  continuationPolicy: "none",
+                  sourceRunId: actor.runId ?? undefined,
+                  title: transition.recoveryInteraction.title,
+                  summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
+                  payload: {
+                    version: 1,
+                    title: transition.recoveryInteraction.title,
+                    submitLabel: "Acknowledge recovery",
+                    questions: [{
+                      id: "recovery_acknowledged",
+                      prompt: `${transition.recoveryInteraction.summary} Please acknowledge ownership by ${transition.recoveryInteraction.queue}.`,
+                      selectionMode: "single",
+                      options: [{ id: "acknowledged", label: "Acknowledged" }],
+                    }],
+                  },
+                },
+                {
+                  identityContextId: req.actor.identityContextId,
+                  agentId: actor.agentId,
+                  userId: actor.actorType === "user" ? actor.actorId : null,
+                },
+              );
+            }
+            if (transition.escalationMetric) {
+              getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+                issue_id: lockedIssue.id,
+                policy_revision:
+                  executionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+                target_type: "user",
+              });
+            }
             if (transition.decision) {
               const decisionId = randomUUID();
               const nextExecutionState = updateFields.executionState;
@@ -9918,6 +10100,7 @@ export function issueRoutes(
             source: "automation",
             triggerDetail: "system",
             reason: "issue_recovery_action_restored",
+            idempotencyKey: `recovery_resolved:${result.recoveryAction.id}`,
             payload: {
               issueId: result.issue.id,
               recoveryActionId: result.recoveryAction.id,
@@ -10637,7 +10820,7 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
-      const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+      const sourceTrust = await sourceTrustForActorWrite(issue, actor, true);
       const referenceSummaryBefore =
         await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const result = await documentsSvc.upsertIssueDocument({
@@ -11447,7 +11630,8 @@ export function issueRoutes(
       )
         return;
       const actor = getActorInfo(req);
-      if (await sourceTrustForActorWrite(issue, actor)) {
+      const issueSourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor });
+      if (issueSourceTrust) {
         res.status(403).json({
           error: "Low-trust actors cannot promote quarantined output",
         });
@@ -11468,7 +11652,6 @@ export function issueRoutes(
         });
         return;
       }
-
       const promotedAt = new Date();
       const promotionTrust = buildPromotedSourceTrust({
         sourceIssueId: issue.id,
@@ -11477,6 +11660,7 @@ export function issueRoutes(
         promotedByActorType: actor.actorType,
         promotedByActorId: actor.actorId,
         promotedAt,
+        promotionOwnerUserId: sourceTrust.promotionOwnerUserId,
       });
       const product = await db.transaction(async (tx) => {
         const markPromoted = {
@@ -11651,7 +11835,7 @@ export function issueRoutes(
           return;
         }
       }
-      const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+      const sourceTrust = await sourceTrustForActorWrite(issue, actor, true);
       const product = await workProductsSvc.update(id, {
         ...patch,
         ...(sourceTrust ? { sourceTrust } : {}),
@@ -12196,6 +12380,20 @@ export function issueRoutes(
           rawCreateBody.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
+      await assertEngineerForCodeIssue({
+        companyId,
+        issue: null,
+        status: typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo",
+        assigneeAgentId: normalizedAssigneeAgentId,
+        projectId: typeof rawCreateBody.projectId === "string" ? rawCreateBody.projectId : null,
+        labelIds: Array.isArray(rawCreateBody.labelIds) ? (rawCreateBody.labelIds as string[]) : undefined,
+        casteKey: typeof rawCreateBody.casteKey === "string" ? rawCreateBody.casteKey : null,
+        harnessKind: typeof rawCreateBody.harnessKind === "string" ? rawCreateBody.harnessKind : null,
+        executionWorkspacePreference:
+          typeof rawCreateBody.executionWorkspacePreference === "string"
+            ? rawCreateBody.executionWorkspacePreference
+            : null,
+      });
       await assertNoAgentDelegationCycle({
         actorType: req.actor.type,
         parentIssueId:
@@ -12313,15 +12511,26 @@ export function issueRoutes(
         Boolean(executionPolicy?.monitor),
       );
       const issueId = randomUUID();
+      const company = await companiesSvc.getById(companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : null) ??
+        company?.defaultResponsibleUserId ??
+        null;
       const sourceTrust = await sourceTrustForActorWrite(
         {
           id: issueId,
           companyId,
           projectId: createBody.projectId ?? null,
           executionPolicy,
+          responsibleUserId: promotionOwnerUserId,
         },
         actor,
+        true,
       );
+      if (sourceTrust?.disposition === "quarantined" && !promotionOwnerUserId) {
+        throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+      }
       let deduplicationReason: "idempotency_key" | "recent_open_title" | null =
         null;
       const createInput = {
@@ -12335,7 +12544,8 @@ export function issueRoutes(
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         actorRunId: actor.runId,
-        actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        actorResponsibleUserId:
+          authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
         trustExplicitResponsibleUserId: actor.actorType === "user",
         watchdogActorRunId: actor.runId,
         onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
@@ -12662,20 +12872,29 @@ export function issueRoutes(
         Boolean(executionPolicy?.monitor),
       );
       const issueId = randomUUID();
+      const company = await companiesSvc.getById(parent.companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : parent.responsibleUserId) ??
+        company?.defaultResponsibleUserId ??
+        null;
       const sourceTrust = await sourceTrustForActorWrite(
         {
           id: issueId,
           companyId: parent.companyId,
           projectId: createBody.projectId ?? parent.projectId ?? null,
           executionPolicy,
+          responsibleUserId: promotionOwnerUserId,
         },
         actor,
+        true,
       );
       const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
         ...createBody,
         ...(taskBridgeOriginForActor(req) ?? {}),
         id: issueId,
         executionPolicy,
+        ...(sourceTrust ? { sourceTrust } : {}),
         ...(currentSerializedChild
           ? {
               status: "blocked",
@@ -12685,11 +12904,11 @@ export function issueRoutes(
               ),
             }
           : {}),
-        ...(sourceTrust ? { sourceTrust } : {}),
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         actorRunId: actor.runId,
-        actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        actorResponsibleUserId:
+          authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
         trustExplicitResponsibleUserId: actor.actorType === "user",
         actorAgentId: actor.agentId,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -12872,6 +13091,13 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
+      const company = await companiesSvc.getById(sourceIssue.companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : null) ??
+        sourceIssue.responsibleUserId ??
+        company?.defaultResponsibleUserId ??
+        null;
       const normalizedChildren = [];
       for (const child of requestedChildren) {
         const executionPolicy = applyActorMonitorScheduledBy(
@@ -12892,9 +13118,14 @@ export function issueRoutes(
             companyId: sourceIssue.companyId,
             projectId: child.projectId ?? sourceIssue.projectId ?? null,
             executionPolicy,
+            responsibleUserId: promotionOwnerUserId,
           },
           actor,
+          true,
         );
+        if (sourceTrust?.disposition === "quarantined" && !promotionOwnerUserId) {
+          throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+        }
         normalizedChildren.push({
           ...child,
           id: childIssueId,
@@ -12903,7 +13134,8 @@ export function issueRoutes(
           createdByAgentId: actor.agentId,
           createdByUserId: actor.actorType === "user" ? actor.actorId : null,
           actorRunId: actor.runId,
-          actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+          actorResponsibleUserId:
+            authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
           trustExplicitResponsibleUserId: actor.actorType === "user",
           actorAgentId: actor.agentId,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -13321,6 +13553,32 @@ export function issueRoutes(
           req.body.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
+      const requestedAssigneeAgentId =
+        normalizedAssigneeAgentId === undefined
+          ? existing.assigneeAgentId
+          : normalizedAssigneeAgentId;
+      // Only a change of assignee is gated. A non-engineer who already holds the
+      // issue must still be able to move it (blocked, in_progress, todo, labels):
+      // refusing that would be a new silent stall (fail-open, Q1).
+      if (
+        normalizedAssigneeAgentId !== undefined &&
+        normalizedAssigneeAgentId !== existing.assigneeAgentId
+      ) {
+        await assertEngineerForCodeIssue({
+          companyId: existing.companyId,
+          issue: existing,
+          status: typeof req.body.status === "string" ? req.body.status : existing.status,
+          assigneeAgentId: requestedAssigneeAgentId,
+          projectId: existing.projectId,
+          labelIds: Array.isArray(req.body.labelIds) ? (req.body.labelIds as string[]) : undefined,
+          casteKey: typeof req.body.casteKey === "string" ? req.body.casteKey : null,
+          harnessKind: typeof req.body.harnessKind === "string" ? req.body.harnessKind : null,
+          executionWorkspacePreference:
+            typeof req.body.executionWorkspacePreference === "string"
+              ? req.body.executionWorkspacePreference
+              : null,
+        });
+      }
       const titleOrDescriptionChanged =
         req.body.title !== undefined || req.body.description !== undefined;
       const existingRelations = Array.isArray(req.body.blockedByIssueIds)
@@ -13339,6 +13597,13 @@ export function issueRoutes(
         hiddenAt: hiddenAtRaw,
         blockerMetadata: blockerMetadataRaw,
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
+        // myrmidon(HANDOFF-CAS): the guarded-handoff inputs are consumed by
+        // the route only — destructuring them out here keeps them from
+        // riding `...updateFields` into the service column patch.
+        expectedAssigneeAgentId: handoffExpectedAssigneeAgentId,
+        expectedStatusVersion: handoffExpectedStatusVersion,
+        reason: handoffReason,
+        handoffIdempotencyKey: handoffIdempotencyKeyRaw,
         ...updateFields
       } = req.body;
       if (existing.conversationAgentId && req.actor.type === "board" && commentBody) {
@@ -13430,10 +13695,6 @@ export function issueRoutes(
         existing.companyId,
         updateFields.executionWorkspaceSettings?.environmentId,
       );
-      const requestedAssigneeAgentId =
-        normalizedAssigneeAgentId === undefined
-          ? existing.assigneeAgentId
-          : normalizedAssigneeAgentId;
       const explicitMoveToTodoRequested =
         reopenRequested || resumeRequested === true;
       const recoveryRelevantSourceMutationRequested =
@@ -13668,21 +13929,52 @@ export function issueRoutes(
         req.body.executionPolicy !== undefined && monitorChanged,
       );
 
+      const transitionIssue: IssueRouteSnapshot & {
+        assigneeAgentRole?: string | null;
+        executionReviewParticipantAgentIds?: string[];
+        defaultEscalationAgentIds?: string[];
+      } = { ...existing };
+      Object.assign(
+        transitionIssue,
+        await withDefaultEscalationChain(db, existing, nextExecutionPolicy),
+      );
+      const reviewParticipantAgentIds = nextExecutionPolicy
+        ? summarizeExecutionParticipants(nextExecutionPolicy, "review").flatMap(
+            (participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
+          )
+        : [];
+      transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
+      // Role is only needed when the issue enters or leaves review (return-assignee choice); skip the lookup otherwise.
+      if (
+        nextExecutionPolicy === null &&
+        existing.assigneeAgentId &&
+        (existing.status === "in_review" || updateFields.status === "in_review")
+      ) {
+        transitionIssue.assigneeAgentRole =
+          (await agentsSvc.getById(existing.assigneeAgentId))?.role ?? null;
+      }
+      const explicitAssigneePatch = {
+        // Use the resolved agent id: req.body may carry a shortname that
+        // normalizeIssueAssigneeAgentReference already resolved above.
+        assigneeAgentId:
+          req.body.assigneeAgentId === undefined
+            ? undefined
+            : (normalizedAssigneeAgentId ?? null),
+        assigneeUserId:
+          req.body.assigneeUserId === undefined
+            ? undefined
+            : (updateFields.assigneeUserId as string | null),
+      };
       const transition = applyIssueExecutionPolicyTransition({
-        issue: existing,
+        // myrmidon(OPE-9031): senior escalation chain for the round limit.
+        issue: transitionIssue,
         policy: nextExecutionPolicy,
         previousPolicy: previousExecutionPolicy,
         requestedStatus:
           typeof updateFields.status === "string"
             ? updateFields.status
             : undefined,
-        requestedAssigneePatch: {
-          assigneeAgentId: normalizedAssigneeAgentId,
-          assigneeUserId:
-            req.body.assigneeUserId === undefined
-              ? undefined
-              : (req.body.assigneeUserId as string | null),
-        },
+        requestedAssigneePatch: explicitAssigneePatch,
         actor: {
           agentId: actor.agentId ?? null,
           userId: actor.actorType === "user" ? actor.actorId : null,
@@ -13693,6 +13985,11 @@ export function issueRoutes(
         monitorExplicitlyUpdated:
           req.body.executionPolicy !== undefined && monitorChanged,
       });
+      // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
+      const monitorClearNotice = transition.patch.monitorClearNotice as
+        | { reason?: string | null; notes?: string | null }
+        | undefined;
+      delete transition.patch.monitorClearNotice;
       const decisionId = transition.decision ? randomUUID() : null;
       if (decisionId) {
         const nextExecutionState = transition.patch.executionState;
@@ -13707,6 +14004,44 @@ export function issueRoutes(
         };
       }
       Object.assign(updateFields, transition.patch);
+      if (transition.recoveryInteraction) {
+        await issueThreadInteractionService(db).create(
+          existing,
+          {
+            kind: "ask_user_questions",
+            idempotencyKey: transition.recoveryInteraction.idempotencyKey,
+            resolverPolicy: "human_only",
+            addresseeUserId: existing.responsibleUserId ?? existing.createdByUserId ?? null,
+            continuationPolicy: "none",
+            title: transition.recoveryInteraction.title,
+            summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
+            payload: {
+              version: 1,
+              title: transition.recoveryInteraction.title,
+              submitLabel: "Acknowledge recovery",
+              questions: [{
+                id: "recovery_acknowledged",
+                prompt: `${transition.recoveryInteraction.summary} Please acknowledge ownership by ${transition.recoveryInteraction.queue}.`,
+                selectionMode: "single",
+                options: [{ id: "acknowledged", label: "Acknowledged" }],
+              }],
+            },
+          },
+          {
+            identityContextId: req.actor.identityContextId,
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+        );
+      }
+      if (transition.escalationMetric) {
+        getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+          issue_id: existing.id,
+          policy_revision:
+            nextExecutionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+          target_type: "user",
+        });
+      }
 
       const nextStatus = updateFields.status ?? existing.status;
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
@@ -13990,17 +14325,272 @@ export function issueRoutes(
       const persistReviewActivityTransactionally =
         enteringReviewRequested || Boolean(reviewInteractionId);
 
-      const nextAssigneeAgentId =
-        updateFields.assigneeAgentId === undefined
-          ? existing.assigneeAgentId
-          : (updateFields.assigneeAgentId as string | null);
-      const nextAssigneeUserId =
+      const requestedAssigneeUserId =
         updateFields.assigneeUserId === undefined
           ? existing.assigneeUserId
           : (updateFields.assigneeUserId as string | null);
+      const nextAssigneeAgentId = requestedAssigneeAgentId;
+      const nextAssigneeUserId = requestedAssigneeUserId;
       const assigneeWillChange =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
         nextAssigneeUserId !== existing.assigneeUserId;
+
+      // myrmidon(HANDOFF-CAS): guarded agent-to-agent handoff, ported from
+      // vendor paperclipai/paperclip#13686. Activates only when the request
+      // carries CAS expectations AND changes the assignee; requests without
+      // the fields keep the previous behavior.
+      const handoffCasRequested =
+        handoffExpectedAssigneeAgentId !== undefined ||
+        handoffExpectedStatusVersion !== undefined;
+      if (
+        handoffCasRequested &&
+        (handoffExpectedAssigneeAgentId === undefined ||
+          handoffExpectedStatusVersion === undefined)
+      ) {
+        throw unprocessable(
+          "A guarded handoff requires both expectedAssigneeAgentId and expectedStatusVersion",
+        );
+      }
+      const handoffGuarded = handoffCasRequested && assigneeWillChange;
+      if (handoffGuarded && deferWakeForGoal === true) {
+        throw unprocessable(
+          "A guarded handoff cannot defer the new owner's wake",
+        );
+      }
+      const handoffCommandId = handoffIdempotencyKeyRaw ?? randomUUID();
+      const handoffExpected = {
+        expectedAssigneeAgentId: handoffExpectedAssigneeAgentId!,
+        expectedStatusVersion: handoffExpectedStatusVersion!,
+      };
+      const handoffFingerprint = handoffCasRequested
+        ? handoffCas.buildHandoffFingerprint({
+            issueId: id,
+            expectedAssigneeAgentId: handoffExpected.expectedAssigneeAgentId,
+            expectedStatusVersion: handoffExpected.expectedStatusVersion,
+            nextAssigneeAgentId,
+            nextAssigneeUserId,
+            reason: handoffReason ?? null,
+          })
+        : "";
+      // Idempotency pre-check outside the lock (no new index or migration —
+      // the query rides the existing company/activity columns, template L4).
+      // It runs before the assignee-change requirement so that a resend of a
+      // completed handoff — whose assignee change no longer applies — still
+      // answers with the stored duplicate receipt instead of mutating or
+      // erroring. A different fingerprint under the same command id is a
+      // conflict.
+      if (handoffCasRequested) {
+        const priorReceipt = await handoffCas.findHandoffReceiptByCommand(db, {
+          companyId: existing.companyId,
+          issueId: id,
+          commandId: handoffCommandId,
+        });
+        if (priorReceipt) {
+          if (priorReceipt.fingerprint !== handoffFingerprint) {
+            throw conflict(
+              "The handoff command id was already used with a different payload",
+              { code: "idempotency_conflict", commandId: handoffCommandId },
+            );
+          }
+          res.status(200).json({
+            id: existing.id,
+            identifier: existing.identifier,
+            changes: {},
+            comment: null,
+            handoffReceipt: { ...priorReceipt, disposition: "duplicate" },
+          });
+          return;
+        }
+        if (!assigneeWillChange) {
+          throw unprocessable(
+            "A guarded handoff requires an assignee change",
+          );
+        }
+      }
+      const handoffNewOwnerWakeKey = handoffGuarded
+        ? handoffCas.handoffNewOwnerWakeKey(handoffCommandId, id)
+        : "";
+      const handoffRollbackWakeKey = handoffGuarded
+        ? handoffCas.handoffRollbackWakeKey(handoffCommandId, id)
+        : "";
+      let handoffStopConfirmed =
+        handoffGuarded && existing.assigneeAgentId === null;
+      let handoffRunStopped = false;
+      let handoffRollbackAttempted = false;
+      let handoffCommitted = false;
+      // Set inside the transaction body, but only trusted once the transaction
+      // has returned: a later throw in the body rolls the whole commit back.
+      let handoffReceiptWrittenInTx = false;
+      let handoffStateRevision: number | null = null;
+      let handoffRevisionInTx: number | null = null;
+      let handoffLockedRow: handoffCas.HandoffLockedRow | null = null;
+      const handoffActorType =
+        req.actor.type === "board"
+          ? ("board" as const)
+          : (actor.actorType as "user" | "agent" | "system");
+      const recordHandoffDisposition = (
+        disposition: handoffCas.HandoffReceiptDetails["disposition"],
+        stateRevision: number,
+        extra?: Partial<handoffCas.HandoffReceiptDetails>,
+      ) =>
+        handoffCas.insertHandoffReceipt(db, {
+          companyId: existing.companyId,
+          issueId: id,
+          actorType: handoffActorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId ?? null,
+          runId: actor.runId ?? null,
+          agentApiKeyId: actor.agentApiKeyId ?? null,
+          details: {
+            commandId: handoffCommandId,
+            fingerprint: handoffFingerprint,
+            disposition,
+            stateRevision,
+            scheduledWakeKeys: [],
+            expectedAssigneeAgentId: handoffExpected.expectedAssigneeAgentId,
+            expectedStatusVersion: handoffExpected.expectedStatusVersion,
+            fromAssigneeAgentId: existing.assigneeAgentId,
+            toAssigneeAgentId: nextAssigneeAgentId,
+            reason: handoffReason ?? null,
+            interruptedRunId: null,
+            ...extra,
+          },
+        });
+      // myrmidon(HANDOFF-CAS): guarded rollback — when the previous owner's
+      // run was already stopped under confirmation but the commit phase
+      // failed (thrown error or a rolled-back null result), the previous
+      // owner gets a guarded wake back so their work resumes, and the
+      // rollback lands as an `issue.reassigned` receipt with disposition
+      // `rollback`. Restore errors are aggregated into the receipt and
+      // logged loudly — never swallowed into the original rejection.
+      const runHandoffRollbackIfNeeded = async () => {
+        // Roll back only when the previous owner's live run was actually
+        // stopped under confirmation and the commit did not land. A failure
+        // before the stop (CAS mismatch, validation) leaves the old owner
+        // running — nothing to restore.
+        if (!handoffGuarded || !handoffRunStopped || handoffCommitted) return;
+        if (handoffRollbackAttempted) return;
+        handoffRollbackAttempted = true;
+        const rollbackErrors: string[] = [];
+        const previousOwnerAgentId = existing.assigneeAgentId;
+        if (previousOwnerAgentId) {
+          try {
+            await heartbeat.wakeup(previousOwnerAgentId, {
+              source: "assignment",
+              triggerDetail: "system",
+              reason: "issue_reassignment_rollback",
+              idempotencyKey: handoffRollbackWakeKey,
+              payload: {
+                issueId: id,
+                mutation: "update",
+                handoffRollback: true,
+                handoffCommandId,
+              },
+              requestedByActorType:
+                handoffActorType === "board" ? "system" : handoffActorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: id,
+                taskId: id,
+                source: "issue.handoff.rollback",
+                handoffRollback: true,
+                // Vendor restoreInterruptedWork guards: previous owner still
+                // holds the issue, status is todo/in_progress, previous
+                // executionRunId unchanged, no pending execution stage. The
+                // rolled-back commit left the version where it was.
+                expectedExecutionRunId: existing.executionRunId ?? null,
+              },
+              issueStateGuard: {
+                statuses: ["todo", "in_progress"],
+                assigneeAgentId: previousOwnerAgentId,
+                statusVersion: existing.statusVersion,
+              },
+            });
+          } catch (rollbackErr) {
+            rollbackErrors.push(
+              rollbackErr instanceof Error
+                ? rollbackErr.message
+                : String(rollbackErr),
+            );
+          }
+        }
+        try {
+          await recordHandoffDisposition(
+            "rollback",
+            existing.statusVersion,
+            {
+              interruptedRunId: interruptedRunId ?? null,
+              ...(rollbackErrors.length > 0
+                ? { rollbackError: rollbackErrors.join("; ") }
+                : {}),
+            },
+          );
+        } catch (receiptErr) {
+          logger.error(
+            { err: receiptErr, issueId: id, commandId: handoffCommandId },
+            "handoff rollback receipt failed to persist",
+          );
+        }
+        if (rollbackErrors.length > 0) {
+          logger.error(
+            { issueId: id, commandId: handoffCommandId, rollbackErrors },
+            "handoff rollback wake could not be delivered; the previous owner needs recovery",
+          );
+        }
+      };
+
+      if (handoffGuarded) {
+        // Forbidden handoff states (vendor parity): a handoff may not strand
+        // a review, a closed issue, a conversation issue, or an issue with a
+        // pending execution stage.
+        const forbiddenReason = handoffCas.handoffForbiddenStateReason({
+          status: existing.status,
+          conversationAgentId: existing.conversationAgentId,
+          pendingExecutionStage:
+            parseIssueExecutionState(existing.executionState)?.status ===
+            "pending",
+        });
+        if (forbiddenReason) {
+          await recordHandoffDisposition(
+            "conflict",
+            existing.statusVersion,
+            { reason: forbiddenReason },
+          ).catch((err) =>
+            logger.warn({ err, issueId: id }, "handoff conflict receipt failed"),
+          );
+          throw conflict(
+            "The issue is in a state that forbids guarded reassignment",
+            { code: "issue_reassignment_conflict", mismatch: forbiddenReason, issueId: id },
+          );
+        }
+        // Cheap pre-lock CAS check; the authoritative compare runs again
+        // under SELECT ... FOR UPDATE inside the commit transaction.
+        const preMismatch = handoffCas.handoffCasMismatch(
+          {
+            assigneeAgentId: existing.assigneeAgentId,
+            assigneeUserId: existing.assigneeUserId,
+            statusVersion: existing.statusVersion,
+          },
+          handoffExpected,
+          { nextAssigneeAgentId, nextAssigneeUserId },
+        );
+        if (preMismatch) {
+          await recordHandoffDisposition(
+            "conflict",
+            existing.statusVersion,
+            { reason: preMismatch },
+          ).catch((err) =>
+            logger.warn({ err, issueId: id }, "handoff conflict receipt failed"),
+          );
+          throw handoffCas.handoffCasConflict(preMismatch, id);
+        }
+        // Vendor demote: a handed-off in_progress task goes back to todo for
+        // the new owner. An explicit caller status always wins.
+        if (existing.status === "in_progress" && updateFields.status === undefined) {
+          updateFields.status = "todo";
+        }
+      }
+
       const isAgentReturningIssueToCreator =
         req.actor.type === "agent" &&
         !!req.actor.agentId &&
@@ -14069,6 +14659,12 @@ export function issueRoutes(
             );
           }
           interruptedRunId = cancelled.id;
+          // myrmidon(HANDOFF-CAS): the confirmed stop releases the commit
+          // fence for the guarded handoff transaction.
+          if (handoffGuarded) {
+            handoffStopConfirmed = true;
+            handoffRunStopped = true;
+          }
 
           // Cancel any deferred executions for the old assignee related to this issue
           if (svc.cancelDeferredExecutionsForAgentOnReassignment) {
@@ -14079,6 +14675,10 @@ export function issueRoutes(
               db
             );
           }
+        } else if (handoffGuarded) {
+          // Nothing was live to stop; the transaction fence still re-checks
+          // for runs that start between this point and the commit.
+          handoffStopConfirmed = true;
         }
       }
 
@@ -14165,6 +14765,10 @@ export function issueRoutes(
         updateFields.status === "done";
       const shouldCollectTerminalIssueActions =
         updateFields.status === "done" || updateFields.status === "cancelled";
+      const closesRecoveryIssue =
+        shouldCollectTerminalIssueActions &&
+        existing.status !== updateFields.status &&
+        existing.originKind === "stranded_issue_recovery";
       // myrmidon(HOLD-READY): a possible board unblock of an issue that has
       // a settled replay hold runs the update in a transaction, so the hold
       // is cleared atomically with it.
@@ -14337,19 +14941,93 @@ export function issueRoutes(
       const attachmentCommentSourceTrust = commentAttachmentIds?.length
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
+      const exitingReviewWithExplicitAssignee =
+        existing.status === "in_review" &&
+        updateFields.status !== undefined &&
+        updateFields.status !== "in_review" &&
+        (req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined);
       const shouldUseTransactionalIssueUpdate =
-        Boolean(commentAttachmentIds?.length) ||
-        Boolean(decision) ||
-        shouldRelayStop ||
-        enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
-        persistReviewActivityTransactionally ||
-        ((updateFields.status === "in_review" || existing.status === "in_review") &&
-          assigneeWillChange) ||
-        reviewPolicySensitiveMutationRequested ||
-        humanUnblockPossible;
+        closesRecoveryIssue ||
+          Boolean(commentAttachmentIds?.length) ||
+          Boolean(decision) ||
+          shouldRelayStop ||
+          enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
+          persistReviewActivityTransactionally ||
+          ((updateFields.status === "in_review" || existing.status === "in_review") &&
+            assigneeWillChange) ||
+          exitingReviewWithExplicitAssignee ||
+          reviewPolicySensitiveMutationRequested ||
+          humanUnblockPossible ||
+          // myrmidon(HANDOFF-CAS): the guarded commit needs the row lock.
+          handoffGuarded;
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            const lockedExisting = await svc.getByIdForUpdate(id, tx);
+            if (!lockedExisting) return null;
+            const lockedReviewParticipants = nextExecutionPolicy
+              ? summarizeExecutionParticipants(nextExecutionPolicy, "review").flatMap(
+                  (participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
+                )
+              : [];
+            const lockedTransitionIssue: typeof transitionIssue = {
+              ...existing,
+              ...lockedExisting,
+              assigneeAgentRole: undefined,
+              executionReviewParticipantAgentIds: lockedReviewParticipants,
+            };
+            if (
+              nextExecutionPolicy === null &&
+              lockedExisting.assigneeAgentId &&
+              (lockedExisting.status === "in_review" || updateFields.status === "in_review")
+            ) {
+              lockedTransitionIssue.assigneeAgentRole =
+                (await agentsSvc.getById(lockedExisting.assigneeAgentId))?.role ?? null;
+            }
+            const lockedTransition = applyIssueExecutionPolicyTransition({
+              issue: lockedTransitionIssue,
+              policy: nextExecutionPolicy,
+              previousPolicy: previousExecutionPolicy,
+              requestedStatus: updateFields.status,
+              requestedAssigneePatch: explicitAssigneePatch,
+              actor: {
+                agentId: actor.agentId ?? null,
+                userId: actor.actorType === "user" ? actor.actorId : null,
+              },
+              allowBoardOverride: req.actor.type === "board",
+              commentBody,
+              reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
+              monitorExplicitlyUpdated:
+                req.body.executionPolicy !== undefined && monitorChanged,
+            });
+            Object.assign(updateFields, lockedTransition.patch);
+            const lockedDecisionId = lockedTransition.decision ? randomUUID() : null;
+            if (lockedDecisionId) {
+              const nextExecutionState = updateFields.executionState as Record<string, unknown> | null | undefined;
+              if (!nextExecutionState || typeof nextExecutionState !== "object") {
+                throw new Error("Execution policy decision patch is missing executionState");
+              }
+              updateFields.executionState = {
+                ...nextExecutionState,
+                lastDecisionId: lockedDecisionId,
+              };
+            }
+            // myrmidon(HANDOFF-CAS): the authoritative compare — re-read the
+            // row under SELECT ... FOR UPDATE, re-check CAS expectations and
+            // the stopped-run fence (executionRunId unchanged, no live run)
+            // before anything is written.
+            if (handoffGuarded) {
+              const gate = await handoffCas.assertHandoffCommitAllowed(tx, {
+                issueId: id,
+                companyId: existing.companyId,
+                expected: handoffExpected,
+                nextAssigneeAgentId,
+                nextAssigneeUserId,
+                stopConfirmed: handoffStopConfirmed,
+                executionRunIdAtPreparation: existing.executionRunId,
+              });
+              handoffLockedRow = gate.locked;
+            }
             if (
               reviewPolicySensitiveMutationRequested &&
               !(await assertLockedReviewPolicyAllowsMutation(tx))
@@ -14357,6 +15035,60 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
+            if (handoffGuarded && handoffLockedRow) {
+              // Fresh-revision invariant: a committed handoff always moves
+              // statusVersion by one. The DB trigger
+              // (paperclip_issue_status_version_trigger) already bumps the
+              // column inside this very UPDATE whenever the commit changed
+              // the status (the vendor demote in_progress -> todo), so a
+              // blind pre-bump would double-count (4 -> 6 instead of 5).
+              // Read the committed row back and only bump explicitly when
+              // the trigger left the revision untouched (no status change).
+              const committedRevision = await tx
+                .select({ statusVersion: issueRows.statusVersion })
+                .from(issueRows)
+                .where(eq(issueRows.id, id))
+                .then(
+                  (rows: Array<{ statusVersion: number }>) =>
+                    rows[0]?.statusVersion ?? null,
+                );
+              handoffRevisionInTx =
+                committedRevision !== null &&
+                committedRevision > handoffLockedRow.statusVersion
+                  ? committedRevision
+                  : await handoffCas.bumpHandoffStatusVersion(tx, id);
+              handoffStateRevision = handoffRevisionInTx;
+            }
+            if (handoffGuarded && handoffLockedRow && handoffRevisionInTx !== null) {
+              // The receipt commits in the same transaction as the ownership
+              // write, so a committed handoff always has its receipt.
+              await handoffCas.insertHandoffReceipt(tx, {
+                companyId: existing.companyId,
+                issueId: id,
+                actorType: handoffActorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId ?? null,
+                runId: actor.runId ?? null,
+                agentApiKeyId: actor.agentApiKeyId ?? null,
+                details: {
+                  commandId: handoffCommandId,
+                  fingerprint: handoffFingerprint,
+                  disposition: "applied",
+                  stateRevision: handoffRevisionInTx,
+                  scheduledWakeKeys: [handoffNewOwnerWakeKey],
+                  expectedAssigneeAgentId:
+                    handoffExpected.expectedAssigneeAgentId,
+                  expectedStatusVersion:
+                    handoffExpected.expectedStatusVersion,
+                  fromAssigneeAgentId: handoffLockedRow.assigneeAgentId,
+                  toAssigneeAgentId: nextAssigneeAgentId,
+                  reason: handoffReason ?? null,
+                  interruptedRunId: interruptedRunId ?? null,
+                },
+              });
+              handoffReceiptWrittenInTx = true;
+            }
+
             if (
               updated.status === "in_review" &&
               (enteringReviewRequested || assigneeWillChange)
@@ -14514,9 +15246,17 @@ export function issueRoutes(
             "issue update rejected with 422",
           );
         }
+        // myrmidon(HANDOFF-CAS): a commit-phase failure after the previous
+        // owner's run was stopped under confirmation wakes them back before
+        // the rejection leaves the route. No-op unless a rollback is due.
+        await runHandoffRollbackIfNeeded();
         throw err;
       }
+      if (issue && handoffReceiptWrittenInTx) handoffCommitted = true;
       if (!issue) {
+        // myrmidon(HANDOFF-CAS): a transaction that returned null rolled
+        // everything back — the same rollback duty applies.
+        await runHandoffRollbackIfNeeded();
         res.status(404).json({ error: "Issue not found" });
         return;
       }
@@ -15014,6 +15754,15 @@ export function issueRoutes(
             notes: previousMonitor.notes,
           },
         });
+        // myrmidon(MON-RESTORE): post one best-effort notice on the activity-log clear edge.
+        if (issue.status !== "done" && issue.status !== "cancelled" && monitorClearNotice) {
+          await svc.addComment(
+            issue.id,
+            `Monitor cleared (${monitorClearNotice.reason ?? "manual"}).${monitorClearNotice.notes ? ` ${monitorClearNotice.notes}` : ""}`,
+            {},
+            { authorType: "system", presentation: { kind: "system_notice", tone: "warning", title: "Issue monitor cleared", detailsDefaultOpen: false, density: "compact" } },
+          ).catch((err) => logger.warn({ err, issueId: issue.id }, "failed to post monitor clear notice"));
+        }
       }
 
       if (issue.status === "done" && existing.status !== "done") {
@@ -15073,13 +15822,20 @@ export function issueRoutes(
         attachmentComment;
       let goalCommentSteered = false;
       let lostReviewPathRef: string | null = null;
-      if (commentBody) {
+      // myrmidon(HANDOFF-CAS): the handoff reason is recorded in the thread
+      // like an ordinary update comment; without one the caller's own
+      // commentBody still applies.
+      const handoffCommentBody =
+        handoffGuarded && handoffReason && !commentBody
+          ? handoffReason
+          : commentBody;
+      if (handoffCommentBody) {
         const commentReferenceSummaryBefore =
           updateReferenceSummaryAfter ??
           (await issueReferencesSvc.listIssueReferenceSummary(issue.id));
         comment ??= await svc.addComment(
           id,
-          commentBody,
+          handoffCommentBody,
           {
             agentId: actor.agentId ?? undefined,
             userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -15276,6 +16032,97 @@ export function issueRoutes(
         requestedByActorId: actor.actorId,
       });
 
+      if (closesRecoveryIssue) {
+        try {
+          const recoveryWake = await db.transaction(async (tx) => {
+            const [recoveryAction] = await tx
+              .select()
+              .from(issueRecoveryActions)
+              .where(and(
+                eq(issueRecoveryActions.companyId, issue.companyId),
+                eq(issueRecoveryActions.recoveryIssueId, issue.id),
+                inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              ))
+              .for("update");
+            if (!recoveryAction) return null;
+
+            const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+              companyId: issue.companyId,
+              sourceIssueId: recoveryAction.sourceIssueId,
+              actionId: recoveryAction.id,
+              status: issue.status === "cancelled" ? "cancelled" : "resolved",
+              outcome: issue.status === "cancelled" ? "cancelled" : "restored",
+              resolutionNote: null,
+            }, tx);
+            if (!resolved) return null;
+            const [sourceIssue] = await tx
+              .select()
+              .from(issueRows)
+              .where(and(
+                eq(issueRows.id, recoveryAction.sourceIssueId),
+                eq(issueRows.companyId, issue.companyId),
+              ))
+              .for("update");
+            if (sourceIssue && sourceIssue.status === "blocked") {
+              const remainingBlockers = await tx
+                .select({ blockerIssueId: issueRelations.issueId })
+                .from(issueRelations)
+                .where(and(
+                  eq(issueRelations.companyId, issue.companyId),
+                  eq(issueRelations.relatedIssueId, recoveryAction.sourceIssueId),
+                  eq(issueRelations.type, "blocks"),
+                ));
+              const blockerIds = remainingBlockers
+                .map(({ blockerIssueId }) => blockerIssueId)
+                .filter((blockerId) => blockerId !== issue.id);
+              await svc.update(recoveryAction.sourceIssueId, {
+                status: blockerIds.length ? "blocked" : "todo",
+                blockedByIssueIds: blockerIds,
+                assigneeAgentId: recoveryAction.returnOwnerAgentId,
+                assigneeUserId: null,
+              }, tx);
+            }
+            return resolved.returnOwnerAgentId
+              ? {
+                  agentId: resolved.returnOwnerAgentId,
+                  actionId: resolved.id,
+                  sourceIssueId: resolved.sourceIssueId,
+                  outcome: resolved.outcome,
+                }
+              : null;
+          });
+          if (recoveryWake) {
+            await enqueueRecoveryActionWakeup(recoveryWake.agentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_recovery_action_restored",
+              idempotencyKey: `recovery_resolved:${recoveryWake.actionId}`,
+              requestedByActorType: "system",
+              requestedByActorId: "recovery_issue_closed",
+              payload: {
+                issueId: recoveryWake.sourceIssueId,
+                recoveryIssueId: issue.id,
+                recoveryActionId: recoveryWake.actionId,
+                outcome: recoveryWake.outcome,
+              },
+              contextSnapshot: {
+                issueId: recoveryWake.sourceIssueId,
+                taskId: recoveryWake.sourceIssueId,
+                recoveryIssueId: issue.id,
+                recoveryActionId: recoveryWake.actionId,
+                source: "issue.recovery_closed",
+                wakeReason: "issue_recovery_action_restored",
+              },
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id },
+            "failed to resolve recovery action after recovery issue closure",
+          );
+        }
+      }
+
       // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
       void (async () => {
         type WakeupRequest = NonNullable<
@@ -15363,11 +16210,22 @@ export function issueRoutes(
             source: "assignment",
             triggerDetail: "system",
             reason: "issue_assigned",
-            ...(issue.status === "in_review"
+            ...(handoffGuarded
               ? {
-                  idempotencyKey: `issue-review-admission:${issue.id}:${issue.assigneeAgentId}`,
+                  idempotencyKey: handoffNewOwnerWakeKey,
+                  issueStateGuard: {
+                    statuses: ["todo"],
+                    assigneeAgentId: nextAssigneeAgentId as string,
+                    ...(handoffStateRevision !== null
+                      ? { statusVersion: handoffStateRevision }
+                      : {}),
+                  },
                 }
-              : {}),
+              : issue.status === "in_review"
+                ? {
+                    idempotencyKey: `issue-review-admission:${issue.id}:${issue.assigneeAgentId}`,
+                  }
+                : {}),
             payload: {
               issueId: issue.id,
               ...(comment ? { commentId: comment.id } : {}),
@@ -15556,6 +16414,7 @@ export function issueRoutes(
           }
         }
 
+
         const becameDone =
           existing.status !== "done" && issue.status === "done";
         if (becameDone) {
@@ -15657,6 +16516,13 @@ export function issueRoutes(
           !["done", "cancelled"].includes(existing.status) &&
           ["done", "cancelled"].includes(issue.status);
         if (becameTerminal) {
+          if (svc.cancelDeferredExecutionsForTerminalIssue) {
+            await svc.cancelDeferredExecutionsForTerminalIssue(
+              issue.id,
+              issue.companyId,
+              db,
+            );
+          }
           const expiredInteractions = await issueThreadInteractionService(
             db,
           ).expirePendingInteractionsForTerminalIssue(issue, {
@@ -15751,6 +16617,21 @@ export function issueRoutes(
 
       await queueTaskWatchdogEvaluation(issue, actor.runId);
       const changes = issueResponse.changes ?? {};
+      // myrmidon(HANDOFF-CAS): expose the applied handoff receipt so the
+      // caller can confirm commandId/stateRevision without a second query.
+      const handoffResponse =
+        handoffGuarded && handoffCommitted
+          ? {
+              handoffReceipt: {
+                commandId: handoffCommandId,
+                fingerprint: handoffFingerprint,
+                disposition: "applied",
+                stateRevision: handoffStateRevision,
+                toAssigneeAgentId: nextAssigneeAgentId,
+                scheduledWakeKeys: [handoffNewOwnerWakeKey],
+              },
+            }
+          : {};
       if (prefersMinimalIssueUpdateResponse(req)) {
         res.setHeader("Preference-Applied", "return=minimal");
         res.json({
@@ -15759,10 +16640,11 @@ export function issueRoutes(
           updatedAt: issueResponse.updatedAt,
           changes,
           comment,
+          ...handoffResponse,
         });
         return;
       }
-      res.json({ ...issueResponse, changes, comment });
+      res.json({ ...issueResponse, changes, comment, ...handoffResponse });
     },
   );
 
@@ -18479,6 +19361,14 @@ export function issueRoutes(
           commentBody: req.body.body,
         });
         const decisionId = transition.decision ? randomUUID() : null;
+        if (transition.escalationMetric) {
+          getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+            issue_id: currentIssue.id,
+            policy_revision:
+              currentExecutionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+            target_type: "user",
+          });
+        }
         if (decisionId) {
           const nextExecutionState = transition.patch.executionState;
           if (!nextExecutionState || typeof nextExecutionState !== "object") {
@@ -18503,7 +19393,10 @@ export function issueRoutes(
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         };
 
-        const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
+        const sourceTrust =
+          actor.actorType === "agent"
+            ? await sourceTrustForActorWrite(currentIssue, actor, true)
+            : null;
         const commentOptions = {
           authorType:
             req.body.authorType ??
@@ -18557,6 +19450,36 @@ export function issueRoutes(
             // has been concurrently deleted between the initial fetch and the in-transaction update.
             if (!updated) throw new AutoApprovalIssueMissingError();
 
+            if (transition.recoveryInteraction) {
+              await issueThreadInteractionService(tx as unknown as Db).create(
+                currentIssue,
+                {
+                  kind: "ask_user_questions",
+                  idempotencyKey: transition.recoveryInteraction.idempotencyKey,
+                  resolverPolicy: "human_only",
+                  addresseeUserId: currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null,
+                  continuationPolicy: "none",
+                  title: transition.recoveryInteraction.title,
+                  summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
+                  payload: {
+                    version: 1,
+                    title: transition.recoveryInteraction.title,
+                    submitLabel: "Acknowledge recovery",
+                    questions: [{
+                      id: "recovery_acknowledged",
+                      prompt: `${transition.recoveryInteraction.summary} Please acknowledge ownership by ${transition.recoveryInteraction.queue}.`,
+                      selectionMode: "single",
+                      options: [{ id: "acknowledged", label: "Acknowledged" }],
+                    }],
+                  },
+                },
+                {
+                  identityContextId: req.actor.identityContextId,
+                  agentId: actor.agentId,
+                  userId: actor.actorType === "user" ? actor.actorId : null,
+                },
+              );
+            }
             if (transition.decision && decisionId) {
               await tx.insert(issueExecutionDecisions).values({
                 id: decisionId,
@@ -18625,12 +19548,17 @@ export function issueRoutes(
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           authorizationReason: commentAuthorizationReason,
-          sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
+          sourceTrust: await sourceTrustForActorWrite(currentIssue, actor, true),
         };
         const add = (dbOrTx: Db = db) =>
           svc.addComment(
             id,
-            req.body.body,
+            commentOptions.sourceTrust?.disposition === "quarantined"
+              ? buildLowTrustQuarantineNotice({
+                  promotionOwnerUserId:
+                    commentOptions.sourceTrust.promotionOwnerUserId ?? null,
+                })
+              : req.body.body,
             {
               agentId: actor.agentId ?? undefined,
               userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -19098,6 +20026,13 @@ export function issueRoutes(
           !["done", "cancelled"].includes(issueBeforeCommentDecision.status) &&
           ["done", "cancelled"].includes(currentIssue.status);
         if (becameTerminal) {
+          if (svc.cancelDeferredExecutionsForTerminalIssue) {
+            await svc.cancelDeferredExecutionsForTerminalIssue(
+              currentIssue.id,
+              currentIssue.companyId,
+              db,
+            );
+          }
           const expiredInteractions = await issueThreadInteractionService(
             db,
           ).expirePendingInteractionsForTerminalIssue(currentIssue, {

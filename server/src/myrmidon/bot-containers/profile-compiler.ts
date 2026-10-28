@@ -42,8 +42,9 @@
 //     (hermes_cli/config.py `_expand_env_vars`); the actual value belongs
 //     in input.env under that name.
 import { createHash } from "node:crypto";
+import { writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
-import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@paperclipai/shared";
+import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@myrmidon/shared";
 import { effortForModel } from "../effort-policy/effort-policy.js";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
 import { writeYamlDocument, type YamlMapping, type YamlNode } from "./deterministic-yaml.js";
@@ -1109,9 +1110,12 @@ function buildEnvFile(input: HermesProfileInput, warnings: string[]): string {
   // map, and always win over a same-named card entry.
   const reserved: Record<string, string> = {
     API_SERVER_KEY: requireNonEmpty(input.apiServerKey, "apiServerKey"),
-    PAPERCLIP_API_URL: requireNonEmpty(input.paperclipApiUrl, "paperclipApiUrl"),
-    PAPERCLIP_API_KEY: requireNonEmpty(input.paperclipApiKey, "paperclipApiKey"),
   };
+  // myrmidon(REBRAND-C): write the board URL and key under both the canonical
+  // MYRMIDON_* names and the PAPERCLIP_* alias so bots reading either prefix
+  // keep working through the transition.
+  writeProductEnv(reserved, "API_URL", requireNonEmpty(input.paperclipApiUrl, "paperclipApiUrl"));
+  writeProductEnv(reserved, "API_KEY", requireNonEmpty(input.paperclipApiKey, "paperclipApiKey"));
   for (const [name, value] of Object.entries(reserved)) {
     if (entries.has(name)) {
       warnings.push(`.env: "${name}" is reserved for the compiler's own value; the card's value was dropped`);

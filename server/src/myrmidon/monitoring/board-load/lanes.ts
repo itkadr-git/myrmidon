@@ -38,6 +38,9 @@ export const BOARD_LANES = [
   "chat_reconcile",
   "bot_reconcile",
   "run_supervision",
+  // myrmidon(1.6.6 OPE-9058): the board's own periodic sweeps and housekeeping
+  // timers (features, alerts, deploy jobs, leases, email polling, ...).
+  "background_sweep",
   "untagged",
 ] as const;
 
@@ -181,6 +184,18 @@ export function laneInterval(
       });
     }
   }, intervalMs);
+}
+
+/**
+ * Drop-in for `setInterval(work, intervalMs)` whose every pass runs in the
+ * `background_sweep` lane (OPE-9058).
+ *
+ * A timer inherits the async context of the code that armed it, and the
+ * board arms its sweeps at startup — outside every lane — so without this
+ * every statement a sweep issues was counted as `untagged`.
+ */
+export function backgroundInterval(work: () => unknown, intervalMs: number): NodeJS.Timeout {
+  return laneInterval("background_sweep", intervalMs, work);
 }
 
 /**

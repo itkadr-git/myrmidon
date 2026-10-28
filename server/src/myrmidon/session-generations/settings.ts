@@ -19,7 +19,7 @@ import {
   SESSION_GENERATION_DEFAULT_MAX_MESSAGES,
   SESSION_GENERATIONS_SETTINGS_KEY,
   storedSessionGenerationsSettingsSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export { SESSION_GENERATIONS_SETTINGS_KEY };
 

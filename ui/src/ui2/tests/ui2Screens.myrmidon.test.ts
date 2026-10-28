@@ -8,14 +8,39 @@
 // contract paths (the vendor routes keep their own shapes), and the legacy
 // paths stay stable so parity comparison stays possible.
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { isUi2PhoneTabActive } from "../shell/Ui2PhoneNav";
 import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
 import { UI2_ROUTE_TABLE } from "../routes";
+import { UI2_SETTINGS_SECTIONS } from "../shell/Ui2SettingsSidebar";
 import { isUi2RouteElementAPlaceholder } from "../routes";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
 
 describe("myrmidon(UI2) route table integration", () => {
-  it("ships the six contract entries plus Commander and Commander chat", () => {
+  it("routes every settings sidebar entry through UI2 or the company settings route tree", () => {
+    const appSource = readFileSync(fileURLToPath(new URL("../../App.tsx", import.meta.url)), "utf8");
+    const routeBlock = appSource.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
+    expect(routeBlock).toBeDefined();
+
+    const appSettingsPaths = new Set(
+      [...routeBlock!.matchAll(/path="(company\/settings(?:\/[^"]*)?)"/g)].map(([, path]) => `/${path}`),
+    );
+    const ui2Paths = new Set(UI2_ROUTE_TABLE.map((entry) => `/${entry.path}`));
+    const routedPaths = new Set([...appSettingsPaths, ...ui2Paths]);
+    const sidebarPaths = UI2_SETTINGS_SECTIONS.map(({ path }) => path);
+
+    expect(new Set(sidebarPaths).size).toBe(sidebarPaths.length);
+    for (const path of sidebarPaths) {
+      expect(routedPaths.has(path), path).toBe(true);
+    }
+    expect(sidebarPaths).not.toContain("/company/settings/guards");
+    expect(routedPaths.has("/company/settings/guards")).toBe(false);
+    expect(routedPaths.has("/company/settings/not-a-real-page")).toBe(false);
+  });
+
+  it("ships exactly the contract entries, the fleet, the commander chat and the knowledge screens", () => {
     expect(UI2_ROUTE_TABLE.map((entry) => entry.key).sort()).toEqual([
       "agent-overview",
       "agents-fleet",
@@ -23,15 +48,28 @@ describe("myrmidon(UI2) route table integration", () => {
       "commander-chat",
       "costs",
       "decisions",
+      "fleet",
+      "knowledge",
+      "knowledge-page",
+      "settings-autonomy-regulations",
       "settings-language",
       "settings-runs-queue",
       "settings-system",
     ]);
   });
 
-  it("keeps the fleet route reachable from both desktop and phone navigation", () => {
+  it("marks the knowledge and regulations nav items as gated on the knowledge API", () => {
+    const items = UI2_NAV_GROUPS.flatMap((group) => group.items);
+    for (const to of ["/knowledge", "/company/settings/autonomy/regulations"]) {
+      expect(items.find((item) => item.to === to)?.requires).toBe("knowledge");
+    }
+  });
+
+  it("keeps the agents and servers routes reachable from both desktop and phone navigation", () => {
     expect(UI2_NAV_GROUPS.flatMap((group) => group.items).filter((item) => item.to === "/agents")).toHaveLength(1);
     expect(UI2_PHONE_TABS.filter((item) => item.to === "/agents")).toHaveLength(1);
+    expect(UI2_NAV_GROUPS.flatMap((group) => group.items).filter((item) => item.to === "/fleet")).toHaveLength(1);
+    expect(UI2_PHONE_TABS.filter((item) => item.to === "/fleet")).toHaveLength(1);
     expect(UI2_PHONE_TABS.some((item) => item.to === "/agents/all")).toBe(true);
   });
 
@@ -47,6 +85,7 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(byKey.get("decisions")?.path).toBe("decisions");
     expect(byKey.get("costs")?.path).toBe("activity/costs");
     expect(byKey.get("agent-overview")?.path).toBe("agents/:agentId/overview");
+    expect(byKey.get("fleet")?.path).toBe("fleet");
     expect(byKey.get("agents-fleet")?.path).toBe("agents");
     expect(byKey.get("settings-runs-queue")?.path).toBe("company/settings/runs-queue");
     expect(byKey.get("settings-system")?.path).toBe("company/settings/system");
@@ -55,6 +94,18 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(byKey.get("costs")?.legacyPath).toBe("/activity/costs");
     expect(byKey.get("agent-overview")?.legacyPath).toBe("/agents/:agentId");
     expect(byKey.get("agents-fleet")?.legacyPath).toBe("/agents");
+  });
+
+  it("activates exactly one tab at /agents in the six-tab phone grid", () => {
+    expect(UI2_PHONE_TABS).toHaveLength(6);
+    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/agents"));
+    expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.agents"]);
+  });
+
+  it("activates only More at /agents/all in the six-tab phone grid", () => {
+    expect(UI2_PHONE_TABS).toHaveLength(6);
+    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/agents/all"));
+    expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.more"]);
   });
 
   it("maps canonical agent API statuses without treating active as running", () => {

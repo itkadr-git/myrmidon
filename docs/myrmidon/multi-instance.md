@@ -79,6 +79,37 @@ falls back to `all` with a warning at startup. Operators normally never set it
 by hand: in the supervised layout the worker forks the api children and sets
 `PAPERCLIP_PROCESS_ROLE=api` (plus `PAPERCLIP_PARENT_BOOT_ID`) itself.
 
+### Standalone worker entry: bind it to loopback
+
+`node dist/worker.js` (`pnpm --filter @myrmidon/server start:worker`) starts the
+`worker` role as its own process. Like every board process it binds its public
+listener to `HOST` (default `127.0.0.1`), and it additionally opens the internal
+loopback listener on `127.0.0.1:3101` that the api processes forward the single
+routes to. The worker has no business on a public interface: in a production
+deployment that runs the worker and the api processes as separate processes,
+set `HOST=127.0.0.1` for the **worker process only** (the api processes keep
+`HOST=0.0.0.0`). The repository's `docker/docker-compose.quickstart.yml` runs
+the single-process `all` role in one container with `HOST=0.0.0.0` and needs no
+change; the worker-only value applies to the process-level launch of the
+worker. Signals: the worker entry installs no handler of its own; `SIGTERM` /
+`SIGINT` reach the one shutdown of the board runtime, which runs once even if
+the signal arrives twice.
+
+### Client address behind nginx (`TRUST_PROXY`)
+
+An api process forwards a single route to the worker with
+`X-Forwarded-For` set to the client address it resolved itself under its own
+`TRUST_PROXY` policy, and drops any chain the caller sent. Set the same
+`TRUST_PROXY` for the worker and the api processes: behind one nginx that is
+`TRUST_PROXY=1` — the api process trusts nginx, the worker trusts the api
+process, and both see the real client in `req.ip`. Without `TRUST_PROXY` the
+header is ignored everywhere and the worker sees the api process (loopback).
+Headers named in `Connection:` are removed in both directions (RFC 9110
+section 7.6.1). If the `singletonProxy` setting cannot be read and has no cached
+value, the api process treats it as on and forwards to the worker (503 with
+`Retry-After` while the worker is down) — it never serves a single route
+locally.
+
 ## Configuration (expected in rc)
 
 The split is configured from the board interface — **Instance → General →
@@ -92,7 +123,7 @@ The split is configured from the board interface — **Instance → General →
 | `leaderLeaseTtlSec` | 5–600 | 30 | Leader lease TTL of the background role |
 | `liveEventsBus` | `local`, `pg` | `local` | How live events travel between processes |
 | `admissionStore` | `memory`, `db` | `memory` | Where run admission is decided |
-| `singletonProxy` | boolean | `true` | A non-leader process proxies single-process routes to the leader |
+| `singletonProxy` | boolean | `true` | An api process forwards the single routes (attention, plugins, bot-container, workspace-runtime) to the worker; counted in `myrmidon_board_singleton_proxy_total` |
 
 Read the effective values and the source of each (`settings` / `env` /
 `default`), plus the mode this build actually honours:

@@ -13,7 +13,7 @@
 // so a dead gateway burns at most batchSize ledger entries per tick and the
 // same records are not hammered again within the hour.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { sql } from "drizzle-orm";
 // Raw sql on `companies` (the drizzle schema export for it differs across
 // stacked release branches; the table itself is stable since 1.5).
@@ -22,7 +22,7 @@ import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { secretService } from "../../services/index.js";
 import { createCasteStore } from "../castes/store.js";
-import { DEFAULT_SCENT_SETTINGS, readScentSettings } from "@paperclipai/shared";
+import { DEFAULT_SCENT_SETTINGS, readScentSettings } from "@myrmidon/shared";
 import { classifyAgentScent, classifyIssueScent, type ScentGatewayDeps } from "./gateway.js";
 import { baseStrengthFromGeneral, createScentService, scentSettingsFromGeneral } from "./service.js";
 
@@ -39,9 +39,13 @@ export interface ScentQueuePorts {
   fetch?: typeof fetch;
   /** Test hook: replace the secret store lookup. */
   resolveSecret?: (db: Db, companyId: string, secretName: string) => Promise<string | null>;
+  /** Test hook: replace general instance settings lookup. */
+  getGeneral?: (db: Db) => Promise<unknown>;
   /** Test hook: replace the company listing (the queue is per-company). */
   listCompanyIds?: () => Promise<string[]>;
   now?: () => number;
+  /** Test hook: observe queue diagnostics without coupling to the logger module. */
+  logActivity?: (db: Db, entry: Parameters<typeof logActivity>[1]) => Promise<unknown>;
 }
 
 async function defaultResolveSecret(
@@ -62,8 +66,9 @@ async function defaultResolveSecret(
 }
 
 async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): Promise<void> {
-  const settingsSvc = instanceSettingsService(db);
-  const general = await settingsSvc.getGeneral();
+  const general = ports.getGeneral
+    ? await ports.getGeneral(db)
+    : await instanceSettingsService(db).getGeneral();
   const settings = readScentSettings(
     (general as unknown as Record<string, unknown> | null)?.swarm,
     process.env,
@@ -75,7 +80,32 @@ async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): P
   const secretName = env[SCENT_KEY_SECRET_ENV]?.trim() || "MYRMIDON_EVALS_API_KEY";
   const resolve = ports.resolveSecret ?? defaultResolveSecret;
   const apiKey = await resolve(db, companyId, secretName);
-  if (!baseUrl || !apiKey) return; // contour not configured — nothing to do
+  if (!baseUrl || !apiKey) {
+    // OPE-7190: a parked queue must not be silent. Without this entry the
+    // acceptance SQL (activity_log by action) cannot distinguish "classifier
+    // off" from "classifier broken" — the exact blindness that hid the 1.6.5
+    // contour gap for a day. Throttled to one entry per company per hour.
+    const seen = await db.execute(sql`
+      select count(*)::int as n
+      from activity_log
+      where action = 'swarm.scent_contour_unconfigured'
+        and company_id = ${companyId}
+        and created_at > now() - interval '1 hour'
+    `);
+    const recent = Number((seen as unknown as Array<{ n: number }>)[0]?.n ?? 0);
+    if (recent === 0) {
+      await (ports.logActivity ?? logActivity)(db, {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "swarm.scent_contour_unconfigured",
+        entityType: "company",
+        entityId: companyId,
+        details: { baseUrlConfigured: Boolean(baseUrl), keyConfigured: Boolean(apiKey) },
+      }).catch(() => undefined);
+    }
+    return;
+  }
 
   const castes = await createCasteStore({ db }).listCastes(companyId);
   const casteKeys = castes.map((c: { key: string }) => c.key);

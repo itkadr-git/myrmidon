@@ -28,14 +28,14 @@ import {
   companySkills,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   agentExchangeCompanySkillKey,
   agentExchangeRoomSkillKey,
   DEFAULT_AGENT_EXCHANGE_FEED_SETTINGS,
   type AgentExchangeParticipantSpec,
   type AgentExchangeFeedSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { companySkillService, documentService } from "../../services/index.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { skillLifecycleService } from "../skill-lifecycle/index.js";

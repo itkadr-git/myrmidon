@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   companies,
@@ -14,8 +15,8 @@ import {
   issueDocuments,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
-import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -901,8 +902,8 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
-  it("rate-limits skipped generic timer wakes by advancing the timer baseline", async () => {
-    const { agentId } = await seedCompanyAndAgent({
+  it("records due timer passes without ready work and advances the timer baseline", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
         enabled: true,
         intervalSec: 60,
@@ -918,31 +919,44 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     const firstTick = await heartbeat.tickTimers(now);
     const secondTick = await heartbeat.tickTimers(now);
 
-    expect(firstTick.skipped).toBe(1);
-    expect(secondTick.skipped).toBe(0);
+    expect(firstTick.checked).toBe(1);
+    expect(firstTick.enqueued).toBe(0);
+    expect(secondTick.checked).toBe(0);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
 
     const wakeups = await db
-      .select({ reason: agentWakeupRequests.reason })
+      .select({ id: agentWakeupRequests.id })
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.agentId, agentId));
+    const noWorkActivities = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(eq(activityLog.agentId, agentId));
     const [agent] = await db
       .select({ lastHeartbeatAt: agents.lastHeartbeatAt })
       .from(agents)
       .where(eq(agents.id, agentId));
 
-    expect(wakeups).toHaveLength(1);
-    expect(wakeups[0]?.reason).toBe("heartbeat.timer.no_actionable_work");
+    expect(wakeups).toHaveLength(0);
+    expect(noWorkActivities.filter((event) => event.action === "heartbeat.timer.no_actionable_work")).toHaveLength(1);
     expect(agent?.lastHeartbeatAt).toBeInstanceOf(Date);
     expect(agent?.lastHeartbeatAt?.getTime()).toBeGreaterThan(now.getTime() - 120_000);
   });
 
   it("atomically claims a due timer interval across overlapping scheduler ticks", async () => {
-    const { agentId } = await seedCompanyAndAgent({
+    const { companyId, agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
         enabled: true,
         intervalSec: 60,
       },
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Ready task for due timer",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
     });
     const now = new Date();
     await db

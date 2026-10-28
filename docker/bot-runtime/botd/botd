@@ -176,7 +176,7 @@ function listArchives() {
 }
 
 async function main() {
-  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod] = await Promise.all([
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod] = await Promise.all([
     tryImport("desired.js"),
     tryImport("rules.js"),
     tryImport("classify.js"),
@@ -187,6 +187,7 @@ async function main() {
     import(path.join(__dirname, "lib", "runs.js")),
     import(path.join(__dirname, "lib", "remove.js")),
     import(path.join(__dirname, "lib", "cache.js")),
+    tryImport("repair.js"),
   ]);
   guardedRemove = (p, roots) => removeMod.guardedRemove(p, roots);
   // One attention signal per path per TTL (botd-attention.json); the uid of the
@@ -212,6 +213,9 @@ async function main() {
   const reporter = reportMod.createReporter({ log });
 
   async function gather(state) {
+    // A run interrupted mid merge/rebase leaves its copy half-way; with no run going, repair it
+    // (state saved to a recovery ref first) so the next `myr-ws open` gets a clean copy.
+    if (repairMod) await repairMod.repairInterrupted({ ws, runProbe, log });
     const registry = (readJson(REGISTRY_PATH, { entries: [] }).entries) || [];
     const bases = listBases();
     const archives = listArchives();

@@ -7,7 +7,7 @@
 // The key is the bot key (the agent id), taken from the caller's API key by the
 // route — a bot can neither write nor read another bot's entry.
 
-import type { WsDiskReport } from "@paperclipai/shared";
+import type { WsDiskReport } from "@myrmidon/shared";
 
 export interface BotDiskReportEntry {
   botKey: string;
@@ -15,6 +15,8 @@ export interface BotDiskReportEntry {
   foreignUid?: { path: string; reason: string } | null;
   /** When the board received it (ISO-8601 UTC); `report.at` is the bot's own clock. */
   receivedAt: string;
+  /** Latest botd count of copies without an active desired-state owner. */
+  copiesWithoutAssignee: number | null;
 }
 
 const reports = new Map<string, BotDiskReportEntry>();
@@ -28,6 +30,7 @@ export function storeBotDiskReport(botKey: string, report: WsDiskReport, nowMs =
     botKey,
     report,
     foreignUid: report.foreignUid ?? (foreignAction ? { path: foreignAction.path, reason: foreignAction.detail ?? "permission denied" } : null),
+    copiesWithoutAssignee: report.metrics?.copies_without_assignee ?? null,
     receivedAt: new Date(nowMs).toISOString(),
   };
   reports.set(botKey, entry);

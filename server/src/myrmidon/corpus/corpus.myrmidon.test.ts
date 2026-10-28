@@ -21,7 +21,7 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   CORPUS_SETTINGS_KEYS,
   CORPUS_SETTINGS_PATH,
@@ -29,7 +29,7 @@ import {
   DEFAULT_CORPUS_SETTINGS,
   mergeCorpusSettings,
   resolveCorpusSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type {
   CorpusDatasetRecord,
   CorpusDocumentRecord,

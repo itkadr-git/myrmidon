@@ -10,6 +10,7 @@ import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_NAV_GROUPS, type Ui2NavItem } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
+import { useKnowledgeAvailable } from "../useKnowledgeAvailable"; // myrmidon(K-4)
 
 function RailItem({ item, active, badge }: { item: Ui2NavItem; active: boolean; badge?: number }) {
   const { t } = useTranslation();
@@ -89,6 +90,11 @@ export function Ui2Rail() {
   // Both siblings consume the canonical attention feed; the same count powers
   // the "Waiting for me" navigation badge and the Command Center total.
   const attentionCount = useUi2AttentionCount();
+  const knowledgeAvailable = useKnowledgeAvailable(selectedCompany?.id);
+  const groups = UI2_NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => item.requires !== "knowledge" || knowledgeAvailable),
+  })).filter((group) => group.items.length > 0);
 
   return (
     <aside
@@ -122,7 +128,7 @@ export function Ui2Rail() {
           overflowY: "auto",
         }}
       >
-        {UI2_NAV_GROUPS.map((group) => (
+        {groups.map((group) => (
           <div key={group.labelKey} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             {group.labelKey ? (
               <div

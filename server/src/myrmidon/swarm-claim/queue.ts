@@ -15,14 +15,17 @@
 // open children, tasks mid-decomposition — copied from `idle-pickup.ts` rather
 // than re-derived, so "ready" means one thing on both paths.
 
+import { blockerOpenSql } from "../blocker-resolved.js";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agents, issues, type Db } from "@paperclipai/db";
+import { agents, issues, type Db } from "@myrmidon/db";
 import {
+  swarmRoleFromLabels,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_DEFAULT_UNASSIGNED_ROLE,
   type SwarmQueueCandidate,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
+import { projectScopedClaimGate } from "../project-membership.js";
 import {
   failedRunsDerivedSql,
   failedRunsJoinOnSql,
@@ -92,6 +95,22 @@ export function unassignedTaskRoutedToRole(role: string) {
   return sql`(case when ${effectiveCaste} is not null then ${effectiveCaste} = ${wantedKey} else ${labelRoute} end)`;
 }
 
+/** JS twin of the SQL routing rule above, for issue mutation validation. */
+export function unassignedTaskRoutedToRoleByLabels(role: string, labels: readonly string[]): boolean {
+  const effectiveRole = swarmRoleFromLabels(labels) ?? "general";
+  return effectiveRole === role.trim().toLowerCase();
+}
+
+export function engineerCasteRequired(
+  taskCasteKey: string | null | undefined,
+  projectDefaultCasteKey: string | null | undefined,
+  roleLabels: readonly string[],
+): boolean {
+  const casteKey = taskCasteKey?.trim() || projectDefaultCasteKey?.trim();
+  if (casteKey) return casteKey.toLowerCase() === "engineer";
+  return unassignedTaskRoutedToRoleByLabels("engineer", roleLabels);
+}
+
 /**
  * The candidate rows of one role's queue. With `agentId` the assigned part is
  * that agent's own todo only (a task assigned to a peer is the peer's, not
@@ -134,7 +153,19 @@ export function roleQueueRows(
         // to the role by its label (default: the engineer).
         or(
           agentId ? eq(issues.assigneeAgentId, agentId) : eq(agents.role, role),
-          and(isNull(issues.assigneeAgentId), unassignedTaskRoutedToRole(role)),
+          and(
+            isNull(issues.assigneeAgentId),
+            unassignedTaskRoutedToRole(role),
+            // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): the unassigned half is the
+            // self-serve read of ONE agent — a task that carries a project is
+            // in it only for a member of that project (lead or joined), the
+            // same rule scope-wiring.listAgents answers for bot containers. A
+            // task assigned to an agent is a manual action and is never gated.
+            // Without an agent there is no member to judge by: the agentless
+            // read is the role-wide view (monitoring, supervisor), not a claim,
+            // so it keeps the whole routed queue.
+            agentId ? projectScopedClaimGate(agentId) : sql`true`,
+          ),
         ),
         // Not blocked by an unresolved blocker (the same rule idle-pickup uses).
         sql`not exists (
@@ -144,7 +175,7 @@ export function roleQueueRows(
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status <> 'done'
+            and ${blockerOpenSql('blocker.status')}
         )`,
         // Not a container: an issue with an open child is a plan, the children are the work.
         sql`not exists (
@@ -265,7 +296,7 @@ export async function listUnassignedQueue(
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status <> 'done'
+            and ${blockerOpenSql('blocker.status')}
         )`,
         sql`not exists (
           select 1

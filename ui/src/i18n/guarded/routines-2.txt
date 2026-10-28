@@ -1,0 +1,9 @@
+# myrmidon(OPE-8950): routines-2 area, files relative to ui/src.
+components/ScheduleEditor.tsx
+components/routine-sections/editable-sections.production.tsx
+components/routine-sections/editable-sections.tsx
+components/routine-sections/operate-sections.tsx
+pages/RoutineDetail.production.tsx
+pages/RoutineDetail.tsx
+pages/Routines.production.tsx
+pages/Routines.tsx

@@ -17,10 +17,11 @@ import { classifySourceError } from "./domain.js";
 import {
   DEFAULT_MONITORING_CONNECTION_SETTINGS,
   monitoringConnectionSettingsSchema,
+  mergeMonitoringSettingsPatch,
   monitoringSettingsView,
 } from "./settings.js";
 import { VictoriaMetricsError, vmClient } from "./vm.js";
-import { ZabbixReadError, zabbixReadClient } from "./zabbix.js";
+import { ZabbixReadError, mapZabbixHostName, zabbixReadClient } from "./zabbix.js";
 import { resolveMonitoringTokenRef } from "./token.js";
 import type { VmClient, VmVectorSample } from "./vm.js";
 import type { ZabbixReadClient } from "./zabbix.js";
@@ -104,7 +105,7 @@ describe("monitoring dashboard service (myrmidon 1.6.6 MONITORING C)", () => {
     expect(host?.runbookKey).toBe("host-disk-pressure");
   });
 
-  it("merges Zabbix-only hosts alongside VM hosts", async () => {
+  it("merges Zabbix readings into explicitly mapped VM hosts", async () => {
     const vm = fakeVm({
       node_cpu_seconds_total: [{ metric: { instance: "vm-core" }, value: 10, timestampSec: 0 }],
     });
@@ -114,20 +115,85 @@ describe("monitoring dashboard service (myrmidon 1.6.6 MONITORING C)", () => {
         name: "build-vps",
         items: {
           "system.cpu.util": "55",
-          "vm.memory.utilization": "70",
+          "vm.memory.util": "70",
           "vfs.fs.size[/,pused]": "91",
         },
       },
     ]);
-    const view = await buildDashboardView({ settings: SETTINGS, vm, zabbix, now: () => NOW });
+    const view = await buildDashboardView({
+      settings: { ...SETTINGS, zabbixHostMapping: { "vm-core": "build-vps" } },
+      vm,
+      zabbix,
+      now: () => NOW,
+    });
     const names = view.hosts.map((h) => h.name).sort();
-    expect(names).toEqual(["build-vps", "vm-core"]);
-    const vps = view.hosts.find((h) => h.name === "build-vps");
-    expect(vps?.origin).toBe("zabbix");
-    expect(vps?.cpuPercent).toBe(55);
+    expect(names).toEqual(["vm-core"]);
+    const vps = view.hosts.find((h) => h.name === "vm-core");
+    expect(vps?.origin).toBe("victoriametrics");
+    expect(vps?.cpuPercent).toBe(10);
+    expect(vps?.memoryPercent).toBe(70);
     expect(vps?.diskPercent).toBe(91);
     // the build VPS rollup surfaces for the fleet screen
     expect(view.vps?.diskPercent).toBe(91);
+  });
+
+  it("merges the Zabbix 7.4 Linux template memory and disk item keys", async () => {
+    const vm = fakeVm({ node_cpu_seconds_total: [{ metric: { instance: "node-exporter:9100" }, value: 20, timestampSec: 0 }] });
+    const zabbix = fakeZabbix([
+      { host: "vm-core", name: "vm-core", items: { "vm.memory.util": "70", "vfs.fs.dependent.size[/,pused]": "81" } },
+    ]);
+    const view = await buildDashboardView({
+      settings: { ...SETTINGS, zabbixHostMapping: { "node-exporter:9100": "vm-core" } },
+      vm,
+      zabbix,
+      now: () => NOW,
+    });
+    expect(view.hosts).toHaveLength(1);
+    expect(view.hosts[0]).toMatchObject({
+      name: "node-exporter:9100",
+      cpuPercent: 20,
+      memoryPercent: 70,
+      diskPercent: 81,
+    });
+  });
+
+  it("merges Zabbix readings when the mapping uses a bare host and VM reports host:9100", async () => {
+    const vm = fakeVm({ node_cpu_seconds_total: [{ metric: { instance: "node-exporter:9100" }, value: 20, timestampSec: 0 }] });
+    const zabbix = fakeZabbix([
+      { host: "vm-core", name: "vm-core", items: { "vm.memory.util": "70", "vfs.fs.dependent.size[/,pused]": "81" } },
+    ]);
+    const view = await buildDashboardView({
+      settings: { ...SETTINGS, zabbixHostMapping: { "node-exporter": "vm-core" } },
+      vm,
+      zabbix,
+      now: () => NOW,
+    });
+    expect(view.hosts).toHaveLength(1);
+    expect(view.hosts[0]).toMatchObject({
+      name: "node-exporter:9100",
+      cpuPercent: 20,
+      memoryPercent: 70,
+      diskPercent: 81,
+    });
+  });
+
+  it("maps Zabbix host names against the VM instance label", async () => {
+    const vm = fakeVm({ node_cpu_seconds_total: [{ metric: { instance: "node-exporter:9100" }, value: 20, timestampSec: 0 }] });
+    const zabbix = fakeZabbix([
+      { host: "vm-core", name: "Core VM", items: { "vm.memory.util": "70" } },
+    ]);
+    const view = await buildDashboardView({
+      settings: { ...SETTINGS, zabbixHostMapping: { "node-exporter:9100": "vm-core" } },
+      vm,
+      zabbix,
+      now: () => NOW,
+    });
+    expect(view.hosts).toHaveLength(1);
+    expect(view.hosts[0]).toMatchObject({
+      name: "node-exporter:9100",
+      cpuPercent: 20,
+      memoryPercent: 70,
+    });
   });
 
   it("degrades cleanly when a source fails", async () => {
@@ -227,6 +293,19 @@ describe("monitoring dashboard service (myrmidon 1.6.6 MONITORING C)", () => {
 });
 
 describe("monitoring dashboard settings (myrmidon 1.6.6 MONITORING C)", () => {
+  it("applies a one-field patch without clearing other configured connections", () => {
+    const current = monitoringConnectionSettingsSchema.parse({
+      vmUrl: "http://vm:8428",
+      zabbixUrl: "http://zabbix/api_jsonrpc.php",
+      zabbixTokenRef: "env:ZABBIX_TOKEN",
+    });
+    expect(mergeMonitoringSettingsPatch(current, { zabbixUrl: "http://zabbix-new/api_jsonrpc.php" })).toMatchObject({
+      vmUrl: "http://vm:8428",
+      zabbixUrl: "http://zabbix-new/api_jsonrpc.php",
+      zabbixTokenRef: "env:ZABBIX_TOKEN",
+    });
+  });
+
   it("defaults keep both sources off and carry no secret values", () => {
     const view = monitoringSettingsView(DEFAULT_MONITORING_CONNECTION_SETTINGS);
     expect(view.vmUrl).toBeNull();
@@ -299,11 +378,18 @@ describe("monitoring dashboard clients (myrmidon 1.6.6 MONITORING C)", () => {
 
   it("the Zabbix read client only calls read methods", async () => {
     const methods: string[] = [];
+    const requests: Array<{ body: Record<string, unknown>; headers: Record<string, string> }> = [];
     const zabbix = zabbixReadClient(
-      { url: "http://zabbix/api_jsonrpc.php", tokenRef: null, hostGroups: [], timeoutMs: 1000 },
+      {
+        url: "http://zabbix/api_jsonrpc.php",
+        tokenRef: "env:ZABBIX_TOKEN",
+        hostGroups: [],
+        timeoutMs: 1000,
+      },
       {
         fetch: async (_input, init) => {
           const body = JSON.parse(String(init?.body));
+          requests.push({ body, headers: init?.headers as Record<string, string> });
           methods.push(body.method);
           if (body.method === "host.get") {
             return new Response(
@@ -319,14 +405,25 @@ describe("monitoring dashboard clients (myrmidon 1.6.6 MONITORING C)", () => {
           }
           return new Response(JSON.stringify({ result: "7.0.0" }), { status: 200 });
         },
+        token: { env: { ZABBIX_TOKEN: "secret-token" } },
       },
     );
     expect(await zabbix.apiVersion()).toBe("7.0.0");
     const readings = await zabbix.hostReadings(["system.cpu.util"]);
-    expect(readings).toEqual([{ hostid: "1", host: "vm-core", name: "vm-core", items: { "system.cpu.util": "33" } }]);
+    const mappedHost = mapZabbixHostName(readings[0], { "vm-core": "friendly-vm-core" });
+    expect(mappedHost).toBe("friendly-vm-core");
+    expect(readings[0]).toMatchObject({ hostid: "1", host: "vm-core", name: "vm-core" });
     for (const method of methods) {
       expect(["apiinfo.version", "hostgroup.get", "host.get", "item.get"]).toContain(method);
     }
+    const versionRequest = requests.find(({ body }) => body.method === "apiinfo.version");
+    expect(versionRequest?.body).not.toHaveProperty("auth");
+    expect(versionRequest?.headers.authorization).toBeUndefined();
+    for (const request of requests.filter(({ body }) => body.method !== "apiinfo.version")) {
+      expect(request.body).not.toHaveProperty("auth");
+      expect(request.headers.authorization).toBe("Bearer secret-token");
+    }
+    expect(requests.find(({ body }) => body.method === "host.get")?.body).not.toHaveProperty("auth");
   });
 });
 
