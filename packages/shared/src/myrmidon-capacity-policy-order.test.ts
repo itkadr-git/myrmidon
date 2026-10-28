@@ -27,7 +27,7 @@ describe("capacity policy composer", () => {
     const candidates = [
       candidate("old", "normal", base - 120 * 60_000, "p1"),
       candidate("fresh", "normal", base - 5 * 60_000, "p2"),
-      candidate("p1-next", "normal", base - 60 * 60_000, "p1"),
+      candidate("p1-next", "normal", base - 30 * 60_000, "p1"),
     ];
     const policy = {
       ...DEFAULT_CAPACITY_POLICY,
