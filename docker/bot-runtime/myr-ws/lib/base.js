@@ -120,7 +120,11 @@ function syncMirrorAlternates(env, dir, parsed) {
   const objectsDir = path.join(mirror, "objects");
   if (!fs.existsSync(objectsDir)) return null;
 
-  const alternatesFile = path.join(dir, "objects", "info", "alternates");
+  const targetObjectsDir = fs.existsSync(path.join(dir, ".git", "objects"))
+    ? path.join(dir, ".git", "objects")
+    : path.join(dir, "objects");
+
+  const alternatesFile = path.join(targetObjectsDir, "info", "alternates");
   const targetLine = `${objectsDir}\n`;
   let existing = "";
   try {

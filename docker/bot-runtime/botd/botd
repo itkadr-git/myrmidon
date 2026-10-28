@@ -368,25 +368,13 @@ async function main() {
     // Only remove sessions for CLOSED tasks older than 7 days, then VACUUM when idle.
     if (hermesRetentionMod && typeof hermesRetentionMod.pruneHermesClosedTaskSessions === "function") {
       try {
-        const closedTaskKeys = new Set();
-        const closedTaskIds = new Set();
-        const cutoff = Date.now() - 7 * 86_400_000;
-
         const desiredState = await desired.poll();
-        if (desiredState.ok && desiredState.value && Array.isArray(desiredState.value.workspaces)) {
-          for (const ws of desiredState.value.workspaces) {
-            if (ws && ws.state === "closing") {
-              const since = Date.parse(ws.since || 0);
-              if (Number.isFinite(since) && since < cutoff && ws.key) {
-                closedTaskKeys.add(ws.key);
-              }
-            }
-          }
-        }
+        const workspaces = desiredState.ok && desiredState.value && Array.isArray(desiredState.value.workspaces)
+          ? desiredState.value.workspaces
+          : [];
 
         const res = hermesRetentionMod.pruneHermesClosedTaskSessions({
-          closedTaskKeys,
-          closedTaskIds,
+          workspaces,
           retentionDays: 7,
           log,
         });

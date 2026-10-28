@@ -46,12 +46,12 @@ test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushe
   runGit(["config", "user.name", "Upstream Dev"], seedWork);
   runGit(["config", "user.email", "dev@example.com"], seedWork);
 
-  // Generate ~1 MB of files to simulate upstream repository contents
+  // Generate upstream repository contents (>100 KB)
   for (let i = 0; i < 5; i++) {
     fs.writeFileSync(path.join(seedWork, `file_${i}.txt`), "upstream content ".repeat(20000));
   }
   runGit(["add", "."], seedWork);
-  const upstreamSha = runGit(["commit", "-m", "upstream release v1"], seedWork);
+  runGit(["commit", "-m", "upstream release v1"], seedWork);
   runGit(["push", mirrorDir, "HEAD:refs/heads/main"], seedWork);
   runGit(["repack", "-a", "-d"], mirrorDir);
 
@@ -76,40 +76,70 @@ test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushe
   const altContent = fs.readFileSync(altFile, "utf8").trim();
   assert.strictEqual(altContent, path.join(mirrorDir, "objects"));
 
-  // 3. Verify own object size is < 100 MB (< 100 KB in this test)
-  const baseOwnObjectsSize = getDirSize(path.join(baseDir, "objects", "pack")) +
+  // 3. Verify base own object size is < 100 MB (< 100 KB in this test)
+  const baseOwnObjectsSize =
+    getDirSize(path.join(baseDir, "objects", "pack")) +
     getDirSize(path.join(baseDir, "objects")) -
     fs.statSync(altFile).size;
   const maxBytes = 100 * 1024 * 1024; // 100 MB criterion
   assert.ok(baseOwnObjectsSize < maxBytes, `own object store must be <100MB, got ${baseOwnObjectsSize} bytes`);
 
-  // 4. Create developer workspace and unpushed branch/commit
+  // 4. Create developer workspace with local-only, unpushed work
   const devWork = path.join(tmp, "workspace", "OPE-1234");
   fs.mkdirSync(devWork, { recursive: true });
-  runGit(["clone", baseDir, devWork]);
+  runGit(["clone", mirrorDir, devWork]);
   runGit(["config", "user.name", "Bot Engineer"], devWork);
   runGit(["config", "user.email", "bot@example.com"], devWork);
   runGit(["checkout", "-b", "myr/feature-unpushed"], devWork);
 
   fs.writeFileSync(path.join(devWork, "unpushed_feature.txt"), "local unpushed critical work");
   runGit(["add", "unpushed_feature.txt"], devWork);
-  const unpushedSha = runGit(["commit", "-m", "feat: unpushed local commit"], devWork);
-  runGit(["push", "origin", "myr/feature-unpushed"], devWork);
+  runGit(["commit", "-m", "feat: unpushed local commit"], devWork);
+  const unpushedSha = runGit(["rev-parse", "HEAD"], devWork);
 
-  // Verify unpushed commit exists in baseDir
-  const baseCommitLog = runGit(["log", "-1", "--format=%s", "refs/heads/myr/feature-unpushed"], baseDir);
-  assert.strictEqual(baseCommitLog, "feat: unpushed local commit");
+  // Assert commit is local only: NOT pushed to mirror, NOT pushed to base
+  assert.throws(
+    () => runGit(["rev-parse", "--verify", "refs/heads/myr/feature-unpushed"], mirrorDir),
+    "unpushed branch must not exist in mirror"
+  );
+  assert.throws(
+    () => runGit(["rev-parse", "--verify", "refs/heads/myr/feature-unpushed"], baseDir),
+    "unpushed branch must not exist in base"
+  );
 
-  // 5. Re-run syncMirrorAlternates with repack to simulate migration pass
-  const secondSync = syncMirrorAlternates(env, baseDir, parsed);
-  assert.strictEqual(secondSync, mirrorDir);
+  // 5. Migrate developer workspace: sync alternates to mirror and repack (-a -d -l)
+  const wsMigrateResult = syncMirrorAlternates(env, devWork, parsed);
+  assert.strictEqual(wsMigrateResult, mirrorDir, "syncMirrorAlternates should configure mirror for workspace");
 
-  // 6. Assert unpushed commit is NOT lost after repack/migration pass
-  const postLog = runGit(["log", "-1", "--format=%s", "refs/heads/myr/feature-unpushed"], baseDir);
-  assert.strictEqual(postLog, "feat: unpushed local commit", "unpushed commit must be preserved");
+  const wsAltFile = path.join(devWork, ".git", "objects", "info", "alternates");
+  assert.ok(fs.existsSync(wsAltFile), "workspace alternates file must exist after migration");
+  assert.strictEqual(fs.readFileSync(wsAltFile, "utf8").trim(), path.join(mirrorDir, "objects"));
 
-  const fsckRes = spawnSync("/usr/bin/git", ["fsck", "--full"], { cwd: baseDir, encoding: "utf8" });
-  assert.strictEqual(fsckRes.status, 0, `git fsck failed: ${fsckRes.stderr}`);
+  // 6. Assert unpushed commit and working copy are completely preserved after migration
+  const postMigrateSha = runGit(["rev-parse", "HEAD"], devWork);
+  assert.strictEqual(postMigrateSha, unpushedSha, "unpushed commit SHA must be identical after migration");
+
+  const postMigrateLog = runGit(["log", "-1", "--format=%s", "HEAD"], devWork);
+  assert.strictEqual(postMigrateLog, "feat: unpushed local commit", "commit message must be intact");
+
+  const fileContent = fs.readFileSync(path.join(devWork, "unpushed_feature.txt"), "utf8");
+  assert.strictEqual(fileContent, "local unpushed critical work", "file content of unpushed commit must be intact");
+
+  const fsckRes = spawnSync("/usr/bin/git", ["fsck", "--full"], { cwd: devWork, encoding: "utf8" });
+  assert.strictEqual(fsckRes.status, 0, `git fsck failed in migrated workspace: ${fsckRes.stderr}`);
+
+  // Confirm branch remains purely local and was never pushed
+  assert.throws(
+    () => runGit(["rev-parse", "--verify", "refs/heads/myr/feature-unpushed"], mirrorDir),
+    "branch must remain local to workspace and unpushed to mirror"
+  );
+
+  // 7. Verify workspace own objects after repack are tiny (< 100 KB, well under 100 MB criterion)
+  const wsOwnObjectsSize = getDirSize(path.join(devWork, ".git", "objects"));
+  assert.ok(
+    wsOwnObjectsSize < maxBytes,
+    `migrated workspace own objects must be <100MB, got ${wsOwnObjectsSize} bytes`
+  );
 
   // Cleanup
   fs.rmSync(tmp, { recursive: true, force: true });
