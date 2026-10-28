@@ -185,7 +185,7 @@ describe("myrmidon(BOT-LSP-DEFAULTS) routes: writing", () => {
 
   it("warns in view when saved tsserverMemoryMb exceeds 40% cap after container limit reduction", async () => {
     const { app } = harness({
-      initial: { tsserverMemoryMb: 409 },
+      stored: { tsserverMemoryMb: 409 },
       containerMemoryMb: [768],
     });
     const res = await request(app).get(URL).expect(200);
