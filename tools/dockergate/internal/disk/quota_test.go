@@ -268,9 +268,9 @@ func TestPut_RepeatKeepsTheProjectID(t *testing.T) {
 	if n := strings.Count(read(t, q.ProjectsFile), "\n"); n != 2 {
 		t.Errorf("projects has %d lines:\n%s", n, read(t, q.ProjectsFile))
 	}
-	// Three puts: each one asks for the state, then sets the project and the limit.
-	if n := len(f.journal()); n != 6 {
-		t.Errorf("%d xfs_quota runs, want 6: %q", n, f.journal())
+	// Three puts each ask for the state and set project, plus the first ensure on each bot key.
+	if n := len(f.journal()); n != 8 {
+		t.Errorf("%d xfs_quota runs, want 8: %q", n, f.journal())
 	}
 }
 
@@ -293,7 +293,7 @@ func TestPut_SameRequestTwiceIsIdempotent(t *testing.T) {
 		t.Error("the files changed on the second put")
 	}
 	j := f.journal()
-	if len(j) != 4 || j[1] != j[3] {
+	if len(j) != 8 || j[1] != j[3] || j[5] != j[7] {
 		t.Errorf("the set command differs between the runs: %q", j)
 	}
 }
@@ -322,7 +322,7 @@ func TestPut_ExistingFilesAreKeptAndIDsNotReused(t *testing.T) {
 	if got, want := read(t, q.ProjidFile), "# bots\nlegacy:1500\nsomebody:12\n"+qKeyA+":1701\n"; got != want {
 		t.Errorf("projid %q, want %q", got, want)
 	}
-	if got, want := read(t, q.ProjectsFile), "1500:/srv/legacy\n1700:/srv/other\n1701:"+root+"/"+qKeyA+"\n"; got != want {
+	if got, want := read(t, q.ProjectsFile), "1500:/srv/legacy\n1700:/srv/other\n1701:"+filepath.Join(q.VolumeRoot, qKeyA)+"\n"; got != want {
 		t.Errorf("projects %q, want %q", got, want)
 	}
 	fi, err := os.Stat(q.ProjidFile)
@@ -349,7 +349,7 @@ func TestPut_ExistingNameKeepsItsID(t *testing.T) {
 	if res.ProjectID != 1234 {
 		t.Errorf("project id %d, want 1234", res.ProjectID)
 	}
-	if got := read(t, q.ProjectsFile); got != "1234:"+root+"/"+qKeyA+"\n" {
+	if got := read(t, q.ProjectsFile); got != "1234:"+filepath.Join(q.VolumeRoot, qKeyA)+"\n" {
 		t.Errorf("projects %q", got)
 	}
 }
