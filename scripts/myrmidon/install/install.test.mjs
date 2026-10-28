@@ -628,12 +628,11 @@ describe("install.sh", () => {
 
   it("install.sh cleans up temporary manifest file on completion", () => {
     const sb = sandbox();
-    const tmpRoot = process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || os.tmpdir();
-    const tmpBefore = fs.readdirSync(tmpRoot).filter((f) => f.startsWith("tmp."));
-    const r = run(sb);
+    const testTmp = path.join(sb.dir, "tmp");
+    fs.mkdirSync(testTmp, { recursive: true });
+    const r = run(sb, [], { TMPDIR: testTmp });
     assert.equal(r.status, 0, r.stderr);
-    const tmpAfter = fs.readdirSync(tmpRoot).filter((f) => f.startsWith("tmp."));
-    const leaked = tmpAfter.filter((f) => !tmpBefore.includes(f));
+    const leaked = fs.readdirSync(testTmp).filter((f) => f.startsWith("tmp."));
     assert.deepEqual(leaked, [], "install.sh must not leave temporary manifest files behind");
   });
 });
