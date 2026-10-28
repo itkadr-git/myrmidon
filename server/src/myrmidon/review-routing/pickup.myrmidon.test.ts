@@ -46,6 +46,18 @@ describe("review completion pickup", () => {
     await Promise.all([pickupNextReview(ports), pickupNextReview(ports)]);
     expect(wake).toHaveBeenCalledTimes(1);
   });
+  it("retries the same oldest review after budget recovers, without a duplicate wake", async () => {
+    const { ports, wake } = fixture();
+    const admit = wake.getMockImplementation()!;
+    wake.mockImplementationOnce(async () => null as never);
+    expect(await pickupNextReview(ports)).toBe(true);
+    expect(await ports.hasWorkInFlight()).toBe(false);
+    wake.mockImplementation(admit);
+    expect(await pickupNextReview(ports)).toBe(true);
+    expect(await ports.hasWorkInFlight()).toBe(true);
+    expect(await pickupNextReview(ports)).toBe(true);
+    expect(wake.mock.calls.map(([candidate]) => (candidate as { id: string }).id)).toEqual(["old", "old"]);
+  });
   it("does not skip the oldest review when admission suppresses its wake", async () => {
     const { ports, wake } = fixture();
     wake.mockImplementation(async () => null as never);

@@ -18776,9 +18776,65 @@ export function heartbeatService(
   /** The agent row's card as a plain object; anything else reads as an empty card. */
   const readAgentCard = (raw: unknown): Record<string, unknown> =>
     raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  async function pickupReviewForAgent(agent: { id: string; companyId: string }, excludeIssueId?: string) {
+    let woken = 0;
+    const handled = await pickupNextReview({
+      serialize: (work) => db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`review-pickup:${agent.companyId}:${agent.id}`}, 0))`);
+        return work();
+      }),
+      hasWorkInFlight: async () => {
+        const [live] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, agent.companyId),
+          eq(heartbeatRuns.agentId, agent.id),
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+        )).limit(1);
+        if (live) return true;
+        const [pending] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, agent.companyId),
+          eq(agentWakeupRequests.agentId, agent.id),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+        )).limit(1);
+        return Boolean(pending);
+      },
+      candidates: () => db.select({
+        id: issues.id, updatedAt: issues.updatedAt, executionState: issues.executionState,
+      }).from(issues).where(and(
+        eq(issues.companyId, agent.companyId),
+        eq(issues.status, "in_review"),
+        isNull(issues.executionRunId),
+        issueHasNoExecutionHold(db),
+        sql`not exists (
+          select 1 from issue_blockers ib join issues blocker on blocker.id = ib.blocker_issue_id
+          where ib.issue_id = ${issues.id} and ${blockerOpenSql('blocker.status')}
+        )`,
+        sql`${issues.executionState} ->> 'status' in ('pending', 'waiting')`,
+        sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+        sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
+        sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agent.id}`,
+      )),
+      wake: async (candidate) => {
+        if (!idleWakeBudget.tryConsume(agent.companyId)) return null;
+        const result = await enqueueWakeup(agent.id, {
+          source: "automation", triggerDetail: "system", reason: "execution_review_requested",
+          requestedByActorType: "system", requestedByActorId: "review_pickup",
+          idempotencyKey: `review-pickup:${candidate.id}:${parseObject(candidate.executionState).currentStageId ?? "review"}`,
+          contextSnapshot: {
+            issueId: candidate.id, taskKey: candidate.id, source: "review_pickup",
+            executionStage: { ...buildReviewRoutingWakeContext(parseObject(candidate.executionState)) },
+          },
+        });
+        if (result) woken += 1;
+        return result;
+      },
+    }, { excludeIssueId });
+    return { handled, woken };
+  }
+
   const idlePickupSweeper = createIdlePickupSweeper({
     db,
     budget: idleWakeBudget,
+    pickupReviewForAgent,
     readLiveness: teamLivenessRead,
     enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
     logActivity: async (input) => {
@@ -28276,54 +28332,9 @@ export function heartbeatService(
           // OPE-9676: participants in review are not issue assignees. Select
           // their waiting review queue before the general development queues.
           if (pickupAllowed && releasedAgent) {
-            const reviewHandled = await pickupNextReview({
-              serialize: (work) => db.transaction(async (tx) => {
-                await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`review-pickup:${releasedRun.companyId}:${releasedRun.agentId}`}, 0))`);
-                return work();
-              }),
-              hasWorkInFlight: async () => {
-                const [live] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-                  eq(heartbeatRuns.companyId, releasedRun.companyId),
-                  eq(heartbeatRuns.agentId, releasedRun.agentId),
-                  inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
-                )).limit(1);
-                if (live) return true;
-                const [pending] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
-                  eq(agentWakeupRequests.companyId, releasedRun.companyId),
-                  eq(agentWakeupRequests.agentId, releasedRun.agentId),
-                  inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
-                )).limit(1);
-                return Boolean(pending);
-              },
-              candidates: () => db.select({
-                id: issues.id, updatedAt: issues.updatedAt, executionState: issues.executionState,
-              }).from(issues).where(and(
-                eq(issues.companyId, releasedRun.companyId),
-                eq(issues.status, "in_review"),
-                isNull(issues.executionRunId),
-                issueHasNoExecutionHold(db),
-                sql`not exists (
-                  select 1 from issue_blockers ib join issues blocker on blocker.id = ib.blocker_issue_id
-                  where ib.issue_id = ${issues.id} and ${blockerOpenSql('blocker.status')}
-                )`,
-                sql`${issues.executionState} ->> 'status' in ('pending', 'waiting')`,
-                sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
-                sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
-                sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${releasedRun.agentId}`,
-              )),
-              wake: async (candidate) => {
-                if (!idleWakeBudget.tryConsume(releasedRun.companyId)) return null;
-                return enqueueWakeup(releasedRun.agentId, {
-                  source: "automation", triggerDetail: "system", reason: "execution_review_requested",
-                  requestedByActorType: "system", requestedByActorId: "review_pickup",
-                  idempotencyKey: `review-pickup:${candidate.id}:${parseObject(candidate.executionState).currentStageId ?? "review"}`,
-                  contextSnapshot: {
-                    issueId: candidate.id, taskKey: candidate.id, source: "review_pickup",
-                    executionStage: { ...buildReviewRoutingWakeContext(parseObject(candidate.executionState)) },
-                  },
-                });
-              },
-            }, { excludeIssueId: releasedIssueId });
+            const { handled: reviewHandled } = await pickupReviewForAgent(
+              { id: releasedRun.agentId, companyId: releasedRun.companyId }, releasedIssueId ?? undefined,
+            );
             if (reviewHandled) return;
           }
           // myrmidon(1.6.5 OPE-6608, review item 1 / design §3.5): with the

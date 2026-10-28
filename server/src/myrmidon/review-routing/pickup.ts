@@ -23,7 +23,8 @@ export async function pickupNextReview(
     if (!next) return false;
     if (await ports.hasWorkInFlight()) return true;
     // A rejected admission is still review work: do not fall through to another
-    // lane or skip FIFO. The periodic routing sweep can retry it.
+    // lane or skip FIFO. The periodic idle sweep retries this same selector;
+    // candidates are never removed or changed when admission returns null.
     await ports.wake(next);
     return true;
   });
