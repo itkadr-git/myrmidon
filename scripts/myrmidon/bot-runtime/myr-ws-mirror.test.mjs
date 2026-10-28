@@ -144,3 +144,66 @@ test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushe
   // Cleanup
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test("syncMirrorAlternates rolls back alternates file and throws on git repack failure", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "myr-ws-mirror-fail-test-"));
+  const mirrorRoot = path.join(tmp, "cache", "git");
+  const parsed = { owner: "itkadr-git", repo: "myrmidon" };
+  const mirrorDir = path.join(mirrorRoot, parsed.owner, `${parsed.repo}.git`);
+  const workDir = path.join(tmp, "work");
+
+  fs.mkdirSync(mirrorDir, { recursive: true });
+  runGit(["init", "--bare", mirrorDir]);
+
+  // Seed mirror with a commit so there are objects
+  const seedWork = path.join(tmp, "seed");
+  fs.mkdirSync(seedWork, { recursive: true });
+  runGit(["init", seedWork]);
+  runGit(["config", "user.name", "Tester"], seedWork);
+  runGit(["config", "user.email", "test@example.com"], seedWork);
+  fs.writeFileSync(path.join(seedWork, "file.txt"), "hello world");
+  runGit(["add", "."], seedWork);
+  runGit(["commit", "-m", "init"], seedWork);
+  runGit(["push", mirrorDir, "HEAD:refs/heads/main"], seedWork);
+
+  runGit(["clone", mirrorDir, workDir]);
+  runGit(["config", "user.name", "Tester"], workDir);
+  runGit(["config", "user.email", "test@example.com"], workDir);
+  fs.writeFileSync(path.join(workDir, "local.txt"), "local commit");
+  runGit(["add", "."], workDir);
+  runGit(["commit", "-m", "local"], workDir);
+
+  const env = {
+    MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot,
+    PATH: process.env.PATH,
+  };
+
+  // Make git repack fail by replacing .git/objects/pack with a regular file (triggers ENOTDIR)
+  const packDir = path.join(workDir, ".git", "objects", "pack");
+  fs.rmSync(packDir, { recursive: true, force: true });
+  fs.writeFileSync(packDir, "not a directory");
+
+  const altFile = path.join(workDir, ".git", "objects", "info", "alternates");
+  assert.ok(!fs.existsSync(altFile), "alternates file should not exist initially");
+
+  let thrown = false;
+  try {
+    syncMirrorAlternates(env, workDir, parsed);
+  } catch {
+    thrown = true;
+  }
+
+  assert.ok(thrown, "syncMirrorAlternates must rethrow when git repack fails");
+  const altFileExists = fs.existsSync(altFile);
+  if (altFileExists) {
+    const content = fs.readFileSync(altFile, "utf8");
+    assert.ok(
+      !content.includes(path.join(mirrorDir, "objects")),
+      "alternates file must not contain mirror objects path after rollback"
+    );
+  } else {
+    assert.ok(!altFileExists, "alternates file should be completely rolled back/removed");
+  }
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});

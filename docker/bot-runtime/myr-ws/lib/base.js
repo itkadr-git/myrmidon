@@ -135,11 +135,23 @@ function syncMirrorAlternates(env, dir, parsed) {
   const lines = existing.split("\n").map((l) => l.trim()).filter(Boolean);
   if (!lines.includes(objectsDir)) {
     fs.mkdirSync(path.dirname(alternatesFile), { recursive: true });
+    const revertAlternates = () => {
+      try {
+        if (existing) {
+          fs.writeFileSync(alternatesFile, existing, "utf8");
+        } else {
+          fs.rmSync(alternatesFile, { force: true });
+        }
+      } catch {
+        // ignore revert error
+      }
+    };
     fs.writeFileSync(alternatesFile, existing ? `${existing.trimEnd()}\n${targetLine}` : targetLine, "utf8");
     try {
       mustGit(env, dir, ["repack", "-a", "-d", "-l"], EXIT.usage);
-    } catch {
-      // non-fatal if repack fails
+    } catch (err) {
+      revertAlternates();
+      throw err;
     }
   }
   return mirror;

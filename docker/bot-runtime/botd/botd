@@ -369,12 +369,12 @@ async function main() {
     if (hermesRetentionMod && typeof hermesRetentionMod.pruneHermesClosedTaskSessions === "function") {
       try {
         const desiredState = await desired.poll();
-        const workspaces = desiredState.ok && desiredState.value && Array.isArray(desiredState.value.workspaces)
-          ? desiredState.value.workspaces
-          : [];
-
+        const payload = desiredState.ok && desiredState.value ? desiredState.value : {};
         const res = hermesRetentionMod.pruneHermesClosedTaskSessions({
-          workspaces,
+          desiredState: payload,
+          workspaces: Array.isArray(payload.workspaces) ? payload.workspaces : [],
+          protectKeys: Array.isArray(payload.protectKeys) ? payload.protectKeys : [],
+          closedKeys: Array.isArray(payload.closedKeys) ? payload.closedKeys : [],
           retentionDays: 7,
           log,
         });
