@@ -176,7 +176,7 @@ function listArchives() {
 }
 
 async function main() {
-  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod] = await Promise.all([
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod, hermesRetentionMod] = await Promise.all([
     tryImport("desired.js"),
     tryImport("rules.js"),
     tryImport("classify.js"),
@@ -188,6 +188,7 @@ async function main() {
     import(path.join(__dirname, "lib", "remove.js")),
     import(path.join(__dirname, "lib", "cache.js")),
     tryImport("repair.js"),
+    tryImport("hermes-retention.js"),
   ]);
   guardedRemove = (p, roots) => removeMod.guardedRemove(p, roots);
   // One attention signal per path per TTL (botd-attention.json); the uid of the
@@ -363,18 +364,38 @@ async function main() {
     if (!r.ok) throw new Error(r.reason);
     if (r.removed.length > 0) log(`botd: archive retention retired ${r.removed.length} entries (${r.removed.map((x) => x.reason).join(",")}), ${r.remaining} left, ${r.remainingBytes} bytes`);
 
-    // Hermes session retention (7 days) & vacuum when idle (OPE-9673):
-    try {
-      const pruneRes = spawnSync("hermes", ["sessions", "prune", "--older-than", "7d", "--yes"], {
-        encoding: "utf8",
-        timeout: 60000,
-      });
-      if (pruneRes.status === 0 && pruneRes.stdout && pruneRes.stdout.trim()) {
-        log(`botd: hermes sessions prune: ${pruneRes.stdout.trim()}`);
-        spawnSync("hermes", ["sessions", "optimize"], { encoding: "utf8", timeout: 120000 });
+    // Hermes session retention (OPE-9673):
+    // Only remove sessions for CLOSED tasks older than 7 days, then VACUUM when idle.
+    if (hermesRetentionMod && typeof hermesRetentionMod.pruneHermesClosedTaskSessions === "function") {
+      try {
+        const closedTaskKeys = new Set();
+        const closedTaskIds = new Set();
+        const cutoff = Date.now() - 7 * 86_400_000;
+
+        const desiredState = await desired.poll();
+        if (desiredState.ok && desiredState.value && Array.isArray(desiredState.value.workspaces)) {
+          for (const ws of desiredState.value.workspaces) {
+            if (ws && ws.state === "closing") {
+              const since = Date.parse(ws.since || 0);
+              if (Number.isFinite(since) && since < cutoff && ws.key) {
+                closedTaskKeys.add(ws.key);
+              }
+            }
+          }
+        }
+
+        const res = hermesRetentionMod.pruneHermesClosedTaskSessions({
+          closedTaskKeys,
+          closedTaskIds,
+          retentionDays: 7,
+          log,
+        });
+        if (res.prunedCount > 0) {
+          log(`botd: hermes session retention pruned ${res.prunedCount} closed-task sessions (vacuumed: ${res.vacuumed})`);
+        }
+      } catch (err) {
+        log(`botd: hermes retention warning: ${err.message}`);
       }
-    } catch {
-      // non-fatal if hermes CLI is not available
     }
   };
 
