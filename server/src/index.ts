@@ -201,6 +201,7 @@ import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall 
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
+import { createBoardJanitorScheduler } from "./myrmidon/board-janitor/index.js"; // myrmidon(BOARD-JANITOR)
 import { createStaleBlockScheduler, createRecoveryLivenessEventReader } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import { createOwnerCardTtlScheduler } from "./myrmidon/owner-reply/index.js"; // myrmidon(1.6.5-F21-B)
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
@@ -1864,6 +1865,11 @@ async function startServerWithDatabaseTeardown(
   // PR refs / merge sha / time) once every PR is merged — or returns it to the
   // assignee when a PR was closed without merging.
   const scheduleTaskPrSyncSweep = createTaskPrSyncScheduler({ db: db as any, track: trackHeartbeatSchedulerWork });
+  // myrmidon(BOARD-JANITOR): daily board cleanup (08:00 Irkutsk / on demand)
+  const scheduleBoardJanitorSweep = createBoardJanitorScheduler({
+    db: db as any,
+    track: trackHeartbeatSchedulerWork,
+  });
   // myrmidon(STALE-BLOCK): the periodic watchdog that lifts dead blocked
   // reasons (a done/cancelled blocker, a passed due date, a cleared gate) off
   // blocked tasks through the ordinary issue update path. Opt-in via
@@ -2603,6 +2609,7 @@ async function startServerWithDatabaseTeardown(
         scheduleEnvironmentLeaseCleanupSweep();
         schedulePendingInteractionWakeSweep(); // myrmidon(P12)
         scheduleTaskPrSyncSweep(); // myrmidon(TASK-PR-SYNC)
+        scheduleBoardJanitorSweep(); // myrmidon(BOARD-JANITOR)
         scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
         scheduleOwnerCardTtlSweep(); // myrmidon(1.6.5-F21-B)
         scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
@@ -2815,6 +2822,7 @@ async function startServerWithDatabaseTeardown(
       scheduleEnvironmentLeaseCleanupSweep();
       schedulePendingInteractionWakeSweep(); // myrmidon(P12)
       scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
+      scheduleBoardJanitorSweep(); // myrmidon(BOARD-JANITOR)
       scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
       scheduleOwnerCardTtlSweep(); // myrmidon(1.6.5-F21-B)
       scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
