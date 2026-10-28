@@ -20120,6 +20120,25 @@ export function heartbeatService(
   // pass after deploy is also the one-off cleanup of the records left behind.
   async function reconcileStrandedDeferredWakes(): Promise<{ cancelledTerminal: number; revisited: number; expired: number }> {
     const now = Date.now();
+    // Execution-wait deferrals belong to the queued-comment resume path; the
+    // stale issue-execution expiry must not cancel them before their blocker clears.
+    // Wakes of a closed task are dead input: the comment is saved on the task,
+    // the wake itself can only start work nobody wants. Cancel them like the
+    // close transition does (DEFERRED-WAKE-LEAK), with the same marker.
+    const closed = await db.update(agentWakeupRequests).set({
+      status: "cancelled", error: "issue_closed", finishedAt: new Date(), updatedAt: new Date(),
+    }).where(and(
+      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      isNull(agentWakeupRequests.runId),
+      lte(agentWakeupRequests.requestedAt, new Date(now - 10 * 60_000)),
+      exists(db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+        inArray(issues.status, ["done", "cancelled"]),
+        isNull(issues.executionRunId),
+      ))),
+    )).returning({ id: agentWakeupRequests.id });
+
     const staleCutoff = new Date(now - 30 * 60_000);
     const staleWakes = await db.select({ wake: agentWakeupRequests }).from(agentWakeupRequests).innerJoin(companies,
       and(eq(companies.id, agentWakeupRequests.companyId), eq(companies.status, "active"))).where(and(
@@ -20138,6 +20157,11 @@ export function heartbeatService(
           sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${agentWakeupRequests.payload}->>'issueId'`,
           sql`${heartbeatRuns.contextSnapshot}->>'taskId' = ${agentWakeupRequests.payload}->>'issueId'`,
         ),
+      )))),
+      not(exists(db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+        inArray(issues.status, ["done", "cancelled"]),
       )))),
     )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
     let expired = 0;
@@ -20158,24 +20182,6 @@ export function heartbeatService(
         .catch(err => logger.warn({ err, wakeId: wake.id }, "failed to re-wake agent after deferred issue execution expiry"));
     }
     const settleBefore = new Date(now - 2 * 60_000);
-    // Execution-wait deferrals belong to the queued-comment resume path; the
-    // stale issue-execution expiry must not cancel them before their blocker clears.
-    // Wakes of a closed task are dead input: the comment is saved on the task,
-    // the wake itself can only start work nobody wants. Cancel them like the
-    // close transition does (DEFERRED-WAKE-LEAK), with the same marker.
-    const closed = await db.update(agentWakeupRequests).set({
-      status: "cancelled", error: "issue_closed", finishedAt: new Date(), updatedAt: new Date(),
-    }).where(and(
-      eq(agentWakeupRequests.status, "deferred_issue_execution"),
-      isNull(agentWakeupRequests.runId),
-      lte(agentWakeupRequests.requestedAt, new Date(now - 10 * 60_000)),
-      exists(db.select({ id: issues.id }).from(issues).where(and(
-        eq(issues.companyId, agentWakeupRequests.companyId),
-        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
-        inArray(issues.status, ["done", "cancelled"]),
-        isNull(issues.executionRunId),
-      ))),
-    )).returning({ id: agentWakeupRequests.id });
 
     // Open tasks: hand the free lock's queue to the ordinary release drain, so
     // every gate (pause holds, handoff, liveness of comments, agent state)

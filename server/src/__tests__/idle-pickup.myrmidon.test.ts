@@ -698,6 +698,36 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(result.woken).toBe(1);
   });
 
+  it("myrmidon(1.6.6 OPE-9445): an idle pickup does not coalesce into an old deferred wake (>30m requestedAt)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId });
+    const oldDate = new Date(Date.now() - 35 * 60 * 1000);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId },
+      status: "deferred_issue_execution",
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      createdAt: new Date(),
+      requestedAt: oldDate,
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(0);
+    expect(result.woken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      source: "automation",
+      reason: IDLE_WAKE_REASON,
+      payload: expect.objectContaining({ issueId }),
+    }));
+  });
+
   it("a deferred or claimed wake also counts as covering (not only queued)", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId });
