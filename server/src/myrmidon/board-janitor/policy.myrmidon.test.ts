@@ -112,7 +112,9 @@ describe("Rule 2: Stale block resolution vs question holding", () => {
     const judgment = judgeStaleBlock(task, 0, 0, null, BASE_NOW);
     expect(judgment).not.toBeNull();
     expect(judgment?.action).toBe("unblock_to_todo");
-    expect(judgment?.comment).toBe("блок снят: блокер закрыт/отсутствует");
+    if (judgment?.action === "unblock_to_todo") {
+      expect(judgment.comment).toBe("блок снят: блокер закрыт/отсутствует");
+    }
   });
 
   it("does NOT unblock if there is an open blocker or open child", () => {
@@ -149,8 +151,10 @@ describe("Rule 2: Stale block resolution vs question holding", () => {
     const judgment = judgeStaleBlock(task, 0, 0, lastComment, BASE_NOW);
     expect(judgment).not.toBeNull();
     expect(judgment?.action).toBe("keep_waiting_question");
-    expect(judgment?.daysWaiting).toBe(4);
-    expect(judgment?.snippet).toContain("согласование");
+    if (judgment?.action === "keep_waiting_question") {
+      expect(judgment.daysWaiting).toBe(4);
+      expect(judgment.snippet).toContain("согласование");
+    }
   });
 });
 
@@ -216,8 +220,10 @@ describe("Rule 4: Tasks untouched >21 days", () => {
     const judgment = judgeStaleUntouched(task, BASE_NOW);
     expect(judgment).not.toBeNull();
     expect(judgment?.action).toBe("mark_stale");
-    expect(judgment?.daysUntouched).toBe(25);
-    expect(judgment?.comment).toBe("актуально? закрыть или назначить срок");
+    if (judgment?.action === "mark_stale") {
+      expect(judgment.daysUntouched).toBe(25);
+      expect(judgment.comment).toBe("актуально? закрыть или назначить срок");
+    }
   });
 
   it("moves stale task to backlog after 7 days without response", () => {

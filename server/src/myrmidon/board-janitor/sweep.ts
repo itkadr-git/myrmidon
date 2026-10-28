@@ -10,15 +10,9 @@
 // 5. Overdue deadline -> comment to assignee and row in report.
 // 6. Report: single document `janitor-YYYY-MM-DD` on service ticket (OPE-9758).
 
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
-  and,
-  desc,
-  eq,
-  inArray,
-  sql,
   type Db,
-} from "@myrmidon/db";
-import {
   issues,
   issueComments,
   issueRelations,
@@ -28,6 +22,7 @@ import {
 } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { documentService } from "../../services/documents.js";
+import { notifySwarmIssueEvent } from "../swarm-claim/events.js";
 import {
   generateJanitorReportMarkdown,
   judgeMergedPrClosure,
@@ -150,6 +145,7 @@ export function createBoardJanitorSweep(deps: {
 
     const openIssueCandidates: IssueCandidate[] = rawOpenIssues.map((i) => ({
       ...i,
+      identifier: i.identifier ?? i.id,
       labels: issueLabelMap.get(i.id) ?? [],
     }));
 
@@ -378,7 +374,6 @@ export function createBoardJanitorSweep(deps: {
               companyId: options.companyId,
               name: STALE_LABEL_NAME,
               color: "#f59e0b",
-              description: "Задача не имела активности более 21 дня",
             })
             .returning({ id: labels.id });
         }
@@ -436,6 +431,28 @@ export function createBoardJanitorSweep(deps: {
                   lastActivityAt: now,
                 })
                 .where(eq(issues.id, action.issueId));
+
+              if (action.comment) {
+                await tx.insert(issueComments).values({
+                  companyId: options.companyId,
+                  issueId: action.issueId,
+                  authorAgentId: settings.serviceAgentId,
+                  body: action.comment,
+                  createdAt: now,
+                  updatedAt: now,
+                });
+              }
+
+              try {
+                notifySwarmIssueEvent({
+                  issueId: action.issueId,
+                  status: "todo",
+                  assigneeAgentId: null,
+                  touched: ["status"],
+                });
+              } catch (e) {
+                logger.warn({ err: e, issueId: action.issueId }, "failed to notify swarm issue event");
+              }
               break;
             }
             case "mark_stale_untouched": {
@@ -514,7 +531,7 @@ export function createBoardJanitorSweep(deps: {
     let reportDocumentId: string | undefined;
     if (!options.dryRun && settings.serviceTicketId) {
       try {
-        const docResult = await documentService(db).putIssueDocumentByKey({
+        const docResult = await documentService(db).upsertIssueDocument({
           issueId: settings.serviceTicketId,
           key: reportDocKey,
           title: `janitor-${dateStr}`,
@@ -522,7 +539,7 @@ export function createBoardJanitorSweep(deps: {
           body: reportMarkdown,
           createdByAgentId: settings.serviceAgentId,
         });
-        reportDocumentId = docResult?.documentId ?? undefined;
+        reportDocumentId = docResult?.id ?? undefined;
       } catch (err) {
         logger.warn({ err, reportDocKey }, "Failed to write janitor report document to service ticket");
       }

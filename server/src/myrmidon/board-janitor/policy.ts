@@ -19,12 +19,12 @@ export interface IssueCandidate {
   identifier: string;
   title: string;
   status: string;
-  assigneeAgentId: string | null;
-  assigneeUserId: string | null;
-  parentId: string | null;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  parentId?: string | null;
   createdAt: Date;
   updatedAt: Date;
-  lastActivityAt: Date | null;
+  lastActivityAt?: Date | null;
   labels?: Array<{ name: string; createdAt?: Date }>;
   metadata?: Record<string, unknown> | null;
 }
@@ -454,7 +454,7 @@ export function generateJanitorReportMarkdown(input: {
 
   lines.push("## 8. Вопросы, требующие решения владельца (Alex)");
   // Only surface items where Alex specifically needs to make a decision
-  const ownerNeedsAction = waitingQ.filter((w) => w.snippet.toLowerCase().includes("alex") || w.snippet.toLowerCase().includes("согласован"));
+  const ownerNeedsAction = waitingQ.filter((w) => w.questionSnippet.toLowerCase().includes("alex") || w.questionSnippet.toLowerCase().includes("согласован"));
   if (ownerNeedsAction.length === 0 && overdue.length === 0) {
     lines.push("Вопросов к владельцу нет. Доска находится в управляемом состоянии.");
   } else {

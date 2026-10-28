@@ -2537,3 +2537,15 @@ code against FLAGS.md / SETTINGS.md / the change fragments): entries restored fo
 code reads and that were never classified — `MYRMIDON_BOT_SCOPE_SUBDIR` (the bot workspace
 subdirectory, F-12), plus `MYRMIDON_CONTINUATION_MESSAGE_CHARS` and
 `MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS` (continuation-history character budgets, DBC-3). They are not part of the swarm settings and are listed here only for the gate.
+
+### Board Janitor (1.6.7)
+
+Routine board hygiene sweep running daily at 08:00 Irkutsk (00:00 UTC) and on-demand via `POST /api/myrmidon/board-janitor/run`.
+
+| Variable | Scope | Default | Meaning |
+|---|---|---|---|
+| `MYRMIDON_BOARD_JANITOR_ENABLED` | 1.6.7-JANITOR | `1` (on) | Master switch for daily board janitor routine |
+| `MYRMIDON_BOARD_JANITOR_RUN_HOUR_IRKUTSK` | 1.6.7-JANITOR | `8` | Hour of day in Irkutsk time (UTC+8) when daily sweep triggers (default 8 = 00:00 UTC) |
+| `MYRMIDON_BOARD_JANITOR_SERVICE_AGENT_ID` | 1.6.7-JANITOR | `b018f9bf-3f76-48d5-9530-aa9b0bf917f9` | Agent ID under whose name janitor actions and comments are authored |
+| `MYRMIDON_BOARD_JANITOR_SERVICE_TICKET_ID` | 1.6.7-JANITOR | `a8529883-ab02-4998-a5ab-d70cd81560f8` | Service ticket where the daily report document `janitor-YYYY-MM-DD` is written |
+

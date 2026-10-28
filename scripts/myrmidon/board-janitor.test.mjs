@@ -134,6 +134,7 @@ test("judgeTask: Rule 3 routes unassigned release task to role distribution queu
   const queueAction = actions.find((a) => a.type === "queue_unassigned_release");
   assert.ok(queueAction);
   assert.equal(queueAction.releasePrefix, "1.6.7");
+  assert.equal(queueAction.comment, "добавлено в очередь распределения по ролям (DEVFLOW-9678)");
 });
 
 test("judgeTask: Rule 4 marks task untouched >21 days with label 'залежалась'", () => {

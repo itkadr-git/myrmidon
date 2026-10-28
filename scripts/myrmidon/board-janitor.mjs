@@ -248,8 +248,9 @@ export function generateReport({ dateStr, statsBefore, statsAfter, actions }) {
 
 export async function runWithApi({ apiUrl, apiKey, companyId, apply, only, serviceTicketId, log = console.log }) {
   const runId = process.env.PAPERCLIP_RUN_ID || "a354063f-ef77-4b1e-95b3-6254165ff37e";
+  const authHeader = apiKey ? ["Bearer", apiKey].join(" ") : "";
   const headers = {
-    Authorization: `Bearer ${apiKey}`,
+    ...(authHeader ? { Authorization: authHeader } : {}),
     "Content-Type": "application/json",
     ...(runId ? { "X-Paperclip-Run-Id": runId } : {}),
   };
@@ -274,20 +275,31 @@ export async function runWithApi({ apiUrl, apiKey, companyId, apply, only, servi
     return res.json();
   };
 
-  log("Fetching issues from API...");
-  const allIssues = [];
-  let offset = 0;
-  const limit = 500;
-  while (true) {
-    const batch = await get(`/api/companies/${companyId}/issues?limit=${limit}&offset=${offset}`);
-    allIssues.push(...batch);
-    if (batch.length < limit) break;
-    offset += limit;
-  }
-
-  let openIssues = allIssues.filter((i) => isOpenStatus(i.status));
+  let openIssues = [];
   if (only?.length) {
-    openIssues = openIssues.filter((i) => only.includes(i.identifier) || only.includes(i.id));
+    log(`Fetching ${only.length} specified issue(s) from API...`);
+    for (const key of only) {
+      try {
+        const item = await get(`/api/issues/${key}`);
+        if (item && isOpenStatus(item.status)) {
+          openIssues.push(item);
+        }
+      } catch (e) {
+        log(`Could not fetch issue ${key}: ${e.message}`);
+      }
+    }
+  } else {
+    log("Fetching issues from API...");
+    const allIssues = [];
+    let offset = 0;
+    const limit = 200;
+    while (true) {
+      const batch = await get(`/api/companies/${companyId}/issues?limit=${limit}&offset=${offset}&view=compact`);
+      allIssues.push(...batch);
+      if (batch.length < limit) break;
+      offset += limit;
+    }
+    openIssues = allIssues.filter((i) => isOpenStatus(i.status));
   }
 
   const now = new Date();
@@ -316,6 +328,49 @@ export async function runWithApi({ apiUrl, apiKey, companyId, apply, only, servi
     if (i.parentId) {
       context.openChildrenByIssue.set(i.parentId, (context.openChildrenByIssue.get(i.parentId) || 0) + 1);
     }
+    if (i.status === "blocked") {
+      const openBlockers = i.blockerAttention?.unresolvedBlockerCount ?? 0;
+      context.openBlockersByIssue.set(i.id, openBlockers);
+    }
+  }
+
+  // Fetch work products for candidate PR issues
+  const candidatePrIssues = openIssues.filter((i) => i.status === "in_review" || i.status === "in_progress" || /PR\s*#?\d+/i.test(i.title));
+  log(`Fetching work products for ${candidatePrIssues.length} candidate issues...`);
+  for (let idx = 0; idx < candidatePrIssues.length; idx += 10) {
+    const chunk = candidatePrIssues.slice(idx, idx + 10);
+    await Promise.all(
+      chunk.map(async (task) => {
+        try {
+          const wpList = await get(`/api/issues/${task.id}/work-products`);
+          if (Array.isArray(wpList) && wpList.length > 0) {
+            context.workProductsByIssue.set(task.id, wpList);
+          }
+        } catch {
+          // ignore error
+        }
+      })
+    );
+  }
+
+  // Fetch comments for blocked issues without open blockers/children
+  const blockedToCheck = openIssues.filter((i) => i.status === "blocked" && (context.openBlockersByIssue.get(i.id) ?? 0) === 0 && (context.openChildrenByIssue.get(i.id) ?? 0) === 0);
+  log(`Fetching comments for ${blockedToCheck.length} blocked issues without blockers...`);
+  for (let idx = 0; idx < blockedToCheck.length; idx += 10) {
+    const chunk = blockedToCheck.slice(idx, idx + 10);
+    await Promise.all(
+      chunk.map(async (task) => {
+        try {
+          const comments = await get(`/api/issues/${task.id}/comments`);
+          if (Array.isArray(comments) && comments.length > 0) {
+            const last = comments[comments.length - 1];
+            context.lastCommentByIssue.set(task.id, last);
+          }
+        } catch {
+          // ignore error
+        }
+      })
+    );
   }
 
   log(`Analyzing ${openIssues.length} open issues...`);
@@ -347,6 +402,26 @@ export async function runWithApi({ apiUrl, apiKey, companyId, apply, only, servi
     return { actions: allActions, statsBefore, statsAfter, applied: 0 };
   }
 
+  // Resolve stale label id
+  let staleLabelId = null;
+  try {
+    const labelList = await get(`/api/companies/${companyId}/labels`);
+    if (Array.isArray(labelList)) {
+      const found = labelList.find((l) => l.name === STALE_LABEL_NAME);
+      if (found) {
+        staleLabelId = found.id;
+      } else {
+        const created = await post(`/api/companies/${companyId}/labels`, {
+          name: STALE_LABEL_NAME,
+          color: "#f59e0b",
+        });
+        staleLabelId = created?.id ?? null;
+      }
+    }
+  } catch {
+    // fallback
+  }
+
   log(`[apply] Applying ${allActions.length} actions...`);
   let applied = 0;
   for (const a of allActions) {
@@ -358,13 +433,20 @@ export async function runWithApi({ apiUrl, apiKey, companyId, apply, only, servi
         await patch(`/api/issues/${a.issueId}`, { status: "todo", comment: a.comment });
         applied++;
       } else if (a.type === "queue_unassigned_release") {
-        await patch(`/api/issues/${a.issueId}`, { status: "todo" });
+        await patch(`/api/issues/${a.issueId}`, { status: "todo", comment: a.comment });
         applied++;
       } else if (a.type === "move_stale_to_backlog") {
         await patch(`/api/issues/${a.issueId}`, { status: "backlog", comment: a.comment });
         applied++;
-      } else if (a.type === "mark_stale_untouched" && a.comment) {
-        await patch(`/api/issues/${a.issueId}`, { comment: a.comment });
+      } else if (a.type === "mark_stale_untouched") {
+        const patchBody = { comment: a.comment };
+        if (staleLabelId) {
+          const existingLabels = a.labelIds || [];
+          if (!existingLabels.includes(staleLabelId)) {
+            patchBody.labelIds = [...existingLabels, staleLabelId];
+          }
+        }
+        await patch(`/api/issues/${a.issueId}`, patchBody);
         applied++;
       } else if (a.type === "notify_overdue") {
         await patch(`/api/issues/${a.issueId}`, { comment: a.comment });
@@ -408,9 +490,9 @@ async function main(argv) {
 
   const only = arg("--only")?.split(",").filter(Boolean) ?? null;
   const serviceTicket = arg("--service-ticket") ?? DEFAULT_SERVICE_TICKET_ID;
-  const companyId = arg("--company-id") ?? process.env.PAPERCLIP_COMPANY_ID ?? "2870b911-483a-4091-9f15-183841811143";
+  const companyId = arg("--company-id") || process.env.PAPERCLIP_COMPANY_ID || "2870b911-483a-4091-9f15-183841811143";
 
-  const apiUrl = process.env.PAPERCLIP_API_URL || "http://10.10.10.2:3100";
+  const apiUrl = process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100";
   const apiKey = process.env.PAPERCLIP_API_KEY;
 
   if (process.env.DATABASE_URL) {
