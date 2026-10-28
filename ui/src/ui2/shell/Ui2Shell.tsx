@@ -37,7 +37,10 @@ export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: stri
         {...rootProps}
       >
         <Ui2PhoneHeader />
-        <main style={{ flex: 1, minWidth: 0, paddingBottom: "var(--myr-phone-tabbar-height)" }}>
+        <main
+          data-testid="ui2-main"
+          style={{ flex: 1, minWidth: 0, paddingBottom: "var(--myr-phone-tabbar-height)" }}
+        >
           {content}
         </main>
         <div style={{ position: "fixed", bottom: 0, left: 0, right: 0 }}>

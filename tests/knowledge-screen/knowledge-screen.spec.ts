@@ -160,6 +160,11 @@ for (const screen of SCREENS) {
       await main.evaluate((el) => {
         el.scrollTop = 0;
       });
+      const expandAll = page.getByRole("button", { name: /развернуть раздел|expand section/i });
+      const expandCount = await expandAll.count();
+      for (let i = 0; i < expandCount; i++) {
+        await expandAll.nth(i).click();
+      }
       const tree = page.locator('[data-testid="knowledge-tree-scroll"]');
       const treeMetrics = await tree.evaluate((el) => ({
         scroll: el.scrollHeight,
