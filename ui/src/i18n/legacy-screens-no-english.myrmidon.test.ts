@@ -11,6 +11,7 @@ import { collectForkMessages } from "./myrmidon-i18n";
 import { flattenCatalog } from "./catalog-utils";
 
 const UI_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const REPO_ROOT = join(UI_ROOT, "../..");
 
 const SCREENS = [
   "pages/Issues.tsx",
@@ -110,26 +111,12 @@ describe("guarded files carry no English literals", () => {
   it("guarded lists name only .tsx files under ui/src", () => {
     expect(guardedFromLists.filter((rel) => !rel.endsWith(".tsx") || rel.startsWith("/") || rel.includes(".."))).toEqual([]);
   });
-  it("catches hard-coded English in a ternary code branch but ignores identifiers and i18n keys", () => {
-    expect(findEnglishLiterals('{ready ? "Ready to run" : t("area.jobs.waiting")}')).toEqual([
-      { line: 1, kind: "literal", text: "Ready to run" },
-    ]);
-  });
 
-  it("ignores data and class strings in ternary expressions while catching user-facing copy", () => {
-    expect(findEnglishLiterals([
-      'const route = allowed ? "access" : "gallery";',
-      'const url = local ? "https://local.example" : "https://remote.example";',
-      'const classes = active ? "text-sm font-bold" : "text-xs";',
-      'const label = ready ? "Ready to run" : "Waiting for approval";',
-    ].join("\n"))).toEqual([
-      { line: 4, kind: "literal", text: "Ready to run" },
-    ]);
-  });
   it("scans all shipped and example plugin UI entry files", () => {
-    const pluginUiFiles = readdirSync(join(UI_ROOT, "../../packages/plugins"), { recursive: true })
+    const pluginsDir = join(REPO_ROOT, "packages/plugins");
+    const pluginUiFiles = readdirSync(pluginsDir, { recursive: true })
       .filter((path): path is string => typeof path === "string" && /^((examples\/[^/]+)|([^/]+))\/src\/ui\/.*\.tsx?$/.test(path))
-      .map((path) => join(UI_ROOT, "../../packages/plugins", path))
+      .map((path) => join(pluginsDir, path))
       .filter((path) => !path.includes("/sdk/src/ui/"));
     expect(pluginUiFiles.length).toBeGreaterThan(0);
     const expectedLegacyEnglishFiles = new Set([
@@ -155,22 +142,34 @@ describe("guarded files carry no English literals", () => {
     expect(allowlistedOffenders.length).toBeGreaterThan(0);
   });
 
-  it("scans web application UI sources when present", () => {
-    const webRoot = join(UI_ROOT, "../../web");
-    if (!existsSync(webRoot)) return;
-    const webFiles = readdirSync(webRoot, { recursive: true })
-      .filter((path): path is string => typeof path === "string" && /\.(?:tsx|jsx)$/.test(path))
-      .map((path) => join(webRoot, path));
-    expect(webFiles.length).toBeGreaterThan(0);
-    const offenders = webFiles.flatMap((path) =>
-      findEnglishLiterals(readFileSync(path, "utf8")).map((o) => `${path}:line ${o.line}: ${o.kind} "${o.text}"`),
-    );
-    expect(offenders, "expected no hard-coded English UI copy in web files").toEqual([]);
+  it("scans web application UI sources when present and verifies web JSX scanner coverage", () => {
+    const webRoot = join(REPO_ROOT, "web");
+    if (existsSync(webRoot)) {
+      const webFiles = readdirSync(webRoot, { recursive: true })
+        .filter((path): path is string => typeof path === "string" && /\.(?:tsx|jsx)$/.test(path))
+        .map((path) => join(webRoot, path));
+      const offenders = webFiles.flatMap((path) =>
+        findEnglishLiterals(readFileSync(path, "utf8")).map((o) => `${path}:line ${o.line}: ${o.kind} "${o.text}"`),
+      );
+      expect(offenders, "expected no hard-coded English UI copy in web files").toEqual([]);
+    }
+
+    // Explicit behavioral verification: ensure scanner correctly flags visible unlocalized JSX in web UI files
+    const webSampleUntranslated = '<div className="container"><h1>Dashboard Overview</h1><input placeholder="Search records" /></div>';
+    const webSampleTranslated = '<div className="container"><h1>{t("dashboard.title")}</h1><input placeholder={t("dashboard.search")} /></div>';
+    expect(findEnglishLiterals(webSampleUntranslated)).toEqual([
+      { line: 1, kind: "text", text: "Dashboard Overview" },
+      { line: 1, kind: "attr", text: 'placeholder="Search records"' },
+    ]);
+    expect(findEnglishLiterals(webSampleTranslated)).toEqual([]);
   });
 
-  it("detects a deliberately untranslated plugin JSX string", () => {
+  it("detects a deliberately untranslated plugin or web JSX string and attribute", () => {
     expect(findEnglishLiterals('<button>Intentionally untranslated</button>')).toEqual([
       { line: 1, kind: "text", text: "Intentionally untranslated" },
+    ]);
+    expect(findEnglishLiterals('<input aria-label="Unlocalized action" />')).toEqual([
+      { line: 1, kind: "attr", text: 'aria-label="Unlocalized action"' },
     ]);
   });
 

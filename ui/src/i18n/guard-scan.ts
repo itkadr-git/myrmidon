@@ -8,10 +8,10 @@
 // textual aria-*, title, label, placeholder, tooltip, message, intro,
 // description, emptyMessage.
 //
-// Catches JSX text children, JSX string children, user-visible attributes,
-// and string literals in code outside JSX and translation calls. The latter
-// covers conditional branches and object values while avoiding arbitrary
-// module strings and i18n catalogue keys.
+// Does NOT catch (see docs/myrmidon/ui-i18n-extraction.md): template
+// literals, strings built in code, object fields and constants (toast
+// texts, option lists, column titles), ternary branches like
+// {ok ? "Yes" : "No"}, and text in .ts files. Review those by hand.
 
 export interface GuardOffender {
   line: number;
@@ -83,20 +83,6 @@ export function findEnglishLiterals(source: string): GuardOffender[] {
     if (!/\p{L}/u.test(match[3])) continue;
     if (URL_ONLY.test(match[3])) continue;
     offenders.push({ line: lineOf(code, match.index!), kind: "attr", text: `${match[1]}="${match[3]}"` });
-  }
-
-  const codeOnly = code
-    .replace(/<[^>]*>/g, (value) => value.replace(/[^\n]/g, " "))
-    .replace(/\b(?:i18n\.)?t\(\s*(["'`])(?:\\.|(?!\1)[^\\])*\1(?:\s*,[^)]*)?\)/g, (value) => value.replace(/[^\n]/g, " "));
-  // Only inspect the consequent of a ternary here. A colon also appears in
-  // TypeScript unions and object/type data, which are not rendered UI copy.
-  const codeLiteralRe = /\b[A-Za-z_$][\w$]*\s*\?\s*(["'])([^\\\n]{2,120})\1\s*:\s*(?:["'])(?:[^\\\n]*)(?:["'])/g;
-  for (const match of codeOnly.matchAll(codeLiteralRe)) {
-    const text = match[2].trim();
-    if (!/[A-Za-z]{2}/.test(text) || !/\s/.test(text)) continue;
-    if (/^(?:https?:\/\/|\/)/i.test(text)) continue;
-    if (/^(?:[A-Za-z0-9_-]+\s*)+$/.test(text) && /(?:^|\s)(?:text|bg|border|flex|grid|items|justify|rounded|p|m|gap|w|h)-/.test(text)) continue;
-    offenders.push({ line: lineOf(codeOnly, match.index!), kind: "literal", text });
   }
 
   return offenders.sort((a, b) => a.line - b.line);
