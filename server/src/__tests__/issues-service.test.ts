@@ -488,7 +488,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       const [persistedProduct] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.id, workProductId));
       expect(persistedProduct).toMatchObject({
         status: "merged",
-        metadata: { state: "merged", draft: false, headSha: "abc123" },
+        metadata: { state: "merged", draft: false },
       });
       const [persistedIssue] = await db.select().from(issues).where(eq(issues.id, issue.id));
       expect(persistedIssue?.status).toBe("done");

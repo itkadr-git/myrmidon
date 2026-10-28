@@ -272,7 +272,38 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     expect(result.synced).toBe(1);
     expect(resolver).toHaveBeenCalledTimes(1);
     const products = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, seeded.issueId));
-    expect(products.find((p) => p.status === "closed")).toBeDefined();
+    const pr74 = products.find((p) => (p.metadata as Record<string, unknown>)?.number === 74);
+    expect(pr74).toBeDefined();
+    expect(pr74!.status).toBe("closed");
+    const pr73 = products.find((p) => (p.metadata as Record<string, unknown>)?.number === 73);
+    expect(pr73).toBeDefined();
+    expect(pr73!.status).toBe("merged");
+  });
+
+  it("settles an active task with mixed merged and closed PRs without error", async () => {
+    const seeded = await seed({
+      status: "in_progress",
+      products: [
+        { number: 1723, status: "ready_for_review" },
+        { number: 1761, status: "ready_for_review" },
+      ],
+    });
+    const resolver = fakeResolver({ 1723: "merged", 1761: "closed" });
+    const sweep = sweepFor(resolver);
+
+    const result = await sweep.sweep({ settings: SETTINGS, force: true });
+
+    expect(result).toMatchObject({ scanned: 1, settled: 1, failed: 0 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("done");
+
+    const products = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, seeded.issueId));
+    const pr1723 = products.find((p) => (p.metadata as Record<string, unknown>)?.number === 1723);
+    const pr1761 = products.find((p) => (p.metadata as Record<string, unknown>)?.number === 1761);
+    expect(pr1723).toBeDefined();
+    expect(pr1723!.status).toBe("merged");
+    expect(pr1761).toBeDefined();
+    expect(pr1761!.status).toBe("closed");
   });
 
   it("does not auto-close inactive tasks, even with a merged PR", async () => {
