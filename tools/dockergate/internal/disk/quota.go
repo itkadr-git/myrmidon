@@ -128,19 +128,21 @@ func softBytes(hard int64) int64 { return hard * 8 / 10 }
 // Ensure registers a bot directory in the XFS project tables without setting
 // a quota. It is safe to call after directory creation and on retries.
 func (q *Quota) Ensure(ctx context.Context, botKey string) (int, error) {
-	return q.ensureLocked(ctx, botKey, false)
+	return q.ensure(ctx, botKey, false)
 }
 
-// ensureLocked reconciles the project tables and applies the project inode state.
-// When locked is true, the caller holds q.mu (Put keeps registration and limit
-// update atomic); otherwise this method acquires the mutex itself.
-func (q *Quota) ensureLocked(ctx context.Context, botKey string, locked bool) (int, error) {
-	if !route.IsBotKey(botKey) {
-		return 0, ErrBadKey
-	}
+func (q *Quota) ensure(ctx context.Context, botKey string, locked bool) (int, error) {
 	if !locked {
 		q.mu.Lock()
 		defer q.mu.Unlock()
+	}
+	return q.ensureLocked(ctx, botKey)
+}
+
+// ensureLocked reconciles the project tables; the caller must hold q.mu.
+func (q *Quota) ensureLocked(ctx context.Context, botKey string) (int, error) {
+	if !route.IsBotKey(botKey) {
+		return 0, ErrBadKey
 	}
 
 	root, err := filepath.Abs(q.VolumeRoot)
@@ -217,7 +219,7 @@ func (q *Quota) Put(ctx context.Context, botKey string, hard int64) (Result, err
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if _, err := q.ensureLocked(ctx, botKey, true); err != nil {
+	if _, err := q.ensureLocked(ctx, botKey); err != nil {
 		return Result{}, err
 	}
 
