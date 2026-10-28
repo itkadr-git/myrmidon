@@ -36,7 +36,7 @@ Save, Cancel, Delete, Close and the like are never duplicated per area.
 Toasts, constants, option lists, column titles and `.ts` files: do not keep English at module level (it freezes the language at import). Call `i18n.t("area....")` at the place of use, or make the constant a lazy function (`const options = () => [{ label: i18n.t("area....") }]`) and call it in render.
 
 ### Dates and numbers
-Do not put dates or numbers into catalog strings. Format with `Intl` / `toLocaleString(i18n.language)` at the place and pass the result as an interpolation value. Note: the shared formatters in `ui/src/lib/utils.ts` (`formatDate`, `formatNumber`, ...) are hard-wired to `en-US`; do not change them inside an area PR (shared by all areas) - raise a separate task.
+Do not put dates or numbers into catalog strings. Format with `Intl` / `toLocaleString(i18n.language)` at the place and pass the result as an interpolation value. Shared formatters in `ui/src/lib/utils.ts` (`formatDate`, `formatDateTime`, `formatNumber`, `formatCurrency`, ...) automatically format according to the active UI locale (`i18n.language` with `en-US` fallback).
 
 ### Do not translate
 Codes and enum values, identifiers, ids, `data-testid`, class names, URLs and routes, CLI commands, JSON/field names, product and protocol names (Myrmidon, LiteLLM...), and error messages that come from the server (show them as received).
@@ -47,6 +47,8 @@ Create `ui/src/i18n/guarded/<area>.txt`: one path per line relative to `ui/src` 
 2. Every static `t("area....")` / `i18n.t("area....")` in those files exists in the en catalog.
 
 An area is done when all its files are in `guarded/<area>.txt` and these tests are green.
+
+In addition to area files, `legacy-screens-no-english.myrmidon.test.ts` scans all shipped and example plugin UI entry files (`packages/plugins/**/src/ui/**`) and web application sources (`web/**` when present) to catch hard-coded English literals in JSX text and visible attributes.
 
 **What the guard does not catch** (check by hand): template literals (`` `Deleted ${name}` ``), strings built in code, object fields and constants (`{ label: "Name" }`), ternary branches (`{ok ? "Yes" : "No"}`), `.ts` files, dynamic keys (`t(`area.x.${k}`)`), a wrong key that happens to exist. Green guard is necessary, not sufficient: grep the files of your area for quoted English before you finish.
 
@@ -108,7 +110,7 @@ Save, Cancel, Delete, Close и подобные не дублируются по
 Toast, константы, списки опций, заголовки колонок и `.ts`-файлы: не держите английский на уровне модуля (язык замёрзнет при импорте). Вызывайте `i18n.t("area....")` в месте использования или сделайте константу ленивой функцией (`const options = () => [{ label: i18n.t("area....") }]`) и вызывайте её при рендере.
 
 ### Даты и числа
-Даты и числа не кладите в строки каталога. Форматируйте через `Intl` / `toLocaleString(i18n.language)` на месте и передавайте результат как значение интерполяции. Общие форматтеры в `ui/src/lib/utils.ts` (`formatDate`, `formatNumber`, ...) жёстко привязаны к `en-US`; в PR области их не менять (общие для всех областей) - заведите отдельную задачу.
+Даты и числа не кладите в строки каталога. Форматируйте через `Intl` / `toLocaleString(i18n.language)` на месте и передавайте результат как значение интерполяции. Общие форматтеры в `ui/src/lib/utils.ts` (`formatDate`, `formatDateTime`, `formatNumber`, `formatCurrency`, ...) автоматически учитывают активную локаль интерфейса (`i18n.language` с fallback на `en-US`).
 
 ### Не переводить
 Коды и значения enum, идентификаторы, id, `data-testid`, имена классов, URL и маршруты, команды CLI, имена полей JSON, названия продуктов и протоколов (Myrmidon, LiteLLM...), ошибки, пришедшие с сервера (показывать как есть).
@@ -119,6 +121,8 @@ Toast, константы, списки опций, заголовки коло�
 2. Каждый статический `t("area....")` / `i18n.t("area....")` в этих файлах есть в en-каталоге.
 
 Область готова, когда все её файлы в `guarded/<area>.txt` и эти тесты зелёные.
+
+Помимо файлов областей, `legacy-screens-no-english.myrmidon.test.ts` проверяет точки входа интерфейса плагинов (`packages/plugins/**/src/ui/**`) и веб-приложения (`web/**` при наличии), выявляя зашитые английские строки в тексте JSX и видимых атрибутах.
 
 **Чего guard не ловит** (проверять руками): шаблонные строки (`` `Удалено ${name}` ``), строки, собранные в коде, поля объектов и константы (`{ label: "Name" }`), ветки тернарника (`{ok ? "Yes" : "No"}`), `.ts`-файлы, динамические ключи (`t(`area.x.${k}`)`), неверный ключ, который случайно существует. Зелёный guard необходим, но не достаточен: перед завершением найдите в файлах области английские строки в кавычках.
 
