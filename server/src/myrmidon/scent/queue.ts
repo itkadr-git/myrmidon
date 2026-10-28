@@ -78,7 +78,7 @@ async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): P
   const env = process.env;
   const baseUrl = env[SCENT_BASE_URL_ENV]?.trim() || env.MYRMIDON_EVALS_BASE_URL?.trim() || "";
   const secretName = env[SCENT_KEY_SECRET_ENV]?.trim() || "MYRMIDON_EVALS_API_KEY";
-  const resolve = ports.resolveSecret ?? defaultResolveSecret;
+  const resolve = ports.resolveSecret ?? resolveScentSecret;
   const apiKey = await resolve(db, companyId, secretName);
   if (!baseUrl || !apiKey) {
     // OPE-7190: a parked queue must not be silent. Without this entry the

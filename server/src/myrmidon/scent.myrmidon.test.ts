@@ -21,6 +21,7 @@
 //  8. the settings reader: defaults, stored override, env kill switch.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 import express from "express";
 import request from "supertest";
 import type { Db } from "@myrmidon/db";
@@ -541,7 +542,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
       logActivity,
     });
     expect(logActivity).toHaveBeenCalledTimes(1);
-    const entry = logActivity.mock.calls[0][0] as { action: string; details: Record<string, unknown> };
+    const entry = logActivity.mock.calls[0][1] as { action: string; details: Record<string, unknown> };
     expect(entry.action).toBe("swarm.scent_contour_unconfigured");
     expect(entry.details).toEqual({ baseUrlConfigured: false, keyConfigured: false });
   });
