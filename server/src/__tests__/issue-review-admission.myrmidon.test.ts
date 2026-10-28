@@ -5,6 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  agentRuntimeState,
   heartbeatRunEvents,
   heartbeatRuns,
   agentWakeupRequests,
@@ -34,7 +35,7 @@ const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
     await db.transaction(async (tx) => {
       // Prevent new wake/activity writers while deleting their rows and issues.
       await tx.execute(
-        sql`LOCK TABLE activity_log, agent_task_sessions, agent_wakeup_requests, issues, agents IN SHARE ROW EXCLUSIVE MODE`,
+        sql`LOCK TABLE activity_log, agent_runtime_state, agent_task_sessions, agent_wakeup_requests, issues, agents IN SHARE ROW EXCLUSIVE MODE`,
       );
       await tx.delete(heartbeatRunEvents);
       await tx.update(agentTaskSessions).set({ lastRunId: null });
@@ -42,6 +43,8 @@ const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
       await tx.delete(heartbeatRuns);
       await tx.delete(agentWakeupRequests);
       await tx.delete(issues);
+      await tx.delete(agentRuntimeState);
+      await tx.delete(agentTaskSessions);
       await tx.delete(agents);
       await resetCompanyIssueFixtures(tx as typeof db);
     });
@@ -98,9 +101,20 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       runtimeConfig: {},
       permissions: {},
     });
+    const policy = {
+      mode: "normal",
+      stages: [
+        {
+          id: randomUUID(),
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: reviewerAgentId, userId: null }],
+        },
+      ],
+    };
     const assigned = await request(routeApp(ctx.db, actor, issueRoutes))
       .patch(`/api/issues/${issueId}`)
-      .send({ assigneeAgentId: reviewerAgentId });
+      .send({ executionPolicy: policy });
     expect(assigned.status).toBe(200);
     expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(0);
   });
