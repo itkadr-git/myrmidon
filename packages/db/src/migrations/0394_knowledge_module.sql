@@ -93,7 +93,6 @@ CREATE TABLE "knowledge_suggestions" (
 	"nest_id" uuid NOT NULL,
 	"target_item_id" uuid,
 	"body" text NOT NULL,
-	"recommendation" text NOT NULL,
 	"rationale" text,
 	"source_kind" text,
 	"source_ref" text,

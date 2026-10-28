@@ -1071,8 +1071,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     input: {
       companyId: string;
       body: string;
-      recommendation: KnowledgeSuggestionRecommendation;
-      rationale: string;
+      recommendation?: KnowledgeSuggestionRecommendation;
+      rationale?: string | null;
       targetSlug?: string | null;
       sourceKind?: KnowledgeSourceKind;
       sourceRef?: string | null;
@@ -1093,7 +1093,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         nestId,
         targetItemId: targetId,
         body: input.body,
-        recommendation: input.recommendation,
+        recommendation: input.recommendation ?? (input.trust === "external" ? "declined" : "accepted"),
         rationale: input.rationale ?? null,
         sourceKind: input.sourceKind ?? null,
         sourceRef: input.sourceRef ?? null,
@@ -1144,7 +1144,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     return { id: row.id, status: input.decision };
   }
 
-  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending"): Promise<Array<{ id: string; targetItemId: string | null; body: string; recommendation: KnowledgeSuggestionRecommendation; rationale: string; sourceKind: string | null; sourceRef: string | null; status: string; trust: string | null; createdAt: string }>> {
+  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending"): Promise<Array<{ id: string; targetItemId: string | null; body: string; recommendation: KnowledgeSuggestionRecommendation; rationale: string | null; sourceKind: string | null; sourceRef: string | null; status: string; trust: string | null; createdAt: string }>> {
     const conditions = [eq(knowledgeSuggestions.nestId, nestId)];
     if (status !== "all") conditions.push(eq(knowledgeSuggestions.status, status));
     const rows = await db.select().from(knowledgeSuggestions).where(and(...conditions)).orderBy(asc(knowledgeSuggestions.createdAt));
@@ -1153,7 +1153,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       targetItemId: row.targetItemId,
       body: row.body,
       recommendation: row.recommendation,
-      rationale: row.rationale,
+      rationale: row.rationale ?? null,
       sourceKind: row.sourceKind ?? null,
       sourceRef: row.sourceRef ?? null,
       status: row.status,
