@@ -423,13 +423,39 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     return companyId;
   }
 
+  function agentRow(companyId: string, input: {
+    id: string;
+    name: string;
+    status?: string;
+    reportsTo?: string | null;
+  }) {
+    return {
+      id: input.id,
+      companyId,
+      name: input.name,
+      role: "engineer",
+      status: input.status ?? "active",
+      reportsTo: input.reportsTo ?? null,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    };
+  }
+
   it("refreshes a stale open pull request before accepting done", async () => {
     const companyId = await seedAssignableAgentCompany();
+    const assigneeAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: assigneeAgentId,
+      name: "AssignedAgent",
+    }));
     const issue = await svc.create(companyId, {
       title: "Merged PR task",
       description: null,
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId,
     });
     const workProductId = randomUUID();
     await db.insert(issueWorkProducts).values({
@@ -534,26 +560,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       expect.objectContaining({ id: issueId }),
     ]);
   });
-
-  function agentRow(companyId: string, input: {
-    id: string;
-    name: string;
-    status?: string;
-    reportsTo?: string | null;
-  }) {
-    return {
-      id: input.id,
-      companyId,
-      name: input.name,
-      role: "engineer",
-      status: input.status ?? "active",
-      reportsTo: input.reportsTo ?? null,
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    };
-  }
 
   it("rejects direct terminated assignees with structured conflict details", async () => {
     const companyId = await seedAssignableAgentCompany();
