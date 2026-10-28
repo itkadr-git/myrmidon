@@ -506,7 +506,7 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.screens.fleet.empty": "Ресурсов флота пока нет",
   "ui2.screens.fleet.emptyBody": "Зарегистрированные узлы и службы появятся здесь.",
   "ui2.screens.fleet.blockerDashboard": "Дашборд графа блокеров",
-  "ui2.screens.fleet.rootFanout": "Root fan-out",
+  "ui2.screens.fleet.rootFanout": "Разветвление корней",
   "ui2.screens.fleet.hosts": "Узлы",
   "ui2.screens.fleet.services": "Службы",
   "ui2.screens.fleet.metrics": "ЦП {{cpu}}% · память {{memory}}% · диск {{disk}}%",
