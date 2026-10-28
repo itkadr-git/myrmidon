@@ -19,3 +19,6 @@
   2. **Decline**: cancel/close with explicit explanation.
   3. **Retain**: keep in the "Ideas" project for further context gathering.
 - SLA requirement: each new idea is either triaged or less than 7 days old.
+- Automated SLA Control API:
+  - `GET /api/companies/:companyId/ideas/sla` — SLA summary and list of cards older than 7 days (`staleIssues`).
+  - `POST /api/companies/:companyId/ideas/sla/audit` — runs audit and automatically creates a triage task for lead/architect if stale ideas (>7 days) are found (`staleCount > 0`).

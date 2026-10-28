@@ -200,6 +200,8 @@ import {
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
   validateIdeasProjectConstraints,
+  checkIdeasWeeklySLA,
+  isIdeasProjectName,
 } from "@myrmidon/shared";
 import { trackAgentTaskCompleted } from "@myrmidon/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -8989,6 +8991,96 @@ export function issueRoutes(
     res.json({ count });
   });
 
+  router.get("/companies/:companyId/ideas/sla", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const companyProjects = await projectsSvc.list(companyId);
+    const ideasProject = companyProjects.find((p) => isIdeasProjectName(p.name));
+    if (!ideasProject) {
+      res.status(404).json({ error: "Ideas project not found" });
+      return;
+    }
+    const issuesList = await svc.list(companyId, { projectId: ideasProject.id });
+    const sla = checkIdeasWeeklySLA(issuesList);
+    const staleIssues = issuesList
+      .filter((i) => sla.staleIssueIds.includes(i.id))
+      .map((i) => ({
+        id: i.id,
+        identifier: i.identifier,
+        title: i.title,
+        status: i.status,
+        createdAt: i.createdAt,
+      }));
+    res.json({
+      companyId,
+      projectId: ideasProject.id,
+      projectName: ideasProject.name,
+      sla,
+      staleIssues,
+    });
+  });
+
+  router.post("/companies/:companyId/ideas/sla/audit", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const companyProjects = await projectsSvc.list(companyId);
+    const ideasProject = companyProjects.find((p) => isIdeasProjectName(p.name));
+    if (!ideasProject) {
+      res.status(404).json({ error: "Ideas project not found" });
+      return;
+    }
+    const issuesList = await svc.list(companyId, { projectId: ideasProject.id });
+    const sla = checkIdeasWeeklySLA(issuesList);
+    const staleIssues = issuesList
+      .filter((i) => sla.staleIssueIds.includes(i.id))
+      .map((i) => ({
+        id: i.id,
+        identifier: i.identifier,
+        title: i.title,
+        status: i.status,
+        createdAt: i.createdAt,
+      }));
+
+    let notificationSent = false;
+    let triageIssueId: string | null = null;
+
+    if (sla.staleCount > 0) {
+      const staleListFormatted = staleIssues
+        .map((i) => `- [${i.identifier}] ${i.title} (создана ${new Date(i.createdAt).toISOString().slice(0, 10)})`)
+        .join("\n");
+
+      const existingTriage = await svc.list(companyId, {
+        status: ["todo", "in_progress"],
+      });
+      const activeTriageIssue = existingTriage.find(
+        (i) => i.title.includes("SLA: разбор просроченных идей") && i.status !== "done" && i.status !== "cancelled",
+      );
+
+      if (!activeTriageIssue) {
+        const newIssue = await svc.create(companyId, {
+          title: `[SLA: разбор просроченных идей] ${sla.staleCount} карточек старше 7 дней`,
+          description: `Автоматический аудит SLA проекта «Идеи» (OPE-9760):\nОбнаружено ${sla.staleCount} карточек старше 7 дней без решения:\n\n${staleListFormatted}\n\nНеобходимо разобрать их: перевести в выпуск с исполнителем, отклонить с причиной или оставить.`,
+          priority: "high",
+          status: "todo",
+        });
+        triageIssueId = newIssue.id;
+        notificationSent = true;
+      } else {
+        triageIssueId = activeTriageIssue.id;
+        notificationSent = true;
+      }
+    }
+
+    res.json({
+      audited: true,
+      compliant: sla.staleCount === 0,
+      sla,
+      staleIssues,
+      notificationSent,
+      triageIssueId,
+    });
+  });
+
   router.get("/companies/:companyId/labels", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -12552,18 +12644,14 @@ export function issueRoutes(
         assigneeAgentId: normalizedAssigneeAgentId ?? null,
       });
       if (rawCreateBody.projectId) {
-        const [proj] = await db
-          .select({ name: projects.name })
-          .from(projects)
-          .where(eq(projects.id, rawCreateBody.projectId as string))
-          .limit(1);
+        const proj = await projectsSvc.getById(rawCreateBody.projectId as string);
         const check = validateIdeasProjectConstraints({
           projectName: proj?.name,
           assigneeAgentId: normalizedAssigneeAgentId,
           assigneeUserId: (rawCreateBody.assigneeUserId as string | null | undefined) ?? null,
-          dueDate: rawCreateBody.dueDate,
+          dueDate: (rawCreateBody as Record<string, unknown>).dueDate,
           description: typeof rawCreateBody.description === "string" ? rawCreateBody.description : null,
-          metadata: rawCreateBody.metadata,
+          metadata: (rawCreateBody as Record<string, unknown>).metadata,
         });
         if (!check.valid) {
           res.status(400).json({ error: check.error });
@@ -13758,11 +13846,7 @@ export function issueRoutes(
       const targetProjectId =
         req.body.projectId !== undefined ? (req.body.projectId as string | null) : existing.projectId;
       if (targetProjectId) {
-        const [proj] = await db
-          .select({ name: projects.name })
-          .from(projects)
-          .where(eq(projects.id, targetProjectId))
-          .limit(1);
+        const proj = await projectsSvc.getById(targetProjectId);
         const check = validateIdeasProjectConstraints({
           projectName: proj?.name,
           assigneeAgentId: requestedAssigneeAgentId,
@@ -13770,12 +13854,12 @@ export function issueRoutes(
             req.body.assigneeUserId !== undefined
               ? (req.body.assigneeUserId as string | null)
               : existing.assigneeUserId,
-          dueDate: req.body.dueDate !== undefined ? req.body.dueDate : existing.dueDate,
+          dueDate: (req.body as Record<string, unknown>).dueDate,
           description:
             req.body.description !== undefined
               ? (req.body.description as string | null)
               : existing.description,
-          metadata: req.body.metadata !== undefined ? req.body.metadata : existing.metadata,
+          metadata: (req.body as Record<string, unknown>).metadata,
         });
         if (!check.valid) {
           res.status(400).json({ error: check.error });
