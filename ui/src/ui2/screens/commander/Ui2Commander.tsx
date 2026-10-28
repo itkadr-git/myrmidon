@@ -4,6 +4,7 @@
 // The attention feed is the canonical "waiting for me" aggregation, so its
 // count is shared with the shell badge rather than recomputed client-side.
 import { useQueries, useQuery } from "@tanstack/react-query";
+import { Link } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { dashboardApi } from "@/api/dashboard";
 import { heartbeatsApi } from "@/api/heartbeats";
@@ -99,13 +100,37 @@ export function Ui2Commander() {
             </div>
           )}
         </Ui2Section>
-        <Ui2Section title={t("ui2.commander.fleet.title")}>
-          {summary ? <Ui2TilesRow>
-            <Ui2Tile label={t("ui2.commander.fleet.active")} value={String(summary.agents.active)} />
-            <Ui2Tile label={t("ui2.commander.fleet.running")} value={String(summary.agents.running)} tone="ok" />
-            <Ui2Tile label={t("ui2.commander.fleet.paused")} value={String(summary.agents.paused)} />
-            <Ui2Tile label={t("ui2.commander.fleet.errors")} value={String(summary.agents.error)} tone={summary.agents.error ? "danger" : "ok"} />
-          </Ui2TilesRow> : <Ui2EmptyState title={t("ui2.commander.empty.fleet")} />}
+        {/* ia-v2 §4: Fleet attention widget maps aggregated agent fleet states from DashboardSummary (active, running, paused, error).
+            Supplemented with health status indicator and direct navigation to /agents. */}
+        <Ui2Section
+          title={t("ui2.commander.fleet.title")}
+          footer={
+            summary ? (
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>
+                  {summary.agents.error > 0
+                    ? t("ui2.commander.fleet.statusErrors", { count: summary.agents.error })
+                    : summary.agents.paused > 0
+                      ? t("ui2.commander.fleet.statusPaused", { count: summary.agents.paused })
+                      : t("ui2.commander.fleet.statusHealthy")}
+                </span>
+                <Link to="/agents" className="text-primary hover:underline">
+                  {t("ui2.commander.fleet.viewFleet")}
+                </Link>
+              </div>
+            ) : undefined
+          }
+        >
+          {summary ? (
+            <Ui2TilesRow>
+              <Ui2Tile label={t("ui2.commander.fleet.active")} value={String(summary.agents.active)} />
+              <Ui2Tile label={t("ui2.commander.fleet.running")} value={String(summary.agents.running)} tone="ok" />
+              <Ui2Tile label={t("ui2.commander.fleet.paused")} value={String(summary.agents.paused)} />
+              <Ui2Tile label={t("ui2.commander.fleet.errors")} value={String(summary.agents.error)} tone={summary.agents.error ? "danger" : "ok"} />
+            </Ui2TilesRow>
+          ) : (
+            <Ui2EmptyState title={t("ui2.commander.empty.fleet")} />
+          )}
         </Ui2Section>
       </div>
     </Ui2Page>
