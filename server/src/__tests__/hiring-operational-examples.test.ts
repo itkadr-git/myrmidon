@@ -26,13 +26,7 @@ describe("published hiring and human-input examples", () => {
       expect(createAgentHireSchema.safeParse(substituteIds(body))).toMatchObject({ success: true });
       expect(body.instructionsBundle.files["AGENTS.md"]).toEqual(expect.any(String));
     }
-    for (const { body } of waits) {
-      const requestBody = substituteIds(body);
-      if (requestBody.status === "blocked" && requestBody.blockerMetadata) {
-        requestBody.blockerMetadata = { ...requestBody.blockerMetadata, externalRef: "workspace-service-recovery" };
-      }
-      expect(updateIssueSchema.safeParse(requestBody)).toMatchObject({ success: true });
-    }
+    for (const { body } of waits) expect(updateIssueSchema.safeParse(substituteIds(body))).toMatchObject({ success: true });
   });
 
   it("keeps these examples in the generated runner reference without displacing confirmations", () => {
