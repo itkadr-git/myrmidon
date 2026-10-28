@@ -549,15 +549,15 @@ export function assertKnowledgeWriteProtection(input: {
     );
   }
 
-  if (!trimmed.includes("\n") && trimmed.length < 20) {
-    throw new KnowledgeDomainError(
-      "write_protection_rejected",
-      422,
-      "Write rejected: single-line content under 20 characters resembles a probe marker. Pass force: true and a valid reason to override.",
-    );
-  }
-
   if (previousContent !== null && previousContent.length > 0) {
+    if (!trimmed.includes("\n") && trimmed.length < 20) {
+      throw new KnowledgeDomainError(
+        "write_protection_rejected",
+        422,
+        "Write rejected: single-line content shorter than 20 characters resembles a probe marker. Pass force: true and a valid reason to override.",
+      );
+    }
+
     if (newContent.length < previousContent.length * 0.2) {
       throw new KnowledgeDomainError(
         "write_protection_rejected",

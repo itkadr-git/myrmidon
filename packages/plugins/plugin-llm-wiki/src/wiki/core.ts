@@ -1877,15 +1877,19 @@ function assertPageContentsPresent(path: string, contents: unknown, allowEmpty: 
 export function isWikiProbeOrTruncation(
   newContents: string,
   existingContents: string | null,
+  options?: { allowEmpty?: boolean | null },
 ): { blocked: boolean; cause?: string } {
+  if (options?.allowEmpty && newContents.trim().length === 0) {
+    return { blocked: false };
+  }
   const trimmed = newContents.trim();
   if (newContents.includes("__probe")) {
     return { blocked: true, cause: "probe marker '__probe' detected" };
   }
-  if (!trimmed.includes("\n") && trimmed.length < 20) {
-    return { blocked: true, cause: "content is a single line shorter than 20 characters (probe marker pattern)" };
-  }
   if (existingContents !== null && existingContents.length > 0) {
+    if (!trimmed.includes("\n") && trimmed.length < 20) {
+      return { blocked: true, cause: "content is a single line shorter than 20 characters (probe marker pattern)" };
+    }
     if (newContents.length < existingContents.length * 0.2) {
       return {
         blocked: true,
@@ -1905,7 +1909,7 @@ export async function writeWikiPage(ctx: PluginContext, input: WritePageInput) {
   const current = await readCurrentWithHash(ctx, input.companyId, path, space);
   assertExpectedHash(input.expectedHash, current.hash, path);
 
-  const protection = isWikiProbeOrTruncation(input.contents, current.contents);
+  const protection = isWikiProbeOrTruncation(input.contents, current.contents, { allowEmpty: input.allowEmpty });
   if (protection.blocked) {
     const hasForceAndReason = input.force === true && typeof input.reason === "string" && input.reason.trim().length > 0;
     if (!hasForceAndReason) {
@@ -4219,7 +4223,7 @@ export async function registerWikiTools(ctx: PluginContext) {
     const space = await resolveSpace(ctx, { companyId, wikiId, spaceSlug: input.spaceSlug as string | null | undefined });
     const path = assertPagePath(requireString(input.path, "path"));
     const contents = await ctx.localFolders.readText(companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
-    return { content: contents, data: { companyId, wikiId, spaceSlug: space.slug, path, hash: contentHash(contents) } };
+    return { content: contents, data: { companyId, wikiId, spaceSlug: space.slug, path, contents, hash: contentHash(contents) } };
   });
 
   ctx.tools.register("wiki_write_page", {

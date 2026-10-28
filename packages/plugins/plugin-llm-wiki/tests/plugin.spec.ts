@@ -718,6 +718,8 @@ describe("LLM Wiki plugin scaffold", () => {
       "wiki_update_index",
       "wiki_list_backlinks",
       "wiki_list_pages",
+      "wiki_rollback_page",
+      "wiki_list_revisions",
     ]);
     expect(manifest.ui?.slots?.map((slot) => slot.type)).toEqual([
       "sidebar",
@@ -3498,7 +3500,7 @@ Duplicate headings receive stable suffixes.
   it("rejects probe markers and severe truncation without force and reason (OPE-9762)", async () => {
     const harness = createTestHarness({ manifest });
     const files = new Map<string, string>([
-      ["wiki/concepts/original.md", "# Original Concept\n\nThis is a long and rich documentation page with multiple sections and details.\n"],
+      ["wiki/concepts/original.md", "# Original Concept\n\n" + "This is a detailed paragraph documenting the architecture and design decisions for this system.\n".repeat(10)],
     ]);
     harness.ctx.localFolders.readText = async (_companyId, _folderKey, relativePath) => {
       const value = files.get(relativePath);
@@ -3533,7 +3535,7 @@ Duplicate headings receive stable suffixes.
       companyId: COMPANY_ID,
       wikiId: "default",
       path: "wiki/concepts/original.md",
-      contents: "# Tiny\n",
+      contents: "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters.\n",
     })).rejects.toThrow("less than 20% of previous revision");
 
     // 4. Overwrite succeeds when explicit force and reason are provided
@@ -3541,12 +3543,14 @@ Duplicate headings receive stable suffixes.
       companyId: COMPANY_ID,
       wikiId: "default",
       path: "wiki/concepts/original.md",
-      contents: "# Tiny\n",
+      contents: "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters.\n",
       force: true,
       reason: "Intentional page reduction for stub",
     });
     expect(forced.data?.hash).toHaveLength(64);
-    expect(files.get("wiki/concepts/original.md")).toBe("# Tiny\n");
+    expect(files.get("wiki/concepts/original.md")).toBe(
+      "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters.\n",
+    );
   });
 
   it("provides read-only list/get without writes and supports revisions/rollback (OPE-9762)", async () => {
@@ -3605,12 +3609,12 @@ Duplicate headings receive stable suffixes.
     expect(pages.data?.pages[0]?.path).toBe("wiki/concepts/page-a.md");
 
     // Read page via tool without writing
-    const read = await harness.executeTool<{ data?: { contents: string } }>("wiki_read_page", {
+    const read = await harness.executeTool<{ content?: string; data?: { contents?: string } }>("wiki_read_page", {
       companyId: COMPANY_ID,
       wikiId: "default",
       path: "wiki/concepts/page-a.md",
     });
-    expect(read.data?.contents).toContain("Full content of page A.");
+    expect(read.data?.contents ?? read.content).toContain("Full content of page A.");
 
     // Write a new revision
     const writeResult = await harness.executeTool<{ data?: { revisionId: string } }>("wiki_write_page", {
