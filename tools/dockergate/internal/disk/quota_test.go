@@ -349,9 +349,10 @@ func TestPut_QuotaUnavailable(t *testing.T) {
 		"only accounting": {state: "  Accounting: ON\n  Enforcement: OFF\n"},
 	}
 	for name, f := range cases {
-		q := NewQuota(root, f)
 		dir := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(root, qKeyA), 0o700); err != nil {
+		volumeRoot := filepath.Join(dir, "bots")
+		q := NewQuota(volumeRoot, f)
+		if err := os.MkdirAll(filepath.Join(volumeRoot, qKeyA), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		q.ProjectsFile, q.ProjidFile = filepath.Join(dir, "projects"), filepath.Join(dir, "projid")
