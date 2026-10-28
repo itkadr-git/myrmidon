@@ -573,12 +573,13 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
       select: () => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) }),
     } as unknown as Db;
     const resolveSecret = vi.fn(async () => "secret-value");
-    const ports: ScentQueuePorts = {
+    const ports = {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       logActivity: async () => undefined,
       resolveSecret,
       listCompanyIds: async () => [COMPANY_ID],
-    };
+      listMarkupQueue: async () => ({ issueIds: [], agentIds: [], totalPending: 0 }),
+    } as unknown as ScentQueuePorts;
     const envSnapshot = new Map(
       ["MYRMIDON_SCENT_BASE_URL", "MYRMIDON_EVALS_BASE_URL", "MYRMIDON_EVALS_API_KEY"].map(
         (name) => [name, process.env[name]],
@@ -610,14 +611,15 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
       execute: async () => [{ n: 0 }],
       select: () => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) }),
     } as unknown as Db;
-    const ports: ScentQueuePorts = {
+    const ports = {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       logActivity: async () => undefined,
       resolveSecret: vi.fn(async () => {
         throw new Error("corrupt cipher");
       }),
       listCompanyIds: async () => [COMPANY_ID],
-    };
+      listMarkupQueue: async () => ({ issueIds: [], agentIds: [], totalPending: 0 }),
+    } as unknown as ScentQueuePorts;
     const response = await request(makeScentStatusApp(db, ports)).get(
       `/api/myrmidon/companies/${COMPANY_ID}/swarm/scent/status`,
     );
