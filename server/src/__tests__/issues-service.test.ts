@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -422,6 +422,54 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
     return companyId;
   }
+
+  it("refreshes a stale open pull request before accepting done", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Merged PR task",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+    });
+    const workProductId = randomUUID();
+    await db.insert(issueWorkProducts).values({
+      id: workProductId,
+      companyId,
+      issueId: issue.id,
+      type: "pull_request",
+      provider: "github",
+      title: "company-a/example#123",
+      url: "https://github.com/company-a/example/pull/123",
+      status: "ready_for_review",
+      metadata: { repo: "company-a/example", number: 123, state: "open", draft: false },
+    });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      title: "Merged PR",
+      state: "closed",
+      merged: true,
+      merged_at: "2026-10-28T00:00:00Z",
+      draft: false,
+      head: { ref: "fix", sha: "abc123" },
+      base: { ref: "main" },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await expect(svc.update(issue.id, { status: "done" })).resolves.toMatchObject({ status: "done" });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://api.github.com/repos/company-a/example/pulls/123",
+        expect.any(Object),
+      );
+      const [persistedProduct] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.id, workProductId));
+      expect(persistedProduct).toMatchObject({
+        status: "merged",
+        metadata: { state: "merged", draft: false, headSha: "abc123" },
+      });
+      const [persistedIssue] = await db.select().from(issues).where(eq(issues.id, issue.id));
+      expect(persistedIssue?.status).toBe("done");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 
   it("does not treat passive issue activity as touching it, but includes real user mutations", async () => {
     const companyId = await seedAssignableAgentCompany();
