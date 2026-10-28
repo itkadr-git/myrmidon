@@ -47,6 +47,7 @@ import { readBotCacheLayoutForBot, readSharedBotRuntimePath, startCloneReportCol
 import { reportBotContainerEvent } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { startSiteScheduler } from "./site-scheduler-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
 import { startSiteHealth } from "./site-health-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
+import { startFleetSiteCertRotation } from "./fleet-site-wiring.js"; // myrmidon(1.6.6 OPE-9154)
 import { isSiteHealthEnabled } from "./site-health-flag.js";
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
@@ -147,6 +148,8 @@ export interface BotContainersStartupPorts {
    * stop is folded into the stop of this run.
    */
   startSiteHealth?: typeof startSiteHealth;
+  /** myrmidon(1.6.6 OPE-9154): unattended periodic client cert rotation. */
+  startFleetSiteCertRotation?: typeof startFleetSiteCertRotation;
   log: BotContainersLog;
 }
 
@@ -179,6 +182,7 @@ const defaultPorts: BotContainersStartupPorts = {
   bootstrapFleetSitesFromEnv,
   startSiteScheduler,
   startSiteHealth,
+  startFleetSiteCertRotation,
   log: logger,
 };
 
@@ -218,6 +222,8 @@ export function startBotContainers(
   const stopSiteScheduler = ports.startSiteScheduler?.(db, { env }) ?? null;
   // myrmidon(1.6.6 REMOTE-SITES-T4): next to the scheduler; it reads the client manager's transports.
   const stopSiteHealth = ports.startSiteHealth?.(db, { env, clientManager }) ?? null;
+  // myrmidon(1.6.6 OPE-9154): unattended site client certificate rotation scheduler
+  const stopCertRotation = ports.startFleetSiteCertRotation?.(db, { env, log: ports.log }) ?? null;
 
   let stopped = false;
   const stop = () => {
@@ -228,6 +234,7 @@ export function startBotContainers(
     clientManager.close();
     stopSiteScheduler?.();
     stopSiteHealth?.();
+    stopCertRotation?.();
     // Only clear the registry entry this run put there.
     if (ports.currentRuntime() === runtime) ports.registerRuntime(null);
     if (stopRunning === stop) stopRunning = null;

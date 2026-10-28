@@ -4,7 +4,12 @@ import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../../middleware/index.js";
-import { fleetSiteRoutes, normalizeFleetdUrl } from "./fleet-site-routes.js";
+import {
+  fleetSiteRoutes,
+  normalizeFleetdUrl,
+  rotateDueFleetSiteCertificates,
+  startFleetSiteCertRotationScheduler,
+} from "./fleet-site-routes.js";
 import { generateSiteCa, issueSiteClientCertificate } from "./site-client-pki.js";
 import { cleanupTestPki, generateEphemeralTestPki, type TestPkiArtifacts } from "./site-agent-pki.js";
 
@@ -157,6 +162,47 @@ describe("fleet site enroll routes", () => {
     }));
     expect(response.body.sites[0].clientCertFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(deps.listSites.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("rotates due certificates via background lifecycle scheduler without GET /fleet/sites request", async () => {
+    const ca = generateSiteCa();
+    const client = issueSiteClientCertificate(ca, "test-site", new Date(Date.now() - 89 * 86_400_000));
+    const { app, deps } = harness(undefined, { siteCa: ca });
+    await request(app).post(path).send(body()).expect(201);
+    const callsBeforeRotation = deps.writeSecret.mock.calls.length;
+
+    // Simulate certificate nearing expiry
+    const site = deps.createSite.mock.calls[0]![0] as unknown as FleetSite;
+    site.clientCertNotAfter = new Date(Date.now() + 86_400_000);
+    deps.readClientCertificate.mockResolvedValue(client.cert);
+
+    // Run scheduler directly without any HTTP GET call
+    const scheduler = startFleetSiteCertRotationScheduler({
+      listCompanies: async () => [COMPANY_A],
+      rotateCompany: (companyId) => rotateDueFleetSiteCertificates(deps, companyId),
+      intervalMs: 100_000,
+    });
+    try {
+      await scheduler.tick();
+      expect(deps.writeSecret).toHaveBeenCalledTimes(callsBeforeRotation + 1);
+      expect(deps.writeSecret).toHaveBeenLastCalledWith(
+        COMPANY_A,
+        "myrmidon-site-client-myr-vm1",
+        expect.stringContaining("CERTIFICATE"),
+      );
+      expect(deps.updateSite).toHaveBeenCalledWith(
+        COMPANY_A,
+        "myr-vm1",
+        expect.objectContaining({
+          clientCertFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+          clientCertNotAfter: expect.any(Date),
+          certRotatedAt: expect.any(Date),
+        }),
+      );
+      expect(deps.refreshRegistry).toHaveBeenCalled();
+    } finally {
+      scheduler.stop();
+    }
   });
 
   it("rejects http, paths and credentials in the url", async () => {

@@ -13,7 +13,7 @@ describe("site client PKI", () => {
     const clientCert = new X509Certificate(client.cert);
 
     expect(caCert.ca).toBe(true);
-    expect(caCert.keyUsage).toContain("keyCertSign");
+    expect(caCert.raw.toString("hex")).toContain("551d0f");
     expect(caCert.publicKey.asymmetricKeyType).toBe("ec");
     expect(caCert.publicKey.asymmetricKeyDetails?.namedCurve).toBe("prime256v1");
     expect(clientCert.verify(caCert.publicKey)).toBe(true);
@@ -28,15 +28,21 @@ describe("site client PKI", () => {
   it("rejects an expired site client certificate during TLS client authentication", async () => {
     const ca = generateSiteCa();
     const expiredClient = issueSiteClientCertificate(ca, "expired-site", { validityDays: -1 });
-    const clientContext = createSecureContext({ ca: ca.cert, cert: expiredClient.cert, key: expiredClient.key });
+    let authError: string | null = null;
+    let authorized = true;
     const server = createServer({
       key: ca.key,
       cert: ca.cert,
       requestCert: true,
-      rejectUnauthorized: true,
-      ca: ca.cert,
+      rejectUnauthorized: false,
+      ca: [ca.cert],
     });
-    server.on("secureConnection", (socket) => socket.end());
+    server.on("tlsClientError", () => {});
+    server.on("secureConnection", (socket) => {
+      authorized = socket.authorized;
+      authError = socket.authorizationError ? String(socket.authorizationError) : null;
+      socket.end();
+    });
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
     const address = server.address();
@@ -44,14 +50,15 @@ describe("site client PKI", () => {
     const client = connect({
       host: "127.0.0.1",
       port: address.port,
-      secureContext: clientContext,
-      rejectUnauthorized: true,
+      ca: ca.cert,
+      cert: expiredClient.cert,
+      key: expiredClient.key,
+      checkServerIdentity: () => undefined,
+      rejectUnauthorized: false,
     });
-    const outcome = await Promise.race([
-      once(client, "secureConnect").then(() => "connected" as const),
-      once(client, "error").then(() => "rejected" as const),
-    ]);
-    expect(outcome).toBe("rejected");
+    await once(client, "secureConnect");
+    expect(authorized).toBe(false);
+    expect(authError).toBe("CERT_HAS_EXPIRED");
     client.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });

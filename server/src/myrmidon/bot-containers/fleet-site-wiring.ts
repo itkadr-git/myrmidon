@@ -6,17 +6,22 @@
 
 import { X509Certificate, createPrivateKey } from "node:crypto";
 import type { Router } from "express";
-import type { Db } from "@myrmidon/db";
+import { myrmidonFleetSites, type Db } from "@myrmidon/db";
 import { secretService } from "../../services/index.js";
 import { siteCaSubject } from "./site-client-pki.js";
-import { fleetSiteRoutes } from "./fleet-site-routes.js";
+import {
+  fleetSiteRoutes,
+  rotateDueFleetSiteCertificates,
+  startFleetSiteCertRotationScheduler,
+  type FleetSiteRoutesDeps,
+} from "./fleet-site-routes.js";
 import { siteHealthStore } from "./site-health-store.js";
 import { createFleetSite, deleteFleetSite, getFleetSite, listFleetSites, parseTlsCredentials, updateFleetSite, bumpFleetRegistryVersion } from "./site-registry.js";
 
-export function myrmidonFleetSiteRoutes(db: Db): Router {
+export function createFleetSiteRoutesDeps(db: Db): FleetSiteRoutesDeps {
   const secrets = secretService(db);
   const health = siteHealthStore(db);
-  return fleetSiteRoutes({
+  return {
     listSites: (companyId) => listFleetSites(db, companyId),
     getSite: (companyId, name) => getFleetSite(db, companyId, name),
     createSite: (input) => createFleetSite(db, input),
@@ -55,6 +60,30 @@ export function myrmidonFleetSiteRoutes(db: Db): Router {
       const raw = await secrets.resolveSecretValue(companyId, secret.id, "latest");
       return raw ? parseTlsCredentials(raw).cert ?? null : null;
     },
+  };
+}
 
+export function myrmidonFleetSiteRoutes(db: Db): Router {
+  return fleetSiteRoutes(createFleetSiteRoutesDeps(db));
+}
+
+export function startFleetSiteCertRotation(
+  db: Db,
+  opts: {
+    env?: NodeJS.ProcessEnv;
+    intervalMs?: number;
+    log?: { info(obj: Record<string, unknown>, msg: string): void; error(obj: Record<string, unknown>, msg: string): void };
+  } = {},
+): () => void {
+  const deps = createFleetSiteRoutesDeps(db);
+  const scheduler = startFleetSiteCertRotationScheduler({
+    listCompanies: async () => {
+      const rows = await db.selectDistinct({ companyId: myrmidonFleetSites.companyId }).from(myrmidonFleetSites);
+      return rows.map((r) => r.companyId);
+    },
+    rotateCompany: (companyId) => rotateDueFleetSiteCertificates(deps, companyId),
+    intervalMs: opts.intervalMs ?? 60_000,
+    log: opts.log,
   });
+  return () => scheduler.stop();
 }

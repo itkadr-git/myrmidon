@@ -55,10 +55,14 @@ export function siteCaSubject(cert: string): Buffer {
 }
 function makeTbs(serial: number, issuer: Buffer, owner: Buffer, publicKey: Buffer, from: Date, to: Date, ca: boolean): Buffer {
   const alg = seq(oid([0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]));
-  // KeyUsage is a BIT STRING; bits are MSB-first then padded on the right.
-  // The CA can sign certificates and CRLs; the client can authenticate TLS.
-  const usage = seq(oid([0x55, 0x1d, 0x0f]), der(0x04, der(0x03, ca ? Buffer.from([0x02, 0x02, 0x04]) : Buffer.from([0x02, 0x07, 0x80]))));
-  const constraints = seq(oid([0x55, 0x1d, 0x13]), der(0x04, ca ? seq(der(0x01, Buffer.from([0xff]))) : seq()));
+  // KeyUsage BIT STRING (RFC 5280 4.2.1.3):
+  // Byte 0: count of unused bits in final octet.
+  // CA: digitalSignature (bit 0), keyCertSign (bit 5), cRLSign (bit 6) -> 0b10000110 = 0x86 (1 unused bit).
+  // Client: digitalSignature (bit 0) -> 0b10000000 = 0x80 (7 unused bits).
+  const kuValue = ca ? Buffer.from([0x01, 0x86]) : Buffer.from([0x07, 0x80]);
+  const usage = seq(oid([0x55, 0x1d, 0x0f]), der(0x01, Buffer.from([0xff])), der(0x04, der(0x03, kuValue)));
+  const bcValue = ca ? seq(der(0x01, Buffer.from([0xff]))) : seq();
+  const constraints = seq(oid([0x55, 0x1d, 0x13]), der(0x01, Buffer.from([0xff])), der(0x04, bcValue));
   const eku = ca ? [] : [seq(oid([0x55, 0x1d, 0x25]), der(0x04, seq(oid([0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02]))))];
   return seq(der(0xa0, int(2)), int(serial), alg, issuer, seq(time(from), time(to)), owner, publicKey, der(0xa3, seq(usage, constraints, ...eku)));
 }

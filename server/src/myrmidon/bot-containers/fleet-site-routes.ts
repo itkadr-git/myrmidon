@@ -160,6 +160,93 @@ function publicSite(site: FleetSite) {
   };
 }
 
+export async function rotateDueFleetSiteCertificates(deps: FleetSiteRoutesDeps, companyId: string): Promise<FleetSite[]> {
+  const sites = await deps.listSites(companyId);
+  for (const site of sites) {
+    if (!site.clientCertSecretKey) continue;
+    const existingPem = await deps.readClientCertificate(companyId, site.clientCertSecretKey);
+    if (!existingPem) continue;
+    try {
+      const certificate = new X509Certificate(existingPem);
+      const expiration = new Date(certificate.validTo).getTime();
+      const fingerprint = createHash("sha256").update(certificate.raw).digest("hex");
+      if (site.clientCertNotAfter?.getTime() !== expiration || site.clientCertFingerprint !== fingerprint) {
+        await deps.updateSite(companyId, site.name, {
+          clientCertNotAfter: new Date(expiration),
+          clientCertFingerprint: fingerprint,
+        });
+        deps.refreshRegistry();
+        site.clientCertNotAfter = new Date(expiration);
+        site.clientCertFingerprint = fingerprint;
+      }
+    } catch {
+      continue;
+    }
+  }
+  for (const site of sites) {
+    if (!site.clientCertSecretKey || !site.clientCertNotAfter) continue;
+    const renewAt = site.clientCertNotAfter.getTime() - SITE_CLIENT_CERT_RENEW_BEFORE_DAYS * 86_400_000;
+    if (Date.now() < renewAt) continue;
+    const ca = await deps.readSiteCa(companyId);
+    if (!ca || !site.caCert || site.caCert !== ca.cert) continue;
+    const client = issueSiteClientCertificate(ca, site.name);
+    await deps.writeSecret(companyId, site.clientCertSecretKey, JSON.stringify({ cert: client.cert, key: client.key }));
+    await deps.updateSite(companyId, site.name, {
+      clientCertNotAfter: client.notAfter,
+      clientCertFingerprint: client.fingerprint,
+      certRotatedAt: new Date(),
+    });
+    deps.refreshRegistry();
+  }
+  return deps.listSites(companyId);
+}
+
+export interface FleetSiteCertRotationSchedulerDeps {
+  listCompanies(): Promise<string[]>;
+  rotateCompany(companyId: string): Promise<FleetSite[]>;
+  intervalMs?: number;
+  log?: {
+    info(obj: Record<string, unknown>, msg: string): void;
+    error(obj: Record<string, unknown>, msg: string): void;
+  };
+}
+
+export function startFleetSiteCertRotationScheduler(deps: FleetSiteCertRotationSchedulerDeps): {
+  tick(): Promise<void>;
+  stop(): void;
+} {
+  let inFlight = false;
+  async function tick(): Promise<void> {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      const companies = await deps.listCompanies();
+      for (const companyId of companies) {
+        try {
+          await deps.rotateCompany(companyId);
+        } catch (err) {
+          deps.log?.error({ companyId, err }, "fleet site certificate rotation failed for company");
+        }
+      }
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  const intervalMs = deps.intervalMs ?? 60_000;
+  const timer = setInterval(() => {
+    void tick().catch((err) => {
+      deps.log?.error({ err }, "fleet site certificate scheduler tick error");
+    });
+  }, intervalMs);
+  timer.unref?.();
+
+  return {
+    tick,
+    stop: () => clearInterval(timer),
+  };
+}
+
 export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
   const router = Router();
 
@@ -174,43 +261,7 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
 
   async function handleList(req: Request, res: Response): Promise<void> {
     const companyId = companyOf(req);
-    const sites = await deps.listSites(companyId);
-    for (const site of sites) {
-      if (!site.clientCertSecretKey) continue;
-      const existingPem = await deps.readClientCertificate(companyId, site.clientCertSecretKey);
-      if (!existingPem) continue;
-      try {
-        const certificate = new X509Certificate(existingPem);
-        const expiration = new Date(certificate.validTo).getTime();
-        const fingerprint = createHash("sha256").update(certificate.raw).digest("hex");
-        if (site.clientCertNotAfter?.getTime() !== expiration || site.clientCertFingerprint !== fingerprint) {
-          await deps.updateSite(companyId, site.name, {
-            clientCertNotAfter: new Date(expiration),
-            clientCertFingerprint: fingerprint,
-          });
-          deps.refreshRegistry();
-          site.clientCertNotAfter = new Date(expiration);
-          site.clientCertFingerprint = fingerprint;
-        }
-      } catch {
-        continue;
-      }
-    }
-    for (const site of sites) {
-      if (!site.clientCertSecretKey || !site.clientCertNotAfter) continue;
-      const renewAt = site.clientCertNotAfter.getTime() - SITE_CLIENT_CERT_RENEW_BEFORE_DAYS * 86_400_000;
-      if (Date.now() < renewAt) continue;
-      const ca = await deps.readSiteCa(companyId);
-      if (!ca || !site.caCert || site.caCert !== ca.cert) continue;
-      const client = issueSiteClientCertificate(ca, site.name);
-      await deps.writeSecret(companyId, site.clientCertSecretKey, JSON.stringify({ cert: client.cert, key: client.key }));
-      await deps.updateSite(companyId, site.name, {
-        clientCertNotAfter: client.notAfter,
-        clientCertFingerprint: client.fingerprint,
-        certRotatedAt: new Date(),
-      });
-      deps.refreshRegistry();
-    }
+    await rotateDueFleetSiteCertificates(deps, companyId);
     const current = await deps.listSites(companyId);
     res.json({ sites: current.map(publicSite) });
   }
