@@ -4,10 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
-import { syncMirrorAlternates, findMirror } from "../../../docker/bot-runtime/myr-ws/lib/base.js";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const { syncMirrorAlternates, findMirror } = require("../../../docker/bot-runtime/myr-ws/lib/base.js");
+
+const GIT_REAL = fs.existsSync("/opt/paperclip/libexec/git") ? "/opt/paperclip/libexec/git" : "git";
 
 function runGit(args, cwd) {
-  const res = spawnSync("/usr/bin/git", args, { cwd, encoding: "utf8" });
+  const res = spawnSync(GIT_REAL, args, { cwd, encoding: "utf8" });
   if (res.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${res.stderr || res.stdout}`);
   }
@@ -28,7 +33,7 @@ function getDirSize(dir) {
   return total;
 }
 
-test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushed work preservation", () => {
+test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushed branch preservation", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "myr-ws-mirror-test-"));
   const mirrorRoot = path.join(tmp, "cache", "git");
   const parsed = { owner: "itkadr-git", repo: "myrmidon" };
@@ -61,8 +66,9 @@ test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushe
   // 2. Initialize base repo and link alternates via syncMirrorAlternates
   runGit(["init", "--bare", baseDir]);
   const env = {
+    ...process.env,
     MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot,
-    PATH: process.env.PATH,
+    MYRMIDON_GIT_REAL: GIT_REAL,
   };
 
   const found = findMirror(parsed, env);
@@ -125,7 +131,7 @@ test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushe
   const fileContent = fs.readFileSync(path.join(devWork, "unpushed_feature.txt"), "utf8");
   assert.strictEqual(fileContent, "local unpushed critical work", "file content of unpushed commit must be intact");
 
-  const fsckRes = spawnSync("/usr/bin/git", ["fsck", "--full"], { cwd: devWork, encoding: "utf8" });
+  const fsckRes = spawnSync(GIT_REAL, ["fsck", "--full"], { cwd: devWork, encoding: "utf8" });
   assert.strictEqual(fsckRes.status, 0, `git fsck failed in migrated workspace: ${fsckRes.stderr}`);
 
   // Confirm branch remains purely local and was never pushed
@@ -174,8 +180,9 @@ test("syncMirrorAlternates rolls back alternates file and throws on git repack f
   runGit(["commit", "-m", "local"], workDir);
 
   const env = {
+    ...process.env,
     MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot,
-    PATH: process.env.PATH,
+    MYRMIDON_GIT_REAL: GIT_REAL,
   };
 
   // Make git repack fail by replacing .git/objects/pack with a regular file (triggers ENOTDIR)

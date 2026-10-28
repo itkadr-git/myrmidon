@@ -18,7 +18,10 @@ const EXIT = { ok: 0, usage: 2, quotaExceeded: 3, baseLimit: 4, network: 5, notF
 const FETCH_STAMP = "myr-ws-fetched";
 
 function gitReal(env) {
-  return env[L.ENV.gitReal] || L.DEFAULT_GIT_REAL;
+  if (env && env[L.ENV.gitReal]) return env[L.ENV.gitReal];
+  if (fs.existsSync(L.DEFAULT_GIT_REAL)) return L.DEFAULT_GIT_REAL;
+  if (fs.existsSync("/usr/bin/git")) return "/usr/bin/git";
+  return "git";
 }
 
 function runGit(env, cwd, args, opts = {}) {
@@ -26,7 +29,7 @@ function runGit(env, cwd, args, opts = {}) {
     cwd,
     encoding: "utf8",
     timeout: opts.timeoutMs || 600_000,
-    env: { ...env, GIT_TERMINAL_PROMPT: "0" },
+    env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: "0" },
   });
   return r;
 }
