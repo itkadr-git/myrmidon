@@ -95,8 +95,8 @@ export function issueSiteClientCertificate(
   });
   const now = nowOrOptions instanceof Date ? nowOrOptions : new Date();
   const validityDays = nowOrOptions instanceof Date ? SITE_CLIENT_CERT_VALIDITY_DAYS : (nowOrOptions.validityDays ?? SITE_CLIENT_CERT_VALIDITY_DAYS);
-  const from = new Date(now.getTime() - 60_000);
   const notAfter = new Date(now.getTime() + validityDays * DAY_MS);
+  const from = new Date(Math.min(now.getTime() - 60_000, notAfter.getTime() - 60_000));
   const issuer = new X509Certificate(ca.cert).issuer;
   const issuerName = issuer.includes("myrmidon-site-ca") ? name("myrmidon-site-ca") : name("invalid-site-ca");
   const tbs = makeTbs(randomBytes(16).readUInt32BE(0) || 1, issuerName, name(commonName), pair.publicKey, from, notAfter, false);

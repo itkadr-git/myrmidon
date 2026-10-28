@@ -28,8 +28,6 @@ describe("site client PKI", () => {
   it("rejects an expired site client certificate during TLS client authentication", async () => {
     const ca = generateSiteCa();
     const expiredClient = issueSiteClientCertificate(ca, "expired-site", { validityDays: -1 });
-    let authError: string | null = null;
-    let authorized = true;
     const server = createServer({
       key: ca.key,
       cert: ca.cert,
@@ -38,10 +36,14 @@ describe("site client PKI", () => {
       ca: [ca.cert],
     });
     server.on("tlsClientError", () => {});
-    server.on("secureConnection", (socket) => {
-      authorized = socket.authorized;
-      authError = socket.authorizationError ? String(socket.authorizationError) : null;
-      socket.end();
+    const serverConnected = new Promise<{ authorized: boolean; authError: string | null }>((resolve) => {
+      server.on("secureConnection", (socket) => {
+        resolve({
+          authorized: socket.authorized,
+          authError: socket.authorizationError ? String(socket.authorizationError) : null,
+        });
+        socket.end();
+      });
     });
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
@@ -56,9 +58,10 @@ describe("site client PKI", () => {
       checkServerIdentity: () => undefined,
       rejectUnauthorized: false,
     });
-    await once(client, "secureConnect");
-    expect(authorized).toBe(false);
-    expect(authError).toBe("CERT_HAS_EXPIRED");
+    await Promise.all([once(client, "secureConnect"), serverConnected]);
+    const result = await serverConnected;
+    expect(result.authorized).toBe(false);
+    expect(result.authError).toBe("CERT_HAS_EXPIRED");
     client.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
