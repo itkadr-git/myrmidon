@@ -172,6 +172,8 @@ func TestPut_ValidCallsXfsQuotaWithTheContractArguments(t *testing.T) {
 	root := q.VolumeRoot
 	want := []string{
 		"xfs_quota|-x|-c|state -p|" + root,
+		"xfs_quota|-x|-c|project -s -p " + root + "/" + qKeyA + " 1000|" + root,
+		"xfs_quota|-x|-c|state -p|" + root,
 		"xfs_quota|-x|-c|project -s -p " + root + "/" + qKeyA + " 1000|-c|limit -p bhard=6442450944 bsoft=5153960755 1000|" + root,
 	}
 	got := f.journal()
@@ -268,9 +270,10 @@ func TestPut_RepeatKeepsTheProjectID(t *testing.T) {
 	if n := strings.Count(read(t, q.ProjectsFile), "\n"); n != 2 {
 		t.Errorf("projects has %d lines:\n%s", n, read(t, q.ProjectsFile))
 	}
-	// Three puts each ask for the state and set project, plus the first ensure on each bot key.
-	if n := len(f.journal()); n != 8 {
-		t.Errorf("%d xfs_quota runs, want 8: %q", n, f.journal())
+	// Three puts. Each one checks quota state and sets a project+limit; the first
+	// call for each key also reconciles it before the limit is set.
+	if n := len(f.journal()); n != 12 {
+		t.Errorf("%d xfs_quota runs, want 12: %q", n, f.journal())
 	}
 }
 

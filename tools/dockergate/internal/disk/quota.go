@@ -128,14 +128,8 @@ func softBytes(hard int64) int64 { return hard * 8 / 10 }
 // Ensure registers a bot directory in the XFS project tables without setting
 // a quota. It is safe to call after directory creation and on retries.
 func (q *Quota) Ensure(ctx context.Context, botKey string) (int, error) {
-	return q.ensure(ctx, botKey, false)
-}
-
-func (q *Quota) ensure(ctx context.Context, botKey string, locked bool) (int, error) {
-	if !locked {
-		q.mu.Lock()
-		defer q.mu.Unlock()
-	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	return q.ensureLocked(ctx, botKey)
 }
 
