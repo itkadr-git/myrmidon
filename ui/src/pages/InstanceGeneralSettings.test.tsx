@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
+import { setFeedbackTermsUrlForTesting } from "@/lib/myrmidon-links";
 import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
 
 // myrmidon(BACKUP-KEEP-LAST): the shared type gains `keepLastOnly?: boolean`
@@ -76,6 +77,7 @@ describe("InstanceGeneralSettings sign-out", () => {
   });
 
   afterEach(() => {
+    setFeedbackTermsUrlForTesting(null);
     flushSync(() => root?.unmount());
     queryClient.clear();
     container.remove();
@@ -277,6 +279,29 @@ describe("InstanceGeneralSettings operator-hidden sections", () => {
     expect(container.textContent).toContain("Deployment and auth");
     expect(container.textContent).toContain("Censor username in logs");
     expect(container.textContent).toContain("Backup retention");
+  });
+
+  it("hides the terms of service link when no operator terms override is configured", async () => {
+    setFeedbackTermsUrlForTesting(null);
+    await renderPage(SELF_HOSTED_HEALTH);
+
+    const termsLink = Array.from(container.querySelectorAll("a")).find(
+      (a) => a.textContent?.includes("Terms of Service") || a.href.includes("terms") || a.href.includes("tos"),
+    );
+    expect(termsLink).toBeUndefined();
+  });
+
+  it("renders the operator terms link when FEEDBACK_TERMS_URL is configured", async () => {
+    setFeedbackTermsUrlForTesting("https://operator.example.org/custom-terms");
+    await renderPage(SELF_HOSTED_HEALTH);
+
+    const termsLink = Array.from(container.querySelectorAll("a")).find(
+      (a) => a.getAttribute("href") === "https://operator.example.org/custom-terms",
+    );
+    expect(termsLink).toBeDefined();
+    expect(termsLink?.getAttribute("target")).toBe("_blank");
+    expect(termsLink?.getAttribute("rel")).toContain("noreferrer");
+    expect(termsLink?.textContent).toContain("Terms of Service");
   });
 });
 

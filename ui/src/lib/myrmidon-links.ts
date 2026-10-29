@@ -6,4 +6,8 @@ export function resolveFeedbackTermsUrl(value: string | undefined): string | nul
   return value?.trim() || null;
 }
 
-export const FEEDBACK_TERMS_URL = resolveFeedbackTermsUrl(import.meta.env.VITE_FEEDBACK_TERMS_URL);
+export let FEEDBACK_TERMS_URL = resolveFeedbackTermsUrl(import.meta.env.VITE_FEEDBACK_TERMS_URL);
+
+export function setFeedbackTermsUrlForTesting(value: string | null) {
+  FEEDBACK_TERMS_URL = value;
+}

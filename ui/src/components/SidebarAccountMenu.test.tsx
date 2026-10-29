@@ -157,6 +157,20 @@ describe("SidebarAccountMenu", () => {
     expect(feedbackButton?.getAttribute("data-slot")).toBe("tooltip-trigger");
     expect(feedbackButton?.hasAttribute("title")).toBe(false);
 
+    await act(async () => {
+      accountTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const popover = document.body.querySelector('[data-slot="popover-content"]');
+    const docsLink = popover?.querySelector<HTMLAnchorElement>(
+      'a[href="https://github.com/itkadr-git/myrmidon/tree/main/docs"]',
+    );
+    expect(docsLink).not.toBeNull();
+    expect(docsLink?.getAttribute("target")).toBe("_blank");
+    expect(docsLink?.getAttribute("rel")).toContain("noreferrer");
+    expect(docsLink?.textContent).toContain("Documentation");
+
     await act(async () => root.unmount());
   });
 
@@ -201,6 +215,13 @@ describe("SidebarAccountMenu", () => {
     const popover = document.body.querySelector('[data-slot="popover-content"]');
     expect(popover?.textContent).not.toContain("Feedback");
     expect(popover?.querySelector('a[href="https://github.com/itkadr-git/myrmidon/issues"]')).toBeNull();
+    const docsLink = popover?.querySelector<HTMLAnchorElement>(
+      'a[href="https://github.com/itkadr-git/myrmidon/tree/main/docs"]',
+    );
+    expect(docsLink).not.toBeNull();
+    expect(docsLink?.getAttribute("target")).toBe("_blank");
+    expect(docsLink?.getAttribute("rel")).toContain("noreferrer");
+    expect(docsLink?.textContent).toContain("Documentation");
 
     await act(async () => root.unmount());
   });
