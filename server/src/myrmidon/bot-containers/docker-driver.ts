@@ -992,6 +992,7 @@ export function skillDirectoriesFromArchive(entries: readonly UstarReadEntry[]):
   const skillDirs = new Set<string>();
   for (const entry of entries) {
     if (entry.type !== "file") continue;
+    if (entry.path.startsWith("skills/paperclip-managed/")) continue;
     if (entry.path === "skills/.bundled_manifest") {
       for (const line of entry.content.toString("utf8").split("\n")) {
         const name = line.split(":")[0]?.trim();
@@ -1006,6 +1007,7 @@ export function skillDirectoriesFromArchive(entries: readonly UstarReadEntry[]):
   }
   for (const entry of entries) {
     if (entry.type !== "file") continue;
+    if (entry.path.startsWith("skills/paperclip-managed/")) continue;
     if (entry.path === "skills/.bundled_manifest") continue;
     const segments = entry.path.split("/").filter((segment) => segment.length > 0);
     if (segments.length < 3 || segments[0] !== "skills") continue;

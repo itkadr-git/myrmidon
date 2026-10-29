@@ -217,7 +217,7 @@ export interface BotContainerDriver {
    * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the bot's OWN skills —
    * the directories under hermes/skills/ (the container's ~/.hermes/skills),
    * where a bot keeps the skills it created at runtime — as (directory name,
-   * files). The board's own delivery (hermes/skills-board/, the profile's
+   * files). The board's own delivery (hermes/skills/paperclip-managed/, the profile's
    * managed directory) is NOT part of the result. The reconcile pass feeds
    * this to the back-importer (skill-backimport.ts), so a skill the bot made
    * lands in the company catalog and survives a volume recreation through
