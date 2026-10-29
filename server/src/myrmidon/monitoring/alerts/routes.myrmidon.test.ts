@@ -12,15 +12,16 @@ import type { IssuePorts } from "./service.js";
 import type { AlertDedupStore, DedupEntry } from "./store.js";
 
 const TOKEN = "webhook-token-1";
-const COMPANY = "0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b";
+const COMPANY = "0b0b0b0b-0b0b-0b0b-0b0b0b0b0b0b";
 
 const zabbixDisk = {
   eventid: "101",
+  triggerid: "7001",
   name: "Free disk space is less than 10% on volume / (disk > 90%)",
   severity: "4",
   status: "PROBLEM",
   hosts: "host-a.example.com",
-  url: "https://zabbix.example.com/tr_events.php?triggerid=1&eventid=101",
+  url: "https://zabbix.example.com/tr_events.php?triggerid=7001&eventid=101",
 };
 
 /** In-memory dedup store matching the interface of the JSON-column store. */
@@ -174,7 +175,18 @@ describe("myrmidon(1.6.6-ALERTS) webhook", () => {
     expect(ports.created[0].priority).toBe("critical");
     expect(ports.created[0].description).toContain(zabbixDisk.url);
     expect(ports.created[0].description).toContain("## Runbook");
-    expect(dedup.entries.get("zabbix:101")).toMatchObject({ issueId: "issue-1" });
+    expect(dedup.entries.get("zabbix:7001")).toMatchObject({ issueId: "issue-1" });
+  });
+
+  it("two events for one trigger produce one task (new eventid for same triggerid updates existing task)", async () => {
+    const { app, ports, dedup } = appFor();
+    await request(app).post(webhook).set("authorization", `Bearer ${TOKEN}`).send(zabbixDisk).expect(200);
+    const repeat = await request(app).post(webhook).set("authorization", `Bearer ${TOKEN}`)
+      .send({ ...zabbixDisk, eventid: "102" }).expect(200);
+    expect(repeat.body.results[0]).toMatchObject({ action: "update", issueId: "issue-1" });
+    expect(ports.created).toHaveLength(1);
+    expect(ports.comments).toHaveLength(1);
+    expect(dedup.entries.size).toBe(1);
   });
 
   it("maps the assignee from the alert-type route map and defaults to adm-devops", async () => {
@@ -214,7 +226,7 @@ describe("myrmidon(1.6.6-ALERTS) webhook", () => {
     expect(ports.statusUpdates).toEqual([{ issueId: "issue-1", status: "done" }]);
     expect(ports.comments).toHaveLength(1);
     expect(ports.comments[0].body).toContain("Recovered");
-    expect(dedup.entries.get("zabbix:101")).toMatchObject({ issueStatus: "resolved" });
+    expect(dedup.entries.get("zabbix:7001")).toMatchObject({ issueStatus: "resolved" });
   });
 
   it("answers 401 for a wrong token and 401 without a token", async () => {

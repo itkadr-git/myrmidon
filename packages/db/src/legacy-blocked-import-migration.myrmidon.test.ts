@@ -5,7 +5,7 @@ import postgres from "postgres";
 import { applyPendingMigrations } from "./client.js";
 import { startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "0421_legacy_blocked_import.sql";
+const MIGRATION_FILE = "0422_legacy_blocked_import.sql";
 const cleanups: Array<() => Promise<void>> = [];
 
 async function migrationHash() {
