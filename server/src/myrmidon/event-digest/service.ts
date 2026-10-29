@@ -161,3 +161,27 @@ export function getSharedEventDigestService(): EventDigestService {
   }
   return defaultService;
 }
+
+/**
+ * Dispatches an event through the shared event digest service and an underlying
+ * heartbeat wakeup provider.
+ */
+export async function dispatchAgentEvent(
+  event: AgentEvent,
+  heartbeat: {
+    wakeup: (
+      agentId: string,
+      opts?: Record<string, unknown>,
+    ) => Promise<unknown>;
+  },
+): Promise<EventDispatchResult> {
+  const service = getSharedEventDigestService();
+  return service.handleAgentEvent(event, {
+    wakeup: async (agentId, context) => {
+      return heartbeat.wakeup(agentId, {
+        reason: context.wakeReason as string,
+        contextSnapshot: context,
+      });
+    },
+  });
+}

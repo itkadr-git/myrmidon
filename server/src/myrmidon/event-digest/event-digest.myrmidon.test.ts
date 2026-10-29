@@ -5,6 +5,8 @@ import {
   isDigestAccumulatedPriority,
   isImmediateWakePriority,
   EVENT_PRIORITY_BY_TYPE,
+  getSharedEventDigestService,
+  dispatchAgentEvent,
   type AgentEvent,
 } from "./index.js";
 
@@ -209,6 +211,112 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
       expect(isDigestAccumulatedPriority("P0")).toBe(false);
       expect(isDigestAccumulatedPriority("P1")).toBe(false);
       expect(isDigestAccumulatedPriority("P2")).toBe(false);
+    });
+  });
+
+  describe("Behavioral Ingestion and Dispatch Flow", () => {
+    beforeEach(() => {
+      getSharedEventDigestService().reset();
+    });
+
+    it("dispatchAgentEvent accumulates P4/P3 in shared service without waking, and wakes on P0 with accumulated digest", async () => {
+      const agentId = "agent-behavioral-1";
+      const heartbeatMock = {
+        wakeup: vi.fn().mockResolvedValue({ created: true }),
+      };
+
+      // 1. Dispatch P4 heartbeat event through dispatchAgentEvent
+      const p4Result = await dispatchAgentEvent(
+        {
+          agentId,
+          type: "heartbeat",
+          payload: { tick: 1 },
+        },
+        heartbeatMock,
+      );
+
+      expect(p4Result.woken).toBe(false);
+      expect(heartbeatMock.wakeup).not.toHaveBeenCalled();
+
+      const sharedService = getSharedEventDigestService();
+      expect(sharedService.getPendingDigest(agentId)?.eventCount).toBe(1);
+
+      // 2. Dispatch P3 progress event through dispatchAgentEvent
+      const p3Result = await dispatchAgentEvent(
+        {
+          agentId,
+          type: "progress",
+          payload: { percent: 75 },
+        },
+        heartbeatMock,
+      );
+
+      expect(p3Result.woken).toBe(false);
+      expect(heartbeatMock.wakeup).not.toHaveBeenCalled();
+      expect(sharedService.getPendingDigest(agentId)?.eventCount).toBe(2);
+
+      // 3. Dispatch P0 emergency event
+      const p0Result = await dispatchAgentEvent(
+        {
+          agentId,
+          type: "security_incident",
+          payload: { alert: "breach_detected" },
+        },
+        heartbeatMock,
+      );
+
+      expect(p0Result.woken).toBe(true);
+      expect(heartbeatMock.wakeup).toHaveBeenCalledTimes(1);
+
+      const [calledAgentId, wakeOpts] = heartbeatMock.wakeup.mock.calls[0] as [
+        string,
+        { reason: string; contextSnapshot: Record<string, unknown> },
+      ];
+      expect(calledAgentId).toBe(agentId);
+      expect(wakeOpts.reason).toBe("security_incident");
+
+      const deliveredDigest = wakeOpts.contextSnapshot.eventDigest as any;
+      expect(deliveredDigest).toBeDefined();
+      expect(deliveredDigest.eventCount).toBe(3);
+      expect(deliveredDigest.events.map((e: any) => e.type)).toEqual([
+        "heartbeat",
+        "progress",
+        "security_incident",
+      ]);
+
+      // Shared buffer should be drained after delivery
+      expect(sharedService.getPendingDigest(agentId)).toBeNull();
+    });
+
+    it("wakes immediately on P1 and delivers pending digest", async () => {
+      const agentId = "agent-behavioral-2";
+      const heartbeatMock = {
+        wakeup: vi.fn().mockResolvedValue({ created: true }),
+      };
+
+      // Accumulate a P4 log event
+      await dispatchAgentEvent(
+        { agentId, type: "log", payload: { msg: "info message" } },
+        heartbeatMock,
+      );
+      expect(heartbeatMock.wakeup).not.toHaveBeenCalled();
+
+      // Dispatch P1 CI completion event
+      const p1Result = await dispatchAgentEvent(
+        { agentId, type: "ci_completed", payload: { runId: "ci-999", status: "passed" } },
+        heartbeatMock,
+      );
+
+      expect(p1Result.woken).toBe(true);
+      expect(heartbeatMock.wakeup).toHaveBeenCalledTimes(1);
+
+      const [, wakeOpts] = heartbeatMock.wakeup.mock.calls[0] as [
+        string,
+        { reason: string; contextSnapshot: Record<string, unknown> },
+      ];
+      const deliveredDigest = wakeOpts.contextSnapshot.eventDigest as any;
+      expect(deliveredDigest.eventCount).toBe(2);
+      expect(deliveredDigest.events.map((e: any) => e.type)).toEqual(["log", "ci_completed"]);
     });
   });
 });
