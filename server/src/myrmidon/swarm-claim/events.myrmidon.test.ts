@@ -45,6 +45,36 @@ describe("issueEventMakesTaskAvailable", () => {
 });
 
 describe("notify hooks", () => {
+  it("transitioning a task to ready without an assignee triggers matcher dispatch to an available engineer", async () => {
+    let assignedPair: { issueId: string; agentId: string; role: string } | null = null;
+    const forIssue = vi.fn(async (issueId: string) => {
+      assignedPair = {
+        issueId,
+        agentId: "agent-engineer-1",
+        role: "engineer",
+      };
+      return { pair: assignedPair, unmatched: 0 } as never;
+    });
+    setSwarmEventSink({ forIssue, forAgent: vi.fn(async () => null) });
+
+    // Transition an unassigned task from another status to ready ("todo")
+    notifySwarmIssueEvent({
+      issueId: "issue-dev-1",
+      status: "todo",
+      assigneeAgentId: null,
+      touched: ["status"],
+    });
+    await flush();
+
+    expect(forIssue).toHaveBeenCalledTimes(1);
+    expect(forIssue).toHaveBeenCalledWith("issue-dev-1");
+    expect(assignedPair).toEqual({
+      issueId: "issue-dev-1",
+      agentId: "agent-engineer-1",
+      role: "engineer",
+    });
+  });
+
   it("an available task reaches forIssue; an unavailable one does not", async () => {
     const forIssue = vi.fn(async () => null);
     setSwarmEventSink({ forIssue, forAgent: vi.fn(async () => null) });
