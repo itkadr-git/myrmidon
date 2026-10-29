@@ -493,6 +493,23 @@ jobs:
         if: ${{ !cancelled() }}
         run: node scripts/myrmidon/ci/sql-template-lint.mjs --root server/src
 
+      - name: i18n guard on every tier (the fast tier skips the guard test; was a host pre-merge check)
+        if: ${{ !cancelled() }}
+        run: node --experimental-strip-types scripts/myrmidon/i18n/precheck.mts ui/src
+
+      - name: Migration numbers are unique in the PR merged with main (was a host pre-merge check)
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          d=packages/db/src/migrations
+          dup=$(ls "$d" | grep -oE '^[0-9]+_' | sort | uniq -d || true)
+          if [ -n "$dup" ]; then
+            echo "::error::duplicate migration numbers (renumber your migration): $dup"
+            ls "$d" | grep -E "^($(echo $dup | tr ' ' '|'))" || true
+            exit 1
+          fi
+          echo "migration numbers unique: $(ls "$d" | grep -cE '^[0-9]+_') files"
+
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}
         env:
