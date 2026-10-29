@@ -108,6 +108,37 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     expect(UI2_PHONE_TABS.some((item) => item.labelKey === "ui2.nav.fleet")).toBe(false);
   });
 
+  it("resolves every shell navigation destination through the selected company prefix", async () => {
+    const { UI2_NAV_GROUPS, UI2_PHONE_TABS } = await import("./navModel");
+    const { applyCompanyPrefix } = await import("@/lib/company-routes");
+    const destinations = [
+      ...UI2_NAV_GROUPS.flatMap((group) => group.items.map((item) => item.to)),
+      ...UI2_PHONE_TABS.map((item) => item.to),
+    ];
+    for (const destination of destinations) {
+      expect(destination.startsWith("/"), destination).toBe(true);
+      const resolved = applyCompanyPrefix(destination, "ACME");
+      expect(resolved, destination).toBe(`/ACME${destination}`);
+      expect(resolved, destination).toMatch(/^\/ACME\//);
+    }
+  });
+
+  it("guards every shell source against bypassing company-aware router wrappers", () => {
+    const shellDir = join(UI_SRC, "ui2", "shell");
+    const files = readdirSync(shellDir).filter((file) => /\.(tsx?|jsx?)$/.test(file) && !file.endsWith(".test.ts") && !file.endsWith(".test.tsx"));
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      const source = readFileSync(join(shellDir, file), "utf8");
+      const hasRouterImport = /from ["']@\/lib\/router["']/.test(source);
+      const hasDirectRouterImport = /from ["']react-router-dom["']/.test(source);
+      const hasNavigationReference = /\b(?:Link|NavLink|Navigate|useNavigate|useLocation|useParams)\b|\bto\s*=|\bnavigate\s*\(/.test(source);
+      if (hasNavigationReference) {
+        expect(hasRouterImport, file).toBe(true);
+        expect(hasDirectRouterImport, file).toBe(false);
+      }
+    }
+  });
+
   it("Ui2Root exists and mounts the shell (UI-0b's provider line)", async () => {
     const mod = await import("./Ui2Root");
     expect(typeof mod.Ui2Root).toBe("function");

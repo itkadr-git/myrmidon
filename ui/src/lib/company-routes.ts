@@ -37,6 +37,9 @@ const BOARD_ROUTE_ROOTS = new Set([
   "pipelines",
   "stack",
   "wiki", // myrmidon(OPE-9222): the Knowledge screen
+  "fleet", // UI2 shell destination: upcoming fleet screen
+  "commander-chat", // UI2 shell destination: commander chat
+  "knowledge", // UI2 shell destination: knowledge screen
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);

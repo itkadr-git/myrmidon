@@ -25,7 +25,7 @@ import {
 export interface Ui2NavItem {
   /** i18n key under ui2.nav */
   labelKey: string;
-  /** Destination path (company-prefixed by the shell's Link) */
+  /** Relative destination path; shell components prefix it with the active company. */
   to: string;
   icon: typeof Gauge;
   /** Badge count source key; the shell fills counts from live queries. */
