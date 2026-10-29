@@ -399,6 +399,7 @@ const en = {
   "ui2.screens.knowledge": "Knowledge",
   "ui2.screens.regulations": "Regulations",
   "ui2.nav.group.work": "Work",
+  "ui2.nav.group.plugins": "Plugins",
   "ui2.nav.knowledge": "Knowledge",
   "ui2.nav.regulations": "Regulations",
 
@@ -877,6 +878,7 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.screens.knowledge": "Знания",
   "ui2.screens.regulations": "Регламенты",
   "ui2.nav.group.work": "Работа",
+  "ui2.nav.group.plugins": "Плагины",
   "ui2.nav.knowledge": "Знания",
   "ui2.nav.regulations": "Регламенты",
 
