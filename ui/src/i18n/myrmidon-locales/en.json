@@ -1039,6 +1039,14 @@
         "name": "Swarm self-claim and idle wake",
         "description": "Idle agents of a role take ready tasks from the role queue under a lease, and the sweeper wakes free agents next to a non-empty queue."
       },
+      "swarm-scent": {
+        "name": "SWARM scent classifier",
+        "description": "Classifies role caste scent on incoming tasks via LiteLLM evaluations gateway."
+      },
+      "execution-holds": {
+        "name": "Execution holds (HOLD-READY)",
+        "description": "Monitors open tasks held with replay=blocked awaiting recovery reconciliation or operator release."
+      },
       "run-admission": {
         "name": "Run admission",
         "description": "Instance-wide limits on concurrent runs, run starts per minute and free memory of the server and the host, so a mass wake cannot exhaust the machine."
@@ -1569,6 +1577,23 @@
         "cooldownBaseMin": "Enter a whole number from 1 to 1440, or leave it empty for the default",
         "cooldownCeilingHours": "Enter a whole number from 1 to 168, or leave it empty for the default"
       }
+    },
+    "scent": {
+      "title": "SWARM caste scent classifier",
+      "description": "Classifies task castes via LiteLLM evaluations gateway. Applied immediately without server restart.",
+      "loading": "Loading classifier settings...",
+      "model": {
+        "label": "Classifier model",
+        "customMode": "Enter custom",
+        "selectMode": "Select from gateway",
+        "help": "Model used for evaluating issue caste scent via LiteLLM."
+      },
+      "secret": {
+        "label": "API Key Secret",
+        "defaultOption": "(Default / MYRMIDON_EVALS_API_KEY env)",
+        "help": "Company secret holding the evaluations gateway API key."
+      },
+      "save": "Save classifier settings"
     }
   },
   "budgetLimits": {

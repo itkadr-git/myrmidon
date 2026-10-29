@@ -12,18 +12,22 @@ import { botLspFeature } from "./definitions/bot-lsp.js";
 import { budgetEnforcementFeature } from "./definitions/budget-enforcement.js";
 import { chatHoldsFeature } from "./definitions/chat-holds.js";
 import { costAttributionFeature } from "./definitions/cost-attribution.js";
+import { executionHoldsFeature } from "./definitions/execution-holds.js";
 import { hostDiskFeature } from "./definitions/host-disk.js";
 import { modelFallbackFeature } from "./definitions/model-fallback.js";
 import { pluginEntitlementsFeature } from "./definitions/plugin-entitlements.js";
 import { runAdmissionFeature } from "./definitions/run-admission.js";
 import { sharedPackageCacheFeature } from "./definitions/shared-package-cache.js";
 import { swarmClaimFeature } from "./definitions/swarm-claim.js";
+import { swarmScentFeature } from "./definitions/swarm-scent.js";
 import { telegramDmStatusFeature } from "./definitions/telegram-dm-status.js";
 import { workspaceHygieneFeature } from "./definitions/workspace-hygiene.js";
 import type { FeatureDefinition } from "./types.js";
 
 export const FEATURE_REGISTRY: readonly FeatureDefinition[] = [
   swarmClaimFeature,
+  swarmScentFeature,
+  executionHoldsFeature,
   runAdmissionFeature,
   botDiskFeature,
   sharedPackageCacheFeature,

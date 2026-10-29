@@ -16,7 +16,7 @@ export type FeatureHealthStatus = (typeof FEATURE_HEALTH_STATUSES)[number];
 export type FeatureConfigSource = "settings" | "env" | "default" | "derived";
 
 /** How long a feature must stay enabled-and-broken before it raises an attention card. */
-export const FEATURE_ATTENTION_AFTER_MS = 30 * 60_000;
+export const FEATURE_ATTENTION_AFTER_MS = 10 * 60_000;
 
 /** The window the error count and the effect metric are read over. */
 export const FEATURE_HEALTH_WINDOW_MS = 24 * 60 * 60_000;

@@ -31,7 +31,10 @@ import {
 import { readTracingHealthAttentionSignal } from "../../tracing-health/attention.js";
 import { readStaleBlockSignals } from "../../stale-block/attention.js";
 import { createPgReviewRoutingStore } from "../../review-routing/store.js";
-import { readSwarmClaimAttentionSignals } from "./swarm-signals.js";
+import { readFeatureAttentionSignals } from "../../features/attention.js";
+import {
+  readSwarmClaimAttentionSignals,
+} from "./swarm-signals.js";
 import {
   resolveProcessMetricsSource,
   type ProcessMetricsSample,
@@ -499,6 +502,7 @@ async function readAgentErrorSignals(db: Db): Promise<number> {
     signals += readStaleBlockSignals(row.id).length;
     signals += readSwarmClaimAttentionSignals(row.id).length;
   }
+  signals += readFeatureAttentionSignals().length;
   return signals;
 }
 

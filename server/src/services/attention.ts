@@ -3899,11 +3899,11 @@ async function buildAttentionFeedSnapshot(
       }
 
       // myrmidon(FEATURES): a feature that is enabled and has been
-      // misconfigured or failing for over 30 minutes raises ONE card on the
+      // misconfigured or failing for over 10 minutes raises ONE card on the
       // operator desk (the Features page holds the detail). The signals come
       // from the process-level clock the health pass feeds (features/
       // attention.ts); the card disappears when the feature is healthy again.
-      for (const feature of readFeatureAttentionSignals()) {
+      for (const feature of readFeatureAttentionSignals(new Date(now))) {
         add(createItem({
           companyId,
           sourceKind: "agent_error_alert",
@@ -3923,7 +3923,7 @@ async function buildAttentionFeedSnapshot(
             { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
           ),
           inlineResolvable: true,
-          entryRule: "an enabled feature has been misconfigured or failing for more than 30 minutes.",
+          entryRule: "an enabled feature has been misconfigured or failing for more than 10 minutes.",
           exitRule: "the feature is healthy, off or unknown again, or the row is dismissed.",
           dedupKey: feature.dedupKey,
           severity: feature.severity,

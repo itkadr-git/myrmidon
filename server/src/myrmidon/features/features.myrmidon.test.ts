@@ -62,6 +62,15 @@ function fakePorts(overrides: Partial<FeaturePorts> = {}): FeaturePorts {
     chatStatus: { stats: async () => ({ delivered: 0, failed: 0, lastDeliveredAt: null, lastError: null }) },
     costs: { stats: async () => ({ collected: 0, lastCollectedAt: null, unpricedStale: 0 }) },
     budget: { stats: async () => ({ activePolicies: 0, openIncidents: 0, incidentsSince: 0 }) },
+    scent: {
+      stats: async () => ({ total: 0, failed: 0 }),
+      isModelInGateway: async () => true,
+      hasSecret: async () => true,
+      baseUrl: () => "http://gateway.test",
+    },
+    executionHolds: {
+      stats: async () => ({ count: 0, oldestAt: null }),
+    },
     lsp: { modeCounts: async () => ({ total: 0, limited: 0, full: 0, off: 0 }) },
     runtime: {
       runAdmission: () => ({ gate: { state: "off", availableMb: null, thresholdMb: null, reason: null, heldSince: null } }),
@@ -603,6 +612,8 @@ describe("registry", () => {
       "chat-holds",
       "budget-enforcement",
       "plugin-entitlements",
+      "swarm-scent",
+      "execution-holds",
     ]) {
       expect(keys).toContain(key);
     }

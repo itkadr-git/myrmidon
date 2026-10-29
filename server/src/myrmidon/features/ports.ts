@@ -11,9 +11,13 @@ import {
   budgetPolicies,
   chatPublications,
   companies,
+  companySecrets,
   costEvents,
   heartbeatRuns,
+  issueRecoveryActions,
+  issues,
   litellmCostEvents,
+  litellmModels,
   type Db,
 } from "@myrmidon/db";
 import { countBotLspModes, resolveBotLsp, type BotLspSettings } from "@myrmidon/shared";
@@ -183,6 +187,83 @@ export function createDbFeaturePorts(db: Db): FeaturePorts {
           activePolicies: Number(policies?.n ?? 0),
           openIncidents: Number(open?.n ?? 0),
           incidentsSince: Number(recent?.n ?? 0),
+        };
+      },
+    },
+
+    scent: {
+      async stats(since) {
+        const rows = await db
+          .select({
+            ok: sql<unknown>`${activityLog.details}->>'ok'`,
+          })
+          .from(activityLog)
+          .where(
+            and(
+              inArray(activityLog.action, ["issue.scent_classified", "agent.scent_classified"]),
+              gte(activityLog.createdAt, since),
+            ),
+          );
+        let failed = 0;
+        for (const r of rows) {
+          if (r.ok === "false" || r.ok === false) {
+            failed++;
+          }
+        }
+        return { total: rows.length, failed };
+      },
+      async isModelInGateway(model) {
+        if (!model) return false;
+        const [row] = await db
+          .select({ id: litellmModels.id })
+          .from(litellmModels)
+          .where(eq(litellmModels.model, model.trim()))
+          .limit(1);
+        return Boolean(row);
+      },
+      async hasSecret(secretName) {
+        if (!secretName) return false;
+        const [row] = await db
+          .select({ id: companySecrets.id })
+          .from(companySecrets)
+          .where(eq(companySecrets.name, secretName.trim()))
+          .limit(1);
+        return Boolean(row);
+      },
+      baseUrl() {
+        return (
+          process.env.SCENT_BASE_URL?.trim() ||
+          process.env.MYRMIDON_EVALS_BASE_URL?.trim() ||
+          null
+        );
+      },
+    },
+
+    executionHolds: {
+      async stats() {
+        const rows = await db
+          .select({
+            createdAt: issueRecoveryActions.createdAt,
+            updatedAt: issueRecoveryActions.updatedAt,
+          })
+          .from(issueRecoveryActions)
+          .innerJoin(issues, eq(issues.id, issueRecoveryActions.sourceIssueId))
+          .where(
+            and(
+              sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+              inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+            ),
+          );
+        let oldestAt: Date | null = null;
+        for (const row of rows) {
+          const at = row.createdAt ?? row.updatedAt;
+          if (at && (!oldestAt || at < oldestAt)) {
+            oldestAt = at;
+          }
+        }
+        return {
+          count: rows.length,
+          oldestAt,
         };
       },
     },

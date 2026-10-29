@@ -77,7 +77,10 @@ async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): P
 
   const env = process.env;
   const baseUrl = env[SCENT_BASE_URL_ENV]?.trim() || env.MYRMIDON_EVALS_BASE_URL?.trim() || "";
-  const secretName = env[SCENT_KEY_SECRET_ENV]?.trim() || "MYRMIDON_EVALS_API_KEY";
+  const secretName =
+    settings.apiKeySecretName?.trim() ||
+    env[SCENT_KEY_SECRET_ENV]?.trim() ||
+    "MYRMIDON_EVALS_API_KEY";
   const resolve = ports.resolveSecret ?? defaultResolveSecret;
   const apiKey = await resolve(db, companyId, secretName);
   if (!baseUrl || !apiKey) {

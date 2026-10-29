@@ -5,9 +5,9 @@
 // pass's view of the queues (free agents next to ready work).
 
 import {
-  SWARM_CLAIM_CLAIMED_ACTION,
   SWARM_CLAIM_ENV_KEYS,
   SWARM_CLAIM_SETTINGS_KEY,
+  SWARM_MATCHED_ACTION,
   resolveSwarmClaimSettings,
 } from "@myrmidon/shared";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
@@ -51,39 +51,39 @@ export const swarmClaimFeature: FeatureDefinition = {
   async health(ctx, config) {
     if (!config.enabled) return healthOff("the pilot switch is off");
     if (config.problems?.length) return makeHealth("misconfigured", config.problems[0]!);
-    const [claims, lastClaimAt] = await Promise.all([
-      ctx.ports.activity.count([SWARM_CLAIM_CLAIMED_ACTION], ctx.since),
-      ctx.ports.activity.latest([SWARM_CLAIM_CLAIMED_ACTION]),
+    const [matched, lastMatchedAt] = await Promise.all([
+      ctx.ports.activity.count([SWARM_MATCHED_ACTION], ctx.since),
+      ctx.ports.activity.latest([SWARM_MATCHED_ACTION]),
     ]);
     const out = ctx.outcomes(SWARM_CLAIM_FEATURE_KEY);
     const base = {
-      lastSuccessAt: iso(latestOf(out.lastSuccessAt, lastClaimAt)),
+      lastSuccessAt: iso(latestOf(out.lastSuccessAt, lastMatchedAt)),
       ...errorFields(out),
-      effect: { label: "issues claimed in 24 h", value: claims },
+      effect: { label: "tasks assigned to free agents in 24 h", value: matched },
     };
     if (out.lastOk === false) {
       return makeHealth("failing", `the last sweep pass failed: ${out.lastError ?? "unknown error"}`, base);
     }
     const detail = out.lastDetail ?? {};
     const unmatchedCount = typeof detail.idleUnmatchedTasks === "number" ? detail.idleUnmatchedTasks : 0;
-    if (unmatchedCount > 0 && claims === 0 && out.effect24h === 0) {
+    if (unmatchedCount > 0 && matched === 0 && out.effect24h === 0) {
       return makeHealth(
         "failing",
-        `${unmatchedCount} ready task(s) were unmatched with no claims or wakes in 24 h`,
+        `${unmatchedCount} ready task(s) were unmatched with free agents available but 0 tasks assigned in 24 h`,
         base,
       );
     }
-    if (out.lastRunAt === null && claims === 0) {
+    if (out.lastRunAt === null && matched === 0) {
       return makeHealth(
         "unknown",
-        "unknown — no sweep pass since the server started and no claim in 24 h",
+        "unknown — no sweep pass since the server started and no tasks assigned in 24 h",
         base,
       );
     }
     return makeHealth(
       "working",
-      claims > 0
-        ? `${claims} issue(s) claimed in 24 h`
+      matched > 0
+        ? `${matched} task(s) assigned to free agents in 24 h`
         : "the sweeper runs; no ready work needed a claim in 24 h",
       base,
     );
