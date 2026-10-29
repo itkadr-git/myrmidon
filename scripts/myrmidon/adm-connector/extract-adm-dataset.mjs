@@ -16,7 +16,7 @@ export const DEFAULT_TARGET_COUNT = 50;
 
 /**
  * Redacts secret patterns per policy OPE-1524:
- * Paperclip tokens (pcp_...), GitHub tokens (ghp_...), Bearer headers,
+ * board tokens (pcp_...), GitHub tokens (ghp_...), Bearer headers,
  * private keys, API keys, and sensitive environment variables.
  */
 export function scrubSecrets(text) {
@@ -27,38 +27,153 @@ export function scrubSecrets(text) {
   // Private key blocks
   scrubbed = scrubbed.replace(/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]');
 
-  // Paperclip tokens (pcp_...)
-  scrubbed = scrubbed.replace(/pcp_[A-Za-z0-9_-]{8,}/g, '[REDACTED_PCP_TOKEN]');
+  // Board tokens (pcp_...)
+  scrubbed = scrubbed.replace(/pcp_[A-Za-z0-9_-]+/g, '[REDACTED_PCP_TOKEN]');
 
   // GitHub tokens (ghp_, gho_, ghu_, ghb_, etc.)
-  scrubbed = scrubbed.replace(/gh[pousr]_[A-Za-z0-9_]{16,}/g, '[REDACTED_GH_TOKEN]');
+  scrubbed = scrubbed.replace(/gh[pousr]_[A-Za-z0-9_]+/g, '[REDACTED_GH_TOKEN]');
 
   // Bearer authentication headers
   scrubbed = scrubbed.replace(/(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, '$1[REDACTED_BEARER]');
 
   // Generic API keys or passwords in key=val or key: val (avoiding re-redacting [REDACTED_...])
-  scrubbed = scrubbed.replace(/(api[_-]?key|token|secret|password|passwd)([\s:=]+)(['"]?)(?!\[REDACTED)[^\s'"&;,]{8,}\3/gi, '$1$2$3[REDACTED_SECRET]$3');
+  scrubbed = scrubbed.replace(/(api[_-]?key|token|secret|password|passwd)([\s:=]+)(['"]?)(?!\[REDACTED)[^\s'"&;,]+\3/gi, '$1$2$3[REDACTED_SECRET]$3');
 
   return scrubbed;
 }
 
 /**
- * Required gitleaks stdin scan; refuse export if the scanner is unavailable or fails
+ * Required gitleaks stdin scan; exit 0 returns original text, exit 1 discards the message (returns null),
+ * and scanner errors or non-0/1 exit codes fail closed.
  */
 export function gitleaksScrub(text, bin = process.env.ADM_GITLEAKS_BIN || 'gitleaks') {
+  if (typeof text !== 'string') return '';
   try {
-    const run = spawnSync(bin, ['stdin', '--no-banner', '--redact=100'], {
+    const run = spawnSync(bin, ['stdin', '--no-banner'], {
       input: text,
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024
     });
-    if (run.error || run.status !== 0 || !run.stdout) {
-      throw new Error('gitleaks scan failed; refusing to export data');
+    if (run.error && run.error.code !== 'EPIPE') {
+      throw new Error(`gitleaks execution failed: ${run.error.message}`);
     }
-    return run.stdout;
-  } catch {
-    throw new Error('gitleaks scan failed; refusing to export data');
+    if (run.status === 0) {
+      return text;
+    }
+    if (run.status === 1) {
+      return null;
+    }
+    throw new Error(`gitleaks scan failed with exit code ${run.status}; refusing to export data`);
+  } catch (err) {
+    if (err.message && err.message.includes('refusing to export data')) {
+      throw err;
+    }
+    throw new Error(`gitleaks scan failed: ${err.message}; refusing to export data`);
   }
+}
+
+/**
+ * Strips service wrapper tags and system injections from prompt text
+ */
+export function stripServiceWrappers(text) {
+  if (typeof text !== 'string') return '';
+  let cleaned = text;
+
+  // XML-like service wrapper tags
+  cleaned = cleaned.replace(/<system[\s\S]*?<\/system>/gi, '');
+  cleaned = cleaned.replace(/<task-notification[\s\S]*?<\/task-notification>/gi, '');
+  cleaned = cleaned.replace(/<local-command-caveat[\s\S]*?<\/local-command-caveat>/gi, '');
+  cleaned = cleaned.replace(/<command-name[\s\S]*?<\/command-name>/gi, '');
+  cleaned = cleaned.replace(/<environment_context[\s\S]*?<\/environment_context>/gi, '');
+  cleaned = cleaned.replace(/<context[\s\S]*?<\/context>/gi, '');
+
+  // Bracketed service wrappers
+  cleaned = cleaned.replace(/\[OUT-OF-BAND USER MESSAGE[\s\S]*?\[\/OUT-OF-BAND USER MESSAGE\]/gi, '');
+  cleaned = cleaned.replace(/\[TASK[\s\S]*?\]/gi, '');
+
+  return cleaned.trim();
+}
+
+/**
+ * Normalizes whitespace: collapses consecutive whitespace characters to a single space
+ */
+export function normalizeWhitespace(text) {
+  if (typeof text !== 'string') return '';
+  return text.trim().replace(/\s+/g, ' ');
+}
+
+function extractTextFromContent(content) {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    let combined = '';
+    for (const part of content) {
+      if (!part) continue;
+      if (typeof part === 'string') {
+        combined += (combined ? '\n' : '') + part;
+      } else if (typeof part === 'object') {
+        // Skip tool_result, tool_use, image, etc.
+        if (part.type === 'tool_result' || part.type === 'tool_use' || part.type === 'image') {
+          continue;
+        }
+        if (part.type === 'text' && typeof part.text === 'string') {
+          combined += (combined ? '\n' : '') + part.text;
+        } else if (typeof part.content === 'string') {
+          combined += (combined ? '\n' : '') + part.content;
+        }
+      }
+    }
+    return combined;
+  }
+  return '';
+}
+
+function extractFromItem(item) {
+  const result = [];
+  if (!item || typeof item !== 'object') return result;
+
+  // Filter isMeta and isSidechain flags
+  if (item.isMeta || item.isSidechain) return result;
+  if (item.message && (item.message.isMeta || item.message.isSidechain)) return result;
+
+  // Filter subagent items
+  if (item.subagent || item.isSubagent || item.agentRole === 'subagent' || item.agentType === 'subagent') return result;
+  if (item.message && (item.message.subagent || item.message.isSubagent)) return result;
+
+  // Role check: human/user only
+  const role = item.role || item.type || (item.message && item.message.role) || (item.message && item.message.type);
+  if (role !== 'user' && role !== 'human') {
+    return result;
+  }
+
+  // Skip tool_result items
+  if (item.type === 'tool_result' || (item.message && item.message.type === 'tool_result')) {
+    return result;
+  }
+
+  let text = '';
+  if (item.content !== undefined) {
+    text = extractTextFromContent(item.content);
+  } else if (item.message && item.message.content !== undefined) {
+    text = extractTextFromContent(item.message.content);
+  } else if (item.message && typeof item.message.text === 'string') {
+    text = item.message.text;
+  } else if (typeof item.text === 'string') {
+    text = item.text;
+  }
+
+  // Strip service wrappers
+  text = stripServiceWrappers(text);
+
+  const timestamp = item.timestamp_utc || item.timestamp || item.created_at || item.createdAt ||
+    (item.message && (item.message.timestamp_utc || item.message.timestamp || item.message.createdAt)) || null;
+
+  if (text.trim()) {
+    result.push({ text: text.trim(), timestamp_utc: timestamp });
+  }
+
+  return result;
 }
 
 /**
@@ -104,45 +219,6 @@ export function parseSessionMessages(content) {
   return messages;
 }
 
-function extractFromItem(item) {
-  const result = [];
-  if (!item || typeof item !== 'object') return result;
-
-  // Claude Code transcript format: { type: "user" | "human", message: { text: "..." }, timestamp: "..." }
-  // or { role: "user", content: "..." }
-  const role = item.role || item.type || (item.message && item.message.role) || (item.message && item.message.type);
-  if (role !== 'user' && role !== 'human') {
-    return result;
-  }
-
-  let text = '';
-  if (typeof item.content === 'string') {
-    text = item.content;
-  } else if (Array.isArray(item.content)) {
-    for (const part of item.content) {
-      if (part && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string') {
-        text += (text ? '\n' : '') + part.text;
-      } else if (typeof part === 'string') {
-        text += (text ? '\n' : '') + part;
-      }
-    }
-  } else if (item.message && typeof item.message.content === 'string') {
-    text = item.message.content;
-  } else if (item.message && typeof item.message.text === 'string') {
-    text = item.message.text;
-  } else if (typeof item.text === 'string') {
-    text = item.text;
-  }
-
-  const timestamp = item.timestamp || item.created_at || item.createdAt || (item.message && (item.message.timestamp || item.message.createdAt)) || null;
-
-  if (text.trim()) {
-    result.push({ text: text.trim(), timestamp });
-  }
-
-  return result;
-}
-
 /**
  * Filters and samples exactly targetCount messages using uniform stride.
  */
@@ -162,10 +238,11 @@ export function sampleDataset(rawCandidates, {
   const inWindow = [];
   for (const c of rawCandidates) {
     if (typeof c.text !== 'string' || !c.text.trim()) continue;
-    if (typeof c.timestamp !== 'string') continue;
-    const t = Date.parse(c.timestamp);
+    const rawTs = c.timestamp_utc || c.timestamp;
+    if (typeof rawTs !== 'string') continue;
+    const t = Date.parse(rawTs);
     if (!Number.isFinite(t) || t < startTime || t >= endTime) continue;
-    inWindow.push({ ...c, timestamp: new Date(t).toISOString() });
+    inWindow.push({ ...c, timestamp_utc: new Date(t).toISOString() });
   }
 
   // Deduplicate and scrub
@@ -173,22 +250,26 @@ export function sampleDataset(rawCandidates, {
   const sanitized = [];
 
   for (const item of inWindow) {
-    const clean = scan(scrubSecrets(item.text));
-    const norm = clean.trim();
+    const preScrubbed = scrubSecrets(item.text);
+    const clean = scan(preScrubbed);
+    // Discard message if scanner detected a leak (returned null/empty)
+    if (clean === null || typeof clean !== 'string') continue;
+
+    const norm = normalizeWhitespace(clean);
     if (norm.length < 5) continue; // Skip single punctuation / trivial noise
     if (seenTexts.has(norm)) continue;
     seenTexts.add(norm);
 
     sanitized.push({
       text: norm,
-      timestamp: item.timestamp
+      timestamp_utc: item.timestamp_utc
     });
   }
 
-  // Sort chronologically
+  // Sort chronologically by timestamp_utc, then text
   sanitized.sort((a, b) => {
-    const ta = new Date(a.timestamp).getTime();
-    const tb = new Date(b.timestamp).getTime();
+    const ta = new Date(a.timestamp_utc).getTime();
+    const tb = new Date(b.timestamp_utc).getTime();
     if (!isNaN(ta) && !isNaN(tb) && ta !== tb) return ta - tb;
     return a.text.localeCompare(b.text);
   });
@@ -201,7 +282,7 @@ export function sampleDataset(rawCandidates, {
   if (N === targetCount) {
     return sanitized.map((item, idx) => ({
       id: idx + 1,
-      timestamp_utc: item.timestamp,
+      timestamp_utc: item.timestamp_utc,
       text: item.text,
       scrubbed: true
     }));
@@ -214,7 +295,7 @@ export function sampleDataset(rawCandidates, {
     const item = sanitized[idx];
     sampled.push({
       id: i + 1,
-      timestamp_utc: item.timestamp,
+      timestamp_utc: item.timestamp_utc,
       text: item.text,
       scrubbed: true
     });
@@ -224,14 +305,16 @@ export function sampleDataset(rawCandidates, {
 }
 
 /**
- * Scans directories recursively for session logs
+ * Scans directories recursively for session logs, excluding subagents directories
  */
 export function scanDirectory(dir) {
   const files = [];
   try {
     const entries = readdirSync(dir);
     for (const entry of entries) {
+      if (entry === 'subagents' || entry === 'subagent' || entry === 'node_modules' || entry === '.git') continue;
       const fullPath = join(dir, entry);
+      if (fullPath.includes('/subagents/') || fullPath.includes('/subagent/')) continue;
       try {
         const s = statSync(fullPath);
         if (s.isDirectory()) {

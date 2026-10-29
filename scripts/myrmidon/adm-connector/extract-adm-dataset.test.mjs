@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { scrubSecrets, parseSessionMessages, sampleDataset, gitleaksScrub } from './extract-adm-dataset.mjs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { scrubSecrets, parseSessionMessages, sampleDataset, gitleaksScrub, normalizeWhitespace } from './extract-adm-dataset.mjs';
 
 test('scrubSecrets redacts tokens, bearer headers, and keys', () => {
   const input = `
     Auth header: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xyz123
-    Paperclip token: pcp_dummy_invite_live_test
+    Board token: pcp_dummy_invite_live_test
     GitHub token: ghp_dummyfaketokenfortestingonly123
     Secret variable: api_key="secret-key-value-12345"
+    Password variable: password=super-secret-pass
     Private key:
     -----BEGIN RSA PRIVATE KEY-----
     MIIEowIBAAKCAQEA0m...
@@ -15,14 +19,16 @@ test('scrubSecrets redacts tokens, bearer headers, and keys', () => {
   `;
 
   const scrubbed = scrubSecrets(input);
-  assert.ok(!scrubbed.includes('pcp_invite_live'));
-  assert.ok(!scrubbed.includes('ghp_11223344'));
-  assert.ok(!scrubbed.includes('eyJhbGciOi'));
+  assert.ok(!scrubbed.includes('pcp_dummy_invite_live_test'));
+  assert.ok(!scrubbed.includes('ghp_dummyfaketokenfortestingonly123'));
+  assert.ok(!scrubbed.includes('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xyz123'));
   assert.ok(!scrubbed.includes('secret-key-value-12345'));
+  assert.ok(!scrubbed.includes('super-secret-pass'));
   assert.ok(!scrubbed.includes('MIIEowIBAAKCAQEA0m'));
   assert.ok(scrubbed.includes('[REDACTED_PCP_TOKEN]'));
   assert.ok(scrubbed.includes('[REDACTED_GH_TOKEN]'));
   assert.ok(scrubbed.includes('[REDACTED_BEARER]'));
+  assert.ok(scrubbed.includes('[REDACTED_SECRET]'));
   assert.ok(scrubbed.includes('[REDACTED_PRIVATE_KEY]'));
 });
 
@@ -42,29 +48,120 @@ test('window boundaries, missing timestamps and insufficient data fail closed', 
   assert.throws(() => sampleDataset(candidates, { ...options, startUtc: 'invalid' }), /Invalid UTC window/);
 });
 
-test('gitleaks failures never export unscanned text', () => {
-  const failedScanner = () => { throw new Error('gitleaks failed'); };
-  assert.throws(() => sampleDataset([{ text: 'sensitive input', timestamp: '2026-10-21T12:00:00Z' }], {
-    targetCount: 1,
-    scan: failedScanner
-  }), /gitleaks failed/);
-  assert.throws(() => gitleaksScrub('sensitive input', '__missing_gitleaks_command__'), /gitleaks scan failed/);
+test('gitleaksScrub handles clean text (exit 0) and leak detected (exit 1)', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'mock-gitleaks-'));
+  const cleanBin = join(tmpDir, 'mock-gitleaks-clean.sh');
+  const leakBin = join(tmpDir, 'mock-gitleaks-leak.sh');
+  const errorBin = join(tmpDir, 'mock-gitleaks-error.sh');
+
+  writeFileSync(cleanBin, '#!/bin/sh\ncat > /dev/null 2>&1 || true\nexit 0\n', { mode: 0o755 });
+  writeFileSync(leakBin, '#!/bin/sh\ncat > /dev/null 2>&1 || true\nexit 1\n', { mode: 0o755 });
+  writeFileSync(errorBin, '#!/bin/sh\ncat > /dev/null 2>&1 || true\nexit 2\n', { mode: 0o755 });
+
+  // Happy path: exit 0 on clean text returns original text
+  const cleanResult = gitleaksScrub('clean message text from operator', cleanBin);
+  assert.equal(cleanResult, 'clean message text from operator');
+
+  // Leak detected: exit 1 returns null (message to be dropped)
+  const leakResult = gitleaksScrub('message with leaked secret', leakBin);
+  assert.equal(leakResult, null);
+
+  // Scanner error (exit 2): fail closed
+  assert.throws(() => gitleaksScrub('some text', errorBin), /gitleaks scan failed/);
+
+  // Missing scanner binary: fail closed
+  assert.throws(() => gitleaksScrub('some text', join(tmpDir, 'nonexistent')), /gitleaks scan failed/);
+
+  // Integration with sampleDataset: exit 1 leak is dropped, exit 0 is included
+  const candidates = [
+    { text: 'clean text message 1', timestamp_utc: '2026-10-21T10:00:00Z' },
+    { text: 'leak text message 2', timestamp_utc: '2026-10-21T11:00:00Z' }
+  ];
+  const scanWithMock = (text) => {
+    return text.includes('leak') ? gitleaksScrub(text, leakBin) : gitleaksScrub(text, cleanBin);
+  };
+  const res = sampleDataset(candidates, { targetCount: 1, scan: scanWithMock });
+  assert.equal(res.length, 1);
+  assert.equal(res[0].text, 'clean text message 1');
 });
 
-test('parseSessionMessages handles Claude Code and JSONL session formats', () => {
+test('parseSessionMessages filters isMeta, isSidechain, subagents, service wrappers and parses block arrays', () => {
   const jsonl = [
+    // Standard user text
     JSON.stringify({ type: 'user', message: { text: 'Deploy the latest release to stage' }, timestamp: '2026-10-21T10:00:00Z' }),
-    JSON.stringify({ type: 'assistant', message: { text: 'Running deploy script...' } }),
-    JSON.stringify({ role: 'user', content: 'Check ssh connection to agent node', timestamp: '2026-10-22T14:30:00Z' }),
-    JSON.stringify({ type: 'tool_result', content: 'Connection timed out' })
+    // isMeta = true -> skipped
+    JSON.stringify({ type: 'user', isMeta: true, message: { text: 'Meta message to skip' }, timestamp: '2026-10-21T10:05:00Z' }),
+    // isSidechain = true -> skipped
+    JSON.stringify({ type: 'user', isSidechain: true, message: { text: 'Sidechain message to skip' }, timestamp: '2026-10-21T10:10:00Z' }),
+    // subagent message -> skipped
+    JSON.stringify({ type: 'user', subagent: true, message: { text: 'Subagent message to skip' }, timestamp: '2026-10-21T10:15:00Z' }),
+    // array of text blocks
+    JSON.stringify({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Block array message part 1' },
+        { type: 'text', text: 'part 2' }
+      ],
+      timestamp: '2026-10-21T10:20:00Z'
+    }),
+    // message containing tool_result block -> tool_result block excluded
+    JSON.stringify({
+      role: 'user',
+      content: [
+        { type: 'tool_result', content: 'Command exit status: 0' },
+        { type: 'text', text: 'User text following tool result' }
+      ],
+      timestamp: '2026-10-21T10:25:00Z'
+    }),
+    // message containing ONLY tool_result -> skipped
+    JSON.stringify({
+      role: 'user',
+      content: [
+        { type: 'tool_result', content: 'Command exit status: 0' }
+      ],
+      timestamp: '2026-10-21T10:26:00Z'
+    }),
+    // service wrappers: <task-notification>, [OUT-OF-BAND...], <system>
+    JSON.stringify({
+      type: 'user',
+      message: { text: '<task-notification>\nUpdate notification\n</task-notification>' },
+      timestamp: '2026-10-21T10:30:00Z'
+    }),
+    JSON.stringify({
+      type: 'user',
+      message: { text: '[OUT-OF-BAND USER MESSAGE — direct]\nService wrapper only\n[/OUT-OF-BAND USER MESSAGE]' },
+      timestamp: '2026-10-21T10:35:00Z'
+    }),
+    // Prompt wrapped in service tags -> wrapper stripped, prompt kept
+    JSON.stringify({
+      type: 'user',
+      message: { text: '<system>System header</system>\nExecute deployment now' },
+      timestamp: '2026-10-21T10:40:00Z'
+    })
   ].join('\n');
 
   const parsed = parseSessionMessages(jsonl);
-  assert.equal(parsed.length, 2);
+  assert.equal(parsed.length, 4);
   assert.equal(parsed[0].text, 'Deploy the latest release to stage');
-  assert.equal(parsed[0].timestamp, '2026-10-21T10:00:00Z');
-  assert.equal(parsed[1].text, 'Check ssh connection to agent node');
-  assert.equal(parsed[1].timestamp, '2026-10-22T14:30:00Z');
+  assert.equal(parsed[0].timestamp_utc, '2026-10-21T10:00:00Z');
+  assert.equal(parsed[1].text, 'Block array message part 1\npart 2');
+  assert.equal(parsed[2].text, 'User text following tool result');
+  assert.equal(parsed[3].text, 'Execute deployment now');
+});
+
+test('whitespace normalization, deduplication and output schema', () => {
+  assert.equal(normalizeWhitespace('  hello \t  world \n \n test  '), 'hello world test');
+
+  const candidates = [
+    { text: '  Excessive   whitespace   \n\n  in   prompt   text  ', timestamp_utc: '2026-10-21T10:00:00Z' },
+    { text: 'Excessive whitespace in prompt text', timestamp_utc: '2026-10-21T10:01:00Z' } // Duplicate after normalization
+  ];
+  const dataset = sampleDataset(candidates, { targetCount: 1, scan: text => text });
+  assert.equal(dataset.length, 1);
+  assert.equal(dataset[0].text, 'Excessive whitespace in prompt text');
+  assert.equal(dataset[0].id, 1);
+  assert.equal(dataset[0].timestamp_utc, '2026-10-21T10:00:00.000Z');
+  assert.equal(dataset[0].scrubbed, true);
 });
 
 test('sampleDataset selects exactly 50 messages using uniform stride within UTC window', () => {
