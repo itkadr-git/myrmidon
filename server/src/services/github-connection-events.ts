@@ -122,12 +122,17 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
     });
   }
   if (event.event === "workflow_run" || event.event === "check_suite") {
+    const workflowPullRequests = record(payload.workflowRun).pullRequests;
+    const workflowPullRequestNumber = Array.isArray(workflowPullRequests) ? positiveInteger(record(workflowPullRequests[0]).number) : null;
+    const checkPullRequests = record(payload.checkSuite).pullRequests;
+    const checkPullRequestNumber = Array.isArray(checkPullRequests) ? positiveInteger(record(checkPullRequests[0]).number) : null;
+    const pullRequest = record(payload.pullRequest);
     return compact({
       ...base,
       action: boundedString(payload.action, 100),
       repository: boundedString(payload.repository, 300),
-      number: positiveInteger(payload.number),
-      pullRequestNumber: positiveInteger(payload.pullRequestNumber),
+      number: workflowPullRequestNumber ?? checkPullRequestNumber,
+      pullRequestNumber: positiveInteger(pullRequest.number) ?? checkPullRequestNumber,
       headSha: commitSha(payload.headSha),
       conclusion: boundedString(payload.conclusion, 40),
       status: boundedString(payload.status, 40),
@@ -255,19 +260,41 @@ export function githubConnectionEventService(
   }
 
   async function applyCiCompletionEvent(companyId: string, event: LeasedEvent) {
-    if (!options.assignmentWakeup || (event.event !== "workflow_run" && event.event !== "check_suite")) return;
-    const payload = normalizeLeasedPayload(event);
+    if (event.event !== "workflow_run" && event.event !== "check_suite") return;
+    const payload = event.payload;
     const status = stringValue(payload.status);
     const conclusion = stringValue(payload.conclusion);
-    if (status && status !== "completed") return;
-    if (!conclusion) return;
+    if (!status || !["queued", "in_progress", "completed"].includes(status)) return;
     const repository = stringValue(payload.repository);
-    const pullRequestNumber = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number);
+    const pullRequestNumber = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number) ?? positiveInteger(payload.checkSuitePullRequestNumber);
     const headSha = commitSha(payload.headSha);
     const runId = identifier(payload.runId) ?? identifier(payload.checkSuiteId) ?? event.id;
     if (!repository || !pullRequestNumber || !headSha) return;
 
-    const products = await db.select({ product: issueWorkProducts, issue: issues })
+    const active = status === "queued" || status === "in_progress";
+    if (!active && !conclusion) return;
+    const currentTime = now();
+    const products = await db.select().from(issueWorkProducts)
+      .where(and(
+        eq(issueWorkProducts.companyId, companyId),
+        eq(issueWorkProducts.type, "pull_request"),
+        eq(issueWorkProducts.provider, "github"),
+      ));
+    for (const product of products) {
+      const metadata = record(product.metadata);
+      const productRepository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
+      const productNumber = positiveInteger(metadata.number)
+        ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
+      if (productRepository?.toLowerCase() !== repository.toLowerCase() || productNumber !== pullRequestNumber) continue;
+      await db.update(issueWorkProducts).set({
+        metadata: { ...metadata, activeCi: active ? { repository, number: pullRequestNumber, headSha, runId, status, observedAt: currentTime.toISOString() } : null },
+        updatedAt: currentTime,
+      }).where(eq(issueWorkProducts.id, product.id));
+    }
+
+    if (!options.assignmentWakeup || !conclusion || active) return;
+
+    const completionProducts = await db.select({ product: issueWorkProducts, issue: issues })
       .from(issueWorkProducts)
       .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
       .where(and(
@@ -275,10 +302,11 @@ export function githubConnectionEventService(
         eq(issueWorkProducts.type, "pull_request"),
         eq(issueWorkProducts.provider, "github"),
       ));
-    const matching = products.find(({ product }: { product: typeof issueWorkProducts.$inferSelect }) => {
+    const matching = completionProducts.find(({ product }: { product: typeof issueWorkProducts.$inferSelect }) => {
       const metadata = record(product.metadata);
       const repo = stringValue(metadata.repo) ?? stringValue(metadata.repository);
-      const number = positiveInteger(metadata.number) ?? Number(product.externalId);
+      const number = positiveInteger(metadata.number)
+        ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
       return repo?.toLowerCase() === repository.toLowerCase() && number === pullRequestNumber;
     });
     if (!matching?.issue.assigneeAgentId) return;
@@ -335,6 +363,8 @@ export function githubConnectionEventService(
       eq(externalObjects.objectType, "pull_request"),
       sql`lower(${externalObjects.externalId}) = lower(${snapshot.externalId})`,
     ));
+    await db.update(issueWorkProducts).set({ metadata: sql`(${issueWorkProducts.metadata} - 'activeCi') || ${JSON.stringify({ repository: snapshot.repository, number: snapshot.number, headSha: snapshot.data.headSha })}::jsonb`, updatedAt: appliedAt })
+      .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github"), eq(issueWorkProducts.externalId, snapshot.externalId)));
     if (snapshot.merged && event.action === "closed") {
       await issueThreadInteractionService(db, { wakeup: options.wakeup })
         .sweepMergedPullRequestConfirmations([{
