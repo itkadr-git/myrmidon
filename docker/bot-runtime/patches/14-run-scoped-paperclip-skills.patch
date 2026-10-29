@@ -6,7 +6,7 @@ index c6aeb92..4e6b2cc 100644
      # ``{"key", "repo", "baseRef?"}`` — validated in _handle_runs; _run_agent_sync opens
      # the task copy via ``myr-ws open`` before the model starts.
      workspace: Optional[Dict[str, str]] = None
-+    # myrmidon(1.6.6-HERMES-SKILLS-A): run-scoped Paperclip-managed skills —
++    # myrmidon(1.6.6-HERMES-SKILLS-A): run-scoped Myrmidon-managed skills —
 +    # ``[{"path", "name", "content"}]`` or None. Materialized into the run
 +    # profile's ``skills/paperclip-managed/`` segment in _run_agent_sync,
 +    # before the model starts (see tools/run_skills.py).
@@ -39,7 +39,7 @@ index c6aeb92..4e6b2cc 100644
          # myrmidon(BOT-DISK-H5b): task workspace to open via myr-ws before the model starts.
 -        workspace=workspace_field)
 +        workspace=workspace_field,
-+        # myrmidon(1.6.6-HERMES-SKILLS-A): Paperclip-managed skills to
++        # myrmidon(1.6.6-HERMES-SKILLS-A): Myrmidon-managed skills to
 +        # materialize into the run profile before the model starts.
 +        paperclip_skills=paperclip_skills_field)
      self._activate_admitted_request()
@@ -49,7 +49,7 @@ index c6aeb92..4e6b2cc 100644
                          run.run_id, "run.workspace_fallback",
                          key=run.workspace.get("key", ""), path=opened["path"],
                          exit_code=opened["exit_code"], warning=opened["error"]))
-+            # myrmidon(1.6.6-HERMES-SKILLS-A): the run carries Paperclip-managed
++            # myrmidon(1.6.6-HERMES-SKILLS-A): the run carries Myrmidon-managed
 +            # skills — materialize them into THIS profile's skills root (we are
 +            # inside _profile_scope) BEFORE the model starts, and fail the run
 +            # loudly when a desired entry did not land: the board adapter
@@ -65,7 +65,7 @@ index c6aeb92..4e6b2cc 100644
 +                if missing is not None:
 +                    from tools.run_skills import skip_reason
 +                    raise RuntimeError(
-+                        "Cannot start without the required Paperclip-managed skills: "
++                        "Cannot start without the required Myrmidon-managed skills: "
 +                        f"{missing}: skill was not materialized in the run profile "
 +                        f"({skip_reason(run.paperclip_skills, missing)})")
 +                from tools.skills_tool import _skills_dir
@@ -108,7 +108,7 @@ index 1875be3..899c437 100644
 --- /dev/null
 +++ b/tools/run_skills.py
 @@ -0,0 +1,169 @@
-+"""myrmidon(G1): run-scoped Paperclip-managed skill materialization (1.6.6-HERMES-SKILLS-A).
++"""myrmidon(G1): run-scoped Myrmidon-managed skill materialization (1.6.6-HERMES-SKILLS-A).
 +
 +The board's hermes_gateway adapter cannot reach the gateway's filesystem: it
 +talks to the API only, and the pinned API surface has no endpoint that writes
