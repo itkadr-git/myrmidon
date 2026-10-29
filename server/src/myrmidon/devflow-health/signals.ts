@@ -91,14 +91,14 @@ export function approvedPrSince(
   for (const comment of sortedComments) {
     const lines = comment.body.split(/\r?\n/);
     for (const line of lines) {
-      if (!/\b(verdict|вердикт)\b/i.test(line)) continue;
+      if (!/(?:^|[^\p{L}\p{N}])(verdict|вердикт)(?:[^\p{L}\p{N}]|$)/iu.test(line)) continue;
       const prMatch = line.match(/#(\d+)/);
       const prNum = prMatch ? Number(prMatch[1]) : null;
       if (number !== null && prNum !== null && prNum !== number) {
         continue;
       }
-      const approves = /\b(approve|approved|одобрен[оаы]?|одобрить|lgtm)\b/i.test(line);
-      const rejects = /\b(changes|rework|return|refuse|отклон|доработк)\b/i.test(line);
+      const approves = /(?:^|[^\p{L}\p{N}])(approve|approved|одобрен[оаы]?|одобрить|lgtm)(?:[^\p{L}\p{N}]|$)/iu.test(line);
+      const rejects = /(?:^|[^\p{L}\p{N}])(changes|rework|return|refuse|отклон\p{L}*|доработк\p{L}*)(?:[^\p{L}\p{N}]|$)/iu.test(line);
       if (approves && !rejects) {
         commentApprovedAt = comment.time;
         commentRejected = false;
