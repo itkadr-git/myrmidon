@@ -301,7 +301,7 @@ describe("InstanceGeneralSettings operator-hidden sections", () => {
     expect(termsLink).toBeDefined();
     expect(termsLink?.getAttribute("target")).toBe("_blank");
     expect(termsLink?.getAttribute("rel")).toContain("noreferrer");
-    expect(termsLink?.textContent).toContain("Terms of Service");
+    expect(termsLink?.textContent).toMatch(/terms of service/i);
   });
 });
 

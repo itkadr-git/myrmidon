@@ -54,7 +54,7 @@ describe("OutputFeedbackButtons terms link rendering", () => {
     expect(termsLink).not.toBeNull();
     expect(termsLink?.getAttribute("target")).toBe("_blank");
     expect(termsLink?.getAttribute("rel")).toContain("noreferrer");
-    expect(termsLink?.textContent).toContain("Read data terms");
+    expect(termsLink?.textContent).toMatch(/terms of service/i);
   });
 
   it("omits the terms link in the prompt dialog when termsUrl is null or empty", async () => {

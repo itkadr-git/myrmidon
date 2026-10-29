@@ -28,7 +28,7 @@ describe("Myrmidon product links", () => {
   });
 
   it("reads the Vite override when the module is loaded", async () => {
-    vi.stubEnv("VITE_FEEDBACK_TERMS_URL", " https://example.org/operator-terms ");
+    vi.stubEnv("VITE_FEEDBACK_TERMS_URL", " https://operator.example.org/operator-terms ");
     vi.resetModules();
     const { FEEDBACK_TERMS_URL } = await import("./myrmidon-links");
     expect(FEEDBACK_TERMS_URL).toBe("https://operator.example.org/operator-terms");
