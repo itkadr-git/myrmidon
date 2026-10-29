@@ -2537,3 +2537,14 @@ code against FLAGS.md / SETTINGS.md / the change fragments): entries restored fo
 code reads and that were never classified — `MYRMIDON_BOT_SCOPE_SUBDIR` (the bot workspace
 subdirectory, F-12), plus `MYRMIDON_CONTINUATION_MESSAGE_CHARS` and
 `MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS` (continuation-history character budgets, DBC-3). They are not part of the swarm settings and are listed here only for the gate.
+
+## 1.6.6 — DEVFLOW: devflow health alert thresholds
+
+Environment variable overrides for attention-feed DEVFLOW alert thresholds (in milliseconds), configured under `instance_settings.general.devflowHealth`. Zero alerts immediately; invalid, negative or nonfinite values fall back to defaults.
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_DEVFLOW_ENGINEER_IDLE_MS` | DEVFLOW-HEALTH | `3600000` (1 h) | Age threshold in milliseconds for idle engineer alerts. Engineers with role `engineer` and status `idle` aged from `lastHeartbeatAt` (or `createdAt`) raise an alert when idle duration exceeds this threshold. | Non-negative integer (ms). Unset, negative or invalid falls back to default (`3600000`). `0` alerts immediately. |
+| `MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS` | DEVFLOW-HEALTH | `86400000` (24 h) | Age threshold in milliseconds for review queue alerts. Tasks in `in_review` aged from the latest transition into `in_review` raise an alert when review duration exceeds this threshold. | Non-negative integer (ms). Unset, negative or invalid falls back to default (`86400000`). `0` alerts immediately. |
+| `MYRMIDON_DEVFLOW_RED_CI_MS` | DEVFLOW-HEALTH | `3600000` (1 h) | Age threshold in milliseconds for red CI alerts on pull requests. A failed CI run on an active issue's PR raises an alert when red duration exceeds this threshold. | Non-negative integer (ms). Unset, negative or invalid falls back to default (`3600000`). `0` alerts immediately. |
+
