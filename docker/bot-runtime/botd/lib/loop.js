@@ -239,7 +239,7 @@ export function createLoop(deps) {
         // is protected by the hook (it gets `startedAt`), older entries are retired.
         if (typeof deps.retention === "function") {
           try {
-            await deps.retention({ startedAt });
+            await deps.retention({ startedAt, desired: desiredOk ? desired.state : null });
           } catch (err) {
             log(`botd loop: archive retention failed: ${errMessage(err)}`);
           }

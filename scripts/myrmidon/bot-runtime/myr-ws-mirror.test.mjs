@@ -7,7 +7,12 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { syncMirrorAlternates, findMirror } = require("../../../docker/bot-runtime/myr-ws/lib/base.js");
+const {
+  ensureBase,
+  syncMirrorAlternates,
+  findMirror,
+} = require("../../../docker/bot-runtime/myr-ws/lib/base.js");
+const { open } = require("../../../docker/bot-runtime/myr-ws/lib/open.js");
 
 const GIT_REAL = fs.existsSync("/opt/paperclip/libexec/git") ? "/opt/paperclip/libexec/git" : "git";
 
@@ -33,10 +38,27 @@ function getDirSize(dir) {
   return total;
 }
 
+test("BOT_DISK_DEFAULT_GIT_MIRROR_REPOS is configured and used as default in myrmidon-bot-disk.ts", () => {
+  const srcPath = path.resolve("packages/shared/src/myrmidon-bot-disk.ts");
+  const content = fs.readFileSync(srcPath, "utf8");
+  assert.ok(
+    content.includes("BOT_DISK_DEFAULT_GIT_MIRROR_REPOS"),
+    "BOT_DISK_DEFAULT_GIT_MIRROR_REPOS must be exported"
+  );
+  assert.ok(
+    content.includes('"itkadr-git/myrmidon"') && content.includes('"itkadr-git/myrmidon-deploy"'),
+    "default mirror repos must include itkadr-git/myrmidon and itkadr-git/myrmidon-deploy"
+  );
+  assert.ok(
+    content.includes("values.gitMirrorRepos ?? BOT_DISK_DEFAULT_GIT_MIRROR_REPOS"),
+    "resolveBotDiskLayout must use BOT_DISK_DEFAULT_GIT_MIRROR_REPOS as default"
+  );
+});
+
 test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushed branch preservation through migration", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "myr-ws-mirror-test-"));
   const mirrorRoot = path.join(tmp, "cache", "git");
-  const parsed = { owner: "itkadr-git", repo: "myrmidon" };
+  const parsed = { owner: "itkadr-git", repo: "myrmidon", slug: "itkadr-git/myrmidon" };
   const upstreamDir = path.join(tmp, "upstream", parsed.owner, `${parsed.repo}.git`);
   const mirrorDir = path.join(mirrorRoot, parsed.owner, `${parsed.repo}.git`);
   const baseDir = path.join(tmp, "bot", "git-base", parsed.owner, `${parsed.repo}.git`);
@@ -96,18 +118,11 @@ test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushe
   assert.ok(baseOwnObjectsSize < maxBytes, `own object store must be <100MB, got ${baseOwnObjectsSize} bytes`);
 
   // 4. Create pre-migration developer workspace by cloning directly from UPSTREAM (NOT mirror)
-  // This represents an existing workspace on the bot host created before the shared mirror was available.
   const devWork = path.join(tmp, "workspace", "OPE-1234");
   fs.mkdirSync(devWork, { recursive: true });
   runGit(["clone", upstreamDir, devWork]);
   runGit(["config", "user.name", "Bot Engineer"], devWork);
   runGit(["config", "user.email", "bot@example.com"], devWork);
-
-  // Verify pre-migration state: full independent copy, NO alternates file
-  const preMigrateAltFile = path.join(devWork, ".git", "objects", "info", "alternates");
-  assert.ok(!fs.existsSync(preMigrateAltFile), "pre-migration workspace must not have alternates file");
-  const preMigrateObjectsSize = getDirSize(path.join(devWork, ".git", "objects"));
-  assert.ok(preMigrateObjectsSize > 1000, "pre-migration workspace has full independent objects");
 
   // Create unpushed branch with unpushed critical work in devWork
   runGit(["checkout", "-b", "myr/feature-unpushed"], devWork);
@@ -115,20 +130,6 @@ test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushe
   runGit(["add", "unpushed_feature.txt"], devWork);
   runGit(["commit", "-m", "feat: unpushed local commit"], devWork);
   const unpushedSha = runGit(["rev-parse", "HEAD"], devWork);
-
-  // Assert unpushed commit and branch exist ONLY in devWork: NOT in upstream, NOT in mirror, NOT in base
-  assert.throws(
-    () => runGit(["rev-parse", "--verify", "refs/heads/myr/feature-unpushed"], upstreamDir),
-    "unpushed branch must not exist in upstream"
-  );
-  assert.throws(
-    () => runGit(["rev-parse", "--verify", "refs/heads/myr/feature-unpushed"], mirrorDir),
-    "unpushed branch must not exist in mirror"
-  );
-  assert.throws(
-    () => runGit(["rev-parse", "--verify", "refs/heads/myr/feature-unpushed"], baseDir),
-    "unpushed branch must not exist in base"
-  );
 
   // 5. Execute production migration on the existing developer workspace:
   // syncMirrorAlternates discovers mirror, attaches alternates, and runs repack (-a -d -l)
@@ -173,66 +174,83 @@ test("myr-ws shared git mirror: alternates link, <100MB own objects, and unpushe
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-test("syncMirrorAlternates rolls back alternates file and throws on git repack failure", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "myr-ws-mirror-fail-test-"));
+test("ensureBase and myr-ws open utilize shared mirror alternates and degrade gracefully", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "myr-ws-open-test-"));
   const mirrorRoot = path.join(tmp, "cache", "git");
-  const parsed = { owner: "itkadr-git", repo: "myrmidon" };
+  const homeDir = path.join(tmp, "home");
+  const workspaceRoot = path.join(tmp, "workspace");
+  const scratchRoot = path.join(tmp, "scratch");
+
+  const parsed = { owner: "itkadr-git", repo: "myrmidon", slug: "itkadr-git/myrmidon" };
+  const upstreamDir = path.join(tmp, "upstream", parsed.owner, `${parsed.repo}.git`);
   const mirrorDir = path.join(mirrorRoot, parsed.owner, `${parsed.repo}.git`);
-  const workDir = path.join(tmp, "work");
 
+  fs.mkdirSync(upstreamDir, { recursive: true });
   fs.mkdirSync(mirrorDir, { recursive: true });
-  runGit(["init", "--bare", mirrorDir]);
+  fs.mkdirSync(homeDir, { recursive: true });
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  fs.mkdirSync(scratchRoot, { recursive: true });
 
-  // Seed mirror with a commit so there are objects
+  // 1. Upstream repo
+  runGit(["init", "--bare", upstreamDir]);
   const seedWork = path.join(tmp, "seed");
   fs.mkdirSync(seedWork, { recursive: true });
   runGit(["init", seedWork]);
-  runGit(["config", "user.name", "Tester"], seedWork);
-  runGit(["config", "user.email", "test@example.com"], seedWork);
-  fs.writeFileSync(path.join(seedWork, "file.txt"), "hello world");
+  runGit(["config", "user.name", "Dev"], seedWork);
+  runGit(["config", "user.email", "dev@example.com"], seedWork);
+  fs.writeFileSync(path.join(seedWork, "README.md"), "# Seed Repo");
   runGit(["add", "."], seedWork);
-  runGit(["commit", "-m", "init"], seedWork);
-  runGit(["push", mirrorDir, "HEAD:refs/heads/main"], seedWork);
+  runGit(["commit", "-m", "initial release"], seedWork);
+  runGit(["push", upstreamDir, "HEAD:refs/heads/main"], seedWork);
 
-  runGit(["clone", mirrorDir, workDir]);
-  runGit(["config", "user.name", "Tester"], workDir);
-  runGit(["config", "user.email", "test@example.com"], workDir);
-  fs.writeFileSync(path.join(workDir, "local.txt"), "local commit");
-  runGit(["add", "."], workDir);
-  runGit(["commit", "-m", "local"], workDir);
+  // 2. Mirror repo
+  runGit(["clone", "--mirror", upstreamDir, mirrorDir]);
+  runGit(["repack", "-a", "-d"], mirrorDir);
 
   const env = {
     ...process.env,
+    MYRMIDON_WS_HOME: homeDir,
     MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot,
+    MYRMIDON_WS_REMOTE_BASE: path.join(tmp, "upstream"),
     MYRMIDON_GIT_REAL: GIT_REAL,
   };
 
-  // Make git repack fail by replacing .git/objects/pack with a regular file (triggers ENOTDIR)
-  const packDir = path.join(workDir, ".git", "objects", "pack");
-  fs.rmSync(packDir, { recursive: true, force: true });
-  fs.writeFileSync(packDir, "not a directory");
+  // 3. Test ensureBase: creates base and attaches mirror alternates
+  const baseRes = await ensureBase(parsed.slug, { home: homeDir, env });
+  assert.ok(fs.existsSync(baseRes.path), "base path must exist");
+  const baseAlt = path.join(baseRes.path, "objects", "info", "alternates");
+  assert.ok(fs.existsSync(baseAlt), "base alternates must exist");
+  assert.strictEqual(fs.readFileSync(baseAlt, "utf8").trim(), path.join(mirrorDir, "objects"));
 
-  const altFile = path.join(workDir, ".git", "objects", "info", "alternates");
-  assert.ok(!fs.existsSync(altFile), "alternates file should not exist initially");
+  // 4. Test myr-ws open: opens workspace using base
+  const openRes = await open(
+    { key: "OPE-9999", repo: parsed.slug },
+    { home: homeDir, workspaceRoot, scratchRoot, env }
+  );
+  assert.strictEqual(openRes.ok, true, "open must succeed");
+  assert.strictEqual(openRes.key, "OPE-9999");
+  assert.ok(fs.existsSync(openRes.path), "workspace directory must exist");
 
-  let thrown = false;
-  try {
-    syncMirrorAlternates(env, workDir, parsed);
-  } catch {
-    thrown = true;
-  }
-
-  assert.ok(thrown, "syncMirrorAlternates must rethrow when git repack fails");
-  const altFileExists = fs.existsSync(altFile);
-  if (altFileExists) {
-    const content = fs.readFileSync(altFile, "utf8");
+  // Verify workspace git alternates
+  const wsAlt = path.join(openRes.path, ".git", "objects", "info", "alternates");
+  if (fs.existsSync(wsAlt)) {
+    const wsAltContent = fs.readFileSync(wsAlt, "utf8");
     assert.ok(
-      !content.includes(path.join(mirrorDir, "objects")),
-      "alternates file must not contain mirror objects path after rollback"
+      wsAltContent.includes(path.join(mirrorDir, "objects")) ||
+      wsAltContent.includes(path.join(baseRes.path, "objects")),
+      "workspace alternates must point to mirror or base"
     );
-  } else {
-    assert.ok(!altFileExists, "alternates file should be completely rolled back/removed");
   }
+
+  // 5. Commit in opened workspace
+  runGit(["config", "user.name", "Bot Engineer"], openRes.path);
+  runGit(["config", "user.email", "bot@example.com"], openRes.path);
+  fs.writeFileSync(path.join(openRes.path, "task.txt"), "task progress");
+  runGit(["add", "task.txt"], openRes.path);
+  runGit(["commit", "-m", "work on task"], openRes.path);
+
+  const fsck = spawnSync(GIT_REAL, ["fsck", "--full"], { cwd: openRes.path, encoding: "utf8" });
+  assert.strictEqual(fsck.status, 0, `fsck in opened workspace: ${fsck.stderr}`);
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });

@@ -35,6 +35,7 @@ import {
   resolveBotDiskSettings,
   myrWsRepoNameSchema,
   wsBotDiskSettingsSchema,
+  type WsClosedKeyEntry,
   type WsDesiredState,
   type WsDesiredWorkspace,
 } from "@myrmidon/shared";
@@ -89,7 +90,7 @@ export interface BotWorkspacesStore {
    * away from it at any time), with no lookback limit. Optional so older stores keep
    * working: without it `closedKeys` comes from the lookback rows only.
    */
-  listClosedKeys?(input: { companyId: string; agentId: string }): Promise<string[]>;
+  listClosedKeys?(input: { companyId: string; agentId: string }): Promise<Array<string | { key: string; closedAt?: string; issueId?: string }>>;
   /** Repo URL of the primary project workspace per project id. */
   listProjectRepoUrls(input: { projectIds: string[] }): Promise<Map<string, string>>;
   /** Stored `general.botDisk` (raw), for the grace settings. */
@@ -201,6 +202,7 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
 
         workspaces.push({
           key,
+          id: row.id,
           ...(repo ? { repo } : {}),
           state: verdict.state,
           since: sinceDate.toISOString(),
@@ -219,15 +221,41 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
 
       // Board-confirmed closed (done/cancelled) tasks of this bot: the lookback rows plus the
       // unbounded store query, so a directory of a task closed long ago is still confirmed.
-      const closedSet = new Set<string>(
-        keyed.filter((row) => row.status === "done" || row.status === "cancelled").map((row) => row.identifier as string),
-      );
-      const extraClosed = (await deps.store.listClosedKeys?.({ companyId: input.companyId, agentId: input.agentId })) ?? [];
-      for (const key of extraClosed) {
-        if (myrWsIssueKeySchema.safeParse(key).success) closedSet.add(key);
+      const closedMap = new Map<string, WsClosedKeyEntry>();
+      for (const row of keyed) {
+        if (row.status === "done" || row.status === "cancelled") {
+          const key = row.identifier as string;
+          const closedAtDate = row.completedAt ?? row.cancelledAt ?? row.updatedAt;
+          closedMap.set(key, {
+            key,
+            ...(row.id ? { issueId: row.id } : {}),
+            ...(closedAtDate ? { closedAt: closedAtDate.toISOString() } : {}),
+          });
+        }
       }
-      for (const key of protectKeys) closedSet.delete(key);
-      const closedKeys = [...closedSet].sort();
+      const extraClosed = (await deps.store.listClosedKeys?.({ companyId: input.companyId, agentId: input.agentId })) ?? [];
+      for (const item of extraClosed) {
+        const key = typeof item === "string" ? item : item?.key;
+        if (key && myrWsIssueKeySchema.safeParse(key).success) {
+          if (!closedMap.has(key)) {
+            if (typeof item === "object" && item) {
+              closedMap.set(key, {
+                key,
+                ...(item.issueId ? { issueId: item.issueId } : {}),
+                ...(item.closedAt ? { closedAt: item.closedAt } : {}),
+              });
+            } else {
+              closedMap.set(key, { key });
+            }
+          }
+        }
+      }
+      for (const key of protectKeys) closedMap.delete(key);
+      const closedKeys = [...closedMap.values()].sort((a, b) => {
+        const keyA = typeof a === "string" ? a : a.key;
+        const keyB = typeof b === "string" ? b : b.key;
+        return keyA.localeCompare(keyB);
+      });
 
       const settings = wsBotDiskSettingsSchema.safeParse(rawSettings);
       const configured = settings.success ? settings.data : {};
@@ -368,11 +396,22 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
           ? or(eq(issues.assigneeAgentId, agentId), inArray(sql`${issues.id}::text`, reassignedIds))
           : eq(issues.assigneeAgentId, agentId);
       const rows = await db
-        .select({ identifier: issues.identifier })
+        .select({
+          identifier: issues.identifier,
+          id: issues.id,
+          completedAt: issues.completedAt,
+          updatedAt: issues.updatedAt,
+        })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), sql`${issues.status} in ('done', 'cancelled')`, held))
         .limit(5000);
-      return rows.map((r) => r.identifier).filter((id): id is string => !!id);
+      return rows
+        .map((r) => ({
+          key: r.identifier,
+          issueId: r.id,
+          closedAt: (r.completedAt ?? r.updatedAt)?.toISOString(),
+        }))
+        .filter((entry): entry is { key: string; issueId: string; closedAt?: string } => !!entry.key);
     },
 
     async listPrProducts({ issueIds }) {

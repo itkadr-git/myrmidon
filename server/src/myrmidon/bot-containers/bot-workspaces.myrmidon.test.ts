@@ -301,9 +301,11 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
       closedKeys: ["ABC-9", "not a key"],
     });
     const res = await request(app(botActor)).get(URL);
-    expect(res.body.closedKeys).toEqual(["ABC-3", "ABC-4", "ABC-9"]);
-    expect(res.body.closedKeys).not.toContain("ABC-5");
-    expect(res.body.closedKeys).not.toContain("ABC-1");
+    const keys = res.body.closedKeys.map((c: any) => (typeof c === "string" ? c : c.key));
+    expect(keys).toEqual(["ABC-3", "ABC-4", "ABC-9"]);
+    expect(res.body.closedKeys[0]).toMatchObject({ key: "ABC-3", closedAt: "2026-10-06T15:00:00.000Z", issueId: done.id });
+    expect(keys).not.toContain("ABC-5");
+    expect(keys).not.toContain("ABC-1");
   });
 
   it("enabled=false switches the mechanism off: 503, so botd deletes nothing", async () => {
@@ -495,7 +497,8 @@ describe("desired-state cache invalidation (1.6.5-BOT-DISK-H4a-INVALIDATE)", () 
     const app = h.app(botActor);
 
     const before = await request(app).get(URL);
-    expect(before.body.closedKeys).toContain("ABC-1");
+    const beforeClosedKeys = (before.body.closedKeys ?? []).map((c: any) => (typeof c === "string" ? c : c.key));
+    expect(beforeClosedKeys).toContain("ABC-1");
     expect(before.body.protectKeys).not.toContain("ABC-1");
     expect(h.calls.listIssues).toBe(1);
 
@@ -512,7 +515,8 @@ describe("desired-state cache invalidation (1.6.5-BOT-DISK-H4a-INVALIDATE)", () 
     expect(after.status).toBe(200);
     expect(h.calls.listIssues).toBe(2); // store was asked again, the cached answer was not served
     expect(after.body.protectKeys).toContain("ABC-1");
-    expect(after.body.closedKeys).not.toContain("ABC-1");
+    const afterClosedKeys = (after.body.closedKeys ?? []).map((c: any) => (typeof c === "string" ? c : c.key));
+    expect(afterClosedKeys).not.toContain("ABC-1");
     expect(after.body.workspaces[0]).toMatchObject({ key: "ABC-1", state: "active" });
   });
 

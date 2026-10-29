@@ -52,6 +52,7 @@ export function parseDesiredState(body) {
     const at = `workspaces[${i}]`;
     if (!isObj(w)) return bad(`${at} is not an object`);
     if (!nonEmpty(w.key)) return bad(`${at}.key is empty`);
+    if (w.id !== undefined && typeof w.id !== "string") return bad(`${at}.id is not a string`);
     if (w.repo !== undefined && !(typeof w.repo === "string" && REPO_RE.test(w.repo))) return bad(`${at}.repo is not owner/name`);
     if (!STATES.includes(w.state)) return bad(`${at}.state is unknown (${JSON.stringify(String(w.state)).slice(0, 40)})`);
     if (!isDatetime(w.since)) return bad(`${at}.since is not a UTC datetime`);
@@ -61,8 +62,20 @@ export function parseDesiredState(body) {
   if (body.protectKeys !== undefined && !(Array.isArray(body.protectKeys) && body.protectKeys.every((k) => typeof k === "string"))) {
     return bad("protectKeys is not an array of strings");
   }
-  if (body.closedKeys !== undefined && !(Array.isArray(body.closedKeys) && body.closedKeys.every((k) => typeof k === "string"))) {
-    return bad("closedKeys is not an array of strings");
+  if (body.closedKeys !== undefined) {
+    if (!Array.isArray(body.closedKeys)) return bad("closedKeys is not an array");
+    for (let i = 0; i < body.closedKeys.length; i += 1) {
+      const k = body.closedKeys[i];
+      if (typeof k === "string") {
+        if (!nonEmpty(k)) return bad(`closedKeys[${i}] is empty`);
+      } else if (isObj(k)) {
+        if (!nonEmpty(k.key)) return bad(`closedKeys[${i}].key is empty`);
+        if (k.closedAt !== undefined && !isDatetime(k.closedAt)) return bad(`closedKeys[${i}].closedAt is not a UTC datetime`);
+        if (k.issueId !== undefined && typeof k.issueId !== "string") return bad(`closedKeys[${i}].issueId is not a string`);
+      } else {
+        return bad(`closedKeys[${i}] is neither string nor object`);
+      }
+    }
   }
   return { ok: true, value: body };
 }

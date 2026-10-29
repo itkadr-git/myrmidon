@@ -205,8 +205,16 @@ async function main() {
   const runProbe = runsMod.createRunProbe({ proc: process });
 
   const desiredClient = desiredMod ? desiredMod.createDesiredClient({ log }) : null;
+  let lastDesiredState = null;
   const desired = {
-    poll: () => (desiredClient ? desiredClient.poll() : Promise.resolve({ ok: false, reason: "desired module is not in this image" })),
+    poll: async () => {
+      if (!desiredClient) return { ok: false, reason: "desired module is not in this image" };
+      const r = await desiredClient.poll();
+      if (r && r.ok && r.state) {
+        lastDesiredState = r.state;
+      }
+      return r;
+    },
   };
   const rules = {
     plan: (inv, state, now, settings) => (rulesMod ? rulesMod.plan(inv, state, now, settings) : { actions: [] }),
@@ -358,7 +366,7 @@ async function main() {
 
   // Archive retention (30 days / 2 GiB) once per pass, after the actions. Entries created
   // during this pass are never evicted: the only copy of someone's work outlives the quota.
-  const retention = async ({ startedAt }) => {
+  const retention = async ({ startedAt, desired: passDesired }) => {
     if (!archiveMod || typeof archiveMod.retainPass !== "function") return;
     const r = archiveMod.retainPass(ARCHIVE_DIR, { startedAt });
     if (!r.ok) throw new Error(r.reason);
@@ -368,17 +376,18 @@ async function main() {
     // Only remove sessions for CLOSED tasks older than 7 days, then VACUUM when idle.
     if (hermesRetentionMod && typeof hermesRetentionMod.pruneHermesClosedTaskSessions === "function") {
       try {
-        const desiredState = await desired.poll();
-        const payload = desiredState.ok && desiredState.value ? desiredState.value : {};
+        const payload = passDesired || lastDesiredState || {};
+        const isIdle = runProbe ? !runProbe.probe().live : true;
         const res = hermesRetentionMod.pruneHermesClosedTaskSessions({
           desiredState: payload,
           workspaces: Array.isArray(payload.workspaces) ? payload.workspaces : [],
           protectKeys: Array.isArray(payload.protectKeys) ? payload.protectKeys : [],
           closedKeys: Array.isArray(payload.closedKeys) ? payload.closedKeys : [],
           retentionDays: 7,
+          idle: isIdle,
           log,
         });
-        if (res.prunedCount > 0) {
+        if (res && res.prunedCount > 0) {
           log(`botd: hermes session retention pruned ${res.prunedCount} closed-task sessions (vacuumed: ${res.vacuumed})`);
         }
       } catch (err) {

@@ -5,11 +5,26 @@
  * 1. Selects closed tasks based on authoritative workspace state/timestamps and closedKeys.
  * 2. Strictly protects active/in-progress/open tasks and explicit protectKeys.
  * 3. Prunes Hermes sessions, messages, and associated cascade tables in state.db.
- * 4. Runs SQLite VACUUM during idle state after pruning.
+ * 4. Runs SQLite VACUUM only during idle state and when sufficient free disk space exists.
  */
 
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+
+/**
+ * Extracts the issue UUID from a Hermes session.
+ * Real session_key format: ...:issue:<ISSUE-UUID>[:gN]
+ *
+ * @param {object} session
+ * @returns {string|null}
+ */
+export function extractIssueIdFromSession(session) {
+  if (!session || typeof session !== "object") return null;
+  const str = session.session_key || session.id || "";
+  if (typeof str !== "string") return null;
+  const m = str.match(/:issue:([0-9a-fA-F-]{36})(?::g\d+)?(?:$|:)/i);
+  return m ? m[1].toLowerCase() : null;
+}
 
 /**
  * Filter closed tasks older than retentionDays (default 7 days).
@@ -42,38 +57,33 @@ export function selectClosedTasksForRetention(input, options = {}) {
 
   const protectedKeys = new Set();
   const protectedIds = new Set();
-  const closedKeysSet = new Set();
-  const closedIdsSet = new Set();
+  const closedCandidates = [];
 
-  const ingest = (source, target) => {
+  const ingestList = (source, target) => {
     if (Array.isArray(source) || source instanceof Set) {
       for (const item of source) {
-        if (item) target.add(String(item));
+        if (!item) continue;
+        if (typeof item === "string") {
+          target.add(item.toLowerCase());
+        } else if (typeof item === "object") {
+          if (item.key) target.add(String(item.key).toLowerCase());
+          if (item.issueId) target.add(String(item.issueId).toLowerCase());
+          if (item.id) target.add(String(item.id).toLowerCase());
+        }
       }
     }
   };
 
   // Ingest protected lists from input and options
-  ingest(inp.protectKeys, protectedKeys);
-  ingest(inp.protectedKeys, protectedKeys);
-  ingest(inp.protectIds, protectedIds);
-  ingest(inp.protectedIds, protectedIds);
+  ingestList(inp.protectKeys, protectedKeys);
+  ingestList(inp.protectedKeys, protectedKeys);
+  ingestList(inp.protectIds, protectedIds);
+  ingestList(inp.protectedIds, protectedIds);
 
-  ingest(opts.protectKeys, protectedKeys);
-  ingest(opts.protectedKeys, protectedKeys);
-  ingest(opts.protectIds, protectedIds);
-  ingest(opts.protectedIds, protectedIds);
-
-  // Ingest closed candidates from input and options
-  ingest(inp.closedKeys, closedKeysSet);
-  ingest(inp.closedTaskKeys, closedKeysSet);
-  ingest(inp.closedIds, closedIdsSet);
-  ingest(inp.closedTaskIds, closedIdsSet);
-
-  ingest(opts.closedKeys, closedKeysSet);
-  ingest(opts.closedTaskKeys, closedKeysSet);
-  ingest(opts.closedIds, closedIdsSet);
-  ingest(opts.closedTaskIds, closedIdsSet);
+  ingestList(opts.protectKeys, protectedKeys);
+  ingestList(opts.protectedKeys, protectedKeys);
+  ingestList(opts.protectIds, protectedIds);
+  ingestList(opts.protectedIds, protectedIds);
 
   const retentionDays = Number.isFinite(opts.retentionDays)
     ? opts.retentionDays
@@ -94,66 +104,105 @@ export function selectClosedTasksForRetention(input, options = {}) {
 
   const cutoffMs = nowMs - retentionDays * 86_400_000;
 
-  // Pass 1: register all open/active workspaces as strictly protected
+  // Pass 1: register all open/active workspaces or workspaces listed in protectKeys as strictly protected
   for (const w of rawWorkspaces) {
     if (!w || typeof w !== "object") continue;
-    const key = w.key ? String(w.key) : null;
-    const id = w.id ? String(w.id) : null;
+    const key = w.key ? String(w.key).toLowerCase() : null;
+    const id = w.id ? String(w.id).toLowerCase() : null;
 
     const isOpenStatus =
       w.state === "active" ||
       ["todo", "in_progress", "in_review", "blocked"].includes(w.status);
 
-    if (isOpenStatus) {
+    const isListedProtected =
+      (key && protectedKeys.has(key)) || (id && protectedIds.has(id));
+
+    if (isOpenStatus || isListedProtected) {
       if (key) protectedKeys.add(key);
       if (id) protectedIds.add(id);
     }
   }
 
-  // Pass 2: evaluate closed tasks.
-  // Rule: A task is eligible for retention ONLY IF:
-  // 1. Not in protectedKeys or protectedIds.
-  // 2. Confirmed closed (state closing/closed, or status done/cancelled/closed, or in closedKeysSet/closedIdsSet).
-  // 3. Has an authoritative closure timestamp strictly before cutoffMs (< cutoffMs).
+  // Pass 2: evaluate workspaces
   const selectedKeys = new Set();
   const selectedIds = new Set();
 
   for (const w of rawWorkspaces) {
     if (!w || typeof w !== "object") continue;
     const key = w.key ? String(w.key) : null;
-    const id = w.id ? String(w.id) : null;
+    const id = w.id ? String(w.id).toLowerCase() : null;
 
-    if ((key && protectedKeys.has(key)) || (id && protectedIds.has(id))) {
+    if ((key && protectedKeys.has(key.toLowerCase())) || (id && protectedIds.has(id))) {
       continue;
     }
 
     const isClosed =
       w.state === "closing" ||
       w.state === "closed" ||
-      ["done", "cancelled", "closed"].includes(w.status) ||
-      (key && closedKeysSet.has(key)) ||
-      (id && closedIdsSet.has(id));
+      ["done", "cancelled", "closed"].includes(w.status);
 
     if (!isClosed) continue;
 
-    const timeVal = w.since || w.closedAt || w.completedAt || w.cancelledAt || w.updatedAt;
+    // Use authoritative closure timestamp: since (from board verdict), closedAt, completedAt, cancelledAt.
+    // Do NOT fall back to updatedAt.
+    const timeVal = w.closedAt || w.completedAt || w.cancelledAt || w.since;
     if (!timeVal) continue;
 
     const closedMs = new Date(timeVal).getTime();
-    if (isNaN(closedMs) || closedMs >= cutoffMs) continue;
+    if (isNaN(closedMs) || closedMs >= cutoffMs) {
+      // If closed within 7 days, protect it!
+      if (key) protectedKeys.add(key.toLowerCase());
+      if (id) protectedIds.add(id);
+      continue;
+    }
 
-    if (key) selectedKeys.add(key);
+    if (key) selectedKeys.add(key.toLowerCase());
     if (id) selectedIds.add(id);
   }
 
-  // For candidate closed keys not in rawWorkspaces, verify against optional taskTimestamps
+  // Pass 3: evaluate closedKeys from input and options
+  const rawClosedKeys = [
+    ...(Array.isArray(inp.closedKeys) ? inp.closedKeys : []),
+    ...(Array.isArray(opts.closedKeys) ? opts.closedKeys : []),
+  ];
+
+  for (const entry of rawClosedKeys) {
+    if (!entry) continue;
+    if (typeof entry === "object") {
+      const key = entry.key ? String(entry.key) : null;
+      const id = (entry.issueId || entry.id) ? String(entry.issueId || entry.id).toLowerCase() : null;
+      if ((key && protectedKeys.has(key.toLowerCase())) || (id && protectedIds.has(id))) {
+        continue;
+      }
+      const timeVal = entry.closedAt || entry.completedAt || entry.cancelledAt;
+      if (timeVal) {
+        const closedMs = new Date(timeVal).getTime();
+        if (!isNaN(closedMs)) {
+          if (closedMs < cutoffMs) {
+            if (key) selectedKeys.add(key.toLowerCase());
+            if (id) selectedIds.add(id);
+          } else {
+            if (key) protectedKeys.add(key.toLowerCase());
+            if (id) protectedIds.add(id);
+          }
+        }
+      }
+    }
+  }
+
+  // For candidate closed keys with optional taskTimestamps lookup
   if (opts.taskTimestamps && typeof opts.taskTimestamps === "object") {
-    for (const [key, ts] of Object.entries(opts.taskTimestamps)) {
-      if (protectedKeys.has(key) || protectedIds.has(key)) continue;
-      if (closedKeysSet.has(key) || closedIdsSet.has(key)) {
-        const closedMs = new Date(ts).getTime();
-        if (!isNaN(closedMs) && closedMs < cutoffMs) {
-          selectedKeys.add(key);
+    for (const [k, ts] of Object.entries(opts.taskTimestamps)) {
+      const lower = k.toLowerCase();
+      if (protectedKeys.has(lower) || protectedIds.has(lower)) continue;
+      const closedMs = new Date(ts).getTime();
+      if (!isNaN(closedMs)) {
+        if (closedMs < cutoffMs) {
+          if (lower.includes("-")) selectedKeys.add(lower);
+          else selectedIds.add(lower);
+        } else {
+          if (lower.includes("-")) protectedKeys.add(lower);
+          else protectedIds.add(lower);
         }
       }
     }
@@ -174,7 +223,7 @@ export function selectClosedTasksForRetention(input, options = {}) {
 
 /**
  * Prune Hermes sessions and associated rows for closed tasks older than retentionDays.
- * Runs SQLite VACUUM after pruning.
+ * Runs SQLite VACUUM after pruning only when idle and free space permits.
  *
  * @param {object} options
  * @param {string} [options.stateDbPath]
@@ -183,9 +232,10 @@ export function selectClosedTasksForRetention(input, options = {}) {
  * @param {Array} [options.protectKeys]
  * @param {Array} [options.closedKeys]
  * @param {number} [options.retentionDays=7]
+ * @param {boolean} [options.idle=true]
  * @param {Date|number} [options.now]
  * @param {Function} [options.log]
- * @returns {{ prunedCount: number, vacuumed: boolean, error?: string }}
+ * @returns {{ prunedCount: number, vacuumed: boolean, skippedReason?: string, error?: string }}
  */
 export function pruneHermesClosedTaskSessions(options = {}) {
   const {
@@ -195,6 +245,7 @@ export function pruneHermesClosedTaskSessions(options = {}) {
     protectKeys,
     closedKeys,
     retentionDays = 7,
+    idle = true,
     now = Date.now(),
     log = () => {},
   } = options;
@@ -204,7 +255,7 @@ export function pruneHermesClosedTaskSessions(options = {}) {
   }
 
   const nowMs = now instanceof Date ? now.getTime() : typeof now === "number" ? now : Date.now();
-  const cutoffSec = Math.floor((nowMs - retentionDays * 86_400_000) / 1000);
+  const cutoffMs = nowMs - retentionDays * 86_400_000;
 
   // Derive selection strictly through selectClosedTasksForRetention with full options
   const selection = selectClosedTasksForRetention(desiredState || workspaces || options, {
@@ -217,11 +268,9 @@ export function pruneHermesClosedTaskSessions(options = {}) {
   });
 
   const closedTaskIds = new Set(selection.closedTaskIds);
-  const closedTaskKeys = new Set(selection.closedTaskKeys);
-  const protectedKeys = new Set(selection.protectedKeys);
   const protectedIds = new Set(selection.protectedIds);
 
-  if (closedTaskIds.size === 0 && closedTaskKeys.size === 0) {
+  if (closedTaskIds.size === 0) {
     return { prunedCount: 0, vacuumed: false, eligibleTasks: 0 };
   }
 
@@ -244,41 +293,39 @@ export function pruneHermesClosedTaskSessions(options = {}) {
     const allSessions = db.prepare("SELECT * FROM sessions").all();
     const sessionsToDelete = new Map();
 
-    const isProtectedSession = (session) => {
-      for (const key of protectedKeys) {
-        if (session.name && session.name.includes(key)) return true;
-        if (session.session_key && session.session_key.includes(key)) return true;
-      }
-      for (const id of protectedIds) {
-        if (session.session_key && session.session_key.includes(id)) return true;
-        if (session.name && session.name.includes(id)) return true;
-      }
-      return false;
-    };
-
-    const matchesClosedTask = (session) => {
-      for (const key of closedTaskKeys) {
-        if (session.name && session.name.includes(key)) return true;
-        if (session.session_key && session.session_key.includes(key)) return true;
-      }
-      for (const id of closedTaskIds) {
-        if (session.session_key && session.session_key.includes(id)) return true;
-        if (session.name && session.name.includes(id)) return true;
-      }
-      return false;
-    };
-
     for (const session of allSessions) {
-      if (isProtectedSession(session)) {
+      const issueId = extractIssueIdFromSession(session);
+      if (!issueId) {
+        // Cron or system session, not an issue session
         continue;
       }
-      if (!matchesClosedTask(session)) {
+
+      if (protectedIds.has(issueId)) {
+        continue;
+      }
+
+      if (!closedTaskIds.has(issueId)) {
         continue;
       }
 
       // Safety check: verify session was not active/touched within retention window
-      const sessTime = session.last_activity_at || session.ended_at || session.started_at;
-      if (typeof sessTime === "number" && sessTime > cutoffSec) {
+      const sessTime = session.last_activity_at ?? session.ended_at ?? session.started_at;
+      let sessMs = null;
+      if (typeof sessTime === "number") {
+        sessMs = sessTime > 1e11 ? sessTime : sessTime * 1000;
+      } else if (typeof sessTime === "string") {
+        const num = Number(sessTime);
+        if (!isNaN(num) && num > 0) {
+          sessMs = num > 1e11 ? num : num * 1000;
+        } else {
+          sessMs = Date.parse(sessTime);
+        }
+      } else if (sessTime instanceof Date) {
+        sessMs = sessTime.getTime();
+      }
+
+      // Fail closed: if timestamp is invalid or within cutoff, do NOT delete
+      if (sessMs === null || isNaN(sessMs) || sessMs > cutoffMs) {
         continue;
       }
 
@@ -295,7 +342,8 @@ export function pruneHermesClosedTaskSessions(options = {}) {
           sessionsToDelete.has(session.parent_session_id) &&
           !sessionsToDelete.has(session.id)
         ) {
-          if (!isProtectedSession(session)) {
+          const issueId = extractIssueIdFromSession(session);
+          if (!issueId || !protectedIds.has(issueId)) {
             sessionsToDelete.set(session.id, session);
             addedChild = true;
           }
@@ -308,62 +356,65 @@ export function pruneHermesClosedTaskSessions(options = {}) {
       return { prunedCount: 0, vacuumed: false };
     }
 
-    // Cascade deletion through related Hermes tables
+    // Inspect child table columns to prepare exact statements
+    const getCols = (tbl) => {
+      if (!existingTables.has(tbl)) return new Set();
+      try {
+        const cols = db.prepare(`PRAGMA table_info(${tbl})`).all();
+        return new Set(cols.map((c) => c.name));
+      } catch {
+        return new Set();
+      }
+    };
+
+    const messagesCols = getCols("messages");
+    const usageCols = getCols("session_model_usage");
+    const locksCols = getCols("compression_locks");
+    const leasesCols = getCols("session_turn_leases");
+    const obligationsCols = getCols("delivery_obligations");
+    const generationsCols = getCols("conversation_generations");
+    const delegationsCols = getCols("async_delegations");
+
+    const deleteMessages = messagesCols.has("session_id")
+      ? db.prepare("DELETE FROM messages WHERE session_id = ?")
+      : null;
+    const deleteUsage = usageCols.has("session_id")
+      ? db.prepare("DELETE FROM session_model_usage WHERE session_id = ?")
+      : null;
+    const deleteLocks = locksCols.has("session_id")
+      ? db.prepare("DELETE FROM compression_locks WHERE session_id = ?")
+      : null;
+    const deleteLeases = leasesCols.has("conversation_id")
+      ? db.prepare("DELETE FROM session_turn_leases WHERE conversation_id = ?")
+      : null;
+    const deleteObligations = obligationsCols.has("session_key")
+      ? db.prepare("DELETE FROM delivery_obligations WHERE session_key = ?")
+      : null;
+    const deleteGenerations = generationsCols.has("session_key")
+      ? db.prepare("DELETE FROM conversation_generations WHERE session_key = ?")
+      : null;
+    const deleteDelegations = delegationsCols.has("origin_session") && delegationsCols.has("parent_session_id")
+      ? db.prepare("DELETE FROM async_delegations WHERE origin_session = ? OR parent_session_id = ?")
+      : null;
+    const deleteSession = db.prepare("DELETE FROM sessions WHERE id = ?");
+
+    // Execute cascade deletions in a strict transaction
     db.exec("BEGIN TRANSACTION;");
     try {
-      const deleteMessages = existingTables.has("messages")
-        ? db.prepare("DELETE FROM messages WHERE session_id = ?")
-        : null;
-      const deleteUsage = existingTables.has("session_model_usage")
-        ? db.prepare("DELETE FROM session_model_usage WHERE session_id = ?")
-        : null;
-      const deleteLocks = existingTables.has("compression_locks")
-        ? db.prepare("DELETE FROM compression_locks WHERE session_id = ?")
-        : null;
-      const deleteLeases = existingTables.has("session_turn_leases")
-        ? db.prepare("DELETE FROM session_turn_leases WHERE conversation_id = ? OR conversation_id = ?")
-        : null;
-      const deleteObligations = existingTables.has("delivery_obligations")
-        ? db.prepare("DELETE FROM delivery_obligations WHERE session_key = ? OR session_key = ?")
-        : null;
-      const deleteGenerations = existingTables.has("conversation_generations")
-        ? db.prepare("DELETE FROM conversation_generations WHERE session_key = ? OR session_key = ?")
-        : null;
-      const deleteDelegations = existingTables.has("async_delegations")
-        ? db.prepare("DELETE FROM async_delegations WHERE origin_session = ? OR parent_session_id = ?")
-        : null;
-      const deleteSession = db.prepare("DELETE FROM sessions WHERE id = ?");
-
       // First, nullify parent_session_id references to prevent self-referential FK constraint failures
       for (const sessId of sessionsToDelete.keys()) {
-        try {
-          db.prepare("UPDATE sessions SET parent_session_id = NULL WHERE id = ? OR parent_session_id = ?").run(sessId, sessId);
-        } catch {}
+        db.prepare("UPDATE sessions SET parent_session_id = NULL WHERE id = ? OR parent_session_id = ?").run(sessId, sessId);
       }
 
       for (const [sessId, session] of sessionsToDelete.entries()) {
         const sessKey = session.session_key ?? sessId;
-        if (deleteMessages) {
-          try { deleteMessages.run(sessId); } catch {}
-        }
-        if (deleteUsage) {
-          try { deleteUsage.run(sessId); } catch {}
-        }
-        if (deleteLocks) {
-          try { deleteLocks.run(sessId); } catch {}
-        }
-        if (deleteLeases) {
-          try { deleteLeases.run(sessId, sessKey); } catch {}
-        }
-        if (deleteObligations) {
-          try { deleteObligations.run(sessKey, sessId); } catch {}
-        }
-        if (deleteGenerations) {
-          try { deleteGenerations.run(sessKey, sessId); } catch {}
-        }
-        if (deleteDelegations) {
-          try { deleteDelegations.run(sessId, sessId); } catch {}
-        }
+        if (deleteMessages) deleteMessages.run(sessId);
+        if (deleteUsage) deleteUsage.run(sessId);
+        if (deleteLocks) deleteLocks.run(sessId);
+        if (deleteLeases) deleteLeases.run(sessId);
+        if (deleteObligations) deleteObligations.run(sessKey);
+        if (deleteGenerations) deleteGenerations.run(sessKey);
+        if (deleteDelegations) deleteDelegations.run(sessId, sessId);
         deleteSession.run(sessId);
       }
 
@@ -376,10 +427,46 @@ export function pruneHermesClosedTaskSessions(options = {}) {
     }
 
     const prunedCount = sessionsToDelete.size;
-    log(`hermes-retention: pruned ${prunedCount} sessions of closed tasks older than ${retentionDays}d, running VACUUM...`);
-    db.exec("VACUUM;");
+    log(`hermes-retention: pruned ${prunedCount} sessions of closed tasks older than ${retentionDays}d`);
+
+    // VACUUM checks: idle check, busy_timeout, free disk space
+    if (idle !== true) {
+      log("hermes-retention: skipping VACUUM because bot is not idle");
+      db.close();
+      return { prunedCount, vacuumed: false, skippedReason: "not_idle" };
+    }
+
+    db.exec("PRAGMA busy_timeout = 5000;");
+
+    let freeBytes = Infinity;
+    let dbSize = 0;
+    try {
+      const dbStat = fs.statSync(stateDbPath);
+      dbSize = dbStat.size;
+      const fsStat = fs.statfsSync(stateDbPath);
+      freeBytes = Number(fsStat.bfree) * Number(fsStat.bsize);
+    } catch (err) {
+      log(`hermes-retention: filesystem stat check: ${err.message}`);
+    }
+
+    // Require free space of at least 1.5x database size
+    if (freeBytes < dbSize * 1.5) {
+      log(`hermes-retention: skipping VACUUM: free space (${Math.round(freeBytes / 1024 / 1024)}MB) < 1.5x db size (${Math.round(dbSize / 1024 / 1024)}MB)`);
+      db.close();
+      return { prunedCount, vacuumed: false, skippedReason: "insufficient_free_space" };
+    }
+
+    let vacuumed = false;
+    try {
+      db.exec("VACUUM;");
+      vacuumed = true;
+    } catch (err) {
+      log(`hermes-retention: VACUUM failed: ${err.message}`);
+      vacuumed = false;
+    }
+
     db.close();
-    return { prunedCount, vacuumed: true };
+    return { prunedCount, vacuumed };
   } catch (err) {
     try { db.close(); } catch {}
     throw err;

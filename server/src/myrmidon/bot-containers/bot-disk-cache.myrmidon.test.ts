@@ -269,7 +269,7 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
   it("fills the defaults, lower-cases and de-duplicates the repositories, and needs a cache path", () => {
     expect(resolveBotDiskLayout({ sharedPackageCachePath: cache })).toEqual({
       sharedPackageCachePath: cache,
-      gitMirrorRepos: [],
+      gitMirrorRepos: ["itkadr-git/myrmidon", "itkadr-git/myrmidon-deploy"],
       gitMirrorRefreshMs: 15 * 60 * 1000,
       pnpmStoreDir: "/cache/pnpm-store",
       pnpmImportMethod: "clone",

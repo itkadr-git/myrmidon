@@ -232,6 +232,7 @@ export type WsDesiredPrState = z.infer<typeof wsDesiredPrStateSchema>;
 
 export const wsDesiredWorkspaceSchema = z.object({
   key: z.string().min(1),
+  id: z.string().uuid().optional(),
   repo: myrWsRepoNameSchema.optional(),
   state: wsDesiredWorkspaceStateSchema,
   since: z.string().datetime({ offset: false }),
@@ -239,6 +240,19 @@ export const wsDesiredWorkspaceSchema = z.object({
   branch: z.string().min(1).optional(),
 });
 export type WsDesiredWorkspace = z.infer<typeof wsDesiredWorkspaceSchema>;
+
+export const wsClosedKeyObjectSchema = z.object({
+  key: myrWsIssueKeySchema,
+  closedAt: z.string().datetime({ offset: false }).optional(),
+  issueId: z.string().uuid().optional(),
+});
+export type WsClosedKeyObject = z.infer<typeof wsClosedKeyObjectSchema>;
+
+export const wsClosedKeyEntrySchema = z.union([
+  myrWsIssueKeySchema,
+  wsClosedKeyObjectSchema,
+]);
+export type WsClosedKeyEntry = z.infer<typeof wsClosedKeyEntrySchema>;
 
 /**
  * Response of `GET /api/myrmidon/bots/me/workspaces` (auth: the bot's
@@ -273,7 +287,7 @@ export const wsDesiredStateSchema = z.object({
    * when the key is listed here; otherwise it only reports it. Optional: an older
    * board omits it, and then such directories are never removed.
    */
-  closedKeys: z.array(myrWsIssueKeySchema).optional(),
+  closedKeys: z.array(wsClosedKeyEntrySchema).optional(),
 });
 export type WsDesiredState = z.infer<typeof wsDesiredStateSchema>;
 

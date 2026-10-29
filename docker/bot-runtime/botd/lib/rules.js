@@ -229,7 +229,9 @@ export function plan(inventory, desired, now, settings) {
   // `legacyPressureIdleDays`, except `shared`. Without `closedKeys` / `protectKeys` (an older board)
   // every key-like directory is only reported.
   const protectKeys = new Set(arr(desired.protectKeys));
-  const closedKeys = Array.isArray(desired.closedKeys) ? new Set(desired.closedKeys) : null;
+  const closedKeys = Array.isArray(desired.closedKeys)
+    ? new Set(desired.closedKeys.map((k) => (typeof k === "string" ? k : k?.key)).filter(Boolean))
+    : null;
   const listedKeys = new Set([...byKey.keys(), ...protectKeys, ...(closedKeys ?? [])]);
   const held = [];
   const hold = (sc, kind, key) => held.push(key === undefined ? { path: sc.path, kind } : { path: sc.path, kind, key });

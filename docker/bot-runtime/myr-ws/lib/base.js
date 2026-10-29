@@ -102,12 +102,11 @@ function lastFetchMs(dir) {
 }
 
 function findMirror(parsed, env) {
+  const root = env.MYRMIDON_GIT_MIRROR_ROOT || "/cache/git";
   const candidates = [
-    path.join(env.MYRMIDON_GIT_MIRROR_ROOT || "/cache/git", `${parsed.owner}/${parsed.repo}.git`),
-    path.join(env.MYRMIDON_GIT_MIRROR_ROOT || "/cache/git", `${parsed.slug}.git`),
-    env.BOT_SCOPE_GIT_OBJECTS_DIR ? path.join(env.BOT_SCOPE_GIT_OBJECTS_DIR, `${parsed.owner}/${parsed.repo}.git`) : null,
-    path.join(L.homeDir(env), ".myrmidon", "git-objects", `${parsed.owner}/${parsed.repo}.git`),
-  ].filter(Boolean);
+    path.join(root, `${parsed.owner}/${parsed.repo}.git`),
+    path.join(root, `${parsed.slug}.git`),
+  ];
 
   for (const c of candidates) {
     if (fs.existsSync(path.join(c, "HEAD")) && fs.existsSync(path.join(c, "objects"))) {
@@ -117,47 +116,103 @@ function findMirror(parsed, env) {
   return null;
 }
 
-function syncMirrorAlternates(env, dir, parsed) {
-  const mirror = findMirror(parsed, env);
-  if (!mirror) return null;
-  const objectsDir = path.join(mirror, "objects");
-  if (!fs.existsSync(objectsDir)) return null;
-
-  const targetObjectsDir = fs.existsSync(path.join(dir, ".git", "objects"))
-    ? path.join(dir, ".git", "objects")
-    : path.join(dir, "objects");
-
-  const alternatesFile = path.join(targetObjectsDir, "info", "alternates");
-  const targetLine = `${objectsDir}\n`;
-  let existing = "";
-  try {
-    existing = fs.readFileSync(alternatesFile, "utf8");
-  } catch {
-    // does not exist yet
-  }
-  const lines = existing.split("\n").map((l) => l.trim()).filter(Boolean);
-  if (!lines.includes(objectsDir)) {
-    fs.mkdirSync(path.dirname(alternatesFile), { recursive: true });
-    const revertAlternates = () => {
-      try {
-        if (existing) {
-          fs.writeFileSync(alternatesFile, existing, "utf8");
-        } else {
-          fs.rmSync(alternatesFile, { force: true });
-        }
-      } catch {
-        // ignore revert error
-      }
-    };
-    fs.writeFileSync(alternatesFile, existing ? `${existing.trimEnd()}\n${targetLine}` : targetLine, "utf8");
+function withSyncLock(dir, fn) {
+  const lockPath = path.join(dir, "sync-mirror.lock");
+  let fd = null;
+  const startTime = Date.now();
+  while (Date.now() - startTime < 5000) {
     try {
-      mustGit(env, dir, ["repack", "-a", "-d", "-l"], EXIT.usage);
+      fd = fs.openSync(lockPath, "wx");
+      break;
     } catch (err) {
-      revertAlternates();
-      throw err;
+      if (err && err.code === "EEXIST") {
+        try {
+          const stat = fs.statSync(lockPath);
+          if (Date.now() - stat.mtimeMs > 30000) {
+            fs.rmSync(lockPath, { force: true });
+            continue;
+          }
+        } catch {
+          // ignore
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      } else {
+        break;
+      }
     }
   }
-  return mirror;
+  try {
+    return fn();
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+      try {
+        fs.rmSync(lockPath, { force: true });
+      } catch {}
+    }
+  }
+}
+
+function syncMirrorAlternates(env, dir, parsed) {
+  try {
+    const mirror = findMirror(parsed, env);
+    if (!mirror) return null;
+    const objectsDir = path.join(mirror, "objects");
+    if (!fs.existsSync(objectsDir)) return null;
+
+    const targetObjectsDir = fs.existsSync(path.join(dir, ".git", "objects"))
+      ? path.join(dir, ".git", "objects")
+      : path.join(dir, "objects");
+
+    const alternatesFile = path.join(targetObjectsDir, "info", "alternates");
+    const targetLine = `${objectsDir}\n`;
+    let existing = "";
+    try {
+      existing = fs.readFileSync(alternatesFile, "utf8");
+    } catch {
+      // does not exist yet
+    }
+    const lines = existing
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && fs.existsSync(l));
+    const cleanExisting = lines.join("\n");
+    if (!lines.includes(objectsDir)) {
+      return withSyncLock(dir, () => {
+        fs.mkdirSync(path.dirname(alternatesFile), { recursive: true });
+        const revertAlternates = () => {
+          try {
+            if (cleanExisting) {
+              fs.writeFileSync(alternatesFile, cleanExisting + "\n", "utf8");
+            } else {
+              fs.rmSync(alternatesFile, { force: true });
+            }
+          } catch {
+            // ignore revert error
+          }
+        };
+        fs.writeFileSync(
+          alternatesFile,
+          cleanExisting ? `${cleanExisting}\n${targetLine}` : targetLine,
+          "utf8",
+        );
+        try {
+          mustGit(env, dir, ["repack", "-a", "-d", "-l", "--keep-unreachable"], EXIT.usage);
+        } catch (err) {
+          revertAlternates();
+          // Degrade gracefully on mirror repack failure
+          return null;
+        }
+        return mirror;
+      });
+    }
+    return mirror;
+  } catch {
+    // Degrade gracefully
+    return null;
+  }
 }
 
 /**
@@ -178,6 +233,7 @@ function ensureBase(repoInput, opts = {}) {
   }
 
   let created = false;
+  let fetched = false;
   if (!fs.existsSync(path.join(dir, "HEAD"))) {
     const existing = listBases(env);
     if (existing.length >= L.WS_GIT_BASE_LIMIT) {
@@ -190,28 +246,35 @@ function ensureBase(repoInput, opts = {}) {
     try {
       mustGit(env, undefined, ["init", "--bare", "--quiet", dir], EXIT.usage);
       configureBase(env, dir, originUrl(parsed, env));
-      syncMirrorAlternates(env, dir, parsed);
+      fetchBase(env, dir);
+      fetched = true;
+      try {
+        syncMirrorAlternates(env, dir, parsed);
+      } catch {
+        // Graceful degradation: mirror sync failure does not break base creation
+      }
     } catch (e) {
       fs.rmSync(dir, { recursive: true, force: true });
       throw e;
     }
     created = true;
   } else {
-    syncMirrorAlternates(env, dir, parsed);
+    try {
+      syncMirrorAlternates(env, dir, parsed);
+    } catch {
+      // Graceful degradation
+    }
   }
 
   // refresh 0 means "always fetch": the stamp is written after the fetch, so
   // `now` taken at call start can precede its mtime and the difference go negative.
   const sec = refreshSec(env);
-  const stale = sec === 0 || now - lastFetchMs(dir) >= sec * 1000;
-  let fetched = false;
-  if (created || stale) {
+  const stale = !fetched && (sec === 0 || now - lastFetchMs(dir) >= sec * 1000);
+  if (stale) {
     try {
       fetchBase(env, dir);
       fetched = true;
     } catch (e) {
-      // A base that never fetched holds nothing and must not eat the limit.
-      if (created) fs.rmSync(dir, { recursive: true, force: true });
       throw e;
     }
   }
