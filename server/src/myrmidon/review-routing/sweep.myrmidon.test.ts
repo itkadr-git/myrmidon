@@ -48,6 +48,7 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
 
 interface Fixture {
   rows: Map<string, InReviewIssueRow>;
+  managerChain?: Map<string, Array<{ id: string; role: string }>>;
   reviewers: Array<{ id: string; role: string }>;
   load: Map<string, number>;
   history: Map<string, RoutingHistory>;
@@ -59,6 +60,9 @@ function makeStore(fx: Fixture) {
     listInReviewIssues: async () => [...fx.rows.values()],
     listInProgressPrIssues: async () => [...fx.rows.values()].filter((issue) => issue.status === "in_progress"),
     findPrWorkProduct: async () => null,
+    listManagerChainReviewerAgents: async (_company: string, engineerId: string, roles: readonly string[]) => {
+      return (fx.managerChain?.get(engineerId) ?? []).filter((agent) => roles.includes(agent.role));
+    },
     listReviewerAgents: async (_company: string, roles: readonly string[]) => fx.reviewers.filter((agent) => roles.includes(agent.role)),
     loadByAgent: async () => new Map(fx.load),
     routingHistory: async (_company: string, ids: readonly string[]) => new Map([...fx.history].filter(([id]) => ids.includes(id))),
@@ -138,6 +142,40 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
 beforeEach(() => resetReviewRoutingSignals());
 
 describe("assignment", () => {
+  it("prefers the nearest eligible manager in the engineer chain", async () => {
+    const t = setup({}, {
+      managerChain: new Map([[ASSIGNEE, [
+        { id: REV_A, role: "reviewer" },
+        { id: REV_B, role: "reviewer" },
+      ]]]),
+      reviewers: [{ id: REV_B, role: "reviewer" }],
+    });
+    t.fixture.rows.set("manager-chain", row("manager-chain"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ assigned: 1, signaled: 0, failed: 0 });
+    expect(t.fixture.rows.get("manager-chain")!.assigneeAgentId).toBe(REV_A);
+    expect(t.activities[0]?.details.reviewerAgentId).toBe(REV_A);
+  });
+
+  it("uses the global pool only when the manager chain has no eligible candidate", async () => {
+    const t = setup({}, { managerChain: new Map([[ASSIGNEE, []]]), reviewers: [{ id: REV_B, role: "reviewer" }] });
+    t.fixture.rows.set("fallback", row("fallback"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ assigned: 1, signaled: 0, failed: 0 });
+    expect(t.fixture.rows.get("fallback")!.assigneeAgentId).toBe(REV_B);
+  });
+
+  it("keeps an explicitly assigned reviewer unchanged", async () => {
+    const t = setup();
+    t.fixture.rows.set("already-assigned", row("already-assigned", {
+      executionPolicy: { stages: [{ id: "review", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] },
+    }));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ assigned: 0, signaled: 0, failed: 0 });
+    expect(t.fixture.rows.get("already-assigned")!.assigneeAgentId).toBe(ASSIGNEE);
+    expect(t.activities).toHaveLength(0);
+  });
+
   it("assigns the least loaded reviewer, comments, logs and wakes it", async () => {
     const t = setup({}, { load: new Map([[REV_A, 3], [REV_B, 1]]) });
     t.fixture.rows.set("1", row("1"));
