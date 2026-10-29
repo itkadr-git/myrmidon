@@ -1,21 +1,43 @@
-# ADM migration and REST context hook (OPE-9263)
+# ADM knowledge migration guide (OPE-9263)
 
 ## Migration
-Install gitleaks >=8.21 on PATH (or set ADM_GITLEAKS_BIN to an absolute executable). Run `node scripts/myrmidon/adm-migrate.mjs SOURCE_ROOT` for deterministic JSON. SOURCE_ROOT contains CLAUDE.md and memory/. The source is never changed. Review counts, conflicts, oversized, unrecognized and redactions before import. Every policy/trigger source must contain an explicit single-line `summary: ...` (1–300 Unicode characters); missing, empty or oversized summaries fail closed. Prepare copies rather than modifying the original archive.
+`node scripts/myrmidon/adm-migrate.mjs SOURCE_ROOT` runs a deterministic dry-run analysis over legacy ADM knowledge sources (CLAUDE.md and memory/). Source files are never modified.
 
-`--apply` additionally requires PAPERCLIP_API_URL (board origin), PAPERCLIP_COMPANY_ID (target company), PAPERCLIP_API_KEY (scoped agent credential) and PAPERCLIP_RUN_ID (current run UUID). Pass credentials only through environment, never command arguments or report files. The importer creates drafts, submits rule drafts for owner approval, verifies read-back, reuses identical items and rejects concurrent differences. It never approves/publishes or deletes source files. An interrupted run can be repeated; an existing rule draft is submitted on retry. Real rollout and archival are separate operator actions.
+The dry-run report outputs JSON with:
+- `manifest`: list of source paths and SHA-256 hashes.
+- `report.counts`: breakdown by category (`rule`, `trigger`, `reference`, `lesson`, `skill_card`).
+- `report.conflicts`: detected slug or content collisions.
+- `report.oversized`: items exceeding safe body size limits.
+- `report.unrecognized`: files without category in `MEMORY.md` index or explicit frontmatter.
+- `report.missingSummary`: rules/triggers lacking `description:` in frontmatter (recorded in report, fail-safe without throwing).
+- `report.redactions`: files containing secrets quarantined by gitleaks.
+- `report.secretsRemaining`: count of residual secrets (0 required for pass).
+- `report.sessionStartBytes` / `report.sessionStartLimit`: verification of SessionStart summary budget (<= 12 KiB).
 
-The scanner reads content on stdin and creates only a redacted report inside a private scratch directory, removed immediately. It does not inherit repository-specific scanner configuration. Scanner failure or residual findings stops migration. Use a private TMPDIR, not shared /tmp.
+Classification is driven by the `MEMORY.md` index (e.g. `## Политики — всегда` for rules, `## Триггеры` for triggers, `## Справочники` for references, `## Уроки` for lessons, `## Навыки` for skill cards) over a flat `memory/*.md` directory. The walker automatically skips `_archive/` subdirectories.
 
-## Hook
-`node scripts/myrmidon/adm-context-hook.mjs` reads Claude hook JSON from stdin: hook_event_name, session_id, prompt. Configure explicit commands for SessionStart, UserPromptSubmit and the compaction-summary event. ADM_HOOK_STATE_DIR and ADM_HOOK_LOG must point inside the operator profile; PAPERCLIP_API_URL/COMPANY_ID/API_KEY configure read-only REST. No MCP/model selection is involved. SessionStart emits only policy title/summary and trigger index (12 KiB cap). UserPromptSubmit performs deterministic trigger matching, REST search/read and emits selected metadata (2 KiB cap), once per slug+revision per session. No match means no REST call and no context. PreCompact returns policy summaries only and preserves dedup. The caller must deliver that summary after compaction. Full knowledge bodies never enter additionalContext. JSONL metrics contain event, bytesAdded and cumulative sessionBytes, not prompt/credential values. Overflow, corrupt state and invalid summary fail closed.
-
-Run one hook process at a time for each session. This command is an opt-in integration surface, not a production hook installation or a replacement for the cache/fallback rollout in sibling tasks. Validate actual operator wiring after deployment before enabling it. Disable the configured commands for rollback; retain sources and published knowledge.
+Secret scanning uses gitleaks (version >= 8.21 on PATH or configured via `ADM_GITLEAKS_BIN`). If any secret pattern is detected, the finding is quarantined and recorded.
 
 ## Verification
-Existing CI scripts lane runs adm-migrate.test.mjs and adm-context-hook.test.mjs: 235-source deterministic fixture, missing/empty/301-character policy summaries, real pinned gitleaks, draft/submit read-back, REST paths, byte caps, session isolation, persisted dedup, compaction restoration and JSONL metrics. No test is skipped. Production content is not part of the fixture.
+CI verifies migration logic via `node --test scripts/myrmidon/adm-migrate.test.mjs`:
+- 235-source realistic fixture (flat `memory/*.md`, `MEMORY.md` index, 15 policies + CLAUDE.md as rules).
+- Frontmatter `description:` extraction and `report.missingSummary` recording without throw.
+- Walker skipping `_archive/` directory.
+- `report.unrecognized` handling for unindexed files.
+- Pinned gitleaks archive SHA-256 hash validation and secret quarantine.
 
 ## Русский
-Команда dry-run: `node scripts/myrmidon/adm-migrate.mjs SOURCE_ROOT`; рядом должны быть CLAUDE.md и memory/. Исходники не меняются. Для rule/trigger обязательна отдельная строка `summary: ...`, 1–300 Unicode-символов; пустое/отсутствующее/слишком длинное значение останавливает запуск. Проверяйте отчёт перед импортом. Для `--apply` нужны PAPERCLIP_API_URL, PAPERCLIP_COMPANY_ID, PAPERCLIP_API_KEY, PAPERCLIP_RUN_ID. Только переменные окружения, без вывода ключа. Создаются черновики; правила отправляются владельцу, но не утверждаются и не публикуются. Повторный запуск не перезаписывает отличающееся содержимое. Архивирование и реальный выкат — отдельно.
+Команда dry-run: `node scripts/myrmidon/adm-migrate.mjs SOURCE_ROOT`. Анализирует `CLAUDE.md` и плоский каталог `memory/`. Исходные файлы не изменяются.
 
-Нужен gitleaks >=8.21 (PATH или ADM_GITLEAKS_BIN). Ошибка сканера — fail-closed. TMPDIR должен быть приватным; временный отчёт уже обезличен и удаляется. Hook читает JSON Claude из stdin; ADM_HOOK_STATE_DIR/ADM_HOOK_LOG — внутри профиля. SessionStart ≤12 KiB, UserPromptSubmit ≤2 KiB, нет триггера — нет поиска/контекста; REST выбирает код, не модель. Дедуп slug+revision сохраняется на session_id; PreCompact отдаёт только свод политик, вызывающий процесс доставляет его после сжатия. Метрики JSONL: event/bytesAdded/sessionBytes. Запуски одной сессии сериализовать. Это opt-in команда, а не установленный боевой hook; интеграцию проверяет оператор после выката, отключение команд — rollback. CI проверяет фикстуру 235 источников, summaries, настоящий scanner, REST, лимиты, дедуп и журнал без skip.
+Отчёт dry-run включает:
+- `manifest`: пути и SHA-256 хеши исходных файлов.
+- `report.counts`: распределение по категориям (`rule`, `trigger`, `reference`, `lesson`, `skill_card`).
+- `report.conflicts`: конфликты slug или содержимого.
+- `report.oversized`: документы, превышающие допустимый размер.
+- `report.unrecognized`: файлы, не найденные в индексе `MEMORY.md` и не имеющие `migration_kind`.
+- `report.missingSummary`: политики и триггеры без `description:` в frontmatter (фиксируются в отчёте без прерывания).
+- `report.redactions`: вырезка и карантин секретов через gitleaks.
+- `report.secretsRemaining`: число оставшихся секретов (0 для успешного прогона).
+- `report.sessionStartBytes` / `report.sessionStartLimit`: проверка лимита SessionStart (<= 12 КБ).
+
+Классификация берётся из индекса `MEMORY.md` (`## Политики — всегда` и др.). Каталог `_archive/` автоматически исключается из обхода. Проверка секретов использует gitleaks с валидацией контрольной суммы.
