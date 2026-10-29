@@ -77,6 +77,10 @@ export type KnowledgeSourceKind = (typeof KNOWLEDGE_SOURCE_KINDS)[number];
 export const KNOWLEDGE_SUGGESTION_STATUSES = ["pending", "accepted", "declined"] as const;
 export type KnowledgeSuggestionStatus = (typeof KNOWLEDGE_SUGGESTION_STATUSES)[number];
 
+/** Explicit classifier verdict, independent of provenance and human review outcome. */
+export const KNOWLEDGE_SUGGESTION_RECOMMENDATIONS = ["accepted", "declined"] as const;
+export type KnowledgeSuggestionRecommendation = (typeof KNOWLEDGE_SUGGESTION_RECOMMENDATIONS)[number];
+
 /** The provenance trust of a suggestion (§2.2): `external` = foreign url only (1.7 L-5). */
 export const KNOWLEDGE_SUGGESTION_TRUSTS = ["internal", "external"] as const;
 export type KnowledgeSuggestionTrust = (typeof KNOWLEDGE_SUGGESTION_TRUSTS)[number];

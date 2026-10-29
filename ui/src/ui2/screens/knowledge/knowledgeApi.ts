@@ -141,6 +141,11 @@ function queryString(params: Record<string, string | number | undefined | null>)
 }
 
 export const knowledgeApi = {
+  suggestions: (companyId: string) =>
+    api.get<{ suggestions: Array<{ id: string; targetItemId: string | null; body: string; recommendation: "accepted" | "declined"; rationale: string | null; sourceKind: string | null; sourceRef: string | null; status: string; trust: string | null; createdAt: string }> }>(
+      `${base(companyId)}/suggestions?status=pending`,
+    ),
+
   /** K-2 exposes one flat catalog; the UI groups it into spaces locally. */
   items: async (
     companyId: string,

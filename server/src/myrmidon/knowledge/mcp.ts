@@ -96,6 +96,8 @@ export const KNOWLEDGE_TOOL_DEFINITIONS = [
       properties: {
         targetSlug: { type: "string", description: "The item to edit; omit for a new page." },
         title: { type: "string" },
+        recommendation: { type: "string", enum: ["accepted", "declined"], description: "Classifier disposition based on the supplied evidence." },
+        rationale: { type: "string", description: "Classifier explanation grounded in the supplied evidence." },
         body: { type: "string" },
         sources: {
           type: "array",
@@ -111,7 +113,7 @@ export const KNOWLEDGE_TOOL_DEFINITIONS = [
           },
         },
       },
-      required: ["body", "sources"],
+      required: ["body", "recommendation", "rationale", "sources"],
     },
   },
   {
@@ -154,10 +156,12 @@ export const KNOWLEDGE_TOOL_DEFINITIONS = [
       properties: {
         targetSlug: { type: "string" },
         title: { type: "string" },
+        recommendation: { type: "string", enum: ["accepted", "declined"], description: "Classifier disposition based on supplied sources." },
+        rationale: { type: "string", description: "Classifier explanation grounded in those sources." },
         body: { type: "string" },
         sources: { type: "array", items: { type: "object" } },
       },
-      required: ["body", "sources"],
+      required: ["body", "recommendation", "rationale", "sources"],
     },
   },
 ] as const;
@@ -358,12 +362,13 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
             field: "sources",
           });
         }
-        const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, sources: args.sources });
+        const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, recommendation: args.recommendation, rationale: args.rationale, sources: args.sources });
         assertCleanWrite(input.body, "body");
         return {
           suggestion: await mod.suggest(actorRef, {
             body: input.body,
-            rationale: input.title ?? undefined,
+            recommendation: input.recommendation,
+            rationale: input.rationale,
             targetSlug: input.targetSlug ?? undefined,
             sourceKind: input.sources[0]!.kind,
             sourceRef: input.sources[0]!.ref,
@@ -377,12 +382,13 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
             field: "sources",
           });
         }
-        const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, sources: args.sources });
+        const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, recommendation: args.recommendation, rationale: args.rationale, sources: args.sources });
         assertCleanWrite(input.body, "body");
         return {
           suggestion: await mod.suggest(actorRef, {
             body: input.body,
-            rationale: input.title ?? undefined,
+            recommendation: input.recommendation,
+            rationale: input.rationale,
             targetSlug: input.targetSlug ?? undefined,
             sourceKind: input.sources[0]!.kind,
             sourceRef: input.sources[0]!.ref,
