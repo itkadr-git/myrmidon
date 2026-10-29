@@ -211,14 +211,21 @@ describe("myrmidon(M2-B) agent gateway keys", () => {
   it("lists agent gateway keys with their allowlist", async () => {
     const agentA = { id: "agent-a", name: "alpha" };
     const agentB = { id: "agent-b", name: "beta" };
+    const allAgents = [
+      { id: agentA.id, name: agentA.name },
+      { id: agentB.id, name: agentB.name },
+    ];
     const base = makeDeps({ "gateway-admin": "admin-value" });
     const db = {
       select: () => ({
         from: () => ({
-          where: async () => [
-            { id: agentA.id, name: agentA.name },
-            { id: agentB.id, name: agentB.name },
-          ],
+          where: () => ({
+            limit: async (n: number) => allAgents.slice(0, n),
+            then: (
+              onfulfilled?: ((value: typeof allAgents) => unknown) | null,
+              onrejected?: ((reason: unknown) => unknown) | null,
+            ) => Promise.resolve(allAgents).then(onfulfilled, onrejected),
+          }),
         }),
       }),
     };
