@@ -1047,6 +1047,10 @@
         "name": "Execution holds (HOLD-READY)",
         "description": "Monitors open tasks held with replay=blocked awaiting recovery reconciliation or operator release."
       },
+      "github-app-identity": {
+        "name": "GitHub App identity (shared tokens)",
+        "description": "Issues short-lived installation tokens for bots via company GitHub App."
+      },
       "run-admission": {
         "name": "Run admission",
         "description": "Instance-wide limits on concurrent runs, run starts per minute and free memory of the server and the host, so a mass wake cannot exhaust the machine."

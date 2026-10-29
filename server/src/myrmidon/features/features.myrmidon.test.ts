@@ -614,6 +614,7 @@ describe("registry", () => {
       "plugin-entitlements",
       "swarm-scent",
       "execution-holds",
+      "github-app-identity",
     ]) {
       expect(keys).toContain(key);
     }
@@ -713,5 +714,46 @@ describe("service", () => {
     const report = await service.report({ fresh: true });
     expect(report.features[0]!.needsAttentionSince).toBe(NOW.toISOString());
     expect(readFeatureAttentionSignals(at)).toHaveLength(1);
+  });
+
+  describe("github-app-identity", () => {
+    it("reports failing when >= 5 denied with 0 issued in the last 10 min", async () => {
+      const { githubAppIdentityFeature } = await import("./definitions/github-app-identity.js");
+      const baseCtx = ctx();
+      baseCtx.ports.activity.count = async (actions) => {
+        if (actions.includes("myrmidon.github_app.denied")) return 5;
+        if (actions.includes("myrmidon.github_app.issued")) return 0;
+        return 0;
+      };
+      const result = await view(githubAppIdentityFeature, baseCtx);
+      expect(result.health.status).toBe("failing");
+      expect(result.health.reason).toContain("5 GitHub App token request(s) denied (0 issued)");
+    });
+
+    it("reports failing when denied share > 50% in the last 10 min", async () => {
+      const { githubAppIdentityFeature } = await import("./definitions/github-app-identity.js");
+      const baseCtx = ctx();
+      baseCtx.ports.activity.count = async (actions) => {
+        if (actions.includes("myrmidon.github_app.denied")) return 6;
+        if (actions.includes("myrmidon.github_app.issued")) return 4;
+        return 0;
+      };
+      const result = await view(githubAppIdentityFeature, baseCtx);
+      expect(result.health.status).toBe("failing");
+      expect(result.health.reason).toContain("6 of 10 GitHub App token requests denied (60%)");
+    });
+
+    it("reports working when issued > 0 and denied <= 50%", async () => {
+      const { githubAppIdentityFeature } = await import("./definitions/github-app-identity.js");
+      const baseCtx = ctx();
+      baseCtx.ports.activity.count = async (actions) => {
+        if (actions.includes("myrmidon.github_app.denied")) return 1;
+        if (actions.includes("myrmidon.github_app.issued")) return 9;
+        return 0;
+      };
+      const result = await view(githubAppIdentityFeature, baseCtx);
+      expect(result.health.status).toBe("working");
+      expect(result.health.reason).toContain("9 GitHub App token(s) issued in the last 10 min (1 denied)");
+    });
   });
 });

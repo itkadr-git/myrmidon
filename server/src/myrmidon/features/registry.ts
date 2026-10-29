@@ -13,6 +13,7 @@ import { budgetEnforcementFeature } from "./definitions/budget-enforcement.js";
 import { chatHoldsFeature } from "./definitions/chat-holds.js";
 import { costAttributionFeature } from "./definitions/cost-attribution.js";
 import { executionHoldsFeature } from "./definitions/execution-holds.js";
+import { githubAppIdentityFeature } from "./definitions/github-app-identity.js";
 import { hostDiskFeature } from "./definitions/host-disk.js";
 import { modelFallbackFeature } from "./definitions/model-fallback.js";
 import { pluginEntitlementsFeature } from "./definitions/plugin-entitlements.js";
@@ -28,6 +29,7 @@ export const FEATURE_REGISTRY: readonly FeatureDefinition[] = [
   swarmClaimFeature,
   swarmScentFeature,
   executionHoldsFeature,
+  githubAppIdentityFeature,
   runAdmissionFeature,
   botDiskFeature,
   sharedPackageCacheFeature,
