@@ -334,6 +334,7 @@ import {
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
+  normalizeStoredIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
@@ -1152,7 +1153,7 @@ function hasScheduledMonitor(input: {
     input.existingMonitorNextCheckAt
   )
     return true;
-  const policy = normalizeIssueExecutionPolicy(input.executionPolicy ?? null);
+  const policy = normalizeStoredIssueExecutionPolicy(input.executionPolicy ?? null);
   return Boolean(policy?.monitor?.nextCheckAt);
 }
 
@@ -4613,7 +4614,7 @@ export function issueRoutes(
 
     const monitor = summarizeIssueMonitor(
       issue,
-      normalizeIssueExecutionPolicy(issue.executionPolicy ?? null),
+      normalizeStoredIssueExecutionPolicy(issue.executionPolicy ?? null),
     );
     if (monitor.nextCheckAt && Date.parse(monitor.nextCheckAt) > Date.now()) {
       return "Recovery action became stale because the source issue now has a scheduled monitor.";
@@ -9878,7 +9879,7 @@ export function issueRoutes(
               actorAgentId: actor.agentId,
               actorRunId: actor.runId,
             });
-            const executionPolicy = normalizeIssueExecutionPolicy(
+            const executionPolicy = normalizeStoredIssueExecutionPolicy(
               lockedIssue.executionPolicy ?? null,
             );
             const transition = applyIssueExecutionPolicyTransition({
@@ -13236,7 +13237,7 @@ export function issueRoutes(
           },
         });
 
-        const executionPolicy = normalizeIssueExecutionPolicy(
+        const executionPolicy = normalizeStoredIssueExecutionPolicy(
           issue.executionPolicy,
         );
         if (executionPolicy?.monitor) {
@@ -13908,7 +13909,7 @@ export function issueRoutes(
           actor.actorType,
         );
       }
-      const previousExecutionPolicy = normalizeIssueExecutionPolicy(
+      const previousExecutionPolicy = normalizeStoredIssueExecutionPolicy(
         existing.executionPolicy ?? null,
       );
       const nextExecutionPolicy =
@@ -15697,7 +15698,7 @@ export function issueRoutes(
         });
       }
 
-      const nextStoredExecutionPolicy = normalizeIssueExecutionPolicy(
+      const nextStoredExecutionPolicy = normalizeStoredIssueExecutionPolicy(
         issue.executionPolicy ?? null,
       );
       const previousMonitor = summarizeIssueMonitor(
@@ -19331,7 +19332,7 @@ export function issueRoutes(
       const currentExecutionState = parseIssueExecutionState(
         currentIssue.executionState,
       );
-      const currentExecutionPolicy = normalizeIssueExecutionPolicy(
+      const currentExecutionPolicy = normalizeStoredIssueExecutionPolicy(
         currentIssue.executionPolicy ?? null,
       );
       const shouldAutoApproveReviewComment =

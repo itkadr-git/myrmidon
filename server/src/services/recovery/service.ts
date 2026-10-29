@@ -125,6 +125,7 @@ import {
 import {
   applyIssueMonitorPolicyTransition,
   normalizeIssueExecutionPolicy,
+  normalizeStoredIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "../issue-execution-policy.js";
 import {
@@ -5085,7 +5086,7 @@ export function recoveryService(
     if (!targetAgentId || input.latestRun.agentId !== targetAgentId)
       return null;
 
-    const previousPolicy = normalizeIssueExecutionPolicy(
+    const previousPolicy = normalizeStoredIssueExecutionPolicy(
       input.issue.executionPolicy ?? null,
     );
     const retryTargetDescription =

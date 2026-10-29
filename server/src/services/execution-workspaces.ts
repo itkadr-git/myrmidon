@@ -40,6 +40,7 @@ import { logger } from "../middleware/logger.js";
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
+  normalizeStoredIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
@@ -3746,7 +3747,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           if (!sourceBefore) throw notFound("Source issue not found");
 
           const requestedStatus = quarantineRestoreRequestedSourceStatus(sourceBefore);
-          const policy = normalizeIssueExecutionPolicy(sourceBefore.executionPolicy ?? null);
+          const policy = normalizeStoredIssueExecutionPolicy(sourceBefore.executionPolicy ?? null);
           const transition = applyIssueExecutionPolicyTransition({
             // myrmidon(OPE-9031): senior escalation chain for the round limit.
             issue: await withDefaultEscalationChain(tx as unknown as Db, sourceBefore, policy),

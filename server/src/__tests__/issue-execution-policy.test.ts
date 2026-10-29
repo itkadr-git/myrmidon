@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, mayNeedDefaultEscalationChain, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, mayNeedDefaultEscalationChain, normalizeIssueExecutionPolicy, normalizeStoredIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@myrmidon/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -107,6 +107,24 @@ describe("normalizeIssueExecutionPolicy", () => {
       ],
     });
     expect(result!.mode).toBe("normal");
+  });
+  it("repairs retired modes only when normalizing stored policies", () => {
+    const stored = normalizeStoredIssueExecutionPolicy({
+      mode: "sequential",
+      commentRequired: false,
+      stages: [],
+      monitor: {
+        nextCheckAt: "2026-04-11T12:30:00.000Z",
+        externalRef: "build-123",
+      },
+    });
+
+    expect(stored).toMatchObject({
+      mode: "normal",
+      stages: [],
+      monitor: { nextCheckAt: "2026-04-11T12:30:00.000Z" },
+    });
+    expect(() => normalizeIssueExecutionPolicy({ mode: "sequential", stages: [] })).toThrow("Invalid execution policy");
   });
 
   it("rejects approvalsNeeded values above 1", () => {
