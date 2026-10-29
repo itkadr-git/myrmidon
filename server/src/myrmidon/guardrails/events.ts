@@ -15,9 +15,9 @@
 // The output hook (`run-output.ts`) is the only caller for part A; part B
 // (input injection) and later parts reuse recordGuardrailEvent directly.
 
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, or } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
-import { guardrailEvents } from "@myrmidon/db";
+import { guardrailEvents, heartbeatRuns } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import { maskSecretsInText } from "../secret-masking.js";
 import {
@@ -79,9 +79,14 @@ export interface RecordGuardrailEventInput {
   companyId: string;
   issueId: string | null;
   runId: string | null;
-  kind: "secret" | "pii";
+  kind: "secret" | "pii" | string;
+  rule?: string | null;
+  mode?: string | null;
+  level?: string | null;
+  agentId?: string | null;
+  decision?: string | null;
   surface: string;
-  severity: "info" | "warn" | "error";
+  severity: "info" | "warn" | "error" | string;
   snippet: string | null;
   occurredAt: Date;
 }
@@ -100,14 +105,21 @@ export function sanitizeGuardrailSnippet(snippet: string | null | undefined): st
   return masked.length > GUARDRAIL_SNIPPET_MAX_CHARS ? `${masked.slice(0, GUARDRAIL_SNIPPET_MAX_CHARS - 1)}…` : masked;
 }
 
-/** FROZEN for part B. Inserts one event row and one activity-log line. */
+/** Inserts one event row and one activity-log line. */
 export async function recordGuardrailEvent(db: Db, input: RecordGuardrailEventInput): Promise<{ id: string }> {
   const maskedSnippet = sanitizeGuardrailSnippet(input.snippet);
+  const rule = input.rule ?? input.kind;
+  const decision = input.decision ?? input.mode ?? "flag";
   const [row] = await db
     .insert(guardrailEvents)
     .values({
       companyId: input.companyId,
       kind: input.kind,
+      rule,
+      mode: input.mode ?? null,
+      level: input.level ?? null,
+      agentId: input.agentId ?? null,
+      decision,
       surface: input.surface,
       severity: input.severity,
       runId: input.runId,
@@ -127,6 +139,11 @@ export async function recordGuardrailEvent(db: Db, input: RecordGuardrailEventIn
     issueId: input.issueId,
     details: {
       kind: input.kind,
+      rule,
+      mode: input.mode ?? null,
+      level: input.level ?? null,
+      agentId: input.agentId ?? null,
+      decision,
       surface: input.surface,
       severity: input.severity,
       snippet: maskedSnippet,
@@ -135,14 +152,94 @@ export async function recordGuardrailEvent(db: Db, input: RecordGuardrailEventIn
   return { id: row.id };
 }
 
-/** Newest-first event list for the board route. */
-export async function listGuardrailEvents(db: Db, companyId: string, limit: number) {
-  return db
+export interface GuardrailEventFilters {
+  rule?: string;
+  kind?: string;
+  mode?: string;
+  level?: string;
+  agentId?: string;
+  agent?: string;
+  decision?: string;
+  severity?: string;
+  surface?: string;
+  runId?: string;
+  issueId?: string;
+}
+
+export interface ListGuardrailEventsOptions {
+  limit?: number;
+  offset?: number;
+  filters?: GuardrailEventFilters;
+}
+
+/** Newest-first event list for the board route with filtering and pagination. */
+export async function listGuardrailEvents(
+  db: Db,
+  companyId: string,
+  limitOrOptions: number | ListGuardrailEventsOptions = 50,
+  legacyFilters?: GuardrailEventFilters,
+) {
+  let limit = 50;
+  let offset = 0;
+  let filters: GuardrailEventFilters = {};
+
+  if (typeof limitOrOptions === "number") {
+    limit = limitOrOptions;
+    if (legacyFilters) {
+      filters = legacyFilters;
+    }
+  } else if (limitOrOptions && typeof limitOrOptions === "object") {
+    if (typeof limitOrOptions.limit === "number") limit = limitOrOptions.limit;
+    if (typeof limitOrOptions.offset === "number") offset = limitOrOptions.offset;
+    if (limitOrOptions.filters) filters = limitOrOptions.filters;
+  }
+
+  const conditions = [eq(guardrailEvents.companyId, companyId)];
+  const filterRule = filters.rule ?? filters.kind;
+  if (filterRule) {
+    conditions.push(or(eq(guardrailEvents.rule, filterRule), eq(guardrailEvents.kind, filterRule))!);
+  }
+  if (filters.mode) {
+    conditions.push(eq(guardrailEvents.mode, filters.mode));
+  }
+  if (filters.level) {
+    conditions.push(eq(guardrailEvents.level, filters.level));
+  }
+  const filterAgent = filters.agentId ?? filters.agent;
+  if (filterAgent) {
+    conditions.push(eq(guardrailEvents.agentId, filterAgent));
+  }
+  if (filters.decision) {
+    conditions.push(eq(guardrailEvents.decision, filters.decision));
+  }
+  if (filters.severity) {
+    conditions.push(eq(guardrailEvents.severity, filters.severity));
+  }
+  if (filters.surface) {
+    conditions.push(eq(guardrailEvents.surface, filters.surface));
+  }
+  if (filters.runId) {
+    conditions.push(eq(guardrailEvents.runId, filters.runId));
+  }
+  if (filters.issueId) {
+    conditions.push(eq(guardrailEvents.issueId, filters.issueId));
+  }
+
+  const baseQuery = db
     .select()
     .from(guardrailEvents)
-    .where(eq(guardrailEvents.companyId, companyId))
+    .where(and(...conditions))
     .orderBy(desc(guardrailEvents.occurredAt))
     .limit(limit);
+
+  const rows = offset > 0 ? await baseQuery.offset(offset) : await baseQuery;
+
+  return rows.map((row) => ({
+    ...row,
+    rule: row.rule ?? row.kind,
+    agent: row.agentId,
+    ts: row.occurredAt,
+  }));
 }
 
 /**
@@ -157,9 +254,12 @@ export async function recordRunOutputGuardrailEvents(
     companyId: string;
     runId: string;
     issueId: string | null;
+    agentId?: string | null;
     text: string | null;
     now(): Date;
     env?: NodeJS.ProcessEnv;
+    modeHint?: "flag" | "mask" | "block";
+    levelHint?: string;
   },
 ): Promise<{ recorded: number; total: number; totalSecrets: number; totalPii: number } | null> {
   const settings = readGuardrailOutputSettings(input.env);
@@ -175,28 +275,54 @@ export async function recordRunOutputGuardrailEvents(
     // redacted copy around its placeholder. A raw value is never in a snippet.
     const allHits = detectGuardrailHits(text, GUARDRAIL_CATEGORIES);
     const redacted = redactGuardrailHits(text, allHits);
+    let agentId = input.agentId ?? null;
+    if (!agentId && input.runId) {
+      const [run] = await db
+        .select({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, input.runId))
+        .limit(1);
+      if (run) {
+        agentId = run.agentId;
+      }
+    }
     let recorded = 0;
     for (const hit of report.hits) {
       if (recorded >= GUARDRAIL_MAX_EVENTS_PER_RUN) break;
       const allIndex = allHits.findIndex((other) => other.span[0] < hit.span[1] && hit.span[0] < other.span[1]);
       if (allIndex < 0) continue;
       const snippet = guardrailSnippet(redacted.text, redacted.spans[allIndex]!, GUARDRAIL_SNIPPET_MAX_CHARS);
+      const baseSeverity = hit.kind === "secret" ? "warn" : "info";
+      const severity =
+        input.modeHint === "block"
+          ? "error"
+          : input.modeHint === "mask"
+            ? "warn"
+            : baseSeverity;
       await recordGuardrailEvent(db, {
         companyId: input.companyId,
         issueId: input.issueId,
         runId: input.runId,
+        agentId,
         kind: hit.kind,
+        rule: hit.kind,
+        mode: input.modeHint ?? "flag",
+        level: input.levelHint ?? "company",
+        decision: input.modeHint ?? "flag",
         surface: GUARDRAIL_SURFACE_RUN_OUTPUT,
-        severity: hit.kind === "secret" ? "warn" : "info",
+        severity,
         snippet,
         occurredAt: input.now(),
       });
       recorded += 1;
     }
-    return { recorded, total: report.total, totalSecrets: report.totalSecrets, totalPii: report.totalPii };
-  } catch {
-    // Flag-only and best-effort: a journaling failure is swallowed, the
-    // run result itself is never affected in 1.6.1.
+    return {
+      recorded,
+      total: report.hits.length,
+      totalSecrets: report.totalSecrets,
+      totalPii: report.totalPii,
+    };
+  } catch (err) {
     return null;
   }
 }
