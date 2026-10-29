@@ -3103,14 +3103,6 @@ export function IssueProperties({
               />
             </Link>
           </PropertyRow>
-        ) : issue.responsibleUserId ? (
-          <PropertyRow label={t("area.issue-properties-panels-2.issue-properties.rows.responsible", { defaultValue: "Responsible" })}>
-            <Identity
-              name={actualUserLabel(issue.responsibleUserId) ?? userProfileMap.get(issue.responsibleUserId)?.label ?? t("common.user")}
-              avatarUrl={userProfileMap.get(issue.responsibleUserId)?.image ?? null}
-              size="sm"
-            />
-          </PropertyRow>
         ) : null}
         {originatingActor ? (
           <PropertyRow label={t("area.issue-properties-panels-2.issue-properties.rows.originating")}>

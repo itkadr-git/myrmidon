@@ -10076,36 +10076,26 @@ export function issueService(db: Db) {
 
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
-        const isCreatedByHuman = Boolean(
-          issueData.createdByUserId &&
-            !issueData.createdByAgentId &&
-            !actorRunId,
+        const responsibleUserId = await resolveResponsibleUserIdForIssueCreate(
+          tx,
+          companyId,
+          {
+            explicitResponsibleUserId: issueData.responsibleUserId ?? null,
+            createdByUserId: issueData.createdByUserId ?? null,
+            parentId: issueData.parentId ?? null,
+            originKind: issueData.originKind ?? "manual",
+            originRunId: issueData.originRunId ?? null,
+            actorRunId: actorRunId ?? null,
+            actorResponsibleUserId: actorResponsibleUserId ?? null,
+            trustExplicitResponsibleUserId:
+              trustExplicitResponsibleUserId === true,
+          },
         );
 
         let responsibleAgentId: string | null = null;
-        let responsibleUserId: string | null = null;
-
         if (issueData.responsibleAgentId !== undefined) {
           responsibleAgentId = issueData.responsibleAgentId ?? null;
-          responsibleUserId = issueData.responsibleUserId ?? null;
-        } else if (isCreatedByHuman) {
-          responsibleUserId = await resolveResponsibleUserIdForIssueCreate(
-            tx,
-            companyId,
-            {
-              explicitResponsibleUserId: issueData.responsibleUserId ?? null,
-              createdByUserId: issueData.createdByUserId ?? null,
-              parentId: issueData.parentId ?? null,
-              originKind: issueData.originKind ?? "manual",
-              originRunId: issueData.originRunId ?? null,
-              actorRunId: actorRunId ?? null,
-              actorResponsibleUserId: actorResponsibleUserId ?? null,
-              trustExplicitResponsibleUserId:
-                trustExplicitResponsibleUserId === true,
-            },
-          );
-          responsibleAgentId = null;
-        } else {
+        } else if (issueData.createdByAgentId || actorRunId) {
           responsibleAgentId = await resolveResponsibleHeadAgentId(
             tx,
             companyId,
@@ -10115,29 +10105,9 @@ export function issueService(db: Db) {
               createdByAgentId: issueData.createdByAgentId ?? null,
             },
           );
-          responsibleUserId =
-            trustExplicitResponsibleUserId && issueData.responsibleUserId
-              ? issueData.responsibleUserId
-              : null;
         }
 
         if (issueData.sourceTrust?.disposition === "quarantined") {
-          if (!responsibleUserId) {
-            responsibleUserId = await resolveResponsibleUserIdForIssueCreate(
-              tx,
-              companyId,
-              {
-                explicitResponsibleUserId: issueData.responsibleUserId ?? null,
-                createdByUserId: issueData.createdByUserId ?? null,
-                parentId: issueData.parentId ?? null,
-                originKind: issueData.originKind ?? "manual",
-                originRunId: issueData.originRunId ?? null,
-                actorRunId: actorRunId ?? null,
-                actorResponsibleUserId: actorResponsibleUserId ?? null,
-                trustExplicitResponsibleUserId: true,
-              },
-            );
-          }
           if (!responsibleUserId) {
             throw unprocessable(
               "Low-trust output cannot be quarantined without a promotion owner",
@@ -10146,7 +10116,6 @@ export function issueService(db: Db) {
         }
         const values = {
           ...issueData,
-          responsibleUserId,
           responsibleAgentId,
           ...(issueData.sourceTrust?.disposition === "quarantined"
             ? {

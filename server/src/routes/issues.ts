@@ -9902,7 +9902,7 @@ export function issueRoutes(
                 {
                   kind: "ask_user_questions",
                   idempotencyKey: transition.recoveryInteraction.idempotencyKey,
-                  resolverPolicy: lockedIssue.responsibleAgentId ? "agent_preferred" : "human_only",
+                  resolverPolicy: lockedIssue.responsibleAgentId ? "anyone" : "human_only",
                   addresseeAgentId: lockedIssue.responsibleAgentId ?? null,
                   addresseeUserId: lockedIssue.responsibleAgentId ? null : (lockedIssue.responsibleUserId ?? lockedIssue.createdByUserId ?? null),
                   continuationPolicy: "none",
@@ -14011,7 +14011,7 @@ export function issueRoutes(
           {
             kind: "ask_user_questions",
             idempotencyKey: transition.recoveryInteraction.idempotencyKey,
-            resolverPolicy: existing.responsibleAgentId ? "agent_preferred" : "human_only",
+            resolverPolicy: existing.responsibleAgentId ? "anyone" : "human_only",
             addresseeAgentId: existing.responsibleAgentId ?? null,
             addresseeUserId: existing.responsibleAgentId ? null : (existing.responsibleUserId ?? existing.createdByUserId ?? null),
             continuationPolicy: "none",
@@ -19458,7 +19458,7 @@ export function issueRoutes(
                 {
                   kind: "ask_user_questions",
                   idempotencyKey: transition.recoveryInteraction.idempotencyKey,
-                  resolverPolicy: currentIssue.responsibleAgentId ? "agent_preferred" : "human_only",
+                  resolverPolicy: currentIssue.responsibleAgentId ? "anyone" : "human_only",
                   addresseeAgentId: currentIssue.responsibleAgentId ?? null,
                   addresseeUserId: currentIssue.responsibleAgentId ? null : (currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null),
                   continuationPolicy: "none",
