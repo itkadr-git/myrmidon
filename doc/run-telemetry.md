@@ -14,20 +14,23 @@ LiteLLM and adapter-reported spend, API-equivalent price estimate for
 subscription-included usage, and a result category derived only from registered
 work products.
 
-The snapshot uses `issues.updatedAt` as `eventRevision`. It is the issue-state
-revision at snapshot time. `sourceEventId` and `sourceEventSeq` are separate and
-are included only when the durable wake payload carries them. They identify the
-source event, not the issue revision. `modelCallCountSource` states whether the
+The snapshot uses the revision captured in the durable wake receipt as
+`eventRevision`; it is not reconstructed from the issue's later state.
+`sourceEventId` and `sourceEventSeq` are separate and are included only when the
+durable wake payload carries them. They identify the source event, not the issue
+revision. `modelCallCountSource` states whether the
 count came from an explicit gateway count, gateway call IDs, LiteLLM request
-IDs, or is unknown. At most 80 gateway call IDs and 80 LiteLLM request IDs are
+IDs, or is unknown. At most 500 gateway call IDs and 500 LiteLLM request IDs are
 retained; separate truncation flags mark overflow. The aggregate call count
 remains separate from those capped lists.
 
-`outcomeCategory` uses registered work products only. It is `artifact`,
-`commit_push`, `other_work_product`, or null when none exist. The snapshot
-reports artifact, document, commit, pull-request, branch, and other work-product
-counts. It does not classify status changes, comments, or a work-product-free
-run as a result.
+`outcomeCategory` prioritizes registered work products (`artifact`,
+`commit_push`, or `other_work_product`). Without a work product, a run-linked
+applied status decision is `status`, a run-linked issue comment is
+`comment_only`, and a completed run with neither is `nothing`. Pending runs
+without an observable outcome remain null. Issue-wide status and comments from
+other runs are not attributed to this run. The snapshot reports artifact,
+document, commit, pull-request, branch, and other work-product counts.
 
 LiteLLM `gatewaySpendCents` and adapter-reported `reportedCostCents` remain
 separate. For `subscription_included` usage, `apiEquivalentCostUsd` is computed
