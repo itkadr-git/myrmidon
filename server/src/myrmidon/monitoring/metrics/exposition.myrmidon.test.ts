@@ -11,6 +11,7 @@ import {
   renderMetricsText,
   type MetricsSnapshot,
 } from "./metrics.js";
+import { swarmClaimMetrics } from "../../swarm-claim/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 
 function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
@@ -69,6 +70,26 @@ describe("prometheus exposition format", () => {
       expect(text).toContain('myrmidon_continuation_deduped_total{role="all"} 1');
     } finally {
       continuationDedupeMetrics.reset();
+    }
+  });
+
+  it("exposes claim conflicts and both bounded recovery reasons, including zero", () => {
+    swarmClaimMetrics.reset();
+    try {
+      expect(renderMetricsText(snapshot())).toContain('swarm_lease_recovered_total{role="all",reason="supervisor_rebalance"} 0');
+      swarmClaimMetrics.conflict();
+      swarmClaimMetrics.recover("lease_expired");
+      swarmClaimMetrics.recover("supervisor_rebalance");
+      swarmClaimMetrics.recover("run_finished");
+      const text = renderMetricsText(snapshot());
+      expect(text).toContain("# TYPE swarm_claim_conflicts_total counter");
+      expect(text).toContain('swarm_claim_conflicts_total{role="all"} 1');
+      expect(text).toContain("# TYPE swarm_lease_recovered_total counter");
+      expect(text).toContain('swarm_lease_recovered_total{role="all",reason="lease_expired"} 1');
+      expect(text).toContain('swarm_lease_recovered_total{role="all",reason="supervisor_rebalance"} 1');
+      expect(text).not.toContain('reason="run_finished"');
+    } finally {
+      swarmClaimMetrics.reset();
     }
   });
 
@@ -332,15 +353,17 @@ describe("prometheus exposition format", () => {
     expect(text.endsWith("\n")).toBe(true);
     const body = text.slice(0, -1);
     const blocks = body.split("\n\n");
-    const families = blocks.map((block) => {
-      // Check registered names, including the task's blocker_* families,
-      // rather than imposing a namespace on otherwise valid exposition.
-      const match = /^# HELP ([a-zA-Z_:][a-zA-Z0-9_:]*) /.exec(block);
-      expect(match).not.toBeNull();
-      expect(block.split("\n")[1]).toMatch(new RegExp(`^# TYPE ${match![1]} `));
-      return match![1];
+    expect(blocks).toHaveLength(METRIC_FAMILIES.length);
+    const names = blocks.map((block) => {
+      const lines = block.split("\n");
+      const help = /^# HELP (\S+) .+$/.exec(lines[0]);
+      expect(help, `block must start with HELP: ${lines[0]}`).not.toBeNull();
+      const name = help![1];
+      expect(lines[1]).toMatch(new RegExp(`^# TYPE ${name} (counter|gauge|summary)$`));
+      expect(lines.slice(2).every((line) => line.startsWith(`${name}{`) || line.startsWith(`${name} `))).toBe(true);
+      return name;
     });
-    expect(families.sort()).toEqual([...METRIC_FAMILIES].sort());
+    expect(names.sort()).toEqual([...METRIC_FAMILIES].sort());
   });
 
   it("escapes label values the way the exposition format requires", () => {
