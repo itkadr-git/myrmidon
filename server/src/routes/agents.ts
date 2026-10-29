@@ -1,3 +1,4 @@
+import { enrichWithPoolModels } from "../myrmidon/model-providers/pool-models.js";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { notModifiedOrSetEtag } from "../middleware/version-key-etag.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
@@ -3381,9 +3382,10 @@ export function agentRoutes(
       res.json(requireServerAdapter(modelAdapterType).models ?? []);
       return;
     }
-    const models = refresh
+    const rawModels = refresh
       ? await refreshAdapterModels(modelAdapterType)
       : await listAdapterModels(modelAdapterType);
+    const models = await enrichWithPoolModels(db, companyId, rawModels);
     res.json(models);
   });
 

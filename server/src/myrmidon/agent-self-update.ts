@@ -115,5 +115,7 @@ export async function assertMyrmidonAgentConfigChange(
     adapterType: nextAdapterType,
     previousAdapterConfig: nextAdapterType === existing.adapterType ? previousAdapterConfig : null,
     nextAdapterConfig,
+    companyId: existing.companyId,
+    db: deps.db,
   });
 }

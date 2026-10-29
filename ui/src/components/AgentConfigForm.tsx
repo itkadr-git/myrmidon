@@ -4059,13 +4059,37 @@ export function ModelDropdown({
       >
         <PopoverTrigger asChild>
           <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-            <span className={cn(!value && "text-muted-foreground")}>
+            <span className={cn("truncate min-w-0 flex-1 text-left", !value && "text-muted-foreground")}>
               {selected
                 ? selected.label
                 : value
                   || (allowDefault ? (defaultLabel ?? t("area.agents-1.agent-config-form.model.default")) : required ? t("area.agents-1.agent-config-form.model.selectRequired") : t("area.agents-1.agent-config-form.model.select"))}
             </span>
-            <ChevronDown className="h-3 w-3 text-muted-foreground" />
+            {selected?.accounts && selected.accounts.length > 0 ? (
+              <Badge
+                variant="secondary"
+                className="shrink-0 text-(length:--text-nano) px-1.5"
+                data-model-accounts={selected.accounts.join(",")}
+                title={selected.accounts.join(", ")}
+              >
+                {selected.accounts.join(", ")}
+              </Badge>
+            ) : null}
+            {selected?.pricing === "free" || selected?.pricing === "paid" ? (
+              <Badge
+                variant="outline"
+                className={cn(
+                  "shrink-0 text-(length:--text-nano) px-1.5",
+                  selected.pricing === "free"
+                    ? "bg-green-500/15 text-green-400 border-green-500/20"
+                    : "bg-amber-500/15 text-amber-400 border-amber-500/20",
+                )}
+                data-model-pricing={selected.pricing}
+              >
+                {t(selected.pricing === "free" ? "cardModels.free" : "cardModels.paid")}
+              </Badge>
+            ) : null}
+            <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
           </button>
         </PopoverTrigger>
         <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
@@ -4239,11 +4263,22 @@ export function ModelDropdown({
                     <span className="block min-w-0 flex-1 text-left truncate" title={m.id}>
                       {groupByProvider ? extractModelName(m.id) : m.label}
                     </span>
+                    {m.accounts && m.accounts.length > 0 ? (
+                      <Badge
+                        variant="secondary"
+                        className="ml-auto shrink-0 text-(length:--text-nano) px-1.5"
+                        data-model-accounts={m.accounts.join(",")}
+                        title={m.accounts.join(", ")}
+                      >
+                        {m.accounts.join(", ")}
+                      </Badge>
+                    ) : null}
                     {m.pricing === "free" || m.pricing === "paid" ? (
                       <Badge
                         variant="outline"
                         className={cn(
-                          "ml-auto shrink-0 text-(length:--text-nano) px-1.5",
+                          m.accounts && m.accounts.length > 0 ? "ml-1" : "ml-auto",
+                          "shrink-0 text-(length:--text-nano) px-1.5",
                           m.pricing === "free"
                             ? "bg-green-500/15 text-green-400 border-green-500/20"
                             : "bg-amber-500/15 text-amber-400 border-amber-500/20",

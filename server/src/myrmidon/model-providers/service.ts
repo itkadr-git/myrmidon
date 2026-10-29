@@ -690,6 +690,14 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
         primaryExhausted ||
         secondaryExhausted);
 
+    const rawModels = Array.isArray(raw.models)
+      ? raw.models
+      : Array.isArray(raw.available_models)
+        ? raw.available_models
+        : Array.isArray(raw.availableModels)
+          ? raw.availableModels
+          : undefined;
+
     return {
       n,
       label,
@@ -697,6 +705,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       state,
       stateRu: mapStateToRu(state),
       plan: raw.plan || rawUsage.plan || null,
+      models: rawModels,
       limitedUntil,
       lastOk,
       windows: {
