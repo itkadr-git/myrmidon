@@ -3026,6 +3026,7 @@ export {
   type InteractionRoutingMetrics,
 } from "./interaction-routing.js";
 export * from "./interaction-recipient-resolver.js";
+export * from "./build-chain.js";
 
 // myrmidon(1.6.6 RECOVERY-FACTORY P1.7, OPE-9133): the typed request/result
 // contract of the recovery factory — how CI, GitHub, myr-ws, devbuild, disk and

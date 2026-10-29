@@ -1,6 +1,6 @@
-import { formatReport, loadReport } from "../../../packages/db/src/readdress-report.ts";
+import { formatReport, loadReport } from "../../../packages/db/src/readdress-report.js";
 
-export { formatReport, loadReport, resolveAddresslessCard } from "../../../packages/db/src/readdress-report.ts";
+export { formatReport, loadReport, resolveAddresslessCard } from "../../../packages/db/src/readdress-report.js";
 
 async function main(argv: string[]): Promise<number> {
   const url = process.env.DATABASE_URL;
