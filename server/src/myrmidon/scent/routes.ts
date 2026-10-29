@@ -193,7 +193,9 @@ export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
       const companyId = String(req.params.companyId);
       assertCompanyAccess(req, companyId);
       const { service, settings } = await buildService(db, companyId, ports);
-      const slice = await service.listMarkupQueue(settings.classifierBatchSize);
+      const slice = ports.listMarkupQueue
+        ? await ports.listMarkupQueue(db, companyId, settings.classifierBatchSize)
+        : await service.listMarkupQueue(settings.classifierBatchSize);
       // OPE-7190: the contour booleans the queue silently gates on. Without
       // them "enabled:true + pending>0 + nothing happening" was undiagnosable
       // from the board: the acceptance had to guess between off/broken/parked.

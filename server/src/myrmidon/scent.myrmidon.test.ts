@@ -578,8 +578,6 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
       listCastes: async () => CASTES.map((key) => ({ key })),
       logActivity: async () => undefined,
       resolveSecret,
-      listCompanyIds: async () => [COMPANY_ID],
-      listMarkupQueue: async () => ({ issueIds: [], agentIds: [], totalPending: 0 }),
     } as unknown as ScentQueuePorts;
     const envSnapshot = new Map(
       ["MYRMIDON_SCENT_BASE_URL", "MYRMIDON_EVALS_BASE_URL", "MYRMIDON_EVALS_API_KEY"].map(
@@ -597,6 +595,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
         contourConfigured: true,
         baseUrlConfigured: true,
         keyConfigured: true,
+        totalPending: 0,
       });
       expect(resolveSecret).toHaveBeenCalledTimes(1);
     } finally {
@@ -619,7 +618,6 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
       resolveSecret: vi.fn(async () => {
         throw new Error("corrupt cipher");
       }),
-      listCompanyIds: async () => [COMPANY_ID],
       listMarkupQueue: async () => ({ issueIds: [], agentIds: [], totalPending: 0 }),
     } as unknown as ScentQueuePorts;
     const response = await request(makeScentStatusApp(db, ports)).get(

@@ -43,6 +43,12 @@ export interface ScentQueuePorts {
   getGeneral?: (db: Db) => Promise<unknown>;
   /** Test hook: provide the company caste directory without querying the database. */
   listCastes?: (db: Db, companyId: string) => Promise<Array<{ key: string }>>;
+  /** Test hook: supply the service's markup backlog to status without Drizzle queries. */
+  listMarkupQueue?: (
+    db: Db,
+    companyId: string,
+    limit: number,
+  ) => Promise<{ issueIds: string[]; agentIds: string[]; totalPending: number }>;
   /** Test hook: replace the company listing (the queue is per-company). */
   listCompanyIds?: () => Promise<string[]>;
   now?: () => number;
