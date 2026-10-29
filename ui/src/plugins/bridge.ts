@@ -110,6 +110,8 @@ export interface PluginHostContext {
   parentEntityId?: string | null;
   userId: string | null;
   isInstanceAdmin?: boolean; // myrmidon(PLUGIN-INSTANCE-ADMIN)
+  locale?: string;
+  language?: string;
   renderEnvironment?: PluginRenderEnvironmentContext | null;
 }
 

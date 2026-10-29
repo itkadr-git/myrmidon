@@ -4,12 +4,14 @@ import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
 import {
   PluginSlotMount,
   _collectRegisterableExportNamesForTests,
   _resetPluginModuleLoader,
   _rewriteBareSpecifiersForTests,
   registerPluginWebComponent,
+  slotContextToHostContext,
   type ResolvedPluginSlot,
 } from "./slots";
 
@@ -107,6 +109,33 @@ describe("plugin bundle bare specifier rewriting", () => {
       expect(new Set(legacy.match(/blob:shim-\d+/g)).size).toBe(1);
     } finally {
       URL.createObjectURL = original;
+    }
+  });
+});
+
+describe("slotContextToHostContext", () => {
+  it("populates locale and language fields matching board i18n language", async () => {
+    const prevLang = i18n.language;
+    try {
+      await i18n.changeLanguage("ru");
+      const hostContextRu = slotContextToHostContext(
+        { companyId: "comp-1", companyPrefix: "PAP" },
+        "user-1",
+        false,
+      );
+      expect(hostContextRu.locale).toBe("ru");
+      expect(hostContextRu.language).toBe("ru");
+
+      await i18n.changeLanguage("en");
+      const hostContextEn = slotContextToHostContext(
+        { companyId: "comp-1", companyPrefix: "PAP" },
+        "user-1",
+        false,
+      );
+      expect(hostContextEn.locale).toBe("en");
+      expect(hostContextEn.language).toBe("en");
+    } finally {
+      await i18n.changeLanguage(prevLang);
     }
   });
 });

@@ -139,6 +139,7 @@ function buildLauncherHostContext(
   renderEnvironment: PluginRenderEnvironmentContext | null,
   userId: string | null,
 ): PluginHostContext {
+  const currentLang = i18n.language || "en";
   return {
     companyId: context.companyId ?? null,
     companyPrefix: context.companyPrefix ?? null,
@@ -147,6 +148,8 @@ function buildLauncherHostContext(
     entityType: context.entityType ?? null,
     userId,
     renderEnvironment,
+    locale: currentLang,
+    language: currentLang,
   };
 }
 
@@ -439,7 +442,7 @@ function LauncherRenderContent({
   instance: LauncherInstance;
   renderEnvironment: PluginRenderEnvironmentContext;
 }) {
-  const { t } = useTranslation(); // myrmidon(OPE-9352)
+  const { t, i18n: activeI18n } = useTranslation(); // myrmidon(OPE-9352)
   const component = instance.component;
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -448,7 +451,7 @@ function LauncherRenderContent({
   const userId = session?.user?.id ?? session?.session?.userId ?? null;
   const hostContext = useMemo(
     () => buildLauncherHostContext(instance.hostContext, renderEnvironment, userId),
-    [instance.hostContext, renderEnvironment, userId],
+    [instance.hostContext, renderEnvironment, userId, activeI18n.language],
   );
 
   if (!component) {

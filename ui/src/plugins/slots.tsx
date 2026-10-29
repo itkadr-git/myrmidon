@@ -18,7 +18,7 @@
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
  * @see PLUGIN_SPEC.md §19.0.3 — Bundle Serving
  */
-import { useTranslation } from "@/i18n"; // myrmidon(OPE-9352)
+import { i18n, useTranslation } from "@/i18n"; // myrmidon(OPE-9352)
 import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 import {
   Component,
@@ -798,6 +798,7 @@ export function slotContextToHostContext(
   userId: string | null,
   isInstanceAdmin = false, // myrmidon(PLUGIN-INSTANCE-ADMIN)
 ): PluginHostContext {
+  const currentLang = i18n.language || "en";
   return {
     companyId: pluginSlotContext.companyId ?? null,
     companyPrefix: pluginSlotContext.companyPrefix ?? null,
@@ -808,6 +809,8 @@ export function slotContextToHostContext(
     userId,
     isInstanceAdmin, // myrmidon(PLUGIN-INSTANCE-ADMIN)
     renderEnvironment: null,
+    locale: currentLang,
+    language: currentLang,
   };
 }
 
@@ -838,9 +841,10 @@ function PluginBridgeScope({
     retry: false,
   });
   const isInstanceAdmin = Boolean(boardAccess?.isInstanceAdmin || boardAccess?.source === "local_implicit");
+  const { i18n: activeI18n } = useTranslation();
   const hostContext = useMemo(
     () => slotContextToHostContext(context, userId, isInstanceAdmin),
-    [context, userId, isInstanceAdmin],
+    [context, userId, isInstanceAdmin, activeI18n.language],
   );
   const value = useMemo(() => ({ pluginId, hostContext }), [pluginId, hostContext]);
 

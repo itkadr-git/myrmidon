@@ -1660,6 +1660,16 @@
       "_plugin": "ChatGPT subscriptions",
       "chatgpt-pool-sidebar": "ChatGPT subscriptions",
       "chatgpt-pool-page": "ChatGPT subscriptions"
+    },
+    "myrmidon_google-ai": {
+      "_plugin": "Google AI Pro",
+      "google-ai-sidebar": "Google AI Pro",
+      "google-ai-page": "Google AI Pro"
+    },
+    "myrmidon_antigravity": {
+      "_plugin": "Antigravity",
+      "antigravity-sidebar": "Antigravity",
+      "antigravity-page": "Antigravity"
     }
   }
 }

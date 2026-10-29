@@ -51,8 +51,9 @@ const ALLOWED_LATIN = new Set([
   // myrmidon(GITHUB-APP-MANIFEST): the manifest flow names the forge the App
   // is created on — a product name, same class as Myrmidon/Paperclip.
   "GitHub",
-  // plugin names (myrmidon_chatgpt-pool: «ChatGPT») are product names, not untranslated copy.
-  "ChatGPT",
+  // plugin names (myrmidon_chatgpt-pool: «ChatGPT», myrmidon_google-ai, myrmidon_antigravity)
+  // are product names, not untranslated copy.
+  "ChatGPT", "Google", "Antigravity", "Pro",
   // input placeholders stay language-neutral (role codes and URLs)
   "engineer", "https", "example", "com", "changelog",
   // myrmidon(1.7-AGENT-EXCHANGE-A): pull request / owner/repo are forge
