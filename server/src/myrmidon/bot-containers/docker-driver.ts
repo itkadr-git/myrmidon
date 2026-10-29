@@ -144,6 +144,9 @@ const HELPER_WAIT_TIMEOUT_MS = 120_000;
 const HELPER_MEMORY_BYTES = 128 * 1024 * 1024;
 const HELPER_PIDS_LIMIT = 64;
 
+const PRIMARY_AGENT_CONTAINER_PREFIX = "myrmidon-bot-";
+const PRIMARY_AGENT_CONTAINER_NAME_RE = /^myrmidon-bot-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 const DEFAULT_TEMPLATE_CONTEXT_TTL_MS = 60_000;
 const HERMES_MOUNT = BOT_VOLUME_MOUNTS.find((mount) => mount.hostSuffix === "hermes")!;
 /** Applied-state marker, relative to the hermes mount. */
@@ -1287,6 +1290,7 @@ export function dockerBotContainerDriver(
    *  first's in-flight request instead of doubling it. Failures are shared
    *  too — the entry is dropped either way once settled. */
   const inspectInFlight = new Map<string, Promise<DockerInspect | null>>();
+  const recordedOomEventKeys = new Set<string>();
 
   async function inspectByName(name: string): Promise<DockerInspect | null> {
     const pending = inspectInFlight.get(name);
@@ -1297,12 +1301,18 @@ export function dockerBotContainerDriver(
       if (res.status >= 400) throw describeFailure(`docker inspect ${name}`, res);
       const info = JSON.parse(res.body.toString("utf8")) as DockerInspect;
       const observation = containerOomObservation(info);
-      const prefix = "myrmidon-bot-";
       // Only the primary agent container, never helpers or replacement containers.
-      if (observation && options.recordOom && new RegExp(`^${prefix}[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`).test(name)) {
-        await options.recordOom(name.slice(prefix.length), observation).catch((err) => {
-          logger.warn({ err, containerId: info.Id }, "failed to persist container OOM observation");
-        });
+      if (observation && options.recordOom && PRIMARY_AGENT_CONTAINER_NAME_RE.test(name)) {
+        const eventKey = `${observation.containerId}:${observation.occurredAt}`;
+        if (!recordedOomEventKeys.has(eventKey)) {
+          await options.recordOom(name.slice(PRIMARY_AGENT_CONTAINER_PREFIX.length), observation)
+            .then(() => {
+              recordedOomEventKeys.add(eventKey);
+            })
+            .catch((err) => {
+              logger.warn({ err, containerId: info.Id }, "failed to persist container OOM observation");
+            });
+        }
       }
       return info;
     })();

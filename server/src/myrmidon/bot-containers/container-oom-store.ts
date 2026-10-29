@@ -18,7 +18,8 @@ export function containerOomRecorder(db: Db) {
       if (!agent) return;
       const [existing] = await tx.select({ id: activityLog.id }).from(activityLog).where(and(
         eq(activityLog.companyId, agent.companyId), eq(activityLog.agentId, agentId),
-        eq(activityLog.action, "agent.container_oom"), eq(activityLog.entityId, eventKey),
+        eq(activityLog.action, "agent.container_oom"), eq(activityLog.entityType, "container_oom"),
+        eq(activityLog.entityId, eventKey),
       )).limit(1);
       if (existing) return;
       // Correlate by event time, NOT whichever run happens to be current at poll time.
