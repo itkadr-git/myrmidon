@@ -1,3 +1,4 @@
+import { buildContinuationKey } from "@myrmidon/shared";
 import { enrichPromotedWakeContext } from "../domain/context.js";
 import {
   decideQueuedCommentAction,
@@ -147,10 +148,7 @@ type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts
  */
 async function runReleaseDrain(
   locked: LockedIssueExecution,
-  ports: {
-    host: WakeQueueHost;
-    transaction: WakeQueueTransaction;
-  },
+  ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
   input: ReleaseIssueExecutionInput,
 ): Promise<ReleaseTransactionResult> {
   const { run } = locked;
@@ -380,10 +378,7 @@ async function runReleaseDrain(
  * on to the next queued wake instead of ending the drain.
  */
 async function promoteDeferredWake(
-  ports: {
-    host: WakeQueueHost;
-    transaction: WakeQueueTransaction;
-  },
+  ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
   run: RunSnapshot,
   issue: IssueSnapshot,
   workingCandidate: DeferredWakeCandidate,
@@ -435,21 +430,29 @@ async function promoteDeferredWake(
     return null;
   }
 
-  const claimed = await ports.transaction.claimContinuationKey({
-    companyId: issue.companyId,
-    issueId: issue.id,
-    key: `issue:${issue.id}:head:${workingCandidate.id}`,
-  });
-  if (claimed === "deduped") {
-    await ports.transaction.cancelDeferredWake({
-      companyId: run.companyId,
-      wakeId: workingCandidate.id,
-      reason: "Deferred execution wake continuation already claimed",
-      now: input.now,
+  if (workingCandidate.wakeReason === "issue_continuation_needed" || workingCandidate.reason === "issue_continuation_needed") {
+    const claimed = await ports.transaction.claimContinuationKey({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      key: buildContinuationKey({
+        issueId: issue.id,
+        event: "issue_continuation_needed",
+        head: readNonEmptyString(workingCandidate.deferredContextSeed.continuationHead) ?? workingCandidate.id,
+      }),
     });
-    return null;
+    if (claimed === "deduped") {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: workingCandidate.id,
+        reason: "Deferred execution wake continuation already claimed",
+        now: input.now,
+      });
+      return null;
+    }
   }
 
+  // Claim before reopening. A reopen write and its post-commit effect must
+  // never survive a lost race on this compare-and-set.
   const claimedForPromotion = await ports.transaction.claimDeferredWakeForPromotion({
     companyId: run.companyId,
     wakeId: workingCandidate.id,
@@ -795,12 +798,14 @@ async function runReleaseRecoveryTail(
     );
   }
 
-  const claimed = await transaction.claimContinuationKey({
-    companyId: issue.companyId,
-    issueId: issue.id,
-    key: `issue:${issue.id}:head:${run.id}`,
-  });
-  if (claimed === "deduped") return { outcome: { kind: "released" }, postCommitEffects };
+  if (recoveryReason === "issue_continuation_needed") {
+    const claimed = await transaction.claimContinuationKey({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      key: buildContinuationKey({ issueId: issue.id, event: "issue_continuation_needed", head: run.id }),
+    });
+    if (claimed === "deduped") return { outcome: { kind: "released" }, postCommitEffects };
+  }
 
   const queuedRun = await transaction.queueImmediateRecoveryRun({
     companyId: issue.companyId,

@@ -246,10 +246,7 @@ export interface IssueLockWriter {
     input: { companyId: string; runId: string; now: Date; deferredWakesPostdateRun?: boolean; ignoreUnrecordedReconciliation?: boolean },
     fn: (
       locked: LockedIssueExecution,
-      ports: {
-        host: WakeQueueHost;
-        transaction: WakeQueueTransaction;
-      },
+      ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
     ) => Promise<ReleaseTransactionResult>,
   ): Promise<ReleaseTransactionResult & { run: RunSnapshot }>;
   claimIssueExecutionLease(input: { companyId: string; issueId: string; runId: string }): Promise<boolean>;

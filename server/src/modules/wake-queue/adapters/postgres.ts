@@ -1313,10 +1313,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           recoveryOnly,
         };
         const drainStartedAt = performance.now();
-        const drainResult = await fn(locked, {
-          host: buildHost(tx, deps),
-          transaction: buildTransaction(tx, deps, db, run),
-        });
+        const drainResult = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
         drainMs = performance.now() - drainStartedAt;
         return { ...drainResult, run: runSnapshot };
       });

@@ -1,3 +1,4 @@
+import { buildContinuationKey } from "@myrmidon/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "./use-cases.js";
 import type { AdmitWakeBehindIssueExecutionInput } from "./use-cases.js";
@@ -137,10 +138,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
 function createFakeIssueLock(host: WakeQueueHost, transaction: WakeQueueTransaction, issue = ISSUE, run = RUN): IssueLockWriter {
   return {
     withIssueExecutionLock: vi.fn(async (_input, fn) => {
-      const result = await fn({ primaryIssue: issue, run }, {
-        host,
-        transaction,
-      });
+      const result = await fn({ primaryIssue: issue, run }, { host, transaction });
       return { ...result, run };
     }),
     claimIssueExecutionLease: vi.fn(async () => true),
@@ -426,10 +424,7 @@ describe("releaseIssueExecution", () => {
       ) => {
         const result = await fn(
           { primaryIssue: ISSUE, releasedSiblingIssue: sibling, run: { ...RUN, status: "succeeded" } },
-          {
-            host: createFakeHost(),
-            transaction,
-          },
+          { host: createFakeHost(), transaction },
         );
         return { ...result, run: { ...RUN, status: "succeeded" } };
       }),
@@ -461,10 +456,7 @@ describe("releaseIssueExecution", () => {
       ) => {
         const result = await fn(
           { primaryIssue: ISSUE, primaryReleaseOnly: true, releasedSiblingIssue: sibling, run: RUN },
-          {
-            host: createFakeHost(),
-            transaction,
-          },
+          { host: createFakeHost(), transaction },
         );
         return { ...result, run: RUN };
       }),
@@ -495,10 +487,7 @@ describe("releaseIssueExecution", () => {
       ) => {
         const result = await fn(
           { primaryIssue: ISSUE, releasedSiblingIssue: sibling, run: RUN },
-          {
-            host: createFakeHost(),
-            transaction,
-          },
+          { host: createFakeHost(), transaction },
         );
         return { ...result, run: RUN };
       }),
@@ -531,10 +520,7 @@ describe("releaseIssueExecution", () => {
       ) => {
         const result = await fn(
           { primaryIssue: ISSUE, releasedSiblingIssue: sibling, run: RUN },
-          {
-            host: createFakeHost(),
-            transaction,
-          },
+          { host: createFakeHost(), transaction },
         );
         return { ...result, run: RUN };
       }),
@@ -560,10 +546,7 @@ describe("releaseIssueExecution", () => {
       ) => {
         const result = await fn(
           { primaryIssue: ISSUE, primaryReleaseOnly: true, releasedSiblingIssue: sibling, run: RUN },
-          {
-            host: createFakeHost(),
-            transaction,
-          },
+          { host: createFakeHost(), transaction },
         );
         return { ...result, run: RUN };
       }),
@@ -716,7 +699,7 @@ describe("releaseIssueExecution", () => {
     expect(claimContinuationKey).toHaveBeenCalledWith({
       companyId: ISSUE.companyId,
       issueId: ISSUE.id,
-      key: `issue:${ISSUE.id}:head:${RUN.id}`,
+      key: buildContinuationKey({ issueId: ISSUE.id, event: "issue_continuation_needed", head: RUN.id }),
     });
     expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
     expect(result.outcome.kind).toBe("released");
@@ -724,7 +707,7 @@ describe("releaseIssueExecution", () => {
   });
 
   it("dedupes a replayed deferred wake before promotion", async () => {
-    const candidate = wakeCandidate({ id: "wake-replayed" });
+    const candidate = wakeCandidate({ id: "wake-replayed", reason: "issue_continuation_needed", wakeReason: "issue_continuation_needed", deferredContextSeed: { continuationHead: RUN.id } });
     const findNextDeferredWake = vi.fn()
       .mockResolvedValueOnce(candidate)
       .mockResolvedValueOnce(null);
@@ -744,7 +727,7 @@ describe("releaseIssueExecution", () => {
     expect(claimContinuationKey).toHaveBeenCalledWith({
       companyId: ISSUE.companyId,
       issueId: ISSUE.id,
-      key: `issue:${ISSUE.id}:head:${candidate.id}`,
+      key: buildContinuationKey({ issueId: ISSUE.id, event: "issue_continuation_needed", head: RUN.id }),
     });
     expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
     expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
@@ -920,10 +903,7 @@ describe("releaseIssueExecution", () => {
     const host = createFakeHost();
     const issueLock: IssueLockWriter = {
       withIssueExecutionLock: vi.fn(async (_input, fn) => {
-        const result = await fn({ primaryIssue: doneIssue, run: RUN }, {
-          host,
-          transaction,
-        });
+        const result = await fn({ primaryIssue: doneIssue, run: RUN }, { host, transaction });
         return { ...result, run: RUN };
       }),
       claimIssueExecutionLease: vi.fn(async () => true),
@@ -965,7 +945,7 @@ describe("releaseIssueExecution", () => {
     expect(claimContinuationKey).toHaveBeenCalledWith({
       companyId: ISSUE.companyId,
       issueId: ISSUE.id,
-      key: `issue:${ISSUE.id}:head:${RUN.id}`,
+      key: buildContinuationKey({ issueId: ISSUE.id, event: "issue_continuation_needed", head: RUN.id }),
     });
     expect(queueImmediateRecoveryRun).not.toHaveBeenCalled();
     expect(result.outcome.kind).toBe("released");
@@ -983,11 +963,36 @@ describe("releaseIssueExecution", () => {
 
     await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
 
-    expect(claimContinuationKey).toHaveBeenCalledWith({
-      companyId: ISSUE.companyId,
-      issueId: ISSUE.id,
-      key: `issue:${ISSUE.id}:head:${RUN.id}`,
+    expect(transaction.queueImmediateRecoveryRun).toHaveBeenCalledTimes(1);
+    expect(claimContinuationKey.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(transaction.queueImmediateRecoveryRun).mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("queues one continuation per event head and permits a new head", async () => {
+    const claimed = new Set<string>();
+    const claimContinuationKey = vi.fn(async ({ key }: { key: string }) => {
+      if (claimed.has(key)) return "deduped" as const;
+      claimed.add(key);
+      return "created" as const;
     });
+    const queueImmediateRecoveryRun = vi.fn(async () => runSummary("immediate-recovery"));
+    const transaction = createFakeTransaction({ claimContinuationKey, queueImmediateRecoveryRun });
+    const releaseFor = (run: RunSnapshot) => createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, ISSUE, run),
+      recovery: createFakeRecovery(),
+    })({ companyId: run.companyId, runId: run.id, now: new Date() });
+
+    await releaseFor(RUN);
+    await releaseFor(RUN);
+    await releaseFor({ ...RUN, id: "new-head" });
+
+    expect(queueImmediateRecoveryRun).toHaveBeenCalledTimes(2);
+    expect(claimContinuationKey.mock.calls.map(([input]) => input.key)).toEqual([
+      buildContinuationKey({ issueId: ISSUE.id, event: "issue_continuation_needed", head: RUN.id }),
+      buildContinuationKey({ issueId: ISSUE.id, event: "issue_continuation_needed", head: RUN.id }),
+      buildContinuationKey({ issueId: ISSUE.id, event: "issue_continuation_needed", head: "new-head" }),
+    ]);
   });
 
   it("resolves the responsible user for an immediate recovery run before queuing it", async () => {
