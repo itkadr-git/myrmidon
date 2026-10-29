@@ -9992,7 +9992,7 @@ export function issueService(db: Db) {
         ) {
           issueData.executionPolicy = normalizeIssueExecutionPolicy(
             developmentProcess.executionPolicy as Parameters<typeof normalizeIssueExecutionPolicy>[0],
-          );
+          ) as unknown as Record<string, unknown> | null;
         }
         if (
           executionWorkspaceSettings == null &&

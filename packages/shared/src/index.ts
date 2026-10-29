@@ -965,6 +965,7 @@ export type {
   SetupTokenTransportAdvisoryCode,
   AssetImage,
   Project,
+  ProjectDevelopmentProcess,
   ProjectBudgetSummary,
   ProjectRepository,
   ProjectRepositoryOptions,
