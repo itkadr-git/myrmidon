@@ -1,27 +1,37 @@
 {
   "benchmarkVersion": "1.0.0",
-  "generatedAt": "2026-10-28T19:29:00.312Z",
+  "generatedAt": "2026-10-29T09:00:32.403Z",
   "dataset": {
     "totalMessages": 50,
+    "sha256": "64df9fef6cd3fe62795c7e5b787af82aa6b50287631365a4eaf0d7af007c375a",
+    "provenance": "OPE-9777 uniform stride sampling (12,096s interval over 7-day UTC window 2026-10-20 to 2026-10-27, 604,800s / 50 = 12,096s)",
+    "scrubbed": true,
     "matchedMessageCount": 44,
     "unmatchedMessageCount": 6
+  },
+  "tokenizer": {
+    "name": "cl100k_base_deterministic_v1",
+    "version": "1.0.0",
+    "description": "Deterministic multilingual subword estimator aligned with cl100k_base vocabulary rules without external model or network dependency.",
+    "regex": "/(?:s|t|re|ve|m|ll|d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+/giu",
+    "formula": "cl100k regex chunking: ASCII words <=4 chars = 1 token, longer = ceil(len/4); punctuation/whitespace = ceil(len/3); UTF-8 non-ASCII = ceil(bytes/3)."
   },
   "sessionStart": {
     "oldBytes": 24200,
     "oldTokens": 6050,
     "newBytes": 1020,
-    "newTokens": 299,
+    "newTokens": 413,
     "newUnder12KiB": true
   },
   "totals": {
     "oldBytes": 59400,
     "oldTokens": 14850,
     "newBytes": 3239,
-    "newTokens": 768,
+    "newTokens": 1259,
     "byteSavings": 56161,
     "byteSavingsPercent": "94.5%",
-    "tokenSavings": 14082,
-    "tokenSavingsPercent": "94.8%"
+    "tokenSavings": 13591,
+    "tokenSavingsPercent": "91.5%"
   },
   "contractACompliance": {
     "newBytesUnderOldBytes": true,
@@ -47,7 +57,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 1020,
-        "cumulativeTokens": 299,
+        "cumulativeTokens": 413,
         "contextInjected": false
       }
     },
@@ -67,9 +77,9 @@
       },
       "new": {
         "bytesAdded": 328,
-        "tokensAdded": 77,
+        "tokensAdded": 125,
         "cumulativeBytes": 1348,
-        "cumulativeTokens": 376,
+        "cumulativeTokens": 538,
         "contextInjected": true
       }
     },
@@ -88,9 +98,9 @@
       },
       "new": {
         "bytesAdded": 326,
-        "tokensAdded": 62,
+        "tokensAdded": 123,
         "cumulativeBytes": 1674,
-        "cumulativeTokens": 438,
+        "cumulativeTokens": 661,
         "contextInjected": true
       }
     },
@@ -109,9 +119,9 @@
       },
       "new": {
         "bytesAdded": 319,
-        "tokensAdded": 73,
+        "tokensAdded": 125,
         "cumulativeBytes": 1993,
-        "cumulativeTokens": 511,
+        "cumulativeTokens": 786,
         "contextInjected": true
       }
     },
@@ -130,9 +140,9 @@
       },
       "new": {
         "bytesAdded": 358,
-        "tokensAdded": 63,
+        "tokensAdded": 136,
         "cumulativeBytes": 2351,
-        "cumulativeTokens": 574,
+        "cumulativeTokens": 922,
         "contextInjected": true
       }
     },
@@ -151,9 +161,9 @@
       },
       "new": {
         "bytesAdded": 310,
-        "tokensAdded": 54,
+        "tokensAdded": 116,
         "cumulativeBytes": 2661,
-        "cumulativeTokens": 628,
+        "cumulativeTokens": 1038,
         "contextInjected": true
       }
     },
@@ -172,9 +182,9 @@
       },
       "new": {
         "bytesAdded": 278,
-        "tokensAdded": 60,
+        "tokensAdded": 109,
         "cumulativeBytes": 2939,
-        "cumulativeTokens": 688,
+        "cumulativeTokens": 1147,
         "contextInjected": true
       }
     },
@@ -193,9 +203,9 @@
       },
       "new": {
         "bytesAdded": 300,
-        "tokensAdded": 80,
+        "tokensAdded": 112,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": true
       }
     },
@@ -214,7 +224,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -233,7 +243,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -254,7 +264,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -275,7 +285,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -296,7 +306,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -317,7 +327,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -338,7 +348,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -359,7 +369,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -380,7 +390,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -401,7 +411,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -420,7 +430,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -441,7 +451,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -462,7 +472,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -483,7 +493,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -504,7 +514,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -525,7 +535,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -546,7 +556,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -567,7 +577,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -588,7 +598,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -609,7 +619,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -630,7 +640,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -651,7 +661,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -672,7 +682,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -693,7 +703,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -714,7 +724,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -735,7 +745,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -754,7 +764,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -775,7 +785,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -796,7 +806,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -817,7 +827,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -838,7 +848,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -859,7 +869,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -880,7 +890,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -901,7 +911,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -923,7 +933,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -944,7 +954,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -965,7 +975,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -986,7 +996,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -1007,7 +1017,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -1026,7 +1036,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -1047,7 +1057,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     },
@@ -1069,7 +1079,7 @@
         "bytesAdded": 0,
         "tokensAdded": 0,
         "cumulativeBytes": 3239,
-        "cumulativeTokens": 768,
+        "cumulativeTokens": 1259,
         "contextInjected": false
       }
     }

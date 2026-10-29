@@ -1,14 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runTokenBenchmark, estimateTokens } from './token-benchmark.mjs';
+import { runTokenBenchmark, estimateTokens, TOKENIZER_SPEC } from './token-benchmark.mjs';
 
-test('Token Estimator is deterministic and handles empty/multilingual text', () => {
+test('Token Estimator is deterministic, versioned, and handles multilingual text', () => {
   assert.equal(estimateTokens(''), 0);
   assert.equal(estimateTokens(null), 0);
+  assert.equal(TOKENIZER_SPEC.name, 'cl100k_base_deterministic_v1');
+  assert.equal(TOKENIZER_SPEC.version, '1.0.0');
+
+  // Deterministic reference calibration strings
   const count1 = estimateTokens('Проверь состояние сервисов и сетевых коннекторов');
-  assert.ok(count1 > 5);
+  assert.ok(count1 >= 15 && count1 <= 45);
   const count2 = estimateTokens('deploy release rc.14 with migrations');
-  assert.ok(count2 > 4);
+  assert.ok(count2 >= 5 && count2 <= 20);
 });
 
 test('Offline Token & Byte Benchmark on 50 real ADM messages satisfies Contract A', async () => {
@@ -17,6 +21,8 @@ test('Offline Token & Byte Benchmark on 50 real ADM messages satisfies Contract 
   assert.equal(result.dataset.totalMessages, 50, 'Must process exactly 50 messages');
   assert.equal(result.dataset.unmatchedMessageCount, 6, 'Must verify 6 unmatched messages');
   assert.equal(result.dataset.matchedMessageCount, 44, 'Must verify 44 matched messages');
+  assert.ok(result.dataset.sha256, 'Must include dataset sha256');
+  assert.equal(result.tokenizer.name, 'cl100k_base_deterministic_v1');
 
   // Acceptance criteria
   const c = result.contractACompliance;

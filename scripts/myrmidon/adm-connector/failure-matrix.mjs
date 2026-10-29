@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { AdmCache } from '../../adm-connector/cache.mjs';
+import { ContextDelivery } from '../../adm-connector/context.mjs';
 import { createHooks, TRIGGERS } from './hooks.mjs';
 
 export const STANDARD_ITEMS = Object.freeze([
@@ -173,13 +174,17 @@ export const STANDARD_ITEMS = Object.freeze([
  * Returns structured results with verification assertions.
  */
 export async function executeFailureMatrix({ baseDir = null, items = STANDARD_ITEMS } = {}) {
-  const root = baseDir || await mkdtemp(join(tmpdir(), 'adm-matrix-'));
+  const scratchBase = process.env.TMPDIR && !/^\/(?:tmp|var\/tmp)(?:\/|$)/.test(process.env.TMPDIR)
+    ? process.env.TMPDIR
+    : join(homedir(), '.cache', 'adm-connector-matrix');
+  await mkdir(scratchBase, { recursive: true, mode: 0o700 });
+  const root = baseDir || await mkdtemp(join(scratchBase, 'adm-matrix-'));
   const profileDir = join(root, 'profile');
   const stateDir = join(root, 'state');
   await mkdir(profileDir, { recursive: true, mode: 0o700 });
   await mkdir(stateDir, { recursive: true, mode: 0o700 });
 
-  const integrityKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  const integrityKey = Buffer.alloc(32, 0x5a).toString('hex');
   const company = 'test-company';
   const space = 'test-space';
 
@@ -226,6 +231,11 @@ export async function executeFailureMatrix({ baseDir = null, items = STANDARD_IT
         prompt: 'deploy release rc.14 на бой',
       });
 
+      // Production ContextDelivery boundary check
+      const delivery = new ContextDelivery(cache, 'sess-fresh-prod');
+      const startDelivery = await delivery.deliver({ items: readResult.items, phase: 'SessionStart' });
+      const promptDelivery = await delivery.deliver({ items: readResult.items, phase: 'UserPromptSubmit', triggers: ['deploy'] });
+
       results.fresh = {
         status: 'pass',
         mode: readResult.mode,
@@ -235,6 +245,12 @@ export async function executeFailureMatrix({ baseDir = null, items = STANDARD_IT
         userPromptBytes: userPrompt.bytes,
         userPromptUnder2K: userPrompt.bytes <= 2 * 1024,
         contextHasDeployRule: userPrompt.context.includes('adm/trigger/deploy'),
+        productionDelivery: {
+          startBytes: startDelivery.bytes,
+          promptBytes: promptDelivery.bytes,
+          prodStartUnder12K: startDelivery.bytes <= 12 * 1024,
+          prodPromptUnder2K: promptDelivery.bytes <= 2 * 1024,
+        },
       };
     }
 
@@ -272,6 +288,10 @@ export async function executeFailureMatrix({ baseDir = null, items = STANDARD_IT
         prompt: 'ssh root@worker-1',
       });
 
+      // Production ContextDelivery boundary check for stale
+      const delivery = new ContextDelivery(cache, 'sess-stale-prod');
+      const staleDelivery = await delivery.deliver({ items: readResult.items, phase: 'UserPromptSubmit', triggers: ['deploy'] });
+
       results.stale = {
         status: 'pass',
         mode: readResult.mode,
@@ -281,6 +301,10 @@ export async function executeFailureMatrix({ baseDir = null, items = STANDARD_IT
         contextIncludesDegradedWarning: userPrompt.context.includes('knowledge degraded'),
         contextIncludesSshRule: userPrompt.context.includes('adm/trigger/ssh'),
         userPromptUnder2K: userPrompt.bytes <= 2 * 1024,
+        productionDelivery: {
+          bytes: staleDelivery.bytes,
+          under2K: staleDelivery.bytes <= 2048,
+        },
       };
     }
 
@@ -370,11 +394,20 @@ export async function executeFailureMatrix({ baseDir = null, items = STANDARD_IT
         summary: 'Updated summary requiring owner approval',
       });
 
+      // 4c. Production ContextDelivery parallel execution boundary check
+      const prodDelivery = new ContextDelivery(cache, 'sess-concurrent-prod');
+      const [prodA, prodB] = await Promise.all([
+        prodDelivery.deliver({ items, phase: 'UserPromptSubmit', triggers: ['ssh'] }),
+        prodDelivery.deliver({ items, phase: 'UserPromptSubmit', triggers: ['ssh'] }),
+      ]);
+      const prodDeduplicated = (prodA.bytes > 0 && prodB.bytes === 0) || (prodB.bytes > 0 && prodA.bytes === 0);
+
       results.concurrent_revision = {
         status: 'pass',
         parallelExecutionHandled: true,
         bothUnder2K,
         sessionRevisionDeduplicated: deduplicated,
+        productionDeduplicated: prodDeduplicated,
         deferralMode: deferResult.mode,
         publishable: deferResult.publishable,
         requiresOwnerReview: deferResult.requires_owner_review,

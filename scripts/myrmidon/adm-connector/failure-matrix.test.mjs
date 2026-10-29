@@ -14,6 +14,8 @@ test('Integration and Failure Matrix: 5 core operational scenarios', async () =>
   assert.ok(m.fresh.sessionStartUnder12K, 'SessionStart must be <= 12 KiB');
   assert.ok(m.fresh.userPromptUnder2K, 'UserPromptSubmit must be <= 2 KiB');
   assert.ok(m.fresh.contextHasDeployRule);
+  assert.ok(m.fresh.productionDelivery.prodStartUnder12K, 'Production ContextDelivery SessionStart <= 12 KiB');
+  assert.ok(m.fresh.productionDelivery.prodPromptUnder2K, 'Production ContextDelivery UserPromptSubmit <= 2 KiB');
 
   // 2. Stale
   assert.equal(m.stale.status, 'pass');
@@ -22,6 +24,7 @@ test('Integration and Failure Matrix: 5 core operational scenarios', async () =>
   assert.ok(m.stale.contextIncludesDegradedWarning);
   assert.ok(m.stale.contextIncludesSshRule);
   assert.ok(m.stale.userPromptUnder2K);
+  assert.ok(m.stale.productionDelivery.under2K, 'Production ContextDelivery Stale UserPromptSubmit <= 2 KiB');
 
   // 3. Fail-Closed
   assert.equal(m.fail_closed.status, 'pass');
@@ -35,6 +38,7 @@ test('Integration and Failure Matrix: 5 core operational scenarios', async () =>
   assert.equal(m.concurrent_revision.status, 'pass');
   assert.ok(m.concurrent_revision.parallelExecutionHandled);
   assert.ok(m.concurrent_revision.sessionRevisionDeduplicated);
+  assert.ok(m.concurrent_revision.productionDeduplicated, 'Production ContextDelivery deduplicates parallel identical rule deliveries');
   assert.equal(m.concurrent_revision.deferralMode, 'write-deferred');
   assert.equal(m.concurrent_revision.publishable, false);
   assert.equal(m.concurrent_revision.requiresOwnerReview, true);
