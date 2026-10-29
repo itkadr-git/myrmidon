@@ -45,3 +45,44 @@ No prompt, model output, credentials, or raw wake payload is copied into this
 snapshot. Trigger and event identifiers are accepted only as bounded
 identifier-like strings; source payload contents are not persisted in
 `runTelemetry`.
+
+## Representative Reconciled Run Telemetry Example
+
+The following sample illustrates the reconciled aggregation snapshot as stored under `heartbeat_runs.result_json.runTelemetry`:
+
+```json
+{
+  "runId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "agentId": "9dd8c4e8-04ed-44bf-9efe-0bbe3a337190",
+  "issueId": "cf294dcc-1f62-4c07-8762-64993eb6d26a",
+  "wakeReason": "issue_commented",
+  "wakeSource": "automation",
+  "wakeTriggerDetail": "callback",
+  "eventRevision": "2026-10-29T16:44:25.870Z",
+  "sourceEventId": "3da7ee61-d395-4a26-83bc-27afb374a85a",
+  "sourceEventSeq": 1,
+  "model": "gpt-6-luna",
+  "billingType": "subscription_included",
+  "modelCallCount": 2,
+  "modelCallCountSource": "gateway_count",
+  "gatewayCallIds": ["gw-call-01", "gw-call-02"],
+  "gatewayCallIdsTruncated": false,
+  "litellmRequestIds": ["litellm-req-01", "litellm-req-02"],
+  "litellmRequestIdsTruncated": false,
+  "inputTokens": 1500,
+  "cachedInputTokens": 200,
+  "outputTokens": 450,
+  "gatewaySpendCents": 0,
+  "apiEquivalentCostUsd": 0.000377,
+  "apiEquivalentCostStatus": "estimated",
+  "commitCount": 1,
+  "pullRequestCount": 1,
+  "branchCount": 1,
+  "artifactCount": 0,
+  "documentCount": 0,
+  "otherWorkProductCount": 0,
+  "outcomeCategory": "commit_push"
+}
+```
+
+This structure reconciles model calls directly against gateway call IDs and LiteLLM request IDs, keeps separate counts for commit and push (`commitCount`, `pullRequestCount`, `branchCount`), and exposes all fields for aggregation queries.

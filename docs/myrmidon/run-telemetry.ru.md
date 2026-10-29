@@ -15,3 +15,31 @@ ID вызовов шлюза и ID запросов LiteLLM хранятся о�
 ## Сверка
 
 Для проверки сопоставьте отдельные ID шлюза и LiteLLM с записями шлюза этого прогона, а затем отдельно сравните токены и spend платных каналов. При усечённом списке ID используйте явное число вызовов и флаги усечения; список ID в этом случае не является полной выборкой.
+
+Пример снимка сверки с живого прогона:
+```json
+{
+  "runId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "agentId": "9dd8c4e8-04ed-44bf-9efe-0bbe3a337190",
+  "issueId": "cf294dcc-1f62-4c07-8762-64993eb6d26a",
+  "wakeReason": "issue_commented",
+  "eventRevision": "2026-10-29T16:44:25.870Z",
+  "sourceEventId": "3da7ee61-d395-4a26-83bc-27afb374a85a",
+  "model": "gpt-6-luna",
+  "billingType": "subscription_included",
+  "modelCallCount": 2,
+  "modelCallCountSource": "gateway_count",
+  "gatewayCallIds": ["gw-call-01", "gw-call-02"],
+  "litellmRequestIds": ["litellm-req-01", "litellm-req-02"],
+  "inputTokens": 1500,
+  "cachedInputTokens": 200,
+  "outputTokens": 450,
+  "gatewaySpendCents": 0,
+  "apiEquivalentCostUsd": 0.000377,
+  "apiEquivalentCostStatus": "estimated",
+  "commitCount": 1,
+  "pullRequestCount": 1,
+  "branchCount": 1,
+  "outcomeCategory": "commit_push"
+}
+```

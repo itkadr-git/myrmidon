@@ -9,6 +9,7 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  issueWorkProducts,
   litellmCostEvents,
   statusDecisions,
   workAssessments,
@@ -236,6 +237,7 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    await db.delete(issueWorkProducts);
     await db.delete(statusDecisions);
     await db.delete(workAssessments);
     await db.delete(nativeRunResults);
@@ -422,16 +424,99 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
     expect((commentResult.resultJson as any).runTelemetry.outcomeCategory).toBe("comment_only");
 
     await db.delete(issueComments).where(eq(issueComments.createdByRunId, runId));
-    const unfinishedRun = { ...run, startedAt: null, finishedAt: null };
-    await emitAgentTaskRun(db, unfinishedRun);
-    const [unfinishedResult] = await db.select({ resultJson: heartbeatRuns.resultJson })
-      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect((unfinishedResult.resultJson as any).runTelemetry.outcomeCategory).toBe("nothing");
-
+    // Ordinary completed terminal run without issue activity yields "nothing"
     await emitAgentTaskRun(db, run);
     const [emptyResult] = await db.select({ resultJson: heartbeatRuns.resultJson })
       .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect((emptyResult.resultJson as any).runTelemetry.outcomeCategory).toBe("nothing");
+
+    // A pending/running run without terminal status or completion timestamps yields null
+    const pendingRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: pendingRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "manual",
+      status: "running",
+      startedAt: new Date(),
+      finishedAt: null,
+      contextSnapshot: { issueId },
+    });
+    const pendingRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, pendingRunId)).then((r) => r[0]!);
+    await emitAgentTaskRun(db, pendingRun);
+    const [pendingResult] = await db.select({ resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, pendingRunId));
+    expect((pendingResult.resultJson as any).runTelemetry.outcomeCategory).toBeNull();
+  });
+
+  it("separately attributes commit and push work products and persists aggregation fields into runTelemetry", async () => {
+    await seedCompanyAndAgent();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    const startedAt = new Date(Date.now() - 6000);
+    const finishedAt = new Date();
+    await db.insert(issues).values({ id: issueId, companyId, title: "telemetry work products test", status: "todo" });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "manual",
+      status: "succeeded",
+      startedAt,
+      finishedAt,
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(issueWorkProducts).values([
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        createdByRunId: runId,
+        type: "commit",
+        title: "commit: feat(telemetry)",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        createdByRunId: runId,
+        type: "pull_request",
+        title: "PR #1888",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        createdByRunId: runId,
+        type: "branch",
+        title: "bot/OPE-9499",
+      },
+    ]);
+
+    const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]!);
+    await emitAgentTaskRun(db, run);
+
+    const [saved] = await db.select({ resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const telemetry = (saved.resultJson as any)?.runTelemetry;
+    expect(telemetry).toBeDefined();
+    expect(telemetry.outcomeCategory).toBe("commit_push");
+    expect(telemetry.commitCount).toBe(1);
+    expect(telemetry.pullRequestCount).toBe(1);
+    expect(telemetry.branchCount).toBe(1);
+    expect(telemetry.artifactCount).toBe(0);
+    expect(telemetry.documentCount).toBe(0);
+    expect(telemetry.otherWorkProductCount).toBe(0);
+
+    // Verify fields are available for aggregation
+    expect(telemetry.runId).toBe(runId);
+    expect(telemetry.agentId).toBe(agentId);
+    expect(telemetry.issueId).toBe(issueId);
+    expect(telemetry.apiEquivalentCostStatus).toBe("not_applicable");
+    expect(telemetry.gatewaySpendCents).toBe(0);
   });
 
   it("emits one agent.task_run event for each of the five terminal states", async () => {
