@@ -54,7 +54,6 @@ import { Trans } from "react-i18next"; // myrmidon(UI-RU)
 // and has no runtime effect.
 type BackupRetentionSettings = BackupRetentionPolicy & { keepLastOnly?: boolean };
 
-
 export function InstanceGeneralSettings({ embedded = false }: { embedded?: boolean }) {
   const { t, i18n } = useTranslation(); // myrmidon(UI-RU)
   const { setBreadcrumbs } = useBreadcrumbs();

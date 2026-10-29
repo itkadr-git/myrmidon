@@ -1,5 +1,5 @@
-// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { FEEDBACK_TERMS_URL } from "@/lib/myrmidon-links";
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
 // myrmidon(UI-RU): task detail copy runs through the fork i18n catalog.

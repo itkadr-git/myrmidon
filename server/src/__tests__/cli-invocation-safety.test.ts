@@ -860,7 +860,8 @@ describe("paperclipai CLI invocation safety", () => {
 
   it("emits the bootstrap fallback command from the UI", () => {
     const source = read("ui/src/bootstrapSetup.ts");
-    expect(source).toContain("npx paperclipai auth bootstrap-ceo");
+    expect(source).toContain("myrmidon auth bootstrap-ceo");
+    expect(source).not.toContain("npx myrmidon");
     expect(source).not.toContain("pnpm paperclipai auth bootstrap-ceo");
     expect(source).not.toContain("pnpm exec paperclipai auth bootstrap-ceo");
   });

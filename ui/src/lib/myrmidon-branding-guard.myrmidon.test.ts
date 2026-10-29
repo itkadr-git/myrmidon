@@ -277,6 +277,7 @@ describe("Myrmidon first-party UI destinations", () => {
     const source = readFileSync(path.join(UI_SRC, rel), "utf8");
     expect(source).not.toMatch(/https?:\/\/(?:docs\.)?paperclip\.ing\b/i);
     expect(source).not.toMatch(/npx\s+paperclipai\s+auth\s+bootstrap/i);
+    expect(source).not.toMatch(/npx\s+myrmidon\b/i);
     if (rel.startsWith("components/") || rel.startsWith("pages/")) {
       expect(source).toContain('from "@/lib/myrmidon-links"');
     }

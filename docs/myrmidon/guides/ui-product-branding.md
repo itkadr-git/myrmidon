@@ -39,8 +39,8 @@ not a substitute for legal terms. Operators who need this link must supply
 applicable terms and rebuild the UI. Vote storage, consent controls, and
 sharing behavior are unchanged.
 
-The bootstrap fallback uses `npx myrmidon auth bootstrap-ceo`, matching the CLI
-package and executable. The branding guard covers both account-menu variants,
+The bootstrap fallback uses `myrmidon auth bootstrap-ceo`, matching the CLI
+executable in our delivery. The branding guard covers both account-menu variants,
 both terms consumers, shared defaults, and bootstrap copy. Link tests cover
 omitted terms and environment overrides. Account-menu tests pin the feedback
 URL in both variants.
