@@ -434,7 +434,10 @@ export function pluginLifecycleManager(
     }
   }
 
-  async function activateReadyPlugin(pluginId: string): Promise<void> {
+  async function activateReadyPlugin(
+    pluginId: string,
+    options?: { markErrorOnFailure?: boolean },
+  ): Promise<void> {
     const supportsRuntimeActivation =
       typeof pluginLoaderInstance.hasRuntimeServices === "function"
       && typeof pluginLoaderInstance.loadSingle === "function";
@@ -442,11 +445,60 @@ export function pluginLifecycleManager(
       return;
     }
 
-    const loadResult = await pluginLoaderInstance.loadSingle(pluginId);
+    const loadResult = await pluginLoaderInstance.loadSingle(pluginId, options);
     if (!loadResult.success) {
       throw new Error(
         loadResult.error
-        ?? `Failed to activate plugin ${loadResult.plugin.pluginKey}`,
+        ?? `Failed to activate plugin ${loadResult.plugin?.pluginKey ?? pluginId}`,
+      );
+    }
+  }
+
+  async function rollbackAndRecoverRunningPlugin(
+    plugin: PluginRecord,
+    rollbackState: {
+      packageName: string;
+      version: string;
+      manifest: PaperclipPluginManifestV1;
+    },
+  ): Promise<void> {
+    try {
+      await registry.update(plugin.id, rollbackState);
+    } catch (regErr) {
+      log.warn(
+        { pluginId: plugin.id, err: regErr instanceof Error ? regErr.message : String(regErr) },
+        "plugin lifecycle: failed to restore registry metadata during rollback",
+      );
+    }
+    if (typeof pluginLoaderInstance.clearCache === "function") {
+      try {
+        pluginLoaderInstance.clearCache();
+      } catch {
+        // Ignore cache clearing errors during rollback
+      }
+    }
+    await recoverRunningPlugin(plugin);
+  }
+
+  async function recoverRunningPlugin(plugin: PluginRecord): Promise<void> {
+    try {
+      await registry.updateStatus(plugin.id, {
+        status: "ready",
+        lastError: null,
+      });
+    } catch (statusErr) {
+      log.warn(
+        { pluginId: plugin.id, err: statusErr instanceof Error ? statusErr.message : String(statusErr) },
+        "plugin lifecycle: failed to ensure ready status during recovery",
+      );
+    }
+
+    try {
+      await activateReadyPlugin(plugin.id);
+    } catch (recoverErr) {
+      log.error(
+        { pluginId: plugin.id, err: recoverErr instanceof Error ? recoverErr.message : String(recoverErr) },
+        "plugin lifecycle: failed to reactivate plugin runtime during recovery",
       );
     }
   }
@@ -679,6 +731,11 @@ export function pluginLifecycleManager(
           );
         }
 
+        const wasRunning = plugin.status === "ready";
+        const previousVersion = plugin.version;
+        const previousManifest = plugin.manifestJson as PaperclipPluginManifestV1;
+        const previousPackageName = plugin.packageName;
+
         log.info(
           { pluginId, pluginKey: plugin.pluginKey, targetVersion: version },
           "plugin lifecycle: upgrade requested",
@@ -686,9 +743,26 @@ export function pluginLifecycleManager(
 
         await deactivatePluginRuntime(pluginId, plugin.pluginKey);
 
-        // 1. Download and validate new package via loader
-        const { oldManifest, newManifest, discovered } =
-          await pluginLoaderInstance.upgradePlugin(pluginId, { version, approvedCapabilities });
+        let upgradeResult: Awaited<ReturnType<PluginLoader["upgradePlugin"]>>;
+        try {
+          // 1. Download and validate new package via loader
+          upgradeResult = await pluginLoaderInstance.upgradePlugin(pluginId, { version, approvedCapabilities });
+        } catch (upgradeErr) {
+          log.warn(
+            {
+              pluginId,
+              pluginKey: plugin.pluginKey,
+              err: upgradeErr instanceof Error ? upgradeErr.message : String(upgradeErr),
+            },
+            "plugin lifecycle: package upgrade rejected, recovering running plugin",
+          );
+          if (wasRunning) {
+            await recoverRunningPlugin(plugin);
+          }
+          throw upgradeErr;
+        }
+
+        const { oldManifest, newManifest, discovered } = upgradeResult;
 
         log.info(
           {
@@ -725,7 +799,27 @@ export function pluginLifecycleManager(
             version: discovered.version,
             manifestJson: newManifest,
           } as PluginRecord);
-          await activateReadyPlugin(pluginId);
+
+          try {
+            await activateReadyPlugin(pluginId, { markErrorOnFailure: false });
+          } catch (activateErr) {
+            log.warn(
+              {
+                pluginId,
+                pluginKey: plugin.pluginKey,
+                err: activateErr instanceof Error ? activateErr.message : String(activateErr),
+              },
+              "plugin lifecycle: activation of upgraded plugin rejected, recovering running plugin",
+            );
+            if (wasRunning) {
+              await rollbackAndRecoverRunningPlugin(plugin, {
+                packageName: previousPackageName,
+                version: previousVersion,
+                manifest: previousManifest,
+              });
+            }
+            throw activateErr;
+          }
 
           emitDomain("plugin.loaded", {
             pluginId,

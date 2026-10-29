@@ -31,6 +31,7 @@ import {
   appendStderrExcerpt,
   createDuplexRouteSlotController,
   createPluginWorkerHandle,
+  createPluginWorkerManager,
   formatWorkerFailureMessage,
   resolveRpcCallTimeoutMs,
 } from "../services/plugin-worker-manager.js";
@@ -2414,7 +2415,7 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
 describe("plugin worker ownership during concurrent operations", () => {
   it("serializes concurrent restarts and retires each previous process", async () => {
     const handle = createPluginWorkerHandle("restart-race", {
-      entrypointPath: MOCK_WORKER_PATH,
+      entrypointPath: DELAYED_WORKER_ENTRYPOINT,
       manifest: TEST_MANIFEST,
       config: {},
       instanceInfo: { instanceId: "test-inst", hostVersion: "0.1.0" },
@@ -2443,7 +2444,7 @@ describe("plugin worker ownership during concurrent operations", () => {
   it("waits for startup before stopping and replacing a handle", async () => {
     const manager = createPluginWorkerManager();
     const options = {
-      entrypointPath: MOCK_WORKER_PATH,
+      entrypointPath: DELAYED_WORKER_ENTRYPOINT,
       manifest: TEST_MANIFEST,
       config: {},
       instanceInfo: { instanceId: "test-inst", hostVersion: "0.1.0" },
