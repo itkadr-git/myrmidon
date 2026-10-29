@@ -342,6 +342,8 @@
   "modelProviders": {
     "title": "Model providers",
     "breadcrumb": "Model providers",
+    "adminOnlyTitle": "Admin access required",
+    "adminOnlyBody": "Only company owners and administrators can view or manage model providers.",
     "intro": "Provider keys for the model gateway: add a provider, rotate or remove its key, enable the models the company may use. The key is write-only — it is stored once and never shown again. Free models come first in every list; among them, free DashScope models lead (owner rule).",
     "loading": "Loading model providers...",
     "noCompany": "Select a company to manage its model providers.",

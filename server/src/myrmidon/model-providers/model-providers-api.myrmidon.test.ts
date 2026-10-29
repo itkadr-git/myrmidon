@@ -28,8 +28,61 @@ const OTHER_COMPANY = "33333333-3333-4333-8333-333333333333";
 
 const KEY_VALUE = "sk-test-provider-key-value-1234";
 
-const member = { type: "board", source: "session", userId: "user-a", isInstanceAdmin: false, companyIds: [COMPANY_ID] };
-const outsider = { type: "board", source: "session", userId: "user-b", isInstanceAdmin: false, companyIds: [OTHER_COMPANY] };
+const member = {
+  type: "board",
+  source: "session",
+  userId: "user-a",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "admin", status: "active" }],
+};
+const ownerActor = {
+  type: "board",
+  source: "session",
+  userId: "user-owner",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "owner", status: "active" }],
+};
+const plainMember = {
+  type: "board",
+  source: "session",
+  userId: "user-plain",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "member", status: "active" }],
+};
+const operatorMember = {
+  type: "board",
+  source: "session",
+  userId: "user-operator",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "operator", status: "active" }],
+};
+const viewerMember = {
+  type: "board",
+  source: "session",
+  userId: "user-viewer",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "viewer", status: "active" }],
+};
+const instanceAdminActor = {
+  type: "board",
+  source: "session",
+  userId: "user-ia",
+  isInstanceAdmin: true,
+  companyIds: [COMPANY_ID],
+};
+const outsider = {
+  type: "board",
+  source: "session",
+  userId: "user-b",
+  isInstanceAdmin: false,
+  companyIds: [OTHER_COMPANY],
+  memberships: [{ companyId: OTHER_COMPANY, membershipRole: "admin", status: "active" }],
+};
 const agentActor = { type: "agent", source: "agent_key", agentId: "agent-a", companyId: COMPANY_ID, keyId: "key-a" };
 
 const providerView = (id: string): ModelProviderView => ({
@@ -176,7 +229,7 @@ function app(actor: unknown, options: { service?: ModelProviderService } = {}) {
 
 const base = `/api/myrmidon/companies/${COMPANY_ID}/model-providers`;
 
-describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: access", () => {
+describe("myrmidon(1.6.1 MODEL-PROVIDERS, 1.6.7 OPE-9852) routes: access", () => {
   it("denies another company on every route (403, no service call)", async () => {
     const { server, calls } = app(outsider);
     await request(server).get(base).expect(403);
@@ -189,25 +242,41 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: access", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("lets an agent of the company read providers, models and channels but not mutate", async () => {
+  it("denies ordinary company members, operators and viewers on every route (403, no service call)", async () => {
+    for (const actor of [plainMember, operatorMember, viewerMember]) {
+      const { server, calls } = app(actor);
+      await request(server).get(base).expect(403);
+      await request(server).get(`${base}/provider-1/models`).expect(403);
+      await request(server).get(`${base}/provider-1/channels`).expect(403);
+      await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(403);
+      await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(403);
+      await request(server).delete(`${base}/provider-1`).expect(403);
+      await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(403);
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it("denies an agent actor on every route (403, no service call)", async () => {
     const { server, calls } = app(agentActor);
-    await request(server).get(base).expect(200);
-    await request(server).get(`${base}/provider-1/models`).expect(200);
-    await request(server).get(`${base}/provider-1/channels`).expect(200);
+    await request(server).get(base).expect(403);
+    await request(server).get(`${base}/provider-1/models`).expect(403);
+    await request(server).get(`${base}/provider-1/channels`).expect(403);
     await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(403);
     await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(403);
     await request(server).delete(`${base}/provider-1`).expect(403);
     await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(403);
-    expect(calls.map((c) => c.op)).toEqual(["list", "listModels", "listChannels"]);
+    expect(calls).toHaveLength(0);
   });
 
-  it("lets a board member of the company do everything", async () => {
-    const { server } = app(member);
-    await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(201);
-    await request(server).get(base).expect(200);
-    await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(200);
-    await request(server).delete(`${base}/provider-1`).expect(204);
-    await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(200);
+  it("lets a company admin, owner, and instance admin do everything", async () => {
+    for (const actor of [member, ownerActor, instanceAdminActor]) {
+      const { server } = app(actor);
+      await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(201);
+      await request(server).get(base).expect(200);
+      await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(200);
+      await request(server).delete(`${base}/provider-1`).expect(204);
+      await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(200);
+    }
   });
 });
 
