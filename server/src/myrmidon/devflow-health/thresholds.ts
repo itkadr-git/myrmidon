@@ -1,9 +1,9 @@
-
 export const DEVFLOW_HEALTH_SETTINGS_KEY = "devflowHealth" as const;
 export const DEFAULT_DEVFLOW_THRESHOLDS_MS = {
   engineerIdleMs: 60 * 60_000,
   reviewQueueAgeMs: 24 * 60 * 60_000,
   redCiMs: 60 * 60_000,
+  approvedNotMergedMs: 2 * 60 * 60_000,
 } as const;
 
 export type DevflowMetric = keyof typeof DEFAULT_DEVFLOW_THRESHOLDS_MS;
@@ -15,6 +15,7 @@ export interface DevflowHealthSettings {
   engineerIdleMs?: number;
   reviewQueueAgeMs?: number;
   redCiMs?: number;
+  approvedNotMergedMs?: number;
 }
 
 export function readDevflowThresholds(settings: unknown): DevflowThresholdsMs {
@@ -23,6 +24,7 @@ export function readDevflowThresholds(settings: unknown): DevflowThresholdsMs {
     engineerIdleMs: validThreshold(value.engineerIdleMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.engineerIdleMs),
     reviewQueueAgeMs: validThreshold(value.reviewQueueAgeMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.reviewQueueAgeMs),
     redCiMs: validThreshold(value.redCiMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.redCiMs),
+    approvedNotMergedMs: validThreshold(value.approvedNotMergedMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.approvedNotMergedMs),
   };
 }
 
@@ -48,6 +50,7 @@ export interface DevflowTimestampSnapshot {
   engineerLastHeartbeatAt?: Date | string | null;
   reviewEnteredAt?: Date | string | null;
   ciRedSince?: Date | string | null;
+  approvedNotMergedSince?: Date | string | null;
 }
 
 /** Derives persisted event ages. Missing timestamps remain absent, never zero. */
@@ -62,5 +65,6 @@ export function collectDevflowDurations(snapshot: DevflowTimestampSnapshot, now 
     engineerIdleMs: age(snapshot.engineerLastHeartbeatAt),
     reviewQueueAgeMs: age(snapshot.reviewEnteredAt),
     redCiMs: age(snapshot.ciRedSince),
+    approvedNotMergedMs: age(snapshot.approvedNotMergedSince),
   };
 }

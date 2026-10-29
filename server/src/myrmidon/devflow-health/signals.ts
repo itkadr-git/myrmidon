@@ -34,3 +34,82 @@ export function redCiSince(events: { conclusion: string | null; at: string }[]):
   }
   return since;
 }
+
+export interface PrApprovalProductFact {
+  status: string;
+  reviewState?: string | null;
+  updatedAt?: Date | string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface PrApprovalCommentFact {
+  body: string;
+  createdAt: Date | string;
+}
+
+/**
+ * Determines when an active PR became approved, if it is currently approved and not merged/closed.
+ * Reads:
+ * 1. Product reviewState / status ("approved") and metadata (reviewApproved, reviewApprovedAt, review-approved label).
+ * 2. Issue comments for reviewer verdicts (e.g. VERDICT #N: APPROVE / VERDICT: APPROVE).
+ * Returns the ISO string of the approval time, or null if unapproved, rejected, or merged/closed.
+ */
+export function approvedPrSince(
+  product: PrApprovalProductFact,
+  comments: PrApprovalCommentFact[] = [],
+): string | null {
+  if (["merged", "closed"].includes(product.status)) return null;
+
+  const meta = product.metadata ?? {};
+  const rawNumber = meta.number ?? meta.pullRequestNumber;
+  const number = typeof rawNumber === "number" && Number.isSafeInteger(rawNumber) && rawNumber > 0 ? rawNumber : null;
+
+  let productApprovedAt: number | null = null;
+  if (product.reviewState === "approved" || product.status === "approved") {
+    const at = product.updatedAt ? new Date(product.updatedAt).getTime() : NaN;
+    if (Number.isFinite(at)) productApprovedAt = at;
+  }
+  if (typeof meta.reviewApprovedAt === "string") {
+    const at = Date.parse(meta.reviewApprovedAt);
+    if (Number.isFinite(at)) productApprovedAt = at;
+  } else if (
+    meta.reviewApproved === true ||
+    (Array.isArray(meta.labels) && meta.labels.includes("review-approved"))
+  ) {
+    const at = product.updatedAt ? new Date(product.updatedAt).getTime() : NaN;
+    if (Number.isFinite(at)) productApprovedAt ??= at;
+  }
+
+  let commentApprovedAt: number | null = null;
+  let commentRejected = false;
+
+  const sortedComments = comments
+    .map((c) => ({ body: c.body, time: c.createdAt instanceof Date ? c.createdAt.getTime() : Date.parse(String(c.createdAt)) }))
+    .filter((c) => Number.isFinite(c.time))
+    .sort((a, b) => a.time - b.time);
+
+  for (const comment of sortedComments) {
+    const lines = comment.body.split(/\r?\n/);
+    for (const line of lines) {
+      if (!/\b(verdict|вердикт)\b/i.test(line)) continue;
+      const prMatch = line.match(/#(\d+)/);
+      const prNum = prMatch ? Number(prMatch[1]) : null;
+      if (number !== null && prNum !== null && prNum !== number) {
+        continue;
+      }
+      const approves = /\b(approve|approved|одобрен[оаы]?|одобрить|lgtm)\b/i.test(line);
+      const rejects = /\b(changes|rework|return|refuse|отклон|доработк)\b/i.test(line);
+      if (approves && !rejects) {
+        commentApprovedAt = comment.time;
+        commentRejected = false;
+      } else if (rejects && !approves) {
+        commentApprovedAt = null;
+        commentRejected = true;
+      }
+    }
+  }
+
+  if (commentRejected) return null;
+  const approvedTime = commentApprovedAt ?? productApprovedAt;
+  return approvedTime !== null ? new Date(approvedTime).toISOString() : null;
+}
