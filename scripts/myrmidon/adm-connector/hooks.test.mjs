@@ -55,3 +55,41 @@ test('trigger boundary does not match scholarship or deploymentless', () => {
   assert.deepEqual(classify('scholarship deploymentless'), []);
   assert.ok(classify('Выкат релиза и SSH').includes('deploy'));
 });
+test('enforces SessionStart <= 12 KB, UserPromptSubmit <= 2 KB, 0 bytes on trigger mismatch, and journals byte metrics', async () => {
+  const logged = [];
+  const items = [
+    item('adm/policy/deploy', [], 'Deploy rule body'),
+    item('adm/trigger/ssh', ['ssh'], 'SSH rule body'),
+  ];
+  const { hooks, cleanup } = await setup(items, {
+    log: async (entry) => logged.push(entry),
+  });
+  try {
+    const start = await hooks.run({ hook_event_name: 'SessionStart', session_id: 'sess-1' });
+    assert.ok(start.bytes <= 12 * 1024);
+    assert.equal(start.sessionBytes, start.bytes);
+
+    const mismatch = await hooks.run({ hook_event_name: 'UserPromptSubmit', session_id: 'sess-1', prompt: 'unrelated topic' });
+    assert.equal(mismatch.bytes, 0);
+    assert.equal(mismatch.context, '');
+    assert.equal(mismatch.sessionBytes, start.sessionBytes);
+
+    const match = await hooks.run({ hook_event_name: 'UserPromptSubmit', session_id: 'sess-1', prompt: 'please ssh to server' });
+    assert.ok(match.bytes > 0);
+    assert.ok(match.bytes <= 2 * 1024);
+    assert.equal(match.sessionBytes, start.sessionBytes + match.bytes);
+
+    // Repeated prompt with same trigger -> deduplicated (0 bytes)
+    const repeat = await hooks.run({ hook_event_name: 'UserPromptSubmit', session_id: 'sess-1', prompt: 'ssh again' });
+    assert.equal(repeat.bytes, 0);
+    assert.equal(repeat.sessionBytes, match.sessionBytes);
+
+    assert.equal(logged.length, 4);
+    assert.equal(logged[0].event, 'SessionStart');
+    assert.equal(logged[1].event, 'UserPromptSubmit');
+    assert.equal(logged[1].bytes, 0);
+    assert.equal(logged[2].event, 'UserPromptSubmit');
+    assert.ok(logged[2].bytes > 0);
+    assert.equal(logged[3].bytes, 0);
+  } finally { await cleanup(); }
+});
