@@ -47,6 +47,10 @@ describe("openLoadOf", () => {
     expect(openLoadOf(["a", "b"], ["b", "c"])).toBe(3);
     expect(openLoadOf([], [])).toBe(0);
   });
+
+  it("releases only an assigned CI-waiting task while retaining live leases", () => {
+    expect(openLoadOf(["ci", "active"], ["ci"], new Set(["ci"]))).toBe(2);
+  });
 });
 
 describe("isAgentPaused", () => {

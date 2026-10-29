@@ -59,11 +59,19 @@ func (f *xfsFake) journal() []string {
 
 // putStub is a DiskQuota with a fixed answer that keeps what it was asked.
 type putStub struct {
-	mu   sync.Mutex
-	res  disk.Result
-	err  error
-	keys []string
-	hard []int64
+	mu         sync.Mutex
+	res        disk.Result
+	err        error
+	keys       []string
+	hard       []int64
+	ensureKeys []string
+}
+
+func (p *putStub) Ensure(_ context.Context, botKey string) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ensureKeys = append(p.ensureKeys, botKey)
+	return disk.FirstProjectID, p.err
 }
 
 func (p *putStub) Put(_ context.Context, botKey string, hard int64) (disk.Result, error) {
@@ -80,7 +88,63 @@ func (p *putStub) asked() int {
 	return len(p.keys)
 }
 
+func (p *putStub) ensured() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.ensureKeys...)
+}
+
 func quotaTarget(key string) string { return "/myrmidon/disk/" + key + "/quota" }
+
+func TestA4_BotCreateRegistersDiskProject(t *testing.T) {
+	st := &putStub{}
+	r := newRig(t, withDisk(st))
+	_, body := r.m.FindBody(t, "bot-plain", "")
+	res := r.send("POST", "/v1.45/containers/create?name="+r.name(""), jsonHdr, body)
+	wantStatus(t, res, 201)
+	if got := st.ensured(); !reflect.DeepEqual(got, []string{r.key()}) {
+		t.Fatalf("registered bot keys %v", got)
+	}
+	if st.asked() != 0 {
+		t.Fatal("create called quota PUT")
+	}
+}
+
+func TestA4_NextCreateDoesNotRegisterDiskProject(t *testing.T) {
+	st := &putStub{}
+	r := newRig(t, withDisk(st))
+	r.seedMain("running")
+	_, body := r.m.FindBody(t, "bot-plain", ".next")
+	res := r.send("POST", "/v1.45/containers/create?name="+r.name(".next"), jsonHdr, body)
+	wantStatus(t, res, 201)
+	if got := st.ensured(); len(got) != 0 {
+		t.Fatalf("next-container create registered projects %v", got)
+	}
+}
+
+func TestA4_ProjectRegistrationFailureReturnsCreatedResponseAndAudits(t *testing.T) {
+	st := &putStub{err: disk.ErrQuotaUnavailable}
+	r := newRig(t, withDisk(st))
+	_, body := r.m.FindBody(t, "bot-plain", "")
+	res := r.send("POST", "/v1.45/containers/create?name="+r.name(""), jsonHdr, body)
+	wantStatus(t, res, 201)
+	if got := st.ensured(); !reflect.DeepEqual(got, []string{r.key()}) {
+		t.Fatalf("registered bot keys %v", got)
+	}
+	var found bool
+	for _, l := range r.log.Lines(t) {
+		if l.Event == "disk_project_register_failed" && l.BotKey == r.key() && l.Reason == "create" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing registration failure audit in log:\n%s", r.log.String())
+	}
+	if len(r.d.Calls()) == 0 {
+		t.Fatal("create did not reach Docker")
+	}
+}
 
 func TestA15_ValidPutRunsXfsQuotaAndAnswersC5(t *testing.T) {
 	const volumeRoot = "/srv/test-bots"

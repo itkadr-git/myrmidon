@@ -330,10 +330,16 @@ describe("prometheus exposition format", () => {
     const text = renderMetricsText(snapshot());
     expect(text.endsWith("\n")).toBe(true);
     const body = text.slice(0, -1);
-    for (const block of body.split("\n\n")) {
-      // Every block starts with its HELP line (no leading blank lines).
-      expect(block.startsWith("# HELP myrmidon_")).toBe(true);
-    }
+    const blocks = body.split("\n\n");
+    const families = blocks.map((block) => {
+      // Check registered names, including the task's blocker_* families,
+      // rather than imposing a namespace on otherwise valid exposition.
+      const match = /^# HELP ([a-zA-Z_:][a-zA-Z0-9_:]*) /.exec(block);
+      expect(match).not.toBeNull();
+      expect(block.split("\n")[1]).toMatch(new RegExp(`^# TYPE ${match![1]} `));
+      return match![1];
+    });
+    expect(families.sort()).toEqual([...METRIC_FAMILIES].sort());
   });
 
   it("escapes label values the way the exposition format requires", () => {
