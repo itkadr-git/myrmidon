@@ -30,7 +30,7 @@ describe("durable container OOM evidence", () => {
     await containerOomRecorder(s.db)("agent-a", observation);
     expect(s.values).not.toHaveBeenCalled();
   });
-  it.each([[], [{ id: "a" }, { id: "b" }]])("never guesses a run when unmatched/ambiguous", async (runs) => {
+  it.each([{ runs: [] }, { runs: [{ id: "a" }, { id: "b" }] }])("never guesses a run when unmatched/ambiguous", async ({ runs }) => {
     const s = store([[agent], [], runs]);
     await containerOomRecorder(s.db)("agent-a", observation);
     expect(s.values).toHaveBeenCalledWith(expect.objectContaining({ runId: null }));

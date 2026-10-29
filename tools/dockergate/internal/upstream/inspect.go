@@ -85,8 +85,8 @@ type trimmedContainer struct {
 	State struct {
 		Status     *string `json:"Status,omitempty"`
 		ExitCode   *int    `json:"ExitCode,omitempty"`
-		OOMKilled  bool    `json:"OOMKilled"`
-		FinishedAt string  `json:"FinishedAt"`
+		OOMKilled  bool    `json:"OOMKilled,omitempty"`
+		FinishedAt string  `json:"FinishedAt,omitempty"`
 		Health     *health `json:"Health,omitempty"`
 	} `json:"State"`
 	HostConfig struct {
