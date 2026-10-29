@@ -70,13 +70,17 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     await tempDb?.cleanup();
   });
 
+  let seedCounter = 0;
+
   async function seed(input: {
     status?: string;
     updatedAt?: Date;
     companyId?: string;
     agentId?: string;
+    identifier?: string;
     products: Array<{ number: number; status?: string; updatedAt?: Date }>;
   }) {
+    const issueNum = ++seedCounter;
     const companyId = input.companyId ?? randomUUID();
     const agentId = input.agentId ?? randomUUID();
     const issueId = randomUUID();
@@ -103,7 +107,7 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      identifier: `SYNC-${issueId.slice(0, 4)}`,
+      identifier: input.identifier ?? `SYNC-${issueNum}-${issueId.slice(0, 8)}`,
       title: "Task a",
       status: input.status ?? "in_progress",
       priority: "medium",
@@ -311,6 +315,7 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
       const seeded = await seed({
         companyId,
         agentId,
+        identifier: `STARVE-${i + 1}`,
         updatedAt: new Date(baseTime + i * 1000),
         products: [{ number: prNumber }],
       });
