@@ -36,6 +36,10 @@ export async function isIssueWaitingForPullRequestCi(
 
   if (!product) return false;
 
+  if (product.status !== "open" && product.status !== "ready_for_review") {
+    return false;
+  }
+
   if (product.reviewState === "changes_requested" || product.status === "changes_requested") {
     return false;
   }

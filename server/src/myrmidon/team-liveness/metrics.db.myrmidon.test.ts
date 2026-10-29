@@ -57,6 +57,9 @@ describeEmbeddedPostgres("team liveness metrics", () => {
   }, 30_000);
 
   afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueWorkProducts);
+    await db.delete(issues);
     await db.delete(activityLog);
     await db.delete(agentWakeupRequests);
     await db.delete(heartbeatRuns);
