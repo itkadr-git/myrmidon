@@ -4,6 +4,7 @@ import {
   connectionGrants,
   externalObjects,
   issueWorkProducts,
+  issueComments,
   issues,
   toolConnections,
   type Db,
@@ -24,6 +25,7 @@ import { issueService } from "./issues.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
+import { parseIssueExecutionState } from "./issue-execution-policy.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
 type GitHubBinding = {
@@ -132,8 +134,8 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
       ...base,
       action: boundedString(payload.action, 100),
       repository: boundedString(payload.repository, 300),
-      number: workflowPullRequestNumber ?? checkPullRequestNumber,
-      pullRequestNumber: positiveInteger(pullRequest.number) ?? checkPullRequestNumber,
+      number: workflowPullRequestNumber ?? checkPullRequestNumber ?? positiveInteger(payload.number),
+      pullRequestNumber: positiveInteger(pullRequest.number) ?? checkPullRequestNumber ?? workflowPullRequestNumber ?? positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number),
       headSha: commitSha(payload.headSha),
       conclusion: boundedString(payload.conclusion, 40),
       status: boundedString(payload.status, 40),
@@ -312,7 +314,56 @@ export function githubConnectionEventService(
     });
     if (!matching?.issue.assigneeAgentId) return;
 
-    await options.assignmentWakeup(matching.issue.assigneeAgentId, {
+    // A PR work product is the opt-in boundary: unrelated task types keep their
+    // existing routing. Never let an old head failure undo a newer PR review.
+    const metadata = record(matching.product.metadata);
+    const expectedHead = commitSha(metadata.headSha) ?? commitSha(metadata.sha);
+    let assigneeAgentId = matching.issue.assigneeAgentId;
+    const htmlUrl = githubUrl(payload.htmlUrl);
+    if (["failure", "timed_out", "action_required", "startup_failure"].includes(conclusion)
+      && (!expectedHead || expectedHead === headSha)) {
+      const publications: ActivityPublication[] = [];
+      await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(issues).where(and(
+          eq(issues.id, matching.issue.id), eq(issues.companyId, companyId),
+        )).for("update");
+        if (!current || current.status !== "in_review" || current.workMode !== "standard") return;
+        const state = parseIssueExecutionState(current.executionState);
+        if (state && (state.status !== "pending" || state.currentStageType !== "review")) return;
+        const executor = state?.returnAssignee;
+        if (executor && executor.type !== "agent") return;
+        const executorId = executor?.agentId ?? current.assigneeAgentId;
+        if (!executorId) return;
+        assigneeAgentId = executorId;
+        const reason = `CI ${conclusion}: ${repository}#${pullRequestNumber}, head ${headSha}, ${event.event} ${runId}${htmlUrl ? ` — ${htmlUrl}` : ""}`;
+        await tx.update(issues).set({
+          status: "in_progress",
+          statusVersion: sql`${issues.statusVersion} + 1`,
+          assigneeAgentId: executorId,
+          assigneeUserId: null,
+          ...(state ? { executionState: {
+            ...state, status: "changes_requested", reviewRequest: null,
+            lastDecisionOutcome: "changes_requested",
+          } } : {}),
+          updatedAt: now(),
+        }).where(and(eq(issues.id, current.id), eq(issues.companyId, companyId)));
+        await tx.insert(issueComments).values({
+          companyId, issueId: current.id, authorType: "system", body: reason,
+        });
+        await logActivity(tx as unknown as Db, {
+          companyId, actorType: "system", actorId: "system:github-ci",
+          action: "issue.ci_failed", entityType: "issue", entityId: current.id,
+          details: { previousStatus: "in_review", status: "in_progress", conclusion,
+            repository, pullRequestNumber, headSha, runId, htmlUrl, deliveryId: event.id },
+        }, publications);
+      });
+      for (const publication of publications) {
+        try { publishActivity(publication); }
+        catch (error) { logger.warn({ err: error, companyId }, "CI return activity publication failed after commit"); }
+      }
+    }
+
+    await options.assignmentWakeup(assigneeAgentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "ci_completed",
@@ -323,6 +374,7 @@ export function githubConnectionEventService(
         headSha,
         conclusion,
         runId,
+        htmlUrl,
         event: event.event,
         deliveryId: event.id,
       },
