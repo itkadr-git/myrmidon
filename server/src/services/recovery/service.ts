@@ -208,6 +208,12 @@ import {
   type ReviewPullRequestCiFacts,
 } from "../../myrmidon/review-stage-recovery/policy.js";
 import type { ReviewPullRequestCiResolver } from "../../myrmidon/review-stage-recovery/github-ci.js";
+import {
+  createGitHubPrHeadResolver,
+  pullRequestCiStateFromStatusPayload,
+  type PullRequestHeadResolver,
+} from "../../myrmidon/review-routing/github.js";
+import { selectRunPullRequest } from "../../myrmidon/run-pull-request.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "queued",
@@ -972,6 +978,120 @@ function isRepeatedProductiveContinuationRecovery(
   );
 }
 
+const ADM_REVIEWER_AGENT_IDS = [
+  "dbd3f01c-518e-4c1d-a05a-2a4bf25acf93", // 0 -> adm-dev-review-8
+  "d674a53a-3abd-43fe-8f49-696a04937323", // 1 -> adm-dev-review-9
+  "07555686-c5f7-4536-ac2b-c9ab1027e89f", // 2 -> adm-dev-review-10
+  "62640ae6-658b-4cde-ba3a-b6a88e708df9", // 3 -> adm-dev-review-11
+  "b7040a16-03a0-4d3c-8060-709038ccc403", // 4 -> adm-dev-review-12
+  "c85f5dac-4a13-4bdb-9498-c666fe45d4c9", // 5 -> adm-dev-review-13
+];
+
+function getReviewerParticipantAgentId(issue: { executionPolicy?: unknown }): string | null {
+  const policy = issue.executionPolicy as Record<string, unknown> | null;
+  if (!policy || !Array.isArray(policy.stages)) return null;
+  for (const stage of policy.stages) {
+    if (stage && typeof stage === "object" && stage.type === "review" && Array.isArray(stage.participants)) {
+      for (const p of stage.participants) {
+        if (p && typeof p === "object" && p.type === "agent" && typeof p.agentId === "string" && p.agentId.length > 0) {
+          return p.agentId;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function pickReviewerForIssue(
+  db: Db,
+  issue: { companyId: string },
+  prProduct: { metadata?: unknown; url?: string | null; externalId?: string | null; type: string },
+): Promise<string | null> {
+  const prInfo = selectRunPullRequest([prProduct]);
+  const prNumber = prInfo?.number;
+
+  const reviewerAgents = await db
+    .select({ id: agents.id, role: agents.role })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, issue.companyId),
+        inArray(agents.role, ["reviewer", "code_reviewer"]),
+      ),
+    );
+
+  if (reviewerAgents.length > 0) {
+    if (typeof prNumber === "number" && Number.isSafeInteger(prNumber)) {
+      const idx = Math.abs(prNumber) % reviewerAgents.length;
+      return reviewerAgents[idx]!.id;
+    }
+    return reviewerAgents[0]!.id;
+  }
+
+  if (typeof prNumber === "number" && Number.isSafeInteger(prNumber)) {
+    const targetId = ADM_REVIEWER_AGENT_IDS[Math.abs(prNumber) % ADM_REVIEWER_AGENT_IDS.length]!;
+    const [existing] = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, targetId)));
+    if (existing) return existing.id;
+  }
+
+  return null;
+}
+
+async function resolvePrCiState(
+  companyId: string,
+  prProduct: typeof issueWorkProducts.$inferSelect,
+  resolver?: PullRequestHeadResolver,
+): Promise<{ ci: "green" | "not_green"; headSha: string | null }> {
+  const metadata = parseObject(prProduct.metadata);
+  if (metadata) {
+    if (metadata.ci === "green" || metadata.ci === "not_green") {
+      return {
+        ci: metadata.ci as "green" | "not_green",
+        headSha: typeof metadata.headSha === "string" ? metadata.headSha : null,
+      };
+    }
+    if (metadata.ciState === "green" || metadata.ciState === "not_green") {
+      return {
+        ci: metadata.ciState as "green" | "not_green",
+        headSha: typeof metadata.headSha === "string" ? metadata.headSha : null,
+      };
+    }
+    if (metadata.statusPayload && typeof metadata.statusPayload === "object") {
+      const ci = pullRequestCiStateFromStatusPayload(metadata.statusPayload as Record<string, unknown>);
+      return {
+        ci,
+        headSha: typeof metadata.headSha === "string" ? metadata.headSha : null,
+      };
+    }
+  }
+
+  if (resolver) {
+    const prInfo = selectRunPullRequest([prProduct]);
+    if (prInfo) {
+      try {
+        const head = await resolver.resolve({
+          companyId,
+          repository: prInfo.repo,
+          number: prInfo.number,
+        });
+        if (head && (head.ci === "green" || head.ci === "not_green")) {
+          return { ci: head.ci, headSha: head.headSha };
+        }
+      } catch {
+        // Fall through to default not_green
+      }
+    }
+  }
+
+  return {
+    ci: "not_green",
+    headSha: typeof metadata?.headSha === "string" ? metadata.headSha : null,
+  };
+}
+
 export function recoveryService(
   db: Db,
   deps: {
@@ -983,12 +1103,14 @@ export function recoveryService(
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
     /** myrmidon(OPE-10045): CI of the issue's open PR head; tests inject a fake. */
     resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
+    prHeadResolver?: PullRequestHeadResolver;
   },
 ) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
   const budgets = budgetService(db);
+  const defaultPrHeadResolver = createGitHubPrHeadResolver({ db });
   let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
 
   async function getAgent(agentId: string) {
@@ -4422,6 +4544,74 @@ export function recoveryService(
       const escalationTarget =
         !assigneePaused && !retriesLeft && escalationTargetId ? await getAgent(escalationTargetId) : null;
       const targetIsAdm = escalationTarget?.name.trim().toLowerCase() === "adm";
+      const openPrProduct = await db.query.issueWorkProducts.findFirst({
+        where: and(
+          eq(issueWorkProducts.issueId, input.issue.id),
+          eq(issueWorkProducts.type, "pull_request"),
+          inArray(issueWorkProducts.status, [
+            "open",
+            "active",
+            "ready_for_review",
+            "approved",
+          ]),
+        ),
+      });
+
+      // OPE-9295: in stranded sweep, an issue with an open PR and status in_progress
+      // transitions to in_review at the current assignee (review in parallel with CI),
+      // instead of blocking.
+      if (
+        openPrProduct &&
+        (input.previousStatus === "in_progress" || input.issue.status === "in_progress")
+      ) {
+        const prCi = await resolvePrCiState(
+          input.issue.companyId,
+          openPrProduct,
+          deps.prHeadResolver ?? defaultPrHeadResolver,
+        );
+        const existingReviewer = getReviewerParticipantAgentId(input.issue);
+        let patchExecutionPolicy: unknown = undefined;
+        let reviewerAgentId = existingReviewer;
+        if (!reviewerAgentId) {
+          reviewerAgentId = await pickReviewerForIssue(db, input.issue, openPrProduct);
+          if (reviewerAgentId) {
+            patchExecutionPolicy = {
+              mode: "normal",
+              stages: [
+                {
+                  type: "review",
+                  approvalsNeeded: 1,
+                  participants: [{ type: "agent", agentId: reviewerAgentId }],
+                },
+              ],
+            };
+          }
+        }
+        const updated = await issuesSvc.update(input.issue.id, {
+          status: "in_review",
+          ...(patchExecutionPolicy ? { executionPolicy: patchExecutionPolicy } : {}),
+        });
+        if (prCi.ci === "green" && reviewerAgentId) {
+          await deps.enqueueWakeup(reviewerAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "review_requested",
+            payload: {
+              issueId: input.issue.id,
+              headSha: prCi.headSha,
+              ci: "green",
+            },
+            idempotencyKey: `ci_green:${input.issue.id}:${prCi.headSha ?? "green"}`,
+            contextSnapshot: {
+              issueId: input.issue.id,
+              taskId: input.issue.id,
+              wakeReason: "review_requested",
+            },
+          }).catch(() => null);
+        }
+        return updated;
+      }
+
       const autoPolicyDecision = decideStrandedAutoPolicy({
         attemptsInWindow,
         maxAttemptsPerDay,
@@ -4431,19 +4621,7 @@ export function recoveryService(
         requireAgentDisposition: successfulRunDisposition,
         hasExecutionWorkflow: issueHasExistingExecutionWorkflow({
           ...input.issue,
-          hasOpenPullRequest: Boolean(await db.query.issueWorkProducts.findFirst({
-            where: and(
-              eq(issueWorkProducts.issueId, input.issue.id),
-              eq(issueWorkProducts.type, "pull_request"),
-              inArray(issueWorkProducts.status, [
-                "open",
-                "active",
-                "ready_for_review",
-                "approved",
-              ]),
-            ),
-            columns: { id: true },
-          })),
+          hasOpenPullRequest: Boolean(openPrProduct),
         }),
         successfulRunHandoffExhausted: handoffExhausted,
         assigneePaused,
@@ -6114,6 +6292,66 @@ export function recoveryService(
       }
 
       if (issue.status === "in_review") {
+        const openPr = await db.query.issueWorkProducts.findFirst({
+          where: and(
+            eq(issueWorkProducts.issueId, issue.id),
+            eq(issueWorkProducts.type, "pull_request"),
+            inArray(issueWorkProducts.status, [
+              "open",
+              "active",
+              "ready_for_review",
+              "approved",
+            ]),
+          ),
+        });
+        if (openPr) {
+          const prCi = await resolvePrCiState(
+            issue.companyId,
+            openPr,
+            deps.prHeadResolver ?? defaultPrHeadResolver,
+          );
+          if (prCi.ci === "green") {
+            let reviewerAgentId = getReviewerParticipantAgentId(issue);
+            if (!reviewerAgentId) {
+              reviewerAgentId = await pickReviewerForIssue(db, issue, openPr);
+              if (reviewerAgentId) {
+                await issuesSvc.update(issue.id, {
+                  executionPolicy: {
+                    mode: "normal",
+                    stages: [
+                      {
+                        type: "review",
+                        approvalsNeeded: 1,
+                        participants: [{ type: "agent", agentId: reviewerAgentId }],
+                      },
+                    ],
+                  },
+                }).catch(() => null);
+              }
+            }
+            if (reviewerAgentId) {
+              await deps.enqueueWakeup(reviewerAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "review_requested",
+                payload: {
+                  issueId: issue.id,
+                  headSha: prCi.headSha,
+                  ci: "green",
+                },
+                idempotencyKey: `ci_green:${issue.id}:${prCi.headSha ?? "green"}`,
+                contextSnapshot: {
+                  issueId: issue.id,
+                  taskId: issue.id,
+                  wakeReason: "review_requested",
+                },
+              }).catch(() => null);
+            }
+          }
+          result.skipped += 1;
+          continue;
+        }
+
         if (!participantAgentId || !pendingExecutionState) {
           result.skipped += 1;
           continue;
