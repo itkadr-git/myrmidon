@@ -213,6 +213,7 @@ import { myrmidonKnowledgeRoutes, myrmidonKnowledgeMcpRoutes } from "./myrmidon/
 import { sweepTelegramNotifyProactivity } from "./myrmidon/channel-connectors/bridge/notify-sweep.js";
 import { accessHubRoutes } from "./myrmidon/access-hub/routes.js"; // myrmidon(SEC1)
 import { ui2LanguageRoutes } from "./myrmidon/ui2-language/routes.js"; // myrmidon(UI2-I18N)
+import { localeUploadRoutes } from "./myrmidon/locale-upload/index.js"; // myrmidon(1.7 LOCALE-UPLOAD E.1, OPE-9645)
 import { myrmidonForagingRoutes, myrmidonForagingIdleGateRoutes, myrmidonForagingPassRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE, 1.6.3-FORAGING-IDLE-GATE)
 import { myrmidonAgentMemoryRoutes, myrmidonAgentMemorySettingsRoutes } from "./myrmidon/agent-memory/index.js"; // myrmidon(MEMORY-UI)
 import { myrmidonToolPolicyCacheRoutes } from "./myrmidon/tool-policy-cache/index.js"; // myrmidon(DB-PERF-C-P4)
@@ -1227,6 +1228,7 @@ export async function createApp(
   api.use(myrmidonScentRoutes(db)); // myrmidon(1.6.5 F-26 T10 SCENT): task/agent scent refresh + swarm scent status
   api.use(myrmidonTelegramNotifyRoutes(db)); // myrmidon(TG-NOTIFY-A): telegramNotify settings core (GET/PATCH + changelog)
   api.use(ui2LanguageRoutes(db)); // myrmidon(UI2-I18N): per-user UI language preference
+  api.use(localeUploadRoutes(db)); // myrmidon(1.7 LOCALE-UPLOAD E.1, OPE-9645): custom locale upload and validation
   // myrmidon(1.6.5-TG-LOCALE-C): instance-wide default language of the bridged
   // Telegram DM — read by board members, changed by instance admins.
   api.use(myrmidonBridgeLanguageRoutes(db));

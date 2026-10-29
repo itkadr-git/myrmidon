@@ -1,0 +1,559 @@
+{
+  "accessHub": {
+    "notAvailable": {
+      "title": "Access hub is not available on this server yet",
+      "description": "This server does not serve the access-hub API yet, so there is nothing to manage here. The screen turns on by itself once the server part is deployed."
+    }
+  },
+  "app": {
+    "noCompanies": {
+      "title": "Create your first organization",
+      "description": "Get started by creating an organization.",
+      "newCompany": "New Organization"
+    }
+  },
+  "emergencyStopBanner": {
+    "banner": "{{agent}} is paused, but {{count}} run(s) are still finishing. They keep running until they finish on their own.",
+    "action": "Emergency stop",
+    "confirmTitle": "Stop {{count}} run(s) of {{agent}} now?",
+    "confirmDescription": "The run(s) are cancelled immediately with the same code a pause-cancellation uses, so no recovery hold appears. Work resumes when the agent is resumed. This cannot be undone.",
+    "cancel": "Cancel",
+    "confirmAction": "Stop runs now",
+    "toastTitle": "Emergency stop applied",
+    "toastBody": "{{count}} run(s) of {{agent}} were cancelled.",
+    "toastErrorTitle": "Emergency stop failed"
+  },
+  "maintenanceBanner": {
+    "title": "Maintenance mode",
+    "window": "Maintenance for {{scope}} ({{state}}) since {{since}}: {{reason}}. New agent runs are paused; wakes are queued ({{queued}}) and will be delivered when maintenance ends.",
+    "scope": {
+      "instance": "the whole instance",
+      "company": "this company",
+      "department": "a department",
+      "agent": "an agent"
+    },
+    "state": {
+      "on": "on",
+      "ending": "ending",
+      "draining": "draining, runs still running: {{count}}",
+      "drainingTimedOut": "draining, runs past the timeout: {{count}}"
+    },
+    "group": "Agent maintenance ({{state}}) since {{since}}: {{reason}} — agents: {{count}}, queued wakeups: {{queued}}. New agent runs are paused; wakes are delivered when maintenance ends.",
+    "ending": "Agent maintenance ending — agents: {{count}}",
+    "idsSummary": "Agent ids",
+    "summary": "Maintenance windows: {{count}} across {{rows}} kind(s), {{state}}",
+    "row": "{{scope}} ({{state}}) since {{since}}: {{reason}} — windows: {{count}}, queued wakeups: {{queued}}.",
+    "endsBy": "ends by {{time}}"
+  },
+  "about": {
+    "title": "About Myrmidon",
+    "version": "Version",
+    "commit": "Commit",
+    "imageDigest": "Image digest",
+    "base": "Upstream base: Paperclip {{version}} (MIT)",
+    "license": "License: {{license}}",
+    "attribution": "Based on Paperclip (MIT)",
+    "links": {
+      "repo": "Source code",
+      "changelog": "Changelog",
+      "docs": "Docs"
+    },
+    "unavailable": "Version information is unavailable right now.",
+    "loading": "Loading version information...",
+    "unknown": "unknown"
+  },
+  "sidebar": {
+    "version": "Myrmidon {{version}}"
+  },
+  "ui2": {
+    "nav": {
+      "railLabel": "Main navigation",
+      "group": {
+        "observe": "Observe",
+        "decide": "Decide & talk",
+        "manage": "Manage",
+        "more": "More",
+        "work": "Work"
+      },
+      "center": "Command center",
+      "agents": "Agents",
+      "servers": "Servers",
+      "swarmQueues": "Swarm: queues",
+      "costs": "Costs",
+      "quality": "Quality",
+      "waiting": "Wait for me",
+      "commander": "Commander",
+      "settings": "Settings",
+      "more": "More",
+      "badge": {
+        "attention": "{{count}} waiting"
+      },
+      "foraging": "Foraging",
+      "knowledge": "Knowledge",
+      "regulations": "Regulations"
+    },
+    "nests": {
+      "all": "All nests"
+    },
+    "chip": {
+      "colony": "{{active}} of {{total}}",
+      "fleet": "Fleet",
+      "fleetAttention": "Fleet: 1 attention",
+      "forecast": "{{spend}} of {{budget}}",
+      "forecastSpendOnly": "{{spend}} spent"
+    },
+    "decisions": {
+      "badge": "{{count}} decisions waiting"
+    },
+    "owner": "Owner",
+    "ownerChannel": "Web · now",
+    "commander": {
+      "aria": "Tell the Commander (Ctrl K)",
+      "placeholder": "Tell the Commander…",
+      "stubNote": "Stub: the message is not sent yet. It opens the existing chat; the Commander conversation arrives with the 1.6 chat update.",
+      "openChat": "Open chat"
+    },
+    "phone": {
+      "status": "Owner · Web"
+    },
+    "screens": {
+      "decisions": "Decisions",
+      "costs": "Costs",
+      "agentOverview": "Agent overview",
+      "runsQueue": "Runs and queue",
+      "system": "System",
+      "language": "Language",
+      "placeholderTitle": "Not in this wave yet",
+      "placeholderBody": "This screen is part of the UI 2.0 rollout plan and lands with its wave. The current data lives on the existing screen; this placeholder exists so the 2.0 frame and routing are real from day one.",
+      "placeholderLegacyLink": "Continue to the current screen",
+      "knowledge": "Knowledge",
+      "regulations": "Regulations"
+    },
+    "settings": {
+      "navLabel": "Settings navigation",
+      "general": "General",
+      "members": "Members",
+      "access": "Access",
+      "secrets": "Secrets",
+      "runs": "Runs and queue",
+      "budgets": "Budgets",
+      "autonomy": "Autonomy",
+      "guards": "Guardrails",
+      "castes": "Castes and models",
+      "system": "System"
+    }
+  },
+  "connectorPanel": {
+    "title": "Connectors",
+    "intro": "Client devices that connect through the browser bridge: pairing, the domain allowlist, the signing policy and the journal of what the bridge did.",
+    "devices": {
+      "title": "Devices",
+      "pairingLabel": "Pairing label",
+      "issue": "Issue pairing code",
+      "issuing": "Issuing...",
+      "expiresAt": "expires at {{time}}",
+      "device": "Device",
+      "status": "Status",
+      "lastSeen": "Last seen",
+      "version": "Version",
+      "capabilities": "Capabilities",
+      "online": "Online",
+      "offline": "Offline",
+      "none": "No devices are paired yet. Issue a pairing code and enter it in the browser extension on the client PC.",
+      "loading": "Loading devices...",
+      "revoke": "Revoke",
+      "confirmRevoke": "Confirm revoke",
+      "cancelRevoke": "Cancel",
+      "revoking": "Revoking..."
+    },
+    "allowlist": {
+      "title": "Domain allowlist",
+      "hint": "One hostname per line. Only these domains (and their subdomains) may be opened by the bot; everything else is refused by the gateway and by the extension."
+    },
+    "signing": {
+      "title": "Signing policy",
+      "mode": "Signing mode",
+      "modeAuto": "Automatic",
+      "modeManual": "Manual confirmation",
+      "modeTypes": "Per action type",
+      "dailyLimit": "Daily limit",
+      "noLimit": "No limit",
+      "signedToday": "{{count}} signatures today",
+      "types": "Action types needing confirmation",
+      "typesHint": "Comma-separated action types (for example tender.submit). In per-type mode only these ask a person to confirm.",
+      "save": "Save connector settings",
+      "saving": "Saving...",
+      "killSwitch": "Emergency stop signing",
+      "stopping": "Stopping...",
+      "off": "Signing is off: every sign action is refused, whatever the mode."
+    },
+    "journal": {
+      "title": "Journal",
+      "device": "Device",
+      "allDevices": "All devices",
+      "method": "Method",
+      "allMethods": "All methods",
+      "outcome": "Outcome",
+      "allOutcomes": "All outcomes",
+      "signaturesOnly": "Signatures only",
+      "when": "When",
+      "what": "What",
+      "confirmation": "Confirmation",
+      "documentHash": "Document hash",
+      "loading": "Loading the journal...",
+      "empty": "No journal rows match the filters."
+    }
+  },
+  "stack": {
+    "title": "Stack",
+    "intro": "Every component the board tracks: our running version and the latest upstream release, with the update plan.",
+    "loading": "Loading the stack registry...",
+    "empty": "The stack registry has no components yet.",
+    "filter": "Filter by name",
+    "filterPlaceholder": "Component name",
+    "refresh": "Refresh data",
+    "refreshing": "Refreshing...",
+    "check": "Check releases",
+    "checking": "Checking releases...",
+    "error": "The stack request failed: {{message}}",
+    "updatedAt": "Local state refreshed at {{time}}",
+    "checkedAt": "Releases checked at {{time}}",
+    "never": "never",
+    "unknown": "unknown",
+    "column": {
+      "name": "Component",
+      "source": "Release source",
+      "ours": "Ours",
+      "runningOn": "Runs on",
+      "latest": "Latest",
+      "behind": "Behind",
+      "patches": "Patches",
+      "actions": "Actions"
+    },
+    "behind": "{{count}} release(s)",
+    "patches": {
+      "closed": "closed",
+      "open": "open",
+      "unknown": "unknown",
+      "none": "none"
+    },
+    "notes": {
+      "show": "Notable lines",
+      "truncated": "Only the top lines are shown."
+    },
+    "source": {
+      "github-releases": "GitHub releases",
+      "github-tags": "GitHub tags",
+      "registry": "Registry",
+      "package": "Package",
+      "manual": "Manual"
+    },
+    "probe": {
+      "health-commit": "Board build commit",
+      "docker-image": "Docker image",
+      "container-labels": "Container labels",
+      "env": "Environment override",
+      "manual": "Operator set",
+      "none": "Not visible from the board"
+    },
+    "schedule": "Schedule update",
+    "dialog": {
+      "title": "Schedule update for {{name}}",
+      "intro": "This creates a backlog task with the plan below. Nothing is deployed here.",
+      "taskTitle": "Task title",
+      "plan": "Plan",
+      "create": "Create draft task",
+      "creating": "Creating...",
+      "cancel": "Cancel",
+      "created": "Draft task created: {{identifier}}",
+      "failed": "The task could not be created: {{message}}"
+    }
+  },
+  "autonomy": {
+    "title": "Autonomy matrix",
+    "breadcrumb": "Autonomy matrix",
+    "intro": "What each role may do on its own, what needs a human approval, and the regulations behind it. Changing a cell applies at the action point; every edit lands in the change log.",
+    "loading": "Loading the autonomy matrix...",
+    "noCompany": "Select a company to edit its autonomy matrix.",
+    "verdict": {
+      "allowed": "Allowed",
+      "approval_required": "Approval",
+      "forbidden": "Forbidden"
+    },
+    "actionClass": {
+      "merge": "Merge",
+      "deploy": "Deploy",
+      "spend_above_threshold": "Spend above threshold",
+      "external_message": "External message",
+      "delete": "Delete",
+      "pause_wake_agents": "Pause/wake agents",
+      "change_instructions": "Change instructions",
+      "other": "Other"
+    },
+    "matrix": {
+      "title": "Matrix",
+      "hint": "Click a cell to cycle: allowed → approval required → forbidden. A cell without a rule uses the action's default verdict.",
+      "role": "Role",
+      "default": "default",
+      "defaults": "Default verdicts",
+      "cycleHint": "Click to cycle the verdict",
+      "save": "Save matrix",
+      "saving": "Saving...",
+      "unsaved": "Unsaved changes",
+      "versionConflict": "The matrix changed on the server while you edited it. Reload and apply your changes again."
+    },
+    "regulations": {
+      "title": "Regulations",
+      "hint": "Per-role regulations. A draft can be edited; approving freezes the text into the approved revision. Prior revisions stay retrievable.",
+      "empty": "No regulations yet.",
+      "revision": "revision {{count}}",
+      "restore": "Restore revision {{count}}",
+      "approve": "Approve",
+      "saveDraft": "Save draft",
+      "newTitle": "New regulation",
+      "roleLabel": "Role",
+      "titleLabel": "Title",
+      "bodyLabel": "Body (markdown)",
+      "create": "Create draft"
+    },
+    "regulationStatus": {
+      "draft": "Draft",
+      "approved": "Approved"
+    },
+    "changeLog": {
+      "title": "Change log",
+      "empty": "No changes recorded yet."
+    },
+    "changeAction": {
+      "matrix_edit": "Matrix edit",
+      "regulation_created": "Regulation created",
+      "regulation_edited": "Regulation edited",
+      "regulation_approved": "Regulation approved",
+      "regulation_rejected": "Regulation rejected",
+      "regulation_rolled_back": "Regulation rolled back"
+    },
+    "placeholders": {
+      "title": "Coming with a later release",
+      "reminders": "Reminders — read-only placeholder; the reminder scheduler lands after 1.6.",
+      "nightMode": "Night mode — read-only placeholder; scheduled for a 1.6+ follow-up.",
+      "answerChannel": "Answer channel — read-only placeholder; channel routing is chosen after 1.6."
+    }
+  },
+  "modelProviders": {
+    "title": "Model providers",
+    "breadcrumb": "Model providers",
+    "intro": "Provider keys for the model gateway: add a provider, rotate or remove its key, enable the models the company may use. The key is write-only — it is stored once and never shown again. Free models come first in every list; among them, free DashScope models lead (owner rule).",
+    "loading": "Loading model providers...",
+    "noCompany": "Select a company to manage its model providers.",
+    "free": "Free",
+    "paid": "Paid",
+    "add": {
+      "title": "Add provider",
+      "open": "Add provider",
+      "cancel": "Cancel",
+      "type": "Type",
+      "name": "Name",
+      "baseUrl": "Base URL",
+      "key": "API key",
+      "keyHint": "Write-only: the key is stored in the secret store and never displayed again.",
+      "free": "Free tier (free models first)",
+      "save": "Save provider",
+      "saving": "Saving..."
+    },
+    "list": {
+      "title": "Providers",
+      "empty": "No model providers yet. Add one to enable its models for the company.",
+      "keyStored": "Key stored",
+      "keyMissing": "No key",
+      "modelsLoading": "Loading models...",
+      "modelsEmpty": "No models discovered for this provider yet."
+    },
+    "rotate": {
+      "open": "Rotate key",
+      "placeholder": "New key",
+      "save": "Rotate",
+      "saving": "Rotating...",
+      "cancel": "Cancel"
+    },
+    "remove": {
+      "open": "Remove",
+      "confirm": "Confirm remove",
+      "removing": "Removing...",
+      "cancel": "Cancel"
+    },
+    "changeLog": {
+      "title": "Change log",
+      "empty": "No provider changes recorded yet."
+    },
+    "channels": {
+      "title": "Pool Accounts & Limit Windows",
+      "signalsTitle": "Role Attention Signals",
+      "refreshing": "Updating...",
+      "loading": "Loading accounts...",
+      "error": "Failed to load pool accounts.",
+      "empty": "No accounts found in pool.",
+      "account": "Account",
+      "state": "State",
+      "window5h": "5h Limit Window",
+      "window7d": "7d Limit Window",
+      "lastOk": "Last OK"
+    }
+  },
+  "castes": {
+    "title": "Agent castes",
+    "breadcrumb": "Agent castes",
+    "intro": "The company's caste directory: the roles agents hold. The first read seeds the twelve built-in castes; add your own, edit names, colors, icons, the default model and the swarm rules. A caste in use by live agents cannot be deleted.",
+    "loading": "Loading the caste directory...",
+    "noCompany": "Select a company to manage its castes.",
+    "add": {
+      "title": "Add caste",
+      "open": "Add caste",
+      "cancel": "Cancel",
+      "key": "Key",
+      "keyHint": "Stable identifier that matches the agent's role. Latin letters and hyphen, 1–60; cannot change after creation.",
+      "nameEn": "Name (EN)",
+      "nameRu": "Name (RU)",
+      "description": "Description",
+      "color": "Color",
+      "icon": "Icon",
+      "defaultModel": "Default model",
+      "swarmEligible": "Eligible for the swarm",
+      "maxActiveTasks": "Max active tasks",
+      "maxActiveTasksHint": "Empty = the global swarm limit",
+      "save": "Save caste",
+      "saving": "Saving..."
+    },
+    "list": {
+      "title": "Castes",
+      "empty": "The directory is empty. The first read seeds the built-in castes; add one if it stays empty.",
+      "key": "Key",
+      "names": "Names",
+      "color": "Color",
+      "icon": "Icon",
+      "defaultModel": "Default model",
+      "swarm": "Swarm",
+      "swarmYes": "Eligible",
+      "swarmNo": "Excluded",
+      "maxActiveTasks": "Task limit",
+      "globalLimit": "global",
+      "builtIn": "built-in",
+      "actions": "Actions",
+      "defaultCaste": "Default",
+      "counters": "Agents / queue / free",
+      "countersHint": "Live agents of this caste / tasks waiting in the queue for this caste / agents of this caste free right now. A task that names no caste counts towards the default one.",
+      "templateNote": "Built-in castes are a template: rename, retune or delete them freely — no swarm logic is hard-wired to them any more."
+    },
+    "edit": {
+      "open": "Edit",
+      "save": "Save",
+      "saving": "Saving...",
+      "cancel": "Cancel"
+    },
+    "remove": {
+      "open": "Remove",
+      "confirm": "Confirm remove",
+      "removing": "Removing...",
+      "cancel": "Cancel",
+      "inUse": "This caste is in use: agents still hold this role. Pick the caste to move them to, then confirm the removal.",
+      "reassignTo": "Reassign the agents on this caste to...",
+      "reassignPlaceholder": "Select a target caste"
+    },
+    "default": {
+      "hint": "Make this caste the company default"
+    }
+  },
+  "cardModels": {
+    "free": "Free",
+    "paid": "Paid",
+    "freeFirstHint": "Free models are listed first.",
+    "fromBoard": "From board settings",
+    "fromEnvDefault": "Default list",
+    "refresh": "Refresh models",
+    "refreshing": "Refreshing…",
+    "loadError": "Could not load the model list."
+  },
+  "wipLimit": {
+    "title": "WIP limit",
+    "breadcrumb": "WIP limit",
+    "intro": "How many tasks one agent may hold in work at once (in progress + in review). A capped agent is handed no new task until one of its active tasks settles; no run in flight is interrupted.",
+    "loading": "Loading the WIP limit settings...",
+    "noCompany": "Select a company to edit its WIP limit.",
+    "defaultLabel": "Default limit per agent",
+    "defaultHint": "Applies to every agent without its own value. Empty — no limit.",
+    "noLimit": "No limit",
+    "usesDefault": "uses default",
+    "agentsTitle": "Per-agent limits",
+    "colAgent": "Agent",
+    "colWip": "In work now",
+    "colLimit": "Limit",
+    "overLimit": "Over limit",
+    "noAgents": "No agents in this company yet.",
+    "save": "Save WIP limit",
+    "saving": "Saving..."
+  },
+  "cardEffort": {
+    "thinkingEffort": "Thinking effort",
+    "thinkingEffortHint": "Reasoning depth. Only values the selected model accepts are offered; empty uses the model's default.",
+    "effortDefault": "default",
+    "effortEmptyHint": "Empty compiles to the model default: {{value}}",
+    "effortSelected": "Selected: {{value}}",
+    "contextLength": "Context length (tokens)",
+    "contextLengthHint": "Explicit context window for the model. Empty keeps the profile setting.",
+    "contextLengthInvalid": "Context length must be a whole number of tokens.",
+    "contextLengthRange": "Context length must be between {{min}} and {{max}}.",
+    "titleGenerationModel": "Title generation model",
+    "titleGenerationModelHint": "Model for auxiliary title generation. Empty keeps the instance default.",
+    "compressionModel": "Compression model",
+    "compressionModelHint": "Model for auxiliary compression summaries. Empty keeps the instance default."
+  },
+  "evals": {
+    "sameFamily": {
+      "label": "Same-family judge",
+      "tooltip": "The judge model belongs to the same family as the evaluated agent model"
+    }
+  },
+  "agentsTree": {
+    "expandNode": "Expand {{name}}",
+    "collapseNode": "Collapse {{name}}",
+    "noManager": "No manager",
+    "searchPlaceholder": "Search agents...",
+    "searchAria": "Search agents by name",
+    "errorIndicator": "Some agents in this branch are in an error state",
+    "agentsCount": "{{count}} agents",
+    "runningCount": "{{count}} running",
+    "sortModeTree": "Tree",
+    "viewTree": "Tree view"
+  },
+  "voiceStt": {
+    "title": "Speech recognition",
+    "breadcrumb": "Speech recognition",
+    "intro": "Voice and audio messages from Telegram are transcribed by the speech recognition service. Provider keys are board-managed company secrets: this screen shows and edits the secret names only — the values are stored on the server and never displayed or transferred here.",
+    "loading": "Loading speech recognition settings...",
+    "noCompany": "Select a company to manage its speech recognition settings.",
+    "enabled": "Enable speech recognition",
+    "backend": "Provider",
+    "backendHint": "DashScope runs through the model gateway (LiteLLM) and is free by default; Deepgram is optional and needs its own key.",
+    "model": "Model",
+    "modelPlaceholder": "transcription model name on the gateway",
+    "modelHint": "The model must be registered on the gateway by the operator; until then transcription degrades to stt_unconfigured.",
+    "language": "Language",
+    "diarization": "Speaker separation (diarization)",
+    "maxDuration": "Max duration, seconds",
+    "maxDurationHint": "Longer recordings are rejected with audio_too_long.",
+    "save": "Save settings",
+    "saving": "Saving..."
+  },
+  "nests": {
+    "title": "Nests",
+    "intro": "The projects this agent is willing to work in. Nothing picked means the whole company: the agent may take any task. Tasks that belong to no project stay open to every agent.",
+    "label": "Projects",
+    "hint": "Pick one or more projects to keep the agent inside them. The matcher reads this on its next pass — no restart.",
+    "noProjects": "The company has no projects yet, so the agent works across the whole company.",
+    "save": "Save nests",
+    "saving": "Saving...",
+    "saved": "Saved",
+    "saveFailed": "The save failed.",
+    "allProjects": "The whole company",
+    "selected": "{{count}} project(s)"
+  }
+}
