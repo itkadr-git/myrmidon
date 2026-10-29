@@ -4126,6 +4126,24 @@ export function recoveryService(
     ) {
       const latestRun = strandedAutoPolicyLatestRun;
       const assigneeAgentId = input.issue.assigneeAgentId;
+      const handoffEvidence = input.successfulRunHandoffEvidence ??
+        isExhaustedSuccessfulRunHandoff(latestRun);
+      const handoffExhausted = Boolean(
+        handoffEvidence &&
+          handoffEvidence.handoffAttempt >= handoffEvidence.maxHandoffAttempts,
+      );
+      // A replay must stand down even when its queued wake used the last retry.
+      // Check before the counter can select a manager handoff or blocked state.
+      const retryIdempotencyKey = buildStrandedAutoPolicyRetryIdempotencyKey({
+        issueId: input.issue.id,
+        sourceRunId: latestRun.id,
+      });
+      if (!handoffExhausted && await findExistingStrandedAutoPolicyRetryWake({
+        companyId: input.issue.companyId,
+        idempotencyKey: retryIdempotencyKey,
+      })) {
+        return input.issue;
+      }
       const maxAttemptsPerDay = readStrandedAutoRetriesPerDay();
       const [attemptsInWindow, managerAgentId, assigneeAgent] = await Promise.all([
         countStrandedAutoPolicyAttemptsInWindow(db, {
@@ -4175,6 +4193,7 @@ export function recoveryService(
         targetIsAdm,
         requireAgentDisposition: successfulRunDisposition,
         hasExecutionWorkflow: issueHasExistingExecutionWorkflow(input.issue),
+        successfulRunHandoffExhausted: handoffExhausted,
         assigneePaused,
       });
 

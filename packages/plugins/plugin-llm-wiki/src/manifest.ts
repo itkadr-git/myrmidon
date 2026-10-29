@@ -372,7 +372,9 @@ const manifest: PaperclipPluginManifestV1 = {
           path: { type: "string" },
           contents: { type: "string" },
           expectedHash: { type: "string" },
-          summary: { type: "string" }
+          summary: { type: "string" },
+          force: { type: "boolean", description: "Bypass write protection for probe markers or drastic truncation." },
+          reason: { type: "string", description: "Mandatory justification if force is true." }
         },
         required: ["companyId", "wikiId", "path", "contents"]
       }
@@ -483,6 +485,39 @@ const manifest: PaperclipPluginManifestV1 = {
         },
         required: ["companyId", "wikiId"]
       }
+    },
+    {
+      name: "wiki_rollback_page",
+      displayName: "Rollback Wiki Page",
+      description: "Roll back a wiki page to a prior revision by creating a new revision with the target revision's contents.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          companyId: { type: "string" },
+          wikiId: { type: "string" },
+          spaceSlug: { type: "string" },
+          path: { type: "string" },
+          revisionId: { type: "string" },
+          reason: { type: "string" }
+        },
+        required: ["companyId", "wikiId", "path", "revisionId"]
+      }
+    },
+    {
+      name: "wiki_list_revisions",
+      displayName: "List Wiki Page Revisions",
+      description: "List recorded revision history for a wiki page.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          companyId: { type: "string" },
+          wikiId: { type: "string" },
+          spaceSlug: { type: "string" },
+          path: { type: "string" },
+          limit: { type: "number" }
+        },
+        required: ["companyId", "wikiId", "path"]
+      }
     }
   ],
   apiRoutes: [
@@ -571,6 +606,38 @@ const manifest: PaperclipPluginManifestV1 = {
       method: "POST",
       path: "/file-as-page",
       auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" }
+    },
+    {
+      routeKey: "pages",
+      method: "GET",
+      path: "/pages",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" }
+    },
+    {
+      routeKey: "read-page",
+      method: "GET",
+      path: "/pages/read",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" }
+    },
+    {
+      routeKey: "page-revisions",
+      method: "GET",
+      path: "/pages/revisions",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" }
+    },
+    {
+      routeKey: "rollback-page",
+      method: "POST",
+      path: "/pages/rollback",
+      auth: "board-or-agent",
       capability: "api.routes.register",
       companyResolution: { from: "body", key: "companyId" }
     }

@@ -195,7 +195,19 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     const signals: ReviewRoutingSignal[] = [];
     let moves = 0;
     let reviewerPool: ReviewerCandidate[] | null = null;
-    const pool = async (): Promise<ReviewerCandidate[]> => {
+    const managerChains = new Map<string, ReviewerCandidate[]>();
+    const managerCandidates = async (engineerId: string | null): Promise<ReviewerCandidate[]> => {
+      if (!engineerId) return [];
+      if (managerChains.has(engineerId)) return managerChains.get(engineerId)!;
+      const [agentRows, load] = await Promise.all([
+        deps.store.listManagerChainReviewerAgents(companyId, engineerId, settings.reviewerRoles),
+        deps.store.loadByAgent(companyId),
+      ]);
+      const candidates = agentRows.map((agent) => ({ id: agent.id, role: agent.role, load: load.get(agent.id) ?? 0 }));
+      managerChains.set(engineerId, candidates);
+      return candidates;
+    };
+    const globalPool = async (): Promise<ReviewerCandidate[]> => {
       if (reviewerPool) return reviewerPool;
       const [agentRows, load] = await Promise.all([
         deps.store.listReviewerAgents(companyId, settings.reviewerRoles),
@@ -204,9 +216,12 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       reviewerPool = agentRows.map((agent) => ({ id: agent.id, role: agent.role, load: load.get(agent.id) ?? 0 }));
       return reviewerPool;
     };
+    const pool = globalPool;
     const bumpLoad = (agentId: string, delta: number) => {
-      const candidate = reviewerPool?.find((entry) => entry.id === agentId);
-      if (candidate) candidate.load = Math.max(0, candidate.load + delta);
+      for (const pool of [reviewerPool, ...managerChains.values()]) {
+        const candidate = pool?.find((entry) => entry.id === agentId);
+        if (candidate) candidate.load = Math.max(0, candidate.load + delta);
+      }
     };
 
     for (const row of needing) {
@@ -221,8 +236,18 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       };
       if (moves >= REVIEW_ROUTING_MAX_MOVES_PER_PASS) continue;
       try {
+        let candidates: ReviewerCandidate[];
+        try {
+          candidates = await managerCandidates(row.assigneeAgentId);
+          if (candidates.length === 0) candidates = await globalPool();
+        } catch (error) {
+          log.warn({ err: error, issueId: row.id, companyId }, "Review-routing reviewer lookup failed");
+          signals.push(signal);
+          result.failed += 1;
+          continue;
+        }
         const picked = pickReviewer({
-          candidates: await pool(),
+          candidates,
           excluded: excludedReviewerIds(row),
           maxLoad: settings.maxLoadPerReviewer,
         });
