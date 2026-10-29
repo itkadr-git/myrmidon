@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AdmContextBudget,
   createAdmKnowledgeAdapter,
+  createAdmProductionHooks,
   type AdmKnowledgeItem,
   type AdmKnowledgeMetadata,
   type AdmKnowledgeRestPort,
@@ -27,6 +28,12 @@ function rest(overrides: Partial<AdmKnowledgeRestPort> = {}): AdmKnowledgeRestPo
     read: vi.fn(async () => policy),
     proposeRule: vi.fn(async () => ({ itemId: policy.id, revisionId: "proposal-revision-id", status: "proposed" as const })),
     writeLesson: vi.fn(async () => ({ itemId: "lesson-id", revisionId: "lesson-r1", status: "published" as const })),
+    approveRule: vi.fn(async ({ itemId, revisionId }) => ({
+      ...policy,
+      id: itemId,
+      deliveredRevisionId: revisionId,
+      status: "published",
+    })),
     ...overrides,
   };
 }
@@ -84,16 +91,121 @@ describe("ADM knowledge REST adapter", () => {
     })).rejects.toMatchObject({ code: "ADM_INVALID_METADATA" });
   });
 
-  it("rejects a published rule response", async () => {
+  it("rejects a published rule response or premature publication read-back", async () => {
     const api = rest({
       proposeRule: vi.fn(async () => ({ itemId: policy.id, revisionId: "r1", status: "published" as const })),
     });
     await expect(createAdmKnowledgeAdapter(api).proposeRule({
       slug: policy.slug, title: policy.title, summary: "", body: "body", sourceRef: "test", idempotencyKey: "ope-9262:rule:2",
     })).rejects.toMatchObject({ code: "ADM_FORBIDDEN" });
+
+    const prematurePublishedApi = rest({
+      proposeRule: vi.fn(async () => ({ itemId: policy.id, revisionId: "r2", status: "proposed" as const })),
+      read: vi.fn(async () => ({ ...policy, deliveredRevisionId: "r2", status: "published" })),
+    });
+    await expect(createAdmKnowledgeAdapter(prematurePublishedApi).proposeRule({
+      slug: policy.slug, title: policy.title, summary: "", body: "body", sourceRef: "test", idempotencyKey: "ope-9262:rule:3",
+    })).rejects.toMatchObject({ code: "ADM_FORBIDDEN" });
   });
 
-  it("requires lesson publication read-back", async () => {
+  it("publishes rules only after owner approval, rejecting non-owner approvers", async () => {
+    const publishedPolicy: AdmKnowledgeItem = {
+      ...policy,
+      deliveredRevisionId: "rev-approved",
+      status: "published",
+    };
+    const api = rest({
+      approveRule: vi.fn(async ({ itemId, revisionId }) => ({
+        ...publishedPolicy,
+        id: itemId,
+        deliveredRevisionId: revisionId,
+      })),
+      read: vi.fn(async (id) => (id === policy.id ? { ...publishedPolicy, deliveredRevisionId: "rev-approved" } : null)),
+    });
+    const adapter = createAdmKnowledgeAdapter(api);
+
+    await expect(adapter.approveRule({
+      itemId: policy.id,
+      revisionId: "rev-approved",
+      approverKind: "agent",
+    })).rejects.toMatchObject({ code: "ADM_FORBIDDEN" });
+    expect(api.approveRule).not.toHaveBeenCalled();
+
+    const approved = await adapter.approveRule({
+      itemId: policy.id,
+      revisionId: "rev-approved",
+      approverKind: "owner",
+    });
+    expect(approved.status).toBe("published");
+    expect(approved.deliveredRevisionId).toBe("rev-approved");
+    expect(api.approveRule).toHaveBeenCalledWith({
+      itemId: policy.id,
+      revisionId: "rev-approved",
+      approverKind: "owner",
+    });
+
+    const mismatchApi = rest({
+      approveRule: vi.fn(async () => ({ ...publishedPolicy, deliveredRevisionId: "wrong-rev" })),
+    });
+    await expect(createAdmKnowledgeAdapter(mismatchApi).approveRule({
+      itemId: policy.id,
+      revisionId: "rev-approved",
+      approverKind: "owner",
+    })).rejects.toMatchObject({ code: "ADM_UPSTREAM_UNAVAILABLE" });
+  });
+
+  it("supports repeated idempotency keys across operations", async () => {
+    const api = rest();
+    const adapter = createAdmKnowledgeAdapter(api);
+    const key = "ope-9877:idempotency:same-key";
+
+    const res1 = await adapter.proposeRule({
+      slug: policy.slug,
+      title: policy.title,
+      summary: policy.summary ?? "",
+      body: "Rule body",
+      sourceRef: "test",
+      idempotencyKey: key,
+    });
+    const res2 = await adapter.proposeRule({
+      slug: policy.slug,
+      title: policy.title,
+      summary: policy.summary ?? "",
+      body: "Rule body",
+      sourceRef: "test",
+      idempotencyKey: key,
+    });
+    expect(res1).toEqual(res2);
+    expect(api.proposeRule).toHaveBeenCalledTimes(2);
+    expect(api.proposeRule).toHaveBeenNthCalledWith(1, expect.objectContaining({ idempotencyKey: key }));
+    expect(api.proposeRule).toHaveBeenNthCalledWith(2, expect.objectContaining({ idempotencyKey: key }));
+  });
+
+  it("requires lesson publication read-back and supports draft and published modes", async () => {
+    const draftLesson: AdmKnowledgeItem = {
+      ...policy,
+      id: "lesson-draft-id",
+      slug: "adm/lessons/deploy-checklist",
+      kind: "wiki",
+      status: "draft",
+      deliveredRevisionId: "draft-rev-1",
+    };
+    const draftApi = rest({
+      writeLesson: vi.fn(async () => ({ itemId: draftLesson.id, revisionId: "draft-rev-1", status: "draft" as const })),
+      read: vi.fn(async (id) => (id === draftLesson.id ? draftLesson : null)),
+    });
+    const draftResult = await createAdmKnowledgeAdapter(draftApi).writeLesson({
+      slug: draftLesson.slug,
+      title: "Draft Lesson",
+      summary: "Draft checklist",
+      body: "Draft body",
+      sourceRef: "OPE-9877",
+      idempotencyKey: "ope-9877:lesson:draft-1",
+      status: "draft",
+    });
+    expect(draftResult.status).toBe("draft");
+    expect(draftApi.writeLesson).toHaveBeenCalledWith(expect.objectContaining({ status: "draft" }));
+
     const lesson = { ...policy, id: "lesson-id", slug: "adm/lessons/deploy", kind: "wiki", deliveredRevisionId: "lesson-r1" };
     const api = rest({ read: vi.fn(async () => lesson) });
     const result = await createAdmKnowledgeAdapter(api).writeLesson({
@@ -165,7 +277,7 @@ describe("ADM knowledge REST adapter", () => {
   });
 
   it("enforces context budgets, trigger filtering, deduplication, and byte metrics", () => {
-    const metrics: Array<{ bytesAdded: number; sessionBytes: number }> = [];
+    const metrics: Array<{ kind?: string; bytesAdded: number; sessionBytes: number }> = [];
     const budget = new AdmContextBudget(12 * 1024, 2 * 1024, (event) => metrics.push(event));
     const metadata: AdmKnowledgeMetadata[] = [{ schema_version: 1, slug: policy.slug, kind: "rule", title: policy.title, summary: policy.summary ?? "", tags: [], triggers: ["deploy"], priority: 1, owner: "owner", source_ref: "test", sensitivity: "internal", status: "published", revision_id: "r1", updated_at: policy.updatedAt, approver_kind: "owner" }];
     expect(budget.sessionStart(metadata)).not.toContain("body");
@@ -173,6 +285,135 @@ describe("ADM knowledge REST adapter", () => {
     expect(budget.prompt(metadata, "deploy")).not.toBe("[]");
     expect(budget.prompt(metadata, "deploy")).toBe("");
     expect(metrics.some((event) => event.bytesAdded > 0)).toBe(true);
+  });
+
+  it("integrates production hooks with deterministic trigger filtering, deduplication, and byte budget caps", () => {
+    const metrics: Array<{ kind?: string; bytesAdded: number; sessionBytes: number }> = [];
+    const budget = new AdmContextBudget(12 * 1024, 2 * 1024, (event) => metrics.push(event));
+    const hooks = createAdmProductionHooks(budget);
+
+    const items: AdmKnowledgeMetadata[] = [
+      {
+        schema_version: 1,
+        slug: "adm/policy/deploy-safety",
+        kind: "rule",
+        title: "Deploy safety policy",
+        summary: "Always check green CI before opening PR",
+        tags: ["deploy"],
+        triggers: ["deploy"],
+        priority: 90,
+        owner: "adm",
+        source_ref: "docs/deploy.md",
+        sensitivity: "internal",
+        status: "published",
+        revision_id: "rev-pol-1",
+        updated_at: "2026-10-25T00:00:00.000Z",
+        approver_kind: "owner",
+      },
+      {
+        schema_version: 1,
+        slug: "adm/trigger/ssh-boundary",
+        kind: "rule",
+        title: "SSH access boundary",
+        summary: "SSH requires bastion certificate",
+        tags: ["ssh"],
+        triggers: ["ssh"],
+        priority: 80,
+        owner: "adm",
+        source_ref: "docs/ssh.md",
+        sensitivity: "internal",
+        status: "published",
+        revision_id: "rev-ssh-1",
+        updated_at: "2026-10-25T00:00:00.000Z",
+        approver_kind: "owner",
+      },
+    ];
+
+    const sessionOutput = hooks.onSessionStart(items);
+    expect(sessionOutput).not.toBe("");
+    expect(sessionOutput).not.toContain("body");
+    expect(Buffer.byteLength(sessionOutput, "utf8")).toBeLessThanOrEqual(12 * 1024);
+
+    const unmatched = hooks.onUserPromptSubmit(items, "incident");
+    expect(unmatched).toBe("");
+
+    const deployPrompt = hooks.onUserPromptSubmit(items, "deploy");
+    expect(deployPrompt).toContain("adm/policy/deploy-safety");
+    expect(Buffer.byteLength(deployPrompt, "utf8")).toBeLessThanOrEqual(2 * 1024);
+
+    const deployRepeat = hooks.onUserPromptSubmit(items, "deploy");
+    expect(deployRepeat).toBe("");
+
+    expect(metrics.length).toBeGreaterThanOrEqual(4);
+    expect(metrics[0].kind).toBe("session_start");
+    expect(metrics[0].bytesAdded).toBeGreaterThan(0);
+    expect(metrics[1].kind).toBe("prompt");
+    expect(metrics[1].bytesAdded).toBe(0);
+    expect(metrics[2].kind).toBe("prompt");
+    expect(metrics[2].bytesAdded).toBeGreaterThan(0);
+    expect(metrics[3].kind).toBe("prompt");
+    expect(metrics[3].bytesAdded).toBe(0);
+  });
+
+  it("enforces context budget limits: SessionStart <= 12 KB, prompt <= 2 KB, and zero bytes on trigger mismatch", () => {
+    const metrics: Array<{ kind?: string; bytesAdded: number; sessionBytes: number }> = [];
+    const budget = new AdmContextBudget(12 * 1024, 2 * 1024, (event) => metrics.push(event));
+
+    const hugeItems: AdmKnowledgeMetadata[] = Array.from({ length: 150 }, (_, i) => ({
+      schema_version: 1,
+      slug: `adm/policy/policy-${i}`,
+      kind: "rule",
+      title: `Policy title ${i} `.repeat(5).slice(0, 160),
+      summary: `Policy summary ${i} `.repeat(20).slice(0, 300),
+      tags: ["deploy"],
+      triggers: ["deploy" as const],
+      priority: 50,
+      owner: "adm",
+      source_ref: "docs/ref.md",
+      sensitivity: "internal" as const,
+      status: "published" as const,
+      revision_id: `rev-${i}`,
+      updated_at: "2026-10-25T00:00:00.000Z",
+      approver_kind: "owner" as const,
+    }));
+
+    const startResult = budget.sessionStart(hugeItems);
+    expect(startResult).toBe("");
+    expect(metrics[metrics.length - 1]).toEqual(expect.objectContaining({
+      kind: "session_start",
+      bytesAdded: 0,
+    }));
+
+    const unmatched = budget.prompt(hugeItems.slice(0, 1), "unmatched-trigger");
+    expect(unmatched).toBe("");
+    expect(metrics[metrics.length - 1]).toEqual(expect.objectContaining({
+      kind: "prompt",
+      bytesAdded: 0,
+    }));
+
+    const bigPromptItems: AdmKnowledgeMetadata[] = Array.from({ length: 30 }, (_, i) => ({
+      schema_version: 1,
+      slug: `adm/trigger/trigger-${i}`,
+      kind: "rule",
+      title: `Trigger title ${i} `.repeat(5).slice(0, 160),
+      summary: `Trigger summary ${i} `.repeat(20).slice(0, 300),
+      tags: ["deploy"],
+      triggers: ["deploy" as const],
+      priority: 50,
+      owner: "adm",
+      source_ref: "docs/ref.md",
+      sensitivity: "internal" as const,
+      status: "published" as const,
+      revision_id: `rev-${i}`,
+      updated_at: "2026-10-25T00:00:00.000Z",
+      approver_kind: "owner" as const,
+    }));
+    const bigPromptResult = budget.prompt(bigPromptItems, "deploy");
+    expect(bigPromptResult).toBe("");
+    expect(metrics[metrics.length - 1]).toEqual(expect.objectContaining({
+      kind: "prompt",
+      bytesAdded: 0,
+    }));
   });
   it("persists slug+revision dedupe per session across compaction", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "adm-state-"));
