@@ -13,9 +13,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isUi2PhoneTabActive } from "../shell/Ui2PhoneNav";
 import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
-import { UI2_ROUTE_TABLE } from "../routes";
+import { UI2_ROUTE_TABLE, isUi2RouteElementAPlaceholder } from "../routes";
 import { UI2_SETTINGS_SECTIONS } from "../shell/Ui2SettingsSidebar";
-import { isUi2RouteElementAPlaceholder } from "../routes";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
 
 describe("myrmidon(UI2) route table integration", () => {
@@ -62,6 +61,13 @@ describe("myrmidon(UI2) route table integration", () => {
     for (const to of ["/knowledge", "/company/settings/autonomy/regulations"]) {
       expect(items.find((item) => item.to === to)?.requires).toBe("knowledge");
     }
+  });
+
+  it("includes mobile launcher-only visibility and dynamic height behavior", () => {
+    const phone = readFileSync(fileURLToPath(new URL("../shell/Ui2PhoneNav.tsx", import.meta.url)), "utf8");
+    expect(phone).toContain("const hasPlugins = pluginSlots.length > 0 || launchers.length > 0");
+    expect(phone).toContain("ResizeObserver");
+    expect(phone).toContain("useUi2I18n");
   });
 
   it("keeps the agents and servers routes reachable from both desktop and phone navigation", () => {
