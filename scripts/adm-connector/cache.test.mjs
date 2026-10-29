@@ -26,19 +26,56 @@ test('fresh refresh persists a private, versioned manifest and body checksum', a
   assert.equal((await stat(cache.directory)).mode & 0o777, 0o700);
 });
 const unavailable = async () => { throw new Error('upstream private detail'); };
-test('timeout aborts the request and uses validated cache with age', async t => {
+test('timeout aborts pending upstream fetch via AbortSignal and falls back or fails closed', async t => {
   let now = 1000;
   const events = [];
-  const cache = await fixture(t, { now: () => now, metric: event => events.push(event) });
+  const cache = await fixture(t, { now: () => now, timeoutMs: 15, metric: event => events.push(event) });
+
+  // 1. Initial timeout without prior cache aborts fetch and fails closed
+  let initialAbortFired = false;
+  let initialSignal;
+  const initialResult = await cache.read({
+    fetchItems: signal => {
+      initialSignal = signal;
+      return new Promise((_, reject) => {
+        signal.addEventListener('abort', () => {
+          initialAbortFired = true;
+          reject(new Error('aborted by timeout'));
+        });
+      });
+    },
+  });
+  assert.equal(initialAbortFired, true);
+  assert.equal(initialSignal.aborted, true);
+  assert.equal(initialResult.mode, 'fail-closed');
+  assert.equal(initialResult.hazardousAllowed, false);
+  assert.equal((await cache.health()).failures, 1);
+
+  // 2. Establish fresh snapshot
+  now += 2000;
   await cache.read({ fetchItems: async () => [item] });
+
+  // 3. Stale read: upstream timeout aborts fetch and falls back to validated cache with age
   now += 100;
-  let signal;
-  const result = await cache.read({ fetchItems: s => { signal = s; return new Promise(() => {}); } });
-  assert.equal(signal.aborted, true);
+  let staleAbortFired = false;
+  let staleSignal;
+  const result = await cache.read({
+    fetchItems: s => {
+      staleSignal = s;
+      return new Promise((_, reject) => {
+        s.addEventListener('abort', () => {
+          staleAbortFired = true;
+          reject(new Error('timed out'));
+        });
+      });
+    },
+  });
+  assert.equal(staleAbortFired, true);
+  assert.equal(staleSignal.aborted, true);
   assert.equal(result.mode, 'stale-read');
   assert.equal(result.ageMs, 100);
   assert.equal(result.warning, 'knowledge degraded');
-  assert(events.some(e => e.name === 'cache_stale'));
+  assert(events.some(e => e.name === 'cache_stale' && e.ageMs === 100));
 });
 test('expired cache is readable but cannot authorize a hazardous action', async t => {
   let now = 1000;
@@ -59,6 +96,85 @@ test('missing, truncated, tampered and wrong-signature cache fail closed', async
   const good = await readFile(cache.file, 'utf8');
   for (const corrupt of ['{', good.replace('Full policy', 'Altered body'), good.replace('"signature":"', '"signature":"bad')]) {
     await writeFile(cache.file, corrupt, { mode: 0o600 });
+    assert.equal((await cache.read({ fetchItems: unavailable })).mode, 'fail-closed');
+  }
+});
+test('signed manifest verification enforces HMAC signature, item digests, and scope', async t => {
+  const { createHash, createHmac } = await import('node:crypto');
+  const digest = val => createHash('sha256').update(JSON.stringify(val)).digest('hex');
+  const cache = await fixture(t);
+  await cache.read({ fetchItems: async () => [item] });
+
+  // 1. Reading cache with a mismatched integrity key fails HMAC verification and fails closed
+  const wrongKeyCache = new AdmCache({
+    profileDir: cache.profileDir,
+    company: 'company',
+    space: 'adm',
+    integrityKey: 'wrong-key-different-secret-32-chars-long',
+    timeoutMs: 10,
+  });
+  const wrongKeyResult = await wrongKeyCache.read({ fetchItems: unavailable });
+  assert.equal(wrongKeyResult.mode, 'fail-closed');
+
+  // 2. Tampered manifest with recomputed checksum but invalid HMAC fails closed
+  const raw = JSON.parse(await readFile(cache.file, 'utf8'));
+  const tamperedManifest = {
+    ...raw,
+    manifest: {
+      ...raw.manifest,
+      items: [{ ...raw.manifest.items[0], revision: 'rev-forged' }],
+    },
+  };
+  tamperedManifest.checksum = digest({ manifest: tamperedManifest.manifest, items: tamperedManifest.items });
+  await writeFile(cache.file, JSON.stringify(tamperedManifest), { mode: 0o600 });
+  assert.equal((await cache.read({ fetchItems: unavailable })).mode, 'fail-closed');
+
+  // 3. Forged HMAC signature using an attacker key fails closed
+  const attackerSignature = createHmac('sha256', 'attacker-key-that-is-not-the-configured-secret')
+    .update(JSON.stringify({ manifest: tamperedManifest.manifest, items: tamperedManifest.items }))
+    .digest('hex');
+  tamperedManifest.signature = attackerSignature;
+  await writeFile(cache.file, JSON.stringify(tamperedManifest), { mode: 0o600 });
+  assert.equal((await cache.read({ fetchItems: unavailable })).mode, 'fail-closed');
+
+  // 4. Mismatched per-item checksum in manifest fails closed
+  const badItemChecksum = {
+    ...raw,
+    manifest: {
+      ...raw.manifest,
+      items: [{ ...raw.manifest.items[0], checksum: '0'.repeat(64) }],
+    },
+  };
+  badItemChecksum.checksum = digest({ manifest: badItemChecksum.manifest, items: badItemChecksum.items });
+  badItemChecksum.signature = cache.sign({ manifest: badItemChecksum.manifest, items: badItemChecksum.items });
+  await writeFile(cache.file, JSON.stringify(badItemChecksum), { mode: 0o600 });
+  assert.equal((await cache.read({ fetchItems: unavailable })).mode, 'fail-closed');
+
+  // 5. Future fetched_at in manifest fails closed
+  const futureManifest = {
+    ...raw,
+    manifest: {
+      ...raw.manifest,
+      fetched_at: Date.now() + 100_000,
+    },
+  };
+  futureManifest.checksum = digest({ manifest: futureManifest.manifest, items: futureManifest.items });
+  futureManifest.signature = cache.sign({ manifest: futureManifest.manifest, items: futureManifest.items });
+  await writeFile(cache.file, JSON.stringify(futureManifest), { mode: 0o600 });
+  assert.equal((await cache.read({ fetchItems: unavailable })).mode, 'fail-closed');
+
+  // 6. Manifest scope mismatch (different company or space) fails closed
+  for (const field of ['company', 'space']) {
+    const wrongScope = {
+      ...raw,
+      manifest: {
+        ...raw.manifest,
+        [field]: 'other-value',
+      },
+    };
+    wrongScope.checksum = digest({ manifest: wrongScope.manifest, items: wrongScope.items });
+    wrongScope.signature = cache.sign({ manifest: wrongScope.manifest, items: wrongScope.items });
+    await writeFile(cache.file, JSON.stringify(wrongScope), { mode: 0o600 });
     assert.equal((await cache.read({ fetchItems: unavailable })).mode, 'fail-closed');
   }
 });
