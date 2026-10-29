@@ -68,6 +68,9 @@ export function ModelProvidersScreenView({
   removing,
   onToggleModel,
   savingModels,
+  onRollback,
+  rollingBack,
+  rollbackError,
   error,
 }: {
   view: ModelProvidersView;
@@ -88,6 +91,9 @@ export function ModelProvidersScreenView({
     models: Array<{ modelName: string; litellmModelName: string; enabled: boolean; free: boolean }>,
   ) => void;
   savingModels: boolean;
+  onRollback?: (auditId: string) => void;
+  rollingBack?: boolean;
+  rollbackError?: string | null;
   error: string | null;
 }) {
   const { t } = useTranslation();
@@ -96,6 +102,8 @@ export function ModelProvidersScreenView({
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [rotateId, setRotateId] = useState<string | null>(null);
   const [rotateKey, setRotateKey] = useState("");
+  const [confirmRollbackId, setConfirmRollbackId] = useState<string | null>(null);
+  const [expandedDiffId, setExpandedDiffId] = useState<string | null>(null);
 
   // The add form resets when the provider list changes after a save: the raw
   // key never survives a successful mutation in this component's state.
@@ -284,23 +292,119 @@ export function ModelProvidersScreenView({
 
       {/* 3. Change log */}
       <section className="space-y-2" data-testid="myrmidon-model-providers-changelog">
-        <h2 className="text-sm font-semibold">{t("modelProviders.changeLog.title")}</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold">{t("modelProviders.changeLog.title")}</h2>
+          <span className="text-xs text-muted-foreground">{t("modelProviders.changeLog.secretsRedacted")}</span>
+        </div>
+        {rollbackError && (
+          <p className="text-xs text-destructive" data-testid="myrmidon-model-providers-rollback-error">
+            {rollbackError}
+          </p>
+        )}
         {view.changeLog.length === 0 ? (
           <p className="text-sm text-muted-foreground" data-testid="myrmidon-model-providers-changelog-empty">
             {t("modelProviders.changeLog.empty")}
           </p>
         ) : (
-          <ol className="space-y-1">
+          <ol className="space-y-2">
             {view.changeLog.map((entry) => (
               <li
                 key={entry.id}
-                className="flex flex-col border-b border-border pb-1 last:border-b-0 text-sm"
+                className="flex flex-col gap-1 border-b border-border pb-2 last:border-b-0 text-sm"
                 data-testid="myrmidon-model-providers-changelog-entry"
               >
-                <span className="font-mono text-xs">{entry.action}</span>
-                <span className="text-xs text-muted-foreground">
-                  {formatTime(entry.at)} · {entry.summary}
-                </span>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs font-medium">{entry.action}</span>
+                    {entry.category && (
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                        {entry.category}
+                      </span>
+                    )}
+                  </div>
+                  {entry.canRollback && onRollback && (
+                    <div>
+                      {confirmRollbackId === entry.id ? (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs text-muted-foreground">
+                            {t("modelProviders.changeLog.rollbackConfirm")}
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            className="h-7 text-xs"
+                            disabled={rollingBack}
+                            onClick={() => {
+                              onRollback(entry.id);
+                              setConfirmRollbackId(null);
+                            }}
+                            data-testid="myrmidon-model-providers-changelog-rollback-confirm"
+                          >
+                            {rollingBack ? t("modelProviders.changeLog.rollingBack") : t("modelProviders.changeLog.rollback")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 text-xs"
+                            onClick={() => setConfirmRollbackId(null)}
+                          >
+                            {t("common.cancel")}
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={() => setConfirmRollbackId(entry.id)}
+                          data-testid="myrmidon-model-providers-changelog-rollback"
+                        >
+                          {t("modelProviders.changeLog.rollback")}
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span>{formatTime(entry.at)}</span>
+                  <span>·</span>
+                  <span>
+                    {t("modelProviders.changeLog.actor")}: {entry.actor?.type ?? "user"}:{entry.actor?.id ?? "board"}
+                  </span>
+                  <span>·</span>
+                  <span>{entry.summary}</span>
+                </div>
+                {(entry.before || entry.after) && (
+                  <div className="mt-1">
+                    <button
+                      type="button"
+                      className="text-[11px] text-muted-foreground underline hover:text-foreground"
+                      onClick={() => setExpandedDiffId((curr) => (curr === entry.id ? null : entry.id))}
+                    >
+                      {expandedDiffId === entry.id ? "Hide diff" : "Show diff"}
+                    </button>
+                    {expandedDiffId === entry.id && (
+                      <div className="mt-1 grid grid-cols-2 gap-2 rounded bg-muted/40 p-2 text-xs font-mono">
+                        <div>
+                          <div className="text-[10px] font-semibold uppercase text-muted-foreground">
+                            {t("modelProviders.changeLog.before")}
+                          </div>
+                          <pre className="max-h-32 overflow-auto whitespace-pre-wrap">
+                            {entry.before ? JSON.stringify(entry.before, null, 2) : "null"}
+                          </pre>
+                        </div>
+                        <div>
+                          <div className="text-[10px] font-semibold uppercase text-muted-foreground">
+                            {t("modelProviders.changeLog.after")}
+                          </div>
+                          <pre className="max-h-32 overflow-auto whitespace-pre-wrap">
+                            {entry.after ? JSON.stringify(entry.after, null, 2) : "null"}
+                          </pre>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </li>
             ))}
           </ol>

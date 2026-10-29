@@ -54,9 +54,13 @@ export interface ModelProviderModelsView {
 export interface ModelProviderChangeLogEntry {
   id: string;
   at: string;
-  actor: { type: "board" | "agent" | "system"; id: string };
-  action: "provider_added" | "provider_rotated" | "provider_removed" | "models_updated";
+  actor: { type: "board" | "agent" | "system" | string; id: string };
+  action: "provider_added" | "provider_rotated" | "provider_removed" | "models_updated" | string;
   summary: string;
+  category?: "models" | "fallbacks" | "keys" | string;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  canRollback?: boolean;
 }
 
 export type PoolAccountState =
@@ -203,6 +207,20 @@ export const modelProvidersApi = {
   channels: (companyId: string, providerId: string) =>
     api.get<ModelProviderChannelsView>(
       `${base(companyId)}/providers/${encodeURIComponent(providerId)}/channels`,
+    ),
+};
+
+export const litellmAuditApi = {
+  list: (companyId: string, category?: string) => {
+    const q = category ? `?category=${encodeURIComponent(category)}` : "";
+    return api.get<{ entries: ModelProviderChangeLogEntry[] }>(
+      `/api/myrmidon/companies/${encodeURIComponent(companyId)}/litellm/audit${q}`,
+    );
+  },
+  rollback: (companyId: string, auditId: string) =>
+    api.post<{ success: boolean; result: unknown }>(
+      `/api/myrmidon/companies/${encodeURIComponent(companyId)}/litellm/audit/${encodeURIComponent(auditId)}/rollback`,
+      {},
     ),
 };
 

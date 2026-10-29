@@ -30,12 +30,18 @@ import { createLitellmSyncService, type LitellmSyncService } from "../litellm-sy
 import { createLitellmSyncClient } from "../litellm-sync/client.js";
 import { defaultAgentGatewayKeyDeps } from "../litellm-keys/agent-keys.js";
 import { updateAgentAllowlistsForCompany } from "../litellm-sync/agent-allowlist-handler.js";
+import { createLiteLlmAuditService } from "../litellm-audit/service.js";
+import { redactCredentials } from "../litellm-audit/redaction.js";
 
 /** The activity row of one model-provider mutation (add / rotate / remove). */
 export async function recordModelProviderActivity(
   db: Db,
   entry: ModelProviderActivityEntry,
 ): Promise<void> {
+  const sanitizedDetails = redactCredentials(entry.details ?? {}) as Record<string, unknown>;
+  if (!sanitizedDetails.category) {
+    sanitizedDetails.category = "models";
+  }
   await logActivity(db, {
     companyId: entry.companyId,
     actorType: "user",
@@ -43,7 +49,7 @@ export async function recordModelProviderActivity(
     action: entry.action,
     entityType: "model_provider",
     entityId: entry.providerId,
-    details: entry.details,
+    details: sanitizedDetails,
   });
 }
 
@@ -108,12 +114,15 @@ export function myrmidonModelProviderRoutes(db: Db, env: NodeJS.ProcessEnv = pro
     return createLitellmSyncService({ db, litellm: client });
   }
 
+  const auditService = createLiteLlmAuditService(db);
+
   const deps: ModelProviderRoutesWithSyncDeps = {
     service: modelProviderService,
     getLitellmSync: syncForCompany,
     refreshAgentAllowlists: (companyId) =>
       updateAgentAllowlistsForCompany(db, defaultAgentGatewayKeyDeps(db, env), companyId),
     recordActivity: (entry) => recordModelProviderActivity(db, entry),
+    listChangeLog: (companyId) => auditService.list(companyId, { limit: 50 }),
   };
 
   return modelProviderRoutesWithSync(deps);

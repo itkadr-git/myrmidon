@@ -427,5 +427,55 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
     const options = Array.from(typeSelect?.options ?? []).map((o) => o.value);
     expect(options).toContain("chatgpt-pool");
   });
+
+  it("renders audit log entry with actor, action, category, and rollback button", async () => {
+    const onRollback = vi.fn();
+    const testView: ModelProvidersView = {
+      providers: [],
+      changeLog: [
+        {
+          id: "audit-1",
+          at: "2026-10-02T12:00:00.000Z",
+          actor: { type: "board", id: "user-123" },
+          action: "model_provider_models_updated",
+          category: "models",
+          summary: "Updated models for provider",
+          canRollback: true,
+          before: { models: [{ modelName: "gpt-4o", enabled: false }] },
+          after: { models: [{ modelName: "gpt-4o", enabled: true }] },
+        },
+      ],
+    };
+
+    const { root: r } = render({ view: testView, onRollback });
+    root = r;
+    await flushReact();
+
+    const entry = container.querySelector('[data-testid="myrmidon-model-providers-changelog-entry"]');
+    expect(entry).not.toBeNull();
+    expect(entry?.textContent).toContain("model_provider_models_updated");
+    expect(entry?.textContent).toContain("board:user-123");
+    expect(entry?.textContent).toContain("MODELS");
+
+    // Click Rollback button
+    const rollbackBtn = container.querySelector('[data-testid="myrmidon-model-providers-changelog-rollback"]');
+    expect(rollbackBtn).not.toBeNull();
+
+    await act(async () => {
+      rollbackBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Confirm button appears
+    const confirmBtn = container.querySelector(
+      '[data-testid="myrmidon-model-providers-changelog-rollback-confirm"]',
+    );
+    expect(confirmBtn).not.toBeNull();
+
+    await act(async () => {
+      confirmBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onRollback).toHaveBeenCalledWith("audit-1");
+  });
 });
 

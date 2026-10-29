@@ -157,10 +157,16 @@ export interface ModelProviderModelView {
   free: boolean;
 }
 
-/** Activity-log entry of add / rotate / remove. */
+/** Activity-log entry of add / rotate / remove / patch / setModels. */
 export interface ModelProviderActivityEntry {
   companyId: string;
-  action: "model_provider_added" | "model_provider_key_rotated" | "model_provider_removed";
+  action:
+    | "model_provider_added"
+    | "model_provider_key_rotated"
+    | "model_provider_removed"
+    | "model_provider_patched"
+    | "model_provider_models_updated"
+    | (string & {});
   providerId: string;
   details: Record<string, unknown>;
 }
@@ -486,6 +492,30 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
 
     await deps.db.update(modelProviders).set(patch).where(eq(modelProviders.id, row.id));
     const updated = await loadProvider(input.companyId, input.providerId);
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_patched",
+      providerId: row.id,
+      details: {
+        category: "models",
+        name: updated.name,
+        before: {
+          name: row.name,
+          baseUrl: row.baseUrl,
+          free: row.free,
+          rpmLimit: row.rpmLimit,
+          packageName: row.packageName,
+        },
+        after: {
+          name: updated.name,
+          baseUrl: updated.baseUrl,
+          free: updated.free,
+          rpmLimit: updated.rpmLimit,
+          packageName: updated.packageName,
+        },
+        canRollback: true,
+      },
+    });
     return view(updated, await hasKeyFor(updated));
   }
 
@@ -554,8 +584,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     companyId: string;
     providerId: string;
     models: Array<{ modelName: string; enabled?: boolean; free?: boolean }>;
+    activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
   }): Promise<ModelProviderModelView[]> {
     const provider = await loadProvider(input.companyId, input.providerId);
+    const beforeModels = await listModels(input.companyId, input.providerId);
     for (const model of input.models) {
       const patch: Partial<typeof modelProviderModels.$inferInsert> = { updatedAt: now() };
       if (model.enabled !== undefined) patch.enabled = model.enabled;
@@ -570,7 +602,19 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
           ),
         );
     }
-    return listModels(input.companyId, input.providerId);
+    const afterModels = await listModels(input.companyId, input.providerId);
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_models_updated",
+      providerId: provider.id,
+      details: {
+        category: "models",
+        before: { models: beforeModels },
+        after: { models: afterModels },
+        canRollback: true,
+      },
+    });
+    return afterModels;
   }
 
   function mapStateToRu(state: string): string {

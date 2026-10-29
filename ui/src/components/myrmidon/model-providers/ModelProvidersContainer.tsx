@@ -20,6 +20,7 @@ import {
   modelProviderModelsQueryKey,
   modelProvidersApi,
   modelProvidersQueryKey,
+  litellmAuditApi,
   type AddModelProviderInput,
   type ModelProviderModelView,
   type ModelProvidersView,
@@ -99,6 +100,15 @@ export function ModelProvidersScreen() {
     onError: (err) => setMutationError(readable(err)),
   });
 
+  const rollbackMutation = useMutation({
+    mutationFn: (auditId: string) => litellmAuditApi.rollback(companyId, auditId),
+    onMutate: () => setMutationError(null),
+    onSuccess: () => {
+      void invalidate();
+    },
+    onError: (err) => setMutationError(readable(err)),
+  });
+
   if (companyId.length === 0) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="myrmidon-model-providers-no-company">
@@ -138,6 +148,9 @@ export function ModelProvidersScreen() {
       removing={removeMutation.isPending}
       onToggleModel={(providerId, models) => updateModelsMutation.mutate({ providerId, models })}
       savingModels={updateModelsMutation.isPending}
+      onRollback={(auditId) => rollbackMutation.mutate(auditId)}
+      rollingBack={rollbackMutation.isPending}
+      rollbackError={rollbackMutation.isError ? readable(rollbackMutation.error) : null}
       error={mutationError}
     />
   );

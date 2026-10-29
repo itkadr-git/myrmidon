@@ -139,6 +139,7 @@ import { myrmidonLitellmCostsRoutes } from "./myrmidon/litellm-costs/routes.js";
 import { myrmidonLitellmKeysRoutes } from "./myrmidon/litellm-keys/routes.js"; // myrmidon(M2-B)
 // myrmidon(1.6.1 MODEL-PROVIDERS A): company model-provider registry, secrets, settings API
 import { myrmidonModelProviderRoutes } from "./myrmidon/model-providers/wiring.js";
+import { myrmidonLitellmAuditRoutes } from "./myrmidon/litellm-audit/wiring.js"; // myrmidon(OPE-9857)
 import { bindModelProviderPluginLifecycle } from "./myrmidon/model-providers/plugin-lifecycle.js"; // myrmidon(1.6.6 OPE-7198)
 import { myrmidonAgentExchangeRoutes } from "./myrmidon/agent-exchange/wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 // myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms and
@@ -1151,6 +1152,7 @@ export async function createApp(
   api.use(myrmidonLitellmCostsRoutes(db)); // myrmidon(M2-A): gateway-collected costs and model catalog
   api.use(myrmidonLitellmKeysRoutes(db)); // myrmidon(M2-B): per-agent gateway keys and fallback topology
   api.use(myrmidonModelProviderRoutes(db)); // myrmidon(1.6.1 MODEL-PROVIDERS A+B): model-provider store, settings API and LiteLLM sync
+  api.use(myrmidonLitellmAuditRoutes(db)); // myrmidon(OPE-9857): LiteLLM settings audit log and safe rollback
   api.use(myrmidonAgentExchangeRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards
   api.use(myrmidonAgentExchangeFeedRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-B): owner feed + «to skill» candidate
   api.use(myrmidonBaselineRoutes(db)); // myrmidon(1.6-BASELINE): cycle/review/return/blocked/run/cost metrics
