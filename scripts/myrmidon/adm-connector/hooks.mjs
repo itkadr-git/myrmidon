@@ -19,8 +19,12 @@ const key = item => JSON.stringify([item.slug, item.revision_id]);
 const summary = item => `${Array.from(`${item.title}: ${item.summary}`).slice(0, 300).join('')} [${item.slug}@${item.revision_id}]`;
 
 /** load is the validated cache/REST boundary; never accept an unchecked disk cache here. */
-export function createHooks({ stateDir, load, log = async () => {} }) {
+export function createHooks({ stateDir, load, log = async () => {}, mode = 'main' }) {
   return { async run(event) {
+    const effectiveMode = event.mode ?? mode;
+    if (effectiveMode === 'disabled') {
+      return { context: '', bytes: 0, sessionBytes: 0, mode: 'disabled', shadow: false };
+    }
     if (!['SessionStart', 'UserPromptSubmit'].includes(event.hook_event_name) || typeof event.session_id !== 'string' || !event.session_id) throw new Error('Invalid hook event');
     await mkdir(stateDir, { recursive: true, mode: 0o700 });
     const path = `${stateDir}/${createHash('sha256').update(event.session_id).digest('hex')}.json`;
@@ -89,8 +93,8 @@ export function createHooks({ stateDir, load, log = async () => {} }) {
       const temp = `${path}.${randomUUID()}`;
       await writeFile(temp, JSON.stringify(next), { mode: 0o600 });
       await rename(temp, path);
-      await log({ event: event.hook_event_name, session: createHash('sha256').update(event.session_id).digest('hex'), bytes: added, sessionBytes: next.sessionBytes });
-      return { context, bytes: added, sessionBytes: next.sessionBytes };
+      await log({ event: event.hook_event_name, session: createHash('sha256').update(event.session_id).digest('hex'), bytes: added, sessionBytes: next.sessionBytes, mode: effectiveMode });
+      return { context, bytes: added, sessionBytes: next.sessionBytes, mode: effectiveMode, shadow: effectiveMode === 'shadow' };
     } finally { await rm(lock, { recursive: true, force: true }); }
   } };
 }
