@@ -18805,8 +18805,13 @@ export function heartbeatService(
         isNull(issues.executionRunId),
         issueHasNoExecutionHold(db),
         sql`not exists (
-          select 1 from issue_blockers ib join issues blocker on blocker.id = ib.blocker_issue_id
-          where ib.issue_id = ${issues.id} and ${blockerOpenSql('blocker.status')}
+          select 1
+          from issue_relations ir
+            join issues blocker on blocker.id = ir.issue_id and blocker.company_id = ${issues.companyId}
+          where ir.company_id = ${issues.companyId}
+            and ir.related_issue_id = ${issues.id}
+            and ir.type = 'blocks'
+            and ${blockerOpenSql('blocker.status')}
         )`,
         sql`${issues.executionState} ->> 'status' in ('pending', 'waiting')`,
         sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
