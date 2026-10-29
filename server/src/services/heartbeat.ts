@@ -18779,10 +18779,22 @@ export function heartbeatService(
   async function pickupReviewForAgent(agent: { id: string; companyId: string }, excludeIssueId?: string) {
     let woken = 0;
     const handled = await pickupNextReview({
-      serialize: (work) => db.transaction(async (tx) => {
-        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`review-pickup:${agent.companyId}:${agent.id}`}, 0))`);
-        return work();
-      }),
+      serialize: async (work) => {
+        const [candidateExists] = await db.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.status, "in_review"),
+          isNull(issues.executionRunId),
+          sql`${issues.executionState} ->> 'status' in ('pending', 'waiting')`,
+          sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+          sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
+          sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agent.id}`,
+        )).limit(1);
+        if (!candidateExists) return false;
+        return db.transaction(async (tx) => {
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`review-pickup:${agent.companyId}:${agent.id}`}, 0))`);
+          return work();
+        });
+      },
       hasWorkInFlight: async () => {
         const [live] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, agent.companyId),
@@ -28334,9 +28346,15 @@ export function heartbeatService(
           const releasedIssueId = readNonEmptyString(
             parseObject(releasedRun.contextSnapshot).issueId,
           );
+          const releasedSnapshot = parseObject(releasedRun.contextSnapshot);
+          const isReviewerRun =
+            releasedAgent?.role === "reviewer" ||
+            readNonEmptyString(releasedSnapshot.wakeReason) === "execution_review_requested" ||
+            readNonEmptyString(parseObject(releasedSnapshot.executionStage).stageType) === "review" ||
+            readNonEmptyString(releasedSnapshot.source) === "review_pickup";
           // OPE-9676: participants in review are not issue assignees. Select
           // their waiting review queue before the general development queues.
-          if (pickupAllowed && releasedAgent) {
+          if (pickupAllowed && releasedAgent && isReviewerRun) {
             const { handled: reviewHandled } = await pickupReviewForAgent(
               { id: releasedRun.agentId, companyId: releasedRun.companyId }, releasedIssueId ?? undefined,
             );
