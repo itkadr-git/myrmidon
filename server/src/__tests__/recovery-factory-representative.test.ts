@@ -8,7 +8,11 @@ import { classifyGithubRecoveryCause } from "../services/recovery-factory/classi
 import { classifyWorkspaceRecoveryCause } from "../services/recovery-factory/classify-workspace.js";
 import { classifyDiskRecoveryCause } from "../services/recovery-factory/classify-disk-operator.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { representativeRecoveryFixtures, type RepresentativeRecoveryFixture } from "./__fixtures__/recovery-factory-representative.js";
+import {
+  measuredSampleArtifact,
+  representativeRecoveryFixtures,
+  type RepresentativeRecoveryFixture,
+} from "./__fixtures__/recovery-factory-representative.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 if (process.env.CI && !support.supported) {
@@ -57,7 +61,7 @@ describePg("representative recovery factory PostgreSQL replay", () => {
     // R4/R5 expose category scopes rather than resource identities. The caller
     // must add its concrete workspace/host scope before invoking R7. These are
     // synthetic replay identities; the signal text above remains unchanged.
-    const scope = `${classification.scope}:${resourceScope}`;
+    const scope = `${classification.scope}:${resourceScope}` + (fixture.provenance ? `:${fixture.provenance.incidentId}` : "");
     return {
       kind: classification.kind,
       sourceIssueId: context.sourceIssueId,
@@ -66,9 +70,48 @@ describePg("representative recovery factory PostgreSQL replay", () => {
       slaMinutes: 30,
       nextCheckAt: "2026-12-01T10:00:00Z",
       runbookRef: "OPE-8312#5.7",
-      evidence: { source: fixture.source, signal: fixture.signal, cause: classification.cause, scope },
+      evidence: {
+        source: fixture.source,
+        signal: fixture.signal,
+        cause: classification.cause,
+        scope,
+        provenance: fixture.provenance,
+      },
     };
   }
+
+  it("verifies the sampling artifact mapping to the OPE-8312 §5.7 measured 38/31/15 dataset", () => {
+    expect(measuredSampleArtifact.designReference).toBe("OPE-8312 §1, §2, §5.7");
+    expect(measuredSampleArtifact.categories.github_38.measuredCount).toBe(38);
+    expect(measuredSampleArtifact.categories.workspace_31.measuredCount).toBe(31);
+    expect(measuredSampleArtifact.categories.disk_15.measuredCount).toBe(15);
+
+    for (const fixture of representativeRecoveryFixtures) {
+      expect(fixture.provenance).toBeDefined();
+      expect(fixture.provenance.incidentId).toMatch(/^OPE-\d+/);
+      expect(fixture.provenance.incidentReference.length).toBeGreaterThan(10);
+      expect(fixture.provenance.observedSymptom.length).toBeGreaterThan(10);
+      expect(fixture.source).toContain(fixture.provenance.incidentId);
+    }
+
+    const githubFixtures = representativeRecoveryFixtures.filter(f => f.provenance.measuredGroup === "github_38");
+    const workspaceFixtures = representativeRecoveryFixtures.filter(f => f.provenance.measuredGroup === "workspace_31");
+    const diskFixtures = representativeRecoveryFixtures.filter(f => f.provenance.measuredGroup === "disk_15");
+
+    expect(githubFixtures.length).toBeGreaterThanOrEqual(3);
+    expect(workspaceFixtures.length).toBeGreaterThanOrEqual(3);
+    expect(diskFixtures.length).toBeGreaterThanOrEqual(3);
+
+    expect(githubFixtures.map(f => f.provenance.incidentId)).toEqual(
+      expect.arrayContaining(["OPE-8225", "OPE-7787"])
+    );
+    expect(workspaceFixtures.map(f => f.provenance.incidentId)).toEqual(
+      expect.arrayContaining(["OPE-7946", "OPE-8294", "OPE-6415"])
+    );
+    expect(diskFixtures.map(f => f.provenance.incidentId)).toEqual(
+      expect.arrayContaining(["OPE-8215", "OPE-6718", "OPE-7946", "OPE-9254"])
+    );
+  });
 
   it("keeps at least twelve distinct sourced causes with three to five per group", () => {
     expect(representativeRecoveryFixtures.length).toBeGreaterThanOrEqual(12);
