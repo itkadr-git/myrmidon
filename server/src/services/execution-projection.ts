@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
+  heartbeatRunEvents,
   heartbeatRuns,
   issueRecoveryActions,
   issueThreadInteractions,
@@ -7,9 +8,38 @@ import {
   type Db,
 } from "@myrmidon/db";
 import type { ExecutionProjection } from "@myrmidon/shared";
+import { readProductEnv } from "@myrmidon/shared/env-alias";
 import { EXECUTION_CONTROL_DEADLINE_MS } from "./execution-control-deadline.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+
+export const DEFAULT_EXECUTION_LIVE_SIGNAL_WINDOW_SEC = 120;
+export const EXECUTION_LIVE_SIGNAL_WINDOW_SEC_ENV = "EXECUTION_LIVE_SIGNAL_WINDOW_SEC";
+
+export function getExecutionLiveSignalWindowSec(overrideSec?: number): number {
+  if (typeof overrideSec === "number" && !isNaN(overrideSec) && overrideSec > 0) {
+    return overrideSec;
+  }
+  const raw =
+    readProductEnv(EXECUTION_LIVE_SIGNAL_WINDOW_SEC_ENV) ??
+    readProductEnv("EXECUTION_PROJECTION_LIVE_SIGNAL_SEC");
+  if (raw) {
+    const parsed = Number(raw);
+    if (!isNaN(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return DEFAULT_EXECUTION_LIVE_SIGNAL_WINDOW_SEC;
+}
+
 const text = (v: unknown) => (typeof v === "string" ? v : null);
+const toDate = (v: unknown): Date | null => {
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+  if (typeof v === "string" || typeof v === "number") {
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+};
 const executionRunColumns = {
   id: heartbeatRuns.id,
   errorCode: heartbeatRuns.errorCode,
@@ -27,12 +57,17 @@ const executionRunColumns = {
   scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
   startedAt: heartbeatRuns.startedAt,
   status: heartbeatRuns.status,
+  updatedAt: heartbeatRuns.updatedAt,
   contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
     'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
     'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
     'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait')`,
 };
-type Run = Pick<typeof heartbeatRuns.$inferSelect, keyof typeof executionRunColumns>;
+type ExecutionRunSelect = Pick<typeof heartbeatRuns.$inferSelect, keyof typeof executionRunColumns>;
+type Run = Omit<ExecutionRunSelect, "updatedAt"> & {
+  updatedAt?: Date | string | null;
+  lastEventAt?: Date | string | null;
+};
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
 type Recovery = Pick<
   typeof issueRecoveryActions.$inferSelect,
@@ -48,6 +83,7 @@ export async function executionProjectionsForRuns(
   companyId: string,
   runIds: string[],
   now = new Date(),
+  options?: { liveSignalWindowSec?: number },
 ) {
   const projections = new Map<string, ExecutionProjection>();
   if (!runIds.length) return projections;
@@ -69,6 +105,25 @@ export async function executionProjectionsForRuns(
         inArray(nativeRunFinalizations.runId, runIds),
       ),
     );
+  const runEvents = await db
+    .select({
+      runId: heartbeatRunEvents.runId,
+      lastEventAt: sql<Date | string | null>`max(${heartbeatRunEvents.createdAt})`,
+    })
+    .from(heartbeatRunEvents)
+    .where(
+      and(
+        eq(heartbeatRunEvents.companyId, companyId),
+        inArray(heartbeatRunEvents.runId, runIds),
+      ),
+    )
+    .groupBy(heartbeatRunEvents.runId);
+  const lastEventByRun = new Map(
+    runEvents.map((row) => [
+      row.runId,
+      toDate(row.lastEventAt),
+    ]),
+  );
   const issueIds = [
     ...new Set(
       runs
@@ -128,34 +183,42 @@ export async function executionProjectionsForRuns(
     projections.set(
       run.id,
       projectExecution(
-        run,
+        {
+          ...run,
+          lastEventAt: lastEventByRun.get(run.id) ?? null,
+        },
         coordinatorByRun.get(run.id),
         pending.filter((row) => row.issueId === issueId),
         action,
         now,
+        options,
       ),
     );
   }
   return projections;
 }
+
 export async function executionProjectionForRun(
   db: Db,
   companyId: string,
   runId: string,
   now = new Date(),
+  options?: { liveSignalWindowSec?: number },
 ): Promise<ExecutionProjection | null> {
   return (
-    (await executionProjectionsForRuns(db, companyId, [runId], now)).get(
+    (await executionProjectionsForRuns(db, companyId, [runId], now, options)).get(
       runId,
     ) ?? null
   );
 }
+
 export function projectExecution(
   run: Run,
   coordinator: Coordinator | undefined,
   pending: Array<{ kind: string }>,
   recoveryAction: Recovery | undefined,
   now = new Date(),
+  options?: { liveSignalWindowSec?: number },
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
@@ -163,12 +226,18 @@ export function projectExecution(
     phase: "queued",
     label: "Queued",
     cause: run.errorCode ?? coordinator?.failureCode ?? null,
-    lastConfirmedActivityAt:
-      (
-        run.lastUsefulActionAt ??
-        run.lastOutputAt ??
-        run.startedAt
-      )?.toISOString() ?? null,
+    lastConfirmedActivityAt: (() => {
+      const dates = [
+        run.lastUsefulActionAt,
+        run.lastOutputAt,
+        run.lastEventAt,
+        run.startedAt,
+      ]
+        .map(toDate)
+        .filter((d): d is Date => d !== null);
+      if (!dates.length) return null;
+      return new Date(Math.max(...dates.map((d) => d.getTime()))).toISOString();
+    })(),
     retryAt:
       (coordinator?.nextAttemptAt ?? run.scheduledRetryAt)?.toISOString() ??
       null,
@@ -302,7 +371,28 @@ export function projectExecution(
         /* No execution confirmation. */
       }
     }
-    return leaseConfirmed || processConfirmed
+    let signalConfirmed = false;
+    if (!coordinator && !run.processPid) {
+      const windowSec = getExecutionLiveSignalWindowSec(options?.liveSignalWindowSec);
+      const windowMs = windowSec * 1000;
+      const signalDates = [
+        run.lastEventAt,
+        run.updatedAt,
+        run.lastOutputAt,
+        run.lastUsefulActionAt,
+      ]
+        .map(toDate)
+        .filter((d): d is Date => d !== null);
+
+      if (signalDates.length > 0) {
+        const latestSignalMs = Math.max(...signalDates.map((d) => d.getTime()));
+        const diffMs = now.getTime() - latestSignalMs;
+        if (diffMs <= windowMs && diffMs >= -60_000) {
+          signalConfirmed = true;
+        }
+      }
+    }
+    return leaseConfirmed || processConfirmed || signalConfirmed
       ? set("working", "Working")
       : set("reconnecting", "Confirming execution");
   }
