@@ -1,4 +1,4 @@
-// myrmidon(1.6.6-HERMES-SKILLS-A): deliver Paperclip-managed skills to a
+// myrmidon(1.6.6-HERMES-SKILLS-A): deliver Myrmidon-managed skills to a
 // gateway-profile agent and verify the delivery by reading the profile back.
 //
 // Route decision (the ticket's part 2б): the hermes API surface of the pinned
@@ -133,13 +133,13 @@ export async function reconcileGatewayPaperclipSkills(
     if (!desiredSet.has(entry.key)) continue;
     if (isPaperclipSkillSourceMissing(entry)) {
       throw new Error(
-        `Cannot start without the required Paperclip-managed skills: ${entry.key}: skill source is missing`,
+        `Cannot start without the required Myrmidon-managed skills: ${entry.key}: skill source is missing`,
       );
     }
     const source = asString(entry.source);
     if (!source) {
       throw new Error(
-        `Cannot start without the required Paperclip-managed skills: ${entry.key}: skill source is missing`,
+        `Cannot start without the required Myrmidon-managed skills: ${entry.key}: skill source is missing`,
       );
     }
     let content: string;
@@ -148,12 +148,12 @@ export async function reconcileGatewayPaperclipSkills(
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `Cannot start without the required Paperclip-managed skills: ${entry.key}: cannot read the skill source (${reason})`,
+        `Cannot start without the required Myrmidon-managed skills: ${entry.key}: cannot read the skill source (${reason})`,
       );
     }
     if (typeof content !== "string" || content.trim().length === 0) {
       throw new Error(
-        `Cannot start without the required Paperclip-managed skills: ${entry.key}: SKILL.md is empty or not text`,
+        `Cannot start without the required Myrmidon-managed skills: ${entry.key}: SKILL.md is empty or not text`,
       );
     }
     const name = resolveGatewaySkillName(entry);
@@ -163,7 +163,7 @@ export async function reconcileGatewayPaperclipSkills(
   entries.sort((a, b) => a.path.localeCompare(b.path));
   if (entries.length > 0) {
     await options.onLog?.(
-      `[hermes-gateway] Delivering ${entries.length} Paperclip-managed skill(s) in the run body: ${entries.map((e) => e.name).join(", ")}\n`,
+      `[hermes-gateway] Delivering ${entries.length} Myrmidon-managed skill(s) in the run body: ${entries.map((e) => e.name).join(", ")}\n`,
     );
   }
   return { skills: entries, desiredSkills, expected, unavailable };
@@ -183,7 +183,7 @@ function joinPath(dir: string, leaf: string): string {
  * the field that is about to cross the wire.
  *
  * Throws a message of the form
- * "Cannot start without the required Paperclip-managed skills: <skill>: <reason>"
+ * "Cannot start without the required Myrmidon-managed skills: <skill>: <reason>"
  * (the hermes_local execute.ts:386 mirror) when a desired skill is absent.
  */
 export function factCheckGatewayPaperclipSkills(input: {
@@ -194,7 +194,7 @@ export function factCheckGatewayPaperclipSkills(input: {
   for (const { key, name } of input.expected) {
     if (!present.has(name)) {
       throw new Error(
-        `Cannot start without the required Paperclip-managed skills: ${key} (${name}): missing from the assembled run-body field`,
+        `Cannot start without the required Myrmidon-managed skills: ${key} (${name}): missing from the assembled run-body field`,
       );
     }
   }

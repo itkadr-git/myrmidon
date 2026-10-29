@@ -129,6 +129,34 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) knowledge tree", () => {
     expect(flattenKnowledgeTree(tree).length).toBe(2001);
     expect(elapsed).toBeLessThan(KNOWLEDGE_TREE_BUDGET_MS);
   });
+
+  it("disambiguates identical titles with folder/path and groups by folder (OPE-9762)", () => {
+    const tree = buildKnowledgeTree([
+      item({ slug: "product/overview", spaceKey: "product", title: "Overview" }),
+      item({ slug: "decisions/overview", spaceKey: "decisions", title: "Overview" }),
+      item({ slug: "rules/guidelines", spaceKey: "rules", title: "Guidelines" }),
+      item({ slug: "product/features", spaceKey: "product", title: "Features" }),
+    ]);
+
+    const flat = flattenKnowledgeTree(tree);
+
+    // Check duplicate titles are disambiguated so there are no indistinguishable duplicates
+    const productOverview = flat.find((n) => n.item.slug === "product/overview");
+    const decisionsOverview = flat.find((n) => n.item.slug === "decisions/overview");
+    const uniqueGuidelines = flat.find((n) => n.item.slug === "rules/guidelines");
+
+    expect(productOverview?.displayLabel).toBe("Overview (product)");
+    expect(decisionsOverview?.displayLabel).toBe("Overview (decisions)");
+    expect(uniqueGuidelines?.displayLabel).toBe("Guidelines");
+
+    // Check that spaces are grouped in order: decisions, product, rules
+    const spaceOrder = tree.map((n) => n.item.spaceKey);
+    expect(spaceOrder).toEqual(["decisions", "product", "rules"]);
+
+    // Check that items inside spaces retain their folder grouping
+    const itemFolderOrder = flat.filter((n) => n.item.slug !== "").map((n) => n.folder);
+    expect(itemFolderOrder).toEqual(["decisions", "product", "product", "rules"]);
+  });
 });
 
 describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) [[…]] links", () => {

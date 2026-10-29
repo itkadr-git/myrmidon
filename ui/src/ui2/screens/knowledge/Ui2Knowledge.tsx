@@ -221,8 +221,9 @@ function TreeBranch({
   const isSpace = node.item.slug === "";
   const isFolder = node.item.id.startsWith("folder:");
   const [expanded, setExpanded] = useState(() => typeof window === "undefined" || window.matchMedia("(min-width: 768px)").matches);
+  const label = node.displayLabel ?? node.item.title;
   return (
-    <li className="ui2-knowledge-tree-node" data-depth={node.depth}>
+    <li className="ui2-knowledge-tree-node" data-depth={node.depth} data-folder={node.folder}>
       <div className="flex items-center gap-1" style={{ paddingInlineStart: `${node.depth * 0.75}rem` }}>
         {node.children.length > 0 ? (
           <button type="button" className="rounded px-1" aria-label={t(expanded ? "ui2.knowledge.tree.collapse" : "ui2.knowledge.tree.expand")} aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
@@ -231,7 +232,7 @@ function TreeBranch({
         ) : null}
         {isSpace || isFolder ? (
           <span className={`ui2-knowledge-space-label min-w-0 flex-1 px-2 py-1 text-xs font-semibold ${isSpace ? "uppercase tracking-wide text-muted-foreground" : "text-foreground"}`}>
-            {isFolder ? t("ui2.knowledge.tree.folder", { name: node.item.title }) : node.item.title}
+            {isFolder ? t("ui2.knowledge.tree.folder", { name: label }) : label}
           </span>
         ) : (
           <button
@@ -240,7 +241,7 @@ function TreeBranch({
             aria-current={active ? "page" : undefined}
             onClick={() => onSelect(node.item)}
           >
-            <span>{node.item.title}</span>
+            <span>{label}</span>
             <span className="ml-2 text-xs text-muted-foreground">{node.item.slug}</span>
           </button>
         )}

@@ -49,6 +49,7 @@ export interface AlertRecoveryStore {
   readRecords(companyId?: string): Promise<AlertRecoveryRecord[]>;
   /** Replace the records of one company, keeping the records of the others. */
   writeRecords(companyId: string, records: readonly AlertRecoveryRecord[]): Promise<void>;
+  markWakeDispatched(identity: string, dispatchedAt: string): Promise<void>;
 }
 
 /** The general settings row, whichever way the service hands it over. */
@@ -93,6 +94,13 @@ export function createAlertRecoveryStore(input: {
       await input.settings.updateGeneral({
         [ALERT_RECOVERY_JOURNAL_KEY]: [...others, ...records],
       });
+    },
+    markWakeDispatched: async (identity, dispatchedAt) => {
+      const general = await readGeneral();
+      const records = coerceAlertRecoveryRecords(general[ALERT_RECOVERY_JOURNAL_KEY]).map((record) =>
+        record.identity === identity ? { ...record, heldAt: dispatchedAt } : record,
+      );
+      await input.settings.updateGeneral({ [ALERT_RECOVERY_JOURNAL_KEY]: records });
     },
   };
 }
