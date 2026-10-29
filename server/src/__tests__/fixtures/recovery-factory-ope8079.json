@@ -1,0 +1,101 @@
+[
+  {
+    "actionIndex": 1,
+    "sourceIssue": "OPE-7710",
+    "sourceComment": "461b3b78-8365-4ed7-9718-d174cf5aa956",
+    "sourceQuote": "подтвердить изолированный Windows/build слот и scoped GitHub CI access; не выдавать сырой ключ в комментарий.",
+    "kind": "workspace_myr_ws",
+    "cause": "isolated_windows_build_slot",
+    "slaMinutes": 120,
+    "ownerRole": "workspace_operator",
+    "evidence": "Windows/build slot and scoped GitHub CI access required; no raw key in comments"
+  },
+  {
+    "actionIndex": 2,
+    "sourceIssue": "OPE-7975",
+    "sourceComment": "461b3b78-8365-4ed7-9718-d174cf5aa956",
+    "sourceQuote": "определить целевой PERSONAL-BOT instance, tracker-only aria2 egress и размер hard quota. Агент-оператор затем настраивает и проверяет; торрент до проверки выключен.",
+    "kind": "disk_space",
+    "cause": "hard_quota_and_egress_configuration",
+    "slaMinutes": 60,
+    "ownerRole": "infra_operator",
+    "evidence": "Target PERSONAL-BOT instance, tracker-only aria2 egress and hard quota configuration required"
+  },
+  {
+    "actionIndex": 3,
+    "sourceIssue": "OPE-7265",
+    "sourceComment": "461b3b78-8365-4ed7-9718-d174cf5aa956",
+    "sourceQuote": "существующая human_only карточка e4e8fbff-589f-447e-8590-eba46792eb8c требует verdicts на HEAD 9c68c9b937ff59cc8dfd424526d08468234ac289. Не давать waiver CI/Tuwunel: вернуть недостающий workflow/интеграционный тест инженеру после законного решения.",
+    "kind": "operator_action",
+    "cause": "human_only_verdict_decision",
+    "slaMinutes": 120,
+    "ownerRole": "lead_operator",
+    "evidence": "Human-only verdict required on HEAD 9c68c9b937ff59cc8dfd424526d08468234ac289; no waiver"
+  },
+  {
+    "actionIndex": 4,
+    "sourceIssue": "OPE-7590",
+    "sourceComment": "461b3b78-8365-4ed7-9718-d174cf5aa956",
+    "sourceQuote": "независимый рецензент PR myrmidon-deploy #23: по новому правилу adm-dev-review-9; обеспечить доступ к head/CI, не создавать второго параллельного review без проверки существующего.",
+    "kind": "github_access",
+    "cause": "reviewer_head_ci_access",
+    "slaMinutes": 60,
+    "ownerRole": "security_operator",
+    "evidence": "Independent reviewer for PR myrmidon-deploy #23: assign adm-dev-review-9 and ensure head/CI access"
+  },
+  {
+    "actionIndex": 5,
+    "sourceIssue": "OPE-7533",
+    "sourceComment": "461b3b78-8365-4ed7-9718-d174cf5aa956",
+    "sourceQuote": "проверенный артефакт 6cfe3573e65f4e904fc761b8328c80c6115087df и авторизованный relay; не заменять защищённую историю угадыванием.",
+    "kind": "branch_relay",
+    "cause": "authorized_artifact_branch_relay",
+    "slaMinutes": 60,
+    "ownerRole": "release_operator",
+    "evidence": "Verified artifact 6cfe3573e65f4e904fc761b8328c80c6115087df and authorized branch relay required"
+  },
+  {
+    "actionIndex": 6,
+    "sourceIssue": "OPE-6001",
+    "sourceComment": "461b3b78-8365-4ed7-9718-d174cf5aa956",
+    "sourceQuote": "решение по новому head ca01bddcbb029e98bfc4722abd06e4d4cbdd6254 PR #842 после зелёного CI; прежнюю SHA-guard не обходить.",
+    "kind": "devbuild",
+    "cause": "green_ci_head_decision",
+    "slaMinutes": 120,
+    "ownerRole": "build_operator",
+    "evidence": "Decision on new head ca01bddcbb029e98bfc4722abd06e4d4cbdd6254 PR #842 after green CI"
+  },
+  {
+    "actionIndex": 7,
+    "sourceIssue": "OPE-6871",
+    "sourceComment": "461b3b78-8365-4ed7-9718-d174cf5aa956",
+    "sourceQuote": "явное разрешение продолжить ранее отклонённую маршрутизацию review/merge PR #1178 либо оператор выполняет сам. Отказанный вызов не повторяли.",
+    "kind": "configuration_validation",
+    "cause": "review_merge_routing_policy",
+    "slaMinutes": 60,
+    "ownerRole": "review_operator",
+    "evidence": "Explicit authorization to continue review/merge routing for PR #1178"
+  },
+  {
+    "actionIndex": 8,
+    "sourceIssue": "OPE-7225",
+    "sourceComment": "461b3b78-8365-4ed7-9718-d174cf5aa956",
+    "sourceQuote": "восстановить execution review participant/runtime, не дублировать уже написанную реализацию.",
+    "kind": "review_participant_restore",
+    "cause": "execution_participant_runtime_restore",
+    "slaMinutes": 60,
+    "ownerRole": "runtime_operator",
+    "evidence": "Restore execution review participant/runtime without duplicating implementation"
+  },
+  {
+    "actionIndex": 9,
+    "sourceIssue": "OPE-7969",
+    "sourceComment": "461b3b78-8365-4ed7-9718-d174cf5aa956",
+    "sourceQuote": "оператор с repo write: rerun/fresh CI PR #1364 и base update при необходимости; reported unrelated Telegram-fixture shard failure не объявлять успешным CI.",
+    "kind": "ci_restart",
+    "cause": "operator_ci_rerun",
+    "slaMinutes": 30,
+    "ownerRole": "ci_operator",
+    "evidence": "Operator with repo write: rerun fresh CI PR #1364 and base update if needed"
+  }
+]
