@@ -117,6 +117,37 @@ function fileContent(profile: CompiledProfile, path: string): string {
 }
 
 describe("myrmidon(W2a) createBotProfileCompile", () => {
+  it("compiles a card pinned to a fleet host with site-specific endpoints", async () => {
+    const board = fakeBoard();
+    board.agent.current!.adapterConfig = { model: "some-model", provider: "custom", container: { host: "site-a" } };
+    const compile = createBotProfileCompile(board.ports, {
+      env: INSTANCE_ENV,
+      fleetHostForAgent: async () => ({
+        name: "site-a",
+        url: "https://fleet.example.com",
+        tokenSecret: "site-token",
+        hindsightUrl: "https://site.example.com/hindsight",
+        llmBaseUrl: "https://site.example.com/llm/v1",
+        boardExtraHost: "board.example.com",
+        volumeRoot: "/srv/site-bots",
+        network: "site-network",
+        imageAllowlist: ["registry.example.com/bots/*"],
+        mcpEndpoints: [],
+      }),
+    });
+    const profile = await compile("agent-a", "agent-a");
+    expect(fileContent(profile, "hermes/hindsight/config.json")).toContain("https://site.example.com/hindsight");
+    expect(fileContent(profile, "hermes/config.yaml")).toContain("https://site.example.com/llm/v1");
+  });
+
+  it("rejects a card pinned to an unregistered fleet host before creating secrets", async () => {
+    const board = fakeBoard();
+    board.agent.current!.adapterConfig = { model: "some-model", provider: "custom", container: { host: "missing-site" } };
+    const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV, fleetHostForAgent: async () => null });
+    await expect(compile("agent-a", "agent-a")).rejects.toThrow("not registered");
+    expect(board.calls).not.toContain("ensureApiServerKey");
+  });
+
   it("compiles a card into the profile files, credentials in .env only", async () => {
     const board = fakeBoard();
     const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });

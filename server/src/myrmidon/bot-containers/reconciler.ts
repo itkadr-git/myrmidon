@@ -36,6 +36,7 @@
 // for one bot must not take the sweep in index.ts down with it.
 
 import { classifyProfileChange, type CompiledProfile, type ProfileChangeClass } from "./types.js";
+import { compositeDriftFields } from "./drift.js";
 import type { BotContainerDriver, BotContainerSpec, BotContainerState } from "./driver.js";
 import type { BackimportSummary, BotSkillBackimportPorts } from "./skill-backimport.js";
 import { backimportBotSkills, isBotSkillBackimportEnabled } from "./skill-backimport.js";
@@ -308,15 +309,38 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
     // myrmidon(OPE-4789): the status read above carries the container's own
     // inspect; handing it in keeps one pass at one inspect instead of two.
     const drift = probed ? probed.drift : await driver.templateDrift(spec, status);
-    const drifted = drift.drifted;
-    const resourceDrift = drift.fields.length > 0 && drift.fields.every(({ field }) =>
-      field === "HostConfig.Memory" || field === "HostConfig.PidsLimit",
+    const compositeDrift = compositeDriftFields(
+      {
+        profileHash: profile.restartHash,
+        imageDigest: spec.image,
+        limits: { memoryMb: spec.memoryMb, cpus: spec.cpus, pidsLimit: spec.pidsLimit },
+      },
+      {
+        profileHash: status.restartHash ?? "",
+        imageDigest: status.image ?? "",
+        limits: {
+          memoryMb: status.memoryMb ?? spec.memoryMb,
+          cpus: status.cpus ?? spec.cpus,
+          pidsLimit: status.pidsLimit ?? spec.pidsLimit,
+        },
+      },
     );
+    const hasCompositeDrift = compositeDrift.length > 0;
+    const drifted =
+      drift.drifted ||
+      (hasCompositeDrift && (compositeDrift.includes("imageDigest") || compositeDrift.some((f) => f.startsWith("limits."))));
+    const resourceDrift =
+      (drift.fields.length > 0 &&
+        drift.fields.every(({ field }) => field === "HostConfig.Memory" || field === "HostConfig.PidsLimit")) ||
+      (hasCompositeDrift &&
+        compositeDrift.every((f) => f.startsWith("limits.")) &&
+        !compositeDrift.includes("imageDigest") &&
+        !compositeDrift.includes("profileHash"));
     if (drifted) {
       // Names the field and both values, so a drift is diagnosable from the
       // log alone — the 01.10 incident recreated every bot every pass with a
       // message that named none of them.
-      await info("bot container template drift detected", { fields: drift.fields });
+      await info("bot container template drift detected", { fields: drift.fields, compositeDrift });
     }
     // Hashes come only from the applied-state marker; none there means nothing
     // verified applied, which classifies as "restart", never "none".

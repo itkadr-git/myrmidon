@@ -142,6 +142,7 @@ while (($#)); do
     --ref) res_ref="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --canary) canary="$2"; shift 2 ;;
+    --site) filter_site="$2"; shift 2 ;;
     --retry-deferred) RETRY_DEFERRED=1; shift ;;
     --wait-sec)
       [[ "${2:-}" =~ ^[0-9]+$ ]] || die "--wait-sec takes a non-negative whole number of seconds (got '${2:-}')"
@@ -292,7 +293,8 @@ board_configs() {
 list_bots() {
   local body
   body="$(board_configs)" || return 1
-  jq -r '[.[]? | select(.adapterType == "hermes_gateway")
+  jq -r --arg site "${MYR_BOT_SITE:-}" '[.[]? | select(.adapterType == "hermes_gateway")
+      | select($site == "" or ((.adapterConfig.container.host // "local") == $site) or ($site == "local" and (.adapterConfig.container.host == null or .adapterConfig.container.host == "local")))
       | select((.adapterConfig.container // {}) | (.enabled == true))
       | [.id,
          ((.adapterConfig.container.memoryMb // 1024) | tostring),
@@ -320,7 +322,8 @@ card_container() {
 bot_categories() {
   local body
   body="$(board_configs)" || return 1
-  jq -r '.[]? | select(.adapterType == "hermes_gateway")
+  jq -r --arg site "${MYR_BOT_SITE:-}" '.[]? | select(.adapterType == "hermes_gateway")
+      | select($site == "" or ((.adapterConfig.container.host // "local") == $site) or ($site == "local" and (.adapterConfig.container.host == null or .adapterConfig.container.host == "local")))
       | select((.adapterConfig.container | type) == "object")
       | .adapterConfig.container as $c
       | (if $c.enabled != true then "adapterConfig.container.enabled is not true"
@@ -340,6 +343,7 @@ bot_categories() {
 
 # Fleet hosts the bots live on: "user@host" per line (empty = none). Entries
 # use the MYR_<COMPONENT>_HOST shape (remote:<user>@<host>), comma-separated.
+MYR_BOT_SITE="${filter_site:-${MYRMIDON_BOT_IMAGE_ROLLOUT_SITE:-}}"
 fleet_hosts() {
   [[ -n "$MYR_BOT_FLEET_HOSTS" ]] || return 0
   local entry host

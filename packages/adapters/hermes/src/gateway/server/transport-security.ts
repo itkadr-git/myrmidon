@@ -45,6 +45,13 @@ export function isRemotePlainHttp(url: URL): boolean {
   return url.protocol === "http:" && !isLoopbackHostname(url.hostname);
 }
 
+export function isFleetHostPlacement(config: Record<string, unknown>): boolean {
+  const container = config.container;
+  if (typeof container !== "object" || container === null || Array.isArray(container)) return false;
+  const host = (container as Record<string, unknown>).host;
+  return typeof host === "string" && host.trim().length > 0 && host.trim() !== "local";
+}
+
 // myrmidon(H3): trust is now narrow — plain http is allowed without any
 // card flag only for the fleet's own bot-container host names; the
 // escape-hatch flag remains for unsafe local development against any other
@@ -52,6 +59,7 @@ export function isRemotePlainHttp(url: URL): boolean {
 // sync (W2a used to set it because the adapter had no narrower way).
 export function allowsInsecureRemoteHttp(url: URL, config: Record<string, unknown>): boolean {
   if (isBotContainerHostname(url.hostname)) return true;
+  if (isFleetHostPlacement(config)) return true;
   return parseBooleanLike(config[INSECURE_REMOTE_HTTP_ESCAPE_HATCH]) === true;
 }
 

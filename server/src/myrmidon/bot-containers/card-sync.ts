@@ -43,6 +43,8 @@
 
 import type { BotProfileAgentRecord, BotProfilePorts } from "./profile-compile.js";
 import { containerNameFor } from "./template.js";
+import { cardFleetHost } from "./fleetd-hosts.js";
+import { fleetGatewayApiBaseUrl } from "./fleetd-placement.js";
 
 /**
  * The adapter's config key that allows plain http to a non-loopback host
@@ -92,14 +94,22 @@ function isMatchingSecretRef(value: unknown, secretId: string, version: number):
  * deleted (the adapter's own bot-container trust replaced it); nothing is
  * written in its place.
  */
+export interface GatewayCardTarget {
+  botKey: string;
+  apiKeySecretId: string;
+  apiKeyVersion: number;
+  fleetGatewayApiBaseUrl?: string | null;
+  gatewayPort?: number | null;
+}
+
 export function planGatewayCardSync(
   adapterConfig: Record<string, unknown>,
-  target: { botKey: string; apiKeySecretId: string; apiKeyVersion: number },
+  target: GatewayCardTarget,
 ): GatewayCardPlan {
   const next: Record<string, unknown> = { ...adapterConfig };
   const changedKeys: string[] = [];
 
-  const apiBaseUrl = gatewayApiBaseUrl(target.botKey);
+  const apiBaseUrl = target.fleetGatewayApiBaseUrl || gatewayApiBaseUrl(target.botKey);
   if (adapterConfig.apiBaseUrl !== apiBaseUrl) {
     next.apiBaseUrl = apiBaseUrl;
     changedKeys.push("apiBaseUrl");
@@ -124,6 +134,10 @@ export interface BotCardSyncPorts {
   ensureApiServerKey: BotProfilePorts["ensureApiServerKey"];
   /** Stores the whole adapterConfig for the agent (agentService.update in profile-ports.ts). */
   saveAdapterConfig(agent: BotProfileAgentRecord, adapterConfig: Record<string, unknown>): Promise<void>;
+  /** Optional lookup of a fleet site URL by company ID and host name */
+  fleetSiteUrl?: (companyId: string, hostName: string) => Promise<string | null>;
+  /** Optional lookup of a bot container's driver status (to get allocated gatewayPort on remote host) */
+  status?: (botKey: string) => Promise<{ gatewayPort?: number | null } | null>;
 }
 
 export interface BotCardSyncResult {
@@ -142,12 +156,37 @@ export interface BotCardSyncResult {
  */
 export function createBotCardSync(
   ports: BotCardSyncPorts,
-): (agentId: string, botKey: string, appliedApiServerKeyVersion: number) => Promise<BotCardSyncResult> {
-  return async function syncCard(agentId: string, botKey: string, appliedApiServerKeyVersion: number): Promise<BotCardSyncResult> {
+): (
+  agentId: string,
+  botKey: string,
+  appliedApiServerKeyVersion: number,
+  options?: { fleetGatewayApiBaseUrl?: string | null; gatewayPort?: number | null },
+) => Promise<BotCardSyncResult> {
+  return async function syncCard(
+    agentId: string,
+    botKey: string,
+    appliedApiServerKeyVersion: number,
+    options?: { fleetGatewayApiBaseUrl?: string | null; gatewayPort?: number | null },
+  ): Promise<BotCardSyncResult> {
     const agent = await ports.loadAgent(agentId);
     if (!agent) return { changedKeys: [] };
     const key = await ports.ensureApiServerKey(agent);
-    const plan = planGatewayCardSync(agent.adapterConfig ?? {}, { botKey, apiKeySecretId: key.secretId, apiKeyVersion: appliedApiServerKeyVersion });
+    const host = cardFleetHost(agent.adapterConfig as { container?: unknown });
+    let fleetGatewayUrl = options?.fleetGatewayApiBaseUrl ?? null;
+    const gatewayPort = options?.gatewayPort ?? (ports.status ? (await ports.status(botKey))?.gatewayPort : null);
+    if (!fleetGatewayUrl && host && ports.fleetSiteUrl) {
+      const siteUrl = await ports.fleetSiteUrl(agent.companyId, host);
+      if (siteUrl && gatewayPort) {
+        fleetGatewayUrl = fleetGatewayApiBaseUrl(siteUrl, gatewayPort);
+      }
+    }
+    const plan = planGatewayCardSync(agent.adapterConfig ?? {}, {
+      botKey,
+      apiKeySecretId: key.secretId,
+      apiKeyVersion: appliedApiServerKeyVersion,
+      fleetGatewayApiBaseUrl: fleetGatewayUrl,
+      gatewayPort,
+    });
     if (!plan.changed) return { changedKeys: [] };
     await ports.saveAdapterConfig(agent, plan.adapterConfig);
     return { changedKeys: plan.changedKeys };

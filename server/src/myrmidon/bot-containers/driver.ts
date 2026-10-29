@@ -106,6 +106,9 @@ export interface BotContainerStatus {
    */
   inspect?: unknown;
   idleStopped?: boolean;
+  memoryMb?: number;
+  cpus?: number;
+  pidsLimit?: number;
 }
 
 /** One template field whose live value (the container's inspect) no longer
