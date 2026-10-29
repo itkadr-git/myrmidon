@@ -499,6 +499,44 @@ describe("hindsight plugin memory routing", () => {
 
     assert.equal(hindsight.calls.length, 0);
   });
+
+  it("accessMode 'roles' allows agents with matching role automatically", async () => {
+    const hindsight = mockHindsight();
+    const harness = createTestHarness({
+      manifest: manifest as PaperclipPluginManifestV1,
+      config: {
+        hindsightApiUrl: API_URL,
+        accessMode: "roles",
+        enabledRoles: ["engineer"],
+      },
+    });
+    harness.seed({
+      agents: [
+        agent({ id: AGENT_BBQ, name: "bbq-grill", role: "engineer", bankId: "fleet-bbq" }),
+        agent({ id: AGENT_ADM, name: "other-agent", role: "sales", bankId: "fleet-adm" }),
+      ],
+      issues: [
+        issue({ id: "issue-eng", title: "Engineer task", assigneeAgentId: AGENT_BBQ }),
+        issue({ id: "issue-sales", title: "Sales task", assigneeAgentId: AGENT_ADM }),
+      ],
+      issueComments: [
+        comment({ id: "comment-eng", issueId: "issue-eng", body: "eng comment", authorAgentId: AGENT_BBQ }),
+        comment({ id: "comment-sales", issueId: "issue-sales", body: "sales comment", authorAgentId: AGENT_ADM }),
+      ],
+    });
+    const plugin = createHindsightPlugin({ fetchImpl: hindsight.fetch });
+    await plugin.definition.setup(harness.ctx);
+
+    // Engineer should be allowed to retain via tool
+    await harness.executeTool("hindsight_retain", { content: "engineer memory" }, { agentId: AGENT_BBQ, runId: "run-e", companyId: COMPANY, projectId: PROJECT });
+    const retains = hindsight.calls.filter((call) => call.path.endsWith("/memories") && call.method === "POST");
+    assert.equal(retains.length, 1);
+    assert.equal(currentBankId(retains[0]!.path), "fleet-bbq");
+
+    // Sales role should be blocked
+    await harness.executeTool("hindsight_retain", { content: "sales memory" }, { agentId: AGENT_ADM, runId: "run-s", companyId: COMPANY, projectId: PROJECT });
+    assert.equal(retains.length, 1);
+  });
 });
 
 describe("run digest retention", () => {

@@ -19,6 +19,7 @@ export interface BankResolution {
   bankId: string;
   source: "agent-card" | "config-map";
   agentName: string | null;
+  agentRole: string | null;
 }
 
 export interface AgentLookup {
@@ -65,11 +66,11 @@ export async function resolveBank(
   }
   const cardBankId = readCardBankId(agent);
   if (cardBankId) {
-    return { bankId: cardBankId, source: "agent-card", agentName: agent?.name ?? null };
+    return { bankId: cardBankId, source: "agent-card", agentName: agent?.name ?? null, agentRole: agent?.role ?? null };
   }
   const configBankId = readConfigBankId(input.config, input.agentId);
   if (configBankId) {
-    return { bankId: configBankId, source: "config-map", agentName: agent?.name ?? null };
+    return { bankId: configBankId, source: "config-map", agentName: agent?.name ?? null, agentRole: agent?.role ?? null };
   }
   return null;
 }

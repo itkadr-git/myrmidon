@@ -6,6 +6,12 @@
 // list, invalidate and clear. Transport is injectable so tests never reach a
 // real service; no addresses live in this file.
 
+import type {
+  HindsightAsyncOperation,
+  HindsightBankConfig,
+  HindsightBankSummary,
+} from "@myrmidon/shared";
+
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -146,6 +152,97 @@ export function createMemoryHindsightClient(
       const deletedCount = body && typeof body.deleted_count === "number" ? body.deleted_count : null;
       return { deletedCount };
     },
+    async listBanks(): Promise<HindsightBankSummary[]> {
+      const payload = await request("GET", "/v1/default/banks");
+      const body = asRecord(payload);
+      const rawList = Array.isArray(payload) ? payload : (Array.isArray(body?.banks) ? body.banks : []);
+      return rawList.map((entry): HindsightBankSummary => {
+        if (typeof entry === "string") {
+          return { id: entry, name: entry };
+        }
+        const rec = asRecord(entry) ?? {};
+        const id = asString(rec.id ?? rec.bank_id ?? rec.name) ?? "unknown";
+        return {
+          id,
+          name: asString(rec.name) ?? id,
+          description: asString(rec.description),
+          memoriesCount: typeof rec.memories_count === "number" ? rec.memories_count : null,
+          pendingConsolidations: typeof rec.pending_consolidations === "number" ? rec.pending_consolidations : null,
+          failedConsolidations: typeof rec.failed_consolidations === "number" ? rec.failed_consolidations : null,
+        };
+      });
+    },
+    async getBankConfig(bankId: string): Promise<HindsightBankConfig> {
+      const payload = await request("GET", `/v1/default/banks/${encodeURIComponent(bankId)}/config`);
+      const body = asRecord(payload);
+      const configObj = asRecord(body?.config) ?? body ?? {};
+      return configObj as HindsightBankConfig;
+    },
+    async updateBankConfig(bankId: string, patch: Record<string, unknown>): Promise<HindsightBankConfig> {
+      const payload = await request("PATCH", `/v1/default/banks/${encodeURIComponent(bankId)}/config`, patch);
+      const body = asRecord(payload);
+      const configObj = asRecord(body?.config) ?? body ?? {};
+      return configObj as HindsightBankConfig;
+    },
+    async getBankStats(bankId: string): Promise<{ memoriesCount: number; pendingConsolidations: number; failedConsolidations: number }> {
+      try {
+        const payload = await request("GET", `/v1/default/banks/${encodeURIComponent(bankId)}/stats`);
+        const body = asRecord(payload);
+        return {
+          memoriesCount: typeof body?.total_memories === "number" ? body.total_memories : 0,
+          pendingConsolidations: typeof body?.pending_consolidation === "number" ? body.pending_consolidation : 0,
+          failedConsolidations: typeof body?.failed_consolidation === "number" ? body.failed_consolidation : 0,
+        };
+      } catch {
+        return { memoriesCount: 0, pendingConsolidations: 0, failedConsolidations: 0 };
+      }
+    },
+    async getOperations(bankId: string, opts: { limit?: number; status?: string } = {}): Promise<HindsightAsyncOperation[]> {
+      const params = new URLSearchParams();
+      if (opts.limit) params.set("limit", String(opts.limit));
+      if (opts.status) params.set("status", opts.status);
+      const query = params.toString() ? `?${params.toString()}` : "";
+      try {
+        const payload = await request("GET", `/v1/default/banks/${encodeURIComponent(bankId)}/operations${query}`);
+        const body = asRecord(payload);
+        const list = Array.isArray(body?.operations) ? body.operations : (Array.isArray(payload) ? payload : []);
+        return list.map((item): HindsightAsyncOperation => {
+          const rec = asRecord(item) ?? {};
+          return {
+            id: asString(rec.id ?? rec.operation_id) ?? "unknown",
+            operation_type: asString(rec.operation_type ?? rec.type) ?? "consolidation",
+            status: asString(rec.status) ?? "pending",
+            created_at: asString(rec.created_at),
+            error: asString(rec.error ?? rec.message),
+          };
+        });
+      } catch {
+        return [];
+      }
+    },
+    async retryOperation(bankId: string, operationId: string): Promise<{ success: boolean; id: string }> {
+      await request("POST", `/v1/default/banks/${encodeURIComponent(bankId)}/operations/${encodeURIComponent(operationId)}/retry`);
+      return { success: true, id: operationId };
+    },
+    async recall(bankId: string, query: string, budget = "mid"): Promise<{ results: Array<{ text: string; score?: number }>; durationMs: number }> {
+      const start = Date.now();
+      const payload = await request("POST", `/v1/default/banks/${encodeURIComponent(bankId)}/memories/recall`, {
+        query,
+        budget,
+      });
+      const durationMs = Date.now() - start;
+      const body = asRecord(payload);
+      const resultsRaw = Array.isArray(body?.results) ? body.results : [];
+      const results = resultsRaw.map((entry) => {
+        if (typeof entry === "string") return { text: entry };
+        const rec = asRecord(entry) ?? {};
+        return {
+          text: typeof rec.text === "string" ? rec.text : JSON.stringify(rec),
+          score: typeof rec.score === "number" ? rec.score : undefined,
+        };
+      });
+      return { results, durationMs };
+    },
   };
 }
 
@@ -153,4 +250,11 @@ export interface MemoryHindsightClient {
   list(bankId: string, opts?: { limit?: number; offset?: number; state?: string }): Promise<HindsightMemoryPage>;
   invalidate(bankId: string, memoryId: string, reason: string): Promise<void>;
   clear(bankId: string): Promise<{ deletedCount: number | null }>;
+  listBanks(): Promise<HindsightBankSummary[]>;
+  getBankConfig(bankId: string): Promise<HindsightBankConfig>;
+  updateBankConfig(bankId: string, patch: Record<string, unknown>): Promise<HindsightBankConfig>;
+  getBankStats(bankId: string): Promise<{ memoriesCount: number; pendingConsolidations: number; failedConsolidations: number }>;
+  getOperations(bankId: string, opts?: { limit?: number; status?: string }): Promise<HindsightAsyncOperation[]>;
+  retryOperation(bankId: string, operationId: string): Promise<{ success: boolean; id: string }>;
+  recall(bankId: string, query: string, budget?: string): Promise<{ results: Array<{ text: string; score?: number }>; durationMs: number }>;
 }
