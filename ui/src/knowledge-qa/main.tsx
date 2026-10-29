@@ -40,14 +40,14 @@ function Legacy() {
 
 function Ui2() {
   return (
-    <Ui2Shell>
-      <Ui2I18nProvider>
+    <Ui2I18nProvider>
+      <Ui2Shell>
         <Routes>
           <Route path="/:companyPrefix/knowledge" element={<Ui2Knowledge />} />
           <Route path="/:companyPrefix/knowledge/:spaceKey/:slug" element={<Ui2Knowledge />} />
         </Routes>
-      </Ui2I18nProvider>
-    </Ui2Shell>
+      </Ui2Shell>
+    </Ui2I18nProvider>
   );
 }
 
