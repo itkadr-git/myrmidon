@@ -110,7 +110,9 @@ export interface PluginHostContext {
   parentEntityId?: string | null;
   userId: string | null;
   isInstanceAdmin?: boolean; // myrmidon(PLUGIN-INSTANCE-ADMIN)
+  /** Active board locale code (e.g. "ru", "en"). */
   locale?: string;
+  /** Alias for `locale` for compatibility with plugins expecting `language`. */
   language?: string;
   renderEnvironment?: PluginRenderEnvironmentContext | null;
 }

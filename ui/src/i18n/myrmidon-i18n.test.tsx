@@ -53,7 +53,7 @@ const ALLOWED_LATIN = new Set([
   "GitHub",
   // plugin names (myrmidon_chatgpt-pool: «ChatGPT», myrmidon_google-ai, myrmidon_antigravity)
   // are product names, not untranslated copy.
-  "ChatGPT", "Google", "Antigravity", "Pro",
+  "ChatGPT", "Google", "Antigravity",
   // input placeholders stay language-neutral (role codes and URLs)
   "engineer", "https", "example", "com", "changelog",
   // myrmidon(1.7-AGENT-EXCHANGE-A): pull request / owner/repo are forge
@@ -61,12 +61,21 @@ const ALLOWED_LATIN = new Set([
   "pull", "request", "owner", "repo",
 ]);
 
-function unruledLatinRuns(value: string): string[] {
+// Specific pluginLabel keys where product qualifier tokens (e.g. "Pro" in "Google AI Pro") are permitted
+const ALLOWED_KEY_LATIN: Record<string, Set<string>> = {
+  "pluginLabels.myrmidon_google-ai._plugin": new Set(["Pro"]),
+  "pluginLabels.myrmidon_google-ai.google-ai-sidebar": new Set(["Pro"]),
+  "pluginLabels.myrmidon_google-ai.google-ai-page": new Set(["Pro"]),
+};
+
+function unruledLatinRuns(value: string, key?: string): string[] {
   const withoutPlaceholders = value.replace(/\{\{[^}]+\}\}/g, " ");
   const runs = withoutPlaceholders.match(/[A-Za-z][A-Za-z-]*/g) ?? [];
+  const allowedForKey = (key && ALLOWED_KEY_LATIN[key]) ?? null;
   return runs.filter((run) => {
     if (run.length <= 1) return false; // single-letter shortcut hints
     if (ALLOWED_LATIN.has(run) || ALLOWED_LATIN.has(run.toUpperCase())) return false;
+    if (allowedForKey?.has(run)) return false;
     if (/^[A-Z]{2,}-?$/.test(run)) return false; // prefix-like tokens (PAP-, ID)
     if (/^[A-Za-z]+-$/.test(run)) return false; // hyphenated compound prefix (Swarm-надзор)
     return true;
@@ -83,7 +92,7 @@ describe("myrmidon fork i18n catalog", () => {
   it("ru values carry no untranslated English wording", () => {
     const flat = flatten(ru);
     const offenders = Object.entries(flat)
-      .map(([key, value]) => ({ key, runs: unruledLatinRuns(value) }))
+      .map(([key, value]) => ({ key, runs: unruledLatinRuns(value, key) }))
       .filter((entry) => entry.runs.length > 0);
     expect(
       offenders.map(({ key, runs }) => `${key}: ${runs.join(", ")}`),

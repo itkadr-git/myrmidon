@@ -109,8 +109,9 @@ export interface PluginHostContext {
    * `actor.isInstanceAdmin` of an action.
    */
   isInstanceAdmin?: boolean;
-  /** Active board locale / language (e.g. "ru", "en"). */
+  /** Active board locale code (e.g. "ru", "en"). */
   locale?: string;
+  /** Alias for `locale` for compatibility with plugins expecting `language`. */
   language?: string;
   /** Runtime metadata for the host container currently rendering this plugin UI. */
   renderEnvironment?: PluginRenderEnvironmentContext | null;

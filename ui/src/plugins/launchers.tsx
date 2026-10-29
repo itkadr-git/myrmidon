@@ -134,7 +134,7 @@ function getErrorMessage(error: unknown): string {
   return i18n.t("area.adapters-plugins-2.launchers.unknownError");
 }
 
-function buildLauncherHostContext(
+export function buildLauncherHostContext(
   context: PluginLauncherContext,
   renderEnvironment: PluginRenderEnvironmentContext | null,
   userId: string | null,
