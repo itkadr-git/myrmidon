@@ -8270,6 +8270,7 @@ export async function buildPaperclipWakePayload(input: {
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
+    eventDigest: input.contextSnapshot.eventDigest ?? null,
     truncated: payloadTruncated,
     fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
   };

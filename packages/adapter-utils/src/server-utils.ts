@@ -1920,6 +1920,7 @@ export function normalizePaperclipWakePayload(
     ),
     includedCount: asNumber(commentWindow.includedCount, comments.length),
     missingCount: asNumber(commentWindow.missingCount, 0),
+    eventDigest: payload.eventDigest ?? null,
     truncated: asBoolean(payload.truncated, false),
     fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
   };
