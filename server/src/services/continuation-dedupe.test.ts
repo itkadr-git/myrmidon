@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { companies, createDb, issueContinuationKeys, issues, type Db } from "@myrmidon/db";
+import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueContinuationKeys, issues, type Db } from "@myrmidon/db";
+import { heartbeatService } from "./heartbeat.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -159,5 +160,179 @@ const support = await getEmbeddedPostgresTestSupport();
       .from(issueContinuationKeys)
       .where(and(eq(issueContinuationKeys.companyId, companyId), eq(issueContinuationKeys.key, activeKey)));
     expect(activeRows).toHaveLength(1);
+  });
+
+  describe("heartbeat continuation admission (acceptance scenarios)", () => {
+    const hbAgentId = randomUUID();
+    const hbIssueId = randomUUID();
+
+    beforeAll(async () => {
+      await db.insert(agents).values({
+        id: hbAgentId,
+        companyId,
+        name: "Continuation Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "test_adapter",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      });
+      await db.insert(issues).values({
+        id: hbIssueId,
+        companyId,
+        title: "HB Continuation Task",
+        status: "in_progress",
+        assigneeAgentId: hbAgentId,
+      });
+    });
+
+    it("absence of new event after prior run does not wake model (skipped with no_new_issue_input)", async () => {
+      const heartbeat = heartbeatService(db);
+      const priorRunId = randomUUID();
+      const finishedAt = new Date(Date.now() - 60_000);
+      await db.insert(heartbeatRuns).values({
+        id: priorRunId,
+        companyId,
+        agentId: hbAgentId,
+        status: "succeeded",
+        createdAt: new Date(finishedAt.getTime() - 10_000),
+        finishedAt,
+        contextSnapshot: { issueId: hbIssueId },
+      });
+
+      const outcome = await heartbeat.wakeup(hbAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_continuation_needed",
+        requestedByActorType: "system",
+        payload: { issueId: hbIssueId },
+        contextSnapshot: { issueId: hbIssueId },
+      });
+
+      expect(outcome).toBeNull();
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, hbAgentId));
+      expect(runs).toHaveLength(1);
+      const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, hbAgentId));
+      const skipped = receipts.find(
+        (r) => r.status === "skipped" && (r.payload as Record<string, unknown>)?.continuationSkipped === "no_new_issue_input",
+      );
+      expect(skipped).toBeDefined();
+    });
+
+    it("new event revision after prior run admits exactly one run", async () => {
+      const heartbeat = heartbeatService(db);
+      const activityId = randomUUID();
+      await db.insert(activityLog).values({
+        id: activityId,
+        companyId,
+        actorType: "user",
+        actorId: "test-user",
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: hbIssueId,
+        createdAt: new Date(),
+      });
+
+      const outcome = await heartbeat.wakeup(hbAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_continuation_needed",
+        requestedByActorType: "system",
+        payload: { issueId: hbIssueId },
+        contextSnapshot: { issueId: hbIssueId },
+      });
+
+      expect(outcome).not.toBeNull();
+      await heartbeat.drainActiveRunExecutions();
+
+      // Subsequent wake with no newer event is skipped
+      const secondWake = await heartbeat.wakeup(hbAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_continuation_needed",
+        requestedByActorType: "system",
+        payload: { issueId: hbIssueId },
+        contextSnapshot: { issueId: hbIssueId },
+      });
+      expect(secondWake).toBeNull();
+    });
+
+    it("duplicate/parallel delivery of same event revision admits exactly one run and dedupes the rest", async () => {
+      const heartbeat = heartbeatService(db);
+      const activityId = randomUUID();
+      await db.insert(activityLog).values({
+        id: activityId,
+        companyId,
+        actorType: "user",
+        actorId: "test-user",
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: hbIssueId,
+        createdAt: new Date(),
+      });
+
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          heartbeat.wakeup(hbAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_continuation_needed",
+            requestedByActorType: "system",
+            payload: { issueId: hbIssueId },
+            contextSnapshot: { issueId: hbIssueId },
+          }),
+        ),
+      );
+
+      const admitted = results.filter(Boolean);
+      expect(admitted).toHaveLength(1);
+      await heartbeat.drainActiveRunExecutions();
+
+      const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, hbAgentId));
+      const dedupedReceipts = receipts.filter(
+        (r) =>
+          r.status === "skipped" &&
+          (Boolean((r.payload as Record<string, unknown>)?.duplicateContinuation) ||
+            (r.payload as Record<string, unknown>)?.continuationSkipped === "duplicate_event_revision"),
+      );
+      expect(dedupedReceipts.length).toBeGreaterThanOrEqual(4);
+    });
+
+    it("recovery of interrupted/failed run is admitted and preserves recovery parent run and revision", async () => {
+      const heartbeat = heartbeatService(db);
+      const failedRunId = randomUUID();
+
+      const outcome = await heartbeat.wakeup(hbAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_continuation_needed",
+        requestedByActorType: "system",
+        failedRunId,
+        payload: { issueId: hbIssueId, retryOfRunId: failedRunId },
+        contextSnapshot: { issueId: hbIssueId, retryOfRunId: failedRunId },
+      });
+
+      expect(outcome).not.toBeNull();
+      await heartbeat.drainActiveRunExecutions();
+
+      const recoveryRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, outcome!.runId));
+      expect(recoveryRuns).toHaveLength(1);
+      const snapshot = recoveryRuns[0]?.contextSnapshot as Record<string, unknown>;
+      expect(snapshot?.retryOfRunId).toBe(failedRunId);
+      expect(snapshot?.continuationEventRevision).toBe(`recovery:${failedRunId}`);
+
+      // Duplicate recovery wake for the same parent run is deduped
+      const duplicateRecovery = await heartbeat.wakeup(hbAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_continuation_needed",
+        requestedByActorType: "system",
+        failedRunId,
+        payload: { issueId: hbIssueId, retryOfRunId: failedRunId },
+        contextSnapshot: { issueId: hbIssueId, retryOfRunId: failedRunId },
+      });
+      expect(duplicateRecovery).toBeNull();
+    });
   });
 });
