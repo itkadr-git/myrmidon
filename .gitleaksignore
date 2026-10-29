@@ -6,3 +6,6 @@
 9a391c74b190d21e84e99cd983a34a8dc3bdc466:server/src/myrmidon/bot-containers/site-agent-security-harness.ts:generic-api-key:572
 # Public key of the extension manifest (pins the extension id); not a secret, the private key is kept outside the repository.
 41d7ab6dde4072e05f75f9be8438886d90cc8693:extension/manifest.json:generic-api-key:5
+# Ephemeral test HMAC placeholder in 1.6.6 ADM-CONN failure-matrix (OPE-9264); fixed by Buffer.alloc in later commits.
+c36f7efd9430bf577615b34101941dada1561934:scripts/myrmidon/adm-connector/failure-matrix.mjs:generic-api-key:182
+c36f7efd9430bf577615b34101941dada1561934:scripts/myrmidon/adm-connector/failure-matrix.mjs:generic-api-key:***
