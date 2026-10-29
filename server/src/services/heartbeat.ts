@@ -28370,7 +28370,16 @@ export function heartbeatService(
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
     try {
-      return await enqueueWakeupInner(agentId, opts, executionWaitRequestId);
+      const run = await enqueueWakeupInner(agentId, opts, executionWaitRequestId);
+      if (run) {
+        getSharedEventDigestService().commitPendingDigest(agentId);
+      } else {
+        getSharedEventDigestService().rollbackPendingDigest(agentId);
+      }
+      return run;
+    } catch (err) {
+      getSharedEventDigestService().rollbackPendingDigest(agentId);
+      throw err;
     } finally {
       const key = opts.idempotencyKey;
       if (typeof key === "string" && key.startsWith("issue-review-admission:")) {
@@ -28532,27 +28541,20 @@ export function heartbeatService(
     }
 
     if (!enrichedContextSnapshot.eventDigest) {
-      const pendingDigest = getSharedEventDigestService().drainDigest(agentId);
-      if (pendingDigest) {
-        const effectiveReason = readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason ?? "wake";
-        const priority = classifyEventPriority(effectiveReason);
-        const triggeringEvent = {
-          id: randomUUID(),
-          agentId,
-          issueId,
-          type: effectiveReason,
-          priority,
-          payload: (payload as Record<string, unknown> | null) ?? undefined,
-          timestamp: new Date(),
-        };
-        enrichedContextSnapshot.eventDigest = {
-          agentId,
-          issueId: issueId ?? pendingDigest.issueId ?? null,
-          events: [...pendingDigest.events, triggeringEvent],
-          eventCount: pendingDigest.eventCount + 1,
-          oldestEventAt: pendingDigest.oldestEventAt,
-          newestEventAt: triggeringEvent.timestamp,
-        };
+      const effectiveReason = readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason ?? "wake";
+      const priority = classifyEventPriority(effectiveReason);
+      const triggeringEvent = {
+        id: randomUUID(),
+        agentId,
+        issueId,
+        type: effectiveReason,
+        priority,
+        payload: (payload as Record<string, unknown> | null) ?? undefined,
+        timestamp: new Date(),
+      };
+      const stagedDigest = getSharedEventDigestService().prepareDigest(agentId, triggeringEvent);
+      if (stagedDigest) {
+        enrichedContextSnapshot.eventDigest = stagedDigest;
       }
     }
     if (issueId) {

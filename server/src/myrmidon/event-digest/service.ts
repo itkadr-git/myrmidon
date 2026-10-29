@@ -13,6 +13,7 @@ import {
 
 export class EventDigestService {
   private buffers = new Map<string, BufferedEvent[]>();
+  private preparedDigests = new Map<string, BufferedEvent[]>();
 
   /**
    * Records an event for an agent.
@@ -40,22 +41,73 @@ export class EventDigestService {
   }
 
   /**
-   * Inspect the current pending digest for an agent without clearing it.
+   * Inspect all current pending uncommitted events for an agent without clearing them.
    */
   public getPendingDigest(agentId: string): EventDigest | null {
-    const list = this.buffers.get(agentId);
-    if (!list || list.length === 0) return null;
+    const prepared = this.preparedDigests.get(agentId) ?? [];
+    const current = this.buffers.get(agentId) ?? [];
+    const list = [...prepared, ...current];
+    if (list.length === 0) return null;
     return this.buildDigest(agentId, [...list]);
   }
 
   /**
+   * Prepares and stages pending events for delivery as part of an upcoming wake run.
+   * Staged events are held in `preparedDigests` and are not committed/cleared until
+   * `commitPendingDigest` is called upon successful downstream run creation. If run
+   * creation fails or is skipped, `rollbackPendingDigest` safely restores them.
+   */
+  public prepareDigest(
+    agentId: string,
+    triggeringEvent?: BufferedEvent,
+  ): EventDigest | null {
+    const current = this.buffers.get(agentId) ?? [];
+    const alreadyPrepared = this.preparedDigests.get(agentId) ?? [];
+    const combined = [...alreadyPrepared, ...current];
+
+    if (combined.length === 0 && !triggeringEvent) {
+      return null;
+    }
+
+    if (current.length > 0) {
+      this.preparedDigests.set(agentId, combined);
+      this.buffers.delete(agentId);
+    }
+
+    const allEvents = triggeringEvent ? [...combined, triggeringEvent] : combined;
+    return this.buildDigest(agentId, allEvents);
+  }
+
+  /**
+   * Atomically commits delivery of staged events once run creation succeeds.
+   */
+  public commitPendingDigest(agentId: string): void {
+    this.preparedDigests.delete(agentId);
+  }
+
+  /**
+   * Restores staged events back to the active buffer if downstream run creation
+   * was skipped, deferred, or encountered a failure.
+   */
+  public rollbackPendingDigest(agentId: string): void {
+    const prepared = this.preparedDigests.get(agentId);
+    if (!prepared || prepared.length === 0) {
+      this.preparedDigests.delete(agentId);
+      return;
+    }
+    const current = this.buffers.get(agentId) ?? [];
+    this.buffers.set(agentId, [...prepared, ...current]);
+    this.preparedDigests.delete(agentId);
+  }
+
+  /**
    * Clears and returns all accumulated events for an agent as a delivered digest.
+   * Equivalent to atomic prepare + commit.
    */
   public drainDigest(agentId: string): EventDigest | null {
-    const list = this.buffers.get(agentId);
-    if (!list || list.length === 0) return null;
-    this.buffers.delete(agentId);
-    return this.buildDigest(agentId, list);
+    const digest = this.prepareDigest(agentId);
+    this.commitPendingDigest(agentId);
+    return digest;
   }
 
   /**
@@ -84,40 +136,27 @@ export class EventDigestService {
     }
 
     if (isImmediateWakePriority(buffered.priority) || buffered.priority === "P2") {
-      const drained = this.drainDigest(buffered.agentId);
-      // If there were no prior low-priority events, provide a digest of this triggering event,
-      // or if there were accumulated events, append or deliver them.
-      const deliveredDigest: EventDigest = drained
-        ? {
-            agentId: buffered.agentId,
-            issueId: buffered.issueId ?? drained.issueId ?? null,
-            events: [...drained.events, buffered],
-            eventCount: drained.eventCount + 1,
-            oldestEventAt: drained.oldestEventAt < buffered.timestamp ? drained.oldestEventAt : buffered.timestamp,
-            newestEventAt: buffered.timestamp,
-          }
-        : {
-            agentId: buffered.agentId,
-            issueId: buffered.issueId ?? null,
-            events: [buffered],
-            eventCount: 1,
-            oldestEventAt: buffered.timestamp,
-            newestEventAt: buffered.timestamp,
-          };
+      const deliveredDigest = this.prepareDigest(buffered.agentId, buffered)!;
 
-      await deps.wakeup(buffered.agentId, {
-        wakeReason: buffered.type,
-        priority: buffered.priority,
-        triggeringEvent: buffered,
-        eventDigest: deliveredDigest,
-      });
+      try {
+        await deps.wakeup(buffered.agentId, {
+          wakeReason: buffered.type,
+          priority: buffered.priority,
+          triggeringEvent: buffered,
+          eventDigest: deliveredDigest,
+        });
+        this.commitPendingDigest(buffered.agentId);
 
-      return {
-        woken: true,
-        event: buffered,
-        digest: deliveredDigest,
-        wakeReason: buffered.type,
-      };
+        return {
+          woken: true,
+          event: buffered,
+          digest: deliveredDigest,
+          wakeReason: buffered.type,
+        };
+      } catch (err) {
+        this.rollbackPendingDigest(buffered.agentId);
+        throw err;
+      }
     }
 
     // Default fallback: do not wake
@@ -146,10 +185,11 @@ export class EventDigestService {
   }
 
   /**
-   * Clear all pending buffers (useful for testing isolation).
+   * Clear all pending and prepared buffers (useful for testing isolation).
    */
   public reset(): void {
     this.buffers.clear();
+    this.preparedDigests.clear();
   }
 }
 

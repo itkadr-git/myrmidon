@@ -318,5 +318,93 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
       expect(deliveredDigest.eventCount).toBe(2);
       expect(deliveredDigest.events.map((e: any) => e.type)).toEqual(["log", "ci_completed"]);
     });
+
+    it("preserves and restores pending events when downstream wake dispatch fails (failure rollback)", async () => {
+      const agentId = "agent-failure-test";
+      const sharedService = getSharedEventDigestService();
+
+      // 1. Accumulate P4 event
+      await dispatchAgentEvent(
+        { agentId, type: "heartbeat", payload: { step: "checkpoint-1" } },
+        { wakeup: vi.fn() },
+      );
+      expect(sharedService.getPendingDigest(agentId)?.eventCount).toBe(1);
+
+      // 2. Dispatch P0 event, but downstream wakeup throws an error (e.g., db failure)
+      const failingHeartbeat = {
+        wakeup: vi.fn().mockRejectedValue(new Error("Downstream database connection failure")),
+      };
+
+      await expect(
+        dispatchAgentEvent(
+          { agentId, type: "security_incident", payload: { level: "critical" } },
+          failingHeartbeat,
+        ),
+      ).rejects.toThrow("Downstream database connection failure");
+
+      // 3. Verify that the buffered event was NOT lost and remains preserved in the digest
+      const preservedDigest = sharedService.getPendingDigest(agentId);
+      expect(preservedDigest).not.toBeNull();
+      expect(preservedDigest?.eventCount).toBe(1);
+      expect(preservedDigest?.events[0].type).toBe("heartbeat");
+
+      // 4. Verify subsequent successful wake delivers the preserved event along with new wake
+      const succeedingHeartbeat = {
+        wakeup: vi.fn().mockResolvedValue({ created: true }),
+      };
+
+      const retryResult = await dispatchAgentEvent(
+        { agentId, type: "ci_completed", payload: { runId: "ci-retry" } },
+        succeedingHeartbeat,
+      );
+
+      expect(retryResult.woken).toBe(true);
+      expect(succeedingHeartbeat.wakeup).toHaveBeenCalledTimes(1);
+      const [, wakeOpts] = succeedingHeartbeat.wakeup.mock.calls[0] as [
+        string,
+        { reason: string; contextSnapshot: Record<string, unknown> },
+      ];
+      const deliveredDigest = wakeOpts.contextSnapshot.eventDigest as any;
+      expect(deliveredDigest.eventCount).toBe(2);
+      expect(deliveredDigest.events.map((e: any) => e.type)).toEqual([
+        "heartbeat",
+        "ci_completed",
+      ]);
+
+      // 5. Buffer should now be cleanly committed/drained
+      expect(sharedService.getPendingDigest(agentId)).toBeNull();
+    });
+
+    it("supports atomic prepare, commit, and rollback directly on EventDigestService", () => {
+      const service = new EventDigestService();
+      const agentId = "agent-atomic-test";
+
+      service.recordEvent({ agentId, type: "heartbeat" });
+      service.recordEvent({ agentId, type: "progress" });
+
+      expect(service.getPendingDigest(agentId)?.eventCount).toBe(2);
+
+      // Stage events for wake
+      const staged = service.prepareDigest(agentId);
+      expect(staged?.eventCount).toBe(2);
+
+      // While staged, getPendingDigest still reports all pending events
+      expect(service.getPendingDigest(agentId)?.eventCount).toBe(2);
+
+      // Simulate failure -> rollback
+      service.rollbackPendingDigest(agentId);
+
+      // Events should still be safely present in active buffer
+      const afterRollback = service.getPendingDigest(agentId);
+      expect(afterRollback?.eventCount).toBe(2);
+      expect(afterRollback?.events.map((e) => e.type)).toEqual(["heartbeat", "progress"]);
+
+      // Re-stage and commit (simulating successful run creation)
+      service.prepareDigest(agentId);
+      service.commitPendingDigest(agentId);
+
+      // Now buffer is completely drained
+      expect(service.getPendingDigest(agentId)).toBeNull();
+    });
   });
 });
