@@ -54,6 +54,8 @@ export interface AgentGatewayKeyDeps {
   }): Promise<{ id: string }>;
   /** Rotates a company secret to a new value. */
   rotateSecret(secretId: string, value: string): Promise<void>;
+  /** Deletes a company secret by id. */
+  deleteSecret?(secretId: string): Promise<void>;
   /** The key-management port of the gateway, built from the admin key. */
   gateway(input: { baseUrl: string; adminKey: string }): GatewayKeyAdminPort;
   env?: NodeJS.ProcessEnv;
@@ -62,8 +64,8 @@ export interface AgentGatewayKeyDeps {
 
 /** The key-management surface of the gateway this module uses. */
 export interface GatewayKeyAdminPort {
-  /** Installs a key under an alias. The gateway stores its sha256. */
-  createKey(input: { alias: string; value: string }): Promise<void>;
+  /** Installs a key under an alias with optional allowed models. The gateway stores its sha256. */
+  createKey(input: { alias: string; value: string; models?: string[] }): Promise<void>;
   /** Replaces the value behind an alias. Returns false when the alias is unknown. */
   rotateKey(input: { alias: string; value: string }): Promise<boolean>;
   /** Removes a key by alias. */
@@ -75,6 +77,8 @@ export interface GatewayKeyAdminPort {
    * alias is unknown to the gateway.
    */
   setKeyAllowedModels?(input: { alias: string; models: string[] }): Promise<boolean>;
+  /** Reads key metadata from the gateway (such as model allowlist). */
+  getKeyInfo?(input: { alias: string }): Promise<{ models?: string[] } | null>;
 }
 
 /** What a card's gateway key looks like to a caller: never the value itself. */
@@ -88,11 +92,14 @@ export interface AgentGatewayKeyView {
   valueHash: string | null;
   /** Whether this instance may manage gateway keys at all. */
   canManageKeys: boolean;
+  /** Allowed models list. Empty array means all models allowed. */
+  models?: string[];
 }
 
 export interface AgentGatewayKeyInput {
   companyId: string;
   agentId: string;
+  models?: string[];
 }
 
 /**
@@ -124,7 +131,11 @@ export async function createAgentGatewayKey(
 
   const adminKey = await requireAdminKey(deps, input.companyId, settings);
   const value = generateGatewayKeyValue();
-  await deps.gateway({ baseUrl: settings.baseUrl!, adminKey }).createKey({ alias: secretName, value });
+  await deps.gateway({ baseUrl: settings.baseUrl!, adminKey }).createKey({
+    alias: secretName,
+    value,
+    models: input.models,
+  });
   await deps.createSecret({
     companyId: input.companyId,
     name: secretName,
@@ -139,6 +150,7 @@ export async function createAgentGatewayKey(
       present: true,
       valueHash: gatewayKeyValueHash(value),
       canManageKeys: true,
+      models: input.models ?? [],
     },
     value,
   };
@@ -194,6 +206,90 @@ export async function rotateAgentGatewayKey(
 }
 
 /**
+ * Revokes one agent's gateway key. Deletes the key from the gateway and
+ * deletes the secret from the company secret store.
+ */
+export async function revokeAgentGatewayKey(
+  deps: AgentGatewayKeyDeps,
+  input: AgentGatewayKeyInput,
+): Promise<AgentGatewayKeyView> {
+  const settings = requireKeyManagement(deps.env ?? process.env);
+  const agent = await loadAgent(deps.db, input);
+  const secretName = agentKeySecretName({ agentId: agent.id, agentSlug: agent.name });
+
+  const secretId = await deps.findSecretId(input.companyId, secretName);
+  if (!secretId) {
+    throw notFound(
+      `agent "${agent.name}" has no gateway key to revoke`,
+      { code: "gateway_key_absent", secretName },
+    );
+  }
+
+  const adminKey = await requireAdminKey(deps, input.companyId, settings);
+  await deps
+    .gateway({ baseUrl: settings.baseUrl!, adminKey })
+    .deleteKey({ alias: secretName });
+
+  if (deps.deleteSecret) {
+    await deps.deleteSecret(secretId);
+  }
+  log(deps).info({ companyId: input.companyId, agentId: agent.id }, "agent gateway key revoked");
+  return {
+    agentId: agent.id,
+    secretName,
+    present: false,
+    valueHash: null,
+    canManageKeys: true,
+    models: [],
+  };
+}
+
+/**
+ * Updates an agent's gateway key model allowlist WITHOUT rotating the key value.
+ */
+export async function updateAgentGatewayKeyAllowlist(
+  deps: AgentGatewayKeyDeps,
+  input: AgentGatewayKeyInput & { models: string[] },
+): Promise<AgentGatewayKeyView> {
+  const settings = requireKeyManagement(deps.env ?? process.env);
+  const agent = await loadAgent(deps.db, input);
+  const secretName = agentKeySecretName({ agentId: agent.id, agentSlug: agent.name });
+
+  const secretId = await deps.findSecretId(input.companyId, secretName);
+  if (!secretId) {
+    throw notFound(
+      `agent "${agent.name}" has no gateway key yet; create one first`,
+      { code: "gateway_key_absent", secretName },
+    );
+  }
+
+  const adminKey = await requireAdminKey(deps, input.companyId, settings);
+  const gw = deps.gateway({ baseUrl: settings.baseUrl!, adminKey });
+  if (!gw.setKeyAllowedModels) {
+    throw unprocessable("gateway does not support setting allowed models", {
+      code: "gateway_allowlist_unsupported",
+    });
+  }
+  const applied = await gw.setKeyAllowedModels({ alias: secretName, models: input.models });
+  if (!applied) {
+    throw unprocessable(
+      `the gateway does not hold a key named "${secretName}"`,
+      { code: "gateway_key_unknown", secretName },
+    );
+  }
+  log(deps).info({ companyId: input.companyId, agentId: agent.id }, "agent gateway key allowlist updated");
+  const value = await deps.readSecretValue(input.companyId, secretName);
+  return {
+    agentId: agent.id,
+    secretName,
+    present: true,
+    valueHash: value ? gatewayKeyValueHash(value) : null,
+    canManageKeys: true,
+    models: input.models,
+  };
+}
+
+/**
  * The state of an agent's key. An agent reaches this for itself; a board member
  * for any agent of the company. The value is never part of the answer.
  */
@@ -205,12 +301,28 @@ export async function readAgentGatewayKey(
   const agent = await loadAgent(deps.db, input);
   const secretName = agentKeySecretName({ agentId: agent.id, agentSlug: agent.name });
   const value = await deps.readSecretValue(input.companyId, secretName);
+  let models: string[] | undefined;
+  if (value && settings.canManageKeys && settings.baseUrl && settings.adminKeySecret) {
+    try {
+      const adminKey = await deps.readSecretValue(input.companyId, settings.adminKeySecret);
+      if (adminKey) {
+        const gw = deps.gateway({ baseUrl: settings.baseUrl, adminKey });
+        if (gw.getKeyInfo) {
+          const info = await gw.getKeyInfo({ alias: secretName });
+          if (info) models = info.models ?? [];
+        }
+      }
+    } catch {
+      // non-fatal: models remain undefined if gateway query fails
+    }
+  }
   return {
     agentId: agent.id,
     secretName,
     present: Boolean(value),
     valueHash: value ? gatewayKeyValueHash(value) : null,
     canManageKeys: settings.canManageKeys,
+    ...(models !== undefined ? { models } : {}),
   };
 }
 
@@ -224,16 +336,39 @@ export async function listAgentGatewayKeys(
     .select({ id: agents.id, name: agents.name })
     .from(agents)
     .where(eq(agents.companyId, companyId));
+
+  let gw: GatewayKeyAdminPort | null = null;
+  if (settings.canManageKeys && settings.baseUrl && settings.adminKeySecret) {
+    try {
+      const adminKey = await deps.readSecretValue(companyId, settings.adminKeySecret);
+      if (adminKey) {
+        gw = deps.gateway({ baseUrl: settings.baseUrl, adminKey });
+      }
+    } catch {
+      gw = null;
+    }
+  }
+
   const views: AgentGatewayKeyView[] = [];
   for (const row of rows) {
     const secretName = agentKeySecretName({ agentId: row.id, agentSlug: row.name });
     const value = await deps.readSecretValue(companyId, secretName);
+    let models: string[] | undefined;
+    if (value && gw?.getKeyInfo) {
+      try {
+        const info = await gw.getKeyInfo({ alias: secretName });
+        if (info) models = info.models ?? [];
+      } catch {
+        // non-fatal
+      }
+    }
     views.push({
       agentId: row.id,
       secretName,
       present: Boolean(value),
       valueHash: value ? gatewayKeyValueHash(value) : null,
       canManageKeys: settings.canManageKeys,
+      ...(models !== undefined ? { models } : {}),
     });
   }
   return views;
@@ -352,6 +487,9 @@ export function defaultAgentGatewayKeyDeps(
     rotateSecret: async (secretId, value) => {
       await secrets.rotate(secretId, { value }, { userId: null, agentId: null });
     },
+    deleteSecret: async (secretId) => {
+      await secrets.remove(secretId);
+    },
     gateway: ({ baseUrl, adminKey }) => createGatewayKeyAdminPort(baseUrl, adminKey),
   };
 }
@@ -395,8 +533,12 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
   }
 
   return {
-    async createKey({ alias, value }) {
-      await post("/key/generate", { key_alias: alias, key: value });
+    async createKey({ alias, value, models }) {
+      await post("/key/generate", {
+        key_alias: alias,
+        key: value,
+        ...(models !== undefined ? { models } : {}),
+      });
     },
     async rotateKey({ alias, value }) {
       const response = await post("/key/update", { key_alias: alias, key: value });
@@ -404,7 +546,7 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
       return response.status < 400;
     },
     async deleteKey({ alias }) {
-      await post("/key/delete", { key_aliases: [alias] });
+      await post("/key/delete", { key_aliases: [alias] }, { okStatuses: [200, 404] });
     },
     async setKeyAllowedModels({ alias, models }) {
       // `/key/update` with key_alias but NO `key` field keeps the installed
@@ -415,6 +557,12 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
       // than throwing, exactly like rotateKey treats it.
       const response = await post("/key/update", { key_alias: alias, models }, { okStatuses: [200, 404] });
       return response.status !== 404;
+    },
+    async getKeyInfo({ alias }) {
+      const response = await post("/key/info", { key_alias: alias }, { okStatuses: [200, 404] });
+      if (response.status === 404 || !response.body) return null;
+      const body = response.body as { info?: { models?: string[] }; models?: string[] };
+      return { models: body.info?.models ?? body.models ?? [] };
     },
   };
 }

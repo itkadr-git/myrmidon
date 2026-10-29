@@ -13,7 +13,7 @@
 // the endpoints answer 503 with `enabled: false`, the same shape M2-A's cost
 // endpoints use, so the interface can say why instead of showing a bare error.
 
-import { Router, type Response } from "express";
+import { Router, type Request, type Response } from "express";
 import type { Db } from "@myrmidon/db";
 import { readGatewayKeySettings } from "@myrmidon/shared";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
@@ -23,7 +23,9 @@ import {
   defaultAgentGatewayKeyDeps,
   listAgentGatewayKeys,
   readAgentGatewayKey,
+  revokeAgentGatewayKey,
   rotateAgentGatewayKey,
+  updateAgentGatewayKeyAllowlist,
   type AgentGatewayKeyDeps,
 } from "./agent-keys.js";
 import { readGatewayFallbackTopology } from "./fallback-cycles.js";
@@ -72,7 +74,10 @@ export function litellmKeysRoutes(_db: Db, input: LitellmKeysRoutesDeps) {
       disabled(res);
       return;
     }
-    const created = await createAgentGatewayKey(input.deps, { companyId, agentId });
+    const models = Array.isArray(req.body?.models)
+      ? (req.body.models as unknown[]).map(String)
+      : undefined;
+    const created = await createAgentGatewayKey(input.deps, { companyId, agentId, models });
     // The value is answered exactly once, to the board member who asked for it.
     res.status(201).json({ ...created.view, value: created.value });
   });
@@ -88,6 +93,38 @@ export function litellmKeysRoutes(_db: Db, input: LitellmKeysRoutesDeps) {
     }
     res.json(await rotateAgentGatewayKey(input.deps, { companyId, agentId }));
   });
+
+  const handleRevoke = async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    if (!settings().canManageKeys) {
+      disabled(res);
+      return;
+    }
+    res.json(await revokeAgentGatewayKey(input.deps, { companyId, agentId }));
+  };
+  router.delete("/myrmidon/companies/:companyId/litellm/keys/:agentId", handleRevoke);
+  router.post("/myrmidon/companies/:companyId/litellm/keys/:agentId/revoke", handleRevoke);
+
+  const handleUpdateAllowlist = async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    if (!settings().canManageKeys) {
+      disabled(res);
+      return;
+    }
+    const models = Array.isArray(req.body?.models)
+      ? (req.body.models as unknown[]).map(String)
+      : [];
+    res.json(await updateAgentGatewayKeyAllowlist(input.deps, { companyId, agentId, models }));
+  };
+  router.put("/myrmidon/companies/:companyId/litellm/keys/:agentId/models", handleUpdateAllowlist);
+  router.post("/myrmidon/companies/:companyId/litellm/keys/:agentId/models", handleUpdateAllowlist);
+  router.patch("/myrmidon/companies/:companyId/litellm/keys/:agentId", handleUpdateAllowlist);
 
   /**
    * The gateway's fallback topology, with its loops named. Exposed so an

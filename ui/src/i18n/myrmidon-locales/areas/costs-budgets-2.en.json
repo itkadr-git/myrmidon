@@ -175,13 +175,28 @@
           "title": "Fallback loops"
         },
         "keysCard": {
+          "allModels": "All models",
+          "allModelsWarning": "пусто = все модели",
+          "cancel": "Cancel",
+          "confirmRevoke": "Revoke gateway key for {{name}}?",
+          "copied": "Copied!",
+          "copyKey": "Copy key",
           "description": "Each agent authenticates with its own gateway key, so the gateway attributes its spend to that key. Only the secret name and the key's fingerprint are shown — never the value.",
           "empty": "No agents yet.",
+          "issueKey": "Issue key",
           "keySet": "key set",
           "loading": "Loading gateway keys…",
+          "modelsLabel": "Allowed models",
+          "modelsPlaceholder": "gpt-4o, claude-3-5-sonnet (empty = all models)",
+          "newKeyValueTitle": "New gateway key",
+          "newKeyValueWarning": "Copy this key now. It is never stored and will not be displayed again.",
           "noKey": "no key yet",
+          "revokeKey": "Revoke",
+          "rotateKey": "Rotate",
+          "saveModels": "Save allowlist",
           "summary": "{{keyed}} of {{total}} agents have a key of their own.",
-          "title": "Keys per agent"
+          "title": "Keys per agent",
+          "updateAllowlist": "Allowed models"
         },
         "noCompany": "Select an organization to view gateway keys.",
         "notEnabled": "Gateway key management is not enabled on this instance."

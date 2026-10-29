@@ -6,8 +6,11 @@ import {
   createAgentGatewayKey,
   createGatewayKeyAdminPort,
   gatewayKeyValueHash,
+  listAgentGatewayKeys,
   readAgentGatewayKey,
+  revokeAgentGatewayKey,
   rotateAgentGatewayKey,
+  updateAgentGatewayKeyAllowlist,
   type AgentGatewayKeyDeps,
   type GatewayKeyAdminPort,
 } from "./agent-keys.js";
@@ -19,14 +22,22 @@ const ENABLED_ENV = {
 } as NodeJS.ProcessEnv;
 
 /** A key-management port that records what it was asked to do. */
-function recordingGateway(): GatewayKeyAdminPort & { calls: Array<{ op: string; alias: string; value?: string }> } {
-  const calls: Array<{ op: string; alias: string; value?: string }> = [];
+function recordingGateway(): GatewayKeyAdminPort & {
+  calls: Array<{ op: string; alias: string; value?: string; models?: string[] }>;
+  installed: Set<string>;
+  modelsByAlias: Map<string, string[]>;
+} {
+  const calls: Array<{ op: string; alias: string; value?: string; models?: string[] }> = [];
   const installed = new Set<string>();
+  const modelsByAlias = new Map<string, string[]>();
   return {
     calls,
-    async createKey({ alias, value }) {
-      calls.push({ op: "create", alias, value });
+    installed,
+    modelsByAlias,
+    async createKey({ alias, value, models }) {
+      calls.push({ op: "create", alias, value, models });
       installed.add(alias);
+      if (models) modelsByAlias.set(alias, models);
     },
     async rotateKey({ alias, value }) {
       calls.push({ op: "rotate", alias, value });
@@ -35,6 +46,17 @@ function recordingGateway(): GatewayKeyAdminPort & { calls: Array<{ op: string; 
     async deleteKey({ alias }) {
       calls.push({ op: "delete", alias });
       installed.delete(alias);
+      modelsByAlias.delete(alias);
+    },
+    async setKeyAllowedModels({ alias, models }) {
+      calls.push({ op: "setAllowedModels", alias, models });
+      if (!installed.has(alias)) return false;
+      modelsByAlias.set(alias, models);
+      return true;
+    },
+    async getKeyInfo({ alias }) {
+      if (!installed.has(alias)) return null;
+      return { models: modelsByAlias.get(alias) ?? [] };
     },
   };
 }
@@ -54,6 +76,9 @@ function makeDeps(seed: Record<string, string> = {}) {
     },
     rotateSecret: async (secretId, value) => {
       store.set(secretId.replace(/^id-/, ""), value);
+    },
+    deleteSecret: async (secretId) => {
+      store.delete(secretId.replace(/^id-/, ""));
     },
     gateway: () => gateway,
   };
@@ -160,6 +185,115 @@ describe("myrmidon(M2-B) agent gateway keys", () => {
     await expect(
       createAgentGatewayKey(withoutAdmin, { companyId: "company-a", agentId: agent.id }),
     ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("creates a key with an explicit model allowlist and passes it to gateway", async () => {
+    const agent = { id: "agent-a", name: "researcher" };
+    const { deps, store, gateway } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+    const created = await createAgentGatewayKey(deps, {
+      companyId: "company-a",
+      agentId: agent.id,
+      models: ["openai/gpt-4o", "anthropic/claude-3-5-sonnet"],
+    });
+
+    expect(created.view.models).toEqual(["openai/gpt-4o", "anthropic/claude-3-5-sonnet"]);
+    expect(gateway.calls).toEqual([
+      {
+        op: "create",
+        alias: created.view.secretName,
+        value: created.value,
+        models: ["openai/gpt-4o", "anthropic/claude-3-5-sonnet"],
+      },
+    ]);
+    expect(store.get(created.view.secretName)).toBe(created.value);
+  });
+
+  it("lists agent gateway keys with their allowlist", async () => {
+    const agentA = { id: "agent-a", name: "alpha" };
+    const agentB = { id: "agent-b", name: "beta" };
+    const base = makeDeps({ "gateway-admin": "admin-value" });
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: async () => [
+            { id: agentA.id, name: agentA.name },
+            { id: agentB.id, name: agentB.name },
+          ],
+        }),
+      }),
+    };
+    const deps = { ...base.deps, db: db as never };
+    await createAgentGatewayKey(deps, {
+      companyId: "company-a",
+      agentId: agentA.id,
+      models: ["openai/gpt-4o"],
+    });
+
+    const list = await listAgentGatewayKeys(deps, "company-a");
+    expect(list.length).toBe(2);
+    const alphaKey = list.find((k) => k.agentId === "agent-a")!;
+    const betaKey = list.find((k) => k.agentId === "agent-b")!;
+    expect(alphaKey.present).toBe(true);
+    expect(alphaKey.models).toEqual(["openai/gpt-4o"]);
+    expect(betaKey.present).toBe(false);
+  });
+
+  it("revokes an agent gateway key, deleting from gateway and store", async () => {
+    const agent = { id: "agent-a", name: "alpha" };
+    const { deps, store, gateway } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+    const created = await createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+    expect(store.has(created.view.secretName)).toBe(true);
+    expect(gateway.installed.has(created.view.secretName)).toBe(true);
+
+    const revoked = await revokeAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+    expect(revoked.present).toBe(false);
+    expect(revoked.valueHash).toBeNull();
+    expect(revoked.models).toEqual([]);
+    expect(store.has(created.view.secretName)).toBe(false);
+    expect(gateway.installed.has(created.view.secretName)).toBe(false);
+    expect(gateway.calls.some((c) => c.op === "delete" && c.alias === created.view.secretName)).toBe(true);
+  });
+
+  it("refuses to revoke an absent gateway key (404)", async () => {
+    const agent = { id: "agent-a", name: "alpha" };
+    const { deps } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+    await expect(
+      revokeAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id }),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("updates an agent gateway key allowlist without rotating value", async () => {
+    const agent = { id: "agent-a", name: "alpha" };
+    const { deps, store, gateway } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+    const created = await createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+    const originalValue = store.get(created.view.secretName);
+
+    const updated = await updateAgentGatewayKeyAllowlist(deps, {
+      companyId: "company-a",
+      agentId: agent.id,
+      models: ["deepseek/deepseek-chat", "openai/gpt-4o-mini"],
+    });
+
+    expect(updated.present).toBe(true);
+    expect(updated.models).toEqual(["deepseek/deepseek-chat", "openai/gpt-4o-mini"]);
+    expect(store.get(created.view.secretName)).toBe(originalValue);
+    expect(gateway.calls).toContainEqual({
+      op: "setAllowedModels",
+      alias: created.view.secretName,
+      models: ["deepseek/deepseek-chat", "openai/gpt-4o-mini"],
+    });
+  });
+
+  it("refuses to update allowlist of absent key (404)", async () => {
+    const agent = { id: "agent-a", name: "alpha" };
+    const { deps } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+    await expect(
+      updateAgentGatewayKeyAllowlist(deps, {
+        companyId: "company-a",
+        agentId: agent.id,
+        models: ["model-x"],
+      }),
+    ).rejects.toMatchObject({ status: 404 });
   });
 });
 
@@ -296,6 +430,59 @@ describe("myrmidon(M2-B) gateway key transport", () => {
 
     const missing = await admin.setKeyAllowedModels!({ alias: "missing-alias", models: [] });
     expect(missing).toBe(false);
+  });
+
+  it("deleteKey calls /key/delete with key_aliases", async () => {
+    const seen: Array<{ path: string; body: Record<string, unknown> }> = [];
+    server = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        seen.push({
+          path: req.url ?? "",
+          body: raw ? (JSON.parse(raw) as Record<string, unknown>) : {},
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ deleted_keys: 1 }));
+      });
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
+    const address = server!.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const admin = createGatewayKeyAdminPort(`http://127.0.0.1:${port}`, "admin-value");
+
+    await admin.deleteKey({ alias: "llm-gateway-key-alpha-agent-a" });
+    expect(seen[0]!.path).toBe("/key/delete");
+    expect(seen[0]!.body).toEqual({ key_aliases: ["llm-gateway-key-alpha-agent-a"] });
+  });
+
+  it("getKeyInfo calls /key/info with key_alias and returns parsed models", async () => {
+    const seen: Array<{ path: string; body: Record<string, unknown> }> = [];
+    server = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        seen.push({
+          path: req.url ?? "",
+          body: raw ? (JSON.parse(raw) as Record<string, unknown>) : {},
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ info: { key_alias: "my-key", models: ["model-1", "model-2"] } }));
+      });
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
+    const address = server!.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const admin = createGatewayKeyAdminPort(`http://127.0.0.1:${port}`, "admin-value");
+
+    const info = await admin.getKeyInfo!({ alias: "my-key" });
+    expect(seen[0]!.path).toBe("/key/info");
+    expect(seen[0]!.body).toEqual({ key_alias: "my-key" });
+    expect(info).toEqual({ models: ["model-1", "model-2"] });
   });
 
   it("maps a gateway error to a 422 instead of a silent success", async () => {
