@@ -11,6 +11,7 @@ import {
   renderMetricsText,
   type MetricsSnapshot,
 } from "./metrics.js";
+import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 
 function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
   return {
@@ -53,6 +54,23 @@ describe("prometheus exposition format", () => {
     }
   });
 
+  it("renders the created and deduped continuation counters after port calls", () => {
+    continuationDedupeMetrics.reset();
+    try {
+      continuationDedupeMetrics.metrics.onContinuationCreated("created-key");
+      continuationDedupeMetrics.metrics.onContinuationCreated("another-created-key");
+      continuationDedupeMetrics.metrics.onContinuationDeduped("deduped-key");
+
+      const text = renderMetricsText(snapshot());
+      expect(text).toContain("# TYPE myrmidon_continuation_created_total counter");
+      expect(text).toContain('myrmidon_continuation_created_total{role="all"} 2');
+      expect(text).toContain("# TYPE myrmidon_continuation_deduped_total counter");
+      expect(text).toContain('myrmidon_continuation_deduped_total{role="all"} 1');
+    } finally {
+      continuationDedupeMetrics.reset();
+    }
+  });
+
   it("renders exactly one HELP and one TYPE line per family", () => {
     const text = renderMetricsText(snapshot());
     const lines = text.split("\n");
@@ -86,8 +104,9 @@ describe("prometheus exposition format", () => {
     // 9 single-sample families + 2 quantile samples + 3 role pairs = 14,
     // plus the process half (1.6.5-PROCS-Q3): 3 loop quantiles + 1 RSS +
     // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
-    // plus the utilization gauge (1.6.6 PROCS-0.1) = 25.
-    expect(sampleLines).toHaveLength(25);
+    // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
+    // continuation dedupe counters = 27.
+    expect(sampleLines).toHaveLength(27);
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{role="all",quantile="0.99"} 0.13');
@@ -311,10 +330,16 @@ describe("prometheus exposition format", () => {
     const text = renderMetricsText(snapshot());
     expect(text.endsWith("\n")).toBe(true);
     const body = text.slice(0, -1);
-    for (const block of body.split("\n\n")) {
-      // Every block starts with its HELP line (no leading blank lines).
-      expect(block.startsWith("# HELP myrmidon_")).toBe(true);
-    }
+    const blocks = body.split("\n\n");
+    const families = blocks.map((block) => {
+      // Check registered names, including the task's blocker_* families,
+      // rather than imposing a namespace on otherwise valid exposition.
+      const match = /^# HELP ([a-zA-Z_:][a-zA-Z0-9_:]*) /.exec(block);
+      expect(match).not.toBeNull();
+      expect(block.split("\n")[1]).toMatch(new RegExp(`^# TYPE ${match![1]} `));
+      return match![1];
+    });
+    expect(families.sort()).toEqual([...METRIC_FAMILIES].sort());
   });
 
   it("escapes label values the way the exposition format requires", () => {

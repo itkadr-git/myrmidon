@@ -55,9 +55,10 @@ export function isIssueReady(facts: IssueReadinessFacts): IssueReadiness {
 export function openLoadOf(
   assignedIssueIds: Iterable<string>,
   leasedIssueIds: Iterable<string>,
+  ciWaitingIssueIds: ReadonlySet<string> = new Set(),
 ): number {
   const ids = new Set<string>();
-  for (const id of assignedIssueIds) ids.add(id);
+  for (const id of assignedIssueIds) if (!ciWaitingIssueIds.has(id)) ids.add(id);
   for (const id of leasedIssueIds) ids.add(id);
   return ids.size;
 }

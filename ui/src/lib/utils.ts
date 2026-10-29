@@ -33,12 +33,12 @@ export function asFiniteNumber(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-export function formatCents(cents: number): string {
-  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export function formatCents(cents: number, locale = "en-US"): string {
+  return `$${(cents / 100).toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-export function formatNumber(n: number): string {
-  return n.toLocaleString("en-US");
+export function formatNumber(n: number, locale = "en-US"): string {
+  return n.toLocaleString(locale);
 }
 
 /**
@@ -50,8 +50,8 @@ export function formatProjectBudget(budget: { amountCents: number; windowKind: s
   return budget.windowKind === "calendar_month_utc" ? `${amount}/mo` : amount;
 }
 
-export function formatDate(date: Date | string): string {
-  return new Date(date).toLocaleDateString("en-US", {
+export function formatDate(date: Date | string, locale = "en-US"): string {
+  return new Date(date).toLocaleDateString(locale, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -60,20 +60,21 @@ export function formatDate(date: Date | string): string {
 
 export function formatDateTime(
   date: Date | string,
-  options: { includeSeconds?: boolean } = {},
+  options: { includeSeconds?: boolean; locale?: string } = {},
 ): string {
-  return new Date(date).toLocaleString("en-US", {
+  const { locale = "en-US", includeSeconds = false } = options;
+  return new Date(date).toLocaleString(locale, {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
-    ...(options.includeSeconds ? { second: "2-digit" as const } : {}),
+    ...(includeSeconds ? { second: "2-digit" as const } : {}),
   });
 }
 
-export function formatShortDate(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
+export function formatShortDate(date: Date | string, locale = "en-US"): string {
+  return new Date(date).toLocaleString(locale, {
     month: "short",
     day: "numeric",
   });
