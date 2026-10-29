@@ -251,6 +251,7 @@
           "service": "Сервис",
           "branch": "Ветка",
           "folder": "Папка",
+          "responsible": "Ответственный",
           "originating": "Автор",
           "started": "Начата",
           "completed": "Завершена",

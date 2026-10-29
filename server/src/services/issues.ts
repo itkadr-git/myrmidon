@@ -213,6 +213,7 @@ import {
 } from "../myrmidon/channel-connectors/bridge/links.js";
 import { stageChannelTaskCompletionPublication } from "../myrmidon/channel-task-control-completion.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
+import { resolveResponsibleHeadAgentId } from "./responsible-head.js";
 
 const ALL_ISSUE_STATUSES = [
   "backlog",
@@ -10075,22 +10076,68 @@ export function issueService(db: Db) {
 
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
-        const responsibleUserId = await resolveResponsibleUserIdForIssueCreate(
-          tx,
-          companyId,
-          {
-            explicitResponsibleUserId: issueData.responsibleUserId ?? null,
-            createdByUserId: issueData.createdByUserId ?? null,
-            parentId: issueData.parentId ?? null,
-            originKind: issueData.originKind ?? "manual",
-            originRunId: issueData.originRunId ?? null,
-            actorRunId: actorRunId ?? null,
-            actorResponsibleUserId: actorResponsibleUserId ?? null,
-            trustExplicitResponsibleUserId:
-              trustExplicitResponsibleUserId === true,
-          },
+        const isCreatedByHuman = Boolean(
+          issueData.createdByUserId &&
+            !issueData.createdByAgentId &&
+            !actorRunId,
         );
+
+        let responsibleAgentId: string | null = null;
+        let responsibleUserId: string | null = null;
+
+        if (issueData.responsibleAgentId !== undefined) {
+          responsibleAgentId = issueData.responsibleAgentId ?? null;
+          responsibleUserId = issueData.responsibleUserId ?? null;
+        } else if (isCreatedByHuman) {
+          responsibleUserId = await resolveResponsibleUserIdForIssueCreate(
+            tx,
+            companyId,
+            {
+              explicitResponsibleUserId: issueData.responsibleUserId ?? null,
+              createdByUserId: issueData.createdByUserId ?? null,
+              parentId: issueData.parentId ?? null,
+              originKind: issueData.originKind ?? "manual",
+              originRunId: issueData.originRunId ?? null,
+              actorRunId: actorRunId ?? null,
+              actorResponsibleUserId: actorResponsibleUserId ?? null,
+              trustExplicitResponsibleUserId:
+                trustExplicitResponsibleUserId === true,
+            },
+          );
+          responsibleAgentId = null;
+        } else {
+          responsibleAgentId = await resolveResponsibleHeadAgentId(
+            tx,
+            companyId,
+            {
+              assigneeAgentId: issueData.assigneeAgentId ?? null,
+              projectId: issueData.projectId ?? null,
+              createdByAgentId: issueData.createdByAgentId ?? null,
+            },
+          );
+          responsibleUserId =
+            trustExplicitResponsibleUserId && issueData.responsibleUserId
+              ? issueData.responsibleUserId
+              : null;
+        }
+
         if (issueData.sourceTrust?.disposition === "quarantined") {
+          if (!responsibleUserId) {
+            responsibleUserId = await resolveResponsibleUserIdForIssueCreate(
+              tx,
+              companyId,
+              {
+                explicitResponsibleUserId: issueData.responsibleUserId ?? null,
+                createdByUserId: issueData.createdByUserId ?? null,
+                parentId: issueData.parentId ?? null,
+                originKind: issueData.originKind ?? "manual",
+                originRunId: issueData.originRunId ?? null,
+                actorRunId: actorRunId ?? null,
+                actorResponsibleUserId: actorResponsibleUserId ?? null,
+                trustExplicitResponsibleUserId: true,
+              },
+            );
+          }
           if (!responsibleUserId) {
             throw unprocessable(
               "Low-trust output cannot be quarantined without a promotion owner",
@@ -10099,6 +10146,8 @@ export function issueService(db: Db) {
         }
         const values = {
           ...issueData,
+          responsibleUserId,
+          responsibleAgentId,
           ...(issueData.sourceTrust?.disposition === "quarantined"
             ? {
                 sourceTrust: {
@@ -10797,6 +10846,27 @@ export function issueService(db: Db) {
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
+      }
+      if (issueData.responsibleAgentId !== undefined) {
+        patch.responsibleAgentId = issueData.responsibleAgentId;
+        if (patch.responsibleAgentId && issueData.responsibleUserId === undefined) {
+          patch.responsibleUserId = null;
+        }
+      } else if (
+        issueData.assigneeAgentId !== undefined &&
+        issueData.assigneeAgentId !== null &&
+        (existing.responsibleAgentId !== null || !existing.createdByUserId)
+      ) {
+        const newHead = await resolveResponsibleHeadAgentId(dbOrTx, existing.companyId, {
+          assigneeAgentId: issueData.assigneeAgentId,
+          projectId: (issueData.projectId as string | undefined) ?? existing.projectId,
+        });
+        if (newHead) {
+          patch.responsibleAgentId = newHead;
+          if (issueData.responsibleUserId === undefined) {
+            patch.responsibleUserId = null;
+          }
+        }
       }
       if (
         patch.status === "in_progress" &&

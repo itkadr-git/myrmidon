@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveOriginatingActor, deriveResponsibleUser } from "./issue-attribution.js";
+import { deriveOriginatingActor, deriveResponsibleActor, deriveResponsibleUser } from "./issue-attribution.js";
 
 describe("deriveResponsibleUser", () => {
   it("prefers an explicit responsible user", () => {
@@ -89,6 +89,48 @@ describe("deriveOriginatingActor", () => {
         createdByUserId: null,
         createdByAgentId: null,
         responsibleUserId: null,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("deriveResponsibleActor", () => {
+  it("prefers responsible agent over responsible user and creator", () => {
+    expect(
+      deriveResponsibleActor({
+        responsibleAgentId: "agent-adm",
+        responsibleUserId: "user-owner",
+        createdByUserId: "user-creator",
+      }),
+    ).toEqual({ kind: "agent", id: "agent-adm" });
+  });
+
+  it("falls back to responsible user when responsible agent is null", () => {
+    expect(
+      deriveResponsibleActor({
+        responsibleAgentId: null,
+        responsibleUserId: "user-owner",
+        createdByUserId: "user-creator",
+      }),
+    ).toEqual({ kind: "user", id: "user-owner" });
+  });
+
+  it("falls back to creator user when neither responsible is set", () => {
+    expect(
+      deriveResponsibleActor({
+        responsibleAgentId: null,
+        responsibleUserId: null,
+        createdByUserId: "user-creator",
+      }),
+    ).toEqual({ kind: "user", id: "user-creator" });
+  });
+
+  it("returns null when no responsible actor exists", () => {
+    expect(
+      deriveResponsibleActor({
+        responsibleAgentId: null,
+        responsibleUserId: null,
+        createdByUserId: null,
       }),
     ).toBeNull();
   });

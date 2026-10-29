@@ -32,6 +32,7 @@ import {
 } from "@myrmidon/db";
 // myrmidon(N2): a pending card's addressee wake receipt is a row keyed
 // `interaction-pending:<interactionId>` in the same table.
+import { resolveAgentHeadId } from "./responsible-head.js";
 import {
   PENDING_INTERACTION_WAKE_IDEMPOTENCY_PREFIX,
   selectUndeliveredAddresseeInteractionIds,
@@ -3500,7 +3501,10 @@ export function issueThreadInteractionService(
         // create keep returning the (by now expired) original.
         const result = await db.transaction(async (tx) => {
           const [issueRow] = await tx
-            .select({ status: issues.status })
+            .select({
+              status: issues.status,
+              responsibleAgentId: issues.responsibleAgentId,
+            })
             .from(issues)
             .where(
               and(
@@ -3525,6 +3529,31 @@ export function issueThreadInteractionService(
               lockForUpdate: true,
             });
           }
+          let addresseeAgentId = data.addresseeAgentId ?? null;
+          let addresseeUserId = data.addresseeUserId ?? null;
+
+          if (!addresseeAgentId && !addresseeUserId && actor.agentId) {
+            const cannotTargetAgent =
+              data.kind === "request_confirmation" &&
+              (data.payload.toolAction !== undefined ||
+                data.payload.secretProposal !== undefined);
+
+            if (!cannotTargetAgent) {
+              let candidateHeadId: string | null = null;
+              if (issueRow.responsibleAgentId && issueRow.responsibleAgentId !== actor.agentId) {
+                candidateHeadId = issueRow.responsibleAgentId;
+              } else {
+                const headId = await resolveAgentHeadId(tx, issue.companyId, actor.agentId);
+                if (headId && headId !== actor.agentId) {
+                  candidateHeadId = headId;
+                }
+              }
+              if (candidateHeadId) {
+                addresseeAgentId = candidateHeadId;
+                addresseeUserId = null;
+              }
+            }
+          }
           const [row] = await tx
             .insert(issueThreadInteractions)
             .values({
@@ -3546,8 +3575,8 @@ export function issueThreadInteractionService(
               title: data.title ?? null,
               summary: data.summary ?? null,
               createdByAgentId: actor.agentId ?? null,
-              addresseeAgentId: data.addresseeAgentId ?? null,
-              addresseeUserId: data.addresseeUserId ?? null,
+              addresseeAgentId,
+              addresseeUserId,
               createdByUserId: actor.userId ?? null,
               payload: data.payload,
             })

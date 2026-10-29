@@ -150,9 +150,11 @@ export {
 } from "./pipeline-case-type.js";
 export {
   deriveResponsibleUser,
+  deriveResponsibleActor,
   deriveOriginatingActor,
   type ResponsibleUserAttribution,
   type ResponsibleUserSource,
+  type ResponsibleActor,
   type OriginatingActor,
 } from "./issue-attribution.js";
 export {

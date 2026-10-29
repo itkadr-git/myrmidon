@@ -3090,6 +3090,28 @@ export function IssueProperties({
       ) : null}
 
       <PropertySection title={t("area.issue-properties-panels-2.issue-properties.sections.about")} streamlined={streamlinedPropertiesEnabled}>
+        {issue.responsibleAgentId ? (
+          <PropertyRow label={t("area.issue-properties-panels-2.issue-properties.rows.responsible", { defaultValue: "Responsible" })}>
+            <Link
+              to={`/agents/${issue.responsibleAgentId}`}
+              className="hover:underline"
+            >
+              <Identity
+                name={agentName(issue.responsibleAgentId) ?? issue.responsibleAgentId.slice(0, 8)}
+                size="sm"
+                shape="square"
+              />
+            </Link>
+          </PropertyRow>
+        ) : issue.responsibleUserId ? (
+          <PropertyRow label={t("area.issue-properties-panels-2.issue-properties.rows.responsible", { defaultValue: "Responsible" })}>
+            <Identity
+              name={actualUserLabel(issue.responsibleUserId) ?? userProfileMap.get(issue.responsibleUserId)?.label ?? t("common.user")}
+              avatarUrl={userProfileMap.get(issue.responsibleUserId)?.image ?? null}
+              size="sm"
+            />
+          </PropertyRow>
+        ) : null}
         {originatingActor ? (
           <PropertyRow label={t("area.issue-properties-panels-2.issue-properties.rows.originating")}>
             {originatingActor.kind === "agent" ? (
