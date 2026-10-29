@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { scrubSecrets, parseSessionMessages, sampleDataset } from './extract-adm-dataset.mjs';
+import { scrubSecrets, parseSessionMessages, sampleDataset, gitleaksScrub } from './extract-adm-dataset.mjs';
 
 test('scrubSecrets redacts tokens, bearer headers, and keys', () => {
   const input = `
@@ -24,6 +24,31 @@ test('scrubSecrets redacts tokens, bearer headers, and keys', () => {
   assert.ok(scrubbed.includes('[REDACTED_GH_TOKEN]'));
   assert.ok(scrubbed.includes('[REDACTED_BEARER]'));
   assert.ok(scrubbed.includes('[REDACTED_PRIVATE_KEY]'));
+});
+
+test('window boundaries, missing timestamps and insufficient data fail closed', () => {
+  const start = '2026-10-20T00:00:00Z';
+  const end = '2026-10-27T00:00:00Z';
+  const candidates = [
+    { text: 'start boundary', timestamp: start },
+    { text: 'end boundary', timestamp: end },
+    { text: 'no timestamp' },
+    { text: 'bad timestamp', timestamp: 'not-a-date' },
+    { text: 'outside', timestamp: '2026-10-19T23:59:59Z' }
+  ];
+  const options = { startUtc: start, endUtc: end, targetCount: 1, scan: text => text };
+  assert.deepEqual(sampleDataset(candidates, options).map(item => item.text), ['start boundary']);
+  assert.throws(() => sampleDataset(candidates, { ...options, targetCount: 2 }), /Only 1 eligible messages/);
+  assert.throws(() => sampleDataset(candidates, { ...options, startUtc: 'invalid' }), /Invalid UTC window/);
+});
+
+test('gitleaks failures never export unscanned text', () => {
+  const failedScanner = () => { throw new Error('gitleaks failed'); };
+  assert.throws(() => sampleDataset([{ text: 'sensitive input', timestamp: '2026-10-21T12:00:00Z' }], {
+    targetCount: 1,
+    scan: failedScanner
+  }), /gitleaks failed/);
+  assert.throws(() => gitleaksScrub('sensitive input', '__missing_gitleaks_command__'), /gitleaks scan failed/);
 });
 
 test('parseSessionMessages handles Claude Code and JSONL session formats', () => {
@@ -68,7 +93,8 @@ test('sampleDataset selects exactly 50 messages using uniform stride within UTC 
   const dataset = sampleDataset(raw, {
     startUtc: '2026-10-20T00:00:00Z',
     endUtc: '2026-10-27T00:00:00Z',
-    targetCount: 50
+    targetCount: 50,
+    scan: text => text
   });
 
   assert.equal(dataset.length, 50);
@@ -88,6 +114,7 @@ test('sampleDataset selects exactly 50 messages using uniform stride within UTC 
     assert.ok(!item.text.includes('out of window'));
   }
 
+  assert.deepEqual(dataset.map(item => item.text), Array.from({ length: 50 }, (_, i) => `Test operational prompt #${i * 3} for task OPE-${1000 + i * 3}`));
   // Check uniform distribution / monotonic timestamps
   for (let i = 1; i < dataset.length; i++) {
     const prev = new Date(dataset[i - 1].timestamp_utc).getTime();

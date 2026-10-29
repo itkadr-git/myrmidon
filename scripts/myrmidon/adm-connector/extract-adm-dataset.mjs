@@ -43,7 +43,7 @@ export function scrubSecrets(text) {
 }
 
 /**
- * Optional gitleaks stdin scan if binary is available
+ * Required gitleaks stdin scan; refuse export if the scanner is unavailable or fails
  */
 export function gitleaksScrub(text, bin = process.env.ADM_GITLEAKS_BIN || 'gitleaks') {
   try {
@@ -52,13 +52,13 @@ export function gitleaksScrub(text, bin = process.env.ADM_GITLEAKS_BIN || 'gitle
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024
     });
-    if (run.status === 0 && run.stdout) {
-      return run.stdout;
+    if (run.error || run.status !== 0 || !run.stdout) {
+      throw new Error('gitleaks scan failed; refusing to export data');
     }
+    return run.stdout;
   } catch {
-    // Fall back to regex scrubbing
+    throw new Error('gitleaks scan failed; refusing to export data');
   }
-  return text;
 }
 
 /**
@@ -149,22 +149,23 @@ function extractFromItem(item) {
 export function sampleDataset(rawCandidates, {
   startUtc = DEFAULT_START_UTC,
   endUtc = DEFAULT_END_UTC,
-  targetCount = DEFAULT_TARGET_COUNT
+  targetCount = DEFAULT_TARGET_COUNT,
+  scan = gitleaksScrub
 } = {}) {
-  const startTime = new Date(startUtc).getTime();
-  const endTime = new Date(endUtc).getTime();
+  const startTime = Date.parse(startUtc);
+  const endTime = Date.parse(endUtc);
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || startTime >= endTime || !Number.isSafeInteger(targetCount) || targetCount < 1) {
+    throw new Error('Invalid UTC window or target count');
+  }
 
-  // Filter by date window and valid text
+  // An unknown or invalid timestamp cannot establish provenance inside the window.
   const inWindow = [];
   for (const c of rawCandidates) {
-    if (!c.text) continue;
-    if (c.timestamp) {
-      const t = new Date(c.timestamp).getTime();
-      if (!isNaN(t)) {
-        if (t < startTime || t >= endTime) continue;
-      }
-    }
-    inWindow.push(c);
+    if (typeof c.text !== 'string' || !c.text.trim()) continue;
+    if (typeof c.timestamp !== 'string') continue;
+    const t = Date.parse(c.timestamp);
+    if (!Number.isFinite(t) || t < startTime || t >= endTime) continue;
+    inWindow.push({ ...c, timestamp: new Date(t).toISOString() });
   }
 
   // Deduplicate and scrub
@@ -172,9 +173,7 @@ export function sampleDataset(rawCandidates, {
   const sanitized = [];
 
   for (const item of inWindow) {
-    let clean = scrubSecrets(item.text);
-    clean = gitleaksScrub(clean);
-
+    const clean = scan(scrubSecrets(item.text));
     const norm = clean.trim();
     if (norm.length < 5) continue; // Skip single punctuation / trivial noise
     if (seenTexts.has(norm)) continue;
@@ -182,7 +181,7 @@ export function sampleDataset(rawCandidates, {
 
     sanitized.push({
       text: norm,
-      timestamp: item.timestamp || startUtc
+      timestamp: item.timestamp
     });
   }
 
@@ -195,11 +194,11 @@ export function sampleDataset(rawCandidates, {
   });
 
   const N = sanitized.length;
-  if (N === 0) {
-    return [];
+  if (N < targetCount) {
+    throw new Error(`Only ${N} eligible messages; ${targetCount} required`);
   }
 
-  if (N <= targetCount) {
+  if (N === targetCount) {
     return sanitized.map((item, idx) => ({
       id: idx + 1,
       timestamp_utc: item.timestamp,
@@ -299,8 +298,7 @@ if (process.argv[1] && process.argv[1].endsWith('extract-adm-dataset.mjs')) {
   console.log(`Produced sanitized dataset with ${dataset.length} items (target: ${targetCount}).`);
 
   if (dryRun) {
-    console.log('Sample items:');
-    console.log(JSON.stringify(dataset.slice(0, 3), null, 2));
+    console.log(`Sanitized dataset has ${dataset.length} items; no messages printed.`);
   } else if (outputFile) {
     writeFileSync(resolve(outputFile), JSON.stringify(dataset, null, 2), 'utf8');
     console.log(`Saved dataset to ${outputFile}`);

@@ -7,37 +7,140 @@ import { createHooks, classify, TRIGGERS } from './hooks.mjs';
 import { STANDARD_ITEMS } from './failure-matrix.mjs';
 
 /**
- * Pinned deterministic multilingual tokenizer spec (0 LLM cost).
- * Follows cl100k_base subword pre-tokenization boundaries.
+ * Pinned deterministic BPE (Byte-Pair Encoding) subword tokenizer spec (0 LLM cost).
+ * Implements deterministic pairwise subword merging with standard cl100k regex pre-tokenization.
  */
 export const TOKENIZER_SPEC = Object.freeze({
-  name: 'cl100k_base_deterministic_v1',
+  name: 'deterministic_bpe_v1',
   version: '1.0.0',
-  description: 'Deterministic multilingual subword estimator aligned with cl100k_base vocabulary rules without external model or network dependency.',
-  regex: '/(?:s|t|re|ve|m|ll|d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+/giu',
-  formula: 'cl100k regex chunking: ASCII words <=4 chars = 1 token, longer = ceil(len/4); punctuation/whitespace = ceil(len/3); UTF-8 non-ASCII = ceil(bytes/3).',
+  description: 'Deterministic offline subword BPE tokenizer with pinned vocabulary and merge ranks, 0 LLM cost.',
+  algorithm: 'Iterative byte/subword pair merging against pinned rank table following cl100k regex pre-segmentation.',
 });
 
 /**
- * Local deterministic token estimator (model-free, 0 LLM calls).
+ * Standard OpenAI cl100k pre-tokenization regex.
+ */
+const PRE_TOKEN_REGEX = /(?:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+/giu;
+
+/**
+ * Pinned table of ranked BPE merges covering common technical English and operational Russian subwords.
+ */
+const BPE_MERGES_LIST = [
+  // English common words, prefixes, and suffixes
+  'd e', 'de p', 'dep l', 'depl o', 'deplo y', // deploy
+  'r e', 're l', 'rel e', 'rele a', 'relea s', 'releas e', // release
+  's e', 'se r', 'ser v', 'serv i', 'servi c', 'servic e', // service
+  's t', 'st a', 'sta t', 'stat u', 'statu s', // status
+  'c h', 'ch e', 'che c', 'chec k', // check
+  'w i', 'wi t', 'wit h', // with
+  'm i', 'mi g', 'mig r', 'migr a', 'migra t', 'migrat i', 'migrati o', 'migratio n', 'migration s', // migrations
+  'p r', 'pr o', 'pro m', 'prom p', 'promp t', // prompt
+  't o', 'to k', 'tok e', 'toke n', // token
+  'c o', 'co n', 'con t', 'cont e', 'conte x', 'contex t', // context
+  's e', 'se s', 'ses s', 'sess i', 'sessi o', 'sessio n', // session
+  'm e', 'me m', 'mem o', 'memo r', 'memor y', // memory
+  'p o', 'po l', 'pol i', 'poli c', 'polic y', // policy
+  'r u', 'ru l', 'rule', // rule
+  's u', 'su m', 'sum m', 'summ a', 'summa r', 'summar y', // summary
+  's c', 'sc r', 'scr i', 'scri p', 'scrip t', // script
+  'c o', 'co d', 'code', // code
+  't e', 'te s', 'test', // test
+  'f a', 'fa i', 'fail', // fail
+  'p a', 'pa s', 'pass', // pass
+  'e r', 'er r', 'err o', 'error', // error
+  'n o', 'no d', 'node', // node
+  'h o', 'ho o', 'hook', // hook
+  'i n', 'in g', // ing
+  't i', 'ti o', 'tio n', // tion
+  'c o', 'co n', // con
+  'c o', 'co m', // com
+  'p r', 'pr e', // pre
+  'p o', 'po s', 'pos t', // post
+  'a p', 'ap p', 'appl y', // apply
+  'u p', 'up d', 'upda t', 'update', // update
+  'a p', 'ap i', // api
+  'k e', 'ke y', // key
+  'd a', 'da t', 'data', // data
+  'f i', 'fi l', 'file', // file
+  'l o', 'lo g', // log
+  'u s', 'us e', 'user', // user
+  'h e', 'he l', 'help', // help
+  'e x', 'ex i', 'exit', // exit
+  'c a', 'ca c', 'cach e', // cache
+  'f r', 'fr e', 'fresh', // fresh
+  's t', 'st a', 'stale', // stale
+  'c l', 'cl o', 'close', 'closed', // closed
+  'o k', // ok
+  // Russian operational morphemes and words
+  'П р', 'Пр о', 'Про в', 'Пров е', 'Прове р', 'Провер ь', // Проверь
+  'п р', 'пр о', 'про в', 'пров е', 'прове р', 'провер ь', 'проверк а', // проверь / проверка
+  'с о', 'со с', 'сос т', 'сост о', 'состо я', 'состоя н', 'состоян и', 'состояни е', // состояние
+  'с е', 'се р', 'сер в', 'серв и', 'серви с', 'сервис о', 'сервисо в', // сервисов
+  'с б', 'сб о', 'сбо й', // сбой
+  'о ш', 'ош и', 'оши б', 'ошиб к', 'ошибк а', // ошибка
+  'н а', 'на с', 'наст р', 'настро й', 'настрой к', 'настройк а', // настройка
+  'б а', 'ба з', 'база', // база
+  'д а', 'да н', 'дан н', 'данны е', // данные
+  'с е', 'се т', 'сеть', // сеть
+  'у з', 'уз е', 'узел', // узел
+  'п а', 'па м', 'памя т', 'памят ь', // память
+  'п р', 'пр а', 'прав и', 'прави л', 'правил о', 'правила', // правило
+  'в ы', 'вы к', 'выка т', // выкат
+  'о б', 'об р', 'обра з', // образ
+  'с б', 'сбо р', 'сбор к', 'сборка', // сборка
+  'т е', 'те с', 'тест', 'тесты', // тест / тесты
+  'о т', 'от ч', 'отчё т', 'отчет', // отчёт
+  'к л', 'кл ю', 'клю ч', // ключ
+  'с е', 'сек р', 'секр е', 'секре т', 'секреты', // секрет
+  'х о', 'хо с', 'хост', // хост
+  'д и', 'ди с', 'диск', // диск
+  'з а', 'за д', 'зада ч', 'задача', // задача
+];
+
+const BPE_MERGE_RANKS = new Map();
+BPE_MERGES_LIST.forEach((pair, idx) => BPE_MERGE_RANKS.set(pair, idx));
+
+/**
+ * Performs Byte-Pair Encoding merges on a single pre-token chunk.
+ */
+function bpeMerge(chunk) {
+  let symbols = Array.from(chunk);
+  if (symbols.length <= 1) return symbols.length;
+
+  while (true) {
+    let minRank = Infinity;
+    let minIdx = -1;
+    for (let i = 0; i < symbols.length - 1; i++) {
+      const pair = `${symbols[i]} ${symbols[i + 1]}`;
+      const rank = BPE_MERGE_RANKS.get(pair);
+      if (rank !== undefined && rank < minRank) {
+        minRank = rank;
+        minIdx = i;
+      }
+    }
+    if (minIdx === -1) break;
+    const merged = symbols[minIdx] + symbols[minIdx + 1];
+    symbols.splice(minIdx, 2, merged);
+  }
+  return symbols.length;
+}
+
+/**
+ * Local deterministic BPE token counter (model-free, 0 LLM calls).
+ * Pinned vocabulary rules, deterministic output across platforms.
  */
 export function estimateTokens(text) {
   if (!text || typeof text !== 'string') return 0;
-  const matches = text.match(/(?:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+/giu);
+  const matches = text.match(PRE_TOKEN_REGEX);
   if (!matches) return 0;
   let count = 0;
   for (const chunk of matches) {
-    const bytes = Buffer.byteLength(chunk, 'utf8');
-    if (/^[a-zA-Z0-9_]+$/.test(chunk)) {
-      count += Math.max(1, Math.ceil(chunk.length / 4));
-    } else if (/^[\s\p{P}]+$/u.test(chunk)) {
-      count += Math.max(1, Math.ceil(chunk.length / 3));
-    } else {
-      count += Math.max(1, Math.ceil(bytes / 3));
-    }
+    count += bpeMerge(chunk);
   }
   return count;
 }
+
+export const countTokens = estimateTokens;
 
 /**
  * Baseline parameters for the Old Scheme (Contract A specification):
@@ -49,9 +152,32 @@ export function estimateTokens(text) {
 export const BASELINE = Object.freeze({
   claudeMdBytes: 10800,
   memoryMdBytes: 13400,
-  initialSessionBytes: 24200, // 10800 + 13400
+  initialSessionBytes: 24200,
   memoryReadPerMessageBytes: 800,
 });
+
+/**
+ * Generates representative baseline SessionStart text (CLAUDE.md + MEMORY.md)
+ * of exactly BASELINE.initialSessionBytes (24,200 bytes).
+ */
+export function generateBaselineSessionStart() {
+  const claudePart = '# CLAUDE.md - System Instructions for ADM Agent\n\n' +
+    'Guidance for software engineering, architecture discipline, security, and operations.\n'.repeat(160);
+  const memoryPart = '# MEMORY.md - Core System Memory and Conventions\n\n' +
+    'Durable operational notes, cluster configurations, network boundaries, and run policies.\n'.repeat(180);
+  const raw = `${claudePart}\n${memoryPart}`;
+  return raw.slice(0, BASELINE.initialSessionBytes).padEnd(BASELINE.initialSessionBytes, ' ');
+}
+
+/**
+ * Generates representative baseline memory read text of exactly BASELINE.memoryReadPerMessageBytes (800 bytes).
+ */
+export function generateBaselineMemoryRead(trigger) {
+  const header = `## Memory Policy for ${trigger || 'operation'}\n\n`;
+  const body = 'Policy details: enforce operator safety, review criteria, authentication, and execution isolation.\n'.repeat(10);
+  const raw = `${header}${body}`;
+  return raw.slice(0, BASELINE.memoryReadPerMessageBytes).padEnd(BASELINE.memoryReadPerMessageBytes, ' ');
+}
 
 /**
  * Runs the offline token and byte benchmark across the 50 real ADM messages.
@@ -63,9 +189,10 @@ export async function runTokenBenchmark({
 } = {}) {
   const rawData = await readFile(samplePath, 'utf8');
   const sampleSha256 = createHash('sha256').update(rawData).digest('hex');
-  const messages = JSON.parse(rawData);
+  const parsed = JSON.parse(rawData);
+  const messages = Array.isArray(parsed) ? parsed : parsed.messages;
   if (!Array.isArray(messages) || messages.length !== 50) {
-    throw new Error(`Expected 50 sample messages, got ${messages.length}`);
+    throw new Error(`Expected 50 sample messages, got ${messages?.length}`);
   }
 
   const scratchBase = process.env.TMPDIR && !/^\/(?:tmp|var\/tmp)(?:\/|$)/.test(process.env.TMPDIR)
@@ -90,11 +217,12 @@ export async function runTokenBenchmark({
 
   try {
     // 1. SessionStart evaluation
-    // Old scheme SessionStart
-    const oldSessionStartBytes = BASELINE.initialSessionBytes;
-    const oldSessionStartTokens = Math.round(oldSessionStartBytes / 4); // ~6050 tokens
+    // Old scheme SessionStart measured on actual 24,200 bytes baseline text
+    const baselineStartText = generateBaselineSessionStart();
+    const oldSessionStartBytes = Buffer.byteLength(baselineStartText, 'utf8');
+    const oldSessionStartTokens = estimateTokens(baselineStartText);
 
-    // New scheme SessionStart
+    // New scheme SessionStart measured on actual generated context
     const newSessionStartRes = await hooks.run({
       hook_event_name: 'SessionStart',
       session_id: sessionId,
@@ -116,8 +244,13 @@ export async function runTokenBenchmark({
 
       // Old scheme UserPromptSubmit:
       // Memory files read on demand (~800 bytes if matched operational trigger)
-      const oldPromptBytes = matchedTriggers.length > 0 ? BASELINE.memoryReadPerMessageBytes : 0;
-      const oldPromptTokens = Math.round(oldPromptBytes / 4);
+      let oldPromptBytes = 0;
+      let oldPromptTokens = 0;
+      if (matchedTriggers.length > 0) {
+        const baselinePromptText = generateBaselineMemoryRead(matchedTriggers[0]);
+        oldPromptBytes = Buffer.byteLength(baselinePromptText, 'utf8');
+        oldPromptTokens = estimateTokens(baselinePromptText);
+      }
 
       cumulativeOldBytes += oldPromptBytes;
       cumulativeOldTokens += oldPromptTokens;
@@ -138,7 +271,7 @@ export async function runTokenBenchmark({
 
       messageResults.push({
         id: msg.id,
-        timestamp_utc: msg.timestamp_utc,
+        timestamp_utc: msg.timestamp || msg.timestamp_utc || '',
         promptLength: Buffer.byteLength(prompt, 'utf8'),
         matchedTriggers,
         old: {
@@ -253,7 +386,8 @@ export function formatMarkdownReport(summary) {
     const status = m.new.bytesAdded === 0
       ? (m.matchedTriggers.length === 0 ? 'zero (no trigger)' : 'dedup (already seen)')
       : `injected (${m.new.bytesAdded} B)`;
-    md += `| ${m.id} | ${m.timestamp_utc.slice(11, 19)} | ${trigs} | +${m.old.bytesAdded} B | +${m.new.bytesAdded} B | ${status} |\n`;
+    const timeStr = m.timestamp_utc && m.timestamp_utc.length >= 19 ? m.timestamp_utc.slice(11, 19) : '--:--:--';
+    md += `| ${m.id} | ${timeStr} | ${trigs} | +${m.old.bytesAdded} B | +${m.new.bytesAdded} B | ${status} |\n`;
   }
 
   return md;

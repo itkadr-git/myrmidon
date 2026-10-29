@@ -1,18 +1,39 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runTokenBenchmark, estimateTokens, TOKENIZER_SPEC } from './token-benchmark.mjs';
+import {
+  runTokenBenchmark,
+  estimateTokens,
+  countTokens,
+  TOKENIZER_SPEC,
+  BASELINE,
+  generateBaselineSessionStart,
+  generateBaselineMemoryRead,
+} from './token-benchmark.mjs';
 
-test('Token Estimator is deterministic, versioned, and handles multilingual text', () => {
-  assert.equal(estimateTokens(''), 0);
-  assert.equal(estimateTokens(null), 0);
-  assert.equal(TOKENIZER_SPEC.name, 'cl100k_base_deterministic_v1');
+test('deterministic_bpe_v1 tokenizer: pinned specification and exact calibration', () => {
+  assert.equal(TOKENIZER_SPEC.name, 'deterministic_bpe_v1');
   assert.equal(TOKENIZER_SPEC.version, '1.0.0');
 
-  // Deterministic reference calibration strings
-  const count1 = estimateTokens('Проверь состояние сервисов и сетевых коннекторов');
-  assert.ok(count1 >= 15 && count1 <= 45);
-  const count2 = estimateTokens('deploy release rc.14 with migrations');
-  assert.ok(count2 >= 5 && count2 <= 20);
+  // Exact boundary calibrations
+  assert.equal(estimateTokens(''), 0);
+  assert.equal(estimateTokens(null), 0);
+  assert.equal(estimateTokens(undefined), 0);
+  assert.equal(estimateTokens(' '), 1);
+  assert.equal(countTokens('deploy'), 1);
+  assert.equal(estimateTokens('check status'), 4);
+  assert.equal(estimateTokens('deploy release rc.14 with migrations'), 13);
+  assert.equal(estimateTokens('Проверь состояние сервисов'), 7);
+  assert.equal(estimateTokens('const status = "ok";'), 12);
+});
+
+test('Baseline generator produces exact byte budgets for Contract A', () => {
+  const startText = generateBaselineSessionStart();
+  assert.equal(Buffer.byteLength(startText, 'utf8'), BASELINE.initialSessionBytes);
+  assert.equal(BASELINE.initialSessionBytes, 24200);
+
+  const memoryText = generateBaselineMemoryRead('deploy');
+  assert.equal(Buffer.byteLength(memoryText, 'utf8'), BASELINE.memoryReadPerMessageBytes);
+  assert.equal(BASELINE.memoryReadPerMessageBytes, 800);
 });
 
 test('Offline Token & Byte Benchmark on 50 real ADM messages satisfies Contract A', async () => {
@@ -22,9 +43,9 @@ test('Offline Token & Byte Benchmark on 50 real ADM messages satisfies Contract 
   assert.equal(result.dataset.unmatchedMessageCount, 6, 'Must verify 6 unmatched messages');
   assert.equal(result.dataset.matchedMessageCount, 44, 'Must verify 44 matched messages');
   assert.ok(result.dataset.sha256, 'Must include dataset sha256');
-  assert.equal(result.tokenizer.name, 'cl100k_base_deterministic_v1');
+  assert.equal(result.tokenizer.name, 'deterministic_bpe_v1');
 
-  // Acceptance criteria
+  // Acceptance criteria (Contract A)
   const c = result.contractACompliance;
   assert.equal(c.newBytesUnderOldBytes, true, 'New scheme total bytes must be <= old scheme');
   assert.equal(c.newTokensUnderOldTokens, true, 'New scheme total tokens must be <= old scheme');
