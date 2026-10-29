@@ -40,7 +40,7 @@ export async function isIssueWaitingForPullRequestCi(
     return false;
   }
 
-  if (product.reviewState === "changes_requested" || product.status === "changes_requested") {
+  if (product.reviewState === "changes_requested") {
     return false;
   }
 
