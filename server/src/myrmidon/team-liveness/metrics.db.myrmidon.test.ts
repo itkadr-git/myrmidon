@@ -257,8 +257,7 @@ describeEmbeddedPostgres("team liveness metrics", () => {
     await db.insert(issueComments).values({
       companyId,
       issueId,
-      actorType: "agent",
-      actorId: agentId,
+      authorAgentId: agentId,
       body: "CI run still in progress",
       createdByRunId: run1Id,
       createdAt: new Date(now.getTime() - 10 * 60 * 1000),
@@ -278,8 +277,7 @@ describeEmbeddedPostgres("team liveness metrics", () => {
     await db.insert(issueComments).values({
       companyId,
       issueId,
-      actorType: "agent",
-      actorId: agentId,
+      authorAgentId: agentId,
       body: "Created PR #123",
       createdByRunId: run2Id,
       createdAt: new Date(now.getTime() - 20 * 60 * 1000),
@@ -308,8 +306,7 @@ describeEmbeddedPostgres("team liveness metrics", () => {
     await db.insert(issueComments).values({
       companyId,
       issueId,
-      actorType: "agent",
-      actorId: agentId,
+      authorAgentId: agentId,
       body: "Completed task",
       createdByRunId: run3Id,
       createdAt: new Date(now.getTime() - 30 * 60 * 1000),
