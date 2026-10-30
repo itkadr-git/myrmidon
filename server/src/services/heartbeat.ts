@@ -19232,7 +19232,7 @@ export function heartbeatService(
         error: "Adapter probeGatewayRunForBoard not found",
       };
     }
-    let baseUrl = input.baseUrl;
+    let baseUrl: string | null = input.baseUrl ?? null;
     let apiKey = input.apiKey;
     let headers = input.headers;
     const rawConfig = parseObject(input.adapterConfig);
