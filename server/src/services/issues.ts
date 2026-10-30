@@ -4312,8 +4312,7 @@ async function listIssueBlockerAttentionMap(
       node.status === "in_progress" ||
       activeIssueIds.has(node.id) ||
       explicitWaitingIssueIds.has(node.id) ||
-      Boolean(node.assigneeUserId) ||
-      Boolean(node.assigneeAgentId)
+      Boolean(node.assigneeUserId)
     )
       return true;
 
