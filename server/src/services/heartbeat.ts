@@ -30483,6 +30483,9 @@ export function heartbeatService(
                 id: heartbeatRuns.id,
                 status: heartbeatRuns.status,
                 finishedAt: heartbeatRuns.finishedAt,
+                stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
+                stderrExcerpt: heartbeatRuns.stderrExcerpt,
+                responsibleUserId: heartbeatRuns.responsibleUserId,
               })
               .from(heartbeatRuns)
               .where(
@@ -30593,7 +30596,7 @@ export function heartbeatService(
                     companyId: issue.companyId,
                     issueId: issue.id,
                     authorType: "system",
-                    body: `Agent ${agentId} completed ${throttleDecision.noProgressStreak} runs without progress. Last result: no issue-visible change. Project lead or assigner: what is needed to continue?`,
+                    body: `Agent ${agentId} completed ${throttleDecision.noProgressStreak} runs without progress. Last result: ${(recentTerminalRuns[0]?.stdoutExcerpt ?? recentTerminalRuns[0]?.stderrExcerpt ?? "no output").slice(-500)}. Project lead or assigner${recentTerminalRuns[0]?.responsibleUserId ? ` (${recentTerminalRuns[0].responsibleUserId})` : ""}: what is needed to continue?`,
                   });
                 }
                 if (!throttleDecision.frozen) {
