@@ -29,7 +29,7 @@ app.use("/api", skillGitRecordRoutes({
 let server: Server;
 
 beforeAll(async () => {
-  await new Promise<void>((resolve) => { server = app.listen(0, "127.0.0.1", resolve); });
+  await new Promise<void>((resolve) => { server = app.listen(0, "127.0.0.1", () => resolve()); });
 });
 
 afterAll(async () => {

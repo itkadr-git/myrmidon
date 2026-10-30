@@ -43,6 +43,7 @@ function store(): SkillLifecycleStore {
     async listEvents() { return []; },
     async getVersion() { return { id: VERSION, revisionNumber: 1, fileInventory: [{ path: "SKILL.md", content: "body" }] }; },
     async getApproval() { return null; },
+    async consumeApproval() { return null; },
     async setSkillCurrentVersion() {},
   } satisfies SkillLifecycleStore;
 }
@@ -70,8 +71,8 @@ function passCache(): SkillLifecycleReadCache & { calls: () => number } {
 function gitRecord(entries: () => Array<{ key: string; files: Array<{ path: string; content: string }> }>) {
   return {
     refresh: vi.fn(async () => {}),
-    listEntries: vi.fn(entries),
-    recordVerified: vi.fn(),
+    listEntries: vi.fn(async () => entries()),
+    recordVerified: vi.fn(async () => {}),
   };
 }
 
