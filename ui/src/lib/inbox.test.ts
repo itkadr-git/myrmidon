@@ -525,6 +525,7 @@ describe("inbox helpers", () => {
         if (item.kind === "issue") return `issue:${item.issue.id}`;
         if (item.kind === "approval") return `approval:${item.approval.id}`;
         if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
+        if (item.kind === "knowledge") return `knowledge:${item.suggestion.id}`;
         return `run:${item.run.id}`;
       }),
     ).toEqual([
@@ -568,6 +569,7 @@ describe("inbox helpers", () => {
         if (item.kind === "issue") return `issue:${item.issue.id}`;
         if (item.kind === "approval") return `approval:${item.approval.id}`;
         if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
+        if (item.kind === "knowledge") return `knowledge:${item.suggestion.id}`;
         return `run:${item.run.id}`;
       }),
     ).toEqual([
