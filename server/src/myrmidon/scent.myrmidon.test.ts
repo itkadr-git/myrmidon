@@ -39,6 +39,13 @@ import type {
   AgentScentClassificationResult,
   ScentGateway,
 } from "./scent/gateway.js";
+import {
+  classifyIssueScent,
+  normalizeScentBaseUrl,
+} from "./scent/gateway.js";
+import { scentMetrics } from "./scent/metrics.js";
+import { checkScentHealth } from "./scent/health.js";
+import { myrmidonScentRoutes } from "./scent/routes.js";
 import { deriveScentAuto, isUnclassifiableIssue } from "./scent/create-hook.js";
 import { canSpendCall, createScentService } from "./scent/service.js";
 import { runScentQueueTick, SCENT_QUEUE_TICK_MS, startScentQueue } from "./scent/queue.js";
@@ -531,5 +538,139 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
       logActivity: async (_db, entry) => unconfiguredJournal(_db, entry),
     });
     expect(unconfiguredJournal).not.toHaveBeenCalled();
+  });
+});
+
+describe("myrmidon(1.6.6 OPE-9996): Scent gateway baseUrl normalization", () => {
+  it("normalizes baseUrl by stripping trailing /v1 and slashes", () => {
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000/v1")).toBe("http://192.0.2.1:4000");
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000/v1/")).toBe("http://192.0.2.1:4000");
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000/v1///")).toBe("http://192.0.2.1:4000");
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000")).toBe("http://192.0.2.1:4000");
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000/")).toBe("http://192.0.2.1:4000");
+  });
+
+  it("calls fetch with correct /v1/chat/completions without duplicating /v1", async () => {
+    const fetchedUrls: string[] = [];
+    const mockFetch = (async (url: string | URL | Request) => {
+      fetchedUrls.push(String(url));
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  tags: ["fix"],
+                  casteProbs: { engineer: 0.9 },
+                  complexity: { coordination: 0.1, uncertainty: 0.1, consequences: 0.1 },
+                }),
+              },
+            },
+          ],
+            usage: { prompt_tokens: 10, completion_tokens: 15 },
+          }),
+        };
+      }) as unknown as typeof fetch;
+
+    const result = await classifyIssueScent(
+      {
+        fetch: mockFetch,
+        baseUrl: "http://192.0.2.1:4000/v1",
+        apiKey: "test-key",
+      },
+      {
+        title: "Test bug",
+        description: "Fix problem",
+        castes: ["engineer"],
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(fetchedUrls[0]).toBe("http://192.0.2.1:4000/v1/chat/completions");
+  });
+});
+
+describe("myrmidon(1.6.6 OPE-9996): Scent status and failure alarm", () => {
+  beforeEach(() => {
+    scentMetrics.reset();
+  });
+
+  it("reports lastSuccessAt and successRateHour accurately", async () => {
+    const lastSuccess = new Date("2026-10-30T10:00:00Z");
+    const health = await checkScentHealth(
+      {} as never,
+      "c1",
+      {
+        getHourlyStats: async () => ({
+          lastSuccessAt: lastSuccess,
+          attemptsLastHour: 20,
+          successesLastHour: 15,
+        }),
+      },
+    );
+
+    expect(health.lastSuccessAt).toBe(lastSuccess.toISOString());
+    expect(health.attemptsLastHour).toBe(20);
+    expect(health.successesLastHour).toBe(15);
+    expect(health.successRateHour).toBe(0.75);
+    expect(health.alarm).toBe(false);
+    expect(scentMetrics.isAlarm()).toBe(false);
+  });
+
+  it("triggers alarm and logs activity when >= 10 attempts and 0 successes in the last hour", async () => {
+    const loggedEntries: Array<{ action: string; details: unknown }> = [];
+    const db = {
+      execute: async () => [{ n: 0 }],
+    };
+    const health = await checkScentHealth(
+      db as never,
+      "c1",
+      {
+        getHourlyStats: async () => ({
+          lastSuccessAt: null,
+          attemptsLastHour: 12,
+          successesLastHour: 0,
+        }),
+        logActivity: async (_d, entry) => {
+          loggedEntries.push({ action: entry.action, details: entry.details });
+        },
+      },
+    );
+
+    expect(health.alarm).toBe(true);
+    expect(health.attemptsLastHour).toBe(12);
+    expect(health.successesLastHour).toBe(0);
+    expect(health.successRateHour).toBe(0);
+    expect(scentMetrics.isAlarm()).toBe(true);
+
+    expect(loggedEntries).toHaveLength(1);
+    expect(loggedEntries[0].action).toBe("swarm.scent_classifier_dead");
+    expect((loggedEntries[0].details as { alarm: boolean }).alarm).toBe(true);
+  });
+
+  it("does not trigger alarm when fewer than 10 attempts have been made", async () => {
+    const loggedEntries: unknown[] = [];
+    const db = {
+      execute: async () => [{ n: 0 }],
+    };
+    const health = await checkScentHealth(
+      db as never,
+      "c1",
+      {
+        getHourlyStats: async () => ({
+          lastSuccessAt: null,
+          attemptsLastHour: 9,
+          successesLastHour: 0,
+        }),
+        logActivity: async (_d, entry) => {
+          loggedEntries.push(entry);
+        },
+      },
+    );
+
+    expect(health.alarm).toBe(false);
+    expect(scentMetrics.isAlarm()).toBe(false);
+    expect(loggedEntries).toHaveLength(0);
   });
 });
