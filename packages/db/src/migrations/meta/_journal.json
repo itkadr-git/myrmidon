@@ -2522,6 +2522,13 @@
       "when": 1793037063000,
       "tag": "0422_interaction_routing",
       "breakpoints": true
+    },
+    {
+      "idx": 423,
+      "version": "7",
+      "when": 1793359933872,
+      "tag": "0423_fleet_site_client_cert_fingerprint",
+      "breakpoints": true
     }
   ]
 }
