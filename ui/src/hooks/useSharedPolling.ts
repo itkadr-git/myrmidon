@@ -6,6 +6,7 @@ import {
   type SharedPollingSnapshot,
 } from "../lib/cross-tab-poll";
 import { filterLocalInboxArchivedQueryData } from "../lib/inboxArchiveCache";
+import { isUnauthorizedError } from "../lib/auth-session-recovery";
 
 type RefetchInterval = number | false;
 
@@ -132,7 +133,14 @@ export function useSharedPollingQuery<TData>({
 
   const isLeader = !leaderOnly || snapshot.isLeader;
   const queryEnabled = enabled && (!leaderOnly || snapshot.isLeader);
-  const coordinatedInterval = leaderOnly && !snapshot.isLeader ? false : refetchInterval;
+  const coordinatedInterval = useMemo(() => {
+    if (leaderOnly && !snapshot.isLeader) return false;
+    if (refetchInterval === false) return false;
+    return (query: { state: { error: unknown } }) => {
+      if (isUnauthorizedError(query?.state?.error)) return false;
+      return typeof refetchInterval === "function" ? (refetchInterval as any)(query) : refetchInterval;
+    };
+  }, [leaderOnly, snapshot.isLeader, refetchInterval]);
 
   const publish = useCallback((data: TData | undefined, dataUpdatedAt: number) => {
     if (!activeCompanyId || !fullResourceKey || data === undefined) return;
