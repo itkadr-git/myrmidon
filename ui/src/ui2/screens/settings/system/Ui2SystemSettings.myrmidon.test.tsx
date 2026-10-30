@@ -171,4 +171,12 @@ describe("myrmidon(UI2) Ui2SystemSettings screen parity", () => {
     expect(container.querySelector(".ui2-key-name")).toBeNull();
     expect(container.querySelector(".ui2-changelog-entry")).toBeNull();
   });
+
+  it("renders link to secret references in Secrets and does not mount secret refs directly", async () => {
+    await renderScreen();
+    const link = container.querySelector<HTMLAnchorElement>('[data-testid="ui2-system-secrets-link"]');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("href")).toBe("/company/settings/secrets");
+    expect(container.querySelector('[data-testid^="ui2-secret-setting-"]')).toBeNull();
+  });
 });
