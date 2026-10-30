@@ -128,11 +128,22 @@ async function createApp(dbMock?: any) {
     next();
   });
 
+  const createQueryMock = (data: any = [mockProviderRow]) => {
+    const query: any = {
+      where: vi.fn(() => query),
+      limit: vi.fn(() => query),
+      offset: vi.fn(() => query),
+      orderBy: vi.fn(() => query),
+      then: (resolve: any, reject: any) => Promise.resolve(data).then(resolve, reject),
+      catch: (reject: any) => Promise.resolve(data).catch(reject),
+      finally: (cb: any) => Promise.resolve(data).finally(cb),
+    };
+    return query;
+  };
+
   const defaultDb = {
     select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(async () => [mockProviderRow]),
-      })),
+      from: vi.fn(() => createQueryMock([mockProviderRow])),
     })),
   };
 
@@ -193,16 +204,23 @@ describe("pool models behavior tests (1.6.6 OPE-9932)", () => {
             accounts: [
               {
                 account_number: 1,
+                n: 1,
                 email: "active@example.com",
                 label: "ChatGPT Plus #1",
+                state: "active",
                 status: "active",
+                isBanned: false,
                 models: ["gpt-4o", "pool-only-model"],
               },
               {
                 account_number: 2,
+                n: 2,
                 email: "banned@example.com",
                 label: "Banned Account #2",
+                state: "banned",
                 status: "banned",
+                isBanned: true,
+                banned: true,
                 models: ["gpt-4o", "banned-only-model"],
               },
             ],
