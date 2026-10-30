@@ -196,6 +196,22 @@ export class RunGuard {
     return this.stoppedReason !== null;
   }
 
+  get stopped(): boolean {
+    return this.stoppedReason !== null;
+  }
+
+  get stopReason(): RunGuardStopReason | null {
+    return this.stoppedReason;
+  }
+
+  stats(): { modelCalls: number; modelCallCount: number; toolRetryCount: number } {
+    return {
+      modelCalls: this.modelCalls,
+      modelCallCount: this.modelCalls,
+      toolRetryCount: this.toolFailureCount,
+    };
+  }
+
   toolSuccess(): RunGuardDecision {
     if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
     this.lastToolFailure = null;
