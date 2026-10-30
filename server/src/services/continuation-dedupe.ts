@@ -1,6 +1,7 @@
 import { and, eq, lt } from "drizzle-orm";
 import { issueContinuationKeys, type Db } from "@myrmidon/db";
 import { isUniqueViolation } from "../db-errors.js";
+import { continuationDedupeMetrics } from "./continuation-dedupe-metrics.js";
 
 export type ContinuationDedupeOutcome = "created" | "deduped";
 
@@ -23,7 +24,10 @@ export async function tryClaimContinuationKey(
       if (isUniqueViolation(err, "issue_continuation_keys_company_key_uq") || isUniqueViolation(err)) return [];
       throw err;
     });
-  return inserted.length ? "created" : "deduped";
+  const outcome: ContinuationDedupeOutcome = inserted.length ? "created" : "deduped";
+  if (outcome === "created") continuationDedupeMetrics.metrics.onContinuationCreated(input.key);
+  else continuationDedupeMetrics.metrics.onContinuationDeduped(input.key);
+  return outcome;
 }
 
 export async function clearExpiredContinuationKeys(
