@@ -91,6 +91,7 @@ type Options struct {
 // DiskQuota is what the disk routes need of the quota code (disk.Quota).
 type DiskQuota interface {
 	Put(ctx context.Context, botKey string, hard int64) (disk.Result, error)
+	Ensure(ctx context.Context, botKey string) (int, error)
 }
 
 // Gate is the dockergate server.
