@@ -24,7 +24,7 @@ import {
   type ReviewVerdict,
 } from "./signals.js";
 
-function extractPrMarker(
+export function extractPrMarker(
   meta: Record<string, unknown>,
   events: { event: string; payload: any; at: Date | null; receivedAt: Date }[],
 ): PrMarkerState {
@@ -65,7 +65,7 @@ function extractPrMarker(
   return { hasMarker: false };
 }
 
-function extractReviewVerdict(
+export function extractReviewVerdict(
   issueId: string,
   prNumber: number,
   decisions: (typeof issueExecutionDecisions.$inferSelect)[],
