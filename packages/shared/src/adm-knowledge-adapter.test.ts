@@ -3,6 +3,7 @@ import {
   createAdmKnowledgeAdapter,
   type AdmKnowledgeItem,
   type AdmKnowledgeRestPort,
+  type AdmWriteResult,
 } from "./adm-knowledge-adapter.js";
 
 const policy: AdmKnowledgeItem = {
@@ -460,5 +461,104 @@ describe("ADM knowledge REST adapter", () => {
     const upstream = Object.assign(new Error("secret token must not escape"), { status: 429 });
     const adapter = createAdmKnowledgeAdapter(rest({ list: vi.fn(async () => { throw upstream; }) }));
     await expect(adapter.list("policy")).rejects.toMatchObject({ code: "ADM_RATE_LIMITED", message: "ADM knowledge request failed" });
+  });
+
+  it("calls onConflict callback with generated diff for human review before retry", async () => {
+    let callCount = 0;
+    const latestPolicy: AdmKnowledgeItem = {
+      ...policy,
+      deliveredRevisionId: "rev-2",
+      summary: "Updated deployment policy v2",
+      content: "Old body content v2",
+    };
+    const api = rest({
+      read: vi.fn(async (id) => (id === policy.id ? latestPolicy : null)),
+      proposeRule: vi.fn(async () => {
+        callCount++;
+        if (callCount === 1) {
+          const err = new Error("Conflict");
+          Object.assign(err, { status: 409 });
+          throw err;
+        }
+        return { itemId: policy.id, revisionId: "rev-3", status: "proposed" as const };
+      }),
+    });
+    let reviewedDiff = "";
+    const adapter = createAdmKnowledgeAdapter(api);
+    const result = await adapter.proposeRuleWithConflictRetry(
+      {
+        itemId: policy.id,
+        slug: policy.slug,
+        title: policy.title,
+        summary: "Updated deployment policy v3",
+        body: "Never deploy on Friday without owner sign-off.",
+        sourceRef: "OPE-9877",
+        baseRevisionId: "rev-1",
+        idempotencyKey: "ope-9877:review-conflict:1",
+        onConflict: (diff) => {
+          reviewedDiff = diff;
+          return true;
+        },
+      },
+      "ope-9877:review-conflict:2",
+    );
+
+    expect(result.conflictResolved).toBe(true);
+    expect(reviewedDiff).toContain("base: rev-1");
+    expect(reviewedDiff).toContain("latest: rev-2");
+    expect(reviewedDiff).toContain("Never deploy on Friday without owner sign-off.");
+  });
+
+  it("aborts conflict retry with ADM_REVISION_CONFLICT if onConflict callback returns false", async () => {
+    const latestPolicy: AdmKnowledgeItem = {
+      ...policy,
+      deliveredRevisionId: "rev-2",
+      summary: "Updated deployment policy v2",
+      content: "Old body content v2",
+    };
+    const api = rest({
+      read: vi.fn(async () => latestPolicy),
+      proposeRule: vi.fn(async () => {
+        const err = new Error("Conflict");
+        Object.assign(err, { status: 409 });
+        throw err;
+      }),
+    });
+    const adapter = createAdmKnowledgeAdapter(api);
+    await expect(
+      adapter.proposeRuleWithConflictRetry(
+        {
+          itemId: policy.id,
+          slug: policy.slug,
+          title: policy.title,
+          summary: "Summary",
+          body: "Body",
+          sourceRef: "OPE-9877",
+          idempotencyKey: "ope-9877:abort-conflict:1",
+          onConflict: () => false,
+        },
+        "ope-9877:abort-conflict:2",
+      ),
+    ).rejects.toMatchObject({ code: "ADM_REVISION_CONFLICT" });
+  });
+
+  it("integrates with production hook interface via createHookLoader", async () => {
+    const api = rest({
+      list: vi.fn(async () => [policy]),
+    });
+    const adapter = createAdmKnowledgeAdapter(api);
+    const loader = adapter.createHookLoader();
+    const loaded = await loader({ event: "SessionStart", triggers: [] });
+    expect(loaded.degraded).toBe(false);
+    expect(loaded.items).toHaveLength(1);
+    expect(loaded.items[0]?.slug).toBe(policy.slug);
+
+    const failingApi = rest({
+      list: vi.fn(async () => { throw new Error("Network down"); }),
+    });
+    const failingLoader = createAdmKnowledgeAdapter(failingApi).createHookLoader();
+    const degradedResult = await failingLoader({ event: "SessionStart", triggers: [] });
+    expect(degradedResult.degraded).toBe(true);
+    expect(degradedResult.items).toHaveLength(0);
   });
 });

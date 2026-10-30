@@ -172,7 +172,10 @@ export function createAdmKnowledgeAdapter(rest: AdmKnowledgeRestPort) {
   };
 
   const proposeRuleWithConflictRetry = async (
-    input: Parameters<AdmKnowledgeWritePort["proposeRule"]>[0] & { itemId?: string },
+    input: Parameters<AdmKnowledgeWritePort["proposeRule"]>[0] & {
+      itemId?: string;
+      onConflict?: (diff: string) => boolean | void | Promise<boolean | void>;
+    },
     nextIdempotencyKey: string,
   ): Promise<{ result: AdmWriteResult; diff: string; conflictResolved: boolean }> => {
     assertIdempotencyKey(nextIdempotencyKey);
@@ -208,6 +211,13 @@ export function createAdmKnowledgeAdapter(rest: AdmKnowledgeRestPort) {
           `- ${latestBody}`,
           `+ ${input.body ?? ""}`,
         ].join("\n");
+
+        if (input.onConflict) {
+          const proceed = await input.onConflict(diff);
+          if (proceed === false) {
+            throw new AdmConnectorError("ADM_REVISION_CONFLICT", "Conflict retry aborted after diff review", { cause: error });
+          }
+        }
 
         const retryBaseRevisionId = latest.deliveredRevisionId ?? (typeof latest.revisionId === "string" ? latest.revisionId : undefined);
         const retryResult = await proposeRule({
@@ -288,6 +298,21 @@ export function createAdmKnowledgeAdapter(rest: AdmKnowledgeRestPort) {
       const parsed = metadataSchema.safeParse(value);
       if (!parsed.success) throw new AdmConnectorError("ADM_INVALID_METADATA", "ADM knowledge metadata is invalid", { cause: parsed.error });
       return parsed.data;
+    },
+    createHookLoader(): (args: { event: "SessionStart" | "UserPromptSubmit"; triggers: string[] }) => Promise<{ items: AdmKnowledgeItem[]; fetchedAt: number; degraded: boolean }> {
+      return async () => {
+        try {
+          const items = await rest.list({
+            space: "adm/",
+            status: "published",
+            limit: 100,
+          });
+          const published = items.filter((item) => item.slug.startsWith("adm/") && item.status === "published");
+          return { items: published, fetchedAt: Date.now(), degraded: false };
+        } catch {
+          return { items: [], fetchedAt: 0, degraded: true };
+        }
+      };
     },
   };
 }

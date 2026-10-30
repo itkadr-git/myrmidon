@@ -8,7 +8,7 @@ const item = (slug, triggers = [], body = 'Full rule') => ({ slug, title: slug, 
 async function setup(items, extra = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'adm-hooks-'));
   const hooks = createHooks({ stateDir: dir, load: async () => ({ items, fetchedAt: Date.now(), degraded: false }), ...extra });
-  return { hooks, cleanup: () => rm(dir, { recursive: true, force: true }) };
+  return { dir, hooks, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 test('session summaries only, compaction excludes trigger index and bodies', async () => {
   const { hooks, cleanup } = await setup([item('adm/policy/security', [], 'SECRET BODY'), item('adm/trigger/ssh', ['ssh'])]);
@@ -92,4 +92,66 @@ test('enforces SessionStart <= 12 KB, UserPromptSubmit <= 2 KB, 0 bytes on trigg
     assert.ok(logged[2].bytes > 0);
     assert.equal(logged[3].bytes, 0);
   } finally { await cleanup(); }
+});
+
+test('exercises budget and dedup persistence across process restart and compaction', async () => {
+  const items = [
+    item('adm/policy/deploy', [], 'Deploy rule body'),
+    item('adm/trigger/ssh', ['ssh'], 'SSH rule body'),
+    item('adm/trigger/merge', ['merge'], 'Merge rule body'),
+  ];
+  const { dir, hooks: hooks1, cleanup } = await setup(items);
+  try {
+    const start1 = await hooks1.run({ hook_event_name: 'SessionStart', session_id: 'session-persist-1' });
+    assert.ok(start1.bytes > 0);
+    assert.equal(start1.sessionBytes, start1.bytes);
+
+    const prompt1 = await hooks1.run({ hook_event_name: 'UserPromptSubmit', session_id: 'session-persist-1', prompt: 'connect with ssh' });
+    assert.ok(prompt1.bytes > 0);
+    assert.equal(prompt1.sessionBytes, start1.sessionBytes + prompt1.bytes);
+
+    // Simulate process restart: fresh hooks instance on same stateDir
+    const hooks2 = createHooks({
+      stateDir: dir,
+      load: async () => ({ items, fetchedAt: Date.now(), degraded: false }),
+    });
+
+    // Dedup across restart: same trigger prompt yields 0 bytes
+    const restartRepeat = await hooks2.run({ hook_event_name: 'UserPromptSubmit', session_id: 'session-persist-1', prompt: 'connect with ssh again' });
+    assert.equal(restartRepeat.bytes, 0);
+    assert.equal(restartRepeat.sessionBytes, prompt1.sessionBytes);
+
+    // New trigger adds bytes starting from persisted sessionBytes
+    const prompt2 = await hooks2.run({ hook_event_name: 'UserPromptSubmit', session_id: 'session-persist-1', prompt: 'please merge this branch' });
+    assert.ok(prompt2.bytes > 0);
+    assert.equal(prompt2.sessionBytes, prompt1.sessionBytes + prompt2.bytes);
+
+    // Compaction maintains accumulated sessionBytes and excludes trigger index
+    const compact = await hooks2.run({ hook_event_name: 'SessionStart', source: 'compact', session_id: 'session-persist-1' });
+    assert.ok(!compact.context.includes('Trigger index'));
+    assert.ok(compact.sessionBytes > prompt2.sessionBytes);
+  } finally { await cleanup(); }
+});
+
+test('exercises fail-closed warning behavior on budget overflow and omission of oversized bodies', async () => {
+  // 1. Mandatory policy overflow fails closed with degraded warning
+  const oversizedPolicies = Array.from({ length: 40 }, (_, i) => ({
+    ...item(`adm/policy/p${i}`, [], 'policy body '.repeat(100)),
+    summary: 'mandatory policy summary '.repeat(20),
+  }));
+  const { hooks: overflowHooks, cleanup: c1 } = await setup(oversizedPolicies);
+  try {
+    const res = await overflowHooks.run({ hook_event_name: 'SessionStart', session_id: 'overflow-1' });
+    assert.ok(res.bytes <= 12288);
+    assert.ok(res.context.includes('fail closed'));
+  } finally { await c1(); }
+
+  // 2. Trigger body exceeding 2 KB prompt cap is omitted
+  const hugeTriggerItem = item('adm/trigger/ssh', ['ssh'], 'huge body '.repeat(400));
+  const { hooks: promptHooks, cleanup: c2 } = await setup([hugeTriggerItem]);
+  try {
+    const res = await promptHooks.run({ hook_event_name: 'UserPromptSubmit', session_id: 'prompt-overflow-1', prompt: 'please ssh' });
+    assert.equal(res.bytes, 0);
+    assert.equal(res.context, '');
+  } finally { await c2(); }
 });
