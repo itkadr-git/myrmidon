@@ -385,6 +385,7 @@ export async function runTokenBenchmark(options = {}) {
       zeroInjectionForUnmatched: perMessage.filter(m => m.triggers.length === 0).every(m => m.newBytes === 0),
       secretScanClean,
       secretScanFindingsCount: secretFindings.length,
+      secretScanScope: "все 50 входных сообщений adm-sample-50.json, базовый контекст и все сгенерированные контексты SessionStart / UserPromptSubmit (всего 104 текстовых блока)",
       tokensAreEstimate: true,
       fullCatalogExtrapolationSatisfied: fullCumulativeBytes <= cumulativeOldBytes,
     },
@@ -445,8 +446,9 @@ export function formatMarkdownReport(summary) {
 3. **SessionStart <= 12 КБ**: ${c.sessionStartUnder12KiB ? "✅ ДА" : "❌ НЕТ"} (${s.newBytes} Б на фикстуре, ${f.sessionStartBytes} Б на 235 политиках).
 4. **UserPromptSubmit <= 2 КБ**: ${c.allUserPromptsUnder2KiB ? "✅ ДА" : "❌ НЕТ"} (строгий лимит соблюдён на всех 50 сообщениях).
 5. **0 байт при отсутствии совпадений**: ${c.zeroInjectionForUnmatched ? "✅ ДА" : "❌ НЕТ"} (все ${d.unmatchedMessageCount} несовпавших сообщений дали 0 байт инъекции).
-6. **Сканирование секретов (scanText)**: ${c.secretScanClean ? "✅ ЧИСТО" : "❌ ОБНАРУЖЕНЫ СЕКРЕТЫ"} (${c.secretScanFindingsCount} находок при фактической проверке входных данных и всех контекстов).
-7. **Расход LLM на замер**: **0 токенов API** (полностью автономный офлайн-расчёт).
+6. **Сканирование секретов (scanText)**: ${c.secretScanClean ? "✅ ЧИСТО" : "❌ ОБНАРУЖЕНЫ СЕКРЕТЫ"} (${c.secretScanFindingsCount} находок). Охват: ${c.secretScanScope}. Сканирование сырых логов хоста не производилось ввиду сетевой и файловой изоляции рабочего контейнера (требование OPE-1524).
+7. **Оценка расхода токенов**: детерминированная BPE-оценка \`${summary.tokenizer.name}\` (~${t.newTokens.toLocaleString("ru-RU")} против ~${t.oldTokens.toLocaleString("ru-RU")}) и эвристика репозитория \`prompt-meter.ts\` (chars / 4: ~${Math.ceil(t.newBytes / 4)} против ~${Math.ceil(t.oldBytes / 4)} токенов). В обоих расчётах новая схема <= старой.
+8. **Расход LLM на замер**: **0 токенов API** (полностью автономный офлайн-расчёт).
 `;
 }
 
