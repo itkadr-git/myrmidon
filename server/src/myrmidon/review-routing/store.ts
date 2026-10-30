@@ -14,8 +14,6 @@
 // create two tasks for one head.
 
 import { sql, and, eq, inArray, desc, isNull } from "drizzle-orm";
-
-const activeStatuses = ["queued", "running", "scheduled_retry"] as const;
 import {
   activityLog,
   agentWakeupRequests,
@@ -40,6 +38,8 @@ import { REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep-constants.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
 import { issueNeedsReviewer } from "./policy.js";
+
+const activeStatuses = ["queued", "running", "scheduled_retry"] as const;
 
 export interface InReviewIssueRow extends RoutingIssue {
   companyId: string;
@@ -224,6 +224,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
           companyId: issues.companyId,
           identifier: issues.identifier,
           title: issues.title,
+          createdAt: issues.createdAt,
           updatedAt: issues.updatedAt,
         })
         .from(issues)
