@@ -87,6 +87,7 @@ export interface ForagingProps {
 export function Foraging({ embedded = false }: ForagingProps = {}) {
   const { t, i18n } = useTranslation();
   const language = i18n.language;
+  const locale = language === "ru" ? "ru-RU" : "en-US";
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -220,10 +221,10 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground" data-testid="foraging-budget">
             <span>
               {budget.budget.enabled
-                ? t("foraging.budget.passBudget", { value: formatCents(budget.budget.maxCostCents) })
+                ? t("foraging.budget.passBudget", { value: formatCents(budget.budget.maxCostCents, locale) })
                 : t("foraging.budget.passBudget", { value: t("foraging.budget.noLimit") })}
             </span>
-            <span>{t("foraging.budget.spentThisMonth", { value: formatCents(budget.spentCents) })}</span>
+            <span>{t("foraging.budget.spentThisMonth", { value: formatCents(budget.spentCents, locale) })}</span>
             <span>{t("foraging.budget.passInterval", { minutes: Math.round(budget.intervalMs / 60_000) })}</span>
             <span>{t("foraging.budget.sameHostPause", { seconds: Math.round(budget.minHostIntervalMs / 1000) })}</span>
           </div>

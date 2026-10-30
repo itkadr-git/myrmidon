@@ -21,7 +21,20 @@ import {
   REASSIGN_UNBLOCK_NOTE,
   type HumanUnblockResult,
 } from "../myrmidon/settled-holds/human-unblock.js";
-import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@myrmidon/shared";
+import {
+  extractIssueReferenceIdentifiers,
+  requiresExecutionReconciliation,
+  EXECUTION_RECONCILIATION_CAUSES,
+  isAgentStatusInvokable,
+} from "@myrmidon/shared";
+import { setImmediateNoReviewerSignal } from "../myrmidon/review-routing/attention.js";
+import {
+  evaluateReviewerAvailability,
+  issueNeedsReviewer,
+  type RoutingIssue,
+} from "../myrmidon/review-routing/policy.js";
+import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
+import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -14112,14 +14125,35 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
-      if (
-        enteringBlocked &&
-        req.actor.type === "agent" &&
-        blockerMetadataRaw == null
-      ) {
-        res.status(422).json({ error: "Entering blocked requires blockerMetadata" });
+      if (enteringBlocked && blockerMetadataRaw == null) {
+        const missingFields = [
+          "blockReason",
+          "owner",
+          "nextCheckAt",
+          "timeoutAt",
+          "escalationPolicy",
+          "blockedByIssueIds or externalRef",
+        ];
+        res.status(422).json({
+          error: "Entering blocked requires complete blockerMetadata",
+          missingFields,
+        });
         return;
       }
+      if (
+        enteringBlocked &&
+        !blockerMetadataRaw.blockedByIssueIds?.length &&
+        !blockerMetadataRaw.externalRef &&
+        !updateFields.blockedByIssueIds?.length &&
+        !(typeof req.body?.unblockDescriptor?.reasonRef === "object" && req.body.unblockDescriptor.reasonRef !== null)
+      ) {
+        res.status(422).json({
+          error: "Entering blocked requires a blocker reference in blockerMetadata",
+          missingFields: ["blockedByIssueIds or externalRef"],
+        });
+        return;
+      }
+
       // myrmidon(BLOCKED-GUARD P0.6): typed blocker metadata describes the current block only;
       // a transition out of blocked without new metadata clears it, so no stale reason survives.
       const leavingBlocked =
@@ -16632,6 +16666,54 @@ export function issueRoutes(
               },
             }
           : {};
+      const reviewerSignalIssue =
+        issue && issue.status === "in_review"
+          ? ({
+              id: issue.id,
+              status: issue.status,
+              assigneeAgentId: issue.assigneeAgentId,
+              assigneeUserId: issue.assigneeUserId,
+              createdByAgentId: issue.createdByAgentId,
+              createdByUserId: issue.createdByUserId,
+              responsibleUserId: issue.responsibleUserId,
+              executionPolicy: issue.executionPolicy,
+              executionState: issue.executionState,
+              reviewPolicy: issue.reviewPolicy,
+            } satisfies RoutingIssue)
+          : null;
+      const needsReviewer = reviewerSignalIssue ? issueNeedsReviewer(reviewerSignalIssue) : false;
+      if (issue && issue.id === existing.id) {
+        let unavailable = false;
+        if (needsReviewer) {
+          const reviewRoutingSettings = await readReviewRoutingSettings(instanceSettings);
+          if (reviewRoutingSettings.enabled && issue.reviewPolicy !== "human_only") {
+            const routingStore = createPgReviewRoutingStore(db);
+            const [reviewerRows, loadByAgent] = await Promise.all([
+              routingStore.listReviewerAgents(issue.companyId, reviewRoutingSettings.reviewerRoles),
+              routingStore.loadByAgent(issue.companyId),
+            ]);
+            unavailable =
+              evaluateReviewerAvailability({
+                reviewers: reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, invokable: agent.invokable ?? true })),
+                loadByAgent,
+                issue: reviewerSignalIssue!,
+                maxLoad: reviewRoutingSettings.maxLoadPerReviewer,
+              }).selected === null;
+          }
+        }
+        setImmediateNoReviewerSignal(
+          {
+            kind: "no_reviewer",
+            issueId: issue.id,
+            companyId: issue.companyId,
+            identifier: issue.identifier,
+            title: issue.title,
+            since: new Date().toISOString(),
+            hoursInReview: null,
+          },
+          unavailable,
+        );
+      }
       if (prefersMinimalIssueUpdateResponse(req)) {
         res.setHeader("Preference-Applied", "return=minimal");
         res.json({
