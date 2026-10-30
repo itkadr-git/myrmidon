@@ -664,12 +664,53 @@ jobs:
               go vet ./...
               go test -count=1 ./...
             '
+
+  deployed-migrations:
+    # Fast check of migration numbers against migrations deployed on production.
+    name: deployed migrations
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Check migration numbers against deployed release
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$EVENT" = "pull_request" ] && [ -n "$PR_BASE" ] && [ -n "$PR_HEAD" ]; then
+            args+=(--base "$PR_BASE" --head "$PR_HEAD")
+          elif [ "$EVENT" = "merge_group" ] && [ -n "$MG_BASE" ] && git cat-file -e "$MG_BASE^{commit}" 2>/dev/null; then
+            args+=(--base "$MG_BASE" --head "$MG_HEAD")
+          elif [ -n "${PUSH_BEFORE:-}" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            args+=(--base "$PUSH_BEFORE" --head "$GITHUB_SHA")
+          fi
+          node scripts/myrmidon/ci/check-deployed-migrations.mjs "${args[@]}"
+          node --test scripts/myrmidon/ci/check-deployed-migrations.test.mjs
+
   ci-result:
     # Single stable name for the ruleset. Lanes the plan did not need are
     # skipped; any failure, or a skip without a successful plan, fails it.
     name: CI result
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
-    needs: [plan, typecheck, tests-affected, tests, tests-other, checks, dockergate]
+    needs: [plan, typecheck, tests-affected, tests, tests-other, checks, dockergate, deployed-migrations]
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:

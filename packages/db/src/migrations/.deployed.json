@@ -1,0 +1,18 @@
+{
+  "releaseBranch": "rel/1.6.6-rc.19",
+  "releaseTag": "myr-v1.6.6-rc.19",
+  "deployedAt": "2026-10-30T12:37:21Z",
+  "lastMigration": "0424_clear_stale_replay_holds.sql",
+  "migrations": [
+    {
+      "number": "0423",
+      "file": "0423_colorful_jazinda.sql",
+      "pr": 1997
+    },
+    {
+      "number": "0424",
+      "file": "0424_clear_stale_replay_holds.sql",
+      "pr": 2012
+    }
+  ]
+}
