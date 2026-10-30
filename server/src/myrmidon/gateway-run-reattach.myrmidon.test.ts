@@ -17,6 +17,9 @@ import {
   type GatewayRunReattachHeartbeatPort,
 } from "./gateway-run-reattach.js";
 import { legacyControllerBootId } from "../services/legacy-controller-lease.js";
+import { secretService } from "../services/secrets.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { getServerAdapter, registerServerAdapter } from "../adapters/index.js";
 
 // myrmidon(HERMES-RUN-REATTACH): after the board restarts without maintenance
 // mode, a running hermes_gateway heartbeat run whose gateway run id was
@@ -478,5 +481,62 @@ describeEmbeddedPostgres("myrmidon(HERMES-RUN-REATTACH) gateway run reattach swe
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, run.id));
     expect(after?.controllerBootId).not.toBe(legacyControllerBootId);
+  });
+
+  it("resolves secret reference apiKey when probing gateway run", async () => {
+    const company = await createCompany(db);
+    const secret = await secretService(db).create(company.id, {
+      name: "Gateway probe token",
+      provider: "local_encrypted",
+      value: "resolved-secret-probe-key-xyz",
+    });
+    const agent = await createAgent(db, company.id, "hermes_gateway", {
+      apiBaseUrl: "http://127.0.0.1:9999",
+      apiKey: { type: "secret_ref", secretId: secret.id },
+    });
+    const run = await createRun(db, agent, {
+      externalRunId: "gw-secret-ref-1",
+      controllerBootId: randomUUID(),
+      controllerLeaseExpiresAt: new Date(Date.now() + 50_000),
+    });
+
+    const originalAdapter = getServerAdapter("hermes_gateway");
+    let capturedApiKey: string | null | undefined = null;
+    registerServerAdapter({
+      ...originalAdapter,
+      probeGatewayRunForBoard: async (input) => {
+        capturedApiKey = input.apiKey;
+        return { state: "live", status: "running" };
+      },
+    });
+
+    try {
+      const heartbeat = heartbeatService(db);
+      const probeResult = await heartbeat.probeGatewayRun({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+        adapterConfig: agent.adapterConfig as Record<string, unknown>,
+        gatewayRunId: "gw-secret-ref-1",
+      });
+
+      expect(probeResult.state).toBe("live");
+      expect(capturedApiKey).toBe("resolved-secret-probe-key-xyz");
+
+      const calls: Array<{ runId: string; gatewayRunId: string }> = [];
+      const port: GatewayRunReattachHeartbeatPort = {
+        executeRunForGatewayReattach: async (runId, gatewayRunId) => {
+          calls.push({ runId, gatewayRunId });
+        },
+        probeGatewayRun: (input) => heartbeat.probeGatewayRun(input),
+      };
+
+      const sweepResult = await sweepGatewayRunReattach(db, port, { isStartup: true });
+      expect(sweepResult.scanned).toBe(1);
+      expect(sweepResult.reattached).toBe(1);
+      expect(calls).toEqual([{ runId: run.id, gatewayRunId: "gw-secret-ref-1" }]);
+    } finally {
+      registerServerAdapter(originalAdapter);
+    }
   });
 });

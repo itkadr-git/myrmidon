@@ -77,7 +77,11 @@ export interface GatewayRunReattachHeartbeatPort {
    * Optional gateway probe hook to verify run liveness with the bot gateway.
    */
   probeGatewayRun?: (input: {
-    baseUrl: string;
+    companyId?: string;
+    agentId?: string | null;
+    runId?: string | null;
+    adapterConfig?: Record<string, unknown> | null;
+    baseUrl?: string;
     apiKey?: string | null;
     headers?: Record<string, string> | string | null;
     gatewayRunId: string;
@@ -152,6 +156,7 @@ export async function sweepGatewayRunReattach(
     .select({
       id: heartbeatRuns.id,
       companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
       externalRunId: heartbeatRuns.externalRunId,
       controllerBootId: heartbeatRuns.controllerBootId,
       controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
@@ -218,31 +223,33 @@ export async function sweepGatewayRunReattach(
           (typeof rawConfig.token === "string" && rawConfig.token.trim()) ||
           null;
 
-        if (baseUrl) {
-          const probe = await heartbeat.probeGatewayRun({
-            baseUrl,
-            apiKey,
-            headers: rawConfig.headers as any,
-            gatewayRunId: candidate.externalRunId,
-          });
+        const probe = await heartbeat.probeGatewayRun({
+          companyId: candidate.companyId,
+          agentId: candidate.agentId,
+          runId: candidate.id,
+          adapterConfig: rawConfig,
+          baseUrl: baseUrl ?? undefined,
+          apiKey: apiKey ?? undefined,
+          headers: rawConfig.headers as any,
+          gatewayRunId: candidate.externalRunId,
+        });
 
-          if (probe.state === "not_found") {
-            result.lostNotFound += 1;
-            logger.info(
-              { runId: candidate.id, gatewayRunId: candidate.externalRunId },
-              "gateway run reattach: run not found on gateway (404); skipping reattach so reaper can finalize",
-            );
-            continue;
-          }
+        if (probe.state === "not_found") {
+          result.lostNotFound += 1;
+          logger.info(
+            { runId: candidate.id, gatewayRunId: candidate.externalRunId },
+            "gateway run reattach: run not found on gateway (404); skipping reattach so reaper can finalize",
+          );
+          continue;
+        }
 
-          if (probe.state === "unreachable") {
-            result.skippedUnreachable += 1;
-            logger.warn(
-              { runId: candidate.id, gatewayRunId: candidate.externalRunId, error: probe.error },
-              "gateway run reattach: gateway unreachable; waiting before finalizing",
-            );
-            continue;
-          }
+        if (probe.state === "unreachable") {
+          result.skippedUnreachable += 1;
+          logger.warn(
+            { runId: candidate.id, gatewayRunId: candidate.externalRunId, error: probe.error },
+            "gateway run reattach: gateway unreachable; waiting before finalizing",
+          );
+          continue;
         }
       }
 
