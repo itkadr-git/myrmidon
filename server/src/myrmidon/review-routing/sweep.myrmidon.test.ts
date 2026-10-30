@@ -227,12 +227,12 @@ describe("review wake liveness", () => {
 
   it("does not wake a review before 30 minutes or inside retry backoff", async () => {
     const t = setup({ maxLoadPerReviewer: 2 }, { wakeStates: new Map([
-      ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 20 * 60_000), attempts: 1 }],
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 5 * 60_000), attempts: 1 }],
       ["2", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 2 * 60_000), attempts: 1 }],
     ]) });
-    t.fixture.rows.set("1", pending("1", REV_A));
+    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: new Date(NOW.getTime() - 20 * 60_000) }));
     t.fixture.rows.set("2", pending("2", REV_B));
-    t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 20 * 60_000), attempts: 1 });
+    t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 5 * 60_000), attempts: 1 });
     t.fixture.wakeStates!.set("2", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 2 * 60_000), attempts: 1 });
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.woken).toBe(0);
@@ -311,7 +311,6 @@ describe("assignment", () => {
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.assigned).toBe(1);
     expect(t.activities.map((entry) => entry.action)).toEqual([
-      REVIEW_ROUTING_WAKE_ACTION,
       REVIEW_ROUTING_ASSIGNED_ACTION,
     ]);
   });

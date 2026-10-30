@@ -242,6 +242,17 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           at: now,
           attempt,
         });
+        await deps.logActivity({
+          companyId,
+          action: REVIEW_ROUTING_WAKE_ACTION,
+          issueId: row.id,
+          details: {
+            reviewerAgentId: review.reviewerAgentId,
+            stageId: currentStage,
+            mutation: "myrmidon_review_wakeup_retry",
+            attempt,
+          },
+        });
         reviewersWoken.add(review.reviewerAgentId);
         liveByReviewer.set(review.reviewerAgentId, (liveByReviewer.get(review.reviewerAgentId) ?? 0) + 1);
         result.woken += 1;
