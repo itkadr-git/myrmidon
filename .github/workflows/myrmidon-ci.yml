@@ -570,7 +570,7 @@ jobs:
     # fleetd is folded in (one checkout, one runner): tools/fleetd, see
     # docs/myrmidon/fleetd-vmexec.md. Every step runs even if an earlier one failed.
     if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_GO || '"ubuntu-latest"') }}
     timeout-minutes: 30
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
