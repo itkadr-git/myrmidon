@@ -489,6 +489,12 @@ jobs:
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
+      - name: Brand release audit (DEBRAND gate)
+        if: ${{ !cancelled() }}
+        run: |
+          node scripts/myrmidon/docs-branding-guard.mjs
+          node scripts/myrmidon/brand-release-audit.mjs --gate
+
       - name: SQL template lint (myrmidon)
         if: ${{ !cancelled() }}
         run: node scripts/myrmidon/ci/sql-template-lint.mjs --root server/src
