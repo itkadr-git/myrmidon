@@ -733,10 +733,14 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
         .from(issueRecoveryActions)
         .where(inArray(issueRecoveryActions.status, ["active", "escalated"]));
       const ages = new Map<IssueRecoveryActionKind, number>();
+      for (const [kind, seconds] of recoveryCounters.ages) {
+        ages.set(kind, Math.max(ages.get(kind) ?? 0, seconds));
+      }
       for (const row of active) {
         const kind = row.kind as IssueRecoveryActionKind;
         const seconds = Math.max(0, (now.getTime() - row.createdAt.getTime()) / 1000);
         ages.set(kind, Math.max(ages.get(kind) ?? 0, seconds));
+        recoveryPort.age(kind, seconds);
       }
       const addressless = await deps.db
         .select({ total: count() })
