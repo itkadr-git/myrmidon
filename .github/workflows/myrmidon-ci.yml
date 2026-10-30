@@ -62,6 +62,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       tier: ${{ steps.plan.outputs.tier }}
+      is_release: ${{ steps.plan.outputs.is_release }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -152,9 +153,10 @@ jobs:
               # tier, so run every lane.
               echo "::warning::base commit $BASE not found; forcing the full tier"
             fi
-            if [ "$FULL_LABEL" = "true" ]; then args+=(--force-full); fi
-            case "$BASE_REF" in rel/*) args+=(--release-fast) ;; esac
-            if [[ "$PR_TITLE" =~ (rc\.[0-9]+|release) ]] || [[ "$BASE_REF" =~ rel/* ]]; then
+            if [ "$FULL_LABEL" = "true" ]; then
+              args+=(--force-full)
+            elif [[ "$PR_TITLE" =~ (rc\.[0-9]+|release) ]] || [[ "$BASE_REF" =~ rel/* ]] || [[ "$HEAD_REF" =~ rel/* ]]; then
+              echo "Release stream detected ($PR_TITLE / $BASE_REF / $HEAD_REF): applying --release-fast"
               args+=(--release-fast)
             fi
             if [ "$EVENT" = "pull_request" ] && [ -n "$PR_NUMBER" ]; then
@@ -165,6 +167,11 @@ jobs:
               fi
             fi
           fi
+          is_rel="false"
+          if [ "$REF" = "refs/heads/main" ] || [[ "$REF" =~ ^refs/tags/ ]] || [[ "$PR_TITLE" =~ (rc\.[0-9]+|release) ]] || [[ "$BASE_REF" =~ rel/* ]] || [[ "$HEAD_REF" =~ rel/* ]]; then
+            is_rel="true"
+          fi
+          echo "is_release=$is_rel" >> "$GITHUB_OUTPUT"
           node scripts/myrmidon/ci/affected-tests.mjs "${args[@]}"
 
       - name: Upload plan
@@ -180,7 +187,7 @@ jobs:
     # steps run even when the typecheck failed, so one run shows both failures.
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ (needs.plan.outputs.is_release == 'true') && fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') || fromJSON(vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -271,7 +278,7 @@ jobs:
     name: tests (affected)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ (needs.plan.outputs.is_release == 'true') && fromJSON(vars.CI_RUNNER_PRIORITY || vars.MYR_RUNNER || '"ubuntu-latest"') || fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 60
     steps:
       - name: Checkout repository
@@ -321,7 +328,7 @@ jobs:
     name: tests (${{ matrix.label }})
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ (needs.plan.outputs.is_release == 'true') && fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') || fromJSON(vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -392,7 +399,7 @@ jobs:
     name: tests (other + runner)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_OTHER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ (needs.plan.outputs.is_release == 'true') && fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_TESTS_OTHER || vars.MYR_RUNNER || '"ubuntu-latest"') || fromJSON(vars.CI_RUNNER_TESTS_OTHER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 50
     steps:
       - name: Checkout repository

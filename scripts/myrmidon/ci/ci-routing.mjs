@@ -17,6 +17,45 @@ export function isReleasePR({ title = '', labels = [], headRef = '', baseRef = '
 }
 
 /**
+ * Resolves the scheduling priority level for a workflow run:
+ * - P0_CRITICAL: push to main or release tag (must never wait behind PRs)
+ * - P1_HIGH: release PR (rc.*, release title/label, rel/* branch)
+ * - P2_NORMAL: standard PR branch
+ */
+export function getExecutionPriority({
+  eventName,
+  ref = '',
+  prTitle = '',
+  prLabels = [],
+  headRef = '',
+  baseRef = '',
+} = {}) {
+  if (ref === 'refs/heads/main' || ref.startsWith('refs/tags/')) {
+    return 'P0_CRITICAL';
+  }
+  if (isReleasePR({ title: prTitle, labels: prLabels, headRef, baseRef })) {
+    return 'P1_HIGH';
+  }
+  return 'P2_NORMAL';
+}
+
+/**
+ * Determines runner pool according to priority level.
+ * High priority runs (P0/P1) route to priority runners when configured,
+ * otherwise falling back to standard runners.
+ */
+export function getRunnerPool({
+  priority,
+  defaultRunner = 'ubuntu-latest',
+  priorityRunner = null,
+} = {}) {
+  if ((priority === 'P0_CRITICAL' || priority === 'P1_HIGH') && priorityRunner) {
+    return priorityRunner;
+  }
+  return defaultRunner;
+}
+
+/**
  * Computes the GitHub Actions concurrency group name.
  * Release PRs receive an isolated 'release-' prefix so ordinary PRs
  * cannot block or cancel release testing.

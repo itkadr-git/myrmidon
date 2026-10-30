@@ -3,6 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isReleasePR,
+  getExecutionPriority,
+  getRunnerPool,
   computeConcurrencyGroup,
   computeCancelInProgress,
   isSupersededHead,
@@ -29,6 +31,46 @@ test('isReleasePR correctly classifies release PRs', () => {
   // Ordinary PR
   assert.equal(isReleasePR({ title: 'feat: add knowledge search', labels: ['enhancement'], headRef: 'bot/OPE-1234' }), false);
   assert.equal(isReleasePR({ title: 'fix: search bar styling', headRef: 'main' }), false);
+});
+
+test('getExecutionPriority assigns correct priority levels', () => {
+  // Main branch push is P0_CRITICAL
+  assert.equal(getExecutionPriority({ eventName: 'push', ref: 'refs/heads/main' }), 'P0_CRITICAL');
+
+  // Release tag is P0_CRITICAL
+  assert.equal(getExecutionPriority({ eventName: 'push', ref: 'refs/tags/v1.6.6' }), 'P0_CRITICAL');
+
+  // Release PR is P1_HIGH
+  assert.equal(getExecutionPriority({ prTitle: '1.6.6 rc.19: patch' }), 'P1_HIGH');
+  assert.equal(getExecutionPriority({ headRef: 'rel/1.6.6' }), 'P1_HIGH');
+  assert.equal(getExecutionPriority({ prLabels: ['release'] }), 'P1_HIGH');
+
+  // Ordinary PR is P2_NORMAL
+  assert.equal(getExecutionPriority({ prTitle: 'feat: add button' }), 'P2_NORMAL');
+});
+
+test('getRunnerPool routes to priority pool for P0/P1 when configured', () => {
+  // When priority runner is configured, P0 and P1 use priority runner
+  assert.equal(
+    getRunnerPool({ priority: 'P0_CRITICAL', defaultRunner: 'ubuntu-latest', priorityRunner: 'vps-ci' }),
+    'vps-ci'
+  );
+  assert.equal(
+    getRunnerPool({ priority: 'P1_HIGH', defaultRunner: 'ubuntu-latest', priorityRunner: 'vps-ci' }),
+    'vps-ci'
+  );
+
+  // P2 uses standard runner even if priority runner is defined
+  assert.equal(
+    getRunnerPool({ priority: 'P2_NORMAL', defaultRunner: 'ubuntu-latest', priorityRunner: 'vps-ci' }),
+    'ubuntu-latest'
+  );
+
+  // When no priority runner is configured, fallback to default
+  assert.equal(
+    getRunnerPool({ priority: 'P0_CRITICAL', defaultRunner: 'ubuntu-latest', priorityRunner: null }),
+    'ubuntu-latest'
+  );
 });
 
 test('computeConcurrencyGroup assigns isolated release- prefix to release PRs', () => {

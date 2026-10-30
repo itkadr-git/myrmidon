@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import {
   calculatePercentile,
   analyzeQueueMetrics,
+  compareQueueMetrics,
   formatMetricsMarkdown,
+  formatComparisonMarkdown,
 } from './queue-metrics.mjs';
 
 test('calculatePercentile calculates correct ranks', () => {
@@ -74,4 +76,43 @@ test('analyzeQueueMetrics computes queue, duration and cancellation statistics',
   assert.match(md, /Queue wait p50/);
   assert.match(md, /600s/);
   assert.match(md, /33.33%/);
+});
+
+test('compareQueueMetrics verifies p95 reduction acceptance target', () => {
+  const baseline = {
+    cancellationRatePercent: 28.4,
+    queueWaitSeconds: { p50: 3781.0, p95: 4920.0 },
+    durationSeconds: { p50: 14.0, p95: 17.8 },
+  };
+
+  // Case 1: 35% reduction in p95 (target >= 30%)
+  const postPassing = {
+    cancellationRatePercent: 12.0,
+    queueWaitSeconds: { p50: 2000.0, p95: 3198.0 }, // (4920 - 3198) / 4920 = 35% reduction
+    durationSeconds: { p50: 14.0, p95: 17.8 },
+  };
+
+  const compPass = compareQueueMetrics(baseline, postPassing, { targetReductionPercent: 30 });
+  assert.equal(compPass.meetsTarget, true);
+  assert.equal(compPass.waitP95ChangePct, -35);
+  assert.equal(compPass.p95ReductionPercent, 35);
+
+  const mdPass = formatComparisonMarkdown(compPass);
+  assert.match(mdPass, /PASSED/);
+  assert.match(mdPass, /-35.0% reduction/);
+
+  // Case 2: only 20% reduction (target >= 30% not met)
+  const postFailing = {
+    cancellationRatePercent: 20.0,
+    queueWaitSeconds: { p50: 3000.0, p95: 3936.0 }, // 20% reduction
+    durationSeconds: { p50: 14.0, p95: 17.8 },
+  };
+
+  const compFail = compareQueueMetrics(baseline, postFailing, { targetReductionPercent: 30 });
+  assert.equal(compFail.meetsTarget, false);
+  assert.equal(compFail.waitP95ChangePct, -20);
+  assert.equal(compFail.p95ReductionPercent, 20);
+
+  const mdFail = formatComparisonMarkdown(compFail);
+  assert.match(mdFail, /TARGET NOT MET/);
 });

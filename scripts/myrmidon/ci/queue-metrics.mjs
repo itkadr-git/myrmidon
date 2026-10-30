@@ -82,6 +82,66 @@ export function analyzeQueueMetrics(runs, { days = 14, now = new Date() } = {}) 
 }
 
 /**
+ * Compares baseline metrics with post-change or modeled metrics to verify
+ * acceptance criteria (e.g. p95 reduction of at least 30%).
+ */
+export function compareQueueMetrics(baseline, postChange, { targetReductionPercent = 30 } = {}) {
+  const baseP95 = baseline?.queueWaitSeconds?.p95 || 0;
+  const postP95 = postChange?.queueWaitSeconds?.p95 || 0;
+  const baseP50 = baseline?.queueWaitSeconds?.p50 || 0;
+  const postP50 = postChange?.queueWaitSeconds?.p50 || 0;
+
+  const waitP95DeltaSec = Number((postP95 - baseP95).toFixed(1));
+  const waitP95ChangePct = baseP95 > 0
+    ? Number((((postP95 - baseP95) / baseP95) * 100).toFixed(1))
+    : 0;
+
+  const waitP50DeltaSec = Number((postP50 - baseP50).toFixed(1));
+  const waitP50ChangePct = baseP50 > 0
+    ? Number((((postP50 - baseP50) / baseP50) * 100).toFixed(1))
+    : 0;
+
+  // Target reduction is a negative percentage change: e.g. -30% or less
+  const p95ReductionPercent = -waitP95ChangePct;
+  const meetsTarget = p95ReductionPercent >= targetReductionPercent;
+
+  return {
+    baselineP95Sec: baseP95,
+    postChangeP95Sec: postP95,
+    waitP95DeltaSec,
+    waitP95ChangePct,
+    p95ReductionPercent,
+    targetReductionPercent,
+    meetsTarget,
+    baselineP50Sec: baseP50,
+    postChangeP50Sec: postP50,
+    waitP50DeltaSec,
+    waitP50ChangePct,
+    cancellationDeltaPct: Number((postChange.cancellationRatePercent - baseline.cancellationRatePercent).toFixed(2)),
+  };
+}
+
+/**
+ * Formats metrics comparison as markdown table.
+ */
+export function formatComparisonMarkdown(comparison) {
+  const status = comparison.meetsTarget
+    ? `PASSED: -${comparison.p95ReductionPercent.toFixed(1)}% reduction (target >= ${comparison.targetReductionPercent}%)`
+    : `PENDING / TARGET NOT MET: ${comparison.waitP95ChangePct > 0 ? '+' : ''}${comparison.waitP95ChangePct}% (target -${comparison.targetReductionPercent}%)`;
+
+  return [
+    `### CI Queue Wait Comparison & Acceptance Verification`,
+    `| Metric | Baseline | Post-change / Modeled | Change | Target | Status |`,
+    `| --- | --- | --- | --- | --- | --- |`,
+    `| **Queue wait p95** | ${(comparison.baselineP95Sec / 60).toFixed(1)} min (${comparison.baselineP95Sec}s) | ${(comparison.postChangeP95Sec / 60).toFixed(1)} min (${comparison.postChangeP95Sec}s) | ${comparison.waitP95ChangePct}% (${comparison.waitP95DeltaSec}s) | -${comparison.targetReductionPercent}% | **${comparison.meetsTarget ? 'PASS' : 'PENDING'}** |`,
+    `| Queue wait p50 | ${(comparison.baselineP50Sec / 60).toFixed(1)} min (${comparison.baselineP50Sec}s) | ${(comparison.postChangeP50Sec / 60).toFixed(1)} min (${comparison.postChangeP50Sec}s) | ${comparison.waitP50ChangePct}% (${comparison.waitP50DeltaSec}s) | - | - |`,
+    `| Cancellation share delta | - | - | ${comparison.cancellationDeltaPct > 0 ? '+' : ''}${comparison.cancellationDeltaPct}% | - | - |`,
+    ``,
+    `**Acceptance verdict:** ${status}`,
+  ].join('\n');
+}
+
+/**
  * Formats metrics as markdown table.
  */
 export function formatMetricsMarkdown(metrics) {
@@ -105,11 +165,27 @@ export function formatMetricsMarkdown(metrics) {
 
 export function main(args = process.argv.slice(2)) {
   let file = null;
+  let baseFile = null;
+  let postFile = null;
   let days = 14;
+  let targetReduction = 30;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--file') file = args[++i];
+    else if (args[i] === '--baseline') baseFile = args[++i];
+    else if (args[i] === '--post') postFile = args[++i];
     else if (args[i] === '--days') days = parseInt(args[++i], 10);
+    else if (args[i] === '--target-reduction') targetReduction = parseFloat(args[++i]);
+  }
+
+  if (baseFile && postFile) {
+    const baseRuns = JSON.parse(fs.readFileSync(baseFile, 'utf8'));
+    const postRuns = JSON.parse(fs.readFileSync(postFile, 'utf8'));
+    const baseMetrics = analyzeQueueMetrics(baseRuns, { days });
+    const postMetrics = analyzeQueueMetrics(postRuns, { days });
+    const comparison = compareQueueMetrics(baseMetrics, postMetrics, { targetReductionPercent: targetReduction });
+    console.log(formatComparisonMarkdown(comparison));
+    return;
   }
 
   let runs = [];
