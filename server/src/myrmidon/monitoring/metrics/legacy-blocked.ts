@@ -151,7 +151,7 @@ export function renderLegacyBlockedMetrics(sample: LegacyBlockedMetrics | null, 
       sample ? Object.entries(sample.classified).map(([name, value]) =>
         `legacy_blocked_classified_total{${labels},class="${name}"} ${value}`) : []),
     scalar("legacy_blocked_unknown_total", "Unique L5 imports classified as unknown.", sample?.unknown),
-    scalar("legacy_blocked_duplicate_total", "Duplicate company/import-key entries observed in the journal read.", sample?.duplicate),
+    scalar("legacy_blocked_duplicate_total", "Duplicate company/issue-id entries observed across journal imports.", sample?.duplicate),
     scalar("legacy_blocked_remaining_age_seconds", "Age of the oldest unresolved L5 import; zero when none remain.", sample?.remainingAgeSeconds, "gauge"),
   ].filter(Boolean).join("\n\n");
 }
