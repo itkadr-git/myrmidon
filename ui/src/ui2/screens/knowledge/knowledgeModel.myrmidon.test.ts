@@ -154,7 +154,7 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) knowledge tree", () => {
     expect(spaceOrder).toEqual(["decisions", "product", "rules"]);
 
     // Check that items inside spaces retain their folder grouping
-    const itemFolderOrder = flat.filter((n) => n.item.slug !== "").map((n) => n.folder);
+    const itemFolderOrder = flat.filter((n) => !n.item.id.startsWith("folder:") && !n.item.id.startsWith("space:")).map((n) => n.folder);
     expect(itemFolderOrder).toEqual(["decisions", "product", "product", "rules"]);
   });
 });

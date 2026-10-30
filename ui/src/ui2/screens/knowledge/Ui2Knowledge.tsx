@@ -220,7 +220,7 @@ function TreeBranch({
   const active = key === activeKey;
   const isSpace = node.item.slug === "";
   const isFolder = node.item.id.startsWith("folder:");
-  const [expanded, setExpanded] = useState(() => typeof window === "undefined" || window.matchMedia("(min-width: 768px)").matches);
+  const [expanded, setExpanded] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" ? window.matchMedia("(min-width: 768px)").matches : true);
   const label = node.displayLabel ?? node.item.title;
   return (
     <li className="ui2-knowledge-tree-node" data-depth={node.depth} data-folder={node.folder}>

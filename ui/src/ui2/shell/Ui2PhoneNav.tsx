@@ -3,9 +3,9 @@
 // Touch targets: tab items 60px high (screen-map §3.3: >= 44px, bar items 60).
 // Desktop rail is hidden on phone; pages render in the column between the
 // two bars.
-import { useContext, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "@/i18n";
-import { Ui2I18nContext } from "../i18n/Ui2I18n";
+import { useUi2I18n } from "../i18n/Ui2I18n";
 import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_PHONE_TABS } from "../navModel";
@@ -130,8 +130,7 @@ export function isUi2PhoneTabActive(tabPath: string, pathname: string): boolean 
 
 export function Ui2PhoneTabBar() {
   const { t } = useTranslation();
-  const ui2I18n = useContext(Ui2I18nContext);
-  const tUi2 = ui2I18n ? ui2I18n.t : ((key: any) => key);
+  const { t: tUi2 } = useUi2I18n();
   const location = useLocation();
   const attentionCount = useUi2AttentionCount();
   const { selectedCompany } = useCompany();
