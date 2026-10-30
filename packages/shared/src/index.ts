@@ -2858,6 +2858,10 @@ export * from "./myrmidon-board-processes.js";
 // (switch, parse service, embedder, limits), wire shapes and route paths — shared by
 // the server (ч.C), the MCP tools (ч.D) and the board UI screen (ч.E).
 export * from "./myrmidon-corpus.js";
+// myrmidon(1.7 KNOWLEDGE-2.0 L-11): the "Settings → Knowledge" contract — limits,
+// auto-accept, the schedule and the section reviewers, with the UI/env/default
+// badge. Shared by the server resolver and the board screen.
+export * from "./myrmidon-knowledge-settings.js";
 // myrmidon(PAUSE-GUARD): the forgotten-pause guard settings, resolution and the value bounds
 // shared by the server, the board UI and the settings validator.
 export * from "./myrmidon-pause-guard.js";
