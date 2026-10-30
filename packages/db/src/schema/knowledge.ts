@@ -336,3 +336,32 @@ export const knowledgeSearch = pgTable(
     nestIdx: index("knowledge_search_nest_idx").on(table.nestId),
   }),
 );
+
+// ---------------------------------------------------------------------------
+// Knowledge Settings (§3.8, L-11)
+// ---------------------------------------------------------------------------
+// Company-scoped knowledge settings: limits, auto-accept and the maintenance
+// schedule. Exactly one row per company; company deletion cascades.
+export const knowledgeSettings = pgTable(
+  "knowledge_settings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    maxItems: integer("max_items"),
+    maxRevisionBytes: integer("max_revision_bytes"),
+    autoAcceptEnabled: boolean("auto_accept_enabled"),
+    autoAcceptMinConfidence: text("auto_accept_min_confidence"),
+    schedule: text("schedule"),
+    sectionReviewers: jsonb("section_reviewers")
+      .$type<Array<{ section: string; reviewerKind: "user" | "agent"; reviewerId: string }>>()
+      .notNull()
+      .default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("knowledge_settings_company_uq").on(table.companyId),
+  ],
+);

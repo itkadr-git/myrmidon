@@ -41,6 +41,8 @@ const items = [
   { value: "owner-delivery", label: "Owner Telegram delivery", href: "/company/settings/owner-delivery" },
   // myrmidon(1.6.6 CORPUS E): the knowledge corpus module screen
   { value: "corpus", label: "Knowledge corpus", href: "/company/settings/corpus" },
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-11): limits, auto-accept, schedule, section reviewers
+  { value: "knowledge", label: "Knowledge", href: "/company/settings/knowledge" },
   // myrmidon(1.6.1 VOICE-STT C): the STT settings section
   { value: "voice-stt", label: "Speech", href: "/company/settings/voice-stt" },
   { value: "agent-exchange", label: "Agent exchanges", href: "/company/settings/agent-exchange" },
@@ -184,6 +186,11 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "corpus";
   }
 
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-11): the knowledge settings section
+  if (pathname.includes("/company/settings/knowledge")) {
+    return "knowledge";
+  }
+
   // myrmidon(1.6.1 VOICE-STT C): the speech recognition settings section
   if (pathname.includes("/company/settings/voice-stt")) {
     return "voice-stt";
@@ -222,6 +229,8 @@ const SETTINGS_TAB_LABEL_KEYS: Partial<Record<string, string>> = {
   "review-routing": "settingsNav.reviewRouting",
   // myrmidon(1.6.6 CORPUS E): the knowledge corpus settings tab
   corpus: "settingsNav.corpus",
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-11): the knowledge settings tab
+  knowledge: "settingsNav.knowledge",
   "agent-exchange": "settingsNav.agentExchange",
   budgets: "settingsNav.budgets",
 };

@@ -53,3 +53,5 @@ export {
   type KnowledgeGitTree,
 } from "./git-export.js";
 export { startKnowledgeExport, stopKnowledgeExport, runKnowledgeExportPass } from "./git-export-job.js";
+export { myrmidonKnowledgeSettingsRoutes } from "./settings-routes.js";
+export { createKnowledgeSettingsService, type KnowledgeSettingsService, type KnowledgeSettingsActor } from "./settings.js";
