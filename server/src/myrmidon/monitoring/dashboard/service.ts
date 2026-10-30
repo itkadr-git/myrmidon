@@ -20,7 +20,14 @@ import {
 import type { MonitoringConnectionSettings } from "./settings.js";
 import type { VmClient } from "./vm.js";
 import type { ZabbixReadClient } from "./zabbix.js";
-import { DASHBOARD_ZABBIX_ITEM_KEYS } from "./zabbix.js";
+import { DASHBOARD_ZABBIX_ITEM_KEYS, mapZabbixHostName } from "./zabbix.js";
+import { collectBlockerRootMetrics } from "../metrics/blocker-roots.js";
+import { collectBlockedMetrics } from "../metrics/blocked.js";
+import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
+import { blockerRootFanoutAlertLimitFromSettings } from "../../../services/blocker-graph/fanout-limit.js";
+import type { Db } from "@myrmidon/db";
+import { companies, instanceSettings } from "@myrmidon/db";
+import { eq } from "drizzle-orm";
 
 export interface DashboardServiceDeps {
   settings: MonitoringConnectionSettings;
@@ -29,6 +36,32 @@ export interface DashboardServiceDeps {
   /** Present only when zabbixUrl is configured. */
   zabbix?: ZabbixReadClient | null;
   now?: () => Date;
+  db?: Db;
+}
+
+async function buildBlockerPanels(db: Db): Promise<import("./domain.js").BlockerDashboardData> {
+  const [companyRows, settings] = await Promise.all([
+    db.select({ id: companies.id }).from(companies),
+    db.select({ general: instanceSettings.general }).from(instanceSettings).where(eq(instanceSettings.singletonKey, "default")).limit(1),
+  ]);
+  const limit = blockerRootFanoutAlertLimitFromSettings(settings[0]?.general);
+  const roots = await collectBlockerRootMetrics(db, { fanoutLimit: limit });
+  let blockedAgeSeconds: number | null = null;
+  let missingFields: number | null = null;
+  for (const company of companyRows) {
+    const groups = await collectBlockedMetrics((id) => loadBlockedGraph(db, id), company.id);
+    for (const group of groups) {
+      blockedAgeSeconds = Math.max(blockedAgeSeconds ?? 0, group.ageSeconds.max ?? 0);
+      missingFields = (missingFields ?? 0) + group.missingFields.reason + group.missingFields.owner + group.missingFields.nextCheckAt;
+    }
+  }
+  return {
+    blockedAgeSeconds,
+    rootFanout: roots.companies.flatMap((company) => company.roots.map((root) => ({ root: root.root, fanout: root.fanout }))),
+    missingFields,
+    terminal: roots.companies.reduce((sum, company) => sum + company.terminalCount, 0),
+    fanoutLimit: limit,
+  };
 }
 
 /** PromQL templates of the host readings (job selector interpolated). */
@@ -139,20 +172,27 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
       zabbixOk = true;
       sources.push({ name: "zabbix", ok: true, latency_ms: Date.now() - started, error: null });
       for (const reading of readings) {
+        const readingName = reading.name || reading.host;
+        const mappedName = mapZabbixHostName(reading, deps.settings.zabbixHostMapping);
         const host: HostReading = {
-          name: reading.name || reading.host,
+          name: readingName,
           origin: "zabbix",
           cpuPercent: numberOrNull(reading.items["system.cpu.util"]),
-          memoryPercent: numberOrNull(reading.items["vm.memory.utilization"]),
+          memoryPercent:
+            numberOrNull(reading.items["vm.memory.util"]) ?? numberOrNull(reading.items["vm.memory.utilization"]),
           swapPercent:
             numberOrNull(reading.items["system.swap.size[,pfree]"]) != null
               ? 100 - numberOrNull(reading.items["system.swap.size[,pfree]"])!
               : null,
-          diskPercent: numberOrNull(reading.items["vfs.fs.size[/,pused]"]),
+          diskPercent:
+            numberOrNull(reading.items["vfs.fs.dependent.size[/,pused]"]) ??
+            numberOrNull(reading.items["vfs.fs.size[/,pused]"]),
           ageSec: null,
           runbookKey: null,
         };
-        zabbixHosts.set(host.name, host);
+        host.name = mappedName;
+        zabbixHosts.set(mappedName, host);
+        zabbixHosts.set(reading.host, host);
       }
     } catch (err) {
       sources.push({ name: "zabbix", ok: false, latency_ms: Date.now() - started, error: classifySourceError(err) });
@@ -166,8 +206,28 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
 
   // Merge: VM wins when it has the host, Zabbix-only hosts are appended.
   const hosts = [...vmHosts.values()];
-  for (const [name, host] of zabbixHosts) {
-    if (!vmHosts.has(name)) hosts.push(host);
+  const mappedZabbixHosts = new Set<HostReading>();
+  let buildVpsCandidate: HostReading | null = null;
+  for (const [instance, zabbixName] of Object.entries(deps.settings.zabbixHostMapping)) {
+    const host = zabbixHosts.get(zabbixName);
+    // Prometheus instances may carry a scrape port while the configured mapping
+    // uses the bare VM hostname (or vice versa).
+    const vmName = vmHosts.has(instance) ? instance : `${instance}:9100`;
+    const vmHost = vmHosts.get(vmName);
+    if (vmHost) {
+      if (host) mappedZabbixHosts.add(host);
+      // A build/vps Zabbix host merged into a VM card still feeds the fleet rollup,
+      // even though its card now carries the VM instance name.
+      if (host && /build|vps/i.test(zabbixName)) buildVpsCandidate = vmHost;
+      vmHost.cpuPercent ??= host?.cpuPercent ?? null;
+      vmHost.memoryPercent ??= host?.memoryPercent ?? null;
+      vmHost.swapPercent ??= host?.swapPercent ?? null;
+      vmHost.diskPercent ??= host?.diskPercent ?? null;
+    }
+  }
+  for (const host of new Set(zabbixHosts.values())) {
+    if (mappedZabbixHosts.has(host)) continue;
+    if (!vmHosts.has(host.name)) hosts.push(host);
   }
   for (const host of hosts) host.runbookKey = defaultRunbookKey(host);
   hosts.sort((a, b) => a.name.localeCompare(b.name));
@@ -206,7 +266,7 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
     } catch {
       // litellm readings are best-effort
     }
-    const buildHost = hosts.find((h) => /build|vps/i.test(h.name));
+    const buildHost = hosts.find((h) => /build|vps/i.test(h.name)) ?? buildVpsCandidate;
     if (buildHost) {
       vps = {
         cpuPercent: buildHost.cpuPercent,
@@ -221,6 +281,13 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
   view.containers = containers;
   view.litellm = litellm;
   view.vps = vps;
+  if (deps.db) {
+    try {
+      view.blockerPanels = await buildBlockerPanels(deps.db);
+    } catch {
+      view.blockerPanels = null;
+    }
+  }
   view.ok = sources.some((s) => s.ok) && sources.filter((s) => s.error !== "not_configured").every((s) => s.ok);
   return view;
 }

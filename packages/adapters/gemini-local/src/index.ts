@@ -1,6 +1,6 @@
 import {
   buildSandboxNpmInstallCommand,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 
 export const type = "gemini_local";
 export const label = "Gemini CLI";

@@ -7,7 +7,7 @@
 // mirror of the shape part A (server) adds to
 // `packages/shared/src/myrmidon-review-routing.ts`. The PUT is full-object, so
 // the client must know the block to preserve it. Once part A merges, replace
-// this interface with an import from `@paperclipai/shared`.
+// this interface with an import from `@myrmidon/shared`.
 import { api } from "@/api/client";
 
 /**

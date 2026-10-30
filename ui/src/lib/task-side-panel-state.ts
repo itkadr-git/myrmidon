@@ -1,5 +1,5 @@
 // myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
-import type { WorkspaceFileSelector } from "@paperclipai/shared";
+import type { WorkspaceFileSelector } from "@myrmidon/shared";
 import type { SidePanelTabRecord, SidePanelTabsState } from "@/components/side-panel";
 
 const STORAGE_VERSION = 1;

@@ -1,0 +1,164 @@
+{
+  "area": {
+    "search-timeline-audit-1": {
+      "search-filter-chips": {
+        "removeFilter": "Убрать фильтр {{label}}",
+        "clearAll": "Сбросить всё"
+      },
+      "search-filter-menu": {
+        "searchPlaceholder": "Поиск…",
+        "emptyMessage": "Нет вариантов",
+        "filterBy": "Фильтр: {{label}}",
+        "clear": "Сбросить"
+      },
+      "search-filter-sheet": {
+        "sheet": {
+          "title": "Фильтры",
+          "clearAll": "Сбросить всё",
+          "status": "Статус",
+          "priority": "Приоритет",
+          "assignee": "Исполнитель",
+          "project": "Проект",
+          "label": "Метка",
+          "updated": "Обновлено",
+          "sortBy": "Сортировка",
+          "showResults": "Показать результаты",
+          "showCount_one": "Показать {{count}} результат",
+          "showCount_few": "Показать {{count}} результата",
+          "showCount_many": "Показать {{count}} результатов",
+          "showCount_other": "Показать {{count}} результатов"
+        },
+        "trigger": {
+          "label": "Фильтры"
+        }
+      },
+      "search-sort-menu": {
+        "triggerAria": "Сортировка результатов",
+        "triggerLabel": "Сортировка:",
+        "menuLabel": "Сортировать по"
+      },
+      "zero-results-recovery": {
+        "title": "С этими фильтрами ничего не найдено",
+        "matches_one": "Без фильтров найден {{count}} результат.",
+        "matches_few": "Без фильтров найдено {{count}} результата.",
+        "matches_many": "Без фильтров найдено {{count}} результатов.",
+        "matches_other": "Без фильтров найдено {{count}} результатов.",
+        "matchesQuery_one": "По запросу «{{query}}» без фильтров найден {{count}} результат.",
+        "matchesQuery_few": "По запросу «{{query}}» без фильтров найдено {{count}} результата.",
+        "matchesQuery_many": "По запросу «{{query}}» без фильтров найдено {{count}} результатов.",
+        "matchesQuery_other": "По запросу «{{query}}» без фильтров найдено {{count}} результатов.",
+        "hidden_one": "{{count}} активный фильтр скрывает все результаты.",
+        "hidden_few": "{{count}} активных фильтра скрывают все результаты.",
+        "hidden_many": "{{count}} активных фильтров скрывают все результаты.",
+        "hidden_other": "{{count}} активных фильтров скрывают все результаты.",
+        "loosenTitle": "Ослабить фильтр",
+        "removeSuggestion": "Убрать <0>{{what}}</0>",
+        "additional_one": "+{{count}} результат",
+        "additional_few": "+{{count}} результата",
+        "additional_many": "+{{count}} результатов",
+        "additional_other": "+{{count}} результатов",
+        "clearAll": "Сбросить все фильтры"
+      },
+      "work-timeline-chart": {
+        "visible": {
+          "weeks_one": "В окне {{count}} неделя",
+          "weeks_few": "В окне {{count}} недели",
+          "weeks_many": "В окне {{count}} недель",
+          "weeks_other": "В окне {{count}} недель",
+          "days_one": "В окне {{count}} день",
+          "days_few": "В окне {{count}} дня",
+          "days_many": "В окне {{count}} дней",
+          "days_other": "В окне {{count}} дней",
+          "daysHours": "В окне {{days}} д {{hours}} ч",
+          "daysShort": "В окне {{days}} д",
+          "hours_one": "В окне {{count}} час",
+          "hours_few": "В окне {{count}} часа",
+          "hours_many": "В окне {{count}} часов",
+          "hours_other": "В окне {{count}} часов",
+          "hoursMinutes": "В окне {{hours}} ч {{minutes}} мин",
+          "minutes_one": "В окне {{count}} минута",
+          "minutes_few": "В окне {{count}} минуты",
+          "minutes_many": "В окне {{count}} минут",
+          "minutes_other": "В окне {{count}} минут"
+        },
+        "chart": {
+          "dashedHandoff": "пунктир — передача: повтор или запрос правок",
+          "solidHandoff": "сплошная линия — передача: делегирование или назначение"
+        },
+        "tooltip": {
+          "runFallback": "прогон",
+          "now": "сейчас",
+          "kickedOffBy": "запустил: {{name}}",
+          "retry": "повтор"
+        },
+        "miniMap": {
+          "dragLeft": "Потяните левый край, чтобы изменить видимый диапазон",
+          "dragRight": "Потяните правый край, чтобы изменить видимый диапазон"
+        }
+      },
+      "search": {
+        "scope": {
+          "all": "Всё",
+          "issues": "Задачи",
+          "comments": "Комментарии",
+          "documents": "Документы",
+          "artifacts": "Артефакты",
+          "agents": "Агенты",
+          "projects": "Проекты"
+        },
+        "scopeIn": {
+          "all": "во всех разделах",
+          "issues": "в задачах",
+          "comments": "в комментариях",
+          "documents": "в документах",
+          "artifacts": "в артефактах",
+          "agents": "среди агентов",
+          "projects": "в проектах"
+        },
+        "page": {
+          "title": "Поиск",
+          "placeholder": "Искать по задачам, комментариям, документам, артефактам, агентам, проектам…",
+          "queryAria": "Поисковый запрос",
+          "clearAria": "Очистить поиск",
+          "insertOperatorAria": "Вставить оператор {{token}}",
+          "operatorHint": "Попробуйте <0>{{status}}</0>, <1>{{assignee}}</1> или <2>{{updated}}</2>."
+        },
+        "content": {
+          "initialTitle": "Введите запрос, чтобы поискать по памяти организации.",
+          "initialDescription": "Задачи, комментарии, плановые документы, артефакты, агенты, проекты — в одной выдаче, по релевантности.",
+          "recentSearches": "Недавние запросы",
+          "tipIdentifier": "<0>Поиск по идентификатору:</0> введите <1>{{example}}</1>, чтобы сразу перейти к задаче.",
+          "tipQuoted": "<0>Фразы в кавычках:</0> возьмите фразу в кавычки, чтобы искать точное совпадение.",
+          "tipPalette": "<0>{{shortcut}}:</0> снова открывает палитру команд с вашим текущим запросом.",
+          "errorTitle": "Не удалось выполнить поиск",
+          "errorServer": "Сервер вернул {{status}}.",
+          "errorFailed": "Запрос не выполнился.",
+          "errorHint": "Введённый запрос и фильтры сохранены: можно повторить попытку или открыть фильтр задач.",
+          "openTasksView": "Открыть список задач с фильтром",
+          "searching": "Ищем «{{query}}»…",
+          "emptyTitle": "По запросу «{{query}}» ничего не найдено",
+          "emptyDescription": "Совпадений {{where}} нет. Попробуйте расширить область поиска или переформулировать запрос.",
+          "searchAllScopes": "Искать везде",
+          "createTaskFromQuery": "Создать задачу из этого запроса",
+          "tipFewerTokens": "Возьмите меньше слов или одно характерное слово.",
+          "tipShortcut": "Введите идентификатор, например <0>{{example}}</0>.",
+          "tipQuotes": "Фразы из нескольких слов берите в кавычки.",
+          "shownOfTotal_one": "{{shown}} из {{count}} результата",
+          "shownOfTotal_few": "{{shown}} из {{count}} результатов",
+          "shownOfTotal_many": "{{shown}} из {{count}} результатов",
+          "shownOfTotal_other": "{{shown}} из {{count}} результатов",
+          "resultCount_one": "{{count}} результат",
+          "resultCount_few": "{{count}} результата",
+          "resultCount_many": "{{count}} результатов",
+          "resultCount_other": "{{count}} результатов",
+          "sortedBy": "сортировка: {{sort}}",
+          "filtersActive_one": "включён {{count}} фильтр",
+          "filtersActive_few": "включено {{count}} фильтра",
+          "filtersActive_many": "включено {{count}} фильтров",
+          "filtersActive_other": "включено {{count}} фильтров",
+          "updating": "Обновление…"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+# myrmidon(OPE-8950): area issue-properties-panels-2
+components/StandaloneBrowserControls.tsx
+components/WorkspaceFileBrowser.tsx
+components/issue-output/IssueOutputSection.tsx
+components/issue-output/OutputPrimaryCard.tsx
+components/issue-output/OutputRow.tsx
+components/issue-properties/IssueProperties.tsx
+components/issue-properties/IssuePropertiesArtifactsTab.tsx
+components/issue-properties/IssuePropertiesPlansTab.tsx

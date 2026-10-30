@@ -48,6 +48,7 @@ export const EXTENSION_CAPABILITIES = [
   "fill",
   "download",
   "screenshot",
+  "sign",
 ] as const;
 
 export type ExtensionCapability = (typeof EXTENSION_CAPABILITIES)[number];
@@ -85,6 +86,7 @@ export const BROWSER_BRIDGE_METHODS = [
   "browser.fill",
   "browser.download",
   "browser.screenshot",
+  "browser.sign",
 ] as const;
 
 export type BrowserBridgeMethod = (typeof BROWSER_BRIDGE_METHODS)[number];

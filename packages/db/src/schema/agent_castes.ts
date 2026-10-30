@@ -63,6 +63,14 @@ export const agentCastes = pgTable(
     /** True for the 12 seed rows; cannot be turned off. */
     builtIn: boolean("built_in").notNull().default(false),
     /**
+     * myrmidon(1.6.6 KNOWLEDGE-2.0 K-3): a sensitive caste's rules are approved
+     * by the owner (owner's matrix of 29.09: "площадки и SMM — Alex"), every
+     * other caste's rules — by the board operator. The flag lives in the caste
+     * directory so the rule engine derives `approver_kind` in code and nobody
+     * types it by hand.
+     */
+    sensitive: boolean("sensitive").notNull().default(false),
+    /**
      * The company's default caste, used by the matcher when neither the task
      * nor its project names a caste. Exactly one row per company (partial
      * unique index below); the settings screen flips it with a radio.

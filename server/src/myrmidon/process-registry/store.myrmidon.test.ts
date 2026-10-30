@@ -17,7 +17,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { boardLeases, boardProcesses, createDb, type Db } from "@paperclipai/db";
+import { boardLeases, boardProcesses, createDb, type Db } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

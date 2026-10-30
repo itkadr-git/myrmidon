@@ -1,6 +1,8 @@
 import { Flag } from "lucide-react";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
+import { Trans } from "react-i18next";
+import { useTranslation } from "@/i18n";
 
 interface IssueAssignedBacklogNoticeProps {
   issueStatus: string;
@@ -17,10 +19,11 @@ export function IssueAssignedBacklogNotice({
   onResume,
   resuming,
 }: IssueAssignedBacklogNoticeProps) {
+  const { t } = useTranslation();
   if (issueStatus !== "backlog") return null;
   if (!assigneeAgent && !assigneeUserId) return null;
 
-  const assigneeLabel = assigneeAgent?.name ?? "the assignee";
+  const assigneeLabel = assigneeAgent?.name ?? t("area.approvals-decisions-notices-2.issue-assigned-backlog-notice.assigneeFallback");
 
   return (
     <div
@@ -32,12 +35,15 @@ export function IssueAssignedBacklogNotice({
         <Flag className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
         <div className="min-w-0 flex-1 space-y-1.5">
           <p className="leading-5">
-            <span className="font-medium">Parked</span> —{" "}
-            <span className="font-medium">{assigneeLabel}</span> will not be asked to work on this until status changes to To do or In progress.
+            <Trans
+              i18nKey="area.approvals-decisions-notices-2.issue-assigned-backlog-notice.parked"
+              values={{ assignee: assigneeLabel }}
+              components={[<span key="0" className="font-medium" />, <span key="1" className="font-medium" />]}
+            />
           </p>
           {assigneeAgent ? (
             <p className="text-xs leading-5 text-amber-800 dark:text-amber-200">
-              Comments still notify the assignee for questions or triage. Leave this parked only if the work is intentionally on hold.
+              {t("area.approvals-decisions-notices-2.issue-assigned-backlog-notice.commentsNotify")}
             </p>
           ) : null}
           {onResume ? (
@@ -50,7 +56,7 @@ export function IssueAssignedBacklogNotice({
                 disabled={resuming}
                 data-testid="issue-assigned-backlog-resume"
               >
-                {resuming ? "Resuming…" : "Resume now"}
+                {resuming ? t("area.approvals-decisions-notices-2.issue-assigned-backlog-notice.resuming") : t("area.approvals-decisions-notices-2.issue-assigned-backlog-notice.resumeNow")}
               </Button>
             </div>
           ) : null}

@@ -12,14 +12,14 @@
 // resolution (the env stays the default and the upper bound).
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   patchBotImageRolloutSettingsSchema,
   resolveBotImageRolloutSettings,
   normalizeBotImageRolloutSettings,
   type BotImageRolloutSettings,
   type BotImageRolloutSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";

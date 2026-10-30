@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   activityLog,
@@ -25,7 +25,7 @@ import {
   routineDocuments,
   routines,
   routineTriggers,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   CreateRoutine,
   CreateRoutineTrigger,
@@ -43,7 +43,7 @@ import type {
   RunRoutine,
   UpdateRoutine,
   UpdateRoutineTrigger,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
   getBuiltinRoutineVariableValues,
@@ -55,8 +55,8 @@ import {
   routineRevisionSnapshotSchema,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
-} from "@paperclipai/shared";
-import { trackRoutineRun } from "@paperclipai/shared/telemetry";
+} from "@myrmidon/shared";
+import { trackRoutineRun } from "@myrmidon/shared/telemetry";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -82,7 +82,7 @@ import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import { findOpenRoutineExecutionIssue } from "../myrmidon/routine-execution-lock.js";
 // myrmidon(R3): maintenance mode skips scheduled routine ticks
 import { isRoutineUnderMaintenance } from "../myrmidon/maintenance/gate.js";
-import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];

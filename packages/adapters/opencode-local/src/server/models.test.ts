@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
+import * as serverUtils from "@myrmidon/adapter-utils/server-utils";
 import {
   discoverOpenCodeModels,
   ensureOpenCodeModelConfiguredAndAvailable,

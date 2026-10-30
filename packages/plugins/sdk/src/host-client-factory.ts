@@ -48,7 +48,7 @@
  * @see PLUGIN_SPEC.md §15 — Capability Model
  */
 
-import type { PluginCapability } from "@paperclipai/shared";
+import type { PluginCapability } from "@myrmidon/shared";
 import type { WorkerHostCallContext, WorkerToHostMethods, WorkerToHostMethodName } from "./protocol.js";
 import { PLUGIN_RPC_ERROR_CODES } from "./protocol.js";
 
@@ -251,6 +251,7 @@ export interface HostServices {
     respondInteraction(params: WorkerToHostMethods["issues.respondInteraction"][0]): Promise<WorkerToHostMethods["issues.respondInteraction"][1]>;
     listAttachments(params: WorkerToHostMethods["issues.listAttachments"][0]): Promise<WorkerToHostMethods["issues.listAttachments"][1]>;
     getAttachmentContent(params: WorkerToHostMethods["issues.getAttachmentContent"][0]): Promise<WorkerToHostMethods["issues.getAttachmentContent"][1]>;
+    uploadAttachment(params: WorkerToHostMethods["issues.uploadAttachment"][0]): Promise<WorkerToHostMethods["issues.uploadAttachment"][1]>;
   };
 
   /** Provides `approvals.list`, `approvals.get`, `approvals.decide`. */
@@ -472,6 +473,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.respondInteraction": "issue.interactions.respond",
   "issues.listAttachments": "issue.attachments.read",
   "issues.getAttachmentContent": "issue.attachments.read",
+  "issues.uploadAttachment": "issue.attachments.write",
 
   // Approvals
   "approvals.list": "approvals.read",
@@ -942,6 +944,10 @@ export function createHostClientHandlers(
     }),
     "issues.getAttachmentContent": gated("issues.getAttachmentContent", async (params) => {
       return services.issues.getAttachmentContent(params);
+    }),
+    "issues.uploadAttachment": gated("issues.uploadAttachment", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("issues.uploadAttachment", params, context);
+      return services.issues.uploadAttachment({ ...params, companyId });
     }),
 
     // Approvals

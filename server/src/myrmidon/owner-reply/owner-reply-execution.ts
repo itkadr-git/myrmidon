@@ -27,11 +27,11 @@ import {
   issueThreadInteractions,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   type IssueCommentMetadata,
   type OwnerDeliveryMode,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { redactSensitiveText } from "../../redaction.js";
 import { logActivity } from "../../services/activity-log.js";
 import {

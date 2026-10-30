@@ -1,4 +1,4 @@
-import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS } from "@myrmidon/shared";
 // myrmidon(CUSTOM-CASTES): the label lookup accepts a caste-directory
 // override; the built-in AGENT_ROLE_LABELS stay the fallback when the
 // directory is empty or unavailable.

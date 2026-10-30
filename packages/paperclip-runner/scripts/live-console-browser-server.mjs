@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -15,10 +15,13 @@ async function loadRunner() {
   return import(new URL("../dist/index.js", import.meta.url).href);
 }
 
-async function createWorkingDirectory() {
-  const scratchRoot =
-    process.env.PAPERCLIP_RUN_SCRATCH_DIR ?? process.env.PAPERCLIP_SCRATCH_DIR ?? tmpdir();
-  return mkdtemp(resolve(scratchRoot, "live-console-browser-"));
+async function createWorkingDirectory(scratchRoot = undefined) {
+  const root =
+    scratchRoot ??
+    process.env.PAPERCLIP_RUN_SCRATCH_DIR ??
+    process.env.PAPERCLIP_SCRATCH_DIR ??
+    tmpdir();
+  return mkdtemp(resolve(root, "live-console-browser-"));
 }
 
 export function createLiveConsoleBrowserMiddleware(options = {}) {
@@ -44,26 +47,36 @@ export function createLiveConsoleBrowserMiddleware(options = {}) {
     bootstrap = (async () => {
       const runner = await load();
       runner.assertLiveConsoleLoopbackBindHost(bindHost);
-      const workingDirectory =
-        options.workingDirectory ?? (await createWorkingDirectory());
-      const server = new runner.LiveConsoleDemoServer({
-        host: bindHost,
-        workingDirectory,
-        manifests: runner.liveConsoleDemoManifestCatalogue(),
-        ...(Number.isInteger(maxActiveSessions) ? { maxActiveSessions } : {}),
-        driverFactory: (taskEnvelope, manifestId) =>
-          driverMode === "codex"
-            ? new runner.CodexAppServerDriver({
-                taskEnvelope,
-                conversationMode: manifestId === "chat" ? "direct" : "task",
-                onDiagnostic: (message) => process.stderr.write(`[liveConsole] ${message}\n`),
-              })
-            : new runner.LiveConsoleScriptedDriver({
-                manifestId: manifestId ?? "completion",
-                chunkDelayMs: Number.isInteger(chunkDelayMs) ? chunkDelayMs : 45,
-              }),
-      });
-      return { handle: server.middleware(), server, workingDirectory };
+      const ownsWorkingDirectory = options.workingDirectory === undefined;
+      let workingDirectory;
+      try {
+        workingDirectory = ownsWorkingDirectory
+          ? await createWorkingDirectory(options.scratchRoot)
+          : options.workingDirectory;
+        const server = new runner.LiveConsoleDemoServer({
+          host: bindHost,
+          workingDirectory,
+          manifests: runner.liveConsoleDemoManifestCatalogue(),
+          ...(Number.isInteger(maxActiveSessions) ? { maxActiveSessions } : {}),
+          driverFactory: (taskEnvelope, manifestId) =>
+            driverMode === "codex"
+              ? new runner.CodexAppServerDriver({
+                  taskEnvelope,
+                  conversationMode: manifestId === "chat" ? "direct" : "task",
+                  onDiagnostic: (message) => process.stderr.write(`[liveConsole] ${message}\n`),
+                })
+              : new runner.LiveConsoleScriptedDriver({
+                  manifestId: manifestId ?? "completion",
+                  chunkDelayMs: Number.isInteger(chunkDelayMs) ? chunkDelayMs : 45,
+                }),
+        });
+        return { handle: server.middleware(), server, workingDirectory, ownsWorkingDirectory };
+      } catch (error) {
+        if (ownsWorkingDirectory && workingDirectory !== undefined) {
+          await rm(workingDirectory, { recursive: true, force: true });
+        }
+        throw error;
+      }
     })();
     return bootstrap;
   }
@@ -88,8 +101,12 @@ export function createLiveConsoleBrowserMiddleware(options = {}) {
   };
   middleware.close = async () => {
     if (bootstrap === null) return;
-    const { server } = await bootstrap;
-    await server.close();
+    const { server, workingDirectory, ownsWorkingDirectory } = await bootstrap;
+    try {
+      await server.close();
+    } finally {
+      if (ownsWorkingDirectory) await rm(workingDirectory, { recursive: true, force: true });
+    }
   };
   middleware.prepare = ready;
   return middleware;

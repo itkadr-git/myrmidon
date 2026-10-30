@@ -132,6 +132,15 @@ export interface BudgetLimitView {
 }
 
 /** One journal entry as the API returns it: who, when, what. */
+export interface EffectiveBudgetLimitView {
+  amountCents: number | null;
+  period: BudgetLimitPeriod | null;
+  mode: BudgetLimitMode | null;
+  sourceLevel: BudgetLimitLevel | null;
+  sourceRef: string | null;
+  sourceLimitId: string | null;
+}
+
 export interface BudgetLimitChangeView {
   id: string;
   companyId: string;

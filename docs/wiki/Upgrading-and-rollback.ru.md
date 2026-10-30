@@ -8,10 +8,10 @@
 ещё раз:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.11/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.12/install.sh | sudo bash
 ```
 
-Текущий опубликованный кандидат — 1.6.6-rc.11. Установщик доступен
+Текущий опубликованный кандидат — 1.6.6-rc.12. Установщик доступен
 начиная с выпуска 1.6.5; ссылка `releases/latest/download/install.sh`
 ведёт на последний стабильный выпуск, поэтому для кандидата укажите точный
 тег. Установщик находит выпуск, **снимает копию базы данных до любых изменений**,
@@ -196,3 +196,6 @@ RESTORE_COMMAND='pg_restore "$DATABASE_URL" --clean --if-exists --no-owner --no-
 PostgreSQL 18 для доски, шлюза языковых моделей, трассировки и памяти
 агентов — хозяйское решение по хранилищам; у каждой программы на нём своя
 база и своя роль.)
+На странице настроек также сохраняется журнал выката. Его можно фильтровать
+по режиму, статусу и исходу; API принимает те же фильтры `mode`, `status` и
+`outcome` в query-параметрах `GET /api/myrmidon/deploy-jobs`.

@@ -70,3 +70,11 @@ models visible) and access to `/spend/logs/v2` and `/v1/model/info`. See
 - [Prompt budget advice and deep analysis](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/prompt-budget-advice.md)
 - [Run admission limits](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-limits.md)
 - [LLM tracing health](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/tracing-health.md)
+
+## Effective issue limits
+
+The budget-limit API can resolve the active limit for a task across issue,
+foraging, role, project, and company scopes. The response identifies the
+winning scope and source limit; see the
+[budget limits guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-limits.md)
+for precedence, authorization, and the signal-only override.

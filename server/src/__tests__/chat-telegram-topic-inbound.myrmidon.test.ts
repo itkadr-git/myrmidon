@@ -25,8 +25,8 @@ import {
   instanceSettings,
   issues,
   principalPermissionGrants,
-} from "@paperclipai/db";
-import type { ChatProvider } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { ChatProvider } from "@myrmidon/shared";
 import type { Attachment, Author, Message, Thread } from "chat";
 import {
   chatChannelService,

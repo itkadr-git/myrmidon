@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, issues, litellmCostEvents } from "@paperclipai/db";
+import { agents, companies, createDb, issues, litellmCostEvents } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

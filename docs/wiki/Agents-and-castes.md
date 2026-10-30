@@ -29,6 +29,16 @@ with the company/project tabs; the selected project is kept in the URL and the
 list and organization tree are filtered to its members. Role and model filters
 can further narrow the results.
 
+## Agents Fleet screen
+
+UI-2 provides a company-wide Agents Fleet at `/{company}/agents`. It groups
+agents by reporting relationship, shows each agent's status and latest live
+run, and links to the agent detail/chat page. The fleet refreshes agent data
+every 30 seconds and live runs every 15 seconds; paused agents retain their
+distinct paused status. See the
+[fleet guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/ui2-agents-fleet.md)
+for details.
+
 ## The container runtime
 
 An agent with the `hermes_gateway` adapter can run inside a Docker container

@@ -1,5 +1,6 @@
-import type { AdapterSessionManagement, ServerAdapterModule } from "@paperclipai/adapter-utils";
+import type { AdapterSessionManagement, ServerAdapterModule } from "@myrmidon/adapter-utils";
 import { ADAPTER_LABEL, ADAPTER_TYPE } from "./shared/constants.js";
+import { listGatewaySkills, syncGatewaySkills } from "./server/myrmidon-skills.js";
 import { execute, getConfigSchema, sessionCodec, stopGatewayRunForBoard, testEnvironment } from "./server/index.js";
 
 export const type = ADAPTER_TYPE;
@@ -67,6 +68,9 @@ export function createServerAdapter(): ServerAdapterModule {
     testEnvironment,
     sessionCodec,
     sessionManagement,
+    // myrmidon(OPE-9033): board skill assignment for gateway agents
+    listSkills: listGatewaySkills,
+    syncSkills: syncGatewaySkills,
     models,
     // myrmidon(HERMES-RUN-REATTACH): board-side stop for runs the board is
     // not actively supervising; the heartbeat cancellation path uses it to

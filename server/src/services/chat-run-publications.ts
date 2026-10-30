@@ -14,7 +14,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   chatConversations,
@@ -25,7 +25,7 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
 import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitration.js";
@@ -52,7 +52,7 @@ import {
 import { readDmProgressRuntimeSteps } from "../myrmidon/telegram-dm-progress/runtime-steps.js";
 import { readTelegramDmProgressForSweep } from "../myrmidon/telegram-dm-progress/sweep.js";
 import { decideDmStatusPublish } from "../myrmidon/telegram-dm-progress/throttle.js";
-import type { ResolvedTelegramDmProgress } from "@paperclipai/shared";
+import type { ResolvedTelegramDmProgress } from "@myrmidon/shared";
 import {
   SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
   safeNativeChatProgressForEvent,

@@ -22,7 +22,7 @@ import {
   type TelegramNotifyDocument,
   type TelegramNotifySettings,
   type TelegramNotifySettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { TelegramNotifyStore } from "./settings-store.js";
 
 /** A typed refusal the route layer turns into an HTTP status. */

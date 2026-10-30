@@ -1,0 +1,44 @@
+---
+divergence-section: Трек 1 — платформа
+settings-section: Track 1 — platform
+---
+
+## changelog-en
+
+### DEBRAND runtime environment aliases (OPE-8124)
+
+- Managed settings: `MYRMIDON_MANAGED_CONFIG`, `MYRMIDON_SETTING_DEFAULTS`, `MYRMIDON_HIDDEN_SETTINGS` (legacy aliases accepted for one release).
+- Datastore care: `MYRMIDON_HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS` (legacy alias accepted for one release).
+- Migrated product settings include: `API_URL`, `CLOUD_API_ORIGIN`, `IN_WORKTREE`, `PROCESS_ROLE`, `PROCESS_MODE`, `ADAPTER_MODELS`, `RUNNER_API_TOOLS_ENABLED`, `RUNNER_API_TOOLS_COMPANY_IDS`, `MANAGED_CONFIG`, `SETTING_DEFAULTS`, `HIDDEN_SETTINGS`, and `HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS`.
+- Remaining `PAPERCLIP_*` uses inside server/shared are compatibility inputs, generated/public API fields, process/adapter transport contracts, or independent vendor integrations; they were not blindly renamed.
+
+## changelog-ru
+
+### DEBRAND: синонимы runtime-переменных окружения (OPE-8124)
+
+- Runtime-потребители в первую очередь разрешают MYRMIDON_* и сохраняют fallback PAPERCLIP_* через централизованный resolver на переходный период 1.6.6.
+- Добавлены канонические имена для managed config/settings и datastore-care retention; старые имена остаются только как совместимые входы.
+
+## divergence
+
+| ID | Что изменено | Файлы | Зачем | Тесты | Когда снимать | Ссылка |
+|---|---|---|---|---|---|---|
+| OPE-8124 | Runtime consumers use MYRMIDON_* first and legacy PAPERCLIP_* fallback through the centralized resolver; managed config/settings and datastore-care retention now have canonical names | server/src/**, packages/shared/src/** | Standard startup no longer requires old names | Resolver precedence and affected runtime suites | Remove fallback after 1.6.6 compatibility window | PR #1410 |
+
+## settings-en
+
+| `MYRMIDON_CLOUD_TENANT_SERVER_TOKEN` | 1.6.6 DEBRAND | unset | Credential used by cloud tenant routes | Unset disables token-authenticated tenant routes |
+| `MYRMIDON_PROCESS_ROLE` | 1.6.6 DEBRAND | `all` | API, worker, or combined server process role | Unset defaults to `all`; accepted values are `all`, `worker`, and `api` |
+| `MYRMIDON_RUN_SCRATCH_DIR` | 1.6.6 DEBRAND | TMPDIR or OS temp directory | Directory for ephemeral SSH operation files | Unset falls back to TMPDIR then OS temp directory |
+| `MYRMIDON_SCRATCH_DIR` | 1.6.6 DEBRAND | home scratch fallback | Approved directory for ephemeral site-agent PKI files | Unset uses MYRMIDON_RUN_SCRATCH_DIR then home scratch |
+| `MYRMIDON_RUNNER_API_TOOLS_ENABLED` | 1.6.6 DEBRAND | `false` | Operator opt-in for native runner API tools | Unset disables the API tools; canonical name takes precedence over legacy alias |
+| `MYRMIDON_RUNNER_API_TOOLS_COMPANY_IDS` | 1.6.6 DEBRAND | unset | Optional comma-separated company allowlist for native runner API tools | Unset allows all companies only after explicit operator opt-in |
+
+## settings-ru
+
+| `MYRMIDON_CLOUD_TENANT_SERVER_TOKEN` | 1.6.6 DEBRAND | не задано | Токен аутентификации cloud tenant routes | Без значения маршруты с токен-аутентификацией отключены |
+| `MYRMIDON_PROCESS_ROLE` | 1.6.6 DEBRAND | `all` | Роль процесса API, worker или совмещённого сервера | Без значения используется `all`; допустимы `all`, `worker`, `api` |
+| `MYRMIDON_RUN_SCRATCH_DIR` | 1.6.6 DEBRAND | TMPDIR или системный временный каталог | Каталог временных SSH-файлов | Без значения используется TMPDIR, затем системный каталог |
+| `MYRMIDON_SCRATCH_DIR` | 1.6.6 DEBRAND | резервный каталог в HOME | Разрешённый каталог файлов PKI site-agent | Без значения используется MYRMIDON_RUN_SCRATCH_DIR, затем HOME-каталог |
+| `MYRMIDON_RUNNER_API_TOOLS_ENABLED` | 1.6.6 DEBRAND | `false` | Явное включение оператором API-инструментов native runner | Без значения API-инструменты отключены; каноническое имя важнее legacy-синонима |
+| `MYRMIDON_RUNNER_API_TOOLS_COMPANY_IDS` | 1.6.6 DEBRAND | не задано | Необязательный allowlist компаний через запятую | Не задано = все компании лишь после явного включения оператором |

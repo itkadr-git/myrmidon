@@ -171,7 +171,17 @@ function registerRouteMocks() {
     dbAutonomyGate: () => mockAutonomyGate,
   }));
 
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  vi.doMock("../myrmidon/review-routing/settings.js", () => ({
+    readReviewRoutingSettings: vi.fn(async () => ({ enabled: false })),
+  }));
+  vi.doMock("../myrmidon/review-routing/store.js", () => ({
+    createPgReviewRoutingStore: vi.fn(() => ({
+      listReviewerAgents: vi.fn(async () => []),
+      loadByAgent: vi.fn(async () => new Map()),
+    })),
+  }));
+
+  vi.doMock("@myrmidon/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
   }));
@@ -467,7 +477,7 @@ function boardActor() {
 describe("agent issue mutation checkout ownership", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("@myrmidon/shared/telemetry");
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
@@ -481,6 +491,8 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../myrmidon/autonomy/gate.js");
+    vi.doUnmock("../myrmidon/review-routing/settings.js");
+    vi.doUnmock("../myrmidon/review-routing/store.js");
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
     vi.clearAllMocks();
@@ -1833,14 +1845,22 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["board", "board"],
-    ["a company user", { userId: "board-user" }],
+    ["a company user", { userId: "00000000-0000-4000-8000-000000000002" }],
   ])("rejects an agent naming %s as unblock owner", async (_label, unblockOwner) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
 
-    // myrmidon(STALE-BLOCK): entering blocked needs a reason reference, so the descriptor carries one;
-    // the ownership rule under test is still the owner field.
+    // Keep the transition valid so this assertion isolates owner authorization.
     const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
       status: "blocked",
+      blockedByIssueIds: ["22222222-2222-4222-8222-222222222222"],
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { userId: "00000000-0000-4000-8000-000000000002" },
+        externalRef: "ownership-route-test",
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
+      },
       unblockDescriptor: { owner: unblockOwner, action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
     });
 
@@ -1851,7 +1871,7 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["board", "board"],
-    ["a company user", { userId: "board-user" }],
+    ["a company user", { userId: "00000000-0000-4000-8000-000000000002" }],
   ])("rejects an agent changing an already-blocked issue owner to %s", async (_label, unblockOwner) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
 
@@ -1871,20 +1891,30 @@ describe("agent issue mutation checkout ownership", () => {
       ...patch,
     }));
 
-    // myrmidon(STALE-BLOCK): entering blocked needs a reason reference.
+    const blockerMetadata = {
+      blockReason: "dependency",
+      owner: { userId: "00000000-0000-4000-8000-000000000002" },
+      externalRef: "ownership-route-test",
+      nextCheckAt: "2026-10-20T00:00:00.000Z",
+      timeoutAt: "2026-10-21T00:00:00.000Z",
+      escalationPolicy: "notify_owner",
+    };
+    const unblockDescriptor = {
+      owner: "board",
+      action: "Review the blocker",
+      reasonRef: { kind: "issue", issueId },
+    };
     const res = await request(await createApp(boardActor())).patch(`/api/issues/${issueId}`).send({
       status: "blocked",
-      unblockDescriptor: { owner: "board", action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
+      blockedByIssueIds: ["22222222-2222-4222-8222-222222222222"],
+      blockerMetadata,
+      unblockDescriptor,
     });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
-      expect.objectContaining({
-        status: "blocked",
-        // myrmidon(STALE-BLOCK): the request now carries a reasonRef (see send above).
-        unblockDescriptor: { owner: "board", action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
-      }),
+      expect.objectContaining({ status: "blocked", blockerMetadata, unblockDescriptor }),
     );
   });
 

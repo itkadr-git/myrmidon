@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { ArrowDown, ArrowUp, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { i18n, useTranslation } from "@/i18n";
 import { CollapsibleSection, Field } from "../agent-config-primitives";
 import { defaultEffortForModel, effortsForModel } from "@/lib/card-effort-policy";
 
@@ -35,28 +36,31 @@ export type AgentCardModels = {
 
 type SingleModelKey = "vision" | "video" | "stt" | "tts";
 
-const SINGLE_MODEL_FIELDS: ReadonlyArray<{ key: SingleModelKey; label: string; hint: string }> = [
-  { key: "vision", label: "Vision model", hint: "Model for image analysis. Empty keeps the profile setting." },
-  { key: "video", label: "Video model", hint: "Model for video input. Empty keeps the profile setting." },
-  { key: "stt", label: "Speech-to-text model", hint: "Model for transcribing audio. Empty keeps the profile setting." },
-  { key: "tts", label: "Text-to-speech model", hint: "Model for voice replies. Empty keeps the profile setting." },
+const SINGLE_MODEL_KEYS: ReadonlyArray<SingleModelKey> = ["vision", "video", "stt", "tts"];
+
+// Lazy: the language must be read at render time, not frozen at import.
+const singleModelFields = (): ReadonlyArray<{ key: SingleModelKey; label: string; hint: string }> => [
+  { key: "vision", label: i18n.t("area.settings-agent-card.agent-card-models-fields.visionLabel"), hint: i18n.t("area.settings-agent-card.agent-card-models-fields.visionHint") },
+  { key: "video", label: i18n.t("area.settings-agent-card.agent-card-models-fields.videoLabel"), hint: i18n.t("area.settings-agent-card.agent-card-models-fields.videoHint") },
+  { key: "stt", label: i18n.t("area.settings-agent-card.agent-card-models-fields.sttLabel"), hint: i18n.t("area.settings-agent-card.agent-card-models-fields.sttHint") },
+  { key: "tts", label: i18n.t("area.settings-agent-card.agent-card-models-fields.ttsLabel"), hint: i18n.t("area.settings-agent-card.agent-card-models-fields.ttsHint") },
 ];
 
 /** myrmidon(BOT-TUNING-C): the auxiliary model fields from the card block. */
-const AUXILIARY_MODEL_FIELDS: ReadonlyArray<{
+const auxiliaryModelFields = (): ReadonlyArray<{
   key: "titleGeneration" | "compressionSummary";
   label: string;
   hint: string;
-}> = [
+}> => [
   {
     key: "titleGeneration",
-    label: "Title generation model",
-    hint: "Model for auxiliary title generation. Empty keeps the instance default.",
+    label: i18n.t("area.settings-agent-card.agent-card-models-fields.titleGenerationLabel"),
+    hint: i18n.t("area.settings-agent-card.agent-card-models-fields.titleGenerationHint"),
   },
   {
     key: "compressionSummary",
-    label: "Compression model",
-    hint: "Model for auxiliary compression summaries. Empty keeps the instance default.",
+    label: i18n.t("area.settings-agent-card.agent-card-models-fields.compressionSummaryLabel"),
+    hint: i18n.t("area.settings-agent-card.agent-card-models-fields.compressionSummaryHint"),
   },
 ];
 
@@ -101,7 +105,7 @@ function normalize(value: unknown): AgentCardModels {
 /** Drop empty single fields so an untouched card stores nothing. */
 export function compactCardModels(models: AgentCardModels): AgentCardModels | undefined {
   const next: AgentCardModels = {};
-  for (const { key } of SINGLE_MODEL_FIELDS) {
+  for (const key of SINGLE_MODEL_KEYS) {
     const value = models[key]?.trim();
     if (value) next[key] = value;
   }
@@ -133,7 +137,8 @@ export type ModelPickerRenderer = (props: {
 }) => ReactNode;
 
 function UnsupportedNote() {
-  return <p className="text-xs text-muted-foreground">Not supported by this adapter.</p>;
+  const { t } = useTranslation();
+  return <p className="text-xs text-muted-foreground">{t("area.settings-agent-card.agent-card-models-fields.unsupported")}</p>;
 }
 
 /**
@@ -152,11 +157,12 @@ export function CardEffortPicker({
   value: string;
   onChange: (effort: string) => void;
 }) {
+  const { t } = useTranslation();
   const efforts = effortsForModel(model);
   const safeDefault = defaultEffortForModel(model);
   const selected = value || safeDefault;
   return (
-    <Field label="Thinking effort" hint="Reasoning depth. Only values the selected model accepts are offered; empty uses the model's default.">
+    <Field label={t("area.settings-agent-card.agent-card-models-fields.effortLabel")} hint={t("area.settings-agent-card.agent-card-models-fields.effortHint")}>
       <div className="space-y-1" data-testid="myrmidon-card-effort-picker">
         <div className="flex flex-wrap items-center gap-1">
           {efforts.map((effort) => (
@@ -175,14 +181,16 @@ export function CardEffortPicker({
               {effort}
               {effort === safeDefault ? (
                 <span className="ml-1.5 text-(length:--text-nano) text-muted-foreground" data-effort-default>
-                  default
+                  {t("area.settings-agent-card.agent-card-models-fields.effortDefaultBadge")}
                 </span>
               ) : null}
             </button>
           ))}
         </div>
         <p className="text-xs text-muted-foreground" data-testid="myrmidon-card-effort-hint">
-          {value ? `Selected: ${value}` : `Empty compiles to the model default: ${safeDefault}`}
+          {value
+            ? t("area.settings-agent-card.agent-card-models-fields.effortSelected", { value })
+            : t("area.settings-agent-card.agent-card-models-fields.effortEmpty", { value: safeDefault })}
         </p>
       </div>
     </Field>
@@ -215,10 +223,10 @@ function parseTokenCount(
 ): { ok: true; value: number | undefined } | { ok: false; message: string } {
   const n = Number(draft);
   if (!Number.isFinite(n) || !Number.isInteger(n)) {
-    return { ok: false, message: `${label} must be a whole number of tokens.` };
+    return { ok: false, message: i18n.t("area.settings-agent-card.agent-card-models-fields.tokensWhole", { label }) };
   }
   if (n < min || n > max) {
-    return { ok: false, message: `${label} must be between ${min} and ${max}.` };
+    return { ok: false, message: i18n.t("area.settings-agent-card.agent-card-models-fields.tokensRange", { label, min, max }) };
   }
   return { ok: true, value: n };
 }
@@ -289,16 +297,17 @@ export function CardContextLengthField({
   value: number | undefined;
   onChange: (tokens: number | undefined) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <TokenInputField
-      label="Context length (tokens)"
-      hint="Explicit context window for the model. Empty keeps the profile setting."
-      placeholder="auto"
+      label={t("area.settings-agent-card.agent-card-models-fields.contextLengthLabel")}
+      hint={t("area.settings-agent-card.agent-card-models-fields.contextLengthHint")}
+      placeholder={t("area.settings-agent-card.agent-card-models-fields.contextLengthPlaceholder")}
       testId="myrmidon-card-context-length"
       value={value}
       min={CONTEXT_LENGTH_MIN}
       max={CONTEXT_LENGTH_MAX}
-      labelForErrors="Context length"
+      labelForErrors={t("area.settings-agent-card.agent-card-models-fields.contextLengthErrorLabel")}
       onChange={onChange}
     />
   );
@@ -316,16 +325,17 @@ export function CardCompressionThresholdField({
   value: number | undefined;
   onChange: (tokens: number | undefined) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <TokenInputField
-      label="Compression threshold (tokens)"
-      hint={`Absolute token cap for context compression. Empty uses the company default (${CARD_COMPRESSION_THRESHOLD_DEFAULT}).`}
+      label={t("area.settings-agent-card.agent-card-models-fields.compressionLabel")}
+      hint={t("area.settings-agent-card.agent-card-models-fields.compressionHint", { value: CARD_COMPRESSION_THRESHOLD_DEFAULT })}
       placeholder={String(CARD_COMPRESSION_THRESHOLD_DEFAULT)}
       testId="myrmidon-card-compression-threshold"
       value={value}
       min={COMPRESSION_THRESHOLD_MIN}
       max={COMPRESSION_THRESHOLD_MAX}
-      labelForErrors="Compression threshold"
+      labelForErrors={t("area.settings-agent-card.agent-card-models-fields.compressionErrorLabel")}
       onChange={onChange}
     />
   );
@@ -343,6 +353,7 @@ export function AgentCardModelsFields({
   /** Same picker and model list as the main model field. */
   renderModelPicker: ModelPickerRenderer;
 }) {
+  const { t } = useTranslation();
   const models = normalize(value);
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(() => compactCardModels(models) !== undefined);
@@ -365,23 +376,23 @@ export function AgentCardModelsFields({
   };
 
   return (
-    <CollapsibleSection title="Additional models" open={expanded} onToggle={() => setExpanded((open) => !open)}>
+    <CollapsibleSection title={t("area.settings-agent-card.agent-card-models-fields.title")} open={expanded} onToggle={() => setExpanded((open) => !open)}>
       <div className="space-y-3">
-      {SINGLE_MODEL_FIELDS.map((field) => (
+      {singleModelFields().map((field) => (
         <Field key={field.key} label={field.label} hint={field.hint}>
           {picker(field.key, models[field.key] ?? "", (id) => update({ [field.key]: id }))}
           {!isCardModelFieldSupported(adapterType, field.key) && <UnsupportedNote />}
         </Field>
       ))}
       {/* myrmidon(BOT-TUNING-C): auxiliary models for title generation and compression. */}
-      {AUXILIARY_MODEL_FIELDS.map((field) => (
+      {auxiliaryModelFields().map((field) => (
         <Field key={field.key} label={field.label} hint={field.hint}>
           {picker(field.key, models[field.key] ?? "", (id) => update({ [field.key]: id }))}
           {!isCardModelFieldSupported(adapterType, field.key) && <UnsupportedNote />}
         </Field>
       ))}
       {/* myrmidon(BOT-TUNING-C): explicit context window for the card's model. */}
-      <Field label="Context length (tokens)" hint="Explicit context window for the model. Empty keeps the profile setting.">
+      <Field label={t("area.settings-agent-card.agent-card-models-fields.contextLengthLabel")} hint={t("area.settings-agent-card.agent-card-models-fields.contextLengthHint")}>
         {isCardModelFieldSupported(adapterType, "contextLength") ? (
           <CardContextLengthField
             value={models.contextLength}
@@ -393,8 +404,8 @@ export function AgentCardModelsFields({
       </Field>
       {/* myrmidon(BOT-RUNTIME-TUNING-A): absolute compression token cap for this agent. */}
       <Field
-        label="Compression threshold (tokens)"
-        hint={`Absolute token cap for context compression. Empty uses the company default (${CARD_COMPRESSION_THRESHOLD_DEFAULT}).`}
+        label={t("area.settings-agent-card.agent-card-models-fields.compressionLabel")}
+        hint={t("area.settings-agent-card.agent-card-models-fields.compressionHint", { value: CARD_COMPRESSION_THRESHOLD_DEFAULT })}
       >
         {isCardModelFieldSupported(adapterType, "compressionThresholdTokens") ? (
           <CardCompressionThresholdField
@@ -405,7 +416,7 @@ export function AgentCardModelsFields({
           <UnsupportedNote />
         )}
       </Field>
-      <Field label="Fallback models" hint="Tried in order when the main model fails.">
+      <Field label={t("area.settings-agent-card.agent-card-models-fields.fallbackLabel")} hint={t("area.settings-agent-card.agent-card-models-fields.fallbackHint")}>
         <div className="space-y-2">
           {fallbacks.map((model, index) => (
             <div key={`${index}-${model}`} className="flex items-center gap-1">
@@ -416,16 +427,16 @@ export function AgentCardModelsFields({
                   update({ fallbacks: next });
                 })}
               </div>
-              <Button variant="ghost" size="icon-sm" aria-label="Move up" onClick={() => moveFallback(index, index - 1)}>
+              <Button variant="ghost" size="icon-sm" aria-label={t("area.settings-agent-card.agent-card-models-fields.moveUp")} onClick={() => moveFallback(index, index - 1)}>
                 <ArrowUp />
               </Button>
-              <Button variant="ghost" size="icon-sm" aria-label="Move down" onClick={() => moveFallback(index, index + 1)}>
+              <Button variant="ghost" size="icon-sm" aria-label={t("area.settings-agent-card.agent-card-models-fields.moveDown")} onClick={() => moveFallback(index, index + 1)}>
                 <ArrowDown />
               </Button>
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label="Remove fallback model"
+                aria-label={t("area.settings-agent-card.agent-card-models-fields.removeFallback")}
                 onClick={() => update({ fallbacks: fallbacks.filter((_, i) => i !== index) })}
               >
                 <X />
@@ -434,7 +445,7 @@ export function AgentCardModelsFields({
           ))}
           <Button variant="outline" size="sm" onClick={() => update({ fallbacks: [...fallbacks, ""] })}>
             <Plus />
-            Add fallback model
+            {t("area.settings-agent-card.agent-card-models-fields.addFallback")}
           </Button>
           {!isCardModelFieldSupported(adapterType, "fallbacks") && <UnsupportedNote />}
         </div>

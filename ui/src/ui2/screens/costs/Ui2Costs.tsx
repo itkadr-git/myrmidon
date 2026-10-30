@@ -134,6 +134,10 @@ export function Ui2Costs() {
   const overview = budgetsQuery.data;
   const utilizationPercent = summary ? Math.round(summary.utilizationPercent) : 0;
   const utilizationTone = utilizationPercent >= 90 ? "danger" : utilizationPercent >= 70 ? "warning" : "ok";
+  const hasSpend = (byAgentQuery.data ?? []).some((row) => row.costCents > 0);
+  const budgetHint = summary && summary.budgetCents > 0
+    ? t("ui2.costs.tile.remaining", { amount: formatCents(Math.max(0, summary.budgetCents - summary.spendCents)) })
+    : undefined;
 
   return (
     <Ui2Page title={t("ui2.costs.title")}>
@@ -146,6 +150,7 @@ export function Ui2Costs() {
         <Ui2Tile
           label={t("ui2.costs.tile.budget")}
           value={summary ? formatCents(summary.budgetCents) : t("ui2.common.unknown")}
+          hint={budgetHint}
         />
         <Ui2Tile label={t("ui2.costs.tile.utilization")} value={`${utilizationPercent}%`} tone={utilizationTone} />
         <Ui2Tile
@@ -204,6 +209,28 @@ export function Ui2Costs() {
           ))}
         </Ui2Section>
       ) : null}
+
+      <Ui2Section title={t("ui2.costs.chart.title")}>
+        {!hasSpend ? (
+          <Ui2EmptyStateView variant="done" title={t("ui2.costs.chart.empty")} />
+        ) : (
+          <div className="ui2-costs-chart flex flex-col gap-2">
+            {(byAgentQuery.data ?? []).slice().sort((a, b) => b.costCents - a.costCents).slice(0, 8).map((row) => {
+              const maximum = Math.max(...(byAgentQuery.data ?? []).map((item) => item.costCents), 1);
+              const width = `${Math.max(2, Math.round((row.costCents / maximum) * 100))}%`;
+              return (
+                <div key={row.agentId} className="ui2-costs-chart-row grid grid-cols-[minmax(6rem,12rem)_1fr_auto] items-center gap-3 text-xs">
+                  <span className="truncate">{row.agentName ?? t("ui2.costs.agents.unnamed")}</span>
+                  <span className="h-2 rounded-full bg-muted" aria-hidden="true">
+                    <span className="block h-2 rounded-full bg-primary" style={{ width }} />
+                  </span>
+                  <span className="font-mono tabular-nums">{formatCents(row.costCents)}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Ui2Section>
 
       <Ui2Section title={t("ui2.costs.policies.title")}>
         {(overview?.policies ?? []).length === 0 ? (

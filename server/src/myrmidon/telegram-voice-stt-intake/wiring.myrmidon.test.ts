@@ -14,7 +14,7 @@
 //      gateway failure is a skip, never a throw, and never leaks the key.
 
 import { Buffer } from "node:buffer";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TELEGRAM_VOICE_OGG } from "../../__tests__/fixtures/telegram-voice.js";
 import { createChatSdkEndpointRuntime } from "../../services/chat-sdk-runtime.js";

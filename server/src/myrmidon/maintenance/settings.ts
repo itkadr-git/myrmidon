@@ -15,6 +15,9 @@ export interface MaintenanceSettings {
   tickMs: number;
   cacheTtlMs: number;
   hookTimeoutMs: number;
+  /** myrmidon(L6-PROFILE-UPDATE-STARVATION): grace past drain deadline before the
+   *  tick retires a still-open window (backstop). Default 60s (drain timeout + 1 min). */
+  stuckGraceMs: number;
 }
 
 export const MIN_TICK_MS = 1_000;
@@ -36,5 +39,6 @@ export function readMaintenanceSettings(env: NodeJS.ProcessEnv = process.env): M
     // must not pin a `leaving` window (OPE-3638): the finishLeaving tail wraps
     // every hook in this timeout. Bounded by the tick interval from above.
     hookTimeoutMs: readMs(env, "MYRMIDON_MAINTENANCE_HOOK_TIMEOUT_MS", 15_000, MIN_TICK_MS, 300_000),
+    stuckGraceMs: readInt(env, "MYRMIDON_MAINTENANCE_STUCK_GRACE_SEC", 60, 0, 3600) * 1000,
   };
 }

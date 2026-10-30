@@ -17,6 +17,6 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 corepack enable >/dev/null 2>&1
 pnpm install --frozen-lockfile >/dev/null
-exec pnpm --filter @paperclipai/server exec vitest run \
+exec pnpm --filter @myrmidon/server exec vitest run \
   --pool=threads --no-file-parallelism --testTimeout=1800000 \
   src/__tests__/attention-perf-proof.myrmidon.test.ts

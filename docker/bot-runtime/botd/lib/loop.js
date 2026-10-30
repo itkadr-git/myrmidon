@@ -290,6 +290,13 @@ export function createLoop(deps) {
           return action ? { path: action.path, reason: action.detail || "foreign-uid" } : null;
         })(),
         actions: results,
+        metrics: {
+          copies_without_assignee: desiredOk ? (g.parts.copies ?? []).filter((copy) =>
+            copy.class === "E" && copy.key && !(desired.state.workspaces ?? []).some((workspace) =>
+              workspace.key === copy.key && workspace.state === "active",
+            ),
+          ).length : undefined,
+        },
       });
       sent = await deps.report.send(report);
     } catch (err) {

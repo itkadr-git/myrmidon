@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { BoardProcessesRefusedError } from "@paperclipai/shared";
+import { BoardProcessesRefusedError } from "@myrmidon/shared";
 import {
   assertBoardProcessesStartableFromSettings,
   preserveBoardProcessesGeneralKey,

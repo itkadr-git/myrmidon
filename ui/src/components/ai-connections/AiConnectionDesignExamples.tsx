@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "@/i18n";
 import { AiConnectionPicker } from "./AiConnectionPicker";
 import { LocalProviderLoginInstructions, ProviderApiKeyCard } from "@/components/AdapterLoginChrome";
 import type {
@@ -12,20 +13,22 @@ const requirement: AiConnectionRequirement = {
   provider: "anthropic",
   method: "subscription",
 };
-const account: AiConnectionSummary = {
+const exampleAccount = (name: string, ownerName: string): AiConnectionSummary => ({
   ...requirement,
   method: "subscription",
   id: "example",
   grantId: "example-grant",
-  name: "My Claude subscription",
+  name,
   ownership: "personal",
   ownerUserId: "example-user",
-  ownerName: "You",
+  ownerName,
   status: "connected",
   isDefault: true,
-};
+});
 
 export function AiConnectionDesignExamples() {
+  const { t } = useTranslation();
+  const account = exampleAccount(t("area.apps-connections-2.ai-connection-design-examples.exampleAccountName"), t("area.apps-connections-2.ai-connection-design-examples.exampleOwner"));
   const [binding, setBinding] = useState<AiConnectionBinding>({
     provider: "anthropic",
     method: "subscription",
@@ -34,12 +37,9 @@ export function AiConnectionDesignExamples() {
   return (
     <div className="flex max-w-2xl flex-col gap-5">
       <p className="text-sm text-muted-foreground">
-        Shared AI connection identity, account selection, and existing
-        authentication chrome. The full interactive state matrix lives in
-        Storybook under AI Connections / Review. Example controls below do not
-        connect accounts.
+        {t("area.apps-connections-2.ai-connection-design-examples.intro")}
       </p>
-      <p className="text-sm text-muted-foreground">Provider lists and account management use Browse and AppDetail from the Connectors interface. The picker below uses ConnectionChoiceList, also used by ConnectionSetupFlow.</p>
+      <p className="text-sm text-muted-foreground">{t("area.apps-connections-2.ai-connection-design-examples.providerNote")}</p>
       <AiConnectionPicker
         requirement={requirement}
         connections={[account]}
@@ -57,7 +57,7 @@ export function AiConnectionDesignExamples() {
         disabled
         onChange={() => {}}
         onSubmit={() => {}}
-        placeholder="Enter API key here"
+        placeholder={t("area.apps-connections-2.ai-connection-design-examples.apiKeyPlaceholder")}
       />
       <LocalProviderLoginInstructions
         adapterType="claude_local"

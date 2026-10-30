@@ -32,7 +32,6 @@ import { buildLicenseRequest, keyId, verifyLicense, type TrustedIssuerKey } from
 import { licensingRoutes } from "./routes.js";
 import { TRUSTED_ISSUER_KEYS } from "./trusted-keys.js";
 
-const MACHINE_ID = "0123456789abcdef0123456789abcdef";
 const INSTALL_ID = "myr-3eb1bd439947eb762998";
 const LICENSE_CORE_SRC = (process.env.MYR_LICENSE_CORE_SRC ?? "").trim();
 // The antigravity adapter's license gate (`.../antigravity/adapter/src/license.ts`):
@@ -80,12 +79,9 @@ function python(args: string[], env: NodeJS.ProcessEnv = {}): string {
 }
 
 let dir: string;
-let machineIdFile: string;
 
 beforeEach(() => {
   dir = mkdtempSync(path.join(os.tmpdir(), "lic-client-"));
-  machineIdFile = path.join(dir, "machine-id");
-  writeFileSync(machineIdFile, MACHINE_ID + "\n");
 });
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -432,7 +428,7 @@ function app(actor: unknown, env: NodeJS.ProcessEnv, installed: string[] = [...M
     "/api",
     licensingRoutes({
       env,
-      machineIdPaths: [machineIdFile],
+      installId: async () => ({ installId: INSTALL_ID, source: "machine-id" as const }),
       now: () => NOW,
       installedModules: async () => installed,
       trustedKeys: [TEST_KEY_1],
@@ -497,6 +493,28 @@ describe("licensing routes: client side", () => {
     expect(JSON.stringify(status.body)).not.toContain(RUNNER_ISSUED.all.split(".")[2]);
   });
 
+  it("names both ids when the license is for another installation", async () => {
+    const issuedFor = JSON.parse(Buffer.from(RUNNER_ISSUED.other.split(".")[1], "base64url").toString("utf8")).instance_id;
+    expect(issuedFor).not.toBe(INSTALL_ID);
+
+    const refused = await request(app(admin, envFor())).post("/api/licensing/license").send({ value: RUNNER_ISSUED.other });
+    expect(refused.status).toBe(422);
+    expect(refused.body.error).toContain(issuedFor);
+    expect(refused.body.error).toContain(INSTALL_ID);
+
+    writeFileSync(licenseFile, RUNNER_ISSUED.other + "\n");
+    const status = await request(app(admin, envFor(), ["google-ai"])).get("/api/licensing/status");
+    const google = status.body.modules.find((m: { module: string }) => m.module === "google-ai");
+    expect(google).toMatchObject({
+      state: "wrong_instance",
+      reason: "instance_mismatch",
+      licenseInstanceId: issuedFor,
+      boardInstanceId: INSTALL_ID,
+    });
+    expect(google.message).toContain(issuedFor);
+    expect(google.message).toContain(INSTALL_ID);
+  });
+
   it("refuses a license that no module would accept and keeps the current file", async () => {
     writeFileSync(licenseFile, RUNNER_ISSUED.chatgptOnly + "\n");
     const [prefix, body, sig] = RUNNER_ISSUED.all.split(".");
@@ -554,7 +572,7 @@ describe("licensing routes: client side", () => {
         (req as unknown as { actor: unknown }).actor = admin;
         next();
       });
-      a.use("/api", licensingRoutes({ env, trustedKeys: [publicPem] }));
+      a.use("/api", licensingRoutes({ env, trustedKeys: [publicPem], installId: async () => ({ installId: INSTALL_ID, source: "machine-id" as const }) }));
       a.use(errorHandler);
       const saved = await request(a).post("/api/licensing/license").send({ value: license });
       expect(saved.status).toBe(200);

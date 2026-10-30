@@ -40,6 +40,8 @@ function job(overrides: Partial<DeployJobView> = {}): DeployJobView {
     commit: "0123456789abcdef0123456789abcdef01234567",
     status: "maintenance_entering",
     reason: "deploy",
+    mode: "manual",
+    window: null,
     startedBy: { actorType: "user", actorId: "user-a" },
     createdAt: NOW,
     updatedAt: NOW,
@@ -116,6 +118,45 @@ describe("DeployJobsPanel", () => {
   it("shows the operator error (for example: the feature is not enabled)", () => {
     const panel = render({ error: "deploys from the interface are not enabled" });
     expect(panel!.querySelector('[data-testid="myrmidon-deploy-error"]')?.textContent).toContain("not enabled");
+  });
+
+  it("filters previous deploys by status", () => {
+    const panel = render({
+      state: {
+        job: null,
+        history: [
+          job({ id: "job-deployed", status: "succeeded", active: false, abortable: false }),
+          job({ id: "job-rolled-back", status: "auto_rolled_back", active: false, abortable: false }),
+        ],
+      },
+    });
+    const filter = panel!.querySelector<HTMLSelectElement>('select[aria-label="Update status"]')!;
+    flushSync(() => {
+      filter.value = "auto_rolled_back";
+      filter.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const history = panel!.querySelector("ul")!;
+    expect(history.textContent).toContain("Rolled back automatically");
+    expect(history.textContent).not.toContain("Deployed");
+  });
+
+  it("reports selected history filters to the API-backed owner", () => {
+    const onFilterChange = vi.fn();
+    const panel = render({ onFilterChange });
+    const filter = panel!.querySelector<HTMLSelectElement>('select[aria-label="Update mode"]')!;
+    flushSync(() => {
+      filter.value = "canary";
+      filter.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onFilterChange).toHaveBeenCalledWith({ mode: "canary", status: undefined, outcome: undefined });
+  });
+
+  it("shows version and commit identity in previous deploys", () => {
+    const panel = render({
+      state: { job: null, history: [job({ status: "succeeded", active: false, abortable: false, id: "job-identity" })] },
+    });
+    expect(panel!.textContent).toContain("version 1.2.1");
+    expect(panel!.textContent).toContain("commit 0123456789ab");
   });
 
   it("lists previous deploys from history", () => {

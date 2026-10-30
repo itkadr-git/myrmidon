@@ -15,7 +15,7 @@ import {
   issues,
   type Db,
   runContextPersistenceFields,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 

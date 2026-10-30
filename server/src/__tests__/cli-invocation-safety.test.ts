@@ -832,7 +832,7 @@ describe("paperclipai CLI invocation safety", () => {
 
   it("emits the safe run form from the client connection-error hint", () => {
     const source = read("cli/src/client/http.ts");
-    expect(source).toContain("npx paperclipai run");
+    expect(source).toContain("npx myrmidon run");
     expect(source).not.toContain("pnpm paperclipai run");
   });
 

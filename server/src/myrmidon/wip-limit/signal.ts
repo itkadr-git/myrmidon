@@ -11,14 +11,14 @@
 // the sweep that calls it must never break on a comment race.
 
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { issueComments, issues } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { issueComments, issues } from "@myrmidon/db";
 import {
   wipLimitSignalKey,
   type WipLimitAgentStatus,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** The signal window: one UTC day. */
 export const WIP_LIMIT_SIGNAL_WINDOW_MS = 24 * 60 * 60 * 1000;

@@ -11,7 +11,7 @@ import type {
   ForagingSettingsPatch,
   ForagingSettingKey,
   ForagingSettingsSource,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { api } from "@/api/client";
 
 export interface ForagingSettingsView {

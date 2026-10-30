@@ -20,7 +20,7 @@
 // wake is drained behind that run by the vendor release path.
 // See docs/myrmidon/DIVERGENCE.md "HOLD-READY" and "REQUEUE-HOLD".
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { agentWakeupRequests, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, issueRecoveryActions, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import type { ActivityPublication } from "../../services/activity-log.js";
 import { executionBlockerPredicate, getExecutionBlocker } from "../../services/execution-blocker.js";

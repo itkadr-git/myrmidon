@@ -10,6 +10,9 @@ import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_NAV_GROUPS, type Ui2NavItem } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
+import { useKnowledgeAvailable } from "../useKnowledgeAvailable"; // myrmidon(K-4)
+import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
+import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 
 function RailItem({ item, active, badge }: { item: Ui2NavItem; active: boolean; badge?: number }) {
   const { t } = useTranslation();
@@ -86,6 +89,14 @@ export function Ui2Rail() {
   const { t } = useTranslation();
   const { selectedCompany } = useCompany();
   const attentionCount = useUi2AttentionCount();
+  const knowledgeAvailable = useKnowledgeAvailable(selectedCompany?.id);
+  const { slots: pluginSlots } = usePluginSlots({ slotTypes: ["sidebar"], companyId: selectedCompany?.id });
+  const { launchers } = usePluginLaunchers({ placementZones: ["sidebar"], companyId: selectedCompany?.id, enabled: !!selectedCompany?.id });
+  const hasPlugins = pluginSlots.length > 0 || launchers.length > 0;
+  const groups = UI2_NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => item.requires !== "knowledge" || knowledgeAvailable),
+  })).filter((group) => group.items.length > 0);
 
   return (
     <aside
@@ -119,7 +130,7 @@ export function Ui2Rail() {
           overflowY: "auto",
         }}
       >
-        {UI2_NAV_GROUPS.map((group) => (
+        {groups.map((group) => (
           <div key={group.labelKey} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             {group.labelKey ? (
               <div
@@ -141,6 +152,22 @@ export function Ui2Rail() {
             ))}
           </div>
         ))}
+        {hasPlugins ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <div style={{ fontSize: "var(--myr-text-nano)", fontWeight: 700, color: "var(--myr-ink-muted)", padding: "6px 10px" }}>{t("ui2.nav.group.plugins", { defaultValue: "Plugins" })}</div>
+            {pluginSlots.map((slot) => (
+              <PluginSlotMount key={`${slot.pluginKey}:${slot.id}`} slot={slot} context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }} />
+            ))}
+            {selectedCompany ? (
+              <PluginLauncherOutlet
+                placementZones={["sidebar"]}
+                context={{ companyId: selectedCompany.id, companyPrefix: selectedCompany.issuePrefix }}
+                className="flex flex-col gap-0.5"
+                itemClassName="text-(length:--text-compact) font-medium"
+              />
+            ) : null}
+          </div>
+        ) : null}
       </nav>
 
       <div

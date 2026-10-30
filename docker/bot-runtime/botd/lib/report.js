@@ -95,6 +95,10 @@ export function validateReport(r) {
     else if (!SIGNS.includes(f.sign)) bad.reason = `${at}.sign is unknown`;
   });
   if (bad.reason) return { ok: false, reason: bad.reason };
+  if (r.metrics !== undefined && r.metrics !== null &&
+      (!isObj(r.metrics) || !Number.isInteger(r.metrics.copies_without_assignee) || r.metrics.copies_without_assignee < 0)) {
+    return { ok: false, reason: "metrics.copies_without_assignee is not a non-negative int" };
+  }
   return { ok: true };
 }
 
@@ -128,6 +132,7 @@ export function buildReport(parts) {
       .slice(-MAX_ACTIONS)
       .map((a) => (a.detail === undefined ? a : { ...a, detail: clip(a.detail, 500) })),
     foreign: [...(parts.foreign ?? [])],
+    ...(Number.isInteger(parts.metrics?.copies_without_assignee) ? { metrics: { copies_without_assignee: parts.metrics.copies_without_assignee } } : {}),
     foreignUid: parts.foreignUid && typeof parts.foreignUid === "object"
       ? { path: clip(parts.foreignUid.path, 500), reason: clip(parts.foreignUid.reason, 500) }
       : null,

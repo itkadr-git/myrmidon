@@ -72,10 +72,12 @@
         "observe": "Observe",
         "decide": "Decide & talk",
         "manage": "Manage",
-        "more": "More"
+        "more": "More",
+        "work": "Work"
       },
       "center": "Command center",
-      "fleet": "Server fleet",
+      "agents": "Agents",
+      "servers": "Servers",
       "costs": "Costs",
       "quality": "Quality",
       "waiting": "Wait for me",
@@ -86,7 +88,9 @@
         "attention": "{{count}} waiting"
       },
       "swarmQueues": "Swarm: queues",
-      "foraging": "Foraging"
+      "foraging": "Foraging",
+      "knowledge": "Knowledge",
+      "regulations": "Regulations"
     },
     "nests": {
       "all": "All nests"
@@ -121,7 +125,9 @@
       "language": "Language",
       "placeholderTitle": "Not in this wave yet",
       "placeholderBody": "This screen is part of the UI 2.0 rollout plan and lands with its wave. The current data lives on the existing screen; this placeholder exists so the 2.0 frame and routing are real from day one.",
-      "placeholderLegacyLink": "Continue to the current screen"
+      "placeholderLegacyLink": "Continue to the current screen",
+      "knowledge": "Knowledge",
+      "regulations": "Regulations"
     },
     "settings": {
       "navLabel": "Settings navigation",
@@ -505,6 +511,18 @@
       "label": "Same-family judge",
       "tooltip": "The judge model belongs to the same family as the evaluated agent model"
     }
+  },
+  "agentsTree": {
+    "expandNode": "Expand {{name}}",
+    "collapseNode": "Collapse {{name}}",
+    "noManager": "No manager",
+    "searchPlaceholder": "Search agents...",
+    "searchAria": "Search agents by name",
+    "errorIndicator": "Some agents in this branch are in an error state",
+    "agentsCount": "{{count}} agents",
+    "runningCount": "{{count}} running",
+    "sortModeTree": "Tree",
+    "viewTree": "Tree view"
   },
   "voiceStt": {
     "title": "Speech recognition",

@@ -5,8 +5,8 @@
 // matcher, bound to the database. Read fresh on every call (the directory has no
 // row cache, so a caste switched off is honoured without a restart).
 
-import type { CompanyCastesReader } from "@paperclipai/shared";
-import type { Db } from "@paperclipai/db";
+import type { CompanyCastesReader } from "@myrmidon/shared";
+import type { Db } from "@myrmidon/db";
 import { createCasteStore } from "./store.js";
 
 export function createCasteDirectoryReader(db: Db): CompanyCastesReader {

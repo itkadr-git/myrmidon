@@ -16,7 +16,7 @@ import { validate } from "../../middleware/validate.js";
 import { assertInstanceAdmin } from "../../routes/authz.js";
 import { logger } from "../../middleware/logger.js";
 import { readAboutBuildInfo } from "../about/build-info.js";
-import { resolveInstallId } from "./install-id.js";
+import type { InstallIdProvider } from "./install-id.js";
 import {
   KNOWN_MODULES,
   buildLicenseRequest,
@@ -28,6 +28,7 @@ import {
   LICENSE_ENV,
   MAX_LICENSE_CHARS,
   hostShare,
+  instanceMismatchMessage,
   licenseFilePath,
   moduleStatuses,
   needsAttention,
@@ -35,6 +36,7 @@ import {
   writeLicenseFile,
   type HostShareOptions,
 } from "./client-license.js";
+import { createDenyListReader } from "./denylist.js";
 import { TRUSTED_ISSUER_KEYS } from "./trusted-keys.js";
 
 // `value`, not `license`: the request logger redacts `value` in 4xx lines, so
@@ -46,7 +48,6 @@ const SAVE_REFUSALS: Partial<Record<VerifyReason, string>> = {
   bad_payload: "The license content is damaged.",
   bad_signature: "The license signature is invalid: the text was changed or it was not issued by the vendor.",
   unsupported_rev: "This license format is not supported by this board version.",
-  instance_mismatch: "This license was issued for another installation (the installation id does not match).",
   expired: "This license has already expired.",
   feature_not_granted: "This license does not allow any module to start.",
 };
@@ -60,7 +61,8 @@ function instanceAdminOnly(req: Request, _res: Response, next: NextFunction) {
 
 export interface LicensingRoutesOptions {
   env?: NodeJS.ProcessEnv;
-  machineIdPaths?: readonly string[];
+  /** The board's installation id (database); the only source the routes use. */
+  installId: InstallIdProvider;
   now?: () => Date;
   /** Closed modules installed into this board (see installed-modules.ts). */
   installedModules?: () => Promise<string[]>;
@@ -70,12 +72,17 @@ export interface LicensingRoutesOptions {
   hostShare?: HostShareOptions;
 }
 
-export function licensingRoutes(options: LicensingRoutesOptions = {}): Router {
+export function licensingRoutes(options: LicensingRoutesOptions): Router {
   const router = Router();
   const env = () => options.env ?? process.env;
   const now = () => (options.now ? options.now() : new Date());
-  const install = () => resolveInstallId({ env: env(), machineIdPaths: options.machineIdPaths });
+  const install = () => options.installId();
   const trustedKeys = options.trustedKeys ?? TRUSTED_ISSUER_KEYS;
+  const denyList = createDenyListReader({
+    env: () => env(),
+    trustedKeys,
+    warn: (message) => logger.warn(message),
+  });
   const installed = async () => {
     if (!options.installedModules) return [] as string[];
     try {
@@ -87,7 +94,7 @@ export function licensingRoutes(options: LicensingRoutesOptions = {}): Router {
   };
 
   async function clientState(requested: string[] | null) {
-    const id = install();
+    const id = await install();
     const board = readAboutBuildInfo(env()).version;
     const installedModules = await installed();
     const requestModules =
@@ -104,6 +111,7 @@ export function licensingRoutes(options: LicensingRoutesOptions = {}): Router {
       nowSeconds,
       trustedKeys,
       installed: installedModules,
+      denyList,
     });
     const file = licenseFilePath(env());
     return {
@@ -124,8 +132,12 @@ export function licensingRoutes(options: LicensingRoutesOptions = {}): Router {
   }
 
   for (const prefix of ["/licensing", "/myrmidon/licensing"]) {
-    router.get(`${prefix}/install-id`, instanceAdminOnly, (_req, res) => {
-      res.json(install());
+    router.get(`${prefix}/install-id`, instanceAdminOnly, async (_req, res, next) => {
+      try {
+        res.json(await install());
+      } catch (err) {
+        next(err);
+      }
     });
 
     router.get(`${prefix}/status`, instanceAdminOnly, async (req, res, next) => {
@@ -148,10 +160,17 @@ export function licensingRoutes(options: LicensingRoutesOptions = {}): Router {
             code: "license_env_override",
           });
         }
-        const id = install();
+        const id = await install();
         const nowSeconds = Math.floor(now().getTime() / 1000);
         const result = verifyLicense(text, id.installId, nowSeconds, trustedKeys);
         if (!result.valid) {
+          if (result.reason === "instance_mismatch" && result.licenseInstanceId) {
+            throw unprocessable(instanceMismatchMessage(result.licenseInstanceId, id.installId), {
+              code: "license_instance_mismatch",
+              licenseInstanceId: result.licenseInstanceId,
+              boardInstanceId: id.installId,
+            });
+          }
           const message = SAVE_REFUSALS[result.reason] ?? "The license is not valid.";
           throw unprocessable(message, { code: `license_${result.reason}` });
         }

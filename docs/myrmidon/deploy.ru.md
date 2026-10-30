@@ -627,7 +627,9 @@ Systemd-oneshot `myrmidon-post-boot.service` (шаблон:
 4. nginx, LiteLLM, RAGFlow и Hindsight отвечают на своих check-URL (пустой URL —
    проверка выключена, со строкой в логе; молча не пропускается ничего);
 5. DNS-имена, которыми пользуются другие сервисы, резолвятся в docker-сети
-   (`DNS_CHECK_NAMES`, по умолчанию `mysql es01 paperclip-server-1` — урок RAGFlow);
+   (`DNS_CHECK_NAMES`, по умолчанию `mysql es01 paperclip-server-1` — старое
+   имя резолвится через совместимый алиас; окно переименования rc.17 добавляет
+   `myrmidon-board`, см. `docs/myrmidon/board-rename-runbook.md`);
 6. `systemctl --failed` пуст.
 
 Каждый провал перечисляется (не только первый), скрипт завершается с кодом 1,

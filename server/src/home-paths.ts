@@ -14,7 +14,7 @@ import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
   resolvePaperclipInstanceRoot,
-} from "@paperclipai/shared/home-paths";
+} from "@myrmidon/shared/home-paths";
 
 export {
   expandHomePrefix,

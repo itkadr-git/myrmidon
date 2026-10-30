@@ -14,7 +14,7 @@
 //    the event to the vendor path — fail-open, no channel falls silent.
 //
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import type {
   ChannelAdmission,
   ChannelConnector,

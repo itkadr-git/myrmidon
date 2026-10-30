@@ -1,0 +1,306 @@
+{
+  "area": {
+    "costs-budgets-2": {
+      "budget-enforcement-settings-panel": {
+        "description": "What a crossed spend budget limit does while its incident is open: only signal, pause the scope with an owner card, or refuse new runs. Saving takes effect at the next budget evaluation — no server restart.",
+        "loadFailed": "Failed to load the budget enforcement mode.",
+        "loading": "Loading the budget enforcement mode...",
+        "modeAccessibleLabel": "Budget enforcement mode: {{title}}",
+        "modeAriaLabel": "Budget enforcement mode",
+        "modes": {
+          "hard": {
+            "description": "New runs of the over-limit scope are refused with the budget reason before they start. Work already in flight finishes.",
+            "title": "Hard: refuse"
+          },
+          "signalOnly": {
+            "description": "A crossed limit opens an incident and signals the owner (issue thread and the decision inbox), but work continues. The default until the owner switches it off.",
+            "title": "Signal only"
+          },
+          "soft": {
+            "description": "The scope is paused and the owner gets a card: raise the budget by the amount needed or keep the work stopped. Raising lifts the pause and held work resumes.",
+            "title": "Soft: pause and ask"
+          }
+        },
+        "saveButton": "Save enforcement mode",
+        "saveFailed": "Saving the budget enforcement mode failed.",
+        "saving": "Saving...",
+        "title": "Budget enforcement"
+      },
+      "costs": {
+        "billers": {
+          "all": "All billers",
+          "empty": "No billable events in this period."
+        },
+        "budgets": {
+          "activeIncidents": "Active incidents",
+          "activeIncidentsSubtitle": "Open soft or hard threshold crossings",
+          "description": "Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.",
+          "emptyPolicies": "No budget policies yet. Set agent and project budgets from their detail pages, or use the existing organization monthly budget control.",
+          "emptyPoliciesLegacy": "No budget policies yet. Set agent and project budgets from their detail pages, or use the existing company monthly budget control.",
+          "incidentsDescription": "Resolve hard stops here by raising the budget or explicitly keeping the scope paused.",
+          "incidentsHeading": "Active incidents",
+          "pausedAgents": "Paused agents",
+          "pausedAgentsSubtitle": "Agent heartbeats blocked by budget",
+          "pausedProjects": "Paused projects",
+          "pausedProjectsSubtitle": "Project execution blocked by budget",
+          "pendingApprovals": "Pending approvals",
+          "pendingApprovalsSubtitle": "Budget override approvals awaiting board action",
+          "scope": {
+            "agentDescription": "Recurring monthly spend policies for individual agents.",
+            "agentTitle": "Agent budgets",
+            "companyDescription": "Organization-wide monthly policy.",
+            "companyDescriptionLegacy": "Company-wide monthly policy.",
+            "companyTitle": "Organization budgets",
+            "companyTitleLegacy": "Company budgets",
+            "projectDescription": "Lifetime spend policies for execution-bound projects.",
+            "projectTitle": "Project budgets"
+          },
+          "title": "Budget control plane"
+        },
+        "byAgent": {
+          "apiRuns": "{{count}} api",
+          "description": "What each agent consumed in the selected period.",
+          "empty": "No cost events yet.",
+          "inOut": "in {{input}} · out {{output}}",
+          "subscriptionRuns": "{{count}} subscription",
+          "title": "By agent",
+          "tok": "{{value}} tok"
+        },
+        "byProject": {
+          "description": "Run costs attributed through project-linked tasks.",
+          "empty": "No project-attributed run costs yet.",
+          "title": "By project",
+          "unattributed": "Unattributed"
+        },
+        "finance": {
+          "byBillerDescription": "Account-level financial events grouped by who charged or credited them.",
+          "byBillerTitle": "By biller",
+          "empty": "No finance events yet."
+        },
+        "financeEventsEmpty": "No finance events yet. Add account-level charges once biller invoices or credits land.",
+        "financeSummary": {
+          "credits": "Credits",
+          "creditsSubtitle": "Refunds, offsets, and credit returns",
+          "debits": "Debits",
+          "debitsSubtitle_one": "{{count}} total event in range",
+          "debitsSubtitle_other": "{{count}} total events in range",
+          "description": "Account-level charges that do not map to a single inference request.",
+          "estimated": "Estimated",
+          "estimatedSubtitle": "Estimated debits that are not yet invoice-authoritative",
+          "net": "Net",
+          "netSubtitle": "Debit minus credit for the selected period",
+          "title": "Finance ledger"
+        },
+        "ledger": {
+          "budget": "Budget {{amount}}",
+          "consumed": "{{pct}}% of monthly budget consumed in this range.",
+          "description": "Request-scoped inference spend for the selected period.",
+          "title": "Inference ledger",
+          "unlimited": "Unlimited budget",
+          "usage": "usage"
+        },
+        "metrics": {
+          "budget": "Budget",
+          "budgetOf": "{{spent}} of {{budget}}",
+          "budgetOpen": "Open",
+          "financeEvents": "Finance events",
+          "financeEventsSubtitle": "{{amount}} estimated in range",
+          "financeNet": "Finance net",
+          "financeNetSubtitle": "{{debits}} debits · {{credits}} credits",
+          "inferenceSpend": "Inference spend",
+          "inferenceSubtitle": "{{tokens}} tokens across request-scoped events",
+          "noCap": "No monthly cap configured",
+          "pausedAgents_one": "{{count}} agent paused",
+          "pausedAgents_other": "{{count}} agents paused",
+          "pausedProjects_one": "{{count}} project paused",
+          "pausedProjects_other": "{{count}} projects paused"
+        },
+        "providers": {
+          "all": "All providers",
+          "empty": "No cost events in this period."
+        },
+        "rangeTo": "to",
+        "selectCompany": "Select a company to view costs.",
+        "selectDates": "Select a start and end date to load data.",
+        "selectOrganization": "Select an organization to view costs.",
+        "subtitle": "Inference spend, platform fees, credits, and live quota windows.",
+        "tabs": {
+          "billers": "Billers",
+          "budgets": "Budgets",
+          "finance": "Finance",
+          "gateway": "Gateway",
+          "gatewayKeys": "Gateway keys",
+          "gatewayWorkers": "Gateway workers",
+          "overview": "Overview",
+          "providers": "Providers"
+        },
+        "title": "Costs"
+      },
+      "gateway-costs-tab": {
+        "agentRow": {
+          "moreRows_one": "+{{count}} more row",
+          "moreRows_other": "+{{count}} more rows",
+          "tokens": "{{input}} in / {{output}} out"
+        },
+        "agentsCard": {
+          "description": "Spend the LLM gateway attributed to each bot key, per run and issue. Collected by the periodic sweep.",
+          "empty": "No gateway-collected spend in this period yet.",
+          "loading": "Loading gateway spend…",
+          "title": "By agent (gateway)",
+          "total": "Total {{amount}}"
+        },
+        "modelsCard": {
+          "columns": {
+            "inPerMillion": "In / 1M tok",
+            "maxIn": "Max in",
+            "model": "Model",
+            "outPerMillion": "Out / 1M tok",
+            "provider": "Provider"
+          },
+          "description": "The model list with the prices the gateway itself charges — the gateway is the source of truth, this is its last answer.",
+          "empty": "No models collected yet.",
+          "loading": "Loading models…",
+          "title": "Models (gateway)"
+        },
+        "noCompany": "Select an organization to view gateway costs.",
+        "notEnabled": "LLM gateway cost collection is not enabled on this instance."
+      },
+      "gateway-keys-tab": {
+        "fallbacksCard": {
+          "description": "A fallback chain that returns to a model it already contains retries the request that just failed. Saving such a chain is refused; this is the same check reading the gateway's live topology.",
+          "empty": "No loops in the gateway's fallback topology.",
+          "found_one": "{{count}} loop found",
+          "found_other": "{{count}} loops found",
+          "loading": "Reading the gateway topology…",
+          "title": "Fallback loops"
+        },
+        "keysCard": {
+          "description": "Each agent authenticates with its own gateway key, so the gateway attributes its spend to that key. Only the secret name and the key's fingerprint are shown — never the value.",
+          "empty": "No agents yet.",
+          "keySet": "key set",
+          "loading": "Loading gateway keys…",
+          "noKey": "no key yet",
+          "summary": "{{keyed}} of {{total}} agents have a key of their own.",
+          "title": "Keys per agent"
+        },
+        "noCompany": "Select an organization to view gateway keys.",
+        "notEnabled": "Gateway key management is not enabled on this instance."
+      },
+      "gateway-workers-tab": {
+        "applyFailed": "Applying the worker count failed.",
+        "auto": {
+          "ariaLabel": "Auto-select worker count",
+          "description": "When on, the backend adds a worker while load stays above 80% and removes one below 30%, with hysteresis and the ceilings above. The rule itself runs on the server; this switch only turns it on or off.",
+          "off": "Auto-select is off",
+          "on": "Auto-select is on",
+          "title": "Auto-select",
+          "unsupported": "Not supported by this backend",
+          "unsupportedHint": "The server does not expose the auto-select setting yet, so the switch is disabled. Manual worker control above still works."
+        },
+        "control": {
+          "apply_one": "Apply {{count}} worker",
+          "apply_other": "Apply {{count}} workers",
+          "applying": "Applying…",
+          "confirm_one": "Confirm: set {{count}} worker",
+          "confirm_other": "Confirm: set {{count}} workers",
+          "description": "How many LiteLLM gateway processes handle requests. The count changes with a planned restart of the gateway.",
+          "limits": "Max by CPU: {{cpu}} · Max by memory: {{memory}}",
+          "loading": "Loading gateway worker state…",
+          "notEnabled": "LiteLLM worker control is not enabled on this instance.",
+          "targetLabel": "Number of processes",
+          "title": "Worker processes"
+        },
+        "metrics": {
+          "cpuPerWorker": "CPU per worker",
+          "description": "Read from the gateway every 30 seconds.",
+          "medianLatency": "Median response time",
+          "ms": "{{value}} ms",
+          "queue": "Request queue",
+          "title": "Gateway metrics",
+          "waiting": "Waiting for the first metrics read…",
+          "worker": "Worker {{n}}"
+        },
+        "status": {
+          "applied_one": "{{count}} worker running — applied.",
+          "applied_other": "{{count}} workers running — applied.",
+          "applying": "Applying: {{current}} running -> {{target}} requested."
+        }
+      },
+      "prompt-budget-advice-panel": {
+        "deepButton": "Deep analysis",
+        "deepFailed": "Filing the deep analysis task failed.",
+        "deepHint": "A cheap-model agent drafts instruction edits as a comment; nothing is changed for you.",
+        "deepPending": "Filing the task...",
+        "deepTask": "Deep analysis task:",
+        "description": "What the last run's prompt was made of, which part is bloated, and what to do about it.",
+        "healthy": "No part of the last prompt crosses the warning threshold.",
+        "itemMeta": "{{part}} · {{share}} · {{tokens}} tokens",
+        "lastRun": "Last run <0>{{runId}}</0> · <1>{{total}}</1> tokens in the prompt",
+        "loading": "Loading the prompt breakdown...",
+        "noRun": "No run of this agent has a recorded prompt breakdown yet.",
+        "title": "Prompt budget advice",
+        "unknownRun": "unknown"
+      },
+      "prompt-budget-settings-panel": {
+        "critInvalid": "Crit threshold: {{message}}",
+        "critLabel": "Crit at, % of the model window",
+        "critNotGreater": "The crit threshold must be greater than the warn threshold.",
+        "enabledLabel": "Signal when a run's prompt crosses a threshold",
+        "fallbackInvalid": "Fallback window: {{message}}",
+        "fallbackLabel": "Fallback window, tokens (used when the model's window is unknown)",
+        "hint": "The signal appears in the attention queue and on the agent card when the last run's prompt crosses a level. Applies immediately; the sweep re-reads the thresholds on every pass.",
+        "off": "Off",
+        "saveFailed": "Could not save the thresholds. Try again.",
+        "saved": "Saved",
+        "saving": "Saving…",
+        "title": "Prompt budget",
+        "warnInvalid": "Warn threshold: {{message}}",
+        "warnLabel": "Warn at, % of the model window"
+      },
+      "prompt-budget-status-section": {
+        "fallbackWindow": " (fallback window)",
+        "lastRun": "Last run used <0>{{pct}}%</0> of the window — <1>{{total}} / {{window}}</1> tokens",
+        "levels": {
+          "crit": "Crit threshold crossed",
+          "ok": "Within budget",
+          "warn": "Warn threshold crossed"
+        },
+        "noParts": "No per-part breakdown recorded for this run.",
+        "noRun": "No run with a recorded prompt size yet.",
+        "part_one": "{{name}} — {{count}} token",
+        "part_other": "{{name}} — {{count}} tokens",
+        "signallingOff": " — signalling off",
+        "thresholds": "Thresholds: warn {{warn}}%, crit {{crit}}%",
+        "title": "Prompt budget"
+      },
+      "provider-quota-card": {
+        "apiRuns": "~{{count}} api",
+        "ofAllocation": "{{pct}}% of allocation",
+        "perWeek": "~{{amount}} / wk",
+        "periodSpend": "Period spend",
+        "providerCostShare": "{{pct}}% of provider cost",
+        "providerTokensShare": "{{pct}}% of provider tokens",
+        "quota": {
+          "resets": "resets {{date}}",
+          "title": "Subscription quota",
+          "used": "{{pct}}% used"
+        },
+        "rollingWindows": "Rolling windows",
+        "runs": "{{parts}} runs",
+        "subRuns": "~{{count}} sub",
+        "subscription": {
+          "input": "<0>{{value}}</0> in",
+          "output": "<0>{{value}}</0> out",
+          "runs_one": "<0>{{count}}</0> run",
+          "runs_other": "<0>{{count}}</0> runs",
+          "share": "{{pct}}% of token usage via subscription",
+          "title": "Subscription",
+          "total": "<0>{{value}}</0> total"
+        },
+        "thisWeek": "This week",
+        "tok": "{{value}} tok",
+        "tokensInOut": "<0>{{input}}</0> in · <1>{{output}}</1> out"
+      }
+    }
+  }
+}

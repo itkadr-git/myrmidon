@@ -24,7 +24,7 @@ import {
   agents,
   type AgentInstructionsRevisionFile,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 
 export const INSTRUCTIONS_REVISION_ROLLBACK_ACTION = "agent.instructions_revision_rollback";
 

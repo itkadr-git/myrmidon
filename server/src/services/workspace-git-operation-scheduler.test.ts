@@ -9,7 +9,7 @@ import {
   workspaceGitSchedulerOptionsFromEnv,
   type WorkspaceGitRunner,
 } from "./workspace-git-operation-scheduler.js";
-import { WORKSPACE_GIT_SCAN_SATURATED_CODE } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { WORKSPACE_GIT_SCAN_SATURATED_CODE } from "@myrmidon/adapter-utils/git-workspace-sync";
 
 const tempPaths: string[] = [];
 
@@ -55,16 +55,30 @@ describe("WorkspaceGitOperationScheduler", () => {
       defaultCacheTtlMs: 10_000,
     });
     expect(workspaceGitSchedulerOptionsFromEnv({
-      PAPERCLIP_WORKSPACE_GIT_SCAN_CONCURRENCY: "4",
-      PAPERCLIP_WORKSPACE_GIT_SCAN_QUEUE_CAPACITY: "12",
-      PAPERCLIP_WORKSPACE_GIT_SCAN_TIMEOUT_MS: "5000",
-      PAPERCLIP_WORKSPACE_GIT_SCAN_CACHE_TTL_MS: "7000",
+      MYRMIDON_WORKSPACE_GIT_SCAN_CONCURRENCY: "4",
+      MYRMIDON_WORKSPACE_GIT_SCAN_QUEUE_CAPACITY: "12",
+      MYRMIDON_WORKSPACE_GIT_SCAN_TIMEOUT_MS: "5000",
+      MYRMIDON_WORKSPACE_GIT_SCAN_CACHE_TTL_MS: "7000",
     })).toEqual({
       concurrency: 4,
       queueCapacity: 12,
       timeoutMs: 5_000,
       defaultCacheTtlMs: 7_000,
     });
+  });
+
+  it("keeps the legacy aliases as fallback while canonical values take precedence, including empty values", () => {
+    expect(workspaceGitSchedulerOptionsFromEnv({
+      PAPERCLIP_WORKSPACE_GIT_SCAN_CONCURRENCY: "4",
+    }).concurrency).toBe(4);
+    expect(workspaceGitSchedulerOptionsFromEnv({
+      MYRMIDON_WORKSPACE_GIT_SCAN_CONCURRENCY: "3",
+      PAPERCLIP_WORKSPACE_GIT_SCAN_CONCURRENCY: "4",
+    }).concurrency).toBe(3);
+    expect(workspaceGitSchedulerOptionsFromEnv({
+      MYRMIDON_WORKSPACE_GIT_SCAN_CONCURRENCY: "",
+      PAPERCLIP_WORKSPACE_GIT_SCAN_CONCURRENCY: "4",
+    }).concurrency).toBe(2);
   });
 
   it("enforces process-wide concurrency across unrelated fairness keys", async () => {

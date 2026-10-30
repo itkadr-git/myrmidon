@@ -83,6 +83,15 @@ function store(seed: {
     async getApproval(approvalId) {
       return approvals.get(approvalId) ?? null;
     },
+    async consumeApproval(approvalId, companyId, skillId) {
+      if (companyId !== COMPANY) return null;
+      const approval = approvals.get(approvalId);
+      if (!approval || approval.type !== SKILL_PROMOTION_APPROVAL_TYPE || approval.status !== "approved" || approval.payload.skillId !== skillId) {
+        return null;
+      }
+      approvals.delete(approvalId);
+      return { ...approval };
+    },
     async setSkillCurrentVersion() {},
   };
 }

@@ -39,8 +39,8 @@ import {
   type PoolAccountChannelView,
   type PoolAccountLimitWindow,
   type PoolAccountRoleSignal,
-} from "@paperclipai/shared";
-import { modelProviderModels, modelProviders, type Db } from "@paperclipai/db";
+} from "@myrmidon/shared";
+import { modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
 import { badRequest, conflict, notFound, unprocessable } from "../../errors.js";
 import {
   clearPoolAccountSignals,
@@ -79,6 +79,13 @@ export interface ModelProviderCatalogPort {
     apiKey: string;
   }): Promise<{ models: string[] }>;
 
+  /** Sends one minimal tool-call request without exposing its response. */
+  probeToolCall?(input: {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+  }): Promise<void>;
+
   /**
    * Fetches the account channel list from the ChatGPT / Codex subscription pool.
    * Returns the accounts array on success.
@@ -91,6 +98,23 @@ export interface ModelProviderCatalogPort {
 }
 
 /** The error a provider answers an invalid key with (maps to 4xx). */
+/**
+ * A tool-call probe failure whose code and text are safe to store and return:
+ * never the provider's response body, headers or the raw exception text.
+ */
+export class ToolCallProbeError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "ToolCallProbeError";
+  }
+}
+
+/** Turns any probe failure into `code: short description`. */
+export function normalizeToolCallCheckError(error: unknown): string {
+  if (error instanceof ToolCallProbeError) return `${error.code}: ${error.message}`.slice(0, 200);
+  return "probe_failed: the tool-call probe failed";
+}
+
 export class ProviderAuthError extends Error {
   constructor(message: string) {
     super(message);
@@ -111,11 +135,15 @@ export interface ModelProviderView {
   type: ModelProviderType;
   name: string;
   baseUrl: string | null;
-  /** True when the secret store holds a value for the credential secret. */
   hasKey: boolean;
-  /** The secret-store name the credential lives under (a reference, not a value). */
   credentialSecretName: string | null;
   free: boolean;
+  expiresAt: string | null;
+  packageName: string | null;
+  rpmLimit: number | null;
+  toolCallCompatible: boolean | null;
+  toolCallCheckedAt: string | null;
+  toolCallCheckError: string | null;
   keyValidatedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -151,6 +179,12 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       hasKey,
       credentialSecretName: row.credentialSecretName,
       free: row.free,
+      expiresAt: row.expiresAt?.toISOString() ?? null,
+      packageName: row.packageName,
+      rpmLimit: row.rpmLimit,
+      toolCallCompatible: row.toolCallCompatible,
+      toolCallCheckedAt: row.toolCallCheckedAt?.toISOString() ?? null,
+      toolCallCheckError: row.toolCallCheckError,
       keyValidatedAt: row.keyValidatedAt ? row.keyValidatedAt.toISOString() : null,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
@@ -299,6 +333,9 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
         name,
         baseUrl: input.body.baseUrl?.trim() || null,
         free: input.body.free ?? false,
+        expiresAt: input.body.expiresAt ? new Date(input.body.expiresAt) : null,
+        packageName: input.body.packageName ?? null,
+        rpmLimit: input.body.rpmLimit ?? null,
         keyValidatedAt: now(),
       })
       .returning();
@@ -367,6 +404,49 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     return view({ ...row, credentialSecretName: secretName, keyValidatedAt: now(), updatedAt: now() }, true);
   }
 
+  /** Re-runs compatibility checks in the background for one company. */
+  async function checkToolCallCompatibility(input: {
+    companyId: string;
+    providerId: string;
+    /** Probe model; by default the first model the provider lists on `/models`. */
+    model?: string;
+  }): Promise<ModelProviderView> {
+    const row = await loadProvider(input.companyId, input.providerId);
+    const secretName = row.credentialSecretName;
+    const apiKey = secretName ? await deps.secrets.readSecretValue(input.companyId, secretName) : null;
+    if (!apiKey) throw notFound("the provider has no stored key", { code: "model_provider_key_absent" });
+    if (!deps.catalog.probeToolCall) {
+      throw unprocessable("tool-call compatibility probing is not configured", { code: "provider_probe_unavailable" });
+    }
+    const baseUrl = effectiveBaseUrl(row.type, row.baseUrl);
+    let probeModel = input.model?.trim() || null;
+    if (!probeModel) {
+      const listed = await deps.catalog.listModels({ baseUrl, apiKey });
+      probeModel = listed.models[0] ?? null;
+      if (!probeModel) {
+        throw unprocessable("the provider lists no models, so the tool-call probe has nothing to run on", {
+          code: "provider_no_models",
+        });
+      }
+    }
+    const checkedAt = now();
+    let compatible = true;
+    let errorMessage: string | null = null;
+    try {
+      await deps.catalog.probeToolCall({ baseUrl, apiKey, model: probeModel });
+    } catch (error) {
+      compatible = false;
+      errorMessage = normalizeToolCallCheckError(error);
+    }
+    await deps.db.update(modelProviders).set({
+      toolCallCompatible: compatible,
+      toolCallCheckedAt: checkedAt,
+      toolCallCheckError: errorMessage,
+      updatedAt: checkedAt,
+    }).where(eq(modelProviders.id, row.id));
+    return view(await loadProvider(input.companyId, input.providerId), true);
+  }
+
   /** Metadata-only patch (name, baseUrl, free flag); never touches the key. */
   async function patchProvider(input: {
     companyId: string;
@@ -393,6 +473,16 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     }
     if (input.body.baseUrl !== undefined) patch.baseUrl = input.body.baseUrl?.trim() || null;
     if (input.body.free !== undefined) patch.free = input.body.free;
+    if (input.body.expiresAt !== undefined) {
+      patch.expiresAt = input.body.expiresAt ? new Date(input.body.expiresAt) : null;
+    }
+    if (input.body.packageName !== undefined) patch.packageName = input.body.packageName;
+    if (input.body.rpmLimit !== undefined) patch.rpmLimit = input.body.rpmLimit;
+    if (input.body.key || input.body.baseUrl !== undefined) {
+      patch.toolCallCompatible = null;
+      patch.toolCallCheckedAt = null;
+      patch.toolCallCheckError = null;
+    }
 
     await deps.db.update(modelProviders).set(patch).where(eq(modelProviders.id, row.id));
     const updated = await loadProvider(input.companyId, input.providerId);
@@ -728,6 +818,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     setModels,
     listChannels,
     syncPoolSignals,
+    checkToolCallCompatibility,
   };
 }
 
@@ -768,6 +859,36 @@ export function createModelProviderCatalogPort(): ModelProviderCatalogPort {
         .map((item) => (typeof item.id === "string" ? item.id : null))
         .filter((id): id is string => Boolean(id));
       return { models };
+    },
+
+    async probeToolCall({ baseUrl, apiKey, model }) {
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: "Reply with a tool call." }],
+          tools: [{ type: "function", function: { name: "compatibility_probe", parameters: { type: "object" } } }],
+          tool_choice: { type: "function", function: { name: "compatibility_probe" } },
+          max_tokens: 64,
+        }),
+        signal: AbortSignal.timeout(30_000),
+        });
+      } catch {
+        throw new ToolCallProbeError("provider_unreachable", "the provider could not be reached");
+      }
+      if (!response.ok) throw new ToolCallProbeError(`provider_http_${response.status}`, `the provider answered ${response.status}`);
+      // A 200 alone is not compatibility: some resellers answer but substitute their own
+      // tools. The reply must carry a tool call for the function we declared.
+      const payload = (await response.json().catch(() => null)) as {
+        choices?: Array<{ message?: { tool_calls?: Array<{ function?: { name?: string } }> } }>;
+      } | null;
+      const calls = payload?.choices?.[0]?.message?.tool_calls ?? [];
+      if (!calls.some((call) => call.function?.name === "compatibility_probe")) {
+        throw new ToolCallProbeError("no_tool_call", "the provider answered without the requested tool call");
+      }
     },
 
     async listAccounts({ baseUrl, apiKey }) {
