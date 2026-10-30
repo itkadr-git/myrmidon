@@ -12,6 +12,8 @@
 // Every request's read-write-audit sequence runs through one queue, so two
 // overlapping PATCHes cannot commit in one order and audit in the other.
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { agents, type Db } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
