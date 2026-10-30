@@ -186,7 +186,6 @@ export function swarmPriorityRank(priority: string | null | undefined): number {
     case "high":
       return 1;
     case "medium":
-    case "normal":
       return 2;
     case "low":
       return 3;

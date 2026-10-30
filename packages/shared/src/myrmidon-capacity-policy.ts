@@ -73,7 +73,7 @@ export function applyProjectFairness<T extends SwarmQueueCandidate & { projectId
     const index = remaining.findIndex((candidate) => {
       const project = candidate.projectId?.trim();
       if (!project) return true;
-      return (counts.get(project) ?? 0) + 1 <= Math.floor((result.length + 1) * maxShare);
+      return (counts.get(project) ?? 0) + 1 <= Math.ceil((result.length + 1) * maxShare);
     });
     const [candidate] = remaining.splice(index < 0 ? 0 : index, 1);
     result.push(candidate);
@@ -154,7 +154,7 @@ export function applyStarvationProtection<T extends CapacityCandidate>(
 ): T[] {
   const nowMs = new Date(now).getTime();
   const rank = (candidate: T) => {
-    const ageMs = Math.max(0, nowMs - new Date(candidate.createdAt ?? 0).getTime());
+    const ageMs = Math.max(0, nowMs - new Date(candidate.createdAt).getTime());
     const baseRank = swarmPriorityRank(candidate.priority);
     return ageMs >= policy.starvation.afterMin * 60_000
       ? Math.max(0, baseRank - policy.starvation.promoteBy)
@@ -163,7 +163,7 @@ export function applyStarvationProtection<T extends CapacityCandidate>(
   return [...candidates].sort((left, right) => {
     const rankDelta = rank(left) - rank(right);
     if (rankDelta !== 0) return rankDelta;
-    const ageDelta = new Date(left.createdAt ?? 0).getTime() - new Date(right.createdAt ?? 0).getTime();
+    const ageDelta = new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
     return ageDelta || candidates.indexOf(left) - candidates.indexOf(right);
   });
 }

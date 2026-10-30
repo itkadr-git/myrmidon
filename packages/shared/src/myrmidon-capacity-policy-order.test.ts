@@ -15,19 +15,20 @@ describe("capacity policy composer", () => {
     const candidates: Candidate[] = [
       { issueId: "a", priority: "low", queuedAt: base, createdAt: base },
       { issueId: "b", priority: "critical", queuedAt: base + 1, createdAt: base + 1 },
-      { issueId: "c", priority: "normal", queuedAt: base + 2, createdAt: base + 2 },
+      { issueId: "c", priority: "medium", queuedAt: base + 2, createdAt: base + 2 },
     ];
     const ctx = { now: base + 10, activeByProject: {}, activeByCaste: {} };
     const result = orderCandidatesWithPolicy(candidates, ctx, { ...DEFAULT_CAPACITY_POLICY, enabled: false });
     expect(result.ordered).toEqual(orderSwarmQueueCandidates(candidates, { now: new Date(ctx.now) }));
+    expect(result.ordered.map((c) => c.issueId)).toEqual(["b", "c", "a"]);
     expect(result.rejected).toEqual([]);
   });
 
   it("composes the integrated fairness, scoring, capacity, and starvation providers by default", () => {
     const candidates = [
-      candidate("old", "normal", base - 120 * 60_000, "p1"),
-      candidate("fresh", "normal", base - 5 * 60_000, "p2"),
-      candidate("p1-next", "normal", base - 30 * 60_000, "p1"),
+      candidate("old", "medium", base - 120 * 60_000, "p1"),
+      candidate("fresh", "medium", base - 5 * 60_000, "p2"),
+      candidate("p1-next", "medium", base - 30 * 60_000, "p1"),
     ];
     const policy = {
       ...DEFAULT_CAPACITY_POLICY,
@@ -42,10 +43,10 @@ describe("capacity policy composer", () => {
     expect(rejected).toEqual([]);
   });
 
-  it("enforces priority ordering invariant (critical > high > normal > low)", () => {
+  it("enforces priority ordering invariant (critical > high > medium > low)", () => {
     const candidates: Candidate[] = [
       candidate("low-old", "low", base - 200 * 60_000, "p1"),
-      candidate("norm-fresh", "normal", base - 10 * 60_000, "p2"),
+      candidate("med-fresh", "medium", base - 10 * 60_000, "p2"),
       candidate("crit-fresh", "critical", base - 5 * 60_000, "p3"),
       candidate("high-fresh", "high", base - 8 * 60_000, "p4"),
     ];
@@ -57,16 +58,16 @@ describe("capacity policy composer", () => {
     const { ordered, rejected } = orderCandidatesWithPolicy(candidates, {
       now: base, activeByProject: {}, activeByCaste: {},
     }, policy);
-    expect(ordered.map(({ issueId }) => issueId)).toEqual(["crit-fresh", "high-fresh", "norm-fresh", "low-old"]);
+    expect(ordered.map(({ issueId }) => issueId)).toEqual(["crit-fresh", "high-fresh", "med-fresh", "low-old"]);
     expect(rejected).toEqual([]);
   });
 
   it("enforces project fairness interleaving invariant", () => {
     const candidates: Candidate[] = [
-      candidate("p1-1", "normal", base - 50 * 60_000, "p1"),
-      candidate("p1-2", "normal", base - 40 * 60_000, "p1"),
-      candidate("p1-3", "normal", base - 30 * 60_000, "p1"),
-      candidate("p2-1", "normal", base - 20 * 60_000, "p2"),
+      candidate("p1-1", "medium", base - 50 * 60_000, "p1"),
+      candidate("p1-2", "medium", base - 40 * 60_000, "p1"),
+      candidate("p1-3", "medium", base - 30 * 60_000, "p1"),
+      candidate("p2-1", "medium", base - 20 * 60_000, "p2"),
     ];
     const policy = {
       ...DEFAULT_CAPACITY_POLICY,
@@ -81,7 +82,7 @@ describe("capacity policy composer", () => {
 
   it("enforces starvation promotion invariant", () => {
     const candidates: Candidate[] = [
-      candidate("normal-fresh", "normal", base - 10 * 60_000, "p1"),
+      candidate("med-fresh", "medium", base - 10 * 60_000, "p1"),
       candidate("low-starved", "low", base - 180 * 60_000, "p2"),
     ];
     const policy = {
@@ -92,13 +93,13 @@ describe("capacity policy composer", () => {
     const { ordered } = orderCandidatesWithPolicy(candidates, {
       now: base, activeByProject: {}, activeByCaste: {},
     }, policy);
-    expect(ordered.map(({ issueId }) => issueId)).toEqual(["low-starved", "normal-fresh"]);
+    expect(ordered.map(({ issueId }) => issueId)).toEqual(["low-starved", "med-fresh"]);
   });
 
   it("returns provider capacity rejection reasons for project and caste limits", () => {
     const candidates: Candidate[] = [
       candidate("p-capped", "critical", base, "p1"),
-      candidate("c-capped", "normal", base + 1, "p2", "design"),
+      candidate("c-capped", "medium", base + 1, "p2", "design"),
       candidate("allowed", "low", base + 2, "p3", "workers"),
     ];
     const policy = {

@@ -14,7 +14,7 @@ describe("capacity policy contract", () => {
   it("caps a dominant project's share, skips missing IDs, and is deterministic", () => {
     const candidates = Array.from({ length: 10 }, (_, index) => ({
       issueId: `issue-${String(index).padStart(2, "0")}`,
-      priority: "normal",
+      priority: "medium",
       queuedAt: index,
       projectId: index < 6 ? "dominant" : null,
     }));
@@ -118,7 +118,7 @@ describe("capacity policy contract", () => {
     const now = Date.parse("2026-01-01T02:00:00Z");
     const candidates = [
       { priority: "low", createdAt: now - 90 * 60_000 },
-      { priority: "normal", createdAt: now - 10 * 60_000 },
+      { priority: "medium", createdAt: now - 10 * 60_000 },
     ];
     const policy = { ...DEFAULT_CAPACITY_POLICY, starvation: { afterMin: 60, promoteBy: 1 } };
     const ordered = applyStarvationProtection(candidates, now, policy);
