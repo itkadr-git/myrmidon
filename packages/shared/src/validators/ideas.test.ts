@@ -69,6 +69,27 @@ describe("validateIdeasProjectConstraints", () => {
     });
     expect(res.valid).toBe(false);
     expect(res.error).toContain("«откуда»");
+
+    const res2 = validateIdeasProjectConstraints({
+      projectName: "Идеи",
+      description: "Обычная мысль без источника",
+    });
+    expect(res2.valid).toBe(false);
+    expect(res2.error).toContain("«откуда»");
+  });
+
+  it("accepts idea card with markdown header origin or structured session fields", () => {
+    const res1 = validateIdeasProjectConstraints({
+      projectName: "Идеи",
+      description: "## Откуда\nВстреча 28.10",
+    });
+    expect(res1.valid).toBe(true);
+
+    const res2 = validateIdeasProjectConstraints({
+      projectName: "Идеи",
+      description: "Мысль из звонка.\nСессия: chat-999\nДата: 2026-10-30\nКто сказал: Alex",
+    });
+    expect(res2.valid).toBe(true);
   });
 
   it("ignores non-ideas projects", () => {

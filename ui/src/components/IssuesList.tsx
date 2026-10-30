@@ -1627,7 +1627,7 @@ function StreamlinedIssuesList({
     };
   }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
 
-  const newIssueDefaults = useCallback((group?: { key: string; items: Issue[] }) => {
+  const newIssueDefaults = useCallback((group?: { key: string; items: Issue[]; label?: string | null }) => {
     const groupKey = group?.key;
     const defaults: Record<string, unknown> = { ...(baseCreateIssueDefaults ?? {}) };
     if (projectId && defaults.projectId === undefined) defaults.projectId = projectId;
@@ -1688,7 +1688,7 @@ function StreamlinedIssuesList({
 
   const createActionLabel = createIssueLabel ? t("area.issue-threads-runs-2.issues-list.createWithLabel", { label: createIssueLabel }) : t("tasks.createAction");
   const createButtonLabel = createIssueLabel ? t("area.issue-threads-runs-2.issues-list.newWithLabel", { label: createIssueLabel }) : t("nav.newTask"); // myrmidon(UI-RU)
-  const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[] }) => {
+  const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[]; label?: string | null }) => {
     openNewIssue(newIssueDefaults(group));
   }, [newIssueDefaults, openNewIssue]);
 

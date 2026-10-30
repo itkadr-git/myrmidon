@@ -36,15 +36,19 @@ export function validateIdeasProjectConstraints(input: IdeasProjectConstraintsIn
 
   // 3. Mandatory origin ("откуда")
   const desc = typeof input.description === "string" ? input.description : "";
+  const meta = input.metadata && typeof input.metadata === "object" ? (input.metadata as Record<string, unknown>) : null;
   const hasOriginInMeta =
-    Boolean(input.metadata) &&
-    typeof input.metadata === "object" &&
-    ("origin" in (input.metadata as Record<string, unknown>) ||
-      "source" in (input.metadata as Record<string, unknown>));
+    Boolean(meta) &&
+    (("origin" in meta! && Boolean(meta!.origin)) ||
+      ("source" in meta! && Boolean(meta!.source)));
 
-  const hasOriginInDesc =
-    /откуда/i.test(desc) ||
-    (/(сессия|chat|session)/i.test(desc) && /(дата|date)/i.test(desc) && /(кто|автор|author)/i.test(desc));
+  const hasOriginHeader = /(?:^|[\r\n])\s*(?:#+\s*)?(?:\*{1,2}|\[)?(?:откуда|источник|origin|source)(?:\*{1,2}|\])?\s*[:\n\-#]/i.test(desc);
+  const hasOriginFields =
+    /(?:^|[\r\n])\s*[-*]?\s*(?:сессия|session|chat)\s*:/i.test(desc) &&
+    /(?:^|[\r\n])\s*[-*]?\s*(?:дата|date)\s*:/i.test(desc) &&
+    /(?:^|[\r\n])\s*[-*]?\s*(?:кто(?:\s+сказал)?|автор|author)\s*:/i.test(desc);
+
+  const hasOriginInDesc = hasOriginHeader || hasOriginFields;
 
   if (!hasOriginInMeta && !hasOriginInDesc) {
     return {

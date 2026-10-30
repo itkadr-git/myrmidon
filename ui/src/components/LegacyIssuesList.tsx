@@ -1580,7 +1580,7 @@ export function IssuesList({
     };
   }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
 
-  const newIssueDefaults = useCallback((group?: { key: string; items: Issue[] }) => {
+  const newIssueDefaults = useCallback((group?: { key: string; items: Issue[]; label?: string | null }) => {
     const groupKey = group?.key;
     const defaults: Record<string, unknown> = { ...(baseCreateIssueDefaults ?? {}) };
     if (projectId && defaults.projectId === undefined) defaults.projectId = projectId;
@@ -1641,7 +1641,7 @@ export function IssuesList({
 
   const createActionLabel = createIssueLabel ? t("area.issue-threads-runs-2.legacy-issues-list.createWithLabel", { label: createIssueLabel }) : t("area.issue-threads-runs-2.legacy-issues-list.createTask");
   const createButtonLabel = createIssueLabel ? t("area.issue-threads-runs-2.legacy-issues-list.newWithLabel", { label: createIssueLabel }) : t("tasks.createAction");
-  const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[] }) => {
+  const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[]; label?: string | null }) => {
     openNewIssue(newIssueDefaults(group));
   }, [newIssueDefaults, openNewIssue]);
 
