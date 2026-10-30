@@ -42,6 +42,7 @@ import {
   REVIEW_ROUTING_PR_TASK_CREATED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
   REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION,
+  REVIEW_ROUTING_WAKE_ACTION,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
   type ReviewRoutingSettings,
@@ -73,8 +74,8 @@ import {
 } from "./pr-policy.js";
 import type { PullRequestHeadResolver } from "./github.js";
 import type { InReviewIssueRow, ReviewRoutingStore } from "./store.js";
-import { REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
-export { REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
+import { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
+export { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 
 export const DEFAULT_REVIEW_ROUTING_SWEEP_INTERVAL_SEC = 60;
@@ -188,12 +189,28 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     for (const [agentId, load] of await deps.store.loadByAgent(companyId)) {
       liveByReviewer.set(agentId, load);
     }
-    for (const { row, review } of pending) {
-      if (liveSignalIssues.has(row.id)) {
-        liveByReviewer.set(review.reviewerAgentId, (liveByReviewer.get(review.reviewerAgentId) ?? 0) + 1);
-      }
-    }
-
+    const activeStageIdsByIssue = new Map(pending.map(({ row }) => {
+      const policy = typeof row.executionPolicy === "object" && row.executionPolicy !== null
+        ? (row.executionPolicy as Record<string, unknown>)
+        : {};
+      const stages = Array.isArray(policy.stages) ? policy.stages : [];
+      const state = typeof row.executionState === "object" && row.executionState !== null
+        ? (row.executionState as Record<string, unknown>)
+        : {};
+      const participant = typeof state.currentParticipant === "object" && state.currentParticipant !== null
+        ? (state.currentParticipant as Record<string, unknown>)
+        : {};
+      const ids = stages.filter((stage): stage is Record<string, unknown> => typeof stage === "object" && stage !== null)
+        .filter((stage) => stage.type === "review" && stage.id === state.currentStageId)
+        .filter((stage) => Array.isArray(stage.participants) && stage.participants.some((p) => {
+          if (typeof p !== "object" || p === null) return false;
+          const principal = p as Record<string, unknown>;
+          return principal.type === "agent" && principal.agentId === participant.agentId;
+        }))
+        .map((stage) => stage.id)
+        .filter((id): id is string => typeof id === "string");
+      return [row.id, new Set(ids)] as const;
+    }));
     const activeStages = pending.filter(({ row, review }) => {
       const state = typeof row.executionState === "object" && row.executionState !== null
         ? (row.executionState as Record<string, unknown>)
@@ -201,7 +218,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       const participant = typeof state.currentParticipant === "object" && state.currentParticipant !== null
         ? (state.currentParticipant as Record<string, unknown>)
         : {};
-      return state.status === "pending" && state.currentStageType === "review" && state.currentStageId === review.stageId && participant.type === "agent" && participant.agentId === review.reviewerAgentId;
+      return state.status === "pending" && state.currentStageType === "review" && state.currentStageId === review.stageId && participant.type === "agent" && participant.agentId === review.reviewerAgentId && activeStageIdsByIssue.get(row.id)?.has(review.stageId) === true;
     });
     const orderedPending = [...activeStages].sort((a, b) => a.row.createdAt.getTime() - b.row.createdAt.getTime());
     const reviewersWoken = new Set<string>();
@@ -225,6 +242,9 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           (row.executionState ?? {}) as Record<string, unknown>,
         );
         const currentStage = review.stageId;
+        const activeRunCount = await deps.store.countActiveRunsForIssue(companyId, review.reviewerAgentId, row.id);
+        if (activeRunCount > 0) continue;
+        if (reviewersWoken.size >= REVIEW_ROUTING_MAX_WAKES_PER_PASS) break;
         // Persist the wake request before dispatch: a failure while enqueuing
         // still observes the cooldown on the next sweep rather than looping.
         await deps.store.recordReviewWake({
@@ -726,31 +746,19 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     mutation: string,
   ) {
     try {
-      await deps.store.recordReviewWake({
-        companyId: row.companyId,
-        issueId: row.id,
-        reviewerAgentId: reviewerId,
-        stageId: typeof state?.currentStageId === "string" ? state.currentStageId : "review",
-        at: new Date(),
-        attempt: 1,
-      });
+      const stageId = typeof state?.currentStageId === "string" ? state.currentStageId : "review";
+      const lastWakeState = await deps.store.reviewWakeState({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId });
+      const attempt = lastWakeState.attempts + 1;
+      const at = new Date();
+      await deps.store.recordReviewWake({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId, at, attempt });
       await deps.wakeReviewer(reviewerId, {
         issueId: row.id,
         reason: "execution_review_requested",
         mutation,
         executionStage: { ...buildReviewRoutingWakeContext(state ?? {}) },
+        retryAttempt: attempt,
       });
-      await deps.logActivity({
-        companyId: row.companyId,
-        action: REVIEW_ROUTING_WAKE_ACTION,
-        issueId: row.id,
-        details: {
-          reviewerAgentId: reviewerId,
-          stageId: typeof state?.currentStageId === "string" ? state.currentStageId : null,
-          mutation,
-          attempt: 1,
-        },
-      });
+      await deps.logActivity({ companyId: row.companyId, action: REVIEW_ROUTING_WAKE_ACTION, issueId: row.id, details: { reviewerAgentId: reviewerId, stageId, mutation, attempt }, at });
     } catch (err) {
       log.warn({ err, issueId: row.id, reviewerId }, "review routing wake failed after the assignment was committed");
     }

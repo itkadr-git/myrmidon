@@ -13,7 +13,9 @@
 // coverage re-checked inside the same guarded path, so two racing passes never
 // create two tasks for one head.
 
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { sql, and, eq, inArray, desc, isNull } from "drizzle-orm";
+
+const activeStatuses = ["queued", "running", "scheduled_retry"] as const;
 import {
   activityLog,
   agentWakeupRequests,
@@ -30,7 +32,6 @@ import { isAgentStatusInvokable } from "@myrmidon/shared";
 import {
   REVIEW_ROUTING_ASSIGNED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
-  REVIEW_ROUTING_WAKE_ACTION,
   REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY,
   REVIEW_ROUTING_PR_KIND_METADATA_KEY,
 } from "@myrmidon/shared";
@@ -64,6 +65,7 @@ export interface ReviewRoutingStore {
   listReviewerAgents(companyId: string, roles: readonly string[]): Promise<ReviewerAgentRow[]>;
   /** Tasks in flight (in progress + in review) per assignee agent. */
   loadByAgent(companyId: string): Promise<Map<string, number>>;
+  countActiveRunsForIssue(companyId: string, agentId: string, issueId: string): Promise<number>;
   routingHistory(companyId: string, issueIds: readonly string[]): Promise<Map<string, RoutingHistory>>;
   reviewWakeState(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string }): Promise<{
     activeRun: boolean;
@@ -238,6 +240,18 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
       return load;
     },
 
+    async countActiveRunsForIssue(companyId, agentId, issueId) {
+      const [result] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, [...activeStatuses]),
+          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId', (${heartbeatRuns.contextSnapshot} -> 'paperclipIssue') ->> 'id', ${heartbeatRuns.contextTaskId}, ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId}`,
+        ));
+      return result?.count ?? 0;
+    },
     async routingHistory(companyId, issueIds) {
       const history = new Map<string, RoutingHistory>();
       if (issueIds.length === 0) return history;
@@ -273,7 +287,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         .where(and(
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, reviewerAgentId),
-          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+          inArray(heartbeatRuns.status, [...activeStatuses]),
           sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId', (${heartbeatRuns.contextSnapshot} -> 'paperclipIssue') ->> 'id', ${heartbeatRuns.contextTaskId}, ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId}`,
         ))
         .limit(1);
@@ -313,7 +327,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         companyId,
         actorType: "system",
         actorId: "review_routing_sweep",
-        action: REVIEW_ROUTING_WAKE_ACTION,
+        action: "review_routing_wake_requested",
         entityType: "issue",
         entityId: issueId,
         agentId: reviewerAgentId,

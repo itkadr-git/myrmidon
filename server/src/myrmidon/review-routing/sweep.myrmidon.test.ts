@@ -64,14 +64,21 @@ function makeStore(fx: Fixture) {
     listInReviewIssues: async () => [...fx.rows.values()],
     listReviewerAgents: async (_company: string, roles: readonly string[]) => fx.reviewers.filter((agent) => roles.includes(agent.role)),
     loadByAgent: async () => new Map(fx.load),
+    countActiveRunsForIssue: async (_companyId, agentId, issueId) => {
+      const state = fx.wakeStates?.get(issueId);
+      if (!state || !state.activeRun) return 0;
+      const row = fx.rows.get(issueId);
+      if (!row || typeof row.executionState !== "object" || row.executionState === null) return 0;
+      const participant = (row.executionState as Record<string, unknown>).currentParticipant as Record<string, unknown> | undefined;
+      return participant?.agentId === agentId ? 1 : 0;
+    },
     routingHistory: async (_company: string, ids: readonly string[]) => new Map([...fx.history].filter(([id]) => ids.includes(id))),
     reviewWakeState: async ({ issueId }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string }) => {
       return fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
     },
     recordReviewWake: async ({ issueId, at, attempt }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }) => {
-      const existing = fx.wakeStates?.get(issueId);
-      const state = existing ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
-      fx.wakeStates?.set(issueId, { ...state, lastWakeAt: at, attempts: attempt });
+      const wake = fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
+      fx.wakeStates?.set(issueId, { ...wake, activeRun: false, pendingWake: true, lastWakeAt: at, attempts: attempt });
     },
     applyPatch: async ({ issueId, guard, build }: { issueId: string; companyId: string; guard: (fresh: RoutingIssue) => boolean; build: (fresh: RoutingIssue) => Record<string, unknown> | null }) => {
       const current = fx.rows.get(issueId);
@@ -126,26 +133,11 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
     wakeReviewer,
     logActivity: async (entry) => {
       activities.push({ action: entry.action, issueId: entry.issueId, details: entry.details });
-      if (entry.action === REVIEW_ROUTING_WAKE_ACTION && existingWake) {
-        fixture.wakeStates?.set(entry.issueId, {
-          ...existingWake,
-          lastWakeAt: new Date(String(entry.createdAt)),
-          attempts: Number(entry.details.attempt ?? existingWake.attempts),
-        });
-      }
       if (entry.action === REVIEW_ROUTING_ASSIGNED_ACTION) {
         const previous = fixture.history.get(entry.issueId);
         fixture.history.set(entry.issueId, {
           lastAt: NOW,
           reviewerAgentIds: [...(previous?.reviewerAgentIds ?? []), String(entry.details.reviewerAgentId)],
-        });
-      }
-      const existingWake = fixture.wakeStates?.get(entry.issueId);
-      if (entry.action === REVIEW_ROUTING_WAKE_ACTION && existingWake) {
-        fixture.wakeStates?.set(entry.issueId, {
-          ...existingWake,
-          lastWakeAt: NOW,
-          attempts: Number(entry.details.attempt ?? entry.details.retryAttempt ?? existingWake.attempts),
         });
       }
     },
@@ -265,8 +257,6 @@ describe("review wake liveness", () => {
     ]) });
     t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: new Date(NOW.getTime() - 20 * 60_000) }));
     t.fixture.rows.set("2", pending("2", REV_B));
-    t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 5 * 60_000), attempts: 1 });
-    t.fixture.wakeStates!.set("2", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 2 * 60_000), attempts: 1 });
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.woken).toBe(0);
     expect(t.wakes).toHaveLength(0);
