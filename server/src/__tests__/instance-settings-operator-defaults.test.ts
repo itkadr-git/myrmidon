@@ -108,6 +108,18 @@ describe("instanceSettingsService operator setting defaults", () => {
     expect(general.feedbackDataSharingPreference).toBe("prompt");
   });
 
+  it("roundtrips operator-configured API-equivalent model prices", async () => {
+    const modelApiPricing = {
+      "gpt-6-luna": { inputUsdPerMillion: 0.1, cachedInputUsdPerMillion: 0.01, outputUsdPerMillion: 0.5 },
+    };
+    const { db, persistedSets } = stubDb(settingsRow({ modelApiPricing }));
+    const svc = instanceSettingsService(db, { runtimeEnv: {} });
+
+    expect((await svc.getGeneral()).modelApiPricing).toEqual(modelApiPricing);
+    await svc.updateGeneral({ keyboardShortcuts: true });
+    expect((persistedSets[0]!.general as Record<string, unknown>).modelApiPricing).toEqual(modelApiPricing);
+  });
+
   it("overlays reads but never persists the operator value", async () => {
     const { db, persistedSets } = stubDb(settingsRow({}));
     const svc = instanceSettingsService(db, { runtimeEnv: defaultsEnv() });
