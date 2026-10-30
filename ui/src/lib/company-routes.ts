@@ -36,6 +36,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "foraging",
   "quality",
   "status",
+  "system",
   "cases",
   "pipelines",
   "stack",

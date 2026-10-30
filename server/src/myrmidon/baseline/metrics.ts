@@ -49,6 +49,7 @@ export interface BaselineTransitionRow {
 export interface BaselineRunRow {
   issueId: string;
   at: Date;
+  status: string;
 }
 
 export interface BaselineCostRow {
@@ -128,6 +129,7 @@ export interface BaselineGroupMetrics {
 export interface BaselineMetrics {
   byProject: BaselineGroupMetrics[];
   byRole: BaselineGroupMetrics[];
+  runSuccess: { succeeded: number; failed: number; total: number; rate: number | null };
 }
 
 /** Statuses that mean "work has started" for the cycle-time start. */
@@ -391,9 +393,18 @@ export function computeBaselineMetrics(input: BaselineMetricsInput, window: Base
       roleByAgent,
     ),
   );
+  const succeeded = input.runs.filter((run) => run.status === "succeeded" && inWindow(run.at, window)).length;
+  const failed = input.runs.filter((run) => run.status === "failed" && inWindow(run.at, window)).length;
+  const totalRuns = succeeded + failed;
 
   return {
     byProject: groupTasks(perTask, (task) => task.projectKey),
     byRole: groupTasks(perTask, (task) => task.roleKey),
+    runSuccess: {
+      succeeded,
+      failed,
+      total: totalRuns,
+      rate: totalRuns > 0 ? succeeded / totalRuns : null,
+    },
   };
 }

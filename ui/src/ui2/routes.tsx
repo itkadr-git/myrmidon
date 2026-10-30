@@ -26,6 +26,8 @@ import { Ui2Fleet } from "./screens/fleet/Ui2Fleet";
 // reader of the knowledge store and the regulations of Autonomy.
 import { Ui2Knowledge } from "./screens/knowledge/Ui2Knowledge";
 import { Ui2Regulations } from "./screens/knowledge/Ui2Regulations";
+import { Ui2SystemScreen } from "./screens/system/Ui2SystemScreen";
+import { Ui2QualityScreen } from "./screens/quality/Ui2QualityScreen";
 
 export type Ui2ScreenKey =
   | "decisions"
@@ -39,7 +41,9 @@ export type Ui2ScreenKey =
   | "fleet"
   | "knowledge"
   | "knowledge-page"
-  | "settings-autonomy-regulations";
+  | "settings-autonomy-regulations"
+  | "system"
+  | "quality";
 
 export interface Ui2RouteEntry {
   key: Ui2ScreenKey;
@@ -153,9 +157,23 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
   {
     key: "settings-autonomy-regulations",
     path: "company/settings/autonomy/regulations",
-    titleKey: "ui2.screens.regulations",
+    titleKey: "ui2.screens.knowledge",
     element: ui2Screen(<Ui2Regulations />),
     legacyPath: "/company/settings",
+  },
+  {
+    key: "system",
+    path: "system",
+    titleKey: "ui2.screens.system",
+    element: ui2Screen(<Ui2SystemScreen />),
+    legacyPath: "/status",
+  },
+  {
+    key: "quality",
+    path: "quality",
+    titleKey: "ui2.screens.quality",
+    element: ui2Screen(<Ui2QualityScreen />),
+    legacyPath: "/quality",
   },
 ];
 

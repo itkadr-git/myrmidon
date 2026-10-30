@@ -97,7 +97,7 @@ export async function loadTransitions(
   );
 }
 
-/** Heartbeat runs attributed to the given tasks (contextSnapshot.issueId). */
+/** Task-linked heartbeat runs, with outcomes available only for terminal runs. */
 export async function loadRuns(
   db: Db,
   companyId: string,
@@ -107,22 +107,27 @@ export async function loadRuns(
   if (issueIds.length === 0) return [];
   const rows = await db
     .select({
-      issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+      issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot} ->> 'issueId')`,
       at: heartbeatRuns.startedAt,
+      status: heartbeatRuns.status,
     })
     .from(heartbeatRuns)
     .where(
       and(
         eq(heartbeatRuns.companyId, companyId),
         isNotNull(heartbeatRuns.startedAt),
+        inArray(heartbeatRuns.status, ["succeeded", "failed"]),
         gte(heartbeatRuns.startedAt, window.from),
         lte(heartbeatRuns.startedAt, window.to),
-        inArray(sql`(${heartbeatRuns.contextSnapshot} ->> 'issueId')`, issueIds),
+        inArray(
+          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot} ->> 'issueId')`,
+          issueIds,
+        ),
       ),
     );
 
   return rows.flatMap((row) =>
-    row.issueId && row.at ? [{ issueId: row.issueId, at: row.at }] : [],
+    row.issueId && row.at ? [{ issueId: row.issueId, at: row.at, status: row.status }] : [],
   );
 }
 
