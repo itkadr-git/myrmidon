@@ -24,3 +24,5 @@ export {
   type GuardrailSubtype,
 } from "./detect.js";
 export { guardrailsOnRunOutput } from "./run-output.js";
+export { redactText, restoreText, drizzleRedactionStore, type RedactionMode, type RedactionResult, type RedactionStore, type DetectedRedactionEntity } from "./entities/redaction.js";
+export { startRedactionSubstitutionCleanup } from "./entities/cleanup.js";
