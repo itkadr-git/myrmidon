@@ -208,7 +208,8 @@ export async function getCachedFailedRunsMap(
   if (entry?.inFlight) {
     return entry.inFlight;
   }
-  const promise = (async () => {
+  let inFlightPromise: Promise<ReadonlyMap<string, number>> | undefined;
+  const execute = async (): Promise<ReadonlyMap<string, number>> => {
     try {
       const map = await computeFailedRunsMap(db, companyId, now);
       failedRunsCache.set(companyId, {
@@ -218,11 +219,13 @@ export async function getCachedFailedRunsMap(
       return map;
     } finally {
       const current = failedRunsCache.get(companyId);
-      if (current?.inFlight === promise) {
+      if (current && inFlightPromise && current.inFlight === inFlightPromise) {
         delete current.inFlight;
       }
     }
-  })();
+  };
+  const promise = execute();
+  inFlightPromise = promise;
   if (entry) {
     entry.inFlight = promise;
   } else {

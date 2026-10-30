@@ -485,10 +485,8 @@ describeEmbeddedPostgres("matcher × pheromone order, caste routing and cooling"
   });
 
   it("N matcher passes within 60s compute failed runs only once", async () => {
-    const companyId = randomUUID();
-    await seedCompany(companyId);
-    const agentId = randomUUID();
-    await seedAgent(companyId, agentId, "engineer");
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
     const taskId = await seedTask(companyId, { identifier: "T-CACHE", priority: "medium", pheromoneStrength: 20 });
     await seedFinishedRun(companyId, agentId, taskId, { status: "failed", finishedAt: new Date(NOW.getTime() - HOUR) });
 

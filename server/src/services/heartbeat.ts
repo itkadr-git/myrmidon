@@ -12828,9 +12828,9 @@ export function heartbeatService(
     invalidateLastRunRowsCache(updated.companyId);
     if (
       updated.status === "failed" ||
-      updated.status === "blocked" ||
-      updated.status === "needs_followup" ||
-      updated.status === "timed_out"
+      updated.status === "timed_out" ||
+      (updated.status as string) === "blocked" ||
+      (updated.status as string) === "needs_followup"
     ) {
       invalidateFailedRunsCache(updated.companyId);
     }

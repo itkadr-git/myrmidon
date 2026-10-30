@@ -1138,7 +1138,8 @@ export async function getCachedLastRunRows(
   if (entry?.inFlight) {
     return entry.inFlight;
   }
-  const promise = (async () => {
+  let inFlightPromise: Promise<LastRunRow[]> | undefined;
+  const execute = async (): Promise<LastRunRow[]> => {
     try {
       const rows = await db
         .select({
@@ -1155,11 +1156,13 @@ export async function getCachedLastRunRows(
       return rows;
     } finally {
       const current = lastRunRowsCache.get(companyId);
-      if (current?.inFlight === promise) {
+      if (current && inFlightPromise && current.inFlight === inFlightPromise) {
         delete current.inFlight;
       }
     }
-  })();
+  };
+  const promise = execute();
+  inFlightPromise = promise;
   if (entry) {
     entry.inFlight = promise;
   } else {
