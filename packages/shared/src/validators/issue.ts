@@ -589,6 +589,8 @@ export const issueExecutionStateSchema = z.object({
     agentId: z.string().guid(),
     frozenAt: z.string().datetime(),
     noProgressStreak: z.number().int().positive(),
+    statusVersion: z.number().int().nonnegative(),
+    assigneeAgentId: z.string().guid().nullable(),
   }).nullable().optional(),
   changesRequestedCount: z.number().int().nonnegative().optional().default(0),
   reviewCycleId: z.string().min(1).max(200).nullable().optional().default(null),

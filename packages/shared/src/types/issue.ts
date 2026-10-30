@@ -771,7 +771,7 @@ export interface IssueExecutionState {
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
   monitor?: IssueExecutionMonitorState | null;
-  issueRewakeFreeze?: { agentId: string; frozenAt: string; noProgressStreak: number } | null;
+  issueRewakeFreeze?: { agentId: string; frozenAt: string; noProgressStreak: number; statusVersion: number; assigneeAgentId: string | null } | null;
   /** Consecutive agent-initiated changes-requested rounds on the current stage. */
   changesRequestedCount?: number;
   reviewCycleId?: string | null;

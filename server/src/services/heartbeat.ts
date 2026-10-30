@@ -30466,8 +30466,11 @@ export function heartbeatService(
           // Server-side recovery retries insert runs directly and never reach
           // this gate.
           const rewakeState = (issue.executionState?.issueRewakeFreeze ?? null) as
-            | { agentId: string; frozenAt: string }
+            | { agentId: string; frozenAt: string; statusVersion: number; assigneeAgentId: string | null }
             | null;
+          const issueStateChanged = rewakeState?.agentId === agentId &&
+            (rewakeState.statusVersion !== issue.statusVersion ||
+              rewakeState.assigneeAgentId !== issue.assigneeAgentId);
           const explicitRewake = opts.requestedByActorType === "user" ||
             Boolean(explicitResumeSession && opts.requestedByActorType !== "agent") ||
             reason === "ci_completed";
@@ -30542,7 +30545,8 @@ export function heartbeatService(
                           ? new Date(rewakeState.frozenAt) : lastRunFinishedAt),
                         rewakeState?.agentId === agentId
                           ? or(
-                              eq(activityLog.actorType, "user"),
+                              and(eq(activityLog.actorType, "user"),
+                                ne(activityLog.actorId, agentId)),
                               and(eq(activityLog.actorType, "system"), inArray(activityLog.action, [
                                 "issue.blockers_resolved_wake_emitted", "issue.work_product_updated",
                                 "myrmidon.task_pr_sync.settled", "myrmidon.task_pr_sync.returned",
@@ -30582,7 +30586,7 @@ export function heartbeatService(
                 hasNewIssueInputSinceLastRun: newInputRows.length > 0,
               });
 
-              if (throttleDecision.blocked && !explicitRewake &&
+              if (throttleDecision.blocked && !explicitRewake && !issueStateChanged &&
                 !(rewakeState?.agentId === agentId && newInputRows.length > 0)) {
                 if (throttleDecision.frozen && rewakeState?.agentId !== agentId) {
                   await tx.update(issues).set({
@@ -30592,6 +30596,8 @@ export function heartbeatService(
                         agentId,
                         frozenAt: throttleDecision.frozenAt.toISOString(),
                         noProgressStreak: throttleDecision.noProgressStreak,
+                        statusVersion: issue.statusVersion,
+                        assigneeAgentId: issue.assigneeAgentId,
                       },
                     },
                   }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
@@ -30641,13 +30647,13 @@ export function heartbeatService(
                 }
                 return { kind: "skipped" as const };
               }
-              if (rewakeState?.agentId === agentId && (newInputRows.length > 0 || explicitRewake)) {
+              if (rewakeState?.agentId === agentId && (newInputRows.length > 0 || explicitRewake || issueStateChanged)) {
                 await tx.update(issues).set({
                   executionState: { ...(issue.executionState ?? {}), issueRewakeFreeze: null },
                 }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
               }
             }
-            if (rewakeState?.agentId === agentId && explicitRewake && recentTerminalRuns.length === 0) {
+            if (rewakeState?.agentId === agentId && (explicitRewake || issueStateChanged) && recentTerminalRuns.length === 0) {
               await tx.update(issues).set({
                 executionState: { ...(issue.executionState ?? {}), issueRewakeFreeze: null },
               }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
