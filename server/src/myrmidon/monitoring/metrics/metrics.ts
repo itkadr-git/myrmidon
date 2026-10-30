@@ -30,6 +30,7 @@ import {
 } from "@myrmidon/db";
 import { readTracingHealthAttentionSignal } from "../../tracing-health/attention.js";
 import { readStaleBlockSignals } from "../../stale-block/attention.js";
+import { getStaleBlockOldestUnsweptSeconds } from "../../stale-block/index.js";
 import { createPgReviewRoutingStore } from "../../review-routing/store.js";
 import { readSwarmClaimAttentionSignals } from "./swarm-signals.js";
 import {
@@ -251,6 +252,12 @@ export interface MetricsSnapshotFields {
   blockerRoots?: BlockerRootMetrics | null;
 
   /**
+   * Age in seconds of the blocked task that has gone the longest without being swept
+   * by the stale-block watchdog.
+   */
+  staleBlockOldestUnsweptSeconds?: number | null;
+
+  /**
    * myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of the two shadow legs in
    * seconds, read from corpus_shadow_log inside the latency window. Absent
    * or null (flag off — the table stays empty) renders HELP/TYPE with no
@@ -332,6 +339,8 @@ export interface MetricsCollectorDeps {
 
   /** myrmidon(1.6.6 REMOTE-SITES-T4): where the remote-site metrics come from; tests inject a fake. */
   fleetSites?: (() => FleetSiteMetricsSample) | null;
+  /** Age in seconds of the blocked task that has gone longest without being swept. */
+  staleBlockOldestUnsweptSeconds?: (() => number | null) | null;
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
@@ -691,9 +700,16 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     null as FleetSiteMetricsSample | null,
   );
 
+  const staleBlockOldestUnsweptSeconds = await guarded(
+    "stale_block_oldest_unswept_seconds",
+    async () => (deps.staleBlockOldestUnsweptSeconds ? deps.staleBlockOldestUnsweptSeconds() : getStaleBlockOldestUnsweptSeconds()),
+    null as number | null,
+  );
+
   return {
     fields: {
       blocked,
+      staleBlockOldestUnsweptSeconds,
       runsActive: runCounters.active,
       runsQueued: runCounters.queued,
       runsFailedTotal: runCounters.failedTotal,
@@ -1293,6 +1309,17 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       fleet ? fleet.movesTotal.map((row) => `myrmidon_fleet_moves_total{result="${escapeLabelValue(row.result)}"} ${formatSampleValue(row.count)}`) : [],
     ),
   );
+
+  if (snapshot.staleBlockOldestUnsweptSeconds !== null && snapshot.staleBlockOldestUnsweptSeconds !== undefined) {
+    blocks.push(
+      familyBlock(
+        "stale_block_oldest_unswept_seconds",
+        "Age in seconds of the blocked task that has gone the longest without being swept by the stale-block watchdog.",
+        "gauge",
+        [`stale_block_oldest_unswept_seconds{${R}} ${formatSampleValue(snapshot.staleBlockOldestUnsweptSeconds)}`],
+      ),
+    );
+  }
 
   blocks.push(renderBlockerRootMetrics(snapshot.blockerRoots ?? { companies: [] }).trimEnd());
   return `${blocks.join("\n\n")}\n`;

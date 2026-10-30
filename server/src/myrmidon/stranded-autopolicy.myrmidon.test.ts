@@ -729,6 +729,11 @@ describe("OPE-9072: escalation chain target and workflow-safe blocked dispositio
     });
     expect(patch.unblockDescriptor.owner).toEqual({ agentId: "adm-1" });
     expect(patch.unblockDescriptor.action).toContain("final status");
+    expect(patch.unblockDescriptor.reasonRef).toEqual({
+      kind: "event",
+      eventKey: "stranded.disposition:issue-1",
+      dueAt: "2026-10-25T10:00:00.000Z",
+    });
     expect(Object.keys(patch).sort()).toEqual(["blockerMetadata", "status", "unblockDescriptor"]);
   });
 
