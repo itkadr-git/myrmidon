@@ -3,6 +3,7 @@ import { appendFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { createHooks, TRIGGERS } from './hooks.mjs';
+import { getRolloutState, MODES } from './rollout.mjs';
 
 /** REST only. Cache D can replace this load port with a verified snapshot. */
 export function restLoader({ baseUrl, companyId, token, fetchImpl = fetch }) {
@@ -34,11 +35,25 @@ export function restLoader({ baseUrl, companyId, token, fetchImpl = fetch }) {
 export async function main() {
   const dir = process.env.ADM_CONNECTOR_STATE_DIR ?? `${homedir()}/.adm-connector/sessions`;
   await mkdir(dir, { recursive: true, mode: 0o700 });
+
+  const rollout = await getRolloutState({ stateDir: dir });
+  if (rollout.mode === MODES.DISABLED) {
+    // Kill-switch active: fast-path exit with zero output, zero network calls
+    return;
+  }
+
   let input = '';
   for await (const chunk of process.stdin) { input += chunk; if (Buffer.byteLength(input) > 1024 * 1024) throw new Error('Oversized hook input'); }
   const event = JSON.parse(input);
-  const hooks = createHooks({ stateDir: dir, load: restLoader({ baseUrl: process.env.PAPERCLIP_API_URL, companyId: process.env.PAPERCLIP_COMPANY_ID, token: process.env.PAPERCLIP_API_KEY }), log: metric => appendFile(`${dir}/metrics.jsonl`, JSON.stringify(metric) + '\n', { mode: 0o600 }) });
+  const hooks = createHooks({
+    stateDir: dir,
+    mode: rollout.mode,
+    load: restLoader({ baseUrl: process.env.PAPERCLIP_API_URL, companyId: process.env.PAPERCLIP_COMPANY_ID, token: process.env.PAPERCLIP_API_KEY }),
+    log: metric => appendFile(`${dir}/metrics.jsonl`, JSON.stringify(metric) + '\n', { mode: 0o600 }),
+  });
   const result = await hooks.run(event);
-  if (result.context) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: event.hook_event_name, additionalContext: result.context } }));
+  if (rollout.mode === MODES.MAIN && result.context) {
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: event.hook_event_name, additionalContext: result.context } }));
+  }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(() => { process.stderr.write('ADM hook failed closed; check connector state/configuration.\n'); process.exitCode = 2; });
