@@ -76,8 +76,7 @@ const ALLOWLIST = [
   "Base Paperclip version", "base Paperclip version", "базового Paperclip",
   "**База:** Paperclip", "Paperclip (MIT)»",
   "PaperclipIcon", "PaperclipLockup.tsx", "Paperclip»-строки",
-  "`Paperclip`", "Paperclip, взятого",
-  "Paperclip**", "«Paperclip»", "stays Paperclip", "остаётся Paperclip",
+  "`Paperclip`", "«Paperclip»", "stays Paperclip", "остаётся Paperclip",
   "Paperclip-managed", // managed-by-vendor flows named in prose; kept one release
   "управляемые навыки Paperclip",
   "Allow Paperclip reads", "upstream Paperclip", "вендорского Paperclip",
