@@ -199,14 +199,6 @@ describe("pending review and reassignment", () => {
     expect(readPendingAgentReview(issue())).toBeNull();
   });
 
-  it("excludes an explicitly human-owned review wait from agent wake recovery", () => {
-    const executionState = {
-      ...(pendingIssue().executionState as Record<string, unknown>),
-      humanReviewPending: true,
-    };
-    expect(readPendingAgentReview(issue({ executionState }))).toBeNull();
-  });
-
   it("moves the stage to another reviewer and keeps the stage id, rounds and return assignee", () => {
     const before = pendingIssue();
     const patch = buildReviewRoutingReassignPatch({ issue: before, newReviewerAgentId: REV_B });

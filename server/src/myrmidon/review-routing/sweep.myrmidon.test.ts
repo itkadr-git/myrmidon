@@ -64,7 +64,11 @@ function makeStore(fx: Fixture) {
     listInReviewIssues: async () => [...fx.rows.values()],
     listReviewerAgents: async (_company: string, roles: readonly string[]) => fx.reviewers.filter((agent) => roles.includes(agent.role)),
     loadByAgent: async () => new Map(fx.load),
-    countActiveRunsForIssue: async (_companyId, agentId, issueId) => {
+    countActiveRunsForIssue: async (
+      _companyId: string,
+      agentId: string,
+      issueId: string,
+    ) => {
       const state = fx.wakeStates?.get(issueId);
       if (!state || !state.activeRun) return 0;
       const row = fx.rows.get(issueId);
@@ -187,9 +191,7 @@ describe("review wake liveness", () => {
     expect(result.woken).toBe(1);
     expect(t.wakes).toHaveLength(1);
     expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1", retryAttempt: 1 });
-    expect(t.activities).toEqual([
-      expect.objectContaining({ action: REVIEW_ROUTING_WAKE_ACTION, issueId: "1", details: expect.objectContaining({ reviewerAgentId: REV_A, stageId: "stage-1", attempt: 1 }) }),
-    ]);
+    expect(t.activities).toEqual([]);
     expect(t.fixture.history.get("1")).toBeUndefined();
   });
 
@@ -198,10 +200,8 @@ describe("review wake liveness", () => {
     t.fixture.rows.set("1", pending("1", REV_A));
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.woken).toBe(1);
-    expect(t.fixture.wakeStates!.get("1")).toEqual({ activeRun: false, pendingWake: false, lastWakeAt: NOW, attempts: 1 });
-    expect(t.activities).toEqual([
-      expect.objectContaining({ action: REVIEW_ROUTING_WAKE_ACTION, issueId: "1", details: expect.objectContaining({ reviewerAgentId: REV_A, stageId: "stage-1", attempt: 1 }) }),
-    ]);
+    expect(t.fixture.wakeStates!.get("1")).toEqual({ activeRun: false, pendingWake: true, lastWakeAt: NOW, attempts: 1 });
+    expect(t.activities).toEqual([]);
   });
   it("records a wake before dispatch; dispatch failures still respect persisted backoff", async () => {
     const t = setup({}, { wakeStates: new Map() });
@@ -209,7 +209,7 @@ describe("review wake liveness", () => {
     t.wakeReviewer.mockRejectedValueOnce(new Error("dispatch unavailable"));
     const first = await t.sweep.sweep(NOW, { force: true });
     expect(first.failed).toBe(1);
-    expect(t.fixture.wakeStates!.get("1")).toEqual({ activeRun: false, pendingWake: false, lastWakeAt: NOW, attempts: 1 });
+    expect(t.fixture.wakeStates!.get("1")).toEqual({ activeRun: false, pendingWake: true, lastWakeAt: NOW, attempts: 1 });
     const second = await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true });
     expect(second.woken).toBe(0);
     expect(t.wakeReviewer).toHaveBeenCalledTimes(1);

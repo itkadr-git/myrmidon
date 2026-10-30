@@ -31,6 +31,7 @@ import {
 import { isAgentStatusInvokable } from "@myrmidon/shared";
 import {
   REVIEW_ROUTING_ASSIGNED_ACTION,
+  REVIEW_ROUTING_WAKE_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
   REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY,
   REVIEW_ROUTING_PR_KIND_METADATA_KEY,
@@ -327,7 +328,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         companyId,
         actorType: "system",
         actorId: "review_routing_sweep",
-        action: "review_routing_wake_requested",
+        action: REVIEW_ROUTING_WAKE_ACTION,
         entityType: "issue",
         entityId: issueId,
         agentId: reviewerAgentId,

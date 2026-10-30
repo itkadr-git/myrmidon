@@ -6,12 +6,13 @@ import { and, eq } from "drizzle-orm";
 import { agents, agentWakeupRequests, activityLog, heartbeatRuns, companies, createDb, issues } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createPgReviewRoutingStore } from "./store.js";
+import { REVIEW_ROUTING_WAKE_ACTION } from "@myrmidon/shared";
 
 const embeddedSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("Postgres review routing wake state", () => {
-  let stopDatabase: (() => Promise<void>) | undefined;
+  let cleanupDatabase: (() => Promise<void>) | undefined;
   let db: ReturnType<typeof createDb> | undefined;
   const companyId = randomUUID();
   const reviewerId = randomUUID();
@@ -21,9 +22,9 @@ describeEmbeddedPostgres("Postgres review routing wake state", () => {
   let completedIssueId: string | undefined;
 
   beforeAll(async () => {
-    const database = await startEmbeddedPostgresTestDatabase();
-    stopDatabase = database.stop;
-    db = createDb(database.pool);
+    const database = await startEmbeddedPostgresTestDatabase("review-routing-wake-state-");
+    cleanupDatabase = database.cleanup;
+    db = createDb(database.connectionString);
     await db.insert(companies).values({ id: companyId, name: "review-routing-test", status: "active" });
     await db.insert(agents).values({ id: reviewerId, companyId, name: "reviewer", role: "reviewer", status: "idle", runtimeConfig: {} });
   }, 120_000);
@@ -49,7 +50,7 @@ describeEmbeddedPostgres("Postgres review routing wake state", () => {
       await db.delete(agents).where(eq(agents.companyId, companyId));
       await db.delete(companies).where(eq(companies.id, companyId));
     }
-    await stopDatabase?.();
+    await cleanupDatabase?.();
   });
 
   async function makeIssue() {
@@ -74,7 +75,7 @@ describeEmbeddedPostgres("Postgres review routing wake state", () => {
     expect(pending).toMatchObject({ activeRun: false, pendingWake: true, attempts: 0, lastWakeAt: null });
 
     const lastWake = new Date(Date.now() - 60_000);
-    await db!.insert(activityLog).values({ companyId, action: "review_routing_wake_requested", entityType: "issue", entityId: completedIssueId!, details: { issueId: completedIssueId!, reviewerAgentId: reviewerId, stageId: "review", attempt: 3, requestedAt: lastWake.toISOString() } });
+    await db!.insert(activityLog).values({ companyId, action: REVIEW_ROUTING_WAKE_ACTION, entityType: "issue", entityId: completedIssueId!, details: { issueId: completedIssueId!, reviewerAgentId: reviewerId, stageId: "review", attempt: 3, requestedAt: lastWake.toISOString() } });
     const completed = await store.reviewWakeState({ companyId, issueId: completedIssueId!, reviewerAgentId: reviewerId, stageId: "review" });
     expect(completed.activeRun).toBe(false);
     expect(completed.pendingWake).toBe(false);
