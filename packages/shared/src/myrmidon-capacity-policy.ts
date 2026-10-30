@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { swarmPriorityRank } from "./myrmidon-swarm-claim.js";
+import { orderSwarmQueueCandidates, swarmPriorityRank, type SwarmQueueCandidate } from "./myrmidon-swarm-claim.js";
 
 const shareSchema = z.number().finite().min(0).max(1);
 const nonNegativeNumberSchema = z.number().finite().min(0);
@@ -56,6 +56,33 @@ export const DEFAULT_CAPACITY_POLICY: CapacityPolicy = {
   limits: { perProjectActive: null, perCasteActive: null },
   starvation: { afterMin: 60, promoteBy: 1 },
 };
+
+/** Reorders the queue to cap each project's share while preserving base order. */
+export function applyProjectFairness<T extends SwarmQueueCandidate & { projectId?: string | null }>(
+  candidates: readonly T[],
+  policy: CapacityPolicy,
+): T[] {
+  const ordered = orderSwarmQueueCandidates(candidates);
+  const maxShare = policy.fairness.perProjectMaxShare;
+  if (ordered.length < 2 || maxShare >= 1) return ordered;
+
+  const result: T[] = [];
+  const remaining = [...ordered];
+  const counts = new Map<string, number>();
+  while (remaining.length) {
+    const nextLength = result.length + 1;
+    const index = remaining.findIndex((candidate) => {
+      const project = candidate.projectId?.trim();
+      if (!project) return true;
+      return (counts.get(project) ?? 0) + 1 <= Math.ceil(nextLength * maxShare);
+    });
+    const [candidate] = remaining.splice(index < 0 ? 0 : index, 1);
+    result.push(candidate);
+    const project = candidate.projectId?.trim();
+    if (project) counts.set(project, (counts.get(project) ?? 0) + 1);
+  }
+  return result;
+}
 
 export interface CapacityMetrics {
   activeByProject: Readonly<Record<string, number>>;
