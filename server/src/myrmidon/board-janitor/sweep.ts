@@ -145,6 +145,7 @@ export function createBoardJanitorSweep(deps: {
 
     const openIssueCandidates: IssueCandidate[] = rawOpenIssues.map((i) => ({
       ...i,
+      metadata: (i.metadata ?? null) as Record<string, unknown> | null,
       identifier: i.identifier ?? i.id,
       labels: issueLabelMap.get(i.id) ?? [],
     }));
@@ -539,7 +540,7 @@ export function createBoardJanitorSweep(deps: {
           body: reportMarkdown,
           createdByAgentId: settings.serviceAgentId,
         });
-        reportDocumentId = docResult?.id ?? undefined;
+        reportDocumentId = docResult?.document?.id ?? undefined;
       } catch (err) {
         logger.warn({ err, reportDocKey }, "Failed to write janitor report document to service ticket");
       }
