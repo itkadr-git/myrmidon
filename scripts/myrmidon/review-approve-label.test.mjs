@@ -159,9 +159,43 @@ describe("decideApproveLabel", () => {
   it("waits for a green CI result and skips closed, merged and draft PRs", () => {
     assert.deepEqual(decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "failure" }), { action: "skip", reason: "ci-failure" });
     assert.equal(decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "in_progress" }).action, "skip");
+    assert.equal(decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "queued" }).action, "skip");
+    assert.equal(decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "missing" }).action, "skip");
     assert.equal(decideApproveLabel({ verdict: approve, pr: { ...open, state: "closed" }, headCommittedAt: null, ci: "success" }).reason, "pr-not-open");
     assert.equal(decideApproveLabel({ verdict: approve, pr: { ...open, merged: true }, headCommittedAt: null, ci: "success" }).reason, "pr-not-open");
     assert.equal(decideApproveLabel({ verdict: approve, pr: { ...open, draft: true }, headCommittedAt: null, ci: "success" }).reason, "pr-draft");
+  });
+
+  it("queued/in_progress/missing CI on the PR does not permit auto-merge or labeling", () => {
+    for (const nonGreenCi of ["queued", "in_progress", "missing"]) {
+      const decision = decideApproveLabel({
+        verdict: approve,
+        pr: open,
+        headCommittedAt: null,
+        ci: nonGreenCi,
+        mainCi: "success",
+        autoMerge: true,
+      });
+      assert.equal(decision.action, "skip");
+      assert.equal(decision.reason, `ci-${nonGreenCi}`);
+      assert.notEqual(decision.autoMerge, true);
+    }
+  });
+
+  it("already-labeled PR with queued/in_progress/missing CI does not permit auto-merge", () => {
+    for (const nonGreenCi of ["queued", "in_progress", "missing"]) {
+      const decision = decideApproveLabel({
+        verdict: approve,
+        pr: { ...open, labels: [APPROVED_LABEL] },
+        headCommittedAt: null,
+        ci: nonGreenCi,
+        mainCi: "success",
+        autoMerge: true,
+      });
+      assert.equal(decision.action, "skip");
+      assert.equal(decision.reason, `ci-${nonGreenCi}`);
+      assert.notEqual(decision.autoMerge, true);
+    }
   });
 });
 
@@ -442,6 +476,55 @@ describe("runOnce with green main protection and auto-merge", () => {
     assert.deepEqual(github.labeled, []);
     assert.equal(dry.results.find((r) => r.prNumber === 1).dryRun, true);
     assert.equal(dry.failed, 2);
+  });
+
+  // Acceptance Case: queued/in_progress/missing CI у самого PR не разрешает включение auto-merge
+  it("acceptance: queued/in_progress/missing CI on the PR does not permit auto-merge", async () => {
+    for (const nonGreenCi of ["queued", "in_progress", "missing"]) {
+      const github = fakeGitHub({
+        1: { pr: open(HEAD, [], false), ci: nonGreenCi },
+        2: { pr: open("a".repeat(40), [APPROVED_LABEL], false), ci: nonGreenCi },
+      }, { mainCi: "success" });
+
+      const { results } = await runOnce({
+        comments,
+        repo: REPO,
+        github,
+        autoMerge: true,
+      });
+
+      assert.deepEqual(github.autoMerged, [], `auto-merge must not be enabled when PR CI is ${nonGreenCi}`);
+      const r1 = results.find((r) => r.prNumber === 1);
+      assert.equal(r1.action, "skip");
+      assert.equal(r1.reason, `ci-${nonGreenCi}`);
+      const r2 = results.find((r) => r.prNumber === 2);
+      assert.equal(r2.action, "skip");
+      assert.equal(r2.reason, `ci-${nonGreenCi}`);
+    }
+  });
+
+  // Acceptance Case: main CI missing falls back to last completed CI status and holds auto-merge when red
+  it("acceptance: main CI missing falls back to last completed CI status and holds auto-merge when red", async () => {
+    const store = createMemoryStateStore({
+      consecutiveFailures: 1,
+      backoffUntil: null,
+      mainStatus: "failure",
+      lastCompletedStatus: "failure",
+    });
+    const github = fakeGitHub({
+      1: { pr: open(HEAD), ci: "success" },
+    }, { mainCi: "missing", lastCompletedMain: "failure" });
+
+    const { paused } = await runOnce({
+      comments,
+      repo: REPO,
+      github,
+      stateStore: store,
+      autoMerge: true,
+    });
+
+    assert.equal(paused, true, "auto-merge should be paused when main CI is missing and last completed was failure");
+    assert.deepEqual(github.autoMerged, []);
   });
 });
 

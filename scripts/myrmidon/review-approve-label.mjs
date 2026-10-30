@@ -408,15 +408,16 @@ export async function runOnce({
   const isRunning =
     mainCiRaw === "in_progress" ||
     mainCiRaw === "queued" ||
-    mainCiRaw === "pending";
+    mainCiRaw === "pending" ||
+    mainCiRaw === "missing";
 
   let resolvedConclusion = mainCiRaw;
   if (isRunning) {
-    // When main CI is running, take the last completed CI result conclusion
+    // When main CI is running or not yet registered, take the last completed CI result conclusion
     const prev =
       lastCompletedMain ||
       (state.lastCompletedStatus && state.lastCompletedStatus !== "unknown" ? state.lastCompletedStatus : null) ||
-      (state.mainStatus && state.mainStatus !== "unknown" && !["in_progress", "queued", "pending"].includes(state.mainStatus) ? state.mainStatus : null) ||
+      (state.mainStatus && state.mainStatus !== "unknown" && !["in_progress", "queued", "pending", "missing"].includes(state.mainStatus) ? state.mainStatus : null) ||
       "success";
     resolvedConclusion = prev;
     log(`Main branch CI is currently ${mainCiRaw}; using last completed conclusion: ${resolvedConclusion}.`);
