@@ -397,6 +397,18 @@
       "window5h": "5h Limit Window",
       "window7d": "7d Limit Window",
       "lastOk": "Last OK"
+    },
+    "litellmChannels": {
+      "title": "LiteLLM Model Groups & Channels",
+      "description": "Model groups and routed provider channels configured in LiteLLM.",
+      "loading": "Loading model groups and channels...",
+      "empty": "No LiteLLM model groups or channels found.",
+      "error": "Failed to load LiteLLM channels: {{error}}",
+      "group": "Group",
+      "provider": "Provider",
+      "providerModel": "Provider Model",
+      "order": "Order",
+      "weight": "Weight"
     }
   },
   "castes": {

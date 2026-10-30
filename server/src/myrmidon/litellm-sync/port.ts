@@ -6,6 +6,21 @@
 // calls to register models dynamically. This module provides the client surface
 // for those calls, abstracting the HTTP transport and credential handling.
 
+export interface LitellmChannelView {
+  /** Gateway deployment/channel id (`model_info.id`), when reported. */
+  id: string | null;
+  /** The model group name in LiteLLM (`model_name`). */
+  group: string;
+  /** The upstream provider type (e.g. 'openai', 'azure', 'dashscope'). */
+  provider: string;
+  /** The provider's model identifier (e.g. 'openai/gpt-4o', 'gpt-4o'). */
+  providerModel: string;
+  /** Routing fallback order / priority, if set. */
+  order: number | null;
+  /** Routing weight for load balancing, if set. */
+  weight: number | null;
+}
+
 export interface LitellmSyncPort {
   /**
    * Registers a model in LiteLLM with credential reference.
@@ -62,4 +77,10 @@ export interface LitellmSyncPort {
     /** The credential secret name reference. */
     credentialSecretName: string;
   }>>;
+
+  /**
+   * Fetches the model groups and channels from LiteLLM /model/info.
+   * Returns key-free channel views (group, provider, providerModel, order, weight).
+   */
+  listChannels(): Promise<LitellmChannelView[]>;
 }
