@@ -29,6 +29,8 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
       { role: "engineer", status: "in_progress", count: 1 },
       { role: "reviewer", status: "in_review", count: 2 },
     ],
+    reviewTasksWithoutReviewer: 0,
+    blockedTasksWithoutAssignee: 0,
     swarmClaimsActive: 4,
     swarmClaimsTotal: 12,
     agentErrorSignals: 1,
@@ -117,18 +119,20 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_agent_error_signals gauge");
     expect(text).toContain("# TYPE myrmidon_llm_cost_cents_total counter");
     expect(text).toContain("# TYPE myrmidon_scrape_errors gauge");
+    expect(text).toContain("# TYPE myrmidon_review_tasks_without_reviewer gauge");
+    expect(text).toContain("# TYPE myrmidon_blocked_tasks_without_assignee gauge");
     expect(text).toContain("# TYPE myrmidon_board_event_loop_utilization gauge");
   });
 
   it("renders one sample line per family and per role/status pair", () => {
     const text = renderMetricsText(snapshot());
-    const sampleLines = text.split("\n").filter((line) => line.startsWith("myrmidon_"));
+    const sampleLines = text.split("\n").filter((line) => line.startsWith("myrmidon_") && !line.startsWith("# "));
     // 9 single-sample families + 2 quantile samples + 3 role pairs = 14,
     // plus the process half (1.6.5-PROCS-Q3): 3 loop quantiles + 1 RSS +
     // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
     // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
-    // continuation dedupe counters = 27.
-    expect(sampleLines).toHaveLength(27);
+    // continuation dedupe counters = 27, plus two review/blocked gauges = 29.
+    expect(sampleLines).toHaveLength(29);
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{role="all",quantile="0.99"} 0.13');
