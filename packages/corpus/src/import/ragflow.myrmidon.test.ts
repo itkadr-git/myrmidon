@@ -294,4 +294,64 @@ describe("RAGFlow corpus import", () => {
       embed: async () => [[Number.NaN, 0, 0, 0]],
     })).rejects.toThrow("non-finite number");
   });
+
+  it("permits zero-chunk documents with uncompleted run states during import", async () => {
+    const memory = memoryTarget();
+    const zeroChunkSource: RagflowSource = {
+      baseUrl: "https://ragflow.example/",
+      apiKey: "test-key",
+      pageSize: 1,
+      async *listDatasets() {
+        yield { id: "ds-empty", name: "Empty Dataset", document_count: 1, chunk_count: 0 };
+      },
+      async *listDocuments() {
+        yield { id: "doc-empty", name: "empty.pdf", run: "PENDING", chunk_count: 0 };
+      },
+      async countChunks() { return 0; },
+      async *listChunks() {},
+    };
+
+    const summary = await importRagflowCorpus({
+      source: zeroChunkSource,
+      target: memory.target,
+      companyId: "aaaaaaaa-0000-0000-0000-000000000001",
+      embeddingDimensions: 4,
+      embed: embedFixture,
+    });
+
+    expect(summary.datasets).toBe(1);
+    expect(summary.documents).toBe(1);
+    expect(summary.chunks).toBe(0);
+    expect(summary.embeddedChunks).toBe(0);
+  });
+
+  it("safely resumes import by reusing existing matching embeddings without re-embedding", async () => {
+    const memory = memoryTarget();
+    let embedCallCount = 0;
+    const trackingEmbedder = async (texts: string[]) => {
+      embedCallCount += texts.length;
+      return texts.map(() => [0.5, 0.5, 0.5, 0.5]);
+    };
+
+    const importOptions = {
+      source,
+      target: memory.target,
+      companyId: "aaaaaaaa-0000-0000-0000-000000000001",
+      embeddingDimensions: 4,
+      embed: trackingEmbedder,
+    };
+
+    // First run: embeds all chunks
+    const firstSummary = await importRagflowCorpus(importOptions);
+    expect(firstSummary.chunks).toBe(4);
+    expect(firstSummary.embeddedChunks).toBe(4);
+    expect(embedCallCount).toBe(4);
+
+    // Second run: resumes, reuses all valid matching embeddings, embeds 0 chunks
+    embedCallCount = 0;
+    const secondSummary = await importRagflowCorpus(importOptions);
+    expect(secondSummary.chunks).toBe(4);
+    expect(secondSummary.embeddedChunks).toBe(0);
+    expect(embedCallCount).toBe(0);
+  });
 });
