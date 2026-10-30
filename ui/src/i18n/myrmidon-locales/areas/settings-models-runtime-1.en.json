@@ -125,6 +125,16 @@
         "saveFailed": "Saving the model fallback settings failed.",
         "loadFailed": "Failed to load model fallback settings."
       },
+      "model-api-pricing-settings-panel": {
+        "title": "Model API-equivalent prices",
+        "description": "Subscription-backed usage is estimated at these per-model list prices instead of being recorded as free. Rates are USD per 1M uncached input, cached input and output tokens. LiteLLM's pool spend remains unchanged.",
+        "pricesLabel": "Model price table JSON",
+        "saveButton": "Save model prices",
+        "saveFailed": "Could not save model prices.",
+        "loadFailed": "Could not load model prices.",
+        "invalidJson": "Enter a valid JSON object.",
+        "invalidPrices": "Each model needs non-negative inputUsdPerMillion, cachedInputUsdPerMillion and outputUsdPerMillion prices."
+      },
       "model-menu-settings-panel": {
         "newGroupTitle": "New group",
         "saveFailed": "Could not save the menu. Try again.",
