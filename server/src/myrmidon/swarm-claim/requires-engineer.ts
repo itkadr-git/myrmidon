@@ -59,3 +59,10 @@ export function requiresEngineer(input: EngineerRequirementInput): boolean {
 export function isCheckoutRequiredPreference(value: string | null | undefined): boolean {
   return value != null && WORKSPACE_PREFERENCES.has(value) && CHECKOUT_PREFERENCES.has(value);
 }
+
+export type ContinuationRoleInput = { agentRole?: string | null; issueRole?: string | null };
+
+/** Fail open when either side has no role classification. */
+export function shouldSkipContinuation(input: ContinuationRoleInput): boolean {
+  return input.agentRole != null && input.issueRole != null && input.agentRole !== input.issueRole;
+}
