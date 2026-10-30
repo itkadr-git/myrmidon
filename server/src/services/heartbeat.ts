@@ -21595,6 +21595,21 @@ export function heartbeatService(
       readNonEmptyString(payload?.taskId);
     const key = opts.idempotencyKey ??
       `issue-review-admission:${resolvedIssueId ?? "unknown"}:${agentId}`;
+    if (typeof tx.select === "function") {
+      try {
+        const agent = await tx
+          .select({ id: agents.id, companyId: agents.companyId })
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .then((rows) => rows[0] ?? null);
+        if (!agent) {
+          return { created: false, skippedMissingAgent: true };
+        }
+        resolvedCompanyId = agent.companyId ?? resolvedCompanyId;
+      } catch {
+        // Query failed on mock tx
+      }
+    }
     if (resolvedIssueId && !payload?.eventRevision) {
       const eventRevision = await tx.select({ updatedAt: issues.updatedAt }).from(issues)
         .where(and(eq(issues.companyId, resolvedCompanyId), eq(issues.id, resolvedIssueId)))

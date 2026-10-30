@@ -1,4 +1,4 @@
--- migration 0423_clear_stale_replay_holds.sql
+-- migration 0424_clear_stale_replay_holds.sql
 -- 1. Deduplicate historical issue_recovery_actions with replay = 'blocked'
 --    scoped strictly to resolved/cancelled recovery actions.
 -- 2. Clear stale replay holds (>24h old) on open workable issues (todo/in_progress)
@@ -41,7 +41,7 @@ BEGIN
         (ira.evidence->'automaticRecovery') || jsonb_build_object(
           'replay', 'cleared',
           'replayClearedAt', NOW()::text,
-          'replayClearedBy', 'migration_0423_dedupe',
+          'replayClearedBy', 'migration_0424_dedupe',
           'replayClearedNote', 'Deduplicated historical hold superseded by later action',
           'previousEvidence', r.original_evidence
         )
@@ -67,14 +67,14 @@ BEGIN
       gen_random_uuid(),
       d.company_id,
       'system',
-      'migration_0423',
+      'migration_0424',
       'issue.execution_recovery_settled',
       'issue',
       d.source_issue_id,
       jsonb_build_object(
         'actionId', d.id,
         'sourceIssueId', d.source_issue_id,
-        'reason', 'migration_0423_dedupe: historical duplicate hold superseded',
+        'reason', 'migration_0424_dedupe: historical duplicate hold superseded',
         'clearedAt', NOW()::text,
         'previousEvidence', d.original_evidence
       ),
@@ -132,7 +132,7 @@ BEGIN
         (ira.evidence->'automaticRecovery') || jsonb_build_object(
           'replay', 'cleared',
           'replayClearedAt', NOW()::text,
-          'replayClearedBy', 'migration_0423_stale',
+          'replayClearedBy', 'migration_0424_stale',
           'replayClearedNote', 'Stale hold cleared (>24h old on safe workable issue)',
           'previousEvidence', sc.original_evidence
         )
@@ -158,14 +158,14 @@ BEGIN
       gen_random_uuid(),
       s.company_id,
       'system',
-      'migration_0423',
+      'migration_0424',
       'issue.execution_recovery_settled',
       'issue',
       s.source_issue_id,
       jsonb_build_object(
         'actionId', s.id,
         'sourceIssueId', s.source_issue_id,
-        'reason', 'migration_0423_stale: stale hold cleared (>24h on safe workable issue)',
+        'reason', 'migration_0424_stale: stale hold cleared (>24h on safe workable issue)',
         'clearedAt', NOW()::text,
         'previousEvidence', s.original_evidence
       ),
@@ -175,6 +175,6 @@ BEGIN
   )
   SELECT count(*) INTO stale_count FROM stale_rows;
 
-  RAISE NOTICE '0423_clear_stale_replay_holds: deduped % duplicate holds, cleared % stale holds older than 24h on safe workable issues',
+  RAISE NOTICE '0424_clear_stale_replay_holds: deduped % duplicate holds, cleared % stale holds older than 24h on safe workable issues',
     dedupe_count, stale_count;
 END $$;
