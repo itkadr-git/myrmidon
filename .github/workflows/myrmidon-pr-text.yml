@@ -15,9 +15,12 @@ name: Myrmidon PR text
 # the `checks` job of myrmidon-ci.yml (scripts/myrmidon/ai-signature-scan.mjs).
 # See docs/myrmidon/publish-scan.md.
 
+# `edited` only: on push (opened/synchronize/reopened), the checks job in
+# myrmidon-ci.yml already scans title and description together with commits.
+# Triggering only on `edited` eliminates duplicate workflow runs on every push.
 on:
   pull_request:
-    types: [opened, edited, reopened, synchronize]
+    types: [edited]
 
 permissions:
   contents: read

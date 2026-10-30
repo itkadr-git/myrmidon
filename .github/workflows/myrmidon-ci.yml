@@ -31,18 +31,19 @@ on:
 
 permissions:
   contents: read
+  statuses: write
+  pull-requests: read
 
 concurrency:
-  # Superseded runs are cancelled on PRs and on main alike; a cancelled run
-  # reports no `CI result`, so it can never look green. A cancelled
-  # merge_group run evicts the group from the queue, so queue runs are never
-  # cancelled.
+  # Main and tags never cancel each other; each push to main completes its run.
+  # On PRs, fresh pushes (run_attempt == 1) cancel superseded runs; re-runs
+  # (run_attempt > 1) do NOT cancel whatever is currently running for the head.
+  # Merge group candidates are never cancelled.
   #
   # `labeled` only matters for `full-ci` and `review-approved`. A run started
-  # by any other label (review-in-progress, needs-rebase, ...) goes to its own
-  # group, so it cannot cancel the real run, and every job in it is skipped.
-  group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') && '' || '-label-noop' }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
+  # by any other label goes to its own group, so it cannot cancel the real run.
+  group: myrmidon-ci-${{ (contains(github.event.pull_request.labels.*.name, 'release') || startsWith(github.head_ref, 'rel/') || startsWith(github.base_ref, 'rel/')) && 'release-' || '' }}${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') && '' || '-label-noop' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 && (github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -63,6 +64,27 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Release freeze check
+        if: ${{ github.event_name == 'pull_request' && github.repository == 'itkadr-git/myrmidon' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ./scripts/myrmidon/release/release-freeze.sh --check
+
+      - name: Hot files review check
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+        env:
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ./scripts/myrmidon/ci/hot-files-check.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -95,6 +117,9 @@ jobs:
           HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
           FULL_LABEL: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'review-approved'))) }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           args=(plan --out "$RUNNER_TEMP/plan.json")
@@ -110,6 +135,16 @@ jobs:
             fi
             if [ "$FULL_LABEL" = "true" ]; then args+=(--force-full); fi
             case "$BASE_REF" in rel/*) args+=(--release-fast) ;; esac
+            if [[ "$PR_TITLE" =~ (rc\.[0-9]+|release) ]] || [[ "$BASE_REF" =~ rel/* ]]; then
+              args+=(--release-fast)
+            fi
+            if [ "$EVENT" = "pull_request" ] && [ -n "$PR_NUMBER" ]; then
+              pr_head="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha' 2>/dev/null || true)"
+              if [ -n "$pr_head" ] && [ "$HEAD" != "$pr_head" ]; then
+                echo "::warning title=Obsolete Run::Commit $HEAD is superseded by head $pr_head on PR #$PR_NUMBER. Running minimal docs tier."
+                args=(plan --out "$RUNNER_TEMP/plan.json" --tier docs)
+              fi
+            fi
           fi
           node scripts/myrmidon/ci/affected-tests.mjs "${args[@]}"
 
@@ -514,6 +549,25 @@ jobs:
           BASE: ${{ steps.range.outputs.base }}
           HEAD: ${{ steps.range.outputs.head }}
         run: node scripts/myrmidon/ai-signature-scan.mjs --commits "$BASE..$HEAD"
+
+      - name: PR text - publish scan (title and body)
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          MYRMIDON_FORBIDDEN_PATTERNS: ${{ secrets.MYRMIDON_FORBIDDEN_PATTERNS }}
+        run: |
+          set -euo pipefail
+          printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | node scripts/myrmidon/publish-scan.mjs
+
+      - name: PR text - AI signatures (title and body)
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | node scripts/myrmidon/ai-signature-scan.mjs
 
       - name: Internal addresses (private networks)
         if: ${{ !cancelled() }}
