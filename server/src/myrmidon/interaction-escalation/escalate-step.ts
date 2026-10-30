@@ -78,6 +78,12 @@ export async function escalateInteractionStep(
           sourceRunId: card.sourceRunId,
           mutation: "interaction",
           escalationLevel: level,
+          escalationWake: {
+            wakeIdempotencyKey: `interaction-pending:${interactionId}:level:${level}`,
+            contextSnapshot: { issueId: card.issueId, taskId: card.issueId,
+              interactionId, interactionKind: card.kind, escalationLevel: level,
+              wakeReason: "interaction_pending", source: "issue.interaction.escalated" },
+          },
         },
       });
     }
