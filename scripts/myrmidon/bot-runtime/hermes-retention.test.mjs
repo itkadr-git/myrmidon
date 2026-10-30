@@ -12,52 +12,14 @@ import {
 
 // Real DDL from Hermes state.db (no `name` column!)
 const REAL_HERMES_SESSIONS_DDL = `
-  CREATE TABLE sessions (
-    id TEXT PRIMARY KEY,
-    source TEXT NOT NULL,
-    user_id TEXT,
-    session_key TEXT,
-    chat_id TEXT,
-    chat_type TEXT,
-    thread_id TEXT,
-    display_name TEXT,
-    origin_json TEXT,
-    parent_session_id TEXT,
-    started_at REAL NOT NULL,
-    ended_at REAL,
-    last_activity_at REAL,
-    message_count INTEGER DEFAULT 0
-  );
-  CREATE TABLE messages (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    role TEXT NOT NULL,
-    content TEXT
-  );
-  CREATE TABLE session_model_usage (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    total_tokens INTEGER DEFAULT 0
-  );
-  CREATE TABLE session_turn_leases (
-    conversation_id TEXT PRIMARY KEY
-  );
-  CREATE TABLE compression_locks (
-    session_id TEXT PRIMARY KEY
-  );
-  CREATE TABLE delivery_obligations (
-    id TEXT PRIMARY KEY,
-    session_key TEXT
-  );
-  CREATE TABLE conversation_generations (
-    source TEXT,
-    session_key TEXT,
-    generation INTEGER
-  );
-  CREATE TABLE async_delegations (
-    origin_session TEXT,
-    parent_session_id TEXT
-  );
+  CREATE TABLE sessions (\n    id TEXT PRIMARY KEY,\n    source TEXT NOT NULL,\n    user_id TEXT,\n    session_key TEXT,\n    chat_id TEXT,\n    chat_type TEXT,\n    thread_id TEXT,\n    display_name TEXT,\n    origin_json TEXT,\n    parent_session_id TEXT,\n    started_at REAL NOT NULL,\n    ended_at REAL,\n    last_activity_at REAL,\n    message_count INTEGER DEFAULT 0\n  );
+  CREATE TABLE messages (\n    id TEXT PRIMARY KEY,\n    session_id TEXT NOT NULL,\n    role TEXT NOT NULL,\n    content TEXT\n  );
+  CREATE TABLE session_model_usage (\n    id TEXT PRIMARY KEY,\n    session_id TEXT NOT NULL,\n    total_tokens INTEGER DEFAULT 0\n  );
+  CREATE TABLE session_turn_leases (\n    conversation_id TEXT PRIMARY KEY\n  );
+  CREATE TABLE compression_locks (\n    session_id TEXT PRIMARY KEY\n  );
+  CREATE TABLE delivery_obligations (\n    id TEXT PRIMARY KEY,\n    session_key TEXT\n  );
+  CREATE TABLE conversation_generations (\n    source TEXT,\n    session_key TEXT,\n    generation INTEGER\n  );
+  CREATE TABLE async_delegations (\n    origin_session TEXT,\n    parent_session_id TEXT\n  );
 `;
 
 test("extractIssueIdFromSession extracts UUID from session_key and session.id", () => {
@@ -77,14 +39,14 @@ test("extractIssueIdFromSession extracts UUID from session_key and session.id", 
   assert.strictEqual(extractIssueIdFromSession(sCron), null);
 });
 
-test("selectClosedTasksForRetention with real C3 contract (workspaces with id, closedKeys with closedAt and issueId)", () => {
+test("selectClosedTasksForRetention: state='closing' is NOT closed (protects reassigned/hidden open tasks), only closedTasks with closedAt are eligible", () => {
   const now = new Date("2026-10-28T12:00:00Z").getTime();
 
   const idActive = "11111111-1111-4111-8111-111111111111";
-  const idRecent = "22222222-2222-4222-8222-222222222222";
+  const idReassignedClosing = "22222222-2222-4222-8222-222222222222";
   const idOldClosed = "33333333-3333-4333-8333-333333333333";
-  const idClosedKeysOld = "44444444-4444-4444-8444-444444444444";
-  const idClosedKeysRecent = "55555555-5555-4555-8555-555555555555";
+  const idClosedTasksOld = "44444444-4444-4444-8444-444444444444";
+  const idClosedTasksRecent = "55555555-5555-4555-8555-555555555555";
   const idProtected = "66666666-6666-4666-8666-666666666666";
 
   const desiredState = {
@@ -95,40 +57,44 @@ test("selectClosedTasksForRetention with real C3 contract (workspaces with id, c
         key: "OPE-12",
         id: idActive,
         state: "active",
-        since: new Date(now - 20 * 86_400_000).toISOString(), // active open task
+        since: new Date(now - 20 * 86_400_000).toISOString(),
       },
       {
-        key: "OPE-123",
-        id: idRecent,
+        // Reassigned open task without activity for 10 days: state is 'closing', but task is NOT closed!
+        key: "OPE-REASSIGNED",
+        id: idReassignedClosing,
         state: "closing",
-        since: new Date(now - 2 * 86_400_000).toISOString(), // closed only 2 days ago (< 7d)
+        since: new Date(now - 10 * 86_400_000).toISOString(),
       },
       {
         key: "OPE-1234",
         id: idOldClosed,
-        state: "closing",
-        since: new Date(now - 12 * 86_400_000).toISOString(), // closed 12 days ago (> 7d)
+        status: "done",
+        completedAt: new Date(now - 12 * 86_400_000).toISOString(),
       },
       {
         key: "OPE-PROT",
         id: idProtected,
-        state: "closing",
-        since: new Date(now - 30 * 86_400_000).toISOString(), // old, but listed in protectKeys
+        status: "done",
+        completedAt: new Date(now - 30 * 86_400_000).toISOString(),
       },
     ],
     protectKeys: ["OPE-PROT"],
-    closedKeys: [
+    closedKeys: ["OPE-1234", "OPE-OLD-KEY", "OPE-REC-KEY", "OPE-STR-ONLY"],
+    closedTasks: [
       {
         key: "OPE-OLD-KEY",
-        issueId: idClosedKeysOld,
-        closedAt: new Date(now - 10 * 86_400_000).toISOString(), // closed 10 days ago (> 7d)
+        issueId: idClosedTasksOld,
+        closedAt: new Date(now - 10 * 86_400_000).toISOString(),
       },
       {
         key: "OPE-REC-KEY",
-        issueId: idClosedKeysRecent,
-        closedAt: new Date(now - 3 * 86_400_000).toISOString(), // closed 3 days ago (< 7d)
+        issueId: idClosedTasksRecent,
+        closedAt: new Date(now - 3 * 86_400_000).toISOString(),
       },
-      "OPE-STR-ONLY", // string only, no timestamp or issueId -> fail safe, not eligible
+      {
+        key: "OPE-STR-ONLY", // string only / no timestamp -> fail safe
+      },
     ],
   };
 
@@ -136,20 +102,20 @@ test("selectClosedTasksForRetention with real C3 contract (workspaces with id, c
     workspaces: desiredState.workspaces,
     protectKeys: desiredState.protectKeys,
     closedKeys: desiredState.closedKeys,
+    closedTasks: desiredState.closedTasks,
     retentionDays: 7,
     now,
   });
 
   assert.ok(selection.closedTaskIds.includes(idOldClosed), "old closed task in workspaces selected");
-  assert.ok(selection.closedTaskIds.includes(idClosedKeysOld), "old closed task in closedKeys selected");
+  assert.ok(selection.closedTaskIds.includes(idClosedTasksOld), "old closed task in closedTasks selected");
 
   assert.ok(!selection.closedTaskIds.includes(idActive), "active task must NOT be selected");
-  assert.ok(!selection.closedTaskIds.includes(idRecent), "recently closed task must NOT be selected");
-  assert.ok(!selection.closedTaskIds.includes(idClosedKeysRecent), "recent closedKeys task must NOT be selected");
+  assert.ok(!selection.closedTaskIds.includes(idReassignedClosing), "reassigned closing task must NOT be selected");
+  assert.ok(!selection.closedTaskIds.includes(idClosedTasksRecent), "recent closed task must NOT be selected");
   assert.ok(!selection.closedTaskIds.includes(idProtected), "protected task must NOT be selected");
 
   assert.ok(selection.protectedIds.includes(idActive), "active task must be in protectedIds");
-  assert.ok(selection.protectedIds.includes(idRecent), "recent task must be protected");
   assert.ok(selection.protectedIds.includes(idProtected), "protectKeys task must be protected");
 });
 
@@ -173,15 +139,10 @@ test("pruneHermesClosedTaskSessions on real schema: exact UUID matching without 
   db.exec(`
     INSERT INTO sessions (id, source, session_key, started_at, ended_at, last_activity_at) VALUES
       ('s_active', 'paperclip', 'paperclip:company:c1:agent:a1:issue:${idOpe12}', ${secNow - 864000}, NULL, ${secNow - 3600}),
-      ('s_active_sub', 'paperclip', 'paperclip:company:c1:agent:a1:sub:active', ${secNow - 3600}, NULL, ${secNow - 3600}),
       ('s_recent', 'paperclip', 'paperclip:company:c1:agent:a1:issue:${idRecent}', ${secNow - 172800}, ${secNow - 172800}, ${secNow - 172800}),
       ('s_old', 'paperclip', 'paperclip:company:c1:agent:a1:issue:${idOpe123}', ${secNow - 864000}, ${secNow - 864000}, ${secNow - 864000}),
-      ('s_old_sub', 'paperclip', 'paperclip:company:c1:agent:a1:sub:old', ${secNow - 864000}, ${secNow - 864000}, ${secNow - 864000}),
       ('s_str_time', 'paperclip', 'paperclip:company:c1:agent:a1:issue:${idStringTime}', ${secNow - 900000}, ${secNow - 900000}, ${secNow - 900000}),
       ('s_cron', 'cron', 'cronjob:daily', ${secNow - 900000}, NULL, ${secNow - 100});
-
-    UPDATE sessions SET parent_session_id = 's_active' WHERE id = 's_active_sub';
-    UPDATE sessions SET parent_session_id = 's_old' WHERE id = 's_old_sub';
   `);
 
   // Insert messages and related records
@@ -189,12 +150,10 @@ test("pruneHermesClosedTaskSessions on real schema: exact UUID matching without 
     INSERT INTO messages VALUES
       ('m1', 's_active', 'user', 'hello active'),
       ('m2', 's_old', 'user', 'hello old'),
-      ('m3', 's_old_sub', 'user', 'hello old sub'),
       ('m4', 's_str_time', 'user', 'hello str time');
     INSERT INTO session_model_usage VALUES
       ('u1', 's_active', 10),
-      ('u2', 's_old', 20),
-      ('u3', 's_old_sub', 30);
+      ('u2', 's_old', 20);
     INSERT INTO delivery_obligations VALUES
       ('d1', 'paperclip:company:c1:agent:a1:issue:${idOpe12}'),
       ('d2', 'paperclip:company:c1:agent:a1:issue:${idOpe123}');
@@ -212,19 +171,18 @@ test("pruneHermesClosedTaskSessions on real schema: exact UUID matching without 
         since: new Date(now - 10 * 86_400_000).toISOString(),
       },
       {
-        key: "OPE-123",
-        id: idOpe123,
-        state: "closing",
-        since: new Date(now - 10 * 86_400_000).toISOString(),
-      },
-      {
         key: "OPE-REC",
         id: idRecent,
-        state: "closing",
-        since: new Date(now - 2 * 86_400_000).toISOString(),
+        status: "done",
+        completedAt: new Date(now - 2 * 86_400_000).toISOString(),
       },
     ],
-    closedKeys: [
+    closedTasks: [
+      {
+        key: "OPE-123",
+        issueId: idOpe123,
+        closedAt: new Date(now - 10 * 86_400_000).toISOString(),
+      },
       {
         key: "OPE-STR-TASK",
         issueId: idStringTime,
@@ -241,7 +199,7 @@ test("pruneHermesClosedTaskSessions on real schema: exact UUID matching without 
     idle: false,
     now,
   });
-  assert.strictEqual(notIdleRes.prunedCount, 3, "prunes s_old, s_old_sub, s_str_time");
+  assert.strictEqual(notIdleRes.prunedCount, 2, "prunes s_old, s_str_time");
   assert.strictEqual(notIdleRes.vacuumed, false, "vacuum must NOT run when bot is not idle");
   assert.strictEqual(notIdleRes.skippedReason, "not_idle");
 
@@ -250,8 +208,8 @@ test("pruneHermesClosedTaskSessions on real schema: exact UUID matching without 
   const remainingIds = checkDb.prepare("SELECT id FROM sessions ORDER BY id").all().map((r) => r.id);
   assert.deepStrictEqual(
     remainingIds,
-    ["s_active", "s_active_sub", "s_cron", "s_recent"],
-    "s_active (OPE-12), s_active_sub, s_cron, and s_recent must remain untouched"
+    ["s_active", "s_cron", "s_recent"],
+    "s_active (OPE-12), s_cron, and s_recent must remain untouched"
   );
 
   // Check cascading deletions
@@ -260,6 +218,151 @@ test("pruneHermesClosedTaskSessions on real schema: exact UUID matching without 
 
   const remainingObligations = checkDb.prepare("SELECT id FROM delivery_obligations").all().map((r) => r.id);
   assert.deepStrictEqual(remainingObligations, ["d1"], "only active delivery obligation remains");
+
+  checkDb.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("CRITICAL SAFETY: active/recent child session is preserved when old parent session is pruned", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-child-safety-test-"));
+  const dbPath = path.join(tmp, "state.db");
+  const db = new DatabaseSync(dbPath);
+
+  db.exec(REAL_HERMES_SESSIONS_DDL);
+
+  const now = new Date("2026-10-28T12:00:00Z").getTime();
+  const secNow = Math.floor(now / 1000);
+
+  const idOldTask = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const idActiveTask = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+  // s_parent belongs to an old closed task (closed 15 days ago), last active 15 days ago
+  // s_child_recent has parent_session_id = 's_parent', but was active 1 hour ago!
+  // s_child_active_task has parent_session_id = 's_parent', but belongs to active open task idActiveTask!
+  // s_child_old_stale has parent_session_id = 's_parent', belongs to idOldTask, and is 15 days stale -> this one CAN be deleted
+  db.exec(`
+    INSERT INTO sessions (id, source, session_key, parent_session_id, started_at, ended_at, last_activity_at) VALUES
+      ('s_parent', 'paperclip', 'paperclip:company:c1:agent:a1:issue:${idOldTask}', NULL, ${secNow - 1296000}, ${secNow - 1296000}, ${secNow - 1296000}),
+      ('s_child_recent', 'paperclip', 'paperclip:company:c1:agent:a1:issue:${idOldTask}', 's_parent', ${secNow - 3600}, NULL, ${secNow - 3600}),
+      ('s_child_active_task', 'paperclip', 'paperclip:company:c1:agent:a1:issue:${idActiveTask}', 's_parent', ${secNow - 1296000}, ${secNow - 1296000}, ${secNow - 1296000}),
+      ('s_child_old_stale', 'paperclip', 'paperclip:company:c1:agent:a1:issue:${idOldTask}', 's_parent', ${secNow - 1296000}, ${secNow - 1296000}, ${secNow - 1296000});
+
+    INSERT INTO messages VALUES
+      ('m_parent', 's_parent', 'user', 'parent message'),
+      ('m_child_recent', 's_child_recent', 'user', 'active child message'),
+      ('m_child_active_task', 's_child_active_task', 'user', 'active task child message'),
+      ('m_child_stale', 's_child_old_stale', 'user', 'stale child message');
+  `);
+  db.close();
+
+  const desiredState = {
+    workspaces: [
+      {
+        key: "OPE-ACTIVE",
+        id: idActiveTask,
+        state: "active",
+      },
+    ],
+    closedTasks: [
+      {
+        key: "OPE-OLD",
+        issueId: idOldTask,
+        closedAt: new Date(now - 15 * 86_400_000).toISOString(),
+      },
+    ],
+  };
+
+  const res = pruneHermesClosedTaskSessions({
+    stateDbPath: dbPath,
+    desiredState,
+    retentionDays: 7,
+    idle: true,
+    now,
+  });
+
+  // Only s_parent and s_child_old_stale should be pruned (2 sessions)
+  assert.strictEqual(res.prunedCount, 2, "only stale parent and stale child are pruned");
+
+  const checkDb = new DatabaseSync(dbPath);
+  const remainingSessions = checkDb.prepare("SELECT id, parent_session_id FROM sessions ORDER BY id").all();
+
+  // s_child_recent and s_child_active_task MUST survive!
+  assert.deepStrictEqual(
+    remainingSessions.map((s) => s.id),
+    ["s_child_active_task", "s_child_recent"],
+    "recent child and active-task child MUST be preserved"
+  );
+
+  // Their parent_session_id should have been safely unparented to NULL
+  for (const s of remainingSessions) {
+    assert.strictEqual(s.parent_session_id, null, "surviving children are safely unparented");
+  }
+
+  // Their messages must remain intact
+  const remainingMsgs = checkDb.prepare("SELECT id FROM messages ORDER BY id").all().map((m) => m.id);
+  assert.deepStrictEqual(
+    remainingMsgs,
+    ["m_child_active_task", "m_child_recent"],
+    "messages for surviving child sessions must be preserved"
+  );
+
+  checkDb.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("SAFE DELIVERY OBLIGATIONS: obligations preserved when surviving session shares session_key", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-obligations-test-"));
+  const dbPath = path.join(tmp, "state.db");
+  const db = new DatabaseSync(dbPath);
+
+  db.exec(REAL_HERMES_SESSIONS_DDL);
+
+  const now = new Date("2026-10-28T12:00:00Z").getTime();
+  const secNow = Math.floor(now / 1000);
+  const idOldTask = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const sharedKey = `paperclip:company:c1:agent:a1:issue:${idOldTask}`;
+
+  // Two sessions share the same session_key: one old stale, one active/recent
+  db.exec(`
+    INSERT INTO sessions (id, source, session_key, started_at, ended_at, last_activity_at) VALUES
+      ('s_stale_1', 'paperclip', '${sharedKey}', ${secNow - 1296000}, ${secNow - 1296000}, ${secNow - 1296000}),
+      ('s_alive_2', 'paperclip', '${sharedKey}', ${secNow - 3600}, NULL, ${secNow - 3600});
+
+    INSERT INTO delivery_obligations VALUES ('d_shared', '${sharedKey}');
+    INSERT INTO conversation_generations VALUES ('paperclip', '${sharedKey}', 42);
+  `);
+  db.close();
+
+  const desiredState = {
+    closedTasks: [
+      {
+        key: "OPE-OLD-2",
+        issueId: idOldTask,
+        closedAt: new Date(now - 15 * 86_400_000).toISOString(),
+      },
+    ],
+  };
+
+  const res = pruneHermesClosedTaskSessions({
+    stateDbPath: dbPath,
+    desiredState,
+    retentionDays: 7,
+    idle: true,
+    now,
+  });
+
+  assert.strictEqual(res.prunedCount, 1, "only s_stale_1 is pruned");
+
+  const checkDb = new DatabaseSync(dbPath);
+  const surviving = checkDb.prepare("SELECT id FROM sessions").all().map((s) => s.id);
+  assert.deepStrictEqual(surviving, ["s_alive_2"]);
+
+  // Because s_alive_2 shares sharedKey and is still present, delivery_obligations and conversation_generations must survive!
+  const remainingObligations = checkDb.prepare("SELECT id FROM delivery_obligations").all();
+  assert.strictEqual(remainingObligations.length, 1, "shared obligation must NOT be deleted");
+
+  const remainingGen = checkDb.prepare("SELECT generation FROM conversation_generations").all();
+  assert.strictEqual(remainingGen.length, 1, "shared generation must NOT be deleted");
 
   checkDb.close();
   fs.rmSync(tmp, { recursive: true, force: true });
@@ -296,12 +399,11 @@ test("pruneHermesClosedTaskSessions rolls back transaction if cascade delete fai
   db.close();
 
   const desiredState = {
-    workspaces: [
+    closedTasks: [
       {
         key: "OPE-FAIL",
-        id: idOld,
-        state: "closing",
-        since: new Date(now - 10 * 86_400_000).toISOString(),
+        issueId: idOld,
+        closedAt: new Date(now - 10 * 86_400_000).toISOString(),
       },
     ],
   };

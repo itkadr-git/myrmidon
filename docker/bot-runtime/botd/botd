@@ -205,15 +205,8 @@ async function main() {
   const runProbe = runsMod.createRunProbe({ proc: process });
 
   const desiredClient = desiredMod ? desiredMod.createDesiredClient({ log }) : null;
-  let lastDesiredState = null;
   const desired = {
-    poll: () =>
-      desiredClient
-        ? desiredClient.poll().then((r) => {
-            if (r && r.ok && r.state) lastDesiredState = r.state;
-            return r;
-          })
-        : Promise.resolve({ ok: false, reason: "desired module is not in this image" }),
+    poll: () => (desiredClient ? desiredClient.poll() : Promise.resolve({ ok: false, reason: "desired module is not in this image" })),
   };
   const rules = {
     plan: (inv, state, now, settings) => (rulesMod ? rulesMod.plan(inv, state, now, settings) : { actions: [] }),
@@ -373,15 +366,17 @@ async function main() {
 
     // Hermes session retention (OPE-9673):
     // Only remove sessions for CLOSED tasks older than 7 days, then VACUUM when idle.
-    if (hermesRetentionMod && typeof hermesRetentionMod.pruneHermesClosedTaskSessions === "function") {
+    const retentionEnabled = process.env.MYRMIDON_HERMES_RETENTION !== "0" && process.env.MYRMIDON_HERMES_RETENTION !== "false";
+    if (retentionEnabled && hermesRetentionMod && typeof hermesRetentionMod.pruneHermesClosedTaskSessions === "function") {
       try {
-        const payload = passDesired || lastDesiredState || {};
-        const isIdle = runProbe ? !runProbe.probe().live : true;
+        const payload = passDesired || {};
+        const isIdle = runProbe ? (runProbe.probe().live === false) : false;
         const res = hermesRetentionMod.pruneHermesClosedTaskSessions({
           desiredState: payload,
           workspaces: Array.isArray(payload.workspaces) ? payload.workspaces : [],
           protectKeys: Array.isArray(payload.protectKeys) ? payload.protectKeys : [],
           closedKeys: Array.isArray(payload.closedKeys) ? payload.closedKeys : [],
+          closedTasks: Array.isArray(payload.closedTasks) ? payload.closedTasks : [],
           retentionDays: 7,
           idle: isIdle,
           log,

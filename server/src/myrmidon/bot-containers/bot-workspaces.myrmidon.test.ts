@@ -301,9 +301,9 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
       closedKeys: ["ABC-9", "not a key"],
     });
     const res = await request(app(botActor)).get(URL);
-    const keys = res.body.closedKeys.map((c: any) => (typeof c === "string" ? c : c.key));
+    const keys = res.body.closedKeys;
     expect(keys).toEqual(["ABC-3", "ABC-4", "ABC-9"]);
-    expect(res.body.closedKeys[0]).toMatchObject({ key: "ABC-3", closedAt: "2026-10-06T15:00:00.000Z", issueId: done.id });
+    expect(res.body.closedTasks[0]).toMatchObject({ key: "ABC-3", closedAt: "2026-10-06T15:00:00.000Z", issueId: done.id });
     expect(keys).not.toContain("ABC-5");
     expect(keys).not.toContain("ABC-1");
   });

@@ -254,3 +254,88 @@ test("ensureBase and myr-ws open utilize shared mirror alternates and degrade gr
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test("BEHAVIORAL: syncMirrorAlternates safely rolls back exact alternates on repack failure without losing existing entries", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "myr-ws-repack-fail-test-"));
+  const mirrorRoot = path.join(tmp, "cache", "git");
+  const parsed = { owner: "itkadr-git", repo: "myrmidon", slug: "itkadr-git/myrmidon" };
+  const mirrorDir = path.join(mirrorRoot, parsed.owner, `${parsed.repo}.git`);
+  const baseDir = path.join(tmp, "base.git");
+
+  fs.mkdirSync(path.join(mirrorDir, "objects"), { recursive: true });
+  fs.writeFileSync(path.join(mirrorDir, "HEAD"), "ref: refs/heads/main\n");
+  runGit(["init", "--bare", baseDir]);
+
+  // Pre-seed an existing custom alternates line
+  const altFile = path.join(baseDir, "objects", "info", "alternates");
+  fs.mkdirSync(path.dirname(altFile), { recursive: true });
+  const customAlt = "/some/existing/custom/objects";
+  fs.writeFileSync(altFile, `${customAlt}\n`, "utf8");
+
+  // Create a bad git wrapper that fails on repack
+  const fakeGitDir = path.join(tmp, "fakebin");
+  fs.mkdirSync(fakeGitDir, { recursive: true });
+  const fakeGit = path.join(fakeGitDir, "git");
+  fs.writeFileSync(
+    fakeGit,
+    `#!/bin/sh\nif [ "$1" = "repack" ]; then echo "simulated repack error" >&2; exit 1; fi\nexec ${GIT_REAL} "$@"\n`,
+    { mode: 0o755 }
+  );
+
+  const env = {
+    ...process.env,
+    PATH: `${fakeGitDir}:${process.env.PATH}`,
+    MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot,
+    MYRMIDON_GIT_REAL: fakeGit,
+  };
+
+  const res = syncMirrorAlternates(env, baseDir, parsed);
+  assert.strictEqual(res, null, "syncMirrorAlternates should return null on repack failure");
+
+  // Verify atomic rollback restored EXACT original content without corruption
+  const restoredContent = fs.readFileSync(altFile, "utf8");
+  assert.strictEqual(restoredContent, `${customAlt}\n`, "original alternates content must be restored exactly");
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("BEHAVIORAL: withSyncLock exclusivity, PID tracking, and idempotency", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "myr-ws-lock-test-"));
+  const mirrorRoot = path.join(tmp, "cache", "git");
+  const parsed = { owner: "itkadr-git", repo: "myrmidon", slug: "itkadr-git/myrmidon" };
+  const mirrorDir = path.join(mirrorRoot, parsed.owner, `${parsed.repo}.git`);
+  const baseDir = path.join(tmp, "base.git");
+
+  fs.mkdirSync(path.join(mirrorDir, "objects"), { recursive: true });
+  fs.writeFileSync(path.join(mirrorDir, "HEAD"), "ref: refs/heads/main\n");
+  runGit(["init", "--bare", baseDir]);
+
+  const env = {
+    ...process.env,
+    MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot,
+    MYRMIDON_GIT_REAL: GIT_REAL,
+  };
+
+  // 1. First sync succeeds
+  const firstSync = syncMirrorAlternates(env, baseDir, parsed);
+  assert.strictEqual(firstSync, mirrorDir);
+
+  // 2. Second sync is idempotent and doesn't duplicate lines
+  const secondSync = syncMirrorAlternates(env, baseDir, parsed);
+  assert.strictEqual(secondSync, mirrorDir);
+
+  const altFile = path.join(baseDir, "objects", "info", "alternates");
+  const lines = fs.readFileSync(altFile, "utf8").trim().split("\n");
+  assert.strictEqual(lines.length, 1, "alternates file must contain exactly 1 entry (no duplicates)");
+
+  // 3. Exclusivity: simulate another live process holding lock
+  const lockFile = path.join(baseDir, "sync-mirror.lock");
+  fs.writeFileSync(lockFile, `${process.pid}\n`, "utf8");
+
+  // A concurrent sync while lock is held by a live PID should return null (skip gracefully, no unlocked execution)
+  const lockedSync = syncMirrorAlternates(env, baseDir, { ...parsed, repo: "other" });
+  assert.strictEqual(lockedSync, null, "must not execute repack unlocked when lock is held");
+
+  fs.rmSync(lockFile, { force: true });
+  fs.rmSync(tmp, { recursive: true, force: true });
+});

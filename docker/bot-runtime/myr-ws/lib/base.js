@@ -123,12 +123,27 @@ function withSyncLock(dir, fn) {
   while (Date.now() - startTime < 5000) {
     try {
       fd = fs.openSync(lockPath, "wx");
+      try {
+        fs.writeFileSync(fd, `${process.pid}\n`, "utf8");
+      } catch {}
       break;
     } catch (err) {
       if (err && err.code === "EEXIST") {
         try {
+          const content = fs.readFileSync(lockPath, "utf8").trim();
+          const lockPid = parseInt(content, 10);
+          let isAlive = false;
+          if (!isNaN(lockPid) && lockPid > 0) {
+            try {
+              process.kill(lockPid, 0);
+              isAlive = true;
+            } catch (e) {
+              isAlive = Boolean(e && e.code === "EPERM");
+            }
+          }
           const stat = fs.statSync(lockPath);
-          if (Date.now() - stat.mtimeMs > 30000) {
+          const isStale = (Date.now() - stat.mtimeMs > 700000) || (!isAlive && !isNaN(lockPid));
+          if (isStale) {
             fs.rmSync(lockPath, { force: true });
             continue;
           }
@@ -137,25 +152,27 @@ function withSyncLock(dir, fn) {
         }
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
       } else {
-        break;
+        return null;
       }
     }
+  }
+  if (fd === null) {
+    // Lock could not be acquired within timeout; do not run unlocked
+    return null;
   }
   try {
     return fn();
   } finally {
-    if (fd !== null) {
-      try {
-        fs.closeSync(fd);
-      } catch {}
-      try {
-        fs.rmSync(lockPath, { force: true });
-      } catch {}
-    }
+    try {
+      fs.closeSync(fd);
+    } catch {}
+    try {
+      fs.rmSync(lockPath, { force: true });
+    } catch {}
   }
 }
 
-function syncMirrorAlternates(env, dir, parsed) {
+function syncMirrorAlternates(env, dir, parsed, opts = {}) {
   try {
     const mirror = findMirror(parsed, env);
     if (!mirror) return null;
@@ -168,47 +185,59 @@ function syncMirrorAlternates(env, dir, parsed) {
 
     const alternatesFile = path.join(targetObjectsDir, "info", "alternates");
     const targetLine = `${objectsDir}\n`;
-    let existing = "";
-    try {
-      existing = fs.readFileSync(alternatesFile, "utf8");
-    } catch {
-      // does not exist yet
-    }
-    const lines = existing
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l && fs.existsSync(l));
-    const cleanExisting = lines.join("\n");
-    if (!lines.includes(objectsDir)) {
-      return withSyncLock(dir, () => {
-        fs.mkdirSync(path.dirname(alternatesFile), { recursive: true });
-        const revertAlternates = () => {
-          try {
-            if (cleanExisting) {
-              fs.writeFileSync(alternatesFile, cleanExisting + "\n", "utf8");
-            } else {
-              fs.rmSync(alternatesFile, { force: true });
-            }
-          } catch {
-            // ignore revert error
-          }
-        };
-        fs.writeFileSync(
-          alternatesFile,
-          cleanExisting ? `${cleanExisting}\n${targetLine}` : targetLine,
-          "utf8",
-        );
-        try {
-          mustGit(env, dir, ["repack", "-a", "-d", "-l", "--keep-unreachable"], EXIT.usage);
-        } catch (err) {
-          revertAlternates();
-          // Degrade gracefully on mirror repack failure
-          return null;
-        }
+
+    return withSyncLock(dir, () => {
+      let existing = "";
+      let hasExisting = false;
+      try {
+        existing = fs.readFileSync(alternatesFile, "utf8");
+        hasExisting = true;
+      } catch {
+        // does not exist yet
+      }
+      const lines = existing
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+
+      if (lines.includes(objectsDir)) {
         return mirror;
-      });
-    }
-    return mirror;
+      }
+
+      fs.mkdirSync(path.dirname(alternatesFile), { recursive: true });
+      const originalContent = hasExisting ? existing : null;
+
+      const revertAlternates = () => {
+        try {
+          if (originalContent !== null) {
+            const tmpRevert = `${alternatesFile}.tmp.${process.pid}.${Date.now()}`;
+            fs.writeFileSync(tmpRevert, originalContent, "utf8");
+            fs.renameSync(tmpRevert, alternatesFile);
+          } else {
+            fs.rmSync(alternatesFile, { force: true });
+          }
+        } catch {
+          // ignore revert error
+        }
+      };
+
+      const newContent = existing ? (existing.endsWith("\n") ? `${existing}${targetLine}` : `${existing}\n${targetLine}`) : targetLine;
+      const tmpNew = `${alternatesFile}.tmp.${process.pid}.${Date.now()}`;
+      fs.writeFileSync(tmpNew, newContent, "utf8");
+      fs.renameSync(tmpNew, alternatesFile);
+
+      if (opts.skipRepack) {
+        return mirror;
+      }
+
+      try {
+        mustGit(env, dir, ["repack", "-a", "-d", "-l", "--keep-unreachable"], EXIT.usage);
+      } catch (err) {
+        revertAlternates();
+        return null;
+      }
+      return mirror;
+    });
   } catch {
     // Degrade gracefully
     return null;
@@ -246,7 +275,26 @@ function ensureBase(repoInput, opts = {}) {
     try {
       mustGit(env, undefined, ["init", "--bare", "--quiet", dir], EXIT.usage);
       configureBase(env, dir, originUrl(parsed, env));
-      fetchBase(env, dir);
+      let mirrorConnected = false;
+      try {
+        mirrorConnected = Boolean(syncMirrorAlternates(env, dir, parsed, { skipRepack: true }));
+      } catch {
+        // mirror attach failure does not break base creation
+      }
+      try {
+        fetchBase(env, dir);
+      } catch (fetchErr) {
+        if (mirrorConnected) {
+          // Fallback: if fetch failed with mirror connected, remove alternates and retry full fetch
+          try {
+            const alternatesFile = path.join(dir, "objects", "info", "alternates");
+            fs.rmSync(alternatesFile, { force: true });
+          } catch {}
+          fetchBase(env, dir);
+        } else {
+          throw fetchErr;
+        }
+      }
       fetched = true;
       try {
         syncMirrorAlternates(env, dir, parsed);

@@ -287,7 +287,12 @@ export const wsDesiredStateSchema = z.object({
    * when the key is listed here; otherwise it only reports it. Optional: an older
    * board omits it, and then such directories are never removed.
    */
-  closedKeys: z.array(wsClosedKeyEntrySchema).optional(),
+  closedKeys: z.array(myrWsIssueKeySchema).optional(),
+  /**
+   * myrmidon(1.6.6 DISK, OPE-9673): structured metadata for closed tasks
+   * (key, closedAt, issueId) for safe session retention without relying on updatedAt.
+   */
+  closedTasks: z.array(wsClosedKeyObjectSchema).optional(),
 });
 export type WsDesiredState = z.infer<typeof wsDesiredStateSchema>;
 

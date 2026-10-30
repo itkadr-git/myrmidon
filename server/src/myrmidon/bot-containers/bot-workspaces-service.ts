@@ -225,7 +225,7 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
       for (const row of keyed) {
         if (row.status === "done" || row.status === "cancelled") {
           const key = row.identifier as string;
-          const closedAtDate = row.completedAt ?? row.cancelledAt ?? row.updatedAt;
+          const closedAtDate = row.completedAt ?? row.cancelledAt;
           closedMap.set(key, {
             key,
             ...(row.id ? { issueId: row.id } : {}),
@@ -251,11 +251,8 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         }
       }
       for (const key of protectKeys) closedMap.delete(key);
-      const closedKeys = [...closedMap.values()].sort((a, b) => {
-        const keyA = typeof a === "string" ? a : a.key;
-        const keyB = typeof b === "string" ? b : b.key;
-        return keyA.localeCompare(keyB);
-      });
+      const closedTasks = [...closedMap.values()].sort((a, b) => a.key.localeCompare(b.key));
+      const closedKeys = closedTasks.map((t) => t.key);
 
       const settings = wsBotDiskSettingsSchema.safeParse(rawSettings);
       const configured = settings.success ? settings.data : {};
@@ -273,6 +270,7 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         workspaces,
         protectKeys,
         closedKeys,
+        closedTasks,
       };
     },
   };
@@ -400,7 +398,6 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
           identifier: issues.identifier,
           id: issues.id,
           completedAt: issues.completedAt,
-          updatedAt: issues.updatedAt,
         })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), sql`${issues.status} in ('done', 'cancelled')`, held))
@@ -411,7 +408,7 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
           entries.push({
             key: r.identifier,
             issueId: r.id,
-            closedAt: (r.completedAt ?? r.updatedAt)?.toISOString(),
+            ...(r.completedAt ? { closedAt: r.completedAt.toISOString() } : {}),
           });
         }
       }

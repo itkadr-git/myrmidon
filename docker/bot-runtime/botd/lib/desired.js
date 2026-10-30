@@ -62,19 +62,16 @@ export function parseDesiredState(body) {
   if (body.protectKeys !== undefined && !(Array.isArray(body.protectKeys) && body.protectKeys.every((k) => typeof k === "string"))) {
     return bad("protectKeys is not an array of strings");
   }
-  if (body.closedKeys !== undefined) {
-    if (!Array.isArray(body.closedKeys)) return bad("closedKeys is not an array");
-    for (let i = 0; i < body.closedKeys.length; i += 1) {
-      const k = body.closedKeys[i];
-      if (typeof k === "string") {
-        if (!nonEmpty(k)) return bad(`closedKeys[${i}] is empty`);
-      } else if (isObj(k)) {
-        if (!nonEmpty(k.key)) return bad(`closedKeys[${i}].key is empty`);
-        if (k.closedAt !== undefined && !isDatetime(k.closedAt)) return bad(`closedKeys[${i}].closedAt is not a UTC datetime`);
-        if (k.issueId !== undefined && typeof k.issueId !== "string") return bad(`closedKeys[${i}].issueId is not a string`);
-      } else {
-        return bad(`closedKeys[${i}] is neither string nor object`);
-      }
+  if (body.closedKeys !== undefined && !(Array.isArray(body.closedKeys) && body.closedKeys.every((k) => typeof k === "string"))) {
+    return bad("closedKeys is not an array of strings");
+  }
+  if (body.closedTasks !== undefined) {
+    if (!Array.isArray(body.closedTasks)) return bad("closedTasks is not an array");
+    for (let i = 0; i < body.closedTasks.length; i += 1) {
+      const k = body.closedTasks[i];
+      if (!isObj(k) || !nonEmpty(k.key)) return bad(`closedTasks[${i}] missing key`);
+      if (k.closedAt !== undefined && !isDatetime(k.closedAt)) return bad(`closedTasks[${i}].closedAt is not a UTC datetime`);
+      if (k.issueId !== undefined && typeof k.issueId !== "string") return bad(`closedTasks[${i}].issueId is not a string`);
     }
   }
   return { ok: true, value: body };
