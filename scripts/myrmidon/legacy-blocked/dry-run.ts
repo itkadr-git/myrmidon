@@ -2,19 +2,19 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { desc, eq, inArray } from "drizzle-orm";
-import { issueComments, issueRelations, issues } from "../../../packages/db/src/index.ts";
-import { listLegacyBlocked } from "./inventory.ts";
+import { issueComments, issueRelations, issues } from "../../../packages/db/src/index.js";
+import { listLegacyBlocked } from "./inventory.js";
 import {
   classifyLegacyBlocked,
   type LegacyBlockedFacts,
   type LegacyBlockedLinkFact,
-} from "./classify.ts";
+} from "./classify.js";
 import {
   buildReconciliationReport,
   type ReconciliationInventoryEntry,
   type ReconciliationReport,
   type ReconciliationResult,
-} from "./report.ts";
+} from "./report.js";
 
 export type DryRunOptions = {
   outputFile?: string;

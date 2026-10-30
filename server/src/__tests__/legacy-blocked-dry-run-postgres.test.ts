@@ -5,6 +5,7 @@ import path from "node:path";
 import { asc } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  agents,
   closeRegisteredClients,
   companies,
   createDb,
@@ -42,6 +43,7 @@ describeEmbeddedPostgres("legacy blocked dry-run postgres", () => {
     await db.delete(issueThreadInteractions);
     await db.delete(issueRelations);
     await db.delete(issues);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -55,6 +57,7 @@ describeEmbeddedPostgres("legacy blocked dry-run postgres", () => {
   async function snapshotTables() {
     return {
       companies: await db.select().from(companies).orderBy(asc(companies.id)),
+      agents: await db.select().from(agents).orderBy(asc(agents.id)),
       issues: await db.select().from(issues).orderBy(asc(issues.id)),
       issueRelations: await db.select().from(issueRelations).orderBy(asc(issueRelations.id)),
       issueThreadInteractions: await db
@@ -78,6 +81,7 @@ describeEmbeddedPostgres("legacy blocked dry-run postgres", () => {
     const eligibleRecId = randomUUID();
     const eligibleDecisionId = randomUUID();
     const eligibleUnknownId = randomUUID();
+    const agentId = randomUUID();
 
     const openBlockedId = randomUUID();
     const openBlockerId = randomUUID();
@@ -92,6 +96,12 @@ describeEmbeddedPostgres("legacy blocked dry-run postgres", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Dependency test agent",
+    });
+
     await db.insert(issues).values([
       // 4 eligible legacy-blocked issues
       {
@@ -99,7 +109,7 @@ describeEmbeddedPostgres("legacy blocked dry-run postgres", () => {
         companyId,
         title: "Eligible dependency blocked issue",
         status: "blocked",
-        assigneeAgentId: "agent-dep-1",
+        assigneeAgentId: agentId,
       },
       {
         id: eligibleRecId,
@@ -244,7 +254,7 @@ describeEmbeddedPostgres("legacy blocked dry-run postgres", () => {
 
       const depRow = report.rows.find((r) => r.issueId === eligibleDepId);
       expect(depRow?.class).toBe("dependency");
-      expect(depRow?.proposedOwner).toBe("agent-dep-1");
+      expect(depRow?.proposedOwner).toBe(agentId);
 
       const recRow = report.rows.find((r) => r.issueId === eligibleRecId);
       expect(recRow?.class).toBe("recovery");
