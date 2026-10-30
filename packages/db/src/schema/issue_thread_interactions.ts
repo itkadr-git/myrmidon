@@ -6,7 +6,7 @@ import type {
   IssueThreadInteractionResult,
 } from "@myrmidon/shared";
 import { sql } from "drizzle-orm";
-import { pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex, integer, check } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -48,6 +48,11 @@ export const issueThreadInteractions = pgTable(
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
     addresseeAgentId: uuid("addressee_agent_id").references(() => agents.id, { onDelete: "set null" }),
     addresseeUserId: text("addressee_user_id"),
+    routeType: text("route_type"),
+    addresseeQueue: text("addressee_queue"),
+    timeoutAt: timestamp("timeout_at", { withTimezone: true }),
+    escalationChain: jsonb("escalation_chain"),
+    escalationLevel: integer("escalation_level").notNull().default(0),
     createdByUserId: text("created_by_user_id"),
     resolvedByAgentId: uuid("resolved_by_agent_id").references(() => agents.id),
     resolvedByRunId: uuid("resolved_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
@@ -76,5 +81,16 @@ export const issueThreadInteractions = pgTable(
     sourceCommentIdx: index("issue_thread_interactions_source_comment_idx").on(table.sourceCommentId),
     addresseeAgentIdx: index("issue_thread_interactions_addressee_agent_idx").on(table.addresseeAgentId),
     addresseeUserIdx: index("issue_thread_interactions_addressee_user_idx").on(table.addresseeUserId),
+    pendingTimeoutIdx: index("issue_thread_interactions_pending_timeout_idx")
+      .on(table.status, table.timeoutAt)
+      .where(sql`${table.status} = 'pending'`),
+    routeAddressTimeoutCheck: check(
+      "issue_thread_interactions_route_address_timeout_check",
+      sql`${table.routeType} IS NULL OR ${table.timeoutAt} IS NOT NULL`,
+    ),
+    routeAddressCheck: check(
+      "issue_thread_interactions_route_address_check",
+      sql`${table.routeType} IS NULL OR ((CASE WHEN ${table.addresseeAgentId} IS NULL THEN 0 ELSE 1 END) + (CASE WHEN ${table.addresseeUserId} IS NULL THEN 0 ELSE 1 END) + (CASE WHEN ${table.addresseeQueue} IS NULL THEN 0 ELSE 1 END) = 1 AND ${table.timeoutAt} IS NOT NULL)`,
+    ),
   }),
 );
