@@ -585,9 +585,63 @@ jobs:
     name: CI result
     if: ${{ !cancelled() }}
     needs: [typecheck, build, tests, tests-other, tests-runner, checks, dockergate, fleetd]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 5
     steps:
+      - name: Ensure gh and jq (self-hosted runners may lack them)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
+          if ! command -v jq >/dev/null; then
+            curl -fsSL -o "$bin/jq" https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+            chmod +x "$bin/jq"
+          fi
+          if ! command -v gh >/dev/null; then
+            curl -fsSL https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
+            cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
+          fi
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Verify queue latency
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          echo "Checking CI result start latency relative to predecessor jobs..."
+          if ! command -v gh >/dev/null || ! command -v jq >/dev/null; then
+            echo "gh or jq not available, skipping latency verification."
+            exit 0
+          fi
+          jobs_data="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" 2>/dev/null || true)"
+          if [ -z "$jobs_data" ]; then
+            echo "Unable to fetch job data from GitHub API; continuing."
+            exit 0
+          fi
+          res="$(echo "$jobs_data" | jq -r '
+            .jobs as $all |
+            ($all[] | select(.name == "CI result") | .started_at) as $ci_start |
+            ([$all[] | select(.name != "CI result" and .completed_at != null) | .completed_at] | sort | last) as $last_test_end |
+            if ($ci_start and $last_test_end) then
+              (($ci_start | fromdateiso8601) - ($last_test_end | fromdateiso8601))
+            else
+              empty
+            end
+          ' 2>/dev/null || true)"
+          if [ -n "$res" ]; then
+            echo "CI result started $res seconds after the last predecessor job finished."
+            if [ "$res" -le 120 ]; then
+              echo "PASS: CI result started within 2 minutes ($res <= 120s)."
+            else
+              echo "::warning title=CI Result Queue Delay::CI result started $res seconds after preceding job (>120s)."
+            fi
+          else
+            echo "Latency check: predecessors or CI result timestamps not yet complete."
+          fi
+
       - name: Check lane results
         env:
           RESULTS: ${{ toJSON(needs) }}

@@ -32,7 +32,7 @@ concurrency:
 jobs:
   pr-text:
     name: PR text scan
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 5
     steps:
       - name: Checkout repository

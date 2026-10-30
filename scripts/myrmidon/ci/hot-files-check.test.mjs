@@ -101,4 +101,23 @@ describe("hot-files-check", () => {
     assert.match(res.calls, /field: state=success/);
     assert.match(res.calls, /review-approved/);
   });
+
+  it("exits cleanly without PR context (push to main / manual dispatch)", () => {
+    const res = runCheck({ PR: "", EVENT: "push" });
+    assert.equal(res.status, 0);
+    assert.equal(res.calls, "");
+  });
+
+  it("handles missing gh tool without crashing", () => {
+    const env = {
+      ...process.env,
+      BASH_ENV: "",
+      PATH: "/usr/bin:/bin",
+      EVENT: "pull_request",
+      PR: "123",
+      SHA: "abcdef",
+    };
+    const res = spawnSync("bash", [SCRIPT], { env, encoding: "utf8" });
+    assert.equal(res.status, 0);
+  });
 });
