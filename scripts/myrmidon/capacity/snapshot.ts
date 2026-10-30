@@ -1,3 +1,6 @@
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+
 /**
  * Read-only SQL extraction queries for 1.6.6 simulation fixture (OPE-8312 §5.12).
  *
@@ -396,9 +399,6 @@ export function serializeDeterministicSnapshot(snapshot: CapacityPolicySnapshot)
 
   return JSON.stringify(normalized, null, 2) + "\n";
 }
-
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
 
 export async function exportStructuralSnapshotFromFile(
   inputPath: string,
