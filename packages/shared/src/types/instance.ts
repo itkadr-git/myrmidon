@@ -161,6 +161,8 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   blockerRootFanoutAlertLimit?: number;
+  /** Consecutive empty issue runs before automatic re-wakes freeze (default 6). */
+  issueRewakeFreezeThreshold?: number;
   /**
    * myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
    * how many HTTP processes (`api`) and scheduler processes (`worker`) the

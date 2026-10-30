@@ -223,7 +223,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(frozenIssue?.state?.issueRewakeFreeze).toMatchObject({ agentId, noProgressStreak: 6 });
     const escalation = await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(escalation).toHaveLength(1);
-    expect(escalation[0]?.body).toContain("what is needed to continue?");
+    expect(escalation[0]?.body).toContain("What is needed to continue?");
     await db.insert(activityLog).values({
       companyId, actorType: "user", actorId: "board-user", action: "issue.comment_added",
       entityType: "issue", entityId: issueId,
@@ -247,6 +247,25 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       entityType: "issue", entityId: issueId,
     });
     expect(await poll()).not.toBeNull();
+  });
+
+  it("admits a CI completion wake for a frozen issue", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    for (let i = 0; i < 6; i += 1) {
+      await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 60 - i * 5 });
+    }
+    const poll = () => heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_continuation_needed",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system", requestedByActorId: "test",
+    });
+    expect(await poll()).toBeNull();
+    const ciWake = await heartbeat.wakeup(agentId, {
+      source: "automation", triggerDetail: "system", reason: "ci_completed",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "ci_completed" },
+      requestedByActorType: "system", requestedByActorId: "system:github-ci",
+    });
+    expect(ciWake).not.toBeNull();
   });
 
   it("does not throttle direct issue_assigned wakes after no-progress handoff runs", async () => {

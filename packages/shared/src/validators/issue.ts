@@ -585,6 +585,11 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionId: z.string().guid().nullable(),
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
+  issueRewakeFreeze: z.object({
+    agentId: z.string().guid(),
+    frozenAt: z.string().datetime(),
+    noProgressStreak: z.number().int().positive(),
+  }).nullable().optional(),
   changesRequestedCount: z.number().int().nonnegative().optional().default(0),
   reviewCycleId: z.string().min(1).max(200).nullable().optional().default(null),
   escalationPolicyRevision: z.string().min(1).max(200).nullable().optional().default(null),

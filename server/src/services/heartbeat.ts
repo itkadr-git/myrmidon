@@ -29372,6 +29372,9 @@ export function heartbeatService(
               executionWorkspacePreference: issues.executionWorkspacePreference,
               executionWorkspaceSettings: issues.executionWorkspaceSettings,
               assigneeAgentId: issues.assigneeAgentId,
+              createdByAgentId: issues.createdByAgentId,
+              createdByUserId: issues.createdByUserId,
+              responsibleUserId: issues.responsibleUserId,
               executionRunId: issues.executionRunId,
               executionAgentNameKey: issues.executionAgentNameKey,
               createdAt: issues.createdAt,
@@ -29383,6 +29386,7 @@ export function heartbeatService(
                 eq(issues.companyId, agent.companyId),
               ),
             )
+            .for("update")
             .then((rows) => rows[0] ?? null);
 
           if (!issue) {
@@ -30465,7 +30469,8 @@ export function heartbeatService(
             | { agentId: string; frozenAt: string }
             | null;
           const explicitRewake = opts.requestedByActorType === "user" ||
-            Boolean(explicitResumeSession && opts.requestedByActorType !== "agent");
+            Boolean(explicitResumeSession && opts.requestedByActorType !== "agent") ||
+            reason === "ci_completed";
           if (
             (rewakeState?.agentId === agentId && !explicitRewake) ||
             isThrottleCandidateIssueRewake({
@@ -30559,10 +30564,8 @@ export function heartbeatService(
                     .limit(1)
                 : [];
 
-              const configuredFreezeThreshold = Number(process.env.ISSUE_REWAKE_FREEZE_THRESHOLD);
-              const freezeThreshold = Number.isInteger(configuredFreezeThreshold) &&
-                configuredFreezeThreshold >= 2 && configuredFreezeThreshold <= ISSUE_REWAKE_RUN_SAMPLE_LIMIT
-                ? configuredFreezeThreshold : ISSUE_REWAKE_FREEZE_THRESHOLD;
+              const freezeThreshold = (await instanceSettings.getGeneral()).issueRewakeFreezeThreshold
+                ?? ISSUE_REWAKE_FREEZE_THRESHOLD;
               const throttleDecision = evaluateIssueRewakeThrottle({
                 now: throttleNow,
                 freezeThreshold,
@@ -30592,11 +30595,18 @@ export function heartbeatService(
                       },
                     },
                   }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+                  const [project] = issue.projectId ? await tx.select({ leadAgentId: projects.leadAgentId })
+                    .from(projects).where(and(eq(projects.id, issue.projectId), eq(projects.companyId, issue.companyId))) : [];
+                  const escalationRecipient = project?.leadAgentId && project.leadAgentId !== agentId
+                    ? `project lead agent ${project.leadAgentId}`
+                    : issue.createdByAgentId && issue.createdByAgentId !== agentId
+                      ? `assigning agent ${issue.createdByAgentId}`
+                      : issue.createdByUserId ?? issue.responsibleUserId ?? recentTerminalRuns[0]?.responsibleUserId ?? "board operator";
                   await tx.insert(issueComments).values({
                     companyId: issue.companyId,
                     issueId: issue.id,
                     authorType: "system",
-                    body: `Agent ${agentId} completed ${throttleDecision.noProgressStreak} runs without progress. Last result: ${(recentTerminalRuns[0]?.stdoutExcerpt ?? recentTerminalRuns[0]?.stderrExcerpt ?? "no output").slice(-500)}. Project lead or assigner${recentTerminalRuns[0]?.responsibleUserId ? ` (${recentTerminalRuns[0].responsibleUserId})` : ""}: what is needed to continue?`,
+                    body: `For ${escalationRecipient}: agent ${agentId} completed ${throttleDecision.noProgressStreak} runs without progress. Last output: ${(recentTerminalRuns[0]?.stdoutExcerpt ?? recentTerminalRuns[0]?.stderrExcerpt ?? "no output").slice(-500)}. What is needed to continue?`,
                   });
                 }
                 if (!throttleDecision.frozen) {
