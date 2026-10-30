@@ -194,11 +194,14 @@ describe("myrmidon(UI2) shell language contract", () => {
     expect(probe.locale).toBe("ru");
   });
 
-  it("reads the legacy and the shared mirror keys", () => {
+  it("reads the legacy, the shared, and the app mirror keys", () => {
     window.localStorage.setItem("myrmidon:ui2:language", "ru");
     expect(readStoredLocale()).toBe("ru");
     window.localStorage.clear();
     window.localStorage.setItem("myrmidon.ui2.locale", "en");
     expect(readStoredLocale()).toBe("en");
+    window.localStorage.clear();
+    window.localStorage.setItem("myrmidon:ui-language", "ru");
+    expect(readStoredLocale()).toBe("ru");
   });
 });
