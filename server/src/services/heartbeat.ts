@@ -11868,7 +11868,59 @@ export function heartbeatService(
           if (scheduled.outcome === "not_scheduled")
             throw conflict(scheduled.reason);
         }
-      } else
+      } else {
+        const prProducts = await db.select().from(issueWorkProducts)
+          .where(and(
+            eq(issueWorkProducts.companyId, claimed.companyId),
+            eq(issueWorkProducts.issueId, claimed.id),
+            eq(issueWorkProducts.type, "pull_request"),
+            eq(issueWorkProducts.provider, "github"),
+          ));
+
+        let activeCiRecord: Record<string, unknown> | null = null;
+        for (const pr of prProducts) {
+          const metadata = pr.metadata && typeof pr.metadata === "object" ? pr.metadata as Record<string, unknown> : null;
+          const ci = metadata?.activeCi && typeof metadata.activeCi === "object" ? metadata.activeCi as Record<string, unknown> : null;
+          if (ci && (ci.status === "queued" || ci.status === "in_progress")) {
+            activeCiRecord = ci;
+            break;
+          }
+        }
+
+        if (activeCiRecord) {
+          const attempt = claimed.monitorAttemptCount ?? 0;
+          const backoffMs = Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(attempt, 4)));
+          const nextCheckAt = new Date(input.now.getTime() + backoffMs);
+
+          await db.update(issues).set({
+            monitorNextCheckAt: nextCheckAt,
+            monitorAttemptCount: nextAttemptCount,
+            monitorWakeRequestedAt: null,
+            updatedAt: input.now,
+          }).where(eq(issues.id, claimed.id));
+
+          await logActivity(db, {
+            companyId: claimed.companyId,
+            actorType: input.actorType,
+            actorId: input.actorId,
+            agentId: input.agentId,
+            runId: input.runId,
+            action: "issue.monitor_deferred",
+            entityType: "issue",
+            entityId: claimed.id,
+            details: {
+              identifier: claimed.identifier,
+              reason: "ci_in_progress",
+              nextCheckAt: nextCheckAt.toISOString(),
+              attemptCount: nextAttemptCount,
+              activeCi: activeCiRecord,
+              source: input.activitySource,
+            },
+          });
+
+          return { outcome: "skipped" as const, reason: "ci_in_progress" };
+        }
+
         await enqueueWakeup(targetAgentId, {
           source: input.source,
           triggerDetail: input.triggerDetail,
@@ -11899,6 +11951,7 @@ export function heartbeatService(
             manualTrigger: input.activitySource === "manual",
           },
         });
+      }
 
       await db
         .update(issues)
