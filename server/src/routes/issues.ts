@@ -3571,7 +3571,10 @@ async function coordinateIssueListGet(input: {
   }
 }
 
-function estimatedJsonBytes(value: unknown): number {
+export function estimatedJsonBytes(value: unknown): number {
+  if (!logger.isLevelEnabled("debug")) {
+    return 0;
+  }
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
@@ -3582,13 +3585,18 @@ function logIssueListRequest(input: {
   requestKey: ReturnType<typeof issueListRequestKey>;
   startedAt: number;
   cacheStatus: IssueListCacheStatus;
-  bodyBytes: number;
+  bodyBytes: number | (() => number);
   etagOutcome: "none" | "fresh" | "not_modified";
   identicalInFlightCount: number;
 }) {
+  if (!logger.isLevelEnabled("debug")) {
+    return;
+  }
   input.res.once("finish", () => {
     const contentEncoding = input.res.getHeader("content-encoding");
     const contentLength = Number(input.res.getHeader("content-length"));
+    const responseBytes =
+      typeof input.bodyBytes === "function" ? input.bodyBytes() : input.bodyBytes;
     logger.debug(
       {
         event: "safe_get_request_observed",
@@ -3602,7 +3610,7 @@ function logIssueListRequest(input: {
         requestCount: input.identicalInFlightCount,
         durationMs: Date.now() - input.startedAt,
         statusCode: input.res.statusCode,
-        responseBytes: input.bodyBytes,
+        responseBytes,
         compressedBytes:
           contentEncoding && Number.isFinite(contentLength)
             ? contentLength
@@ -8698,7 +8706,7 @@ export function issueRoutes(
         requestKey,
         startedAt,
         cacheStatus: "retry",
-        bodyBytes: estimatedJsonBytes(body),
+        bodyBytes: () => estimatedJsonBytes(body),
         etagOutcome: "none",
         identicalInFlightCount: coordinated.identicalInFlightCount,
       });
@@ -8720,9 +8728,10 @@ export function issueRoutes(
         requestKey,
         startedAt,
         cacheStatus: coordinated.cacheStatus,
-        bodyBytes: etagMatched
-          ? 0
-          : estimatedJsonBytes(coordinated.response.body),
+        bodyBytes: () =>
+          etagMatched
+            ? 0
+            : estimatedJsonBytes(coordinated.response.body),
         etagOutcome: etagMatched ? "not_modified" : "fresh",
         identicalInFlightCount: coordinated.identicalInFlightCount,
       });
@@ -8741,7 +8750,7 @@ export function issueRoutes(
       requestKey,
       startedAt,
       cacheStatus: coordinated.cacheStatus,
-      bodyBytes: estimatedJsonBytes(coordinated.response.body),
+      bodyBytes: () => estimatedJsonBytes(coordinated.response.body),
       etagOutcome: "none",
       identicalInFlightCount: coordinated.identicalInFlightCount,
     });
