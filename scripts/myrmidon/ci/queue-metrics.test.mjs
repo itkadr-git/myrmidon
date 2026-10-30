@@ -7,6 +7,7 @@ import {
   compareQueueMetrics,
   formatMetricsMarkdown,
   formatComparisonMarkdown,
+  calculateCiResultLatency,
 } from './queue-metrics.mjs';
 
 test('calculatePercentile calculates correct ranks', () => {
@@ -115,4 +116,136 @@ test('compareQueueMetrics verifies p95 reduction acceptance target', () => {
 
   const mdFail = formatComparisonMarkdown(compFail);
   assert.match(mdFail, /TARGET NOT MET/);
+});
+
+test('calculateCiResultLatency scopes to exact predecessor jobs and ignores unrelated completed jobs', () => {
+  const jobs = [
+    {
+      name: 'plan',
+      completed_at: '2026-10-30T14:00:25Z',
+      started_at: '2026-10-30T14:00:00Z',
+    },
+    {
+      name: 'typecheck + build',
+      completed_at: '2026-10-30T14:05:00Z',
+      started_at: '2026-10-30T14:00:30Z',
+    },
+    {
+      name: 'tests (server 1/3)',
+      completed_at: '2026-10-30T14:15:30Z',
+      started_at: '2026-10-30T14:00:30Z',
+    },
+    {
+      name: 'tests (workspaces-a)',
+      completed_at: '2026-10-30T14:16:00Z', // Actual latest predecessor
+      started_at: '2026-10-30T14:00:30Z',
+    },
+    {
+      name: 'unrelated-monitoring-daemon', // Unrelated completed job! Must be ignored
+      completed_at: '2026-10-30T14:16:55Z',
+      started_at: '2026-10-30T14:10:00Z',
+    },
+    {
+      name: 'report-external-webhook', // Another unrelated job! Must be ignored
+      completed_at: '2026-10-30T14:16:58Z',
+      started_at: '2026-10-30T14:16:30Z',
+    },
+    {
+      name: 'CI result',
+      started_at: '2026-10-30T14:17:00Z', // Started 60s after tests (workspaces-a)
+      completed_at: '2026-10-30T14:17:15Z',
+    },
+  ];
+
+  const result = calculateCiResultLatency(jobs, { workflow: 'ci', maxLatencySec: 120 });
+  assert.equal(result.lastPredecessorJob, 'tests (workspaces-a)');
+  assert.equal(result.lastPredecessorEnd, '2026-10-30T14:16:00Z');
+  assert.equal(result.latencySeconds, 60);
+  assert.equal(result.passed, true);
+  assert.equal(result.evaluatedJobsCount, 3); // typecheck + build, tests (server 1/3), tests (workspaces-a)
+});
+
+test('calculateCiResultLatency fails closed when latency exceeds threshold', () => {
+  const jobs = [
+    {
+      name: 'tests (affected)',
+      completed_at: '2026-10-30T14:00:00Z',
+      started_at: '2026-10-30T13:58:00Z',
+    },
+    {
+      name: 'CI result',
+      started_at: '2026-10-30T14:02:40Z', // 160s later (> 120s)
+      completed_at: '2026-10-30T14:02:50Z',
+    },
+  ];
+
+  const result = calculateCiResultLatency(jobs, { workflow: 'ci', maxLatencySec: 120 });
+  assert.equal(result.passed, false);
+  assert.equal(result.latencySeconds, 160);
+  assert.equal(result.lastPredecessorJob, 'tests (affected)');
+});
+
+test('calculateCiResultLatency works for tag workflow predecessor jobs', () => {
+  const jobs = [
+    {
+      name: 'build',
+      completed_at: '2026-10-30T14:04:00Z',
+      started_at: '2026-10-30T14:00:00Z',
+    },
+    {
+      name: 'fleetd',
+      completed_at: '2026-10-30T14:05:00Z',
+      started_at: '2026-10-30T14:00:00Z',
+    },
+    {
+      name: 'unrelated-tag-logger',
+      completed_at: '2026-10-30T14:05:25Z', // Should be ignored
+      started_at: '2026-10-30T14:05:00Z',
+    },
+    {
+      name: 'CI result',
+      started_at: '2026-10-30T14:05:30Z', // 30s after fleetd
+      completed_at: '2026-10-30T14:05:40Z',
+    },
+  ];
+
+  const result = calculateCiResultLatency(jobs, { workflow: 'tag', maxLatencySec: 120 });
+  assert.equal(result.lastPredecessorJob, 'fleetd');
+  assert.equal(result.latencySeconds, 30);
+  assert.equal(result.passed, true);
+  assert.equal(result.evaluatedJobsCount, 2);
+});
+
+test('calculateCiResultLatency falls back to plan in ci workflow if test predecessors skipped', () => {
+  const jobs = [
+    {
+      name: 'plan',
+      completed_at: '2026-10-30T14:00:25Z',
+      started_at: '2026-10-30T14:00:00Z',
+    },
+    {
+      name: 'CI result',
+      started_at: '2026-10-30T14:00:40Z', // 15s after plan
+      completed_at: '2026-10-30T14:00:50Z',
+    },
+  ];
+
+  const result = calculateCiResultLatency(jobs, { workflow: 'ci', maxLatencySec: 120 });
+  assert.equal(result.lastPredecessorJob, 'plan');
+  assert.equal(result.latencySeconds, 15);
+  assert.equal(result.passed, true);
+  assert.equal(result.evaluatedJobsCount, 1);
+});
+
+test('calculateCiResultLatency throws when no predecessors or missing CI result', () => {
+  assert.throws(() => {
+    calculateCiResultLatency([], { workflow: 'ci' });
+  }, /CI result job \("CI result"\) not found/);
+
+  assert.throws(() => {
+    calculateCiResultLatency([
+      { name: 'CI result', started_at: '2026-10-30T14:00:00Z' },
+      { name: 'unrelated-only', completed_at: '2026-10-30T13:59:00Z' },
+    ], { workflow: 'ci' });
+  }, /No completed relevant predecessor jobs found/);
 });

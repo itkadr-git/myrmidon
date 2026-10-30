@@ -809,9 +809,18 @@ jobs:
           res="$(echo "$jobs_data" | jq -r '
             .jobs as $all |
             ([$all[] | select(.name == "CI result" and .started_at != null) | .started_at] | last) as $ci_start |
-            ([$all[] | select(.name != "CI result" and .completed_at != null) | .completed_at] | sort | last) as $last_test_end |
-            if ($ci_start and $last_test_end) then
-              (($ci_start | fromdateiso8601) - ($last_test_end | fromdateiso8601))
+            ([$all[] | select(
+              (.name == "typecheck + build" or
+               .name == "tests (affected)" or
+               (.name | startswith("tests (")) or
+               .name == "tests (other + runner)" or
+               .name == "checks" or
+               .name == "go tools (dockergate + fleetd)") and
+              .completed_at != null
+            ) | .completed_at] | sort | last) as $test_end |
+            ($test_end // ([$all[] | select(.name == "plan" and .completed_at != null) | .completed_at] | last)) as $last_pred_end |
+            if ($ci_start and $last_pred_end) then
+              (($ci_start | fromdateiso8601) - ($last_pred_end | fromdateiso8601))
             else
               empty
             end

@@ -185,6 +185,99 @@ export function formatMetricsMarkdown(metrics) {
   ].join('\n');
 }
 
+export const CI_WORKFLOW_PREDECESSORS = {
+  ci: [
+    'typecheck + build',
+    'tests (affected)',
+    /^tests \(/,
+    'tests (other + runner)',
+    'checks',
+    'go tools (dockergate + fleetd)',
+  ],
+  tag: [
+    'typecheck',
+    'build',
+    /^tests \(/,
+    'tests (other packages)',
+    'tests (runner)',
+    'checks',
+    'fleetd',
+    'dockergate',
+  ],
+};
+
+/**
+ * Calculates CI result start latency relative to its exact predecessor jobs.
+ * Unrelated completed jobs or non-predecessors are ignored.
+ */
+export function calculateCiResultLatency(jobs, {
+  workflow = 'ci',
+  allowedPredecessors = null,
+  ciResultName = 'CI result',
+  maxLatencySec = 120,
+} = {}) {
+  if (!Array.isArray(jobs)) {
+    throw new Error('Expected jobs to be an array');
+  }
+
+  const ciJob = jobs.find((j) => j.name === ciResultName && j.started_at);
+  if (!ciJob || !ciJob.started_at) {
+    throw new Error(`CI result job ("${ciResultName}") not found or has no started_at timestamp`);
+  }
+  const ciStartTime = new Date(ciJob.started_at).getTime();
+  if (isNaN(ciStartTime)) {
+    throw new Error(`Invalid started_at timestamp on CI result job: ${ciJob.started_at}`);
+  }
+
+  const primaryPatterns = allowedPredecessors || CI_WORKFLOW_PREDECESSORS[workflow] || CI_WORKFLOW_PREDECESSORS.ci;
+
+  // Filter completed jobs matching relevant predecessor patterns
+  let completedPredecessors = jobs.filter((j) => {
+    if (!j.completed_at || j.name === ciResultName) return false;
+    return primaryPatterns.some((pattern) => {
+      if (pattern instanceof RegExp) return pattern.test(j.name);
+      return pattern === j.name;
+    });
+  });
+
+  // If no test/check predecessor completed (e.g. docs tier where all tests were skipped), fall back to plan
+  if (completedPredecessors.length === 0 && workflow === 'ci') {
+    completedPredecessors = jobs.filter((j) => j.name === 'plan' && j.completed_at);
+  }
+
+  if (completedPredecessors.length === 0) {
+    throw new Error('No completed relevant predecessor jobs found to compute latency');
+  }
+
+  let latestJob = null;
+  let latestEndTime = -Infinity;
+
+  for (const job of completedPredecessors) {
+    const t = new Date(job.completed_at).getTime();
+    if (!isNaN(t) && t > latestEndTime) {
+      latestEndTime = t;
+      latestJob = job;
+    }
+  }
+
+  if (!latestJob || latestEndTime === -Infinity) {
+    throw new Error('Could not parse completion timestamps for relevant predecessor jobs');
+  }
+
+  const latencySeconds = Math.round((ciStartTime - latestEndTime) / 1000);
+  const passed = latencySeconds <= maxLatencySec;
+
+  return {
+    ciStart: ciJob.started_at,
+    lastPredecessorEnd: latestJob.completed_at,
+    lastPredecessorJob: latestJob.name,
+    latencySeconds,
+    maxLatencySec,
+    passed,
+    evaluatedJobsCount: completedPredecessors.length,
+  };
+}
+
 export function main(args = process.argv.slice(2)) {
   let file = null;
   let baseFile = null;
@@ -192,6 +285,9 @@ export function main(args = process.argv.slice(2)) {
   let benchmarkFile = null;
   let days = 14;
   let targetReduction = 30;
+  let verifyLatency = false;
+  let workflowType = 'ci';
+  let maxLatency = 120;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--file') file = args[++i];
@@ -207,6 +303,36 @@ export function main(args = process.argv.slice(2)) {
     }
     else if (args[i] === '--days') days = parseInt(args[++i], 10);
     else if (args[i] === '--target-reduction') targetReduction = parseFloat(args[++i]);
+    else if (args[i] === '--verify-latency') verifyLatency = true;
+    else if (args[i] === '--workflow') workflowType = args[++i];
+    else if (args[i] === '--max-latency') maxLatency = parseInt(args[++i], 10);
+  }
+
+  if (verifyLatency) {
+    let rawJson = '';
+    if (file) {
+      rawJson = fs.readFileSync(file, 'utf8');
+    } else {
+      rawJson = fs.readFileSync(0, 'utf8');
+    }
+    const data = JSON.parse(rawJson);
+    const jobsList = Array.isArray(data) ? data : (data.jobs || []);
+    try {
+      const result = calculateCiResultLatency(jobsList, {
+        workflow: workflowType || 'ci',
+        maxLatencySec: maxLatency || 120,
+      });
+      if (result.passed) {
+        console.log(`PASS: CI result start latency is ${result.latencySeconds}s (<= ${result.maxLatencySec}s) relative to predecessor "${result.lastPredecessorJob}" (${result.evaluatedJobsCount} predecessor jobs evaluated).`);
+      } else {
+        console.error(`ERROR: CI result start latency exceeded threshold: ${result.latencySeconds}s > ${result.maxLatencySec}s relative to predecessor "${result.lastPredecessorJob}".`);
+        process.exit(1);
+      }
+    } catch (err) {
+      console.error(`ERROR: Latency verification failed: ${err.message}`);
+      process.exit(1);
+    }
+    return;
   }
 
   if (benchmarkFile) {
