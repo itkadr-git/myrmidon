@@ -36,6 +36,7 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
     identifier: `T-${id}`,
     title: `Task ${id}`,
     status: "in_review",
+    updatedAt: new Date(NOW.getTime() - 16 * 60 * 1000),
     assigneeAgentId: ASSIGNEE,
     assigneeUserId: null,
     createdByAgentId: AUTHOR,
@@ -140,6 +141,19 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
 beforeEach(() => resetReviewRoutingSignals());
 
 describe("assignment", () => {
+  it("does not route until the reviewer-less review has aged fifteen minutes", async () => {
+    const t = setup();
+    t.fixture.rows.set("fresh", row("fresh", { updatedAt: NOW }));
+    await t.sweep.sweep(NOW, { force: true });
+    expect(t.fixture.rows.get("fresh")?.assigneeAgentId).toBe(ASSIGNEE);
+    expect(t.wakes).toHaveLength(0);
+
+    t.fixture.rows.set("aged", row("aged", { updatedAt: new Date(NOW.getTime() - 16 * 60 * 1000) }));
+    await t.sweep.sweep(NOW, { force: true });
+    expect(t.fixture.rows.get("aged")?.assigneeAgentId).toBe(REV_A);
+    expect(t.wakes).toEqual([expect.objectContaining({ agentId: REV_A, issueId: "aged" })]);
+  });
+
   it("prefers the nearest eligible manager in the engineer chain", async () => {
     const t = setup({}, {
       managerChain: new Map([[ASSIGNEE, [
@@ -200,7 +214,7 @@ describe("assignment", () => {
     expect(reviewers.filter((id) => id === REV_B)).toHaveLength(2);
   });
 
-  it("never picks the author or the assignee, even when they are the least loaded reviewers", async () => {
+  it("excludes the task author and current assignee from reviewer candidates", async () => {
     const t = setup(
       {},
       {
@@ -212,9 +226,12 @@ describe("assignment", () => {
         load: new Map([[REV_A, 4]]),
       },
     );
-    t.fixture.rows.set("1", row("1"));
-    await t.sweep.sweep(NOW, { force: true });
-    expect(t.fixture.rows.get("1")!.assigneeAgentId).toBe(REV_A);
+    t.fixture.rows.set("authored", row("authored", { assigneeAgentId: null }));
+    t.fixture.rows.set("assigned", row("assigned"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ assigned: 2, signaled: 0 });
+    expect(t.fixture.rows.get("authored")?.assigneeAgentId).toBe(ASSIGNEE);
+    expect(t.fixture.rows.get("assigned")?.assigneeAgentId).toBe(REV_A);
   });
 
   it("only considers the configured reviewer roles", async () => {
