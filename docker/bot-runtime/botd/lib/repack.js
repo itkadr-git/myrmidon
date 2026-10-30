@@ -104,9 +104,21 @@ export function shouldRepack(repoPath, options = {}) {
   return { should: true, reason: "schedule", packs };
 }
 
-function defaultRunCmd(bin, args, cwd) {
+export function defaultRunCmd(bin, args, cwdOrOpts) {
+  const opts = typeof cwdOrOpts === "string" ? { cwd: cwdOrOpts } : (cwdOrOpts || {});
+  const execOpts = {
+    cwd: opts.cwd,
+    timeout: 600_000,
+    maxBuffer: 16 * 1024 * 1024,
+  };
+  if (typeof opts.uid === "number" && (process.getuid ? process.getuid() === 0 : true)) {
+    execOpts.uid = opts.uid;
+  }
+  if (typeof opts.gid === "number" && (process.getuid ? process.getuid() === 0 : true)) {
+    execOpts.gid = opts.gid;
+  }
   return new Promise((resolve) => {
-    execFile(bin, args, { cwd, timeout: 600_000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(bin, args, execOpts, (err, stdout, stderr) => {
       resolve({
         code: err ? (typeof err.code === "number" ? err.code : 1) : 0,
         stdout: String(stdout || ""),
@@ -126,18 +138,32 @@ export async function repackRepo(repoPath, options = {}) {
     return { ok: false, skipped: true, reason: "locked" };
   }
 
+  let uid = options.uid;
+  let gid = options.gid;
+  if (uid == null || gid == null) {
+    try {
+      const st = fs.statSync(repoPath);
+      if (uid == null) uid = st.uid;
+      if (gid == null) gid = st.gid;
+    } catch {}
+  }
+
+  const cmdOpts = { cwd: repoPath };
+  if (typeof uid === "number") cmdOpts.uid = uid;
+  if (typeof gid === "number") cmdOpts.gid = gid;
+
   const packsBefore = countPacks(repoPath);
   const sizeBefore = getDirSizeBytes(repoPath);
 
   // 1. git repack -A -d
-  const repackRes = await runCmd(gitBin, ["-C", repoPath, "repack", "-A", "-d"], repoPath);
+  const repackRes = await runCmd(gitBin, ["-C", repoPath, "repack", "-A", "-d"], cmdOpts);
   if (repackRes.code !== 0) {
     log(`botd repack: git repack failed on ${repoPath} (code ${repackRes.code}): ${repackRes.stderr || repackRes.stdout}`);
     return { ok: false, error: repackRes.stderr || repackRes.stdout };
   }
 
   // 2. git prune --expire=2.weeks
-  const pruneRes = await runCmd(gitBin, ["-C", repoPath, "prune", "--expire=2.weeks"], repoPath);
+  const pruneRes = await runCmd(gitBin, ["-C", repoPath, "prune", "--expire=2.weeks"], cmdOpts);
   if (pruneRes.code !== 0) {
     log(`botd repack: git prune warning on ${repoPath} (code ${pruneRes.code}): ${pruneRes.stderr || pruneRes.stdout}`);
   }
@@ -150,6 +176,11 @@ export async function repackRepo(repoPath, options = {}) {
   try {
     const fd = fs.openSync(markerPath, "w");
     fs.closeSync(fd);
+    if (typeof uid === "number" && typeof gid === "number" && (process.getuid ? process.getuid() === 0 : true)) {
+      try {
+        fs.chownSync(markerPath, uid, gid);
+      } catch {}
+    }
   } catch {}
 
   log(`botd repack: git-base ${repoPath} repacked: packs ${packsBefore} -> ${packsAfter}, size ${formatBytes(sizeBefore)} -> ${formatBytes(sizeAfter)}`);
@@ -160,6 +191,8 @@ export async function repackRepo(repoPath, options = {}) {
     packsAfter,
     sizeBefore,
     sizeAfter,
+    uid,
+    gid,
   };
 }
 
