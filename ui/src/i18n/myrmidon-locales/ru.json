@@ -1661,5 +1661,6 @@
       "chatgpt-pool-sidebar": "Подписки ChatGPT",
       "chatgpt-pool-page": "Подписки ChatGPT"
     }
-  }
+  },
+  "ui2.nav.group.plugins": "Плагины"
 }
