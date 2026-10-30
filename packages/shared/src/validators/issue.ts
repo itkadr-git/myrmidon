@@ -453,22 +453,38 @@ export const issueBlockReasonSchema = z.enum([
   "resource",
 ]);
 
+export const issueRewakeFreezeSchema = z.object({
+  agentId: z.string().uuid(),
+  frozenAt: z.string().datetime(),
+  noProgressStreak: z.number().int().positive(),
+  statusVersion: z.number().int().nonnegative().optional(),
+  assigneeAgentId: z.string().uuid().nullable().optional(),
+});
+
 export const issueBlockerMetadataSchema = z.object({
-  blockReason: issueBlockReasonSchema,
+  blockReason: issueBlockReasonSchema.optional(),
   owner: z.union([
     z.object({ agentId: z.string().uuid() }).strict(),
     z.object({ userId: z.string().uuid() }).strict(),
-  ]),
+  ]).optional(),
   blockedByIssueIds: z.array(z.string().uuid()).max(20).optional(),
   externalRef: z.string().trim().min(1).max(500).optional(),
-  nextCheckAt: z.string().datetime(),
-  timeoutAt: z.string().datetime(),
-  escalationPolicy: z.string().trim().min(1).max(120),
+  nextCheckAt: z.string().datetime().optional(),
+  timeoutAt: z.string().datetime().optional(),
+  escalationPolicy: z.string().trim().min(1).max(120).optional(),
+  issueRewakeFreeze: issueRewakeFreezeSchema.nullable().optional(),
 }).strict().refine(
   (value: {
+    blockReason?: string;
     blockedByIssueIds?: string[];
     externalRef?: string;
-  }) => Boolean(value.blockedByIssueIds?.length || value.externalRef),
+    issueRewakeFreeze?: unknown;
+  }) => {
+    if (value.issueRewakeFreeze && !value.blockReason) {
+      return true;
+    }
+    return Boolean(value.blockedByIssueIds?.length || value.externalRef);
+  },
   { message: "Provide blockedByIssueIds or externalRef", path: ["externalRef"] },
 );
 
@@ -585,13 +601,6 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionId: z.string().guid().nullable(),
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
-  issueRewakeFreeze: z.object({
-    agentId: z.string().guid(),
-    frozenAt: z.string().datetime(),
-    noProgressStreak: z.number().int().positive(),
-    statusVersion: z.number().int().nonnegative(),
-    assigneeAgentId: z.string().guid().nullable(),
-  }).nullable().optional(),
   changesRequestedCount: z.number().int().nonnegative().optional().default(0),
   reviewCycleId: z.string().min(1).max(200).nullable().optional().default(null),
   escalationPolicyRevision: z.string().min(1).max(200).nullable().optional().default(null),

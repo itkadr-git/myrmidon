@@ -71,7 +71,11 @@ import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBinding
 import { listAdapterModels } from "../adapters/registry.js";
 import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/router.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
-import { aiConnectionBindingSchema, type AiConnectionBinding } from "@myrmidon/shared";
+import {
+  aiConnectionBindingSchema,
+  type AiConnectionBinding,
+  type IssueBlockerMetadata,
+} from "@myrmidon/shared";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
 // settings against the environment, plus the per-agent card switch, so the three
 // automatic behaviours obey the settings page without a restart.
@@ -435,6 +439,18 @@ import {
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
+
+let cachedFreezeThreshold: { value: number; expiresAt: number } | null = null;
+async function getCachedFreezeThreshold(settings: { getGeneral: () => Promise<{ issueRewakeFreezeThreshold?: number | null }> }): Promise<number> {
+  const now = Date.now();
+  if (cachedFreezeThreshold && cachedFreezeThreshold.expiresAt > now) {
+    return cachedFreezeThreshold.value;
+  }
+  const general = await settings.getGeneral().catch(() => null);
+  const value = general?.issueRewakeFreezeThreshold ?? ISSUE_REWAKE_FREEZE_THRESHOLD;
+  cachedFreezeThreshold = { value, expiresAt: now + 30_000 };
+  return value;
+}
 // myrmidon(WAKE-GUARD): admission-side half of TASK-PR-SYNC — skips a run for a
 // task whose delivering PRs are all merged and settles it instead.
 import {
@@ -29375,6 +29391,7 @@ export function heartbeatService(
               createdByAgentId: issues.createdByAgentId,
               createdByUserId: issues.createdByUserId,
               responsibleUserId: issues.responsibleUserId,
+              blockerMetadata: issues.blockerMetadata,
               executionRunId: issues.executionRunId,
               executionAgentNameKey: issues.executionAgentNameKey,
               createdAt: issues.createdAt,
@@ -29386,7 +29403,6 @@ export function heartbeatService(
                 eq(issues.companyId, agent.companyId),
               ),
             )
-            .for("update")
             .then((rows) => rows[0] ?? null);
 
           if (!issue) {
@@ -30465,8 +30481,8 @@ export function heartbeatService(
           // so external pollers/reconcilers can't storm full-price sessions.
           // Server-side recovery retries insert runs directly and never reach
           // this gate.
-          const rewakeState = (issue.executionState?.issueRewakeFreeze ?? null) as
-            | { agentId: string; frozenAt: string; statusVersion: number; assigneeAgentId: string | null }
+          const rewakeState = (issue.blockerMetadata?.issueRewakeFreeze ?? null) as
+            | { agentId: string; frozenAt: string; statusVersion?: number; assigneeAgentId?: string | null }
             | null;
           const issueStateChanged = rewakeState?.agentId === agentId &&
             (rewakeState.statusVersion !== issue.statusVersion ||
@@ -30475,7 +30491,7 @@ export function heartbeatService(
             Boolean(explicitResumeSession && opts.requestedByActorType !== "agent") ||
             reason === "ci_completed";
           if (
-            (rewakeState?.agentId === agentId && !explicitRewake) ||
+            (rewakeState?.agentId === agentId) ||
             isThrottleCandidateIssueRewake({
               reason,
               wakeCommentId: wakeCommentId ?? null,
@@ -30568,8 +30584,7 @@ export function heartbeatService(
                     .limit(1)
                 : [];
 
-              const freezeThreshold = (await instanceSettings.getGeneral()).issueRewakeFreezeThreshold
-                ?? ISSUE_REWAKE_FREEZE_THRESHOLD;
+              const freezeThreshold = await getCachedFreezeThreshold(instanceSettings);
               const throttleDecision = evaluateIssueRewakeThrottle({
                 now: throttleNow,
                 freezeThreshold,
@@ -30589,31 +30604,98 @@ export function heartbeatService(
               if (throttleDecision.blocked && !explicitRewake && !issueStateChanged &&
                 !(rewakeState?.agentId === agentId && newInputRows.length > 0)) {
                 if (throttleDecision.frozen && rewakeState?.agentId !== agentId) {
-                  await tx.update(issues).set({
-                    executionState: {
-                      ...(issue.executionState ?? {}),
-                      issueRewakeFreeze: {
-                        agentId,
-                        frozenAt: throttleDecision.frozenAt.toISOString(),
-                        noProgressStreak: throttleDecision.noProgressStreak,
-                        statusVersion: issue.statusVersion,
-                        assigneeAgentId: issue.assigneeAgentId,
-                      },
+                  await tx
+                    .select({ id: issues.id })
+                    .from(issues)
+                    .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+                    .for("update");
+
+                  const nextBlocker: IssueBlockerMetadata = {
+                    ...(issue.blockerMetadata ?? {}),
+                    issueRewakeFreeze: {
+                      agentId,
+                      frozenAt: throttleDecision.frozenAt.toISOString(),
+                      noProgressStreak: throttleDecision.noProgressStreak,
+                      statusVersion: issue.statusVersion,
+                      assigneeAgentId: issue.assigneeAgentId,
                     },
+                  };
+                  await tx.update(issues).set({
+                    blockerMetadata: nextBlocker,
                   }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
-                  const [project] = issue.projectId ? await tx.select({ leadAgentId: projects.leadAgentId })
-                    .from(projects).where(and(eq(projects.id, issue.projectId), eq(projects.companyId, issue.companyId))) : [];
-                  const escalationRecipient = project?.leadAgentId && project.leadAgentId !== agentId
-                    ? `project lead agent ${project.leadAgentId}`
-                    : issue.createdByAgentId && issue.createdByAgentId !== agentId
-                      ? `assigning agent ${issue.createdByAgentId}`
-                      : issue.createdByUserId ?? issue.responsibleUserId ?? recentTerminalRuns[0]?.responsibleUserId ?? "board operator";
-                  await tx.insert(issueComments).values({
-                    companyId: issue.companyId,
-                    issueId: issue.id,
-                    authorType: "system",
-                    body: `For ${escalationRecipient}: agent ${agentId} completed ${throttleDecision.noProgressStreak} runs without progress. Last output: ${(recentTerminalRuns[0]?.stdoutExcerpt ?? recentTerminalRuns[0]?.stderrExcerpt ?? "no output").slice(-500)}. What is needed to continue?`,
-                  });
+                  issue.blockerMetadata = nextBlocker;
+
+                  const [project] = issue.projectId
+                    ? await tx
+                        .select({ leadAgentId: projects.leadAgentId })
+                        .from(projects)
+                        .where(and(eq(projects.id, issue.projectId), eq(projects.companyId, issue.companyId)))
+                    : [];
+
+                  let recipientAgentId: string | null = null;
+                  let recipientUserId: string | null = null;
+
+                  if (project?.leadAgentId && project.leadAgentId !== agentId) {
+                    recipientAgentId = project.leadAgentId;
+                  } else if (issue.createdByAgentId && issue.createdByAgentId !== agentId) {
+                    recipientAgentId = issue.createdByAgentId;
+                  } else if (issue.createdByUserId) {
+                    recipientUserId = issue.createdByUserId;
+                  } else if (issue.responsibleUserId) {
+                    recipientUserId = issue.responsibleUserId;
+                  } else if (recentTerminalRuns[0]?.responsibleUserId) {
+                    recipientUserId = recentTerminalRuns[0].responsibleUserId;
+                  }
+
+                  const [recipientAgent] = recipientAgentId
+                    ? await tx.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.id, recipientAgentId))
+                    : [];
+                  const [recipientUser] = recipientUserId
+                    ? await tx.select({ id: users.id, name: users.name }).from(users).where(eq(users.id, recipientUserId))
+                    : [];
+                  const [currentAgentRow] = await tx
+                    .select({ id: agents.id, name: agents.name })
+                    .from(agents)
+                    .where(eq(agents.id, agentId));
+
+                  const agentLabel = currentAgentRow?.name ?? `агент ${agentId}`;
+                  const recipientMention = recipientAgent?.name
+                    ? `@${recipientAgent.name}`
+                    : recipientAgentId
+                      ? `@${recipientAgentId}`
+                      : recipientUser?.name
+                        ? `@${recipientUser.name}`
+                        : "Оператор доски";
+
+                  const lastRunId = recentTerminalRuns[0]?.id;
+                  const lastRunRef = lastRunId ? `/runs/${lastRunId}` : "нет завершенных прогонов";
+
+                  const commentBody = `${recipientMention}: ${agentLabel} выполнил ${throttleDecision.noProgressStreak} прогонов по задаче без прогресса. Последний прогон: ${lastRunRef}. Что нужно, чтобы продолжить?`;
+
+                  const [createdComment] = await tx
+                    .insert(issueComments)
+                    .values({
+                      companyId: issue.companyId,
+                      issueId: issue.id,
+                      authorType: "system",
+                      body: commentBody,
+                    })
+                    .returning();
+
+                  if (recipientAgentId && createdComment) {
+                    await tx.insert(agentWakeupRequests).values({
+                      companyId: issue.companyId,
+                      agentId: recipientAgentId,
+                      source: "automation",
+                      triggerDetail: "system",
+                      reason: "issue_commented",
+                      payload: {
+                        issueId: issue.id,
+                        commentId: createdComment.id,
+                      },
+                      status: "queued",
+                    });
+                  }
                 }
                 if (!throttleDecision.frozen) {
                   await tx.insert(agentWakeupRequests).values({
@@ -30648,15 +30730,23 @@ export function heartbeatService(
                 return { kind: "skipped" as const };
               }
               if (rewakeState?.agentId === agentId && (newInputRows.length > 0 || explicitRewake || issueStateChanged)) {
+                const nextBlocker = issue.blockerMetadata?.blockReason
+                  ? { ...issue.blockerMetadata, issueRewakeFreeze: null }
+                  : null;
                 await tx.update(issues).set({
-                  executionState: { ...(issue.executionState ?? {}), issueRewakeFreeze: null },
+                  blockerMetadata: nextBlocker,
                 }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+                issue.blockerMetadata = nextBlocker;
               }
             }
             if (rewakeState?.agentId === agentId && (explicitRewake || issueStateChanged) && recentTerminalRuns.length === 0) {
+              const nextBlocker = issue.blockerMetadata?.blockReason
+                ? { ...issue.blockerMetadata, issueRewakeFreeze: null }
+                : null;
               await tx.update(issues).set({
-                executionState: { ...(issue.executionState ?? {}), issueRewakeFreeze: null },
+                blockerMetadata: nextBlocker,
               }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+              issue.blockerMetadata = nextBlocker;
             }
           }
 

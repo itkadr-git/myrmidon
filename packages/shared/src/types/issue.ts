@@ -46,14 +46,23 @@ import type {
 
 export type { IssueWorkMode };
 
+export interface IssueRewakeFreeze {
+  agentId: string;
+  frozenAt: string;
+  noProgressStreak: number;
+  statusVersion?: number;
+  assigneeAgentId?: string | null;
+}
+
 export interface IssueBlockerMetadata {
-  blockReason: "external_wait" | "dependency" | "recovery" | "human_decision" | "resource";
-  owner: { agentId: string } | { userId: string };
+  blockReason?: "external_wait" | "dependency" | "recovery" | "human_decision" | "resource";
+  owner?: { agentId: string } | { userId: string };
   blockedByIssueIds?: string[];
   externalRef?: string;
-  nextCheckAt: string;
-  timeoutAt: string;
-  escalationPolicy: string;
+  nextCheckAt?: string;
+  timeoutAt?: string;
+  escalationPolicy?: string;
+  issueRewakeFreeze?: IssueRewakeFreeze | null;
 }
 
 export interface IssueAncestorProject {
@@ -771,7 +780,6 @@ export interface IssueExecutionState {
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
   monitor?: IssueExecutionMonitorState | null;
-  issueRewakeFreeze?: { agentId: string; frozenAt: string; noProgressStreak: number; statusVersion: number; assigneeAgentId: string | null } | null;
   /** Consecutive agent-initiated changes-requested rounds on the current stage. */
   changesRequestedCount?: number;
   reviewCycleId?: string | null;

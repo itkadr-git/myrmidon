@@ -219,16 +219,19 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     });
     expect(await poll()).toBeNull();
     expect(await poll()).toBeNull();
-    const [frozenIssue] = await db.select({ state: issues.executionState }).from(issues).where(eq(issues.id, issueId));
-    expect(frozenIssue?.state?.issueRewakeFreeze).toMatchObject({ agentId, noProgressStreak: 6 });
+    const [frozenIssue] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(frozenIssue?.blocker?.issueRewakeFreeze).toMatchObject({ agentId, noProgressStreak: 6 });
     const escalation = await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(escalation).toHaveLength(1);
-    expect(escalation[0]?.body).toContain("What is needed to continue?");
+    expect(escalation[0]?.body).toContain("Что нужно, чтобы продолжить?");
+    expect(escalation[0]?.body).toContain("/runs/");
     await db.insert(activityLog).values({
       companyId, actorType: "user", actorId: "board-user", action: "issue.comment_added",
       entityType: "issue", entityId: issueId,
     });
     expect(await poll()).not.toBeNull();
+    const [thawedIssue] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(thawedIssue?.blocker?.issueRewakeFreeze).toBeFalsy();
   });
 
   it("admits a PR sync event after a freeze", async () => {
@@ -247,6 +250,8 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       entityType: "issue", entityId: issueId,
     });
     expect(await poll()).not.toBeNull();
+    const [thawedIssuePr] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(thawedIssuePr?.blocker?.issueRewakeFreeze).toBeFalsy();
   });
 
   it("admits a CI completion wake for a frozen issue", async () => {
@@ -266,6 +271,8 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       requestedByActorType: "system", requestedByActorId: "system:github-ci",
     });
     expect(ciWake).not.toBeNull();
+    const [thawedIssueCi] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(thawedIssueCi?.blocker?.issueRewakeFreeze).toBeFalsy();
   });
 
   it("does not throttle direct issue_assigned wakes after no-progress handoff runs", async () => {

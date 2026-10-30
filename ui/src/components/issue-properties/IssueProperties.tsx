@@ -1484,7 +1484,7 @@ export function IssueProperties({
     setMonitorOpen(false);
   };
   const monitorState = issue.executionState?.monitor ?? null;
-  const rewakeFreeze = issue.executionState?.issueRewakeFreeze ?? null;
+  const rewakeFreeze = (issue.blockerMetadata?.issueRewakeFreeze ?? issue.executionState?.issueRewakeFreeze ?? null) as { frozenAt: string } | null;
   const monitorNextCheckAt = monitorState?.nextCheckAt ?? issue.monitorNextCheckAt ?? issue.executionPolicy?.monitor?.nextCheckAt ?? null;
   const monitorAttemptCount = issue.monitorAttemptCount ?? monitorState?.attemptCount ?? 0;
   const monitorLastTriggeredAt = issue.monitorLastTriggeredAt ?? monitorState?.lastTriggeredAt ?? null;
