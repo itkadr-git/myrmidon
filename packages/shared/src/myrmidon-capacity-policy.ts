@@ -70,10 +70,11 @@ export function applyProjectFairness<T extends SwarmQueueCandidate & { projectId
   const remaining = [...ordered];
   const counts = new Map<string, number>();
   while (remaining.length) {
+    const nextLength = result.length + 1;
     const index = remaining.findIndex((candidate) => {
       const project = candidate.projectId?.trim();
       if (!project) return true;
-      return (counts.get(project) ?? 0) + 1 <= Math.ceil((result.length + 1) * maxShare);
+      return (counts.get(project) ?? 0) + 1 <= Math.ceil(nextLength * maxShare);
     });
     const [candidate] = remaining.splice(index < 0 ? 0 : index, 1);
     result.push(candidate);
