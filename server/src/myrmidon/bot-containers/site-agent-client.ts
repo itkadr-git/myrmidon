@@ -215,7 +215,7 @@ export function createSiteAgentClient(config: SiteAgentClientConfig): SiteAgentM
             port: url.port ? Number(url.port) : isHttps ? 443 : 80,
             path: `/v1/bots/${encodeURIComponent(botKey)}/logs?tail=${tail}`,
             method: "GET",
-            headers: { ...baseHeaders(), Accept: "text/plain" },
+            headers: { ...baseHeaders(), Accept: "application/json" },
           },
           (res) => {
             const chunks: Buffer[] = [];

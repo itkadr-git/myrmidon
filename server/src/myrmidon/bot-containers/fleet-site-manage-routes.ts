@@ -333,7 +333,7 @@ export function fleetSiteManageRoutes(deps: FleetSiteManageDeps): Router {
     if (certExpired(site, nowMs())) refuseExpired(site, "reading its logs");
     let text: string;
     try {
-      text = await deps.botLogs(companyId, site.name, botKey);
+      text = await deps.botLogs(companyId, site.name, botKey, tail);
     } catch (err) {
       if (err instanceof HttpError) throw err;
       throw new HttpError(502, `Site "${site.name}" could not give the log of bot "${botKey}": ${err instanceof Error ? err.message : String(err)}`);

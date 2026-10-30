@@ -72,14 +72,12 @@ describe("classifyChanges", () => {
         [
           { file: "server/src/__tests__/app-private-hostname-gate.test.ts", source: "" },
           { file: "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts", source: "" },
-          { file: "server/src/embedded-postgres-owner.test.ts", source: "" },
         ],
       );
       assert.deepEqual(result.files, [{
         package: "@myrmidon/server",
         files: [
           "server/src/__tests__/app-private-hostname-gate.test.ts",
-          "server/src/embedded-postgres-owner.test.ts",
           "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts",
         ],
       }]);

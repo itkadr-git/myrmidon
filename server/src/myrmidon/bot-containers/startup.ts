@@ -218,7 +218,7 @@ export function startBotContainers(
     ports.log.error({ err }, "failed to start clone hygiene report collection");
   }
   // myrmidon(1.6.6 REMOTE-SITES-T5): after the runtime is registered, because a move uses it.
-  const stopSiteScheduler = ports.startSiteScheduler?.(db, { env }) ?? null;
+  const stopSiteScheduler = ports.startSiteScheduler?.(db, { env, clientManager }) ?? null;
   // myrmidon(1.6.6 REMOTE-SITES-T4): next to the scheduler; it reads the client manager's transports.
   const stopSiteHealth = ports.startSiteHealth?.(db, { env, clientManager }) ?? null;
 

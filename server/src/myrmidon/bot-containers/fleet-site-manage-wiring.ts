@@ -217,9 +217,9 @@ export function myrmidonFleetSiteManageRoutes(db: Db, clientManager?: FleetClien
       else await driver.stop(botKey);
     },
 
-    async botLogs(companyId, siteName, botKey) {
+    async botLogs(companyId, siteName, botKey, tail = 100) {
       const transport = await registeredTransport(companyId, siteName);
-      return createSiteAgentClient({ baseUrl: transport.baseUrl, token: transport.token, agent: transport.agent, requireMtls: true }).logs(botKey);
+      return createSiteAgentClient({ baseUrl: transport.baseUrl, token: transport.token, agent: transport.agent, requireMtls: true }).logs(botKey, tail);
     },
 
     log: logger,

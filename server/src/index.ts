@@ -2279,13 +2279,11 @@ async function startServerWithDatabaseTeardown(
     startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
     // myrmidon(1.6.6 REMOTE-SITES-T4): the site-monitor lane finalizes the runs of a lost site through the heartbeat service of this process.
     if (heartbeat && processRoleProfile.runsBackground) registerSiteLostRunFinalizer(heartbeat.finalizeSiteLostRun);
-    if (processRoleProfile.runsBackground) {
-      startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
-      // Initialize IDLE-STOP service after bot containers (needs the driver from runtime)
-      const botContainerRuntime = getBotContainerRuntime();
-      if (botContainerRuntime) {
-        await initializeIdleStopService(botContainerRuntime.driver, db as any);
-      }
+    startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
+    // Initialize IDLE-STOP service after bot containers (needs the driver from runtime)
+    const botContainerRuntime = getBotContainerRuntime();
+    if (botContainerRuntime) {
+      await initializeIdleStopService(botContainerRuntime.driver, db as any);
     }
     runContextColumnsBackfill = startRunContextColumnsBackfill(db as any, logger); // OPE-5007 П2: batched, per-batch-commit fill of the thin run-context columns (the migration only adds them)
     startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set

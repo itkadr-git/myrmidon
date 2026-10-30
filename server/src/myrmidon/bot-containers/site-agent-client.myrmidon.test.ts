@@ -3,9 +3,11 @@
 // myrmidon(1.6.6 C-MEM): the memory export call of the site-agent client against a local server.
 
 import http from "node:http";
+import https from "node:https";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createSiteAgentClient } from "./site-agent-client.js";
+import { cleanupTestPki, generateEphemeralTestPki } from "./site-agent-pki.js";
 
 describe("site-agent client memoryExport", () => {
   const servers: http.Server[] = [];
@@ -113,5 +115,68 @@ describe("site-agent client memoryExport", () => {
     });
     await expect(createSiteAgentClient({ baseUrl, token: "tok" }).logs("work-qa", 100)).resolves.toBe("line one\n");
     expect(seen).toBe("GET /v1/bots/work-qa/logs?tail=100");
+  });
+});
+
+describe("site-agent client mTLS guard & https", () => {
+  let pki: ReturnType<typeof generateEphemeralTestPki>;
+  const httpsServers: https.Server[] = [];
+
+  beforeEach(() => {
+    pki = generateEphemeralTestPki();
+  });
+
+  afterEach(async () => {
+    await Promise.all(httpsServers.splice(0).map((s) => new Promise((resolve) => s.close(resolve))));
+    cleanupTestPki(pki);
+  });
+
+  it("fails fast when requireMtls is true but no agent is provided", () => {
+    expect(() =>
+      createSiteAgentClient({ baseUrl: "https://site.example.com", requireMtls: true }),
+    ).toThrow("site-agent client requires an https agent configured with an active mTLS certificate");
+  });
+
+  it("fails fast when baseUrl is not https and requireMtls is set", () => {
+    const agent = new https.Agent({ cert: pki.clientCert, key: pki.clientKey, ca: pki.caCert });
+    expect(() =>
+      createSiteAgentClient({ baseUrl: "http://site.example.com", agent, requireMtls: true }),
+    ).toThrow("site-agent client requires https baseUrl when requireMtls is enabled");
+  });
+
+  it("performs mTLS-authenticated request against an https server with mutual auth", async () => {
+    let clientCertSubject = "";
+    const server = https.createServer(
+      {
+        cert: pki.serverCert,
+        key: pki.serverKey,
+        ca: pki.caCert,
+        requestCert: true,
+        rejectUnauthorized: true,
+      },
+      (req, res) => {
+        const cert = (req.socket as any).getPeerCertificate();
+        clientCertSubject = cert?.subject?.CN ?? "";
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ logs: "log line via mtls\n" }));
+      },
+    );
+    httpsServers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    const baseUrl = `https://127.0.0.1:${port}`;
+
+    const agent = new https.Agent({
+      cert: pki.clientCert,
+      key: pki.clientKey,
+      ca: pki.caCert,
+      rejectUnauthorized: true,
+      checkServerIdentity: () => undefined,
+    });
+
+    const client = createSiteAgentClient({ baseUrl, agent, requireMtls: true, token: "test-token" });
+    const logs = await client.logs("work-bot", 10);
+    expect(logs).toBe("log line via mtls\n");
+    expect(clientCertSubject).toBeTruthy();
   });
 });

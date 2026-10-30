@@ -28,7 +28,7 @@ import { botContainerSpec, botKeyForAgent, readBotContainerAgentConfig } from ".
 import { botKeyLock } from "./bot-key-lock.js";
 import { getBotContainerRuntime } from "./routes-wiring.js";
 import type { BotContainerRuntimeDeps } from "./index.js";
-import { agentService } from "../../services/index.js";
+import { agentService, secretService } from "../../services/index.js";
 import { logger } from "../../middleware/logger.js";
 import type { FleetClientManager, FleetSiteTransport } from "./site-registry.js";
 
@@ -57,6 +57,15 @@ export function createFleetMoveContext(db: Db, clientManager?: FleetClientManage
   const currentClientManager = () => typeof clientManager === "function" ? clientManager() ?? undefined : clientManager;
   const store = fleetMoveStore(db);
   const agentsApi = agentService(db);
+  const secrets = secretService(db);
+
+  async function readSecretValue(companyId: string, name: string, what: string): Promise<string> {
+    const secret = await secrets.getByName(companyId, name);
+    if (!secret) throw new Error(`${what}: company secret "${name}" not found`);
+    const value = (await secrets.resolveSecretValue(companyId, secret.id, "latest"))?.trim();
+    if (!value) throw new Error(`${what}: company secret "${name}" is empty`);
+    return value;
+  }
 
   function requireRuntime(): BotContainerRuntimeDeps {
     const runtime = getBotContainerRuntime();
@@ -103,6 +112,17 @@ export function createFleetMoveContext(db: Db, clientManager?: FleetClientManage
 
   /** The fleetd address and token of a site, for the company that owns the bot. */
   async function resolveSiteHost(siteName: string, companyId: string): Promise<FleetSiteTransport> {
+    if (siteName === LOCAL_SITE) {
+      const url = process.env[LOCAL_SITE_AGENT_URL_ENV]?.trim().replace(/\/+$/, "");
+      const tokenSecret = process.env[LOCAL_SITE_AGENT_TOKEN_SECRET_ENV]?.trim();
+      if (!url || !tokenSecret) {
+        throw new Error(
+          `site "${LOCAL_SITE}" has no site-agent configured: set ${LOCAL_SITE_AGENT_URL_ENV} and ${LOCAL_SITE_AGENT_TOKEN_SECRET_ENV}`,
+        );
+      }
+      return { baseUrl: url, token: await readSecretValue(companyId, tokenSecret, `site "${LOCAL_SITE}"`), mtls: false };
+    }
+
     const manager = currentClientManager();
     if (manager) {
       await manager.ensureFresh();
@@ -111,9 +131,6 @@ export function createFleetMoveContext(db: Db, clientManager?: FleetClientManage
         throw new Error(`site "${siteName}" has no valid mTLS client certificate, key, or CA`);
       }
       return transport;
-    }
-    if (siteName === LOCAL_SITE) {
-      throw new Error(`site "${LOCAL_SITE}" requires a registered site mTLS client certificate, key, and CA`);
     }
 
     const envHost = parseFleetHosts(process.env.MYRMIDON_FLEET_HOSTS).get(siteName);
@@ -156,6 +173,9 @@ export function createFleetMoveContext(db: Db, clientManager?: FleetClientManage
   // myrmidon(1.6.6 C-MEM): the memory sync right before a live move; null when not configured.
   const memorySync = fleetMemorySyncFromEnv(db, process.env, async (site, botKey) => {
     const transport = await resolveSiteHost(site.name, site.companyId);
+    if (site.name === LOCAL_SITE) {
+      return createSiteAgentClient({ baseUrl: transport.baseUrl, token: transport.token }).memoryExport(botKey);
+    }
     return createSiteAgentClient({ baseUrl: transport.baseUrl, token: transport.token, agent: transport.agent, requireMtls: true }).memoryExport(botKey);
   });
 
@@ -179,6 +199,9 @@ export function createFleetMoveContext(db: Db, clientManager?: FleetClientManage
 
     async getSiteAgentClient(siteName: string, companyId: string): Promise<SiteAgentClient> {
       const transport = await resolveSiteHost(siteName, companyId);
+      if (siteName === LOCAL_SITE) {
+        return createSiteAgentClient({ baseUrl: transport.baseUrl, token: transport.token });
+      }
       return createSiteAgentClient({ baseUrl: transport.baseUrl, token: transport.token, agent: transport.agent, requireMtls: true });
     },
 
@@ -218,6 +241,9 @@ export function createFleetMoveContext(db: Db, clientManager?: FleetClientManage
     botSpec,
     async siteAgentClient(siteName: string, companyId: string) {
       const transport = await resolveSiteHost(siteName, companyId);
+      if (siteName === LOCAL_SITE) {
+        return createSiteAgentClient({ baseUrl: transport.baseUrl, token: transport.token });
+      }
       return createSiteAgentClient({ baseUrl: transport.baseUrl, token: transport.token, agent: transport.agent, requireMtls: true });
     },
   };
