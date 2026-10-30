@@ -44,4 +44,13 @@ describe("browser storage namespace migration", () => {
     expect(window.localStorage.getItem("myrmidon.sidebar.width")).toBe("400");
     expect(window.localStorage.getItem("paperclip.sidebar.width")).toBeNull();
   });
+
+  it("preserves the language plugin locale key across startup migration", () => {
+    window.localStorage.setItem("paperclip.lang.locale", "ru");
+
+    migrateLegacyBrowserStorage();
+
+    expect(window.localStorage.getItem("paperclip.lang.locale")).toBe("ru");
+    expect(window.localStorage.getItem("myrmidon.lang.locale")).toBeNull();
+  });
 });

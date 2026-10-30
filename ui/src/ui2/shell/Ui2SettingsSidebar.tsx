@@ -15,7 +15,6 @@ export const UI2_SETTINGS_SECTIONS = [
   { key: "runs", path: "/company/settings/runs-queue" },
   { key: "budgets", path: "/company/settings/budgets" },
   { key: "autonomy", path: "/company/settings/autonomy" },
-  { key: "guards", path: "/company/settings/guards" },
   { key: "castes", path: "/company/settings/castes" },
   { key: "system", path: "/company/settings/system" },
   { key: "language", path: "/company/settings/language" },
