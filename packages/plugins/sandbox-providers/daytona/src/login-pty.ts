@@ -27,7 +27,7 @@
 // excludes `packages/plugins/sandbox-providers/**`). So the module imports no
 // workspace package. It declares the small session shape locally through
 // {@link LoginPtySession}. The shape matches the `LoginPtySession` interface in
-// `@paperclipai/adapter-utils`, so the transport factory `createLoginPtyTransport`
+// `@myrmidon/adapter-utils`, so the transport factory `createLoginPtyTransport`
 // accepts the session opener from this module with no adapter. The runner drives
 // the transport; the transport drives this session.
 //
@@ -138,7 +138,7 @@ export function composeLaunchLine(descriptor: LoginPtyLaunchDescriptor): string 
  * A live pseudo-terminal session for one login command. The session allocates a
  * real pseudo-terminal, streams the raw terminal output, accepts delayed input,
  * and stops the child. The shape matches the `LoginPtySession` interface in
- * `@paperclipai/adapter-utils`, so the transport factory there accepts a session
+ * `@myrmidon/adapter-utils`, so the transport factory there accepts a session
  * opener that returns this session.
  */
 export interface LoginPtySession {

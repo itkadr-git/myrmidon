@@ -36,9 +36,9 @@ import {
   issueClaims,
   issueComments,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { and, eq, isNull } from "drizzle-orm";
-import { SWARM_MATCHED_WAKE_REASON, resolveSwarmClaimSettings } from "@paperclipai/shared";
+import { SWARM_MATCHED_WAKE_REASON, resolveSwarmClaimSettings } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -198,6 +198,7 @@ describeEmbeddedPostgres("swarm wake: real dispatch and the supervisor caste gat
         agentId: holderId,
         role: "engineer",
         runId: null,
+        origin: "auto_match",
         claimedAt: new Date(now.getTime() - 60_000),
         heartbeatAt: new Date(now.getTime() - 60_000),
         expiresAt: new Date(now.getTime() + 600_000),

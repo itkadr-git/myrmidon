@@ -6,7 +6,7 @@
 // the cache itself (the tool gateway service) import `runtime.js` directly so
 // the hot path does not pull the services barrel in.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { instanceSettingsService } from "../../services/index.js";
 import { toolPolicyCacheStats } from "./runtime.js";
 import { toolPolicyCacheSettingsRoutes, toolPolicyCacheSettingsService } from "./settings-routes.js";

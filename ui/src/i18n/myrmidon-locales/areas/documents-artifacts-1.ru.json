@@ -1,0 +1,173 @@
+{
+  "area": {
+    "documents-artifacts-1": {
+      "artifacts-panel": {
+        "title": "Артефакты",
+        "filterAll": "Все",
+        "filterInProgress": "В работе",
+        "filterForReview": "На ревью",
+        "filterCompleted": "Завершены",
+        "statusChangesRequested": "Нужны правки",
+        "statusFailed": "Сбой",
+        "documentFallbackTitle": "Документ",
+        "emptyAll": "Результаты и планы вашей команды появятся здесь по мере создания.",
+        "emptyFiltered": "Нет артефактов, подходящих под этот фильтр.",
+        "generating": "Генерируется…",
+        "loadingDocument": "Загрузка документа…",
+        "documentUnavailable": "Документ пока недоступен.",
+        "documentEmpty": "Документ пуст.",
+        "needsReview": "Этот документ ждёт вашего ревью.",
+        "approve": "Одобрить",
+        "reject": "Отклонить",
+        "approvedNote": "Одобрено — задачи на найм созданы",
+        "changesRequestedNote": "Запрошены правки — CEO дорабатывает"
+      },
+      "document-annotation-layer": {
+        "openThread": "Открыть ветку комментариев",
+        "anchorMoved": "Привязка сместилась — нужна проверка",
+        "selectionActions": "Действия с выделением",
+        "addCommentOnSelection": "Прокомментировать выделенное (⌘⇧M)",
+        "comment": "Комментарий"
+      },
+      "document-annotation-panel": {
+        "panel": {
+          "commentsOn": "Комментарии к {{documentKey}}, ревизия {{revision}}",
+          "annotationsFor": "Комментарии к {{documentKey}}, ревизия {{revision}}"
+        },
+        "body": {
+          "revision": "рев. {{revision}}",
+          "closePanel": "Закрыть панель комментариев",
+          "composerPlaceholder": "Напишите комментарий…",
+          "posting": "Отправка…",
+          "comment": "Комментарий"
+        },
+        "threadCard": {
+          "replyPlaceholder": "Ответить…",
+          "reopen": "Открыть снова",
+          "resolve": "Закрыть",
+          "sending": "Отправка…",
+          "reply": "Ответить",
+          "moreThreadActions": "Ещё действия с веткой",
+          "copyLink": "Копировать ссылку",
+          "commentCount_one": "{{count}} комментарий",
+          "commentCount_few": "{{count}} комментария",
+          "commentCount_many": "{{count}} комментариев",
+          "commentCount_other": "{{count}} комментария"
+        },
+        "commentRow": {
+          "agentSuffix": "· агент",
+          "authorAgent": "Агент",
+          "authorBoard": "Доска"
+        }
+      },
+      "document-annotation-popover": {
+        "addComment": "Добавить комментарий к фрагменту",
+        "thread": "Ветка комментариев",
+        "composerPlaceholder": "Напишите комментарий…",
+        "posting": "Отправка…",
+        "comment": "Комментарий"
+      },
+      "document-diff-modal": {
+        "actorBoard": "доска",
+        "actorAgent": "агент",
+        "actorSystem": "система",
+        "revisionLabel": "рев. {{revision}} — {{time}} • {{actor}}",
+        "title": "Сравнение —",
+        "oldBadge": "Было",
+        "newBadge": "Стало",
+        "selectRevision": "Выберите ревизию",
+        "loadingRevisions": "Загрузка ревизий…",
+        "selectTwo": "Выберите две ревизии для сравнения.",
+        "sameRevision": "С обеих сторон одна и та же ревизия.",
+        "colOld": "Было",
+        "colNew": "Стало",
+        "colContent": "Содержимое"
+      },
+      "document-frame-header": {
+        "expandDocument": "Развернуть документ {{documentKey}}",
+        "collapseDocument": "Свернуть документ {{documentKey}}",
+        "revision": "рев. {{revision}}",
+        "revisionHistory": "История ревизий",
+        "loadingRevisions": "Загрузка ревизий…",
+        "current": "Текущая",
+        "noRevisions": "Ревизий пока нет",
+        "updated": "обновлено {{time}}"
+      },
+      "file-viewer-sheet": {
+        "somethingWrong": "Что-то пошло не так.",
+        "denial": {
+          "blockedTitle": "Просмотр этого файла заблокирован",
+          "blockedBody": "Этот файл недоступен в просмотрщике: в нём могут быть конфиденциальные данные.",
+          "outsideTitle": "Путь вне рабочего пространства",
+          "outsideBody": "Просмотрщик открывает только файлы из рабочего пространства задачи.",
+          "archivedTitle": "Рабочее пространство больше недоступно",
+          "archivedBody": "Изолированная рабочая копия этой задачи удалена, поэтому файлы нельзя просмотреть.",
+          "remoteTitle": "Просмотр удалённого рабочего пространства не поддерживается",
+          "remoteBody": "Это рабочее пространство размещено удалённо, встроенный просмотр для него пока недоступен.",
+          "tooLargeTitle": "Файл слишком большой для просмотра",
+          "tooLargeBody": "Размер файла превышает допустимый для просмотра.",
+          "unsupportedTitle": "Для этого типа файла просмотр не поддерживается",
+          "unsupportedBody": "Для этого файла нет текстового, графического или видеопросмотра.",
+          "defaultTitle": "Не удаётся показать этот файл",
+          "defaultBody": "Просмотрщику не удалось загрузить этот файл."
+        },
+        "metadata": {
+          "line": "Строка {{line}}",
+          "lineColumn": "Строка {{line}}, столбец {{column}}",
+          "loadingDetails": "Загрузка сведений о файле"
+        },
+        "content": {
+          "loaded_one": "Файл загружен, {{count}} строка.",
+          "loaded_few": "Файл загружен, {{count}} строки.",
+          "loaded_many": "Файл загружен, {{count}} строк.",
+          "loaded_other": "Файл загружен, {{count}} строки.",
+          "imageUnavailable": "Просмотр изображения недоступен",
+          "videoUnavailable": "Просмотр видео недоступен",
+          "videoPreview": "Просмотр видео: {{title}}",
+          "unsupported": "Для этого типа файла просмотр не поддерживается",
+          "contentType": "Тип содержимого: {{type}}",
+          "sourceOf": "Исходный текст: {{title}}",
+          "markdownMode": "Режим просмотра Markdown",
+          "showRendered": "Показать оформленный Markdown",
+          "rendered": "Оформленный Markdown",
+          "showRaw": "Показать исходный Markdown",
+          "raw": "Исходный Markdown",
+          "renderedOf": "Оформленный Markdown: {{title}}"
+        },
+        "loading": {
+          "preview": "Загрузка просмотра файла",
+          "previewLong": "Загрузка просмотра файла…"
+        },
+        "sheet": {
+          "loadFailed": "Не удалось загрузить файл.",
+          "loadContentFailed": "Не удалось загрузить содержимое файла.",
+          "copyFailed": "Не удалось скопировать",
+          "contentsUnavailable": "Содержимое файла недоступно",
+          "copiedData": "Данные файла скопированы",
+          "copiedContents": "Содержимое скопировано",
+          "copiedLink": "Ссылка скопирована",
+          "browseTitle": "Обзор рабочего пространства",
+          "browseDescription": "Поиск и просмотр файлов из рабочего пространства этой задачи.",
+          "backToFiles": "Назад к файлам",
+          "download": "Скачать файл",
+          "copiedFileContents": "Содержимое файла скопировано",
+          "copyFileContents": "Копировать содержимое файла",
+          "copiedViewLink": "Ссылка на просмотр файла скопирована",
+          "copyViewLink": "Копировать ссылку на просмотр этого файла",
+          "copyLink": "Копировать ссылку",
+          "closeViewer": "Закрыть просмотр файла",
+          "resizeTree": "Изменить ширину дерева файлов"
+        },
+        "body": {
+          "notFoundTitle": "Файл не найден",
+          "notFoundBody": "Этот файл не найден в активном рабочем пространстве.",
+          "tryProject": "Открыть в рабочем пространстве проекта",
+          "noWorkspaceTitle": "Рабочее пространство недоступно",
+          "noWorkspaceBody": "У этой задачи нет рабочего пространства, поддерживающего просмотр.",
+          "remoteTitle": "Просмотр удалённого рабочего пространства скоро появится",
+          "remoteBody": "Это рабочее пространство размещено удалённо, встроенный просмотр пока не поддерживается."
+        }
+      }
+    }
+  }
+}

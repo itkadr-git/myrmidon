@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, or, type SQL } from "drizzle-orm";
-import { issues, type Db } from "@paperclipai/db";
+import { issues, type Db } from "@myrmidon/db";
 import { visibleIssueCondition } from "../services/issue-visibility.js";
 
 /**

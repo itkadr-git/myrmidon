@@ -16,7 +16,7 @@ import {
   DEFAULT_RUN_PRIORITY_ROLE_WEIGHTS,
   runPriorityWeight,
   type RunPrioritySettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   RUN_PRIORITY_PICK_WAIT_REASON,
   decideRunPriorityPick,

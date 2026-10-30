@@ -7,7 +7,7 @@ import {
   vercelGrantReference,
   vercelTokenRequest,
 } from "./vercel-connect.js";
-import type { VercelConnectCredentialReference } from "@paperclipai/shared";
+import type { VercelConnectCredentialReference } from "@myrmidon/shared";
 
 const credential: VercelConnectCredentialReference = {
   provider: "vercel_connect",

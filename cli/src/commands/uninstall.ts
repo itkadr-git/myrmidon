@@ -29,8 +29,8 @@ function otherServiceDefinitions(platform: NodeJS.Platform, userHomeDir: string,
     ? systemdServiceName(instanceId)
     : `${launchdServiceName(instanceId)}.plist`;
   const pattern = platform === "linux"
-    ? /^paperclipai(?:-.+)?\.service$/
-    : /^ing\.paperclip\.paperclipai(?:\..+)?\.plist$/;
+    ? /^(?:myrmidon|paperclipai)(?:-.+)?\.service$/
+    : /^ing\.paperclip\.(?:myrmidon|paperclipai)(?:\..+)?\.plist$/;
   return fs.readdirSync(directory)
     .filter((name) => name !== currentName && pattern.test(name))
     .map((name) => path.join(directory, name));
@@ -85,6 +85,6 @@ export async function uninstallCommand(
   if (!shimRemoved) {
     console.log(pc.yellow(`Left ${paths.shimPath} unchanged because it is not a Paperclip-managed shim.`));
   }
-  console.log(pc.green("Removed the managed Paperclip CLI install."));
+  console.log(pc.green("Removed the managed Myrmidon CLI install."));
   console.log(pc.dim(`User data was left untouched under ${paths.paperclipHome}.`));
 }

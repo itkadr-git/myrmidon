@@ -1,0 +1,120 @@
+import type {
+  AskUserQuestionsInteraction,
+  IssueThreadInteraction,
+  RequestConfirmationInteraction,
+} from "@myrmidon/shared";
+import { projectSafeChatPublicationText } from "../../services/chat-publication-projection.js";
+
+const MAX_TELEGRAM_MESSAGE_LENGTH = 4_096;
+const QUESTION_REPLY_GUIDANCE = "Ответьте сообщением: номером варианта или своими словами.";
+
+/** The complete owner text does not fit into one Telegram message. */
+export class TelegramOwnerTextTooLongError extends Error {
+  constructor(readonly length: number) {
+    super(
+      `Owner interaction text exceeds Telegram's ${MAX_TELEGRAM_MESSAGE_LENGTH}-character message limit`,
+    );
+    this.name = "TelegramOwnerTextTooLongError";
+  }
+}
+
+function finishTelegramText(lines: string[]): string {
+  const text = projectSafeChatPublicationText(lines.join("\n").trim());
+  if (text.length > MAX_TELEGRAM_MESSAGE_LENGTH) {
+    throw new TelegramOwnerTextTooLongError(text.length);
+  }
+  return text;
+}
+
+/**
+ * Short notice for an interaction that cannot be shown in Telegram (too long,
+ * or a tool/secret/connection confirmation that is resolved on the board
+ * only). Carries no interaction content, so it always fits.
+ */
+export function telegramOwnerBoardOnlyText(
+  taskUrl: string | null,
+  reason: "too_long" | "board_only",
+): string {
+  const lines = [
+    reason === "too_long"
+      ? "Вопрос слишком длинный для Telegram."
+      : "Нужно ваше решение.",
+    "Ответить можно только на доске.",
+  ];
+  if (taskUrl) lines.push("", taskUrl);
+  return finishTelegramText(lines);
+}
+
+export function telegramOwnerQuestionText(
+  interaction: AskUserQuestionsInteraction,
+  taskUrl: string | null,
+): string {
+  const questionSet = interaction.payload.questionSet;
+  const lines = [
+    questionSet?.title?.trim() ||
+      interaction.payload.title?.trim() ||
+      interaction.title?.trim() ||
+      "Нужен ответ",
+  ];
+  if (questionSet?.description?.trim()) lines.push("", questionSet.description.trim());
+
+  const questions = questionSet?.questions ?? interaction.payload.questions;
+  for (const question of questions) {
+    lines.push("");
+    if ("header" in question && question.header?.trim()) {
+      lines.push(question.header.trim());
+    }
+    lines.push(question.prompt.trim());
+    if ("helpText" in question && question.helpText?.trim()) {
+      lines.push(question.helpText.trim());
+    }
+    for (const [index, option] of (question.options ?? []).entries()) {
+      const recommendation = "recommended" in option && option.recommended
+        ? " (рекомендуется)"
+        : "";
+      lines.push(`${index + 1}. ${option.label.trim()}${recommendation}`);
+      if (option.description?.trim()) lines.push(`   ${option.description.trim()}`);
+    }
+    lines.push(QUESTION_REPLY_GUIDANCE);
+  }
+  if (taskUrl) lines.push(taskUrl);
+  return finishTelegramText(lines);
+}
+
+export function telegramOwnerConfirmationText(
+  interaction: RequestConfirmationInteraction,
+  taskUrl: string | null,
+): string | null {
+  const payload = interaction.payload;
+  if (payload.secretProposal !== undefined) return null;
+  if (
+    payload.toolAction !== undefined ||
+    payload.connectionAuthorization !== undefined
+  ) return null;
+
+  const lines = [payload.prompt.trim()];
+  if (payload.detailsMarkdown?.trim()) lines.push("", payload.detailsMarkdown.trim());
+  // Only the human label of the target: internal ids, keys, revisions and
+  // hrefs of the target never go into the owner message.
+  const targetLabel = payload.target?.label?.trim();
+  if (targetLabel) lines.push("", `Предмет согласования: ${targetLabel}`);
+  // Text replies to a confirmation are not resolved by this delivery path, so
+  // the message must not promise them: the decision is made on the board.
+  lines.push("", "Ответить можно только на доске.");
+  if (taskUrl) lines.push("", taskUrl);
+  return finishTelegramText(lines);
+}
+
+/** Return null for non-owner Telegram publications; the vendor path stays unchanged. */
+export function telegramOwnerInteractionText(
+  interaction: IssueThreadInteraction,
+  taskUrl: string | null,
+  ownerOnly: boolean,
+): string | null {
+  if (!ownerOnly) return null;
+  if (interaction.kind === "ask_user_questions")
+    return telegramOwnerQuestionText(interaction, taskUrl);
+  if (interaction.kind === "request_confirmation")
+    return telegramOwnerConfirmationText(interaction, taskUrl);
+  return null;
+}

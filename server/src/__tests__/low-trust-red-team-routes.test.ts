@@ -35,11 +35,11 @@ import {
   issueWorkProducts,
   principalPermissionGrants,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   LOW_TRUST_REVIEW_PRESET,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -522,6 +522,11 @@ async function seedLowTrustFixture(db: Db) {
       status: "in_progress",
       priority: "medium",
       responsibleUserId: "board-user",
+      sourceTrust: {
+        preset: LOW_TRUST_REVIEW_PRESET,
+        disposition: "quarantined",
+        promotionOwnerUserId: "board-user",
+      },
     })
     .returning();
   const [sameBoundaryChild] = await db
@@ -585,7 +590,7 @@ async function seedLowTrustFixture(db: Db) {
               assignedReview!.id,
               sameBoundaryChild!.id,
             ],
-            allowedAgentIds: [collaborator!.id],
+            allowedAgentIds: [collaborator!.id, standard!.id],
           },
         },
       },
@@ -597,6 +602,7 @@ async function seedLowTrustFixture(db: Db) {
     .set({ assigneeAgentId: lowTrust!.id })
     .where(eq(issues.id, assignedReview!.id));
   assignedReview!.assigneeAgentId = lowTrust!.id;
+
 
   const executionPolicy = {
     authorizationPolicy: {
@@ -897,6 +903,31 @@ describeEmbeddedPostgres(
       await tempDb?.cleanup();
     });
 
+    it("fails closed when a low-trust issue or child has no promotion owner", async () => {
+      const fixture = await seedLowTrustFixture(db);
+      await db.update(companies)
+        .set({ defaultResponsibleUserId: null })
+        .where(eq(companies.id, fixture.company.id));
+      await db.update(issues)
+        .set({ responsibleUserId: null })
+        .where(eq(issues.id, fixture.issues.reviewRoot.id));
+      await db.update(issues)
+        .set({ responsibleUserId: null })
+        .where(eq(issues.id, fixture.issues.assignedReview.id));
+      const app = createApp(db, agentActor(fixture));
+      const quarantinedComment = await request(app)
+        .post(`/api/issues/${fixture.issues.assignedReview.id}/comments`)
+        .send({ body: `quarantined ${fixture.canaries.raw}` });
+      expect(quarantinedComment.status, JSON.stringify(quarantinedComment.body)).toBe(422);
+      expect(quarantinedComment.body.error).toContain("without a promotion owner");
+      const childWithoutOwner = await request(app)
+        .post(`/api/issues/${fixture.issues.reviewRoot.id}/children`)
+        .send({ title: `child ${fixture.canaries.raw}` });
+      expect(childWithoutOwner.status, JSON.stringify(childWithoutOwner.body)).toBe(403);
+      // The actor cannot see the root issue, so visibility rejects before the control-plane gate.
+      expect(childWithoutOwner.body.error).toContain("outside this actor's visibility");
+    });
+
     it("allows bounded same-issue reads and writes while quarantining low-trust output", async () => {
       const fixture = await seedLowTrustFixture(db);
       const app = createApp(db, agentActor(fixture));
@@ -1020,7 +1051,18 @@ describeEmbeddedPostgres(
         .patch(`/api/issues/${fixture.issues.reviewRoot.id}`)
         // myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation
         // out of the way; the run lock conflict is what is under test.
-        .send({ status: "blocked", unblockDescriptor: { owner: "board", action: "Peer probe", reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" } } });
+        .send({
+          status: "blocked",
+          unblockDescriptor: { owner: "board", action: "Peer probe", reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" } },
+          blockerMetadata: {
+            blockReason: "human_decision",
+            owner: { userId: "00000000-0000-4000-8000-000000000001" },
+            externalRef: "low-trust-peer-probe",
+            nextCheckAt: "2026-10-10T00:00:00.000Z",
+            timeoutAt: "2026-10-11T00:00:00.000Z",
+            escalationPolicy: "notify_owner",
+          },
+        });
       expect(
         checkedOutPeerUpdate.status,
         JSON.stringify(checkedOutPeerUpdate.body),
@@ -1103,11 +1145,20 @@ describeEmbeddedPostgres(
     it("relays blocked and cancelled stops once without laundering child prose", async () => {
       const fixture = await seedLowTrustFixture(db);
       const app = createApp(db, boardActor(fixture));
-      // myrmidon(STALE-BLOCK): entering blocked needs a reason reference.
+      // myrmidon(STALE-BLOCK + P1.10): entering blocked needs a reason
+      // reference and complete typed blockerMetadata.
       const unblockDescriptor = {
         owner: "board",
         action: "Review the low-trust stop",
         reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
+      } as const;
+      const blockerMetadata = {
+        blockReason: "human_decision",
+        owner: { userId: "00000000-0000-4000-8000-000000000001" },
+        externalRef: "low-trust-red-team-test",
+        nextCheckAt: "2026-10-10T00:00:00.000Z",
+        timeoutAt: "2026-10-11T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
       } as const;
 
       await db
@@ -1120,6 +1171,7 @@ describeEmbeddedPostgres(
           status: "blocked",
           comment: fixture.canaries.raw,
           unblockDescriptor,
+          blockerMetadata,
         });
       expect(blocked.status, JSON.stringify(blocked.body)).toBe(200);
       expect(blocked.body.unblockDescriptor).toEqual(unblockDescriptor);
@@ -1130,7 +1182,7 @@ describeEmbeddedPostgres(
         .expect(200);
       await request(app)
         .patch(`/api/issues/${fixture.issues.assignedReview.id}`)
-        .send({ status: "blocked", unblockDescriptor })
+        .send({ status: "blocked", unblockDescriptor, blockerMetadata })
         .expect(200);
       await request(app)
         .patch(`/api/issues/${fixture.issues.assignedReview.id}`)
@@ -1154,12 +1206,13 @@ describeEmbeddedPostgres(
           parentId: fixture.issues.reviewGrandparent.id,
           status: "blocked",
           unblockDescriptor,
+          blockerMetadata,
         })
         .expect(200);
 
       await request(app)
         .patch(`/api/issues/${fixture.issues.standardChild.id}`)
-        .send({ status: "blocked", unblockDescriptor })
+        .send({ status: "blocked", unblockDescriptor, blockerMetadata })
         .expect(200);
       await request(app)
         .patch(`/api/issues/${fixture.issues.standardChild.id}`)
@@ -1204,6 +1257,9 @@ describeEmbeddedPostgres(
         expect(relay.body).not.toContain("done");
         expect(relay.body).not.toContain(
           fixture.issues.standardChild.identifier,
+        );
+        expect(relay.body).not.toContain(
+          fixture.issues.assignedReview.identifier,
         );
       }
 
@@ -1400,9 +1456,10 @@ describeEmbeddedPostgres(
         createApp(db, { ...standardActor, runId: null }),
       ).get("/api/agents/me");
       expect(standardRes.status, JSON.stringify(standardRes.body)).toBe(200);
-      expect(JSON.stringify(standardRes.body)).toContain(
-        fixture.canaries.agentConfig,
-      );
+      expect(standardRes.body).toHaveProperty("runtimeConfig");
+      expect(standardRes.body.runtimeConfig).toMatchObject({
+        env: { SECRET_MARKER: fixture.canaries.agentConfig },
+      });
 
       const issueScopedLowTrustRes = await request(
         createApp(db, standardActor),
@@ -1895,7 +1952,14 @@ describeEmbeddedPostgres(
           lowTrustContext.status,
           JSON.stringify(lowTrustContext.body),
         ).toBe(200);
-        expect(JSON.stringify(lowTrustContext.body.wakeComment)).toContain(
+        expect(lowTrustContext.body.wakeComment).toMatchObject({
+          body: expect.stringContaining(LOW_TRUST_QUARANTINED_BODY),
+          sourceTrust: {
+            disposition: "quarantined",
+            promotionOwnerUserId: "board-user",
+          },
+        });
+        expect(lowTrustContext.body.wakeComment.body).not.toContain(
           fixture.canaries.raw,
         );
 
@@ -1918,6 +1982,7 @@ describeEmbeddedPostgres(
               sourceIssueId: fixture.issues.assignedReview.id,
               sourceRunId: fixture.runs.lowTrust.id,
               sourceAgentId: fixture.agents.lowTrust.id,
+              promotionOwnerUserId: "board-user",
             },
           })
           .returning()
@@ -1931,7 +1996,7 @@ describeEmbeddedPostgres(
           JSON.stringify(higherTrustContext.body),
         ).toBe(200);
         expect(higherTrustContext.body.continuationSummary).toMatchObject({
-          body: LOW_TRUST_QUARANTINED_BODY,
+          body: expect.stringContaining(LOW_TRUST_QUARANTINED_BODY),
           sourceTrust: {
             preset: LOW_TRUST_REVIEW_PRESET,
             disposition: "quarantined",
@@ -1941,6 +2006,7 @@ describeEmbeddedPostgres(
           },
         });
         expectNoCanary(higherTrustContext.body, fixture.canaries.raw);
+        expectNoCanary(higherTrustContext.body, fixture.canaries.agentConfig);
 
         const bogusRunStandardApp = createApp(db, {
           ...agentActor(fixture, fixture.agents.standard.id),
@@ -1954,13 +2020,14 @@ describeEmbeddedPostgres(
           JSON.stringify(bogusRunContext.body),
         ).toBe(200);
         expect(bogusRunContext.body.continuationSummary).toMatchObject({
-          body: LOW_TRUST_QUARANTINED_BODY,
+          body: expect.stringContaining(LOW_TRUST_QUARANTINED_BODY),
           sourceTrust: {
             preset: LOW_TRUST_REVIEW_PRESET,
             disposition: "quarantined",
           },
         });
         expectNoCanary(bogusRunContext.body, fixture.canaries.raw);
+        expectNoCanary(bogusRunContext.body, fixture.canaries.agentConfig);
 
         await db
           .update(heartbeatRuns)
@@ -2114,6 +2181,7 @@ describeEmbeddedPostgres(
             sourceIssueId: fixture.issues.assignedReview.id,
             sourceRunId: fixture.runs.lowTrust.id,
             sourceAgentId: fixture.agents.lowTrust.id,
+            promotionOwnerUserId: "board-user",
           },
         })
         .returning();
@@ -2177,6 +2245,7 @@ describeEmbeddedPostgres(
         preset: LOW_TRUST_REVIEW_PRESET,
         disposition: "promoted",
         sourceIssueId: fixture.issues.assignedReview.id,
+        promotionOwnerUserId: "board-user",
         promotedFrom: {
           artifactKind: "work_product",
           artifactId: rawProduct!.id,
@@ -2205,6 +2274,7 @@ describeEmbeddedPostgres(
       expect(promotedSource?.sourceTrust).toMatchObject({
         preset: LOW_TRUST_REVIEW_PRESET,
         disposition: "promoted",
+        promotionOwnerUserId: "board-user",
         promotedFrom: {
           artifactKind: "work_product",
           artifactId: rawProduct!.id,

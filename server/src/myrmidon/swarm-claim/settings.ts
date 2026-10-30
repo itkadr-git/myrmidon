@@ -4,7 +4,7 @@
 // (`general.swarm` is the F-26 wake guard's block and is never touched here).
 //
 // The precedence (stored settings, then environment, then the built-in default)
-// is decided in `@paperclipai/shared`; this module is only the database half:
+// is decided in `@myrmidon/shared`; this module is only the database half:
 // it reads the raw row, hands it to the resolver, writes the canonical object
 // back on a patch and logs the change. The same shape the RUNTIME-LIMITS and
 // WORKSPACE-HYGIENE settings use, so an operator changes the swarm from the
@@ -17,7 +17,7 @@
 // log row stays the audit trail; the journal is the UI-facing view of it that
 // works without a company scope (instance settings are instance-wide).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   SWARM_CLAIM_SETTINGS_KEY,
   readStoredSwarmSettings,
@@ -25,7 +25,7 @@ import {
   resolveSwarmClaimSettings,
   type ResolvedSwarmClaimSettings,
   type SwarmClaimSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
 /** Activity action written for every swarm settings change. */

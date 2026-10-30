@@ -44,8 +44,8 @@ import {
   createDb,
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
-} from "@paperclipai/db";
-import { companySearchQuerySchema } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { companySearchQuerySchema } from "@myrmidon/shared";
 import { companySearchService } from "../services/company-search.js";
 
 const support = await getEmbeddedPostgresTestSupport();

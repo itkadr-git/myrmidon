@@ -26,7 +26,7 @@ case "$1" in
       if [ -e "$SANDBOX/bots-failed" ]; then cat "$SANDBOX/bots-a"; else cat "$SANDBOX/bots-running"; fi
     elif [[ "$*" == *dockergate* ]]; then
       if [ -e "$SANDBOX/dockergate-image" ]; then cat "$SANDBOX/dockergate-image"; fi
-    elif [[ "$*" == *name=server* ]]; then
+    elif [[ "$*" == *"label=com.docker.compose.service=server"* || "$*" == *name=server* ]]; then
       cat "$SANDBOX/board-image"
     elif [[ "$*" == *name=myrmidon-bot-* ]]; then
       if [ -e "$SANDBOX/bots-failed" ]; then cat "$SANDBOX/bots-empty"; else cat "$SANDBOX/bots-running"; fi

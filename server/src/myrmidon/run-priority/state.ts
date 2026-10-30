@@ -1,6 +1,6 @@
 // myrmidon(1.6.5 RUN-PRIORITY A): the process-wide in-force priority settings.
 //
-// A leaf module (imports only `@paperclipai/shared`) so the heartbeat sweeps
+// A leaf module (imports only `@myrmidon/shared`) so the heartbeat sweeps
 // can read it without pulling the services barrel. Startup and every
 // settings write push into it (see service.ts); the sweeps read it fresh on
 // every pass, so a changed weight reaches the queue without a restart —
@@ -11,7 +11,7 @@ import {
   normalizeRunPrioritySettings,
   storedRunPriorityDeclares,
   type RunPrioritySettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export interface RunPriorityView {
   settings: RunPrioritySettings;

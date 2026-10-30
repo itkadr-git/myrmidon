@@ -25,7 +25,7 @@ import {
   resolveBotDiskLayout,
   resolveBotDiskSettings,
   resolveSharedPackageCachePath,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { FLEETD_PACKAGE_CACHE_NOTICE, fleetdBotContainerDriver } from "./fleetd-driver.js";
 import type { BotContainerSpec } from "./driver.js";
 import {

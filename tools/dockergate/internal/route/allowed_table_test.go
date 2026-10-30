@@ -42,6 +42,7 @@ var allowedTable = []allowedEntry{
 	{ID: A10, Method: "POST", Template: "containers/{name}/stop?t=30", Suffixes: []string{""}},
 	{ID: A17, Method: "POST", Template: "containers/{name}/stop?t=30&myrmidon-idle=true", Suffixes: []string{""}},
 	{ID: A11, Method: "POST", Template: "containers/{name}/restart?t=30", Suffixes: []string{""}},
+	{ID: A18, Method: "POST", Template: "containers/{name}/update", Suffixes: []string{""}},
 	{ID: A12, Method: "POST", Template: "containers/{name}/rename?name={mainName}", Suffixes: []string{".next"}},
 	{ID: A13, Method: "GET", Template: "containers/{name}/archive?" + cloneReportQuery, Suffixes: []string{""}},
 	{ID: A13, Method: "GET", Template: "containers/{name}/archive?" + LegacyCloneReportQuery, Suffixes: []string{""}},

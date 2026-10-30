@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   applyManagedExperimentalOverlay,
   instanceSettingsService,
@@ -127,7 +127,7 @@ describe("instanceSettingsService managed overlay", () => {
   it("fails closed at construction on a malformed managed config", () => {
     const { db } = stubDb(settingsRow({}));
     expect(() => instanceSettingsService(db, { runtimeEnv: managedEnv("{bad") })).toThrow(
-      /PAPERCLIP_MANAGED_CONFIG is not valid JSON/,
+      /MYRMIDON_MANAGED_CONFIG is not valid JSON/,
     );
   });
 

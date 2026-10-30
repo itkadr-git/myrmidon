@@ -1,4 +1,5 @@
-import { getAgentWorkEligibility, isAgentInvokable, type IssueReviewPolicy } from "@paperclipai/shared";
+import { getAgentWorkEligibility, isAgentInvokable, type IssueReviewPolicy } from "@myrmidon/shared";
+import { isBlockerOpen } from "../../myrmidon/blocker-resolved.js";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
@@ -523,8 +524,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       blocked &&
       blocker.companyId === relation.companyId &&
       blocked.companyId === relation.companyId &&
-      blocker.status !== "done" &&
-      blocker.status !== "cancelled" &&
+      isBlockerOpen(blocker.status) &&
       blocked.status === "blocked"
     ) {
       unresolvedBlockers.add(blocker.id);
@@ -719,6 +719,10 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       if (relation.companyId !== current.companyId || relation.companyId !== source.companyId) continue;
       const blocker = issuesById.get(relation.blockerIssueId);
       if (!blocker || blocker.companyId !== source.companyId || blocker.status === "done") continue;
+      // Intentionally NOT isBlockerResolved: this walk is what reports
+      // blocked_by_cancelled_issue for a task that is already `blocked` on a
+      // cancelled blocker (a legacy hold nobody lifted); skipping cancelled
+      // here would hide exactly that finding.
       const path = [...dependencyPath, blocker];
 
       if (blocker.status === "blocked") {
@@ -738,7 +742,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     const hasUnresolvedBlockerEdge = (blockersByBlockedIssueId.get(issue.id) ?? []).some((relation) => {
       if (relation.companyId !== issue.companyId) return false;
       const blocker = issuesById.get(relation.blockerIssueId);
-      return Boolean(blocker && blocker.companyId === issue.companyId && blocker.status !== "done");
+      return Boolean(blocker && blocker.companyId === issue.companyId && isBlockerOpen(blocker.status));
     });
     const shouldInspectBlockedChain = issue.status === "blocked" || (
       issue.status !== "done" &&

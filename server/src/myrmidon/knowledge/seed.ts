@@ -14,7 +14,7 @@
 // The seeder is idempotent: a re-run skips items whose slug already exists in
 // the nest instead of duplicating rows (create() would raise slug_conflict).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { KnowledgeDomainError } from "./domain.js";
 import { SEED_DECISIONS, type SeedDecision } from "./seed-data.js";
 import { SEED_PRODUCT_PAGES, type SeedProductPage } from "./seed-product.js";

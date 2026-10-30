@@ -54,8 +54,8 @@ describe("CI test coverage", () => {
     const stable = fs.readFileSync(path.join(ROOT, "scripts/run-vitest-stable.mjs"), "utf8");
     const listBlock = stable.slice(stable.indexOf("const nonServerProjects = ["), stable.indexOf("];", stable.indexOf("const nonServerProjects = [")));
     const covered = new Set([...listBlock.matchAll(/"([^"]+)"/g)].map((m) => m[1]));
-    covered.add("@paperclipai/server");
-    covered.add("@paperclipai/paperclip-runner"); // tests (runner) lane
+    covered.add("@myrmidon/server");
+    covered.add("@myrmidon/paperclip-runner"); // tests (runner) lane
     const lanes = JSON.parse(fs.readFileSync(path.join(ROOT, "scripts/myrmidon/ci/extra-test-lanes.json"), "utf8")).lanes;
     for (const lane of lanes) covered.add(lane.package);
 

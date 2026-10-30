@@ -22,7 +22,7 @@ import {
   issueAttachments,
   issueComments,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
@@ -47,6 +47,15 @@ const wakeup = vi.hoisted(() =>
 // binding, wake construction and private byte staging, but launches no agent.
 vi.mock("../services/heartbeat.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../services/heartbeat.js")>()),
+  heartbeatService: () => ({
+    wakeup,
+    getRun: async () => null,
+    getActiveRunForAgent: async () => null,
+    reportRunActivity: async () => undefined,
+  }),
+}));
+vi.mock("../services/index.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/index.js")>()),
   heartbeatService: () => ({
     wakeup,
     getRun: async () => null,

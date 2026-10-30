@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
-import { updateInboxAgentPolicySchema } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { updateInboxAgentPolicySchema } from "@myrmidon/shared";
 import { forbidden, notFound, unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { accessService, inboxAgentPolicyService, logActivity } from "../services/index.js";

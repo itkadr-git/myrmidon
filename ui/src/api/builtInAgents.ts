@@ -1,4 +1,4 @@
-import type { Agent, Approval } from "@paperclipai/shared";
+import type { Agent, Approval } from "@myrmidon/shared";
 import { api } from "./client";
 
 /**

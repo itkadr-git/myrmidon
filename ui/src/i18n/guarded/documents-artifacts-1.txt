@@ -1,0 +1,7 @@
+components/ArtifactsPanel.tsx
+components/DocumentAnnotationLayer.tsx
+components/DocumentAnnotationPanel.tsx
+components/DocumentAnnotationPopover.tsx
+components/DocumentDiffModal.tsx
+components/DocumentFrameHeader.tsx
+components/FileViewerSheet.tsx

@@ -1,4 +1,4 @@
-import type { ToolConnection } from "@paperclipai/shared";
+import type { ToolConnection } from "@myrmidon/shared";
 
 /**
  * Reading Composio's service endpoints for the Services tab (PAP-17865).

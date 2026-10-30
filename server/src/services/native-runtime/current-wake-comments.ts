@@ -3,15 +3,15 @@ import { createHash } from "node:crypto";
 import { and, asc, eq, inArray } from "drizzle-orm";
 // myrmidon(B1): product name in the notice text below; see product.ts.
 import { productSaid } from "../../myrmidon/product.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   assets,
   heartbeatRuns,
   issueAttachments,
   issueComments,
   issues,
-} from "@paperclipai/db";
-import type { SourceTrustMetadata } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { SourceTrustMetadata } from "@myrmidon/shared";
 
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";

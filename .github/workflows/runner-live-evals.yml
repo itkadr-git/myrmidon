@@ -157,7 +157,7 @@ jobs:
             runner-live-eval-history-${{ github.ref_name }}-
 
       - name: Build provider-neutral eval kernel
-        run: pnpm --filter @paperclipai/paperclip-eval-kernel build
+        run: pnpm --filter @myrmidon/paperclip-eval-kernel build
 
       - name: Run trend-only live matrix
         env:
@@ -172,7 +172,7 @@ jobs:
           PAPERCLIP_EVAL_CASE: ${{ inputs.case }}
           PAPERCLIP_EVAL_LIMIT: ${{ inputs.limit }}
           PAPERCLIP_EVALBOOK_PROGRAM: ${{ github.workspace }}/.paperclip-evals/evals/paperclip-runner/tools/eval_program.py
-        run: pnpm --filter @paperclipai/paperclip-runner report:runner-live-evals
+        run: pnpm --filter @myrmidon/paperclip-runner report:runner-live-evals
 
       - name: Publish job summary
         if: always()

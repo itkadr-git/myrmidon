@@ -273,7 +273,7 @@ describe("issue graph liveness classifier", () => {
     expect(paused[0]?.state).toBe("blocked_by_uninvokable_assignee");
   });
 
-  it("detects a cancelled blocker on an assigned todo source", () => {
+  it("a cancelled blocker no longer holds an assigned todo source (resolved, OPE-8904)", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [
         issue({ status: "todo" }),
@@ -289,15 +289,10 @@ describe("issue graph liveness classifier", () => {
       agents: [agent(), manager, agent({ id: "blocker-agent", name: "Cancelled owner" })],
     });
 
-    expect(findings).toHaveLength(1);
-    expect(findings[0]).toMatchObject({
-      issueId: blockedId,
-      state: "blocked_by_cancelled_issue",
-      recoveryIssueId: blockerId,
-    });
+    expect(findings).toHaveLength(0);
   });
 
-  it("prefers the blocker finding for an in-review source with a cancelled blocker", () => {
+  it("does not report a cancelled blocker for an in-review source (resolved, OPE-8904)", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [
         issue({ status: "in_review" }),
@@ -313,8 +308,7 @@ describe("issue graph liveness classifier", () => {
       agents: [agent(), manager, agent({ id: "blocker-agent", name: "Cancelled owner" })],
     });
 
-    expect(findings).toHaveLength(1);
-    expect(findings[0]?.state).toBe("blocked_by_cancelled_issue");
+    expect(findings.map((finding) => finding.state)).not.toContain("blocked_by_cancelled_issue");
   });
 
   it("detects blocker assignees under terminated org ancestors as uninvokable", () => {

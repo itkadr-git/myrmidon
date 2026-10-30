@@ -25,7 +25,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   hasCommittedNativeBoardResponseWait,
   readNativeBoardResponseWaitSource,
@@ -37,10 +37,15 @@ import {
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+  buildContinuationKey,
   requiresExecutionReconciliation,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import {
+  releaseContinuationKey,
+  tryClaimContinuationKey,
+} from "../continuation-dedupe.js";
 import {
   agents,
   agentTaskSessions,
@@ -52,6 +57,7 @@ import {
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
+  issueWorkProducts,
   issueComments,
   issueApprovals,
   issueRecoveryActions,
@@ -63,7 +69,7 @@ import {
   statusDecisions,
   workAssessments,
   runContextPersistenceFields,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
 import {
@@ -166,6 +172,12 @@ import {
 import { filterAgentsOutsideMaintenance } from "../../myrmidon/maintenance/gate.js";
 // myrmidon(L4): a successful run without a disposition resolves by policy, not an owner card
 import {
+  buildStrandedDispositionBlockedComment,
+  buildStrandedDispositionBlockedPatch,
+  buildStrandedDispositionWakeIdempotencyKey,
+  findEscalationChainAgentId,
+  STRANDED_DISPOSITION_ACTION,
+  STRANDED_DISPOSITION_WAKE_SOURCE,
   buildStrandedAutoPolicyManagerReviewComment,
   buildStrandedAutoPolicyManagerReviewPatch,
   buildStrandedAutoPolicyManagerReviewWakeContext,
@@ -1974,7 +1986,9 @@ export function recoveryService(
 
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
+    companyId: string;
     agentId: string;
+    continuationHead?: string;
     reason:
       | "issue_assignment_recovery"
       | "issue_continuation_needed"
@@ -2051,45 +2065,87 @@ export function recoveryService(
       )
         return null;
     }
-    const queued = await deps.enqueueWakeup(input.agentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: input.reason,
-      idempotencyKey: input.idempotencyKey ?? undefined,
-      // The sweep can combine an old in-progress issue snapshot with a newer
-      // successful run. Validate eligibility under the enqueue issue lock so
-      // completion or reassignment cannot create a redundant continuation.
-      ...(input.source === "issue.productive_terminal_continuation_recovery"
-        ? {
-            issueStateGuard: {
-              statuses: ["in_progress"],
-              assigneeAgentId: input.agentId,
-            },
-          }
-        : {}),
-      payload: withRecoveryContext(
-        {
-          issueId: input.issueId,
-          ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-          ...(input.extraContext ?? {}),
-        },
-        "normal_model",
-      ),
-      requestedByActorType: "system",
-      requestedByActorId: null,
-      contextSnapshot: withRecoveryContext(
-        {
-          issueId: input.issueId,
-          taskId: input.issueId,
-          wakeReason: input.reason,
-          retryReason: input.retryReason,
-          source: input.source,
-          ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-          ...(input.extraContext ?? {}),
-        },
-        "normal_model",
-      ),
-    });
+    let continuationClaimKey: string | null = null;
+    if (input.reason === "issue_continuation_needed") {
+      const key = buildContinuationKey({
+        issueId: input.issueId,
+        event: "issue_continuation_needed",
+        head: input.continuationHead ?? "unversioned",
+      });
+      const claimed = await tryClaimContinuationKey(db, {
+        companyId: input.companyId,
+        issueId: input.issueId,
+        key,
+        // Recovery runs without a concrete run head can recur for the same
+        // issue indefinitely; don't suppress those retries for a full day.
+        ttl:
+          !input.continuationHead ||
+          input.source === "issue.continuation_recovery" ||
+          input.source === "issue.interaction_continuation_recovery" ||
+          input.source === STRANDED_AUTO_POLICY_RETRY_SOURCE
+            ? 60 * 1_000
+            : 24 * 60 * 60 * 1_000,
+      });
+      if (claimed === "deduped") return null;
+      continuationClaimKey = key;
+    }
+
+    let queued: typeof heartbeatRuns.$inferSelect | null;
+    try {
+      queued = await deps.enqueueWakeup(input.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: input.reason,
+        idempotencyKey: input.idempotencyKey ?? undefined,
+        // The sweep can combine an old in-progress issue snapshot with a newer
+        // successful run. Validate eligibility under the enqueue issue lock so
+        // completion or reassignment cannot create a redundant continuation.
+        ...(input.source === "issue.productive_terminal_continuation_recovery"
+          ? {
+              issueStateGuard: {
+                statuses: ["in_progress"],
+                assigneeAgentId: input.agentId,
+              },
+            }
+          : {}),
+        payload: withRecoveryContext(
+          {
+            issueId: input.issueId,
+            ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(input.extraContext ?? {}),
+          },
+          "normal_model",
+        ),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: withRecoveryContext(
+          {
+            issueId: input.issueId,
+            taskId: input.issueId,
+            wakeReason: input.reason,
+            retryReason: input.retryReason,
+            source: input.source,
+            ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(input.extraContext ?? {}),
+          },
+          "normal_model",
+        ),
+      });
+    } catch (error) {
+      if (continuationClaimKey) {
+        await releaseContinuationKey(db, {
+          companyId: input.companyId,
+          key: continuationClaimKey,
+        });
+      }
+      throw error;
+    }
+    if (!queued && continuationClaimKey) {
+      await releaseContinuationKey(db, {
+        companyId: input.companyId,
+        key: continuationClaimKey,
+      });
+    }
 
     if (queued && input.retryOfRunId) {
       return db
@@ -4057,7 +4113,6 @@ export function recoveryService(
     if (
       readStrandedAutoPolicyEnabled() &&
       strandedAutoPolicyLatestRun?.status === "succeeded" &&
-      !input.rerouteToSharedQueue &&
       isStrandedAutoPolicyCause(recoveryCause) &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress") &&
       input.issue.assigneeAgentId &&
@@ -4065,6 +4120,24 @@ export function recoveryService(
     ) {
       const latestRun = strandedAutoPolicyLatestRun;
       const assigneeAgentId = input.issue.assigneeAgentId;
+      const handoffEvidence = input.successfulRunHandoffEvidence ??
+        isExhaustedSuccessfulRunHandoff(latestRun);
+      const handoffExhausted = Boolean(
+        handoffEvidence &&
+          handoffEvidence.handoffAttempt >= handoffEvidence.maxHandoffAttempts,
+      );
+      // A replay must stand down even when its queued wake used the last retry.
+      // Check before the counter can select a manager handoff or blocked state.
+      const retryIdempotencyKey = buildStrandedAutoPolicyRetryIdempotencyKey({
+        issueId: input.issue.id,
+        sourceRunId: latestRun.id,
+      });
+      if (!handoffExhausted && await findExistingStrandedAutoPolicyRetryWake({
+        companyId: input.issue.companyId,
+        idempotencyKey: retryIdempotencyKey,
+      })) {
+        return input.issue;
+      }
       const maxAttemptsPerDay = readStrandedAutoRetriesPerDay();
       const [attemptsInWindow, managerAgentId, assigneeAgent] = await Promise.all([
         countStrandedAutoPolicyAttemptsInWindow(db, {
@@ -4091,10 +4164,44 @@ export function recoveryService(
       // really is abandoned) and is unaffected by this flag.
       const assigneePaused =
         assigneeAgent?.companyId === input.issue.companyId && assigneeAgent.status === "paused";
+      // myrmidon(OPE-9072): once the retries are used up the escalation
+      // target comes from the default chain (reports_to -> project lead ->
+      // `adm`), not only from the direct manager; a board card is the last
+      // resort for an empty chain.
+      const retriesLeft = maxAttemptsPerDay > 0 && attemptsInWindow < maxAttemptsPerDay;
+      const escalationAgentId =
+        !assigneePaused && !retriesLeft && !managerAgentId
+          ? await findEscalationChainAgentId(db, input.issue)
+          : null;
+      // myrmidon(OPE-9072): `adm` cannot decide a review stage (403 on
+      // approve), so it is never a reviewer; it gets the blocked variant.
+      const escalationTargetId = managerAgentId ?? escalationAgentId;
+      const escalationTarget =
+        !assigneePaused && !retriesLeft && escalationTargetId ? await getAgent(escalationTargetId) : null;
+      const targetIsAdm = escalationTarget?.name.trim().toLowerCase() === "adm";
       const autoPolicyDecision = decideStrandedAutoPolicy({
         attemptsInWindow,
         maxAttemptsPerDay,
         managerAgentId,
+        escalationAgentId,
+        targetIsAdm,
+        hasExecutionWorkflow: issueHasExistingExecutionWorkflow({
+          ...input.issue,
+          hasOpenPullRequest: Boolean(await db.query.issueWorkProducts.findFirst({
+            where: and(
+              eq(issueWorkProducts.issueId, input.issue.id),
+              eq(issueWorkProducts.type, "pull_request"),
+              inArray(issueWorkProducts.status, [
+                "open",
+                "active",
+                "ready_for_review",
+                "approved",
+              ]),
+            ),
+            columns: { id: true },
+          })),
+        }),
+        successfulRunHandoffExhausted: handoffExhausted,
         assigneePaused,
       });
 
@@ -4150,7 +4257,9 @@ export function recoveryService(
         try {
           queued = await enqueueStrandedIssueRecovery({
             issueId: input.issue.id,
+            companyId: input.issue.companyId,
             agentId: assigneeAgentId,
+            continuationHead: latestRun.id,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
             source: STRANDED_AUTO_POLICY_RETRY_SOURCE,
@@ -4421,6 +4530,132 @@ export function recoveryService(
         // skipped up front (conversation-bound) — fall through below. A
         // racing caller that found the *same* handoff already committed was
         // already returned above and never reaches here.
+      } else if (autoPolicyDecision.kind === "disposition_blocked") {
+        // myrmidon(OPE-9072): the issue has its own workflow (policy, monitor
+        // or execution state): never take it over and never change the
+        // assignee. Block it with complete metadata owned by a senior agent
+        // and wake that agent once. The wake key ties it to this successful
+        // run, so a repeat pass stands down instead of waking again.
+        const ownerAgentId = autoPolicyDecision.ownerAgentId;
+        const wakeKey = buildStrandedDispositionWakeIdempotencyKey({
+          issueId: input.issue.id,
+          sourceRunId: latestRun.id,
+        });
+        let existingWake: { id: string } | null = null;
+        try {
+          existingWake = await findExistingStrandedAutoPolicyRetryWake({
+            companyId: input.issue.companyId,
+            idempotencyKey: wakeKey,
+          });
+        } catch {
+          existingWake = null;
+        }
+        if (existingWake) return input.issue;
+
+        let blockedIssue: Awaited<ReturnType<typeof issuesSvc.update>> = null;
+        let alreadyBlocked: typeof issues.$inferSelect | null = null;
+        try {
+          const result = await db.transaction(async (tx) => {
+            const [current] = await tx
+              .select()
+              .from(issues)
+              .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)))
+              .for("update")
+              .limit(1);
+            if (!current) return { outcome: "skipped" as const };
+            if (
+              current.status === "blocked" &&
+              current.assigneeAgentId === input.issue.assigneeAgentId &&
+              (current.blockerMetadata?.owner as { agentId?: string } | undefined)?.agentId === ownerAgentId
+            ) {
+              return { outcome: "already_applied" as const, issue: current };
+            }
+            if (current.status !== input.issue.status || current.assigneeAgentId !== input.issue.assigneeAgentId) {
+              return { outcome: "skipped" as const };
+            }
+            const applied = await issuesSvc.update(
+              input.issue.id,
+              buildStrandedDispositionBlockedPatch({ issueId: input.issue.id, ownerAgentId }) as Partial<
+                typeof issues.$inferInsert
+              >,
+              tx,
+            );
+            return applied
+              ? { outcome: "applied" as const, issue: applied }
+              : { outcome: "skipped" as const };
+          });
+          if (result.outcome === "applied") blockedIssue = result.issue;
+          else if (result.outcome === "already_applied") alreadyBlocked = result.issue;
+        } catch {
+          blockedIssue = null;
+        }
+        if (alreadyBlocked) return alreadyBlocked;
+        if (blockedIssue) {
+          const ownerAgent = await getAgent(ownerAgentId);
+          await issuesSvc.addComment(
+            input.issue.id,
+            buildStrandedDispositionBlockedComment({
+              cause: recoveryCause,
+              attemptsInWindow: autoPolicyDecision.attemptsInWindow,
+              maxAttemptsPerDay: autoPolicyDecision.maxAttemptsPerDay,
+            }),
+            {},
+            {
+              authorType: "system",
+              presentation: compactRecoveryPresentation("Escalated to a senior agent"),
+              metadata: recoveryNoticeMetadata({
+                cause: recoveryCause,
+                latestRun,
+                previousStatus: input.previousStatus,
+                recoveryOwner: ownerAgent ? { id: ownerAgent.id, name: ownerAgent.name } : null,
+              }),
+            },
+          );
+          try {
+            await deps.enqueueWakeup(ownerAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_unblock_requested",
+              idempotencyKey: wakeKey,
+              payload: { issueId: input.issue.id, action: STRANDED_DISPOSITION_ACTION },
+              requestedByActorType: "system",
+              requestedByActorId: null,
+              contextSnapshot: {
+                issueId: input.issue.id,
+                taskId: input.issue.id,
+                wakeReason: "issue_unblock_requested",
+                source: STRANDED_DISPOSITION_WAKE_SOURCE,
+              },
+            });
+          } catch (error) {
+            logger.warn(
+              {
+                issueId: input.issue.id,
+                ownerAgentId,
+                error: error instanceof Error ? error.message : String(error),
+              },
+              "myrmidon(OPE-9072): disposition wake failed after the issue was already blocked with an agent owner",
+            );
+          }
+          await logActivity(db, {
+            companyId: input.issue.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: null,
+            runId: latestRun.id,
+            action: "issue.stranded_autopolicy_disposition_blocked",
+            entityType: "issue",
+            entityId: input.issue.id,
+            details: {
+              identifier: input.issue.identifier,
+              recoveryCause,
+              ownerAgentId,
+              attemptsInWindow: autoPolicyDecision.attemptsInWindow,
+              maxAttemptsPerDay: autoPolicyDecision.maxAttemptsPerDay,
+            },
+          });
+          return blockedIssue;
+        }
       }
       // autoPolicyDecision.kind === "vendor_default" falls through as-is.
     }
@@ -4503,6 +4738,16 @@ export function recoveryService(
       return issuesSvc.update(input.issue.id, {
         status: "blocked",
         blockedByIssueIds: blockerIds,
+        // myrmidon(BLOCKED-REASON): no open blocker means the board-owned
+        // recovery disposition is the reason; name it.
+        ...(blockerIds.length === 0
+          ? {
+              unblockDescriptor: recoveryLivenessDescriptor(
+                input.issue.id,
+                "Inspect the failed run evidence, restore a live execution path or record the manual resolution, then move the issue out of blocked.",
+              ),
+            }
+          : {}),
       });
     }
     if (!recoveryAction) return input.issue;
@@ -4559,6 +4804,16 @@ export function recoveryService(
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
+      // myrmidon(BLOCKED-REASON): without an open blocker the board-owned
+      // recovery action is the reason; name it so the block is never reasonless.
+      ...(blockerIds.length === 0
+        ? {
+            unblockDescriptor: recoveryLivenessDescriptor(
+              input.issue.id,
+              "Inspect the recovery action for this issue, restore a live execution path or record the manual resolution, then move the issue out of blocked.",
+            ),
+          }
+        : {}),
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
@@ -5562,7 +5817,11 @@ export function recoveryService(
 
           const queued = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
+            companyId: issue.companyId,
             agentId,
+            continuationHead:
+              latestPostResolutionRun?.id ??
+              acceptedContinuationInteraction.id,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
             source: "issue.interaction_continuation_recovery",
@@ -5755,6 +6014,7 @@ export function recoveryService(
         // If participant has a live run somewhere, just enqueue a recovery wake instead of escalating
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId: participantAgentId,
           reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
@@ -5853,6 +6113,7 @@ export function recoveryService(
 
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId,
           reason: "issue_assignment_recovery",
           retryReason: "assignment_recovery",
@@ -5974,7 +6235,9 @@ export function recoveryService(
 
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId,
+          continuationHead: successfulRun.id,
           reason: "issue_continuation_needed",
           retryReason: "issue_continuation_needed",
           source: "issue.productive_terminal_continuation_recovery",
@@ -6097,7 +6360,9 @@ export function recoveryService(
 
       const queued = await enqueueStrandedIssueRecovery({
         issueId: issue.id,
+        companyId: issue.companyId,
         agentId,
+        continuationHead: latestRun?.id ?? issue.checkoutRunId ?? undefined,
         reason: "issue_continuation_needed",
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",

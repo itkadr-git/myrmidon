@@ -14,7 +14,7 @@ describe("omp runtime image contract", () => {
     assert.match(dockerfile, /^USER 1000:1000$/m);
     assert.match(dockerfile, /OMP_SESSION_DIR=\/home\/paperclip\/\.local\/share\/omp\/sessions/);
     assert.match(dockerfile, /ln -sf .*\/omp.*\/usr\/local\/bin\/omp/);
-    assert.doesNotMatch(dockerfile, /@latest|@paperclipai\/pi-coding-agent/);
+    assert.doesNotMatch(dockerfile, /@latest|@myrmidon\/pi-coding-agent/);
   });
 
   it("smoke-checks version, PATH, help, and local model listing in the built image", () => {
@@ -35,7 +35,7 @@ describe("omp runtime image contract", () => {
   it("verifies omp version matches Part A and validates minimal adapter execution contract", () => {
     // 1. Check version in Part A adapter matches Dockerfile
     const adapterPkg = JSON.parse(fs.readFileSync("packages/adapters/omp-local/package.json", "utf8"));
-    assert.equal(adapterPkg.name, "@paperclipai/adapter-omp-local");
+    assert.equal(adapterPkg.name, "@myrmidon/adapter-omp-local");
 
     const adapterIndex = fs.readFileSync("packages/adapters/omp-local/src/index.ts", "utf8");
     assert.match(adapterIndex, /type = "omp_local"/);

@@ -4,7 +4,7 @@ import {
   RUN_LIMITS_ENV_KEYS,
   readRunLimitsFromEnv,
   type RunLimits,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../middleware/logger.js";
 
 /**
@@ -776,7 +776,14 @@ export interface RunAdmission {
    * sweep hands the runs over in the order it sorted them.
    */
   reserve(wanted: number, opts?: { agentId?: string; ownerChatTurns?: number }): number;
-  release(unused: number): void;
+  /**
+   * myrmidon(1.6.6 OPE-8988): pass the same `agentId` as the reservation so
+   * the unused slots also leave that agent's share of the start window. A
+   * reservation whose claim came back empty is no start; counting it held the
+   * agent over its share forever (six agents with an unclaimable queued run
+   * reached ~90 "starts" each in a 10-minute window with zero real starts).
+   */
+  release(unused: number, opts?: { agentId?: string }): void;
   finish(): void;
   /**
    * Raise the in-process count to the runs the database has in `running`: an
@@ -1376,10 +1383,23 @@ export function createRunAdmission(options: {
       }
       return allowed;
     },
-    release(unused) {
+    release(unused, opts) {
       if (unused <= 0) return;
       active = Math.max(0, active - unused);
       starts.splice(starts.length - Math.min(unused, starts.length), unused);
+      // myrmidon(1.6.6 OPE-8988): the unused slots were never starts of this
+      // agent either. Remove its newest entries (reservations of other agents
+      // may have landed in between while this one awaited its claims).
+      const agentId = opts?.agentId;
+      if (agentId) {
+        let left = unused;
+        for (let i = agentStarts.length - 1; i >= 0 && left > 0; i -= 1) {
+          if (agentStarts[i]!.agentId === agentId) {
+            agentStarts.splice(i, 1);
+            left -= 1;
+          }
+        }
+      }
     },
     finish() {
       active = Math.max(0, active - 1);

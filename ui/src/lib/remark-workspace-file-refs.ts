@@ -1,4 +1,4 @@
-import type { WorkspaceFileSelector } from "@paperclipai/shared";
+import type { WorkspaceFileSelector } from "@myrmidon/shared";
 import { parseWorkspaceFileRef, type ParsedWorkspaceFileRef } from "./workspace-file-parser";
 import type { WorkspaceFileAvailabilityTarget } from "./workspace-file-availability";
 

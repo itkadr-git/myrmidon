@@ -1,0 +1,181 @@
+{
+  "area": {
+    "task-chat-runner": {
+      "task-chat-marker": {
+        "tryAgain": "Повторить",
+        "tryingAgain": "Повторяем…",
+        "viewRun": "Открыть прогон"
+      },
+      "task-chat-plan-view": {
+        "title": "План",
+        "revision": "версия {{revision}}",
+        "progress": "выполнено {{done}} из {{total}}"
+      },
+      "protocol-activity-row": {
+        "research": {
+          "query": "Запрос",
+          "resultsCount_one": "{{count}} результат",
+          "resultsCount_other": "{{count}} результатов",
+          "resultsCount_few": "{{count}} результата",
+          "resultsCount_many": "{{count}} результатов",
+          "sources": "Источники исследования",
+          "showMore_one": "Показать ещё {{count}} результат",
+          "showMore_other": "Показать ещё {{count}} результатов",
+          "showMore_few": "Показать ещё {{count}} результата",
+          "showMore_many": "Показать ещё {{count}} результатов",
+          "showFewer": "Показать меньше результатов",
+          "extraOutput": "Дополнительный вывод провайдера доступен в инспекторе исполнителя."
+        },
+        "provider": {
+          "planSteps": "Шаги плана",
+          "sources": "Источники исследования",
+          "delegatedAgents": "Делегированные агенты",
+          "outputTruncated": "Вывод обрезан до 8 КиБ."
+        },
+        "change": {
+          "noDetails": "Сведения об изменённых файлах не переданы.",
+          "changedFiles": "Изменённые файлы",
+          "moreFiles_one": "Ещё {{count}} файл не показан",
+          "moreFiles_other": "Ещё {{count}} файлов не показано",
+          "moreFiles_few": "Ещё {{count}} файла не показано",
+          "moreFiles_many": "Ещё {{count}} файлов не показано"
+        },
+        "file": {
+          "previewUnavailable": "Предпросмотр недоступен.",
+          "previewTruncated": "Предпросмотр обрезан исполнителем."
+        },
+        "row": {
+          "noticeFallback": "Провайдер передал уведомление без текста.",
+          "error": "Ошибка",
+          "warning": "Предупреждение"
+        }
+      },
+      "task-chat-runner-turn": {
+        "duration": {
+          "seconds": "{{seconds}} с",
+          "minutes": "{{minutes}} мин",
+          "minutesSeconds": "{{minutes}} мин {{seconds}} с"
+        },
+        "status": {
+          "stopped": "Остановлен",
+          "stoppedAfter": "Остановлен через {{elapsed}}",
+          "worked": "Отработал",
+          "workedFor": "Отработал {{elapsed}}",
+          "workingFor": "Работает {{elapsed}}",
+          "continuedAfterSteering": "Продолжил после корректировки · {{status}}"
+        },
+        "thinking": "Думает",
+        "activityUnavailable": "Активность исполнителя временно недоступна. Повторяем попытку…"
+      },
+      "tool-card": {
+        "allowed": "разрешено",
+        "rejected": "отклонено",
+        "interrupted": "Прервано",
+        "changed": "Изменено"
+      },
+      "task-chat-turn-status-island": {
+        "filesChanged_one": "Изменён {{count}} файл",
+        "filesChanged_other": "Изменено {{count}} файлов",
+        "filesChanged_few": "Изменено {{count}} файла",
+        "filesChanged_many": "Изменено {{count}} файлов",
+        "additions_one": "{{count}} добавленная строка",
+        "additions_other": "{{count}} добавленных строк",
+        "additions_few": "{{count}} добавленные строки",
+        "additions_many": "{{count}} добавленных строк",
+        "deletions_one": "{{count}} удалённая строка",
+        "deletions_other": "{{count}} удалённых строк",
+        "deletions_few": "{{count}} удалённые строки",
+        "deletions_many": "{{count}} удалённых строк",
+        "stepCounter": "Шаг {{current}} / {{total}}",
+        "stepLabel": "Шаг {{current}} из {{total}}",
+        "stepLabelWithName": "Шаг {{current}} из {{total}}: {{label}}",
+        "turnPlan": "План хода",
+        "checklist": "Чек-лист в пределах хода"
+      },
+      "activity-group": {
+        "thinking": "Думает",
+        "thought": "Подумал",
+        "tokenUsage": "Расход токенов",
+        "contextUsage": "{{used}}/{{size}} контекста",
+        "permissionAllowed": "Разрешение выдано",
+        "permissionRejected": "Разрешение отклонено",
+        "activityCount_one": "{{count}} действие",
+        "activityCount_other": "{{count}} действий",
+        "activityCount_few": "{{count}} действия",
+        "activityCount_many": "{{count}} действий",
+        "summaryWithCount": "{{summary}} ({{count}})",
+        "collapse": "Свернуть: {{what}}",
+        "expand": "Развернуть: {{what}}",
+        "history": "История действий"
+      },
+      "protocol-card": {
+        "planSteps": "Шаги плана",
+        "provider": {
+          "delegatedAgents": "Делегированные агенты",
+          "researchSources": "Источники исследования",
+          "details": "Подробности",
+          "outputTruncated": "Вывод обрезан до 8 КиБ."
+        },
+        "change": {
+          "summaryDone_one": "Изменён {{count}} файл",
+          "summaryDone_other": "Изменено {{count}} файлов",
+          "summaryDone_few": "Изменено {{count}} файла",
+          "summaryDone_many": "Изменено {{count}} файлов",
+          "summaryDoneWithStats_one": "Изменён {{count}} файл · {{stats}}",
+          "summaryDoneWithStats_other": "Изменено {{count}} файлов · {{stats}}",
+          "summaryDoneWithStats_few": "Изменено {{count}} файла · {{stats}}",
+          "summaryDoneWithStats_many": "Изменено {{count}} файлов · {{stats}}",
+          "inProgress": "Изменения рабочей области выполняются",
+          "title": "Изменения рабочей области",
+          "binaryPrefix": "двоичный · ",
+          "showFewer": "Показать меньше файлов",
+          "showMore_one": "Показать ещё {{count}} файл",
+          "showMore_other": "Показать ещё {{count}} файлов",
+          "showMore_few": "Показать ещё {{count}} файла",
+          "showMore_many": "Показать ещё {{count}} файлов",
+          "reviewDiff": "Проверить изменения",
+          "diffTitle": "Изменения рабочей области",
+          "changedFiles": "Изменённые файлы",
+          "binaryNoDiff": "Двоичный файл: текстовый diff недоступен.",
+          "noPatch": "Для этого файла встроенный патч не записан."
+        },
+        "file": {
+          "genericLabel": "Файл",
+          "summary": "{{label}} · {{extension}}",
+          "summaryWithLine": "{{label}} · {{extension}} · строка {{line}}",
+          "preview": "Предпросмотр",
+          "previewUnavailable": "Предпросмотр недоступен. Проверенная ссылка на файл рабочей области по-прежнему доступна выше.",
+          "previewTruncated": "Предпросмотр обрезан исполнителем."
+        },
+        "question": {
+          "answered": "Вопросы с ответами",
+          "cancelled": "Вопросы отменены",
+          "expired": "Срок вопросов истёк",
+          "resolved": "Вопросы закрыты",
+          "runtimeInput": "Ввод для исполнителя",
+          "olderRuntime": "Подробности ответа не записаны этой более ранней версией исполнителя.",
+          "noAnswers": "Ответы не отправлены; состояние запроса: {{status}}."
+        },
+        "request": {
+          "permissionTitle": "Разрешение для исполнителя",
+          "inputTitle": "Ввод для исполнителя",
+          "responseField": "Ответ",
+          "resolveError": "Не удалось обработать запрос исполнителя.",
+          "submitting": "Отправляем…",
+          "submit": "Отправить ответ",
+          "deny": "Отклонить",
+          "resolveInSession": "Обработайте этот запрос в активной сессии исполнителя."
+        },
+        "result": {
+          "title": "Результат прогона",
+          "blocked": "Заблокировано: {{reason}}",
+          "verification": "Результаты проверки",
+          "blocksCompletion": " · блокирует завершение"
+        },
+        "terminal": {
+          "title": "Прогон завершён"
+        }
+      }
+    }
+  }
+}

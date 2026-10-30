@@ -3,7 +3,7 @@
 // superseded, who is eligible. No database and no clock here; the sweep feeds
 // these functions (the same shape as policy.ts, which stays the task-lane half).
 
-import { REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY, REVIEW_ROUTING_PR_KIND_METADATA_KEY } from "@paperclipai/shared";
+import { REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY, REVIEW_ROUTING_PR_KIND_METADATA_KEY } from "@myrmidon/shared";
 
 /** The per-head CI/review state the github.ts resolver reads off GitHub. */
 export type PullRequestHeadCiState = "green" | "not_green" | "unknown";

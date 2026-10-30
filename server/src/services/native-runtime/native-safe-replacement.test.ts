@@ -29,7 +29,7 @@ import {
   issueComments,
   issues,
   nativeRunFinalizations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -133,7 +133,7 @@ const support = externalDatabaseUrl
           } }).where(eq(heartbeatRuns.id, source.runId));
           await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined" })
             .where(eq(nativeRunFinalizations.runId, source.runId));
-          const projected = await issueService(db).update(source.issueId, { status: "blocked" });
+          const projected = await issueService(db).update(source.issueId, { status: "blocked", unblockDescriptor: { owner: "board", action: "Test hold" } });
           await db.insert(issueRecoveryActions).values({
             companyId: source.companyId, sourceIssueId: source.issueId,
             kind: "active_run_watchdog", cause: "native_session_cleanup_quarantined", fingerprint: source.runId,
@@ -219,7 +219,7 @@ const support = externalDatabaseUrl
     it.each(["missing_receipt", "other_run", "other_cause", "manual_reblock", "dependency_edit", "queued_comment"] as const)("honors blocking intent before safe replacement (%s)", async (mode) => {
       const source = await seed(2);
       await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined" }).where(eq(nativeRunFinalizations.runId, source.runId));
-      const projected = await issueService(db).update(source.issueId, { status: "blocked" });
+      const projected = await issueService(db).update(source.issueId, { status: "blocked", unblockDescriptor: { owner: "board", action: "Test hold" } });
       const evidence = { runId: source.runId, ...(mode === "missing_receipt" ? {} : {
         nativeFailureBlock: { runId: mode === "other_run" ? randomUUID() : source.runId, statusVersion: projected!.statusVersion },
       }) };
@@ -228,7 +228,7 @@ const support = externalDatabaseUrl
         fingerprint: source.runId, ownerType: "board", returnOwnerAgentId: source.agentId,
         status: "resolved", outcome: "blocked", evidence, nextAction: "Preserve this hold.",
       }).returning();
-      if (mode === "manual_reblock") await issueService(db).update(source.issueId, { status: "blocked", actorUserId: "operator" });
+      if (mode === "manual_reblock") await issueService(db).update(source.issueId, { status: "blocked", unblockDescriptor: { owner: "board", action: "Test hold" }, actorUserId: "operator" });
       if (mode === "dependency_edit") {
         const blockerId = randomUUID();
         await db.insert(issues).values({ id: blockerId, companyId: source.companyId, title: "Human dependency", status: "todo" });

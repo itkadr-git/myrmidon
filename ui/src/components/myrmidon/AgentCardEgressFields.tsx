@@ -12,6 +12,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { i18n, useTranslation } from "@/i18n";
 import { CollapsibleSection, Field } from "../agent-config-primitives";
 import { useCompany } from "../../context/CompanyContext";
 import { botEgressApi } from "./botEgressApi";
@@ -44,24 +45,24 @@ export function AgentCardEgressFieldsView({
   onAllowText,
   onSave,
 }: AgentCardEgressFieldsViewProps) {
+  const { t } = useTranslation();
   const parsed = parseAllowlistText(allowText);
   return (
-    <CollapsibleSection title="Egress" open onToggle={() => {}}>
+    <CollapsibleSection title={t("area.settings-agent-card.agent-card-egress-fields.title")} open onToggle={() => {}}>
       <div className="space-y-3" data-testid="myrmidon-agent-egress">
         <p className="text-xs text-muted-foreground">
-          Which project this bot belongs to in the egress journal, and the destinations only this bot may reach. The
-          project's own list and its journal-or-blocking mode are edited on the project page.
+          {t("area.settings-agent-card.agent-card-egress-fields.description")}
         </p>
 
-        <Field label="Project" hint="The project whose egress list applies to this bot. Empty means no project list applies.">
+        <Field label={t("area.settings-agent-card.agent-card-egress-fields.projectLabel")} hint={t("area.settings-agent-card.agent-card-egress-fields.projectHint")}>
           <select
             className={inputClass}
-            aria-label="Project"
+            aria-label={t("area.settings-agent-card.agent-card-egress-fields.projectLabel")}
             data-testid="myrmidon-agent-egress-project"
             value={project}
             onChange={(event) => onProject(event.target.value)}
           >
-            <option value="">No project</option>
+            <option value="">{t("area.settings-agent-card.agent-card-egress-fields.noProject")}</option>
             {projectNames.map((name) => (
               <option key={name} value={name}>
                 {name}
@@ -70,14 +71,14 @@ export function AgentCardEgressFieldsView({
           </select>
         </Field>
 
-        <Field label="This bot's own destinations" hint="One per line: host or host:port. Added to the project's list.">
+        <Field label={t("area.settings-agent-card.agent-card-egress-fields.allowLabel")} hint={t("area.settings-agent-card.agent-card-egress-fields.allowHint")}>
           <textarea
             className={`${inputClass} min-h-20`}
-            aria-label="This bot's own destinations"
+            aria-label={t("area.settings-agent-card.agent-card-egress-fields.allowLabel")}
             data-testid="myrmidon-agent-egress-allow"
             value={allowText}
             onChange={(event) => onAllowText(event.target.value)}
-            placeholder={"other.example.com"}
+            placeholder={t("area.settings-agent-card.agent-card-egress-fields.allowPlaceholder")}
           />
         </Field>
         {parsed.problems.length > 0 && (
@@ -97,7 +98,7 @@ export function AgentCardEgressFieldsView({
             disabled={saving || parsed.problems.length > 0}
             data-testid="myrmidon-agent-egress-save"
           >
-            {saving ? "Saving..." : "Save egress"}
+            {saving ? t("area.settings-agent-card.agent-card-egress-fields.saving") : t("area.settings-agent-card.agent-card-egress-fields.save")}
           </Button>
           {savedNote && (
             <span className="text-xs text-muted-foreground" data-testid="myrmidon-agent-egress-saved">
@@ -145,12 +146,12 @@ export function AgentCardEgressFields({ agentId }: { agentId: string }) {
     },
     onSuccess: () => {
       setError(null);
-      setSavedNote("Saved");
+      setSavedNote(i18n.t("area.settings-agent-card.agent-card-egress-fields.saved"));
       void queryClient.invalidateQueries({ queryKey: projectEgressKey(selectedCompanyId ?? "none") });
     },
     onError: (err) => {
       setSavedNote(null);
-      setError(err instanceof Error ? err.message : "The save failed.");
+      setError(err instanceof Error ? err.message : i18n.t("area.settings-agent-card.agent-card-egress-fields.saveFailed"));
     },
   });
 

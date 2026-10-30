@@ -440,6 +440,17 @@ describe("sandbox callback bridge", () => {
     const queueDir = path.posix.join(rootDir, "queue");
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const processed: string[] = [];
+    // Deterministic barrier: the handler announces that it started req-a and
+    // then stays in flight until the test releases it, so the drain deadline
+    // is always missed by req-b regardless of poll timing or CI load.
+    let signalStarted: () => void = () => {};
+    const handlerStarted = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    let releaseHandler: () => void = () => {};
+    const handlerGate = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
 
     const worker = await startSandboxCallbackBridgeWorker({
       client: createFileSystemSandboxCallbackBridgeQueueClient(),
@@ -447,7 +458,8 @@ describe("sandbox callback bridge", () => {
       authorizeRequest: async () => null,
       handleRequest: async (request) => {
         processed.push(request.id);
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        signalStarted();
+        await handlerGate;
         return {
           status: 200,
           body: request.id,
@@ -482,17 +494,19 @@ describe("sandbox callback bridge", () => {
       "utf8",
     );
 
-    for (let attempt = 0; attempt < 50 && processed.length === 0; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
+    try {
+      await handlerStarted;
+
+      await worker.stop({ drainTimeoutMs: 10 });
+
+      expect(processed).toEqual(["req-a"]);
+      await expect(readFile(path.posix.join(directories.responsesDir, "req-a.json"), "utf8")).resolves.toContain("\"req-a\"");
+      await expect(readFile(path.posix.join(directories.responsesDir, "req-b.json"), "utf8")).resolves.toContain(
+        "Bridge worker stopped before request could be handled.",
+      );
+    } finally {
+      releaseHandler();
     }
-
-    await worker.stop({ drainTimeoutMs: 10 });
-
-    expect(processed).toEqual(["req-a"]);
-    await expect(readFile(path.posix.join(directories.responsesDir, "req-a.json"), "utf8")).resolves.toContain("\"req-a\"");
-    await expect(readFile(path.posix.join(directories.responsesDir, "req-b.json"), "utf8")).resolves.toContain(
-      "Bridge worker stopped before request could be handled.",
-    );
   });
 
   it("handles SSH queue polling failures without emitting an unhandled rejection", async () => {

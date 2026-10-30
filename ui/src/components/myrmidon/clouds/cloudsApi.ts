@@ -11,7 +11,7 @@ import type {
   CloudProviderId,
   CloudRoot,
   CloudRootKind,
-} from "@paperclipai/shared/myrmidon-cloud-connector";
+} from "@myrmidon/shared/myrmidon-cloud-connector";
 
 export const cloudsAccountsQueryKey = ["myrmidon", "clouds", "accounts"] as const;
 export const cloudsRootsQueryKey = ["myrmidon", "clouds", "roots"] as const;

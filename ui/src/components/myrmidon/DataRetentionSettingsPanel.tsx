@@ -9,6 +9,8 @@ import { Database } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Trans } from "react-i18next";
+import { i18n, useTranslation } from "@/i18n";
 import {
   dataRetentionApi,
   dataRetentionQueryKey,
@@ -21,15 +23,13 @@ import {
  *  order they appear, with the label of the table group each one covers. */
 const FIELDS: ReadonlyArray<{
   key: keyof DataRetentionSettings;
-  label: string;
+  label: () => string;
   table: DataRetentionTableGroup;
 }> = [
-  { key: "heartbeatRunsDays", label: "Run history", table: "runs" },
-  { key: "activityLogDays", label: "Activity log", table: "activity" },
-  { key: "accessAuditDays", label: "Access audit logs", table: "access" },
+  { key: "heartbeatRunsDays", label: () => i18n.t("area.settings-bots-host-1.data-retention-settings-panel.fieldRuns"), table: "runs" },
+  { key: "activityLogDays", label: () => i18n.t("area.settings-bots-host-1.data-retention-settings-panel.fieldActivity"), table: "activity" },
+  { key: "accessAuditDays", label: () => i18n.t("area.settings-bots-host-1.data-retention-settings-panel.fieldAccess"), table: "access" },
 ];
-
-const INVALID_DAYS = "Enter a whole number of days (0 or more)";
 
 /** A whole number of days, or null when the draft is not one. `0` is valid and
  *  means "keep forever". */
@@ -63,12 +63,13 @@ function formatBytes(bytes: number): string {
 }
 
 function formatTimestamp(value: string | null): string {
-  if (!value) return "never";
+  if (!value) return i18n.t("area.settings-bots-host-1.data-retention-settings-panel.never");
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toISOString();
 }
 
 export function DataRetentionSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data: view, isError } = useQuery({
     queryKey: dataRetentionQueryKey,
@@ -90,7 +91,7 @@ export function DataRetentionSettingsPanel() {
       if (saved) setDrafts(draftsFrom(saved.settings));
       queryClient.invalidateQueries({ queryKey: dataRetentionQueryKey });
     },
-    onError: () => setSaveError("Could not save the retention windows. Try again."),
+    onError: () => setSaveError(t("area.settings-bots-host-1.data-retention-settings-panel.saveWindowsFailed")),
   });
 
   // myrmidon(1.6.5-F14B): the backup-gate mode saves on its own, at once; it
@@ -102,7 +103,7 @@ export function DataRetentionSettingsPanel() {
       setSaveError(null);
       queryClient.invalidateQueries({ queryKey: dataRetentionQueryKey });
     },
-    onError: () => setSaveError("Could not save the backup mode. Try again."),
+    onError: () => setSaveError(t("area.settings-bots-host-1.data-retention-settings-panel.saveModeFailed")),
   });
 
   const submit = () => {
@@ -111,7 +112,7 @@ export function DataRetentionSettingsPanel() {
     const nextErrors: Partial<Record<keyof DataRetentionSettings, string>> = {};
     for (const field of FIELDS) {
       const value = parseDays(drafts[field.key]);
-      if (value === null) nextErrors[field.key] = INVALID_DAYS;
+      if (value === null) nextErrors[field.key] = t("area.settings-bots-host-1.data-retention-settings-panel.invalidDays");
       else parsed[field.key] = value;
     }
     setErrors(nextErrors);
@@ -134,19 +135,17 @@ export function DataRetentionSettingsPanel() {
     <section className="space-y-4 rounded-lg border p-4" data-testid="data-retention-panel">
       <div className="flex items-center gap-2">
         <Database className="size-4 text-muted-foreground" />
-        <h3 className="text-sm font-medium">Data retention</h3>
+        <h3 className="text-sm font-medium">{t("area.settings-bots-host-1.data-retention-settings-panel.title")}</h3>
       </div>
 
       <p className="text-xs text-muted-foreground">
-        How long the grown tables keep their rows. The cleanup sweep re-reads
-        these windows on every run, so a saved value applies without a restart.
-        <code className="ml-1">0</code> keeps the rows forever.
+        <Trans i18nKey="area.settings-bots-host-1.data-retention-settings-panel.intro" components={[<code key="zero" className="ml-1" />]} />
       </p>
 
       <div className="space-y-3">
         {FIELDS.map((field) => (
           <div key={field.key} className="space-y-1">
-            <Label htmlFor={`data-retention-${field.key}`}>{field.label}, days</Label>
+            <Label htmlFor={`data-retention-${field.key}`}>{t("area.settings-bots-host-1.data-retention-settings-panel.fieldDays", { label: field.label() })}</Label>
             <div className="flex items-center gap-2">
               <Input
                 id={`data-retention-${field.key}`}
@@ -171,7 +170,7 @@ export function DataRetentionSettingsPanel() {
                 data-testid={`data-retention-${field.key}-input`}
               />
               {sources[field.key] !== "settings" && (
-                <span className="text-xs text-muted-foreground">Default</span>
+                <span className="text-xs text-muted-foreground">{t("area.settings-bots-host-1.data-retention-settings-panel.default")}</span>
               )}
             </div>
             {errors[field.key] && (
@@ -196,13 +195,10 @@ export function DataRetentionSettingsPanel() {
               onChange={(event) => saveMode.mutate(event.target.checked)}
               data-testid="data-retention-external-backup"
             />
-            The machine is backed up externally
+            {t("area.settings-bots-host-1.data-retention-settings-panel.externalBackup")}
           </label>
           <p className="text-xs text-muted-foreground">
-            Do not wait for a local database dump: the whole machine is backed
-            up nightly on a separate host. Applies to both the run-context
-            compaction and the deletion of old rows. Leave off while the
-            cleanup relies on a dump in the backup directory.
+            {t("area.settings-bots-host-1.data-retention-settings-panel.externalBackupHelp")}
           </p>
         </div>
 
@@ -213,10 +209,10 @@ export function DataRetentionSettingsPanel() {
             disabled={save.isPending || drafts === null}
             data-testid="data-retention-save"
           >
-            {save.isPending ? "Saving…" : "Save"}
+            {save.isPending ? t("area.settings-bots-host-1.data-retention-settings-panel.saving") : t("common.save")}
           </Button>
           {saveError && <p className="text-xs text-red-600">{saveError}</p>}
-          {save.isSuccess && !saveError && <p className="text-xs text-green-600">Saved</p>}
+          {save.isSuccess && !saveError && <p className="text-xs text-green-600">{t("area.settings-bots-host-1.data-retention-settings-panel.saved")}</p>}
         </div>
       </div>
 
@@ -224,11 +220,11 @@ export function DataRetentionSettingsPanel() {
         <div className="space-y-2 text-sm" data-testid="data-retention-status">
           <div className="space-y-1">
             <p>
-              <span className="font-medium">Last cleanup:</span> {formatTimestamp(status.lastRunAt)}
+              <span className="font-medium">{t("area.settings-bots-host-1.data-retention-settings-panel.lastCleanup")}</span> {formatTimestamp(status.lastRunAt)}
             </p>
             {status.backupCheckedAt && (
               <p className="text-muted-foreground">
-                Last backup check: {formatTimestamp(status.backupCheckedAt)}
+                {t("area.settings-bots-host-1.data-retention-settings-panel.lastBackupCheck", { when: formatTimestamp(status.backupCheckedAt) })}
               </p>
             )}
           </div>
@@ -240,28 +236,24 @@ export function DataRetentionSettingsPanel() {
               className="rounded bg-orange-500/15 px-2 py-1 text-xs font-medium text-orange-600"
               data-testid="data-retention-waiting-backup"
             >
-              Cleanup is waiting for a fresh backup — it starts once a backup
-              younger than 24 hours exists, or when the machine is marked as
-              backed up externally.
+              {t("area.settings-bots-host-1.data-retention-settings-panel.waitingBackup")}
             </p>
           )}
 
           <div>
-            <p className="font-medium">Rows deleted and space freed</p>
+            <p className="font-medium">{t("area.settings-bots-host-1.data-retention-settings-panel.deletedHeading")}</p>
             <ul className="list-disc pl-4 text-muted-foreground">
               {FIELDS.map((field) => {
                 const table = status.perTable[field.table];
                 return (
                   <li key={field.table}>
-                    {field.label} — {table.deletedTotal} rows deleted in total,{" "}
-                    {table.lastDeleted} in the last sweep, {formatBytes(table.lastFreedBytes)}{" "}
-                    freed
+                    {t("area.settings-bots-host-1.data-retention-settings-panel.tableLine", { label: field.label(), count: table.deletedTotal, last: table.lastDeleted, freed: formatBytes(table.lastFreedBytes) })}
                   </li>
                 );
               })}
             </ul>
             <p className="text-muted-foreground">
-              Total freed: {formatBytes(status.freedBytesTotal)}
+              {t("area.settings-bots-host-1.data-retention-settings-panel.totalFreed", { size: formatBytes(status.freedBytesTotal) })}
             </p>
           </div>
         </div>

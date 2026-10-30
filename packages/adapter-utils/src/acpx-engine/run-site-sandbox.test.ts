@@ -24,7 +24,7 @@ import type {
   SandboxReuseCandidate,
   StagedRuntimeResource,
 } from "./run-contracts.js";
-import type { PreparedAdapterExecutionTargetRuntime } from "@paperclipai/adapter-utils/execution-target";
+import type { PreparedAdapterExecutionTargetRuntime } from "@myrmidon/adapter-utils/execution-target";
 
 function makeStagedRuntime(id: string): PreparedAdapterExecutionTargetRuntime {
   return {

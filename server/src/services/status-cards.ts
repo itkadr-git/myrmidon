@@ -10,15 +10,15 @@ import {
   statusCards,
   statusCardUpdates,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   CompanySearchIssueSummary,
   CreateStatusCard,
   PatchStatusCard,
   WriteStatusCardQuery,
   WriteStatusCardSummary,
-} from "@paperclipai/shared";
-import { companySearchQuerySchema, STATUS_CARD_AGENT_MAX_CARDS } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { companySearchQuerySchema, STATUS_CARD_AGENT_MAX_CARDS } from "@myrmidon/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CompanyPortabilityFileEntry } from "@paperclipai/shared";
+import type { CompanyPortabilityFileEntry } from "@myrmidon/shared";
 
 const companySvc = {
   getById: vi.fn(),
@@ -932,7 +932,7 @@ describe("company portability", () => {
         catalogKind: "bundled",
         catalogCategory: "software-development",
         catalogPath: "catalog/bundled/software-development/review",
-        packageName: "@paperclipai/skills-catalog",
+        packageName: "@myrmidon/skills-catalog",
         packageVersion: "0.3.1",
         originHash,
         originVersion: "0.3.1",
@@ -978,7 +978,7 @@ describe("company portability", () => {
     expect(skillMarkdown).toContain(`catalogKey: "${catalogKey}"`);
     expect(skillMarkdown).toContain('catalogKind: "bundled"');
     expect(skillMarkdown).toContain('catalogPath: "catalog/bundled/software-development/review"');
-    expect(skillMarkdown).toContain('packageName: "@paperclipai/skills-catalog"');
+    expect(skillMarkdown).toContain('packageName: "@myrmidon/skills-catalog"');
     expect(skillMarkdown).toContain('packageVersion: "0.3.1"');
     expect(skillMarkdown).toContain('installedHash: "sha256:installed"');
     expect(skillMarkdown).toContain('auditVerdict: "warning"');
@@ -995,7 +995,7 @@ describe("company portability", () => {
         catalogKey,
         catalogKind: "bundled",
         catalogPath: "catalog/bundled/software-development/review",
-        packageName: "@paperclipai/skills-catalog",
+        packageName: "@myrmidon/skills-catalog",
         packageVersion: "0.3.1",
         installedHash: "sha256:installed",
         auditCodes: ["local_modifications"],

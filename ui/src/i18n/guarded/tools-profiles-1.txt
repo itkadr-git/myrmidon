@@ -1,0 +1,8 @@
+# OPE-8950: area tools-profiles-1
+pages/tools/AdvancedToolsRoute.tsx
+pages/tools/AuditTab.tsx
+pages/tools/ProfilesTab.tsx
+pages/tools/SmokeLabTab.tsx
+pages/tools/ToolsAccess.tsx
+pages/tools/profiles/ProfileActionDialog.tsx
+pages/tools/profiles/ProfileDetail.tsx

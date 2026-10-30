@@ -1,0 +1,10 @@
+# myrmidon(OPE-8950): access-hub area
+components/myrmidon/access-hub/AccessDetail.tsx
+components/myrmidon/access-hub/AccessHubPage.tsx
+components/myrmidon/access-hub/AccessList.tsx
+components/myrmidon/access-hub/AccessValueDialog.tsx
+components/myrmidon/access-hub/AuditTab.tsx
+components/myrmidon/access-hub/GrantRevokeControls.tsx
+components/myrmidon/access-hub/HostDeployDialog.tsx
+components/myrmidon/access-hub/RotateDialog.tsx
+components/myrmidon/access-hub/SshGenerateDialog.tsx

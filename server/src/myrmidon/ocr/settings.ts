@@ -68,22 +68,25 @@ function readPositiveInt(raw: string | undefined, fallback: number, max: number)
  * typo in a limit must not silently switch OCR off. A missing address or key
  * secret is not a typo — that is the documented way to leave the path closed.
  */
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
+
 export function readOcrSettings(env: NodeJS.ProcessEnv = process.env): OcrSettings {
+  const live = (key: string) => env === process.env ? liveBehaviorSetting(key) : undefined;
   const baseUrl = env[OCR_BASE_URL_ENV]?.trim() || null;
   const keySecret = env[OCR_KEY_SECRET_ENV]?.trim() || null;
-  const rawBackend = env[OCR_BACKEND_ENV]?.trim().toLowerCase();
+  const rawBackend = env[OCR_BACKEND_ENV] !== undefined ? env[OCR_BACKEND_ENV]?.trim().toLowerCase() : live("ocrBackend");
   const backend: OcrBackendKind =
     rawBackend === "litellm" || rawBackend === "ragflow" ? rawBackend : DEFAULT_OCR_BACKEND;
-  const timeoutSec = readPositiveInt(env[OCR_TIMEOUT_SEC_ENV], DEFAULT_OCR_TIMEOUT_SEC, MAX_TIMEOUT_SEC);
+  const timeoutSec = readPositiveInt(env[OCR_TIMEOUT_SEC_ENV] ?? (live("ocrTimeoutSec") as number | undefined)?.toString(), DEFAULT_OCR_TIMEOUT_SEC, MAX_TIMEOUT_SEC);
   return {
     enabled: Boolean(baseUrl && keySecret),
     backend,
     baseUrl,
     keySecret,
-    model: env[OCR_MODEL_ENV]?.trim() || null,
-    maxBytes: readPositiveInt(env[OCR_MAX_BYTES_ENV], DEFAULT_OCR_MAX_BYTES, Number.MAX_SAFE_INTEGER),
-    maxPages: readPositiveInt(env[OCR_MAX_PAGES_ENV], DEFAULT_OCR_MAX_PAGES, Number.MAX_SAFE_INTEGER),
-    maxChars: readPositiveInt(env[OCR_MAX_CHARS_ENV], DEFAULT_OCR_MAX_CHARS, Number.MAX_SAFE_INTEGER),
+    model: env[OCR_MODEL_ENV]?.trim() || (live("ocrModel") as string | undefined) || null,
+    maxBytes: readPositiveInt(env[OCR_MAX_BYTES_ENV] ?? (live("ocrMaxBytes") as number | undefined)?.toString(), DEFAULT_OCR_MAX_BYTES, Number.MAX_SAFE_INTEGER),
+    maxPages: readPositiveInt(env[OCR_MAX_PAGES_ENV] ?? (live("ocrMaxPages") as number | undefined)?.toString(), DEFAULT_OCR_MAX_PAGES, Number.MAX_SAFE_INTEGER),
+    maxChars: readPositiveInt(env[OCR_MAX_CHARS_ENV] ?? (live("ocrMaxChars") as number | undefined)?.toString(), DEFAULT_OCR_MAX_CHARS, Number.MAX_SAFE_INTEGER),
     timeoutMs: Math.max(timeoutSec, MIN_TIMEOUT_SEC) * 1000,
   };
 }

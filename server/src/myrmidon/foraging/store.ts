@@ -8,11 +8,11 @@
 // no vendor table is written.
 
 import { and, desc, eq, gte, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { foragingFindings, foragingSources, foragingSpendEvents } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { foragingFindings, foragingSources, foragingSpendEvents } from "@myrmidon/db";
 import type { ForagingFindingStatus, ForagingSourceKind } from "./domain.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
-import type { ForagingSpendOutcome } from "@paperclipai/db";
+import type { ForagingSpendOutcome } from "@myrmidon/db";
 
 export interface ForagingSourceRow {
   id: string;

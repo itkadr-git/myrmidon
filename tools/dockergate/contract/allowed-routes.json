@@ -113,6 +113,14 @@
    ]
   },
   {
+   "id": "A18",
+   "method": "POST",
+   "template": "containers/{name}/update",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
    "id": "A12",
    "method": "POST",
    "template": "containers/{name}/rename?name={mainName}",

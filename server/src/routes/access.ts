@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   assets,
   agentApiKeys,
@@ -27,7 +27,7 @@ import {
   invites,
   joinRequests,
   principalPermissionGrants,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 // myrmidon(B1c): product name in user-facing onboarding texts; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 import {
@@ -48,8 +48,8 @@ import {
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS,
   isUuidLike,
-} from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole } from "@myrmidon/shared";
 import {
   forbidden,
   conflict,

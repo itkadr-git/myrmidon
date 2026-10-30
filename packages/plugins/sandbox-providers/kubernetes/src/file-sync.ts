@@ -57,7 +57,7 @@ import type {
   PluginPostUploadCommand,
   PluginSyncFileMapping,
   PluginSyncOperation,
-} from "@paperclipai/plugin-sdk";
+} from "@myrmidon/plugin-sdk";
 
 const execFileAsync = promisify(execFile);
 
