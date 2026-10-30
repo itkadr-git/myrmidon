@@ -25,9 +25,19 @@ export function resolveMyrmidonUi2Enabled(
   return settings?.enableMyrmidonUi2 === true;
 }
 
-export function readUi2PersonalOverride(storage: Storage | null | undefined): Ui2PersonalOverride {
+export function getSafeLocalStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
   try {
-    const raw = storage?.getItem(UI_OVERRIDE_STORAGE_KEY);
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function readUi2PersonalOverride(storage?: Storage | null): Ui2PersonalOverride {
+  try {
+    const s = storage !== undefined ? storage : getSafeLocalStorage();
+    const raw = s?.getItem(UI_OVERRIDE_STORAGE_KEY);
     return raw === "1" || raw === "2" ? raw : null;
   } catch {
     return null;
@@ -36,13 +46,12 @@ export function readUi2PersonalOverride(storage: Storage | null | undefined): Ui
 
 export function rememberUi2PersonalOverride(
   value: "1" | "2" | null,
-  storage: Pick<Storage, "setItem" | "removeItem"> | undefined | null = typeof window !== "undefined"
-    ? window.localStorage
-    : undefined,
+  storage?: Pick<Storage, "setItem" | "removeItem"> | null,
 ): void {
   try {
-    if (value === null) storage?.removeItem(UI_OVERRIDE_STORAGE_KEY);
-    else storage?.setItem(UI_OVERRIDE_STORAGE_KEY, value);
+    const s = storage !== undefined ? storage : getSafeLocalStorage();
+    if (value === null) s?.removeItem(UI_OVERRIDE_STORAGE_KEY);
+    else s?.setItem(UI_OVERRIDE_STORAGE_KEY, value);
   } catch {
     // Storage access throws in some privacy modes; the override is cosmetic.
   }
@@ -116,8 +125,7 @@ export function useMyrmidonUi2Enabled(): { enabled: boolean; loaded: boolean } {
     if (typeof window !== "undefined") rememberUi2PersonalOverride(personal);
     return { enabled: personal === "2", loaded: true };
   }
-  const remembered =
-    typeof window !== "undefined" ? readUi2PersonalOverride(window.localStorage) : null;
+  const remembered = readUi2PersonalOverride();
   if (remembered != null) {
     return { enabled: remembered === "2", loaded: true };
   }
@@ -162,8 +170,7 @@ export function useMyrmidonUi2PersonalOverride(): {
   const instanceEnabled = resolveMyrmidonUi2Enabled(query.data);
   const personalFromUrl =
     typeof window !== "undefined" ? ui2OverrideFromSearch(window.location.search) : null;
-  const remembered =
-    typeof window !== "undefined" ? readUi2PersonalOverride(window.localStorage) : null;
+  const remembered = readUi2PersonalOverride();
   const currentOverride = personalFromUrl ?? remembered;
 
   const effectiveEnabled =
