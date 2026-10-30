@@ -5720,7 +5720,7 @@ function getActorIdentityPart(req: Request): string {
         adapterConfig: patchData.adapterConfig,
       });
       // myrmidon(S4): admin-only inheritProcessEnv, unknown models are rejected
-      await assertMyrmidonAgentConfigChange(req, existing, requestedAdapterType, patchData.adapterConfig as Record<string, unknown>);
+      await assertMyrmidonAgentConfigChange(req, existing, requestedAdapterType, patchData.adapterConfig as Record<string, unknown>, { db });
     }
     if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
     const nextAiBinding = aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;

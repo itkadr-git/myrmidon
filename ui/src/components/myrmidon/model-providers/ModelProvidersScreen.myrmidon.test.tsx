@@ -376,6 +376,55 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
     expect(container.textContent).toContain("Заблокирован");
   });
 
+  it("renders models for pool channels when provided (1.6.6 OPE-9932)", async () => {
+    vi.mocked(modelProvidersApi.channels).mockResolvedValue({
+      providerId: "prov-pool",
+      channels: [
+        {
+          n: 1,
+          label: "ChatGPT Plus Account #1",
+          email: "plus1@example.com",
+          state: "active",
+          stateRu: "Активен",
+          models: ["gpt-4o", "o1-mini", "o1-preview"],
+          limitedUntil: null,
+          lastOk: 1700000000,
+          windows: {
+            primary: { usedPct: 20, windowMin: 300, resetsAt: 1700018000 },
+            secondary: { usedPct: 10, windowMin: 10080, resetsAt: 1700600000 },
+          },
+          isBanned: false,
+          isExhausted: false,
+        },
+      ],
+      signals: [],
+    });
+
+    const poolView: ModelProvidersView = {
+      providers: [
+        {
+          id: "prov-pool",
+          type: "chatgpt-pool",
+          name: "ChatGPT Codex Pool",
+          baseUrl: "http://localhost:8895",
+          hasKey: true,
+          free: false,
+          createdAt: "2026-10-14T00:00:00.000Z",
+          updatedAt: "2026-10-14T00:00:00.000Z",
+        },
+      ],
+      changeLog: [],
+    };
+
+    const { root: r } = render({ view: poolView });
+    root = r;
+    await flushReact();
+
+    const channelModelsEl = container.querySelector('[data-testid="myrmidon-pool-channel-models-1"]');
+    expect(channelModelsEl).toBeTruthy();
+    expect(channelModelsEl?.textContent).toBe("gpt-4o, o1-mini, o1-preview");
+  });
+
   it("omits chatgpt-pool from type select when availableTypes excludes it", async () => {
     const viewWithoutPool: ModelProvidersView = {
       providers: [],
