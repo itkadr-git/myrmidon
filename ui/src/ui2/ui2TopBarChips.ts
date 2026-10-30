@@ -121,8 +121,15 @@ export function ui2WaitingBadge(
   interactionsPending: number | null | undefined,
 ): Ui2WaitingBadge | null {
   // A partial sum must not look like the complete waiting inbox.
-  if (approvalsPending == null || openDecisions == null || interactionsPending == null) return null;
-  const decisions = openDecisions.filter((entry) => entry.status === "open").length;
+  if (
+    approvalsPending == null ||
+    openDecisions == null ||
+    !Array.isArray(openDecisions) ||
+    interactionsPending == null
+  ) {
+    return null;
+  }
+  const decisions = openDecisions.filter((entry) => entry && entry.status === "open").length;
   const count = approvalsPending + decisions + interactionsPending;
   return {
     count,
@@ -133,13 +140,15 @@ export function ui2WaitingBadge(
 }
 
 /** Pending issue-thread interactions from the attention feed counts. */
-export function ui2InteractionsPendingFromAttention(feed: AttentionFeed | undefined): number | null {
-  if (!feed) return null;
-  const counts = feed.countsBySourceKind as Partial<Record<string, number>>;
-  return counts.issue_thread_interaction ?? 0;
+export function ui2InteractionsPendingFromAttention(feed: AttentionFeed | undefined | null): number | null {
+  if (!feed || typeof feed !== "object" || Array.isArray(feed) || !("countsBySourceKind" in feed)) return null;
+  const counts = (feed as Partial<AttentionFeed>).countsBySourceKind as Partial<Record<string, number>> | undefined;
+  if (!counts || typeof counts !== "object" || Array.isArray(counts)) return null;
+  return typeof counts.issue_thread_interaction === "number" ? counts.issue_thread_interaction : 0;
 }
 
 /** Pending approvals from sidebar badges (the shipped owner-facing counter). */
-export function ui2ApprovalsPendingFromBadges(badges: SidebarBadges | undefined): number | null {
-  return badges ? badges.approvals : null;
+export function ui2ApprovalsPendingFromBadges(badges: SidebarBadges | undefined | null): number | null {
+  if (!badges || typeof badges !== "object" || Array.isArray(badges)) return null;
+  return typeof badges.approvals === "number" ? badges.approvals : null;
 }

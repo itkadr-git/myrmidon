@@ -190,16 +190,24 @@ describe("myrmidon(UI2) waiting badge union", () => {
     expect(ui2WaitingBadge(null, [decisionFixture("open")], 2)).toBeNull();
   });
 
-  it("reads interactions from attention countsBySourceKind", () => {
+  it("reads interactions from attention countsBySourceKind safely", () => {
     expect(ui2InteractionsPendingFromAttention(attentionFixture(7))).toBe(7);
     expect(ui2InteractionsPendingFromAttention(undefined)).toBeNull();
+    expect(ui2InteractionsPendingFromAttention(null)).toBeNull();
     expect(ui2InteractionsPendingFromAttention(attentionFixture(0))).toBe(0);
+    // Malformed/empty payloads (e.g. empty array or object from generic mock)
+    expect(ui2InteractionsPendingFromAttention([] as never)).toBeNull();
+    expect(ui2InteractionsPendingFromAttention({} as never)).toBeNull();
+    expect(ui2InteractionsPendingFromAttention({ countsBySourceKind: {} } as never)).toBe(0);
   });
 
   it("reads approvals from sidebar badges", () => {
     const badges: SidebarBadges = { inbox: 0, approvals: 5, failedRuns: 1, joinRequests: 0 };
     expect(ui2ApprovalsPendingFromBadges(badges)).toBe(5);
     expect(ui2ApprovalsPendingFromBadges(undefined)).toBeNull();
+    expect(ui2ApprovalsPendingFromBadges(null)).toBeNull();
+    expect(ui2ApprovalsPendingFromBadges([] as never)).toBeNull();
+    expect(ui2ApprovalsPendingFromBadges({} as never)).toBeNull();
   });
 });
 

@@ -45,8 +45,12 @@ import {
   type Ui2MessageKey,
 } from "./locales";
 
-/** Legacy mirror key (kept so existing choices survive) and the shared one. */
-const STORAGE_KEYS = ["myrmidon.ui2.locale", "myrmidon:ui2:language"] as const;
+/** Legacy mirror key (kept so existing choices survive), shared key, and app key. */
+const STORAGE_KEYS = [
+  "myrmidon.ui2.locale",
+  "myrmidon:ui2:language",
+  "myrmidon:ui-language",
+] as const;
 
 export function isUi2Locale(value: unknown): value is Ui2Locale {
   return typeof value === "string" && (UI2_LOCALES as readonly string[]).includes(value);
