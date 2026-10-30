@@ -109,8 +109,13 @@ describe("chat-first: the gate exemption", () => {
 describeEmbeddedPostgres("chat-first: the queued-run start path", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let previousJwtSecret: string | undefined;
 
   beforeAll(async () => {
+    previousJwtSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    if (previousJwtSecret === undefined) {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = "vitest-agent-jwt-secret";
+    }
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-maintenance-chat-first-");
     db = createDb(tempDb.connectionString);
   }, 60_000);
@@ -143,6 +148,11 @@ describeEmbeddedPostgres("chat-first: the queued-run start path", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (previousJwtSecret === undefined) {
+      delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+    } else {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = previousJwtSecret;
+    }
   });
 
   async function seedCompany() {

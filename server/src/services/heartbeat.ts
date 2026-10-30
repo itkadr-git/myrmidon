@@ -26093,7 +26093,6 @@ export function heartbeatService(
                           executionWorkspace.cwd,
                         ),
                         ...runnerAcpxCodexAuthEnv,
-                        ...(authToken ? { PAPERCLIP_API_KEY: authToken } : {}),
                         ...(nativeGitHubBridge
                           ? {
                               PAPERCLIP_GITHUB_BROKER_URL:

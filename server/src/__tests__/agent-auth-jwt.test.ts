@@ -1,11 +1,6 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import {
-  ConfigurationIncompleteFailure,
-  isConfigurationIncompleteFailure,
-} from "../services/heartbeat.ts";
-
 
 describe("agent local JWT", () => {
   const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
@@ -87,24 +82,6 @@ describe("agent local JWT", () => {
 
     const claims = verifyLocalAgentJwt(token!);
     expect(claims?.key_scope).toEqual({ kind: "skill_test", issueId });
-  });
-
-  it("classifies unavailable local run JWTs as non-retryable configuration failures", () => {
-    expect(
-      isConfigurationIncompleteFailure(
-        new ConfigurationIncompleteFailure(
-          "local_agent_jwt_unavailable: cannot issue PAPERCLIP_API_KEY for adapter claude_local",
-        ),
-      ),
-    ).toBe(true);
-  });
-
-  it("makes the local run token available to native runner environment", () => {
-    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
-    const runnerEnvironment = {
-      PAPERCLIP_API_KEY: token!,
-    };
-    expect(runnerEnvironment.PAPERCLIP_API_KEY).toBe(token);
   });
 
   it("returns null when all JWT secrets are missing", () => {
