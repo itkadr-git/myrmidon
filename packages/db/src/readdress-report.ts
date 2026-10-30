@@ -152,7 +152,7 @@ export function resolveAddresslessCard<T extends AddresslessCardInput>(card: T):
         return { userId: principal.userId };
       }
     }
-    if ("serviceQueue" in principal) {
+    if ("serviceQueue" in principal && principal.serviceQueue) {
       return { serviceQueue: principal.serviceQueue };
     }
     return null;
