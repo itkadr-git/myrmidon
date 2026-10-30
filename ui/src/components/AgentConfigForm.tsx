@@ -4075,20 +4075,6 @@ export function ModelDropdown({
                 {selected.accounts.join(", ")}
               </Badge>
             ) : null}
-            {selected?.pricing === "free" || selected?.pricing === "paid" ? (
-              <Badge
-                variant="outline"
-                className={cn(
-                  "shrink-0 text-(length:--text-nano) px-1.5",
-                  selected.pricing === "free"
-                    ? "bg-green-500/15 text-green-400 border-green-500/20"
-                    : "bg-amber-500/15 text-amber-400 border-amber-500/20",
-                )}
-                data-model-pricing={selected.pricing}
-              >
-                {t(selected.pricing === "free" ? "cardModels.free" : "cardModels.paid")}
-              </Badge>
-            ) : null}
             <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
           </button>
         </PopoverTrigger>

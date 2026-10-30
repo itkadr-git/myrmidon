@@ -8,9 +8,9 @@ import type { Db } from "@myrmidon/db";
 import { modelProviderModels, modelProviders } from "@myrmidon/db";
 import {
   DEFAULT_CHATGPT_POOL_MODELS,
+  getModelProviderConnector,
   type PoolAccountChannelView,
 } from "@myrmidon/shared";
-import { findModelProviderConnector } from "./plugin-lifecycle.js";
 import { createDefaultModelProviderService } from "./wiring.js";
 import type { AdapterModel } from "@myrmidon/adapter-utils";
 
@@ -45,7 +45,7 @@ export async function enrichWithPoolModels(
     const poolModelAccounts = new Map<string, Set<string>>();
 
     for (const p of providers) {
-      const connector = findModelProviderConnector(p.type);
+      const connector = getModelProviderConnector(p.type);
       const isPool =
         p.type === "chatgpt-pool" || connector?.supportsChannels === true;
       if (!isPool) {

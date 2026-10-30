@@ -379,6 +379,7 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
   it("renders models for pool channels when provided (1.6.6 OPE-9932)", async () => {
     vi.mocked(modelProvidersApi.channels).mockResolvedValue({
       providerId: "prov-pool",
+      providerType: "chatgpt-pool",
       channels: [
         {
           n: 1,
