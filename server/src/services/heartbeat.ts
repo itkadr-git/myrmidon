@@ -27080,12 +27080,8 @@ export function heartbeatService(
                 agentId: agent.id,
                 text: resolved.text,
               }).catch(() => null);
-              if (
-                guardrailDecision?.text &&
-                guardrailDecision.text !== resolved.text
-              ) {
-                resolved = { ...resolved, text: guardrailDecision.text };
-              }
+              const outgoingCommentText =
+                guardrailDecision?.text ?? resolved.text;
               // The presentation resolver exposes only the final assistant
               // surface selected from completed final messages or accepted
               // semantic results. For an exactly bound external-chat run,
@@ -27102,7 +27098,7 @@ export function heartbeatService(
                 // myrmidon(1.7-GRD-MODES): the guardrail decision's text —
                 // unchanged for flag, span-masked for mask, the refusal for
                 // block. Null decision (layer off / error) keeps the text.
-                guardrailDecision?.text ?? resolved.text,
+                outgoingCommentText,
                 { agentId: agent.id, runId: livenessRun.id },
                 { authorizationReason: presentationAuthorizationReason },
               );
