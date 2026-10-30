@@ -534,7 +534,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     const db = {
       execute: async () => [{ n: 0 }], // return a Drizzle-style thenable for the throttle query
     };
-    const logActivity = vi.fn(async () => undefined);
+    const logActivity = vi.fn(async (_db: unknown, _entry: unknown) => undefined);
     await runScentQueueTick(db as never, {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       listCompanyIds: async () => ["c1"],
@@ -542,7 +542,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
       logActivity,
     });
     expect(logActivity).toHaveBeenCalledTimes(1);
-    const entry = logActivity.mock.calls[0][1] as { action: string; details: Record<string, unknown> };
+    const entry = (logActivity.mock.calls[0] as unknown[])[1] as { action: string; details: Record<string, unknown> };
     expect(entry.action).toBe("swarm.scent_contour_unconfigured");
     expect(entry.details).toEqual({ baseUrlConfigured: false, keyConfigured: false });
   });
@@ -551,7 +551,7 @@ describe("scent queue: unconfigured contour is visible in the activity log", () 
     const db = {
       execute: async () => [{ n: 1 }], // return a Drizzle-style thenable for the throttle query
     };
-    const logActivity = vi.fn(async () => undefined);
+    const logActivity = vi.fn(async (_db: unknown, _entry: unknown) => undefined);
     await runScentQueueTick(db as never, {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       listCompanyIds: async () => ["c1"],

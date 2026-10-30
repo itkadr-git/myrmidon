@@ -91,7 +91,7 @@ async function buildService(
         details: entry.details ?? {},
       }).then(() => undefined),
   });
-  return { service, settings, casteKeys };
+  return { service, settings, casteKeys, keyConfigured: Boolean(apiKey) };
 }
 
 export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
@@ -193,7 +193,7 @@ export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
     async (req, res) => {
       const companyId = String(req.params.companyId);
       assertCompanyAccess(req, companyId);
-      const { service, settings } = await buildService(db, companyId, ports);
+      const { service, settings, keyConfigured } = await buildService(db, companyId, ports);
       const slice = ports.listMarkupQueue
         ? await ports.listMarkupQueue(db, companyId, settings.classifierBatchSize)
         : await service.listMarkupQueue(settings.classifierBatchSize);
@@ -203,14 +203,6 @@ export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
       const env = process.env;
       const baseUrl =
         env[SCENT_BASE_URL_ENV]?.trim() || env.MYRMIDON_EVALS_BASE_URL?.trim() || "";
-      const secretName = env[SCENT_KEY_SECRET_ENV]?.trim() || "MYRMIDON_EVALS_API_KEY";
-      const resolve = ports.resolveSecret ?? resolveScentSecret;
-      let keyConfigured = false;
-      try {
-        keyConfigured = Boolean(await resolve(db, companyId, secretName));
-      } catch {
-        keyConfigured = false;
-      }
       res.json({
         enabled: settings.enabled,
         model: settings.model,
