@@ -861,6 +861,20 @@ run_startup_diagnostics() {
   log "phase startup_diagnostics completed in $(( t_diag_1 - t_diag_0 ))ms"
 }
 
+# Clean sessions via native hermes CLI before gateway startup if enabled
+if [ "${MYRMIDON_HERMES_PRUNE_ENABLED:-0}" = "1" ] || [ "${MYRMIDON_HERMES_PRUNE_ENABLED:-}" = "true" ]; then
+  prune_days="${MYRMIDON_HERMES_PRUNE_DAYS:-7}"
+  log "phase hermes_session_maintenance starting (retention ${prune_days}d)"
+  if command -v hermes >/dev/null 2>&1; then
+    hermes sessions prune --yes --older-than "${prune_days}d" || log "warning: hermes sessions prune exited $?"
+    hermes sessions prune --yes --older-than "${prune_days}d" --title ':run:' || log "warning: hermes sessions prune :run: exited $?"
+    hermes sessions optimize || log "warning: hermes sessions optimize exited $?"
+  else
+    log "warning: hermes command not found, skipping session maintenance"
+  fi
+  log "phase hermes_session_maintenance completed"
+fi
+
 # --replace: a previous instance's lock (from a hard container restart) does
 # not block this one — the fleet manager, not hermes, decides whether two
 # instances should ever coexist. --accept-hooks: no TTY to answer a shell

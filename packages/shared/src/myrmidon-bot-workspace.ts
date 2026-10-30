@@ -506,6 +506,7 @@ export const WS_BOT_DISK_SETTING_DEFAULTS = {
 export const wsGraceClosingMinutesSchema = z.number().int().min(5).max(24 * 60);
 export const wsScratchTtlHoursSchema = z.number().int().min(1).max(24 * 30);
 export const wsPartitionPercentSchema = z.number().int().min(50).max(100);
+export const wsHermesPruneDaysSchema = z.number().int().min(1).max(365);
 
 export const wsBotDiskSettingsSchema = z
   .object({
@@ -515,6 +516,8 @@ export const wsBotDiskSettingsSchema = z
     partitionThresholdPercent: wsPartitionPercentSchema.optional(),
     partitionRefuseOpenPercent: wsPartitionPercentSchema.optional(),
     partitionCriticalPercent: wsPartitionPercentSchema.optional(),
+    hermesPruneEnabled: z.boolean().optional(),
+    hermesPruneDays: wsHermesPruneDaysSchema.optional(),
     /** Where pnpm keeps its store; must sit on the bot partition (C1/H8). */
     pnpmStoreDir: z.string().min(1).optional(),
     /** How pnpm imports a package into a clone; `clone` = reflink-only. */
@@ -552,8 +555,10 @@ export const WS_PROFILE_ENV = {
   botdIntervalSec: "MYRMIDON_BOTD_INTERVAL_SEC",
   graceClosingMinutes: "MYRMIDON_BOTD_GRACE_CLOSING_MINUTES",
   scratchTtlHours: "MYRMIDON_BOTD_SCRATCH_TTL_HOURS",
-  boardUrl: "MYRMIDON_BOTD_BOARD_URL",
-  boardKeyEnv: "MYRMIDON_BOTD_BOARD_KEY_ENV",
+  boardUrl: 'MYRMIDON_BOTD_BOARD_URL',
+  boardKeyEnv: 'MYRMIDON_BOTD_BOARD_KEY_ENV',
+  hermesPruneEnabled: 'MYRMIDON_HERMES_PRUNE_ENABLED',
+  hermesPruneDays: 'MYRMIDON_HERMES_PRUNE_DAYS',
 } as const;
 
 /** The value {@link WS_PROFILE_ENV.boardKeyEnv} always carries: the board key

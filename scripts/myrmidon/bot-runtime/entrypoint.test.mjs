@@ -49,6 +49,9 @@ describe("docker/bot-runtime/entrypoint.sh", () => {
     assert.match(source, /DEVBUILD_BOT_NAME:-.*DEVBUILD_HOST:-.*devbuild/s);
     assert.match(source, /log "phase \$\{check\} starting"/);
     assert.match(source, /log "phase \$\{check\} finished in \$\{duration_ms\}ms/);
+    assert.match(source, /log "phase hermes_session_maintenance starting/);
+    assert.match(source, /hermes sessions prune --yes --older-than/);
+    assert.match(source, /hermes sessions optimize/);
     assert.match(source, /log "phase gateway_launch starting"/);
   });
 

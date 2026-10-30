@@ -4,6 +4,7 @@ import { z } from "zod";
 // object, one source of truth for the ranges.
 import {
   wsGraceClosingMinutesSchema,
+  wsHermesPruneDaysSchema,
   wsPartitionPercentSchema,
   wsScratchTtlHoursSchema,
 } from "./myrmidon-bot-workspace.js";
@@ -488,6 +489,8 @@ export const botDiskSettingsSchema = z
     botdIntervalSec: botdIntervalSecSchema.optional(),
     legacyPressureIdleDays: legacyPressureIdleDaysSchema.optional(),
     defaultRepo: defaultRepoSchema.optional(),
+    hermesPruneEnabled: z.boolean().optional(),
+    hermesPruneDays: wsHermesPruneDaysSchema.optional(),
   })
   .strict();
 
@@ -515,6 +518,8 @@ const storedBotDiskObjectSchema = z
     botdIntervalSec: botdIntervalSecSchema.optional().catch(undefined),
     legacyPressureIdleDays: legacyPressureIdleDaysSchema.optional().catch(undefined),
     defaultRepo: defaultRepoSchema.optional().catch(undefined),
+    hermesPruneEnabled: z.boolean().optional().catch(undefined),
+    hermesPruneDays: wsHermesPruneDaysSchema.optional().catch(undefined),
   })
   .passthrough();
 
@@ -556,6 +561,8 @@ export const patchBotDiskSettingsSchema = z
     legacyPressureIdleDays: z.union([legacyPressureIdleDaysSchema, z.null()]).optional(),
     // myrmidon(1.6.5-BOT-DISK-H4b): a repository sets the fallback, null or "" clears it.
     defaultRepo: z.union([defaultRepoSchema, z.literal(""), z.null()]).optional(),
+    hermesPruneEnabled: z.union([z.boolean(), z.null()]).optional(),
+    hermesPruneDays: z.union([wsHermesPruneDaysSchema, z.null()]).optional(),
   })
   .strict();
 
@@ -629,6 +636,8 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   if (typeof parsed.data.botdIntervalSec === "number") out.botdIntervalSec = parsed.data.botdIntervalSec;
   if (typeof parsed.data.legacyPressureIdleDays === "number") out.legacyPressureIdleDays = parsed.data.legacyPressureIdleDays;
   if (typeof parsed.data.defaultRepo === "string") out.defaultRepo = parsed.data.defaultRepo;
+  if (typeof parsed.data.hermesPruneEnabled === "boolean") out.hermesPruneEnabled = parsed.data.hermesPruneEnabled;
+  if (typeof parsed.data.hermesPruneDays === "number") out.hermesPruneDays = parsed.data.hermesPruneDays;
   return out;
 }
 
@@ -790,6 +799,8 @@ export interface BotDiskMechanics {
   partitionRefuseOpenPercent: number;
   partitionCriticalPercent: number;
   botdIntervalSec?: number;
+  hermesPruneEnabled?: boolean;
+  hermesPruneDays?: number;
 }
 
 export function resolveBotDiskMechanics(stored: unknown): BotDiskMechanics {
@@ -801,6 +812,8 @@ export function resolveBotDiskMechanics(stored: unknown): BotDiskMechanics {
     partitionRefuseOpenPercent: values.partitionRefuseOpenPercent ?? 90,
     partitionCriticalPercent: values.partitionCriticalPercent ?? 95,
     ...(values.botdIntervalSec !== undefined ? { botdIntervalSec: values.botdIntervalSec } : {}),
+    ...(values.hermesPruneEnabled !== undefined ? { hermesPruneEnabled: values.hermesPruneEnabled } : {}),
+    ...(values.hermesPruneDays !== undefined ? { hermesPruneDays: values.hermesPruneDays } : {}),
   };
 }
 
