@@ -4,9 +4,11 @@ import { z } from "zod";
 // object, one source of truth for the ranges.
 import {
   wsGraceClosingMinutesSchema,
+  wsNpmCacheTtlHoursSchema,
   wsPartitionPercentSchema,
   wsScratchTtlHoursSchema,
-  wsSessionRetentionDaysSchema,
+  wsTerminalOutputTtlHoursSchema,
+  wsUvCacheTtlHoursSchema,
 } from "./myrmidon-bot-workspace.js";
 
 /**
@@ -478,7 +480,9 @@ export const botDiskSettingsSchema = z
     // WS_BOT_DISK_SETTING_DEFAULTS); stored in this same object, PATCH-able.
     graceClosingMinutes: wsGraceClosingMinutesSchema.optional(),
     scratchTtlHours: wsScratchTtlHoursSchema.optional(),
-    sessionRetentionDays: wsSessionRetentionDaysSchema.optional(),
+    npmCacheTtlHours: wsNpmCacheTtlHoursSchema.optional(),
+    uvCacheTtlHours: wsUvCacheTtlHoursSchema.optional(),
+    terminalOutputTtlHours: wsTerminalOutputTtlHoursSchema.optional(),
     partitionThresholdPercent: wsPartitionPercentSchema.optional(),
     partitionRefuseOpenPercent: wsPartitionPercentSchema.optional(),
     partitionCriticalPercent: wsPartitionPercentSchema.optional(),
@@ -513,7 +517,9 @@ const storedBotDiskObjectSchema = z
     // branch of normalize/resolve below) instead of dropped as an unknown key.
     graceClosingMinutes: wsGraceClosingMinutesSchema.optional().catch(undefined),
     scratchTtlHours: wsScratchTtlHoursSchema.optional().catch(undefined),
-    sessionRetentionDays: wsSessionRetentionDaysSchema.optional().catch(undefined),
+    npmCacheTtlHours: wsNpmCacheTtlHoursSchema.optional().catch(undefined),
+    uvCacheTtlHours: wsUvCacheTtlHoursSchema.optional().catch(undefined),
+    terminalOutputTtlHours: wsTerminalOutputTtlHoursSchema.optional().catch(undefined),
     partitionThresholdPercent: wsPartitionPercentSchema.optional().catch(undefined),
     partitionRefuseOpenPercent: wsPartitionPercentSchema.optional().catch(undefined),
     partitionCriticalPercent: wsPartitionPercentSchema.optional().catch(undefined),
@@ -551,7 +557,9 @@ export const patchBotDiskSettingsSchema = z
     // returns the key to its default; these five have no env variable.
     graceClosingMinutes: z.union([wsGraceClosingMinutesSchema, z.null()]).optional(),
     scratchTtlHours: z.union([wsScratchTtlHoursSchema, z.null()]).optional(),
-    sessionRetentionDays: z.union([wsSessionRetentionDaysSchema, z.null()]).optional(),
+    npmCacheTtlHours: z.union([wsNpmCacheTtlHoursSchema, z.null()]).optional(),
+    uvCacheTtlHours: z.union([wsUvCacheTtlHoursSchema, z.null()]).optional(),
+    terminalOutputTtlHours: z.union([wsTerminalOutputTtlHoursSchema, z.null()]).optional(),
     partitionThresholdPercent: z.union([wsPartitionPercentSchema, z.null()]).optional(),
     partitionRefuseOpenPercent: z.union([wsPartitionPercentSchema, z.null()]).optional(),
     partitionCriticalPercent: z.union([wsPartitionPercentSchema, z.null()]).optional(),
@@ -719,11 +727,13 @@ function optionalLayoutKeys(values: Partial<BotDiskSettings>): Partial<BotDiskSe
 /** The 1.6.6-SETTINGS-UI-B workspace-lifecycle keys that are set, in canonical form. */
 function optionalWorkspaceLifecycleKeys(
   values: Partial<BotDiskSettings>,
-): Pick<BotDiskSettings, "graceClosingMinutes" | "scratchTtlHours" | "sessionRetentionDays" | "partitionThresholdPercent" | "partitionRefuseOpenPercent" | "partitionCriticalPercent"> {
+): Pick<BotDiskSettings, "graceClosingMinutes" | "scratchTtlHours" | "npmCacheTtlHours" | "uvCacheTtlHours" | "terminalOutputTtlHours" | "partitionThresholdPercent" | "partitionRefuseOpenPercent" | "partitionCriticalPercent"> {
   return {
     ...(values.graceClosingMinutes !== undefined ? { graceClosingMinutes: values.graceClosingMinutes } : {}),
     ...(values.scratchTtlHours !== undefined ? { scratchTtlHours: values.scratchTtlHours } : {}),
-    ...(values.sessionRetentionDays !== undefined ? { sessionRetentionDays: values.sessionRetentionDays } : {}),
+    ...(values.npmCacheTtlHours !== undefined ? { npmCacheTtlHours: values.npmCacheTtlHours } : {}),
+    ...(values.uvCacheTtlHours !== undefined ? { uvCacheTtlHours: values.uvCacheTtlHours } : {}),
+    ...(values.terminalOutputTtlHours !== undefined ? { terminalOutputTtlHours: values.terminalOutputTtlHours } : {}),
     ...(values.partitionThresholdPercent !== undefined ? { partitionThresholdPercent: values.partitionThresholdPercent } : {}),
     ...(values.partitionRefuseOpenPercent !== undefined ? { partitionRefuseOpenPercent: values.partitionRefuseOpenPercent } : {}),
     ...(values.partitionCriticalPercent !== undefined ? { partitionCriticalPercent: values.partitionCriticalPercent } : {}),
@@ -750,13 +760,15 @@ export function mergeBotDiskSettings(
   return {
     enabled: patch.enabled === undefined ? base.enabled : patch.enabled,
     idleTtlMs: patch.idleTtlMs === undefined ? base.idleTtlMs : patch.idleTtlMs,
-    // myrmidon(1.6.6-SETTINGS-UI-B): the five workspace-lifecycle numbers merge
+    // myrmidon(1.6.6-SETTINGS-UI-B): the workspace-lifecycle numbers merge
     // like the layout keys: absent keeps the current value, null returns the
     // key to its default (then the ws service reads WS_BOT_DISK_SETTING_DEFAULTS).
     ...optionalWorkspaceLifecycleKeys({
       graceClosingMinutes: pick(patch.graceClosingMinutes, base.graceClosingMinutes),
       scratchTtlHours: pick(patch.scratchTtlHours, base.scratchTtlHours),
-      sessionRetentionDays: pick(patch.sessionRetentionDays, base.sessionRetentionDays),
+      npmCacheTtlHours: pick(patch.npmCacheTtlHours, base.npmCacheTtlHours),
+      uvCacheTtlHours: pick(patch.uvCacheTtlHours, base.uvCacheTtlHours),
+      terminalOutputTtlHours: pick(patch.terminalOutputTtlHours, base.terminalOutputTtlHours),
       partitionThresholdPercent: pick(patch.partitionThresholdPercent, base.partitionThresholdPercent),
       partitionRefuseOpenPercent: pick(patch.partitionRefuseOpenPercent, base.partitionRefuseOpenPercent),
       partitionCriticalPercent: pick(patch.partitionCriticalPercent, base.partitionCriticalPercent),
@@ -817,7 +829,9 @@ export const BOT_DISK_LAYOUT_KEYS = ["sharedPackageCachePath", "sharedBotRuntime
 export interface BotDiskMechanics {
   graceClosingMinutes: number;
   scratchTtlHours: number;
-  sessionRetentionDays: number;
+  npmCacheTtlHours?: number;
+  uvCacheTtlHours?: number;
+  terminalOutputTtlHours?: number;
   partitionThresholdPercent: number;
   partitionRefuseOpenPercent: number;
   partitionCriticalPercent: number;
@@ -836,6 +850,9 @@ export function resolveBotDiskMechanics(stored: unknown): BotDiskMechanics {
     partitionThresholdPercent: values.partitionThresholdPercent ?? 85,
     partitionRefuseOpenPercent: values.partitionRefuseOpenPercent ?? 90,
     partitionCriticalPercent: values.partitionCriticalPercent ?? 95,
+    ...(values.npmCacheTtlHours !== undefined ? { npmCacheTtlHours: values.npmCacheTtlHours } : {}),
+    ...(values.uvCacheTtlHours !== undefined ? { uvCacheTtlHours: values.uvCacheTtlHours } : {}),
+    ...(values.terminalOutputTtlHours !== undefined ? { terminalOutputTtlHours: values.terminalOutputTtlHours } : {}),
     ...(values.botdIntervalSec !== undefined ? { botdIntervalSec: values.botdIntervalSec } : {}),
     ...(values.hermesPruneEnabled !== undefined ? { hermesPruneEnabled: values.hermesPruneEnabled } : {}),
     ...(values.hermesPruneDays !== undefined ? { hermesPruneDays: values.hermesPruneDays } : {}),
@@ -844,10 +861,19 @@ export function resolveBotDiskMechanics(stored: unknown): BotDiskMechanics {
 }
 
 /**
- * myrmidon(1.6.6-SETTINGS-UI-B): the five workspace-lifecycle keys a settings
+ * myrmidon(1.6.6-SETTINGS-UI-B): the workspace-lifecycle keys a settings
  * change compares besides the env-backed ones (stored-only, no env variable).
  */
-export const BOT_DISK_WORKSPACE_LIFECYCLE_KEYS = ["graceClosingMinutes", "scratchTtlHours", "sessionRetentionDays", "partitionThresholdPercent", "partitionRefuseOpenPercent", "partitionCriticalPercent"] as const;
+export const BOT_DISK_WORKSPACE_LIFECYCLE_KEYS = [
+  "graceClosingMinutes",
+  "scratchTtlHours",
+  "npmCacheTtlHours",
+  "uvCacheTtlHours",
+  "terminalOutputTtlHours",
+  "partitionThresholdPercent",
+  "partitionRefuseOpenPercent",
+  "partitionCriticalPercent",
+] as const;
 
 /**
  * myrmidon(1.6.2-BOT-DISK-C): the shared-cache layout in force, with the
