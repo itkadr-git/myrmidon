@@ -22,7 +22,7 @@
 //   - `exportTree()/importTree()` are canonical: export → import → export is
 //     byte-for-byte identical.
 
-import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   knowledgeEvents,
@@ -39,6 +39,8 @@ import {
   KnowledgeDomainError,
   assertApprovable,
   assertItemTransition,
+  assertKnowledgeWriteProtection,
+  type KnowledgeWriteProtectionViolation,
   assertRevisionTransition,
   assertRuleFields,
   assertSingleLine,
@@ -147,6 +149,8 @@ export interface CreateKnowledgeInput {
   approvalRequired?: boolean;
   approverKind?: string | null;
   sources?: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
+  force?: boolean;
+  reason?: string | null;
 }
 
 export interface DraftKnowledgeInput {
@@ -157,6 +161,8 @@ export interface DraftKnowledgeInput {
   sources?: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
   /** Submit straight to review instead of leaving the revision as draft. */
   submit?: boolean;
+  force?: boolean;
+  reason?: string | null;
 }
 
 export interface ApproveKnowledgeInput {
@@ -276,7 +282,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
 
   async function mirrorActivity(input: {
     companyId: string;
-    itemId: string;
+    itemId?: string | null;
     slug: string;
     event: string;
     actor: KnowledgeActor;
@@ -288,7 +294,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       actorId: input.actor.actorId ?? input.actor.actorType,
       action: input.event,
       entityType: "knowledge_item",
-      entityId: input.itemId,
+      entityId: input.itemId ?? input.slug,
       agentId: input.actor.actorType === "agent" ? (input.actor.actorId ?? null) : null,
       details: { slug: input.slug, ...input.payload },
     });
@@ -363,6 +369,26 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     assertSingleLine(input.title, "Title");
     if (input.summary != null) assertSingleLine(input.summary, "Summary");
     assertValidTags(input.tags ?? []);
+    let createViolation: KnowledgeWriteProtectionViolation | null = null;
+    try {
+      createViolation = assertKnowledgeWriteProtection({
+        newContent: input.content,
+        previousContent: null,
+        force: input.force,
+        reason: input.reason,
+      });
+    } catch (err) {
+      console.warn(`[KNOWLEDGE_WRITE_PROTECTION_ALERT] Refused create for ${input.slug}: ${(err as Error).message}`);
+      await mirrorActivity({
+        companyId: input.companyId,
+        itemId: input.slug,
+        slug: input.slug,
+        event: "knowledge.write_protection_alert",
+        actor,
+        payload: { slug: input.slug, cause: (err as Error).message, action: "create" },
+      }).catch(() => {});
+      throw err;
+    }
     const lang = normalizeKnowledgeRevisionLang(input.lang);
     if (input.translationOf) throw new KnowledgeDomainError("translation_requires_canonical_item", 400, "A translation revision must be created against an existing knowledge item.");
     const kind = input.kind ?? "note";
@@ -459,6 +485,16 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     });
 
     await mirrorActivity({ companyId: row.companyId, itemId: row.id, slug: row.slug, event: "knowledge.created", actor, payload: { kind: row.kind } });
+    if (createViolation) {
+      await mirrorActivity({
+        companyId: row.companyId,
+        itemId: row.id,
+        slug: row.slug,
+        event: "knowledge.write_protection_overridden",
+        actor,
+        payload: { slug: row.slug, violation: createViolation.kind, reason: input.reason },
+      }).catch(() => {});
+    }
     await reindex(row.nestId, row.id);
     return toItemDto(row);
   }
@@ -473,6 +509,34 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     if (input.changeSummary != null) assertSingleLine(input.changeSummary, "Change summary");
     const lang = normalizeKnowledgeRevisionLang(input.lang);
     const timestamp = now();
+
+    const [latestRevision] = await db
+      .select({ content: knowledgeRevisions.content })
+      .from(knowledgeRevisions)
+      .where(and(eq(knowledgeRevisions.nestId, nestId), eq(knowledgeRevisions.itemId, current.id)))
+      .orderBy(desc(knowledgeRevisions.revisionNumber))
+      .limit(1);
+
+    let draftViolation: KnowledgeWriteProtectionViolation | null = null;
+    try {
+      draftViolation = assertKnowledgeWriteProtection({
+        newContent: input.content,
+        previousContent: latestRevision?.content ?? null,
+        force: input.force,
+        reason: input.reason,
+      });
+    } catch (err) {
+      console.warn(`[KNOWLEDGE_WRITE_PROTECTION_ALERT] Refused draft for ${current.slug}: ${(err as Error).message}`);
+      await mirrorActivity({
+        companyId: current.companyId,
+        itemId: current.id,
+        slug: current.slug,
+        event: "knowledge.write_protection_alert",
+        actor,
+        payload: { slug: current.slug, cause: (err as Error).message, action: "draft" },
+      }).catch(() => {});
+      throw err;
+    }
 
     const row = await db.transaction(async (tx) => {
       // Lock the item row so concurrent drafts serialize on the revision
@@ -553,6 +617,16 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     });
 
     await mirrorActivity({ companyId: row.companyId, itemId: row.id, slug: row.slug, event: "knowledge.draft", actor, payload: {} });
+    if (draftViolation) {
+      await mirrorActivity({
+        companyId: current.companyId,
+        itemId: current.id,
+        slug: current.slug,
+        event: "knowledge.write_protection_overridden",
+        actor,
+        payload: { slug: current.slug, violation: draftViolation.kind, reason: input.reason },
+      }).catch(() => {});
+    }
     return toItemDto(row);
   }
 

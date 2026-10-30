@@ -108,11 +108,20 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     expect(UI2_PHONE_TABS.some((item) => item.labelKey === "ui2.nav.fleet")).toBe(false);
   });
 
-  it("Ui2Root exists and mounts the shell (UI-0b's provider line)", async () => {
+  it("Ui2Root exists and mounts the shell", async () => {
     const mod = await import("./Ui2Root");
     expect(typeof mod.Ui2Root).toBe("function");
     const root = mod.Ui2Root({} as never);
     expect(root).toBeTruthy();
+    expect(root.type).toBe((await import("./shell/Ui2Shell")).Ui2Shell);
+  });
+
+  it("does not wrap Ui2Shell in a second PluginLauncherProvider", () => {
+    const rootSource = readFileSync(join(UI_SRC, "ui2", "Ui2Root.tsx"), "utf8");
+    const shellSource = readFileSync(join(UI_SRC, "ui2", "shell", "Ui2Shell.tsx"), "utf8");
+    expect(rootSource).not.toMatch(/<PluginLauncherProvider\b/);
+    expect(shellSource).not.toMatch(/<PluginLauncherProvider\b/);
+    expect(shellSource).toContain("PluginLauncherProvider is installed at the application root");
   });
 
   it("the theme keys the RU display-font switch on [lang=ru] and keeps the wordmark font", () => {
