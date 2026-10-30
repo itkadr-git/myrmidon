@@ -685,6 +685,9 @@ export interface PluginWorkerHandle {
   /** Current worker status. */
   readonly status: WorkerStatus;
 
+  /** Process ID of the active worker process, or null if not running. */
+  readonly pid: number | null;
+
   /** Start the worker process. Resolves when initialize completes. */
   start(): Promise<void>;
 
@@ -3434,6 +3437,10 @@ export function createPluginWorkerHandle(
 
     get status() {
       return status;
+    },
+
+    get pid() {
+      return childProcess?.pid ?? null;
     },
 
     get supportedMethods() {
