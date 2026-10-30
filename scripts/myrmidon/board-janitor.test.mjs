@@ -6,6 +6,7 @@ import {
   hasQuestionPattern,
   isOpenStatus,
   judgeTask,
+  runWithApi,
   STALE_LABEL_NAME,
 } from "./board-janitor.mjs";
 
@@ -246,4 +247,63 @@ test("generateReport produces formatted markdown document", () => {
   assert.ok(report.includes("1055"));
   assert.ok(report.includes("955"));
   assert.ok(report.includes("OPE-9680"));
+});
+
+test("runWithApi: loads context and executes actions with separate comments and labels", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({
+      url: String(url),
+      method: options.method || "GET",
+      body: options.body ? JSON.parse(options.body) : null,
+    });
+    if (String(url).includes("/api/companies/comp-1/issues")) {
+      return {
+        ok: true,
+        json: async () => [
+          {
+            id: "task-1",
+            identifier: "OPE-101",
+            title: "1.6.7 release task without assignee",
+            status: "todo",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+            parentId: null,
+            labels: [],
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+      };
+    }
+    if (String(url).includes("/api/issues/task-1/work-products")) {
+      return { ok: true, json: async () => [] };
+    }
+    if (String(url).includes("/api/companies/comp-1/labels")) {
+      return { ok: true, json: async () => [] };
+    }
+    if (String(url).includes("/documents/janitor-")) {
+      return { ok: true, json: async () => ({ id: "doc-1" }) };
+    }
+    return { ok: true, json: async () => ({ ok: true }) };
+  };
+
+  try {
+    const res = await runWithApi({
+      apiUrl: "http://example.test",
+      apiKey: "test-token",
+      companyId: "comp-1",
+      apply: true,
+      log: () => {},
+    });
+    assert.strictEqual(res.applied, 1);
+    const patchCall = calls.find((c) => c.method === "PATCH" && c.url.includes("/api/issues/task-1"));
+    assert.ok(patchCall, "PATCH call made");
+    assert.strictEqual(patchCall.body.status, "todo");
+    const commentCall = calls.find((c) => c.method === "POST" && c.url.includes("/api/issues/task-1/comments"));
+    assert.ok(commentCall, "Comment POST call made");
+    assert.ok(commentCall.body.body.includes("DEVFLOW-9678"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

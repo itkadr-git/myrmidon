@@ -247,13 +247,16 @@ export function generateReport({ dateStr, statsBefore, statsAfter, actions }) {
 }
 
 export async function runWithApi({ apiUrl, apiKey, companyId, apply, only, serviceTicketId, log = console.log }) {
-  const runId = process.env.PAPERCLIP_RUN_ID || "a354063f-ef77-4b1e-95b3-6254165ff37e";
-  const authHeader = apiKey ? ["Bearer", apiKey].join(" ") : "";
+  const runId = process.env.PAPERCLIP_RUN_ID || "";
   const headers = {
-    ...(authHeader ? { Authorization: authHeader } : {}),
     "Content-Type": "application/json",
-    ...(runId ? { "X-Paperclip-Run-Id": runId } : {}),
   };
+  if (apiKey) {
+    headers["Authorization"] = ["Bearer", apiKey].join(" ");
+  }
+  if (runId) {
+    headers["X-Paperclip-Run-Id"] = runId;
+  }
   const get = async (path) => {
     const res = await fetch(`${apiUrl}${path}`, { headers });
     if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
@@ -328,14 +331,43 @@ export async function runWithApi({ apiUrl, apiKey, companyId, apply, only, servi
     if (i.parentId) {
       context.openChildrenByIssue.set(i.parentId, (context.openChildrenByIssue.get(i.parentId) || 0) + 1);
     }
-    if (i.status === "blocked") {
-      const openBlockers = i.blockerAttention?.unresolvedBlockerCount ?? 0;
-      context.openBlockersByIssue.set(i.id, openBlockers);
-    }
+  }
+
+  // Fetch relations/blocker details for blocked issues
+  const blockedIssues = openIssues.filter((i) => i.status === "blocked");
+  log(`Fetching relations/blocker details for ${blockedIssues.length} blocked issues...`);
+  for (let idx = 0; idx < blockedIssues.length; idx += 10) {
+    const chunk = blockedIssues.slice(idx, idx + 10);
+    await Promise.all(
+      chunk.map(async (task) => {
+        try {
+          const detail = await get(`/api/issues/${task.id}`);
+          let openBlockers = detail.blockerAttention?.unresolvedBlockerCount;
+          if (openBlockers == null && Array.isArray(detail.relations?.blockedBy)) {
+            openBlockers = detail.relations.blockedBy.filter(
+              (r) => !["done", "cancelled"].includes(r.issue?.status || r.status)
+            ).length;
+          }
+          context.openBlockersByIssue.set(task.id, openBlockers ?? 0);
+        } catch (err) {
+          log(`Failed to fetch blocker details for ${task.identifier || task.id}: ${err.message}`);
+          context.openBlockersByIssue.set(task.id, 999);
+        }
+      })
+    );
   }
 
   // Fetch work products for candidate PR issues
-  const candidatePrIssues = openIssues.filter((i) => i.status === "in_review" || i.status === "in_progress" || /PR\s*#?\d+/i.test(i.title));
+  const candidatePrIssues = only?.length
+    ? openIssues
+    : openIssues.filter(
+        (i) =>
+          i.status === "in_review" ||
+          i.status === "in_progress" ||
+          i.status === "blocked" ||
+          /PR\s*#?\d+/i.test(i.title) ||
+          (Array.isArray(i.workProducts) && i.workProducts.length > 0)
+      );
   log(`Fetching work products for ${candidatePrIssues.length} candidate issues...`);
   for (let idx = 0; idx < candidatePrIssues.length; idx += 10) {
     const chunk = candidatePrIssues.slice(idx, idx + 10);
@@ -346,15 +378,20 @@ export async function runWithApi({ apiUrl, apiKey, companyId, apply, only, servi
           if (Array.isArray(wpList) && wpList.length > 0) {
             context.workProductsByIssue.set(task.id, wpList);
           }
-        } catch {
-          // ignore error
+        } catch (err) {
+          log(`Failed to fetch work products for ${task.identifier || task.id}: ${err.message}`);
         }
       })
     );
   }
 
   // Fetch comments for blocked issues without open blockers/children
-  const blockedToCheck = openIssues.filter((i) => i.status === "blocked" && (context.openBlockersByIssue.get(i.id) ?? 0) === 0 && (context.openChildrenByIssue.get(i.id) ?? 0) === 0);
+  const blockedToCheck = openIssues.filter(
+    (i) =>
+      i.status === "blocked" &&
+      (context.openBlockersByIssue.get(i.id) ?? 0) === 0 &&
+      (context.openChildrenByIssue.get(i.id) ?? 0) === 0
+  );
   log(`Fetching comments for ${blockedToCheck.length} blocked issues without blockers...`);
   for (let idx = 0; idx < blockedToCheck.length; idx += 10) {
     const chunk = blockedToCheck.slice(idx, idx + 10);
@@ -366,8 +403,11 @@ export async function runWithApi({ apiUrl, apiKey, companyId, apply, only, servi
             const last = comments[comments.length - 1];
             context.lastCommentByIssue.set(task.id, last);
           }
-        } catch {
-          // ignore error
+        } catch (err) {
+          log(`Failed to fetch comments for ${task.identifier || task.id}: ${err.message}`);
+          context.lastCommentByIssue.set(task.id, {
+            body: "Не удалось загрузить комментарий при проверке блокировки (ошибка сети)",
+          });
         }
       })
     );
@@ -427,29 +467,40 @@ export async function runWithApi({ apiUrl, apiKey, companyId, apply, only, servi
   for (const a of allActions) {
     try {
       if (a.type === "close_merged_pr") {
-        await patch(`/api/issues/${a.issueId}`, { status: "done", comment: a.comment });
+        await patch(`/api/issues/${a.issueId}`, { status: "done" });
+        if (a.comment) await post(`/api/issues/${a.issueId}/comments`, { body: a.comment });
         applied++;
       } else if (a.type === "unblock_stale") {
-        await patch(`/api/issues/${a.issueId}`, { status: "todo", comment: a.comment });
+        await patch(`/api/issues/${a.issueId}`, { status: "todo" });
+        if (a.comment) await post(`/api/issues/${a.issueId}/comments`, { body: a.comment });
         applied++;
       } else if (a.type === "queue_unassigned_release") {
-        await patch(`/api/issues/${a.issueId}`, { status: "todo", comment: a.comment });
+        await patch(`/api/issues/${a.issueId}`, { status: "todo" });
+        if (a.comment) await post(`/api/issues/${a.issueId}/comments`, { body: a.comment });
         applied++;
       } else if (a.type === "move_stale_to_backlog") {
-        await patch(`/api/issues/${a.issueId}`, { status: "backlog", comment: a.comment });
+        await patch(`/api/issues/${a.issueId}`, { status: "backlog" });
+        if (a.comment) await post(`/api/issues/${a.issueId}/comments`, { body: a.comment });
         applied++;
       } else if (a.type === "mark_stale_untouched") {
-        const patchBody = { comment: a.comment };
+        const patchBody = {};
         if (staleLabelId) {
           const existingLabels = a.labelIds || [];
           if (!existingLabels.includes(staleLabelId)) {
             patchBody.labelIds = [...existingLabels, staleLabelId];
           }
         }
-        await patch(`/api/issues/${a.issueId}`, patchBody);
+        if (Object.keys(patchBody).length > 0) {
+          await patch(`/api/issues/${a.issueId}`, patchBody);
+        }
+        if (a.comment) {
+          await post(`/api/issues/${a.issueId}/comments`, { body: a.comment });
+        }
         applied++;
       } else if (a.type === "notify_overdue") {
-        await patch(`/api/issues/${a.issueId}`, { comment: a.comment });
+        if (a.comment) {
+          await post(`/api/issues/${a.issueId}/comments`, { body: a.comment });
+        }
         applied++;
       }
     } catch (err) {

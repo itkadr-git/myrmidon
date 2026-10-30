@@ -1,6 +1,7 @@
 // myrmidon(BOARD-JANITOR): unit tests for settings, policies, and report generation
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { notifySwarmIssueEvent, setSwarmEventSink } from "../swarm-claim/events.js";
 import {
   generateJanitorReportMarkdown,
   judgeMergedPrClosure,
@@ -200,6 +201,20 @@ describe("Rule 3: Unassigned release tasks", () => {
       updatedAt: BASE_NOW,
     };
     expect(judgeUnassignedReleaseTask(assigned)).toBeNull();
+  });
+
+  it("delivers issue to swarm matcher when queued by janitor", async () => {
+    const forIssue = vi.fn(async () => null);
+    setSwarmEventSink({ forIssue, forAgent: vi.fn(async () => null) });
+    notifySwarmIssueEvent({
+      issueId: "task-3",
+      status: "todo",
+      assigneeAgentId: null,
+      touched: ["status"],
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(forIssue).toHaveBeenCalledWith("task-3");
+    setSwarmEventSink(null);
   });
 });
 
