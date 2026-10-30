@@ -378,7 +378,7 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
       return [...mine, ...lost];
     },
 
-    async listClosedKeys({ companyId, agentId }) {
+    async listClosedKeys({ companyId, agentId }): Promise<Array<string | { key: string; closedAt?: string; issueId?: string }>> {
       const reassigned = await db
         .selectDistinct({ entityId: activityLog.entityId })
         .from(activityLog)
@@ -405,13 +405,17 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
         .from(issues)
         .where(and(eq(issues.companyId, companyId), sql`${issues.status} in ('done', 'cancelled')`, held))
         .limit(5000);
-      return rows
-        .map((r) => ({
-          key: r.identifier,
-          issueId: r.id,
-          closedAt: (r.completedAt ?? r.updatedAt)?.toISOString(),
-        }))
-        .filter((entry): entry is { key: string; issueId: string; closedAt?: string } => !!entry.key);
+      const entries: Array<{ key: string; closedAt?: string; issueId?: string }> = [];
+      for (const r of rows) {
+        if (r.identifier) {
+          entries.push({
+            key: r.identifier,
+            issueId: r.id,
+            closedAt: (r.completedAt ?? r.updatedAt)?.toISOString(),
+          });
+        }
+      }
+      return entries;
     },
 
     async listPrProducts({ issueIds }) {

@@ -207,14 +207,13 @@ async function main() {
   const desiredClient = desiredMod ? desiredMod.createDesiredClient({ log }) : null;
   let lastDesiredState = null;
   const desired = {
-    poll: async () => {
-      if (!desiredClient) return { ok: false, reason: "desired module is not in this image" };
-      const r = await desiredClient.poll();
-      if (r && r.ok && r.state) {
-        lastDesiredState = r.state;
-      }
-      return r;
-    },
+    poll: () =>
+      desiredClient
+        ? desiredClient.poll().then((r) => {
+            if (r && r.ok && r.state) lastDesiredState = r.state;
+            return r;
+          })
+        : Promise.resolve({ ok: false, reason: "desired module is not in this image" }),
   };
   const rules = {
     plan: (inv, state, now, settings) => (rulesMod ? rulesMod.plan(inv, state, now, settings) : { actions: [] }),
