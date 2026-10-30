@@ -217,18 +217,21 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         });
         if (wakeState.activeRun || wakeState.pendingWake) continue;
         if ((liveByReviewer.get(review.reviewerAgentId) ?? 0) >= settings.maxLoadPerReviewer) continue;
-        const idleMs = now.getTime() - row.createdAt.getTime();
+        const lastActivity = row.updatedAt ?? row.createdAt;
+        const idleMs = now.getTime() - lastActivity.getTime();
         if (idleMs < REVIEW_WAKE_STALE_AFTER_MS) continue;
         const attempt = wakeState.attempts + 1;
         const backoffMs = Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** Math.max(0, attempt - 1));
         if (wakeState.lastWakeAt && now.getTime() - wakeState.lastWakeAt.getTime() < backoffMs) continue;
-        const wakeContext = buildReviewRoutingWakeContext(row.executionState ?? {});
+        const wakeContext = buildReviewRoutingWakeContext(
+          (row.executionState ?? {}) as Record<string, unknown>,
+        );
         const currentStage = review.stageId;
         await deps.wakeReviewer(review.reviewerAgentId, {
           issueId: row.id,
           reason: "execution_review_requested",
           mutation: "myrmidon_review_wakeup_retry",
-          executionStage: wakeContext,
+          executionStage: wakeContext as unknown as Record<string, unknown>,
           retryAttempt: attempt,
         });
         await deps.store.recordReviewWake({
