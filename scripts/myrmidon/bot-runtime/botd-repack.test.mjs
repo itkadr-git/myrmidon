@@ -145,9 +145,10 @@ describe("botd repack: git-base optimization (OPE-10039)", () => {
       fs.writeFileSync(path.join(packDir, `pack-${i}.pack`), "0123456789");
     }
 
+    const st = fs.statSync(dir);
     const commands = [];
-    const runCmd = async (bin, args) => {
-      commands.push([bin, ...args]);
+    const runCmd = async (bin, args, opts) => {
+      commands.push({ bin, args, opts });
       if (args.includes("repack")) {
         // simulate repacking 3 packs into 1
         for (let i = 0; i < 3; i++) {
@@ -168,10 +169,37 @@ describe("botd repack: git-base optimization (OPE-10039)", () => {
     assert.equal(res.packsBefore, 3);
     assert.equal(res.packsAfter, 1);
     assert.equal(commands.length, 2);
-    assert.deepEqual(commands[0].slice(1), ["-C", dir, "repack", "-A", "-d"]);
-    assert.deepEqual(commands[1].slice(1), ["-C", dir, "prune", "--expire=2.weeks"]);
+    assert.deepEqual(commands[0].args, ["-C", dir, "repack", "-A", "-d"]);
+    assert.equal(commands[0].opts.uid, st.uid);
+    assert.equal(commands[0].opts.gid, st.gid);
+    assert.deepEqual(commands[1].args, ["-C", dir, "prune", "--expire=2.weeks"]);
+    assert.equal(commands[1].opts.uid, st.uid);
+    assert.equal(commands[1].opts.gid, st.gid);
     assert.ok(fs.existsSync(path.join(dir, MARKER_FILE)));
     assert.ok(logs.some((l) => l.includes("repacked") && l.includes("packs 3 -> 1")));
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("repackRepo passes repository owner uid and gid credentials to git repack and prune", async () => {
+    const dir = makeTempDir();
+    const commands = [];
+    const runCmd = async (bin, args, opts) => {
+      commands.push({ bin, args, opts });
+      return { code: 0, stdout: "", stderr: "" };
+    };
+
+    const res = await repackRepo(dir, { runCmd, uid: 2001, gid: 2002 });
+    assert.equal(res.ok, true);
+    assert.equal(commands.length, 2);
+
+    assert.ok(commands[0].args.includes("repack"));
+    assert.equal(commands[0].opts.uid, 2001);
+    assert.equal(commands[0].opts.gid, 2002);
+
+    assert.ok(commands[1].args.includes("prune"));
+    assert.equal(commands[1].opts.uid, 2001);
+    assert.equal(commands[1].opts.gid, 2002);
 
     fs.rmSync(dir, { recursive: true, force: true });
   });

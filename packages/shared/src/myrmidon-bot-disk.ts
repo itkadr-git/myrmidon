@@ -625,6 +625,9 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   // layout patch (they used to live only under wsBotDiskSettingsSchema).
   if (typeof parsed.data.graceClosingMinutes === "number") out.graceClosingMinutes = parsed.data.graceClosingMinutes;
   if (typeof parsed.data.scratchTtlHours === "number") out.scratchTtlHours = parsed.data.scratchTtlHours;
+  if (typeof parsed.data.npmCacheTtlHours === "number") out.npmCacheTtlHours = parsed.data.npmCacheTtlHours;
+  if (typeof parsed.data.uvCacheTtlHours === "number") out.uvCacheTtlHours = parsed.data.uvCacheTtlHours;
+  if (typeof parsed.data.terminalOutputTtlHours === "number") out.terminalOutputTtlHours = parsed.data.terminalOutputTtlHours;
   if (typeof parsed.data.partitionThresholdPercent === "number") out.partitionThresholdPercent = parsed.data.partitionThresholdPercent;
   if (typeof parsed.data.partitionRefuseOpenPercent === "number") out.partitionRefuseOpenPercent = parsed.data.partitionRefuseOpenPercent;
   if (typeof parsed.data.partitionCriticalPercent === "number") out.partitionCriticalPercent = parsed.data.partitionCriticalPercent;
@@ -651,11 +654,6 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   if (uv.uvLinkMode !== undefined) out.uvLinkMode = uv.uvLinkMode;
   if (Array.isArray(parsed.data.sharedCacheRoles)) out.sharedCacheRoles = parsed.data.sharedCacheRoles;
   // myrmidon(1.6.5-BOT-DISK-H5c): the C7 mechanics keys.
-  if (typeof parsed.data.graceClosingMinutes === "number") out.graceClosingMinutes = parsed.data.graceClosingMinutes;
-  if (typeof parsed.data.scratchTtlHours === "number") out.scratchTtlHours = parsed.data.scratchTtlHours;
-  if (typeof parsed.data.partitionThresholdPercent === "number") out.partitionThresholdPercent = parsed.data.partitionThresholdPercent;
-  if (typeof parsed.data.partitionRefuseOpenPercent === "number") out.partitionRefuseOpenPercent = parsed.data.partitionRefuseOpenPercent;
-  if (typeof parsed.data.partitionCriticalPercent === "number") out.partitionCriticalPercent = parsed.data.partitionCriticalPercent;
   if (typeof parsed.data.botdIntervalSec === "number") out.botdIntervalSec = parsed.data.botdIntervalSec;
   if (typeof parsed.data.legacyPressureIdleDays === "number") out.legacyPressureIdleDays = parsed.data.legacyPressureIdleDays;
   if (typeof parsed.data.defaultRepo === "string") out.defaultRepo = parsed.data.defaultRepo;
@@ -825,9 +823,6 @@ export const BOT_DISK_LAYOUT_KEYS = ["sharedPackageCachePath", "sharedBotRuntime
 export interface BotDiskMechanics {
   graceClosingMinutes: number;
   scratchTtlHours: number;
-  npmCacheTtlHours?: number;
-  uvCacheTtlHours?: number;
-  terminalOutputTtlHours?: number;
   partitionThresholdPercent: number;
   partitionRefuseOpenPercent: number;
   partitionCriticalPercent: number;
@@ -845,9 +840,6 @@ export function resolveBotDiskMechanics(stored: unknown): BotDiskMechanics {
     partitionThresholdPercent: values.partitionThresholdPercent ?? 85,
     partitionRefuseOpenPercent: values.partitionRefuseOpenPercent ?? 90,
     partitionCriticalPercent: values.partitionCriticalPercent ?? 95,
-    ...(values.npmCacheTtlHours !== undefined ? { npmCacheTtlHours: values.npmCacheTtlHours } : {}),
-    ...(values.uvCacheTtlHours !== undefined ? { uvCacheTtlHours: values.uvCacheTtlHours } : {}),
-    ...(values.terminalOutputTtlHours !== undefined ? { terminalOutputTtlHours: values.terminalOutputTtlHours } : {}),
     ...(values.botdIntervalSec !== undefined ? { botdIntervalSec: values.botdIntervalSec } : {}),
     ...(values.hermesPruneEnabled !== undefined ? { hermesPruneEnabled: values.hermesPruneEnabled } : {}),
     ...(values.hermesPruneDays !== undefined ? { hermesPruneDays: values.hermesPruneDays } : {}),

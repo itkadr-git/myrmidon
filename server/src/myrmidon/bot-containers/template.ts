@@ -744,9 +744,6 @@ export function botdProfileEnv(mechanics: BotDiskMechanics, boardUrl: string, bo
   };
   // botd reports under its own bot key (the agent id, not a secret); the hostname fallback is a container id the board refuses.
   if (botKey) env[BOT_KEY_ENV] = botKey;
-  if (mechanics.npmCacheTtlHours !== undefined) env[WS_PROFILE_ENV.npmCacheTtlHours] = String(mechanics.npmCacheTtlHours);
-  if (mechanics.uvCacheTtlHours !== undefined) env[WS_PROFILE_ENV.uvCacheTtlHours] = String(mechanics.uvCacheTtlHours);
-  if (mechanics.terminalOutputTtlHours !== undefined) env[WS_PROFILE_ENV.terminalOutputTtlHours] = String(mechanics.terminalOutputTtlHours);
   if (mechanics.botdIntervalSec !== undefined) env[WS_PROFILE_ENV.botdIntervalSec] = String(mechanics.botdIntervalSec);
   if (mechanics.hermesPruneEnabled !== undefined) {
     env[WS_PROFILE_ENV.hermesPruneEnabled] = mechanics.hermesPruneEnabled ? "1" : "0";
