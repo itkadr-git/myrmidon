@@ -5,9 +5,15 @@ import {
   toolFailureSignature,
   type AdapterExecutionContext,
 } from "@myrmidon/adapter-utils";
+import { emitRuntimeEventForTest } from "@myrmidon/adapter-utils/acpx-engine/execute.js";
 import { execute as executeHermesGateway } from "@myrmidon/hermes-paperclip-adapter/gateway/server";
 import { legacyExecutionNeedsReconciliation } from "./legacy-execution-recovery.js";
-import { buildHeartbeatRunStopMetadata } from "./heartbeat-stop-metadata.js";
+import {
+  buildHeartbeatRunStopMetadata,
+  inferHeartbeatRunStopReason,
+  mergeHeartbeatRunStopMetadata,
+} from "./heartbeat-stop-metadata.js";
+import { decideReleaseRecovery, type ReleaseRecoveryFacts } from "../modules/wake-queue/domain/policy.js";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../myrmidon/maintenance/domain.js";
 
 const runGuardReasons = ["model_call_limit", "idle_timeout", "tool_retry_loop"] as const;
@@ -113,32 +119,74 @@ it("pauses gateway idle timeout during a 25-minute quiet tool execution without 
   }
 });
 
-it("deduplicates repeated failed tool call updates by callId so duplicate events do not increment retry count", () => {
+it("deduplicates repeated failed tool call updates by callId through production emitRuntimeEvent", async () => {
   const guard = new RunGuard({ toolRetryLimit: 3 });
-  const failedCalls = new Set<string>();
-
-  const recordFailedCall = (callId: string, name: string, args: unknown) => {
-    if (failedCalls.has(callId)) {
-      return guard.event();
-    }
-    failedCalls.add(callId);
-    return guard.toolFailure(name, args);
-  };
+  const onRunGuardStop = vi.fn(async () => undefined);
+  const ctx = {
+    runId: "dedupe-run",
+    agent: { id: "agent-1", companyId: "comp-1", name: "test", adapterType: "acpx", adapterConfig: {} },
+    runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: "task-1" },
+    config: {},
+    context: {},
+    runGuard: guard,
+    onRunGuardStop,
+    onLog: vi.fn(async () => undefined),
+    onMeta: vi.fn(async () => undefined),
+  } as unknown as AdapterExecutionContext;
 
   const args = { file: "test.ts" };
   // First failed event for call-1: count 1
-  expect(recordFailedCall("call-1", "patch", args).stop).toBe(false);
-  // Duplicate failed event for same call-1: deduplicated, count remains 1
-  expect(recordFailedCall("call-1", "patch", args).stop).toBe(false);
-  expect(recordFailedCall("call-1", "patch", args).stop).toBe(false);
+  await emitRuntimeEventForTest(ctx, {
+    type: "tool_call",
+    toolCallId: "call-1",
+    status: "failed",
+    title: "patch",
+    input: args,
+  });
+  expect(guard.stats().toolRetryCount).toBe(1);
+  expect(onRunGuardStop).not.toHaveBeenCalled();
 
-  // Second failure for call-2: count 2
-  expect(recordFailedCall("call-2", "patch", args).stop).toBe(false);
-  // Duplicate for call-2: deduplicated
-  expect(recordFailedCall("call-2", "patch", args).stop).toBe(false);
+  // Duplicate failed events for SAME call-1: deduplicated by emitRuntimeEvent, count remains 1
+  await emitRuntimeEventForTest(ctx, {
+    type: "tool_call",
+    toolCallId: "call-1",
+    status: "failed",
+    title: "patch",
+    input: args,
+  });
+  await emitRuntimeEventForTest(ctx, {
+    type: "tool_call",
+    toolCallId: "call-1",
+    status: "failed",
+    title: "patch",
+    input: args,
+  });
+  expect(guard.stats().toolRetryCount).toBe(1);
+  expect(onRunGuardStop).not.toHaveBeenCalled();
+
+  // Second failure for call-2: count becomes 2
+  await emitRuntimeEventForTest(ctx, {
+    type: "tool_call",
+    toolCallId: "call-2",
+    status: "failed",
+    title: "patch",
+    input: args,
+  });
+  expect(guard.stats().toolRetryCount).toBe(2);
+  expect(onRunGuardStop).not.toHaveBeenCalled();
 
   // Third failure for call-3: reaches limit 3 -> stops
-  expect(recordFailedCall("call-3", "patch", args)).toEqual({ stop: true, reason: "tool_retry_loop" });
+  await emitRuntimeEventForTest(ctx, {
+    type: "tool_call",
+    toolCallId: "call-3",
+    status: "failed",
+    title: "patch",
+    input: args,
+  });
+  expect(guard.stats().toolRetryCount).toBe(3);
+  expect(guard.stopped).toBe(true);
+  expect(guard.stopReason).toBe("tool_retry_loop");
+  expect(onRunGuardStop).toHaveBeenCalledWith("tool_retry_loop");
 });
 
 it("resolves guard limits with defaults (150 calls / 20 min / 3) and applies agent/team/env overrides", () => {
@@ -182,50 +230,70 @@ it("resolves guard limits with defaults (150 calls / 20 min / 3) and applies age
   expect(env.toolRetryLimit).toBe(4);
 });
 
-it("aborts executionControl, sets runErrorCode and avoids same-revision reschedule on run guard stop", () => {
-  const executionControl = {
-    controller: new AbortController(),
+it("persists stopReason in heartbeat metadata, bypasses reconciliation hold, and suppresses same-revision wake on run guard stop", () => {
+  const baseReleaseRecoveryFacts: ReleaseRecoveryFacts = {
+    suppressImmediateRecovery: false,
+    reviewParticipant: {
+      applies: false,
+      isExecutionReviewParticipantRecoveryRun: false,
+    },
+    immediate: {
+      applies: true,
+      isDispositionRepairRetry: false,
+      hasExplicitBlockerPath: false,
+      isWorkspaceValidationFailedRun: false,
+      isConfigurationIncompleteFailedRun: false,
+      automaticRecoveryAlreadyFailed: false,
+    },
+    shared: {
+      hasExistingExecutionPath: false,
+      hasPersistedMonitor: false,
+      suppressedByPauseHold: false,
+      isStrandedRecoveryOrigin: false,
+      recoveryAgentPresent: true,
+      recoveryAgentInvokable: true,
+    },
   };
-  const guard = new RunGuard();
-  let runGuardStopReason: string | null = null;
 
-  const stopForRunGuard = (reason: "model_call_limit" | "idle_timeout" | "tool_retry_loop") => {
-    runGuardStopReason ??= reason;
-    guard.stop(reason);
-    guard.clearIdleWatch();
-    if (!executionControl.controller.signal.aborted) {
-      executionControl.controller.abort(new Error(reason));
-    }
-  };
+  for (const reason of runGuardReasons) {
+    // 1. inferHeartbeatRunStopReason correctly maps run guard errors to stopReason
+    expect(inferHeartbeatRunStopReason({ outcome: "cancelled", errorCode: reason })).toBe(reason);
+    expect(inferHeartbeatRunStopReason({ outcome: "failed", errorCode: reason })).toBe(reason);
 
-  // Trigger guard stop
-  stopForRunGuard("idle_timeout");
+    // 2. buildHeartbeatRunStopMetadata constructs the full stop metadata
+    const metadata = buildHeartbeatRunStopMetadata({
+      adapterType: "hermes_gateway",
+      adapterConfig: {},
+      outcome: "cancelled",
+      errorCode: reason,
+      errorMessage: `Run guard stopped: ${reason}`,
+    });
+    expect(metadata.stopReason).toBe(reason);
+    expect(metadata.timeoutFired).toBe(false);
 
-  // 1. executionControl signal is aborted with error
-  expect(executionControl.controller.signal.aborted).toBe(true);
-  expect(executionControl.controller.signal.reason).toBeInstanceOf(Error);
-  expect((executionControl.controller.signal.reason as Error).message).toBe("idle_timeout");
+    // 3. mergeHeartbeatRunStopMetadata persists the stopReason in the run resultJson
+    const initialResultJson = { previousPayload: "preserved" };
+    const merged = mergeHeartbeatRunStopMetadata(initialResultJson, metadata);
+    expect(merged.stopReason).toBe(reason);
+    expect(merged.previousPayload).toBe("preserved");
 
-  // 2. runGuardStopReason and stopReason in metadata match
-  expect(runGuardStopReason).toBe("idle_timeout");
-  const stopMetadata = buildHeartbeatRunStopMetadata({
-    adapterType: "hermes_gateway",
-    adapterConfig: {},
-    outcome: "cancelled",
-    errorCode: "idle_timeout",
-    errorMessage: "Run guard stopped: idle_timeout",
-  });
-  expect(stopMetadata.stopReason).toBe("idle_timeout");
+    // 4. legacyExecutionNeedsReconciliation returns false (no manual hold in reconciliation)
+    const isHeld = legacyExecutionNeedsReconciliation({
+      runtimeMode: "legacy",
+      status: "cancelled",
+      errorCode: reason,
+      scheduledRetryAttempt: 0,
+      resultJson: merged,
+    });
+    expect(isHeld).toBe(false);
 
-  // 3. legacyExecutionNeedsReconciliation returns false (no manual hold)
-  const isHeld = legacyExecutionNeedsReconciliation({
-    runtimeMode: "legacy",
-    status: "cancelled",
-    errorCode: "idle_timeout",
-    scheduledRetryAttempt: 0,
-    resultJson: { runGuardStopReason: "idle_timeout" },
-  });
-  expect(isHeld).toBe(false);
+    // 5. Wake queue release policy with suppressImmediateRecovery: true suppresses same-revision retry/wake
+    const recoveryDecision = decideReleaseRecovery({
+      ...baseReleaseRecoveryFacts,
+      suppressImmediateRecovery: true,
+    });
+    expect(recoveryDecision).toEqual({ kind: "released" });
+  }
 });
 
 it("allows N model calls and rejects N+1 before it can dispatch", () => {
@@ -330,16 +398,26 @@ it("counts gateway assistant turns and repeated failed tool rounds without loggi
   }
 });
 
-it("counts gateway model rounds once per assistant response and stops before the limit is exceeded", async () => {
+it("counts discrete provider requests across streaming token bursts and tool boundaries, stopping at the limit", async () => {
   const guard = new RunGuard({ modelCallLimit: 2 });
   const onRunGuardStop = vi.fn(async () => undefined);
   const frames = [
-    ["message.delta", { delta: "first" }],
+    // Round 1 (provider request 1: model.request followed by multiple streaming token chunks)
+    ["model.request", { request_id: "req-1" }],
+    ["message.delta", { delta: "first " }],
+    ["message.delta", { delta: "chunk " }],
+    ["message.delta", { delta: "tokens" }],
     ["tool.started", { tool: "noop" }],
     ["tool.completed", { tool: "noop" }],
-    ["message.delta", { delta: "second" }],
+    // Round 2 (provider request 2: model.request followed by multiple streaming token chunks)
+    ["model.request", { request_id: "req-2" }],
+    ["message.delta", { delta: "second " }],
+    ["message.delta", { delta: "chunk " }],
+    ["message.delta", { delta: "tokens" }],
     ["tool.started", { tool: "noop" }],
     ["tool.completed", { tool: "noop" }],
+    // Round 3 (provider request 3: exceeds modelCallLimit 2 -> triggers model_call_limit stop)
+    ["model.request", { request_id: "req-3" }],
     ["message.delta", { delta: "third" }],
     ["run.completed", { status: "completed", output: "done" }],
   ] as const;
@@ -349,7 +427,7 @@ it("counts gateway model rounds once per assistant response and stops before the
     runId: "guard-model-test-run",
     agent: { id: "agent-test", companyId: "company-test", name: "test", adapterType: "hermes_gateway", adapterConfig: {} },
     runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: "issue-test" },
-    config: { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "test-only", timeoutSec: 10, sessionKeyStrategy: "run" },
+    config: { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "mock-key", timeoutSec: 10, sessionKeyStrategy: "run" },
     context: { issueId: "issue-test" },
     runGuard: guard,
     onRunGuardStop,
@@ -364,6 +442,10 @@ it("counts gateway model rounds once per assistant response and stops before the
   }));
   try {
     await executeHermesGateway(ctx);
+    // Streaming chunks within each round did not artificially advance the model call count
+    expect(guard.stats().modelCallCount).toBe(2);
+    expect(guard.stopped).toBe(true);
+    expect(guard.stopReason).toBe("model_call_limit");
     expect(onRunGuardStop).toHaveBeenCalledTimes(1);
     expect(onRunGuardStop).toHaveBeenCalledWith("model_call_limit");
   } finally {

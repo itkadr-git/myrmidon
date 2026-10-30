@@ -5491,3 +5491,4 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
 
 export const execute = createAcpxEngineExecutor();
+export { emitRuntimeEvent as emitRuntimeEventForTest };

@@ -27230,13 +27230,14 @@ export function heartbeatService(
           const conversationSettled = await settleConversationTurn(db, livenessRun);
           await releaseIssueExecutionAndPromote(livenessRun, {
             suppressImmediateRecovery: conversationSettled ||
+              runGuardStopReason !== null ||
               readNonEmptyString(
                 parseObject(livenessRun.contextSnapshot).goalControlRequestId,
               ) !== null ||
               parseObject(livenessRun.contextSnapshot)
                 .resumeSessionGoalHeartbeat === true,
           });
-          if (!conversationSettled) {
+          if (!conversationSettled && runGuardStopReason === null) {
           await handleRunLivenessContinuation(livenessRun);
           await handleIssueReviewPathDisposition(livenessRun);
           await handleSuccessfulRunHandoff(
@@ -27693,7 +27694,7 @@ export function heartbeatService(
             // exhaustion. Once its durable coordinator has classified a
             // terminal failure, generic issue recovery must not create a
             // replacement retryOfRunId chain for the same provider work.
-            suppressImmediateRecovery: nativeTerminalFailureCode !== null,
+            suppressImmediateRecovery: nativeTerminalFailureCode !== null || runGuardStopReason !== null,
           });
           await handleIssueReviewPathDisposition(livenessRun);
 
