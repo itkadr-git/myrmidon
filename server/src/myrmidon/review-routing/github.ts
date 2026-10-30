@@ -227,7 +227,7 @@ export function createGitHubPrHeadResolver(input: {
         url: asString(pr.html_url),
         authorLogin: asString(asRecord(pr.user)?.login),
         baseRef: asString(asRecord(pr.base)?.ref),
-        labels,
+        ...(labels.length > 0 ? { labels } : {}),
       };
 
       if (!open || !headSha) {

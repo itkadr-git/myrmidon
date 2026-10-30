@@ -15299,13 +15299,14 @@ export function issueRoutes(
         publishActivity(publication);
       await flushIssuePostCommitActions(postCommitIssueActions);
 
+      const currentIssue = issue;
       if (
         decision?.outcome === "approved" ||
-        (existingIssue.status === "in_review" && issue.status === "done")
+        (existing.status === "in_review" && currentIssue.status === "done")
       ) {
         void triggerReviewApprovalPropagation(db, {
-          companyId: issue.companyId,
-          issueId: issue.id,
+          companyId: currentIssue.companyId,
+          issueId: currentIssue.id,
           decisionOutcome: decision?.outcome ?? "approved",
           verdictBody: decision?.body ?? null,
           actor: {
@@ -15315,7 +15316,7 @@ export function issueRoutes(
             runId: actor.runId,
           },
         }).catch((err) => {
-          logger.warn({ err, issueId: issue.id }, "failed to propagate PR review approval");
+          logger.warn({ err, issueId: currentIssue.id }, "failed to propagate PR review approval");
         });
       }
 

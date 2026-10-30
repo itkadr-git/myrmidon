@@ -105,6 +105,9 @@ function createDevflowMockDb(initial: Partial<MockDbContext> = {}) {
               // verdictComments query
               return Promise.resolve(state.comments).then(resolve);
             }
+            if (!fields && state.workProducts.length > 0) {
+              return Promise.resolve(state.workProducts).then(resolve);
+            }
             return Promise.resolve([]).then(resolve);
           },
           [Symbol.asyncIterator]: async function* () {},

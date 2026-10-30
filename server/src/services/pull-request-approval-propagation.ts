@@ -288,14 +288,20 @@ export async function resolveGitHubTokenForApproval(
     try {
       const { readGitHubSharedIdentitySettings } = await import("../myrmidon/github-shared-identity/index.js");
       const settings = await readGitHubSharedIdentitySettings(db, companyId);
-      if (settings?.app) {
-        const { mintGitHubAppInstallationToken } = await import("../myrmidon/github-shared-identity/app-token.js");
-        const minted = await mintGitHubAppInstallationToken({
-          app: settings.app,
-          repository,
-          permissions: { pull_requests: "write", issues: "write" },
-        });
-        if (minted?.token) return minted.token;
+      if (settings?.enabled && settings.apps && settings.apps.length > 0) {
+        const app = settings.apps[0]!;
+        const keyVal = await secrets.resolveSecretValue(companyId, app.privateKeySecretId, "latest");
+        if (keyVal) {
+          const { mintGitHubAppInstallationToken } = await import("../myrmidon/github-shared-identity/app-token.js");
+          const minted = await mintGitHubAppInstallationToken({
+            appId: app.appId,
+            privateKeyPem: keyVal,
+            installationId: app.installationId,
+            repository,
+            permissions: { pull_requests: "write", issues: "write" },
+          });
+          if (minted?.token) return minted.token;
+        }
       }
     } catch {
       // App broker resolution optional
@@ -379,7 +385,7 @@ export async function propagateReviewApprovalToPullRequest(
 
   let matchedWorkProduct: typeof issueWorkProducts.$inferSelect | null = null;
 
-  if (input.issueId && (!targetRepo || !targetNumber)) {
+  if (input.issueId) {
     try {
       const products = await deps.db
         .select()
@@ -394,28 +400,38 @@ export async function propagateReviewApprovalToPullRequest(
 
       for (const wp of products) {
         const metadata = (wp.metadata && typeof wp.metadata === "object" ? wp.metadata : {}) as Record<string, unknown>;
-        const repo = typeof metadata.repo === "string" ? metadata.repo : (typeof metadata.repository === "string" ? metadata.repository : null);
-        const num = typeof metadata.number === "number" ? metadata.number : (typeof metadata.pullRequestNumber === "number" ? metadata.pullRequestNumber : null);
+        let repo = typeof metadata.repo === "string" ? metadata.repo : (typeof metadata.repository === "string" ? metadata.repository : null);
+        let num = typeof metadata.number === "number" ? metadata.number : (typeof metadata.pullRequestNumber === "number" ? metadata.pullRequestNumber : null);
         const head = typeof metadata.headSha === "string" ? metadata.headSha : null;
 
-        if (repo && num) {
+        if ((!repo || !num) && wp.url) {
+          const parsed = parsePullRequestCoordinates(wp.url);
+          if (parsed) {
+            repo = repo ?? parsed.repository;
+            num = num ?? parsed.number;
+          }
+        }
+
+        if (targetRepo && targetNumber) {
+          if (repo === targetRepo && num === targetNumber) {
+            matchedWorkProduct = wp;
+            if (!reviewedHead && head) reviewedHead = head;
+            break;
+          }
+        } else if (repo && num) {
           targetRepo = repo;
           targetNumber = num;
           if (!reviewedHead && head) reviewedHead = head;
           matchedWorkProduct = wp;
           break;
         }
+      }
 
-        if (wp.url) {
-          const parsed = parsePullRequestCoordinates(wp.url);
-          if (parsed) {
-            targetRepo = parsed.repository;
-            targetNumber = parsed.number;
-            if (!reviewedHead && head) reviewedHead = head;
-            matchedWorkProduct = wp;
-            break;
-          }
-        }
+      if (!matchedWorkProduct && products.length === 1) {
+        matchedWorkProduct = products[0]!;
+        const metadata = (matchedWorkProduct.metadata && typeof matchedWorkProduct.metadata === "object" ? matchedWorkProduct.metadata : {}) as Record<string, unknown>;
+        const head = typeof metadata.headSha === "string" ? metadata.headSha : null;
+        if (!reviewedHead && head) reviewedHead = head;
       }
     } catch (err) {
       logger.warn({ err, issueId: input.issueId }, "failed to read issue work products for PR approval propagation");
@@ -470,7 +486,7 @@ export async function propagateReviewApprovalToPullRequest(
   }
 
   // Fetch PR from GitHub with retry policy
-  let prDetails: GitHubPullRequestDetails;
+  let prDetails: GitHubPullRequestDetails | null = null;
   try {
     prDetails = await executeWithRetry(
       () => client.getPullRequest({ repository: targetRepo!, number: targetNumber!, token }),
@@ -492,6 +508,34 @@ export async function propagateReviewApprovalToPullRequest(
           pullRequestNumber: targetNumber,
           reason: "github_fetch_failed",
           error: err instanceof Error ? err.message : String(err),
+        },
+      }).catch(() => {});
+    }
+    return {
+      success: false,
+      action: "failed",
+      reason: "github_fetch_failed",
+      repository: targetRepo,
+      pullRequestNumber: targetNumber,
+    };
+  }
+
+  if (!prDetails) {
+    if (input.issueId) {
+      await logActivity(deps.db, {
+        companyId: input.companyId,
+        actorType: input.actor?.actorType ?? "system",
+        actorId: input.actor?.actorId ?? "system",
+        agentId: input.actor?.agentId ?? null,
+        runId: input.actor?.runId ?? null,
+        action: PR_APPROVAL_ACTIVITY_FAILED,
+        entityType: "issue",
+        entityId: input.issueId,
+        details: {
+          repository: targetRepo,
+          pullRequestNumber: targetNumber,
+          reason: "github_fetch_failed",
+          error: "PR details not found",
         },
       }).catch(() => {});
     }
