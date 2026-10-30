@@ -498,7 +498,8 @@ export function githubConnectionEventService(
       });
 
       if (matching) {
-        let assigneeAgentId = matching.issue.assigneeAgentId;
+        let transitioned = false;
+        let returnedAssigneeId: string | null = null;
         const publications: ActivityPublication[] = [];
         await database.transaction(async (tx) => {
           const [current] = await tx.select().from(issues).where(and(
@@ -519,7 +520,6 @@ export function githubConnectionEventService(
           }
           if (!executorId) executorId = current.assigneeAgentId;
           if (!executorId) return;
-          assigneeAgentId = executorId;
 
           const commentBody = `PR ${snapshot.owner}/${snapshot.repo}#${snapshot.number}: merge conflict (mergeable=CONFLICTING), влей свежий main.`;
           await tx.update(issues).set({
@@ -542,34 +542,38 @@ export function githubConnectionEventService(
             details: { previousStatus: "in_review", status: "in_progress", mergeable: "CONFLICTING",
               repository: snapshot.repository, pullRequestNumber: snapshot.number, deliveryId: event.id },
           }, publications);
+          transitioned = true;
+          returnedAssigneeId = executorId;
         });
-        for (const publication of publications) {
-          try { publishActivity(publication); }
-          catch (error) { logger.warn({ err: error, companyId }, "Conflict return activity publication failed after commit"); }
-        }
-        if (options.assignmentWakeup && assigneeAgentId) {
-          await options.assignmentWakeup(assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "pr_merge_conflict",
-            payload: {
-              issueId: matching.issue.id,
-              repository: snapshot.repository,
-              pullRequestNumber: snapshot.number,
-              mergeable: "CONFLICTING",
-              event: event.event,
-              deliveryId: event.id,
-            },
-            idempotencyKey: `pr_merge_conflict:${snapshot.repository}#${snapshot.number}:${matching.issue.id}`,
-            requestedByActorType: "system",
-            requestedByActorId: "system:github-conflict",
-            contextSnapshot: {
-              issueId: matching.issue.id,
-              source: "github_pr_conflict",
-              repository: snapshot.repository,
-              pullRequestNumber: snapshot.number,
-            },
-          });
+        if (transitioned) {
+          for (const publication of publications) {
+            try { publishActivity(publication); }
+            catch (error) { logger.warn({ err: error, companyId }, "Conflict return activity publication failed after commit"); }
+          }
+          if (options.assignmentWakeup && returnedAssigneeId) {
+            await options.assignmentWakeup(returnedAssigneeId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "pr_merge_conflict",
+              payload: {
+                issueId: matching.issue.id,
+                repository: snapshot.repository,
+                pullRequestNumber: snapshot.number,
+                mergeable: "CONFLICTING",
+                event: event.event,
+                deliveryId: event.id,
+              },
+              idempotencyKey: `pr_merge_conflict:${snapshot.repository}#${snapshot.number}:${matching.issue.id}`,
+              requestedByActorType: "system",
+              requestedByActorId: "system:github-conflict",
+              contextSnapshot: {
+                issueId: matching.issue.id,
+                source: "github_pr_conflict",
+                repository: snapshot.repository,
+                pullRequestNumber: snapshot.number,
+              },
+            });
+          }
         }
       }
     }

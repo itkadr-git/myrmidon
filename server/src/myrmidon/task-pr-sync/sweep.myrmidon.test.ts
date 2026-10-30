@@ -415,5 +415,11 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]!.body).toContain("влей свежий main");
     expect(comments[0]!.body).toContain("merge conflict");
+
+    // Second sweep run when issue is already in_progress: no additional return or comment
+    const secondResult = await sweep.sweep({ settings: SETTINGS, force: true });
+    expect(secondResult.returned).toBe(0);
+    const secondComments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(secondComments).toHaveLength(1);
   });
 });
