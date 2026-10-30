@@ -5769,6 +5769,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activityDetailsText).not.toContain(apiKeySecret);
   });
 
+  it("finishes a routine issue after exhausted missing-disposition handoff", async () => {
+    const { issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress", runStatus: "failed", runErrorCode: "adapter_failed",
+    });
+    await db.update(issues).set({ originKind: "routine_execution", originId: randomUUID() })
+      .where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        issueId, taskId: issueId, wakeReason: "finish_successful_run_handoff",
+        sourceRunId: randomUUID(), handoffRequired: true,
+        handoffReason: "successful_run_missing_state", missingDisposition: "clear_next_step",
+        handoffAttempt: 1, maxHandoffAttempts: 1,
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    const [issue] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId));
+    expect(issue.status).toBe("done");
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect(result.issueIds).toContain(issueId);
+  });
+
   it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
     const { companyId, agentId, runId, issueId } =
       await seedStrandedIssueFixture({
