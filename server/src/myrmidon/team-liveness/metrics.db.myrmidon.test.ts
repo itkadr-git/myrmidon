@@ -419,7 +419,7 @@ describeEmbeddedPostgres("team liveness metrics", () => {
       createdAt: new Date(now.getTime() - 3 * 60 * 1000),
     });
 
-    // Run 7: comment + created issue in issues table -> excluded
+    // Run 7: comment + issue creation audit event -> excluded
     const run7Id = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: run7Id,
@@ -443,7 +443,17 @@ describeEmbeddedPostgres("team liveness metrics", () => {
       companyId,
       identifier: "SUB-1",
       title: "Subtask",
-      createdByRunId: run7Id,
+      createdByAgentId: agentId,
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      runId: run7Id,
+      action: "issue.created",
+      entityType: "issue",
+      entityId: issueId,
+      createdAt: new Date(now.getTime() - 2 * 60 * 1000),
     });
 
     const metrics = await readTeamLivenessMetrics(db, companyId, now);
