@@ -29,6 +29,7 @@ function walk(root, directory, files) {
     if (stat.isDirectory()) {
       walk(root, path, files);
     } else if (stat.isFile() && name.endsWith('.md')) {
+      if (name === 'MEMORY.md') continue;
       files.push(relative(root, path).split('\\').join('/'));
     }
   }
@@ -73,7 +74,6 @@ export function parseMemoryIndex(content) {
 
 export function classify(path, text, memoryIndex = new Map()) {
   if (path === 'CLAUDE.md' || basename(path) === 'CLAUDE.md') return 'rule';
-  if (path === 'MEMORY.md' || basename(path) === 'MEMORY.md') return 'reference';
   const cleanName = basename(path);
   if (memoryIndex.has(path)) return memoryIndex.get(path);
   if (memoryIndex.has(cleanName)) return memoryIndex.get(cleanName);
@@ -267,18 +267,27 @@ export function buildMigration(root, { scan = gitleaksScan } = {}) {
   report.sessionStartLimit = 12 * 1024;
   report.budgetExceeded = report.sessionStartBytes > report.sessionStartLimit;
 
+  report.ok = (
+    report.conflicts.length === 0 &&
+    report.secretsRemaining === 0 &&
+    !report.budgetExceeded &&
+    report.missingSummary.length === 0 &&
+    report.unrecognized.length === 0
+  );
+  report.success = report.ok;
+
   return { manifest, items, report };
 }
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), { scan } = {}) {
   const root = argv.find(a => !a.startsWith('--'));
   if (!root || argv.some(a => a.startsWith('--') && a !== '--dry-run')) {
     throw new Error('Usage: adm-migrate.mjs SOURCE_ROOT [--dry-run]');
   }
-  const plan = buildMigration(root);
-  const out = JSON.stringify(plan.report, null, 2) + '\n';
+  const plan = buildMigration(root, scan ? { scan } : {});
+  const out = JSON.stringify(plan, null, 2) + '\n';
   process.stdout.write(out);
-  if (plan.report.conflicts.length > 0 || plan.report.secretsRemaining > 0 || plan.report.budgetExceeded) {
+  if (!plan.report.ok) {
     process.exitCode = 1;
   }
 }

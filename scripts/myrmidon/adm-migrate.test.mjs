@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { buildMigration, classify, parseMemoryIndex } from './adm-migrate.mjs';
+import { buildMigration, classify, parseMemoryIndex, main } from './adm-migrate.mjs';
 
 function cleanScanner() {
   return { clean: true, findings: [] };
@@ -56,10 +56,11 @@ function fixture() {
 
 test('dry-run classification, provenance and reproducible counts over 235 sources', () => {
   const root = fixture();
-  // 1 CLAUDE.md + 1 MEMORY.md + 1 safety.md + 1 reference.md + 1 deploy-trigger.md = 5 base files.
+  // 1 CLAUDE.md + 1 safety.md + 1 reference.md + 1 deploy-trigger.md = 4 base files.
   // Add 14 policies (total 15 in memory + CLAUDE.md = 16 rules).
-  // Add 216 references (total 218 references).
+  // Add 217 references (total 218 references).
   // Total sources = 16 rules + 218 references + 1 trigger = 235 sources.
+  // MEMORY.md is the memory index, excluded from migration sources.
   let policyLinks = '- [Безопасность](safety.md): Never reveal credentials.\n';
   for (let i = 1; i <= 14; i++) {
     policyLinks += `- [Политика ${i}](policy-${i}.md): Policy ${i} description.\n`;
@@ -70,7 +71,7 @@ test('dry-run classification, provenance and reproducible counts over 235 source
   }
 
   let refLinks = '- [Каталог](reference.md): Service catalog.\n';
-  for (let i = 1; i <= 216; i++) {
+  for (let i = 1; i <= 217; i++) {
     refLinks += `- [Справка ${i}](doc-${i}.md): Reference document ${i}.\n`;
     writeFileSync(
       join(root, `memory/doc-${i}.md`),
@@ -101,6 +102,8 @@ ${refLinks}
   assert.equal(first.report.conflicts.length, 0);
   assert.equal(first.report.missingSummary.length, 0);
   assert.equal(first.report.unrecognized.length, 0);
+  assert.equal(first.report.ok, true);
+  assert.equal(first.report.success, true);
   assert.deepEqual(first.manifest, second.manifest);
   assert.deepEqual(first.report, second.report);
   assert.equal(first.report.budgetExceeded, false);
@@ -120,6 +123,17 @@ test('policy summary uses frontmatter description and missing description writes
     plan = buildMigration(root, { scan: cleanScanner });
   });
   assert.ok(plan.report.missingSummary.includes('memory/unsummarized.md'));
+  assert.equal(plan.report.ok, false);
+  assert.equal(plan.report.success, false);
+});
+
+test('MEMORY.md is an index file: classify returns null and walk excludes it from items', () => {
+  const root = fixture();
+  const plan = buildMigration(root, { scan: cleanScanner });
+  assert.equal(plan.manifest.some((m) => m.path === 'memory/MEMORY.md' || m.path === 'MEMORY.md'), false);
+  assert.equal(plan.items.some((i) => i.path === 'memory/MEMORY.md' || i.path === 'MEMORY.md'), false);
+  assert.equal(classify('memory/MEMORY.md', ''), null);
+  assert.equal(classify('MEMORY.md', ''), null);
 });
 
 test('_archive directory is skipped by source walker', () => {
@@ -135,6 +149,39 @@ test('unindexed files without explicit category are recorded in report.unrecogni
   writeFileSync(join(root, 'memory/unknown.md'), '# Unknown\nNeeds human classification\n');
   const plan = buildMigration(root, { scan: cleanScanner });
   assert.ok(plan.report.unrecognized.includes('memory/unknown.md'));
+  assert.equal(plan.report.ok, false);
+  assert.equal(plan.report.success, false);
+});
+
+test('CLI outputs manifest, items and report, and exits with code 1 when missingSummary is present', async () => {
+  const root = fixture();
+  writeFileSync(
+    join(root, 'memory/unsummarized.md'),
+    '# Unsummarized Policy\nNo frontmatter description provided.\n'
+  );
+  const updatedIndex = readFileSync(join(root, 'memory/MEMORY.md'), 'utf8') + '\n- [Без описания](unsummarized.md)\n';
+  writeFileSync(join(root, 'memory/MEMORY.md'), updatedIndex);
+
+  let output = '';
+  const origWrite = process.stdout.write;
+  const origExitCode = process.exitCode;
+  try {
+    process.stdout.write = (chunk) => {
+      output += chunk;
+      return true;
+    };
+    await main([root, '--dry-run'], { scan: cleanScanner });
+    assert.equal(process.exitCode, 1);
+    const parsed = JSON.parse(output);
+    assert.ok(Array.isArray(parsed.manifest));
+    assert.ok(Array.isArray(parsed.items));
+    assert.ok(parsed.report);
+    assert.equal(parsed.report.ok, false);
+    assert.ok(parsed.report.missingSummary.includes('memory/unsummarized.md'));
+  } finally {
+    process.stdout.write = origWrite;
+    process.exitCode = origExitCode;
+  }
 });
 
 test('gitleaks binary archive hash verification and secret scanning', async () => {
