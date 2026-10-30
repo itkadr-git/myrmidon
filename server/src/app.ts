@@ -226,6 +226,11 @@ import {
 import { myrmidonOcrRoutes } from "./myrmidon/ocr/index.js";
 // myrmidon(1.6.6-CORPUS-D): the corpus MCP endpoint (`corpus_*` for bots)
 import { myrmidonCorpusMcpRoutes } from "./myrmidon/corpus/index.js";
+// myrmidon(1.6.6 ARCH-DATA): read-only architect operational data and MCP endpoint
+import {
+  myrmidonArchitectDataMcpRoutes,
+  myrmidonArchitectDataRoutes,
+} from "./myrmidon/architect-data/index.js";
 import { myrmidonSttRoutes } from "./myrmidon/stt/index.js"; // myrmidon(1.6.1 VOICE-STT A1)
 import { myrmidonGitHubSharedIdentityRoutes } from "./myrmidon/github-shared-identity/index.js"; // myrmidon(GITHUB-SHARED-IDENTITY)
 
@@ -1216,6 +1221,8 @@ export async function createApp(
   api.use(myrmidonBrowserBridgeRoutes(db)); // myrmidon(EXTCASE-B): bridge panel (codes, devices, allowlist)
   api.use(myrmidonOcrRoutes(db)); // myrmidon(EXT-CASE-OCR): company OCR MCP endpoint (ocr.pdf)
   api.use(myrmidonCorpusMcpRoutes(db)); // myrmidon(1.6.6-CORPUS-D): company corpus MCP endpoint (corpus_search, corpus_get_document, corpus_list_datasets, corpus_list_documents)
+  api.use(myrmidonArchitectDataRoutes(db)); // myrmidon(1.6.6 ARCH-DATA): read-only architect operational data
+  api.use(myrmidonArchitectDataMcpRoutes(db)); // myrmidon(1.6.6 ARCH-DATA): architect MCP endpoint
   api.use(myrmidonSttRoutes(db)); // myrmidon(1.6.1 VOICE-STT A1)
   api.use(myrmidonGitHubSharedIdentityRoutes(db)); // myrmidon(GITHUB-SHARED-IDENTITY): access rules of the shared GitHub authorization
   api.use(myrmidonVoiceMeetingProtocolRoutes()); // myrmidon(1.6.5 VOICE-STT B): meeting protocol from a labeled transcript
