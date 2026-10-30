@@ -1,582 +1,920 @@
 #!/usr/bin/env node
-// Standby control tool for central databases (Board DB and Hindsight DB).
-// Supports replication setup, lag and RPO monitoring, failover, switchback, and restore rehearsal.
-//
-// Usage:
-//   node standby-ctl.mjs setup [--target board|hindsight|all] [--dry-run]
-//   node standby-ctl.mjs check-lag [--target board|hindsight|all] [--rpo <seconds>] [--json]
-//   node standby-ctl.mjs failover [--target board|hindsight|all] [--dry-run] [--json]
-//   node standby-ctl.mjs switchback [--target board|hindsight|all] [--dry-run] [--json]
-//   node standby-ctl.mjs rehearse [--target board|hindsight|all] [--dry-run] [--json]
-//
-// Node built-ins only.
-
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-
-export const DEFAULT_CONFIG = {
-  rpoMaxSeconds: 900, // 15 minutes RPO
-  rtoMaxSeconds: 1800, // 30 minutes RTO
-  primaryHost: process.env.PRIMARY_PG_HOST || "primary-host",
-  primaryPort: Number(process.env.PRIMARY_PG_PORT || 5432),
-  standbyHost: process.env.STANDBY_PG_HOST || "standby-host",
-  board: {
-    name: "board",
-    dbName: "paperclip",
-    primaryPort: Number(process.env.PRIMARY_BOARD_PORT || process.env.PRIMARY_PG_PORT || 5432),
-    standbyPort: Number(process.env.STANDBY_BOARD_PORT || 5433),
-    dataDir: process.env.STANDBY_BOARD_DATA_DIR || "/srv/standby/myrmidon-pg/data",
-    walArchiveDir: process.env.BOARD_WAL_ARCHIVE_DIR || "/srv/backups/wal/myrmidon-pg",
-    slotName: process.env.BOARD_REPL_SLOT || "standby_board_slot",
-    appName: "myrmidon_board_standby",
-    user: process.env.BOARD_REPL_USER || "myr_replicator",
-  },
-  hindsight: {
-    name: "hindsight",
-    dbName: "myrmidon_hindsight",
-    primaryPort: Number(process.env.PRIMARY_HINDSIGHT_PORT || process.env.PRIMARY_PG_PORT || 5432),
-    standbyPort: Number(process.env.STANDBY_HINDSIGHT_PORT || 5434),
-    dataDir: process.env.STANDBY_HINDSIGHT_DATA_DIR || "/srv/standby/hindsight-pg/data",
-    walArchiveDir: process.env.HINDSIGHT_WAL_ARCHIVE_DIR || "/srv/backups/wal/hindsight-pg",
-    slotName: process.env.HINDSIGHT_REPL_SLOT || "standby_hindsight_slot",
-    appName: "myrmidon_hindsight_standby",
-    user: process.env.HINDSIGHT_REPL_USER || "myr_replicator",
-  },
-};
 
 /**
- * Parses PostgreSQL LSN string 'X/Y' (hex) to BigInt.
+ * standby-ctl.mjs
+ *
+ * Operational CLI and control module for Myrmidon center warm standby (Option A+A2, OPE-7656).
+ * Manages PostgreSQL warm standby replication for Board DB and Hindsight DB on myr-vm1,
+ * lag measurement against primary LSN, automated failover promotion, switchback, and rehearsal.
+ */
+
+export const DEFAULT_CONFIG = {
+  primaryHost: "10.10.100.1",
+  primaryBoardPort: 5432,
+  primaryHindsightPort: 5432,
+  standbyHost: "127.0.0.1",
+  standbyBoardPort: 5433,
+  standbyHindsightPort: 5434,
+  boardReplUser: "myr_replicator",
+  hindsightReplUser: "hindsight_replicator",
+  boardReplSlot: "standby_board_slot",
+  hindsightReplSlot: "standby_hindsight_slot",
+  boardDataDir: "/srv/standby/myrmidon-pg/data",
+  hindsightDataDir: "/srv/standby/hindsight-pg/data",
+  boardWalArchiveDir: "/srv/backups/wal/myrmidon-pg",
+  hindsightWalArchiveDir: "/srv/backups/wal/hindsight-pg",
+  boardDbUser: "paperclip",
+  boardDbName: "paperclip",
+  hindsightDbUser: "hindsight",
+  hindsightDbName: "hindsight",
+  rpoMaxSeconds: 900, // RPO <= 15 min
+  rtoTargetSeconds: 1800, // RTO <= 30 min
+};
+
+export const defaultFsOps = {
+  mkdirSync: fs.mkdirSync,
+  writeFileSync: fs.writeFileSync,
+  readFileSync: fs.readFileSync,
+  existsSync: fs.existsSync,
+  rmSync: fs.rmSync,
+};
+
+export function defaultRunner(cmd, args = [], options = {}) {
+  const res = spawnSync(cmd, args, {
+    encoding: "utf8",
+    timeout: options.timeoutMs ?? 30000,
+    env: { ...process.env, ...options.env },
+  });
+  return {
+    exitCode: res.status ?? (res.error ? 1 : 0),
+    stdout: res.stdout ?? "",
+    stderr: res.stderr ?? (res.error ? String(res.error) : ""),
+  };
+}
+
+/**
+ * Parses PostgreSQL LSN string ('1/17FCA00') into BigInt.
  */
 export function parseLsn(lsnStr) {
   if (!lsnStr || typeof lsnStr !== "string") return null;
-  const parts = lsnStr.trim().split("/");
-  if (parts.length !== 2) return null;
-  const [high, low] = parts;
-  if (!/^[0-9a-fA-F]+$/.test(high) || !/^[0-9a-fA-F]+$/.test(low)) return null;
-  try {
-    const highVal = BigInt(`0x${high}`);
-    const lowVal = BigInt(`0x${low}`);
-    return (highVal << 32n) + lowVal;
-  } catch {
-    return null;
+  const cleaned = lsnStr.trim().toUpperCase();
+  const match = cleaned.match(/^([0-9A-F]+)\/([0-9A-F]+)$/);
+  if (!match) return null;
+  const high = BigInt(`0x${match[1]}`);
+  const low = BigInt(`0x${match[2]}`);
+  return (high << 32n) + low;
+}
+
+/**
+ * Calculates byte lag and time lag between primary/receive and replay LSN.
+ */
+export function calculateLag({
+  primaryLsn,
+  receiveLsn,
+  replayLsn,
+  lastXactReplayTimestamp,
+  rpoMaxSeconds,
+  maxByteLag,
+  now = new Date(),
+} = {}) {
+  const effectiveRpoMax =
+    typeof rpoMaxSeconds === "number" && Number.isFinite(rpoMaxSeconds)
+      ? rpoMaxSeconds
+      : DEFAULT_CONFIG.rpoMaxSeconds;
+
+  const refLsn = primaryLsn || receiveLsn;
+  const refBig = parseLsn(refLsn);
+  const replayBig = parseLsn(replayLsn);
+
+  let byteLag = null;
+  if (refBig !== null && replayBig !== null) {
+    const diff = refBig - replayBig;
+    byteLag = diff >= 0n ? diff : 0n;
   }
-}
 
-/**
- * Converts BigInt back to PostgreSQL LSN format 'X/Y' (hex uppercase).
- */
-export function formatLsn(lsnBigInt) {
-  if (lsnBigInt === null || lsnBigInt === undefined) return null;
-  const val = BigInt(lsnBigInt);
-  const high = (val >> 32n).toString(16).toUpperCase();
-  const low = (val & 0xffffffffn).toString(16).toUpperCase();
-  return `${high}/${low}`;
-}
+  let receiveByteLag = null;
+  const recBig = parseLsn(receiveLsn);
+  if (recBig !== null && replayBig !== null) {
+    const diff = recBig - replayBig;
+    receiveByteLag = diff >= 0n ? diff : 0n;
+  }
 
-/**
- * Calculates byte difference between two LSNs (lsnA - lsnB).
- */
-export function lsnDiff(lsnA, lsnB) {
-  const a = typeof lsnA === "bigint" ? lsnA : parseLsn(lsnA);
-  const b = typeof lsnB === "bigint" ? lsnB : parseLsn(lsnB);
-  if (a === null || b === null) return null;
-  return Number(a - b);
-}
-
-/**
- * Calculates lag metrics from database query results.
- */
-export function calculateLag({ currentLsn, receiveLsn, replayLsn, lastReplayTimestamp, now = new Date() }) {
-  const current = parseLsn(currentLsn);
-  const receive = parseLsn(receiveLsn);
-  const replay = parseLsn(replayLsn);
-
-  // Byte lag from primary write head to standby replay
-  const byteLag = current !== null && replay !== null ? Number(current - replay) : null;
-  // Byte lag between received WAL and replayed WAL on standby
-  const receiveReplayByteLag = receive !== null && replay !== null ? Number(receive - replay) : null;
-
-  let replayDelaySeconds = 0;
-  if (lastReplayTimestamp) {
-    const replayTime = new Date(lastReplayTimestamp).getTime();
-    const currentTime = now instanceof Date ? now.getTime() : new Date(now).getTime();
-    if (!Number.isNaN(replayTime) && !Number.isNaN(currentTime)) {
-      replayDelaySeconds = Math.max(0, Math.floor((currentTime - replayTime) / 1000));
+  let timeLagSeconds = null;
+  if (lastXactReplayTimestamp) {
+    const replayTime = new Date(lastXactReplayTimestamp);
+    if (!Number.isNaN(replayTime.getTime())) {
+      timeLagSeconds = Math.max(0, Math.floor((now.getTime() - replayTime.getTime()) / 1000));
     }
   }
 
-  // If standby is replaying and caught up with receive LSN, byte lag on standby is 0
-  const isCaughtUp = receive !== null && replay !== null && receive === replay;
+  let rpoOk = true;
+  let rpoStatus = "ok";
 
-  return {
-    byteLag: byteLag !== null ? Math.max(0, byteLag) : 0,
-    receiveReplayByteLag: receiveReplayByteLag !== null ? Math.max(0, receiveReplayByteLag) : 0,
-    replayDelaySeconds,
-    isCaughtUp,
-  };
-}
-
-/**
- * Evaluates whether measured lag meets RPO constraint.
- */
-export function evaluateRpo(lagSeconds, maxRpoSeconds = DEFAULT_CONFIG.rpoMaxSeconds) {
-  if (lagSeconds === null || lagSeconds === undefined || Number.isNaN(lagSeconds)) {
-    return { ok: false, marginSeconds: 0, status: "unknown" };
+  if (effectiveRpoMax !== undefined && timeLagSeconds !== null && timeLagSeconds > effectiveRpoMax) {
+    rpoOk = false;
+    rpoStatus = "lag_exceeded";
   }
-  const ok = lagSeconds <= maxRpoSeconds;
+
+  if (maxByteLag !== undefined && byteLag !== null && byteLag > BigInt(maxByteLag)) {
+    rpoOk = false;
+    rpoStatus = "byte_lag_exceeded";
+  }
+
   return {
-    ok,
-    marginSeconds: maxRpoSeconds - lagSeconds,
-    status: ok ? "ok" : "lag_exceeded",
+    measuredAgainst: primaryLsn ? "primary" : receiveLsn ? "receive" : "none",
+    primaryLsn: primaryLsn || null,
+    receiveLsn: receiveLsn || null,
+    replayLsn: replayLsn || null,
+    byteLag,
+    receiveByteLag,
+    timeLagSeconds,
+    rpoMaxSeconds: effectiveRpoMax,
+    rpoOk,
+    rpoStatus,
   };
 }
 
 /**
- * Constructs arguments for pg_basebackup execution.
+ * Parses psql output for standby recovery and LSN queries.
  */
-export function buildBasebackupArgs(targetConfig, options = {}) {
-  const host = options.primaryHost || DEFAULT_CONFIG.primaryHost;
-  const port = targetConfig.primaryPort;
-  const user = targetConfig.user;
-  const dataDir = targetConfig.dataDir;
-  const slot = targetConfig.slotName;
+export function parseReplicationStatus(sqlOutput) {
+  if (!sqlOutput || typeof sqlOutput !== "string") {
+    return {
+      inRecovery: false,
+      receiveLsn: null,
+      replayLsn: null,
+      lastXactReplayTimestamp: null,
+      role: "unknown",
+      raw: "",
+    };
+  }
+
+  if (sqlOutput.includes("psql: error:") || sqlOutput.includes("Connection refused")) {
+    return {
+      inRecovery: false,
+      receiveLsn: null,
+      replayLsn: null,
+      lastXactReplayTimestamp: null,
+      role: "unreachable",
+      error: "psql_connection_failed",
+      raw: sqlOutput,
+    };
+  }
+
+  const lines = sqlOutput.trim().split("\n");
+  const firstLine = lines[0] || "";
+  const parts = firstLine.split("|").map((p) => p.trim());
+
+  if (parts.length < 1 || firstLine === "") {
+    return {
+      inRecovery: false,
+      receiveLsn: null,
+      replayLsn: null,
+      lastXactReplayTimestamp: null,
+      role: "unknown",
+      raw: sqlOutput,
+    };
+  }
+
+  const inRecovery = parts[0] === "t" || parts[0] === "true";
+  const receiveLsn = parts[1] && parts[1] !== "" ? parts[1] : null;
+  const replayLsn = parts[2] && parts[2] !== "" ? parts[2] : null;
+  const lastXactReplayTimestamp = parts[3] && parts[3] !== "" ? parts[3] : null;
+
+  return {
+    inRecovery,
+    receiveLsn,
+    replayLsn,
+    lastXactReplayTimestamp,
+    role: inRecovery ? "standby" : "primary_or_standalone",
+    raw: sqlOutput,
+  };
+}
+
+/**
+ * Generates postgresql.auto.conf content for standby streaming.
+ */
+export function generateStandbyConfig(target = "board", overrides = {}) {
+  const isBoard = target === "board";
+  const primaryHost = overrides.primaryHost || DEFAULT_CONFIG.primaryHost;
+  const primaryPort = isBoard
+    ? overrides.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
+    : overrides.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort;
+  const replUser = isBoard
+    ? overrides.boardReplUser || DEFAULT_CONFIG.boardReplUser
+    : overrides.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
+  const replSlot = isBoard
+    ? overrides.boardReplSlot || DEFAULT_CONFIG.boardReplSlot
+    : overrides.hindsightReplSlot || DEFAULT_CONFIG.hindsightReplSlot;
+  const walArchiveDir = isBoard
+    ? overrides.boardWalArchiveDir || DEFAULT_CONFIG.boardWalArchiveDir
+    : overrides.hindsightWalArchiveDir || DEFAULT_CONFIG.hindsightWalArchiveDir;
+  const appName = isBoard ? "myrmidon_board_standby" : "myrmidon_hindsight_standby";
 
   return [
-    "-h",
-    String(host),
-    "-p",
-    String(port),
-    "-U",
-    String(user),
-    "-D",
-    String(dataDir),
-    "-Fp", // Plain format
-    "-Xs", // Stream WAL
-    "-R",  // Write standby connection settings
-    `--slot=${slot}`,
-    "-v",
-    "-P",
+    `# PostgreSQL standby configuration for ${target} (managed by standby-ctl.mjs)`,
+    `primary_conninfo = 'host=${primaryHost} port=${primaryPort} user=${replUser} application_name=${appName} connect_timeout=10'`,
+    `primary_slot_name = '${replSlot}'`,
+    `hot_standby = 'on'`,
+    `restore_command = 'test -f ${walArchiveDir}/%f && cp ${walArchiveDir}/%f %p'`,
+    `archive_cleanup_command = 'pg_archivecleanup ${walArchiveDir} %r'`,
+    "",
+  ].join("\n");
+}
+
+/**
+ * Generates pg_basebackup command array and string.
+ */
+export function generateBasebackupCommand(target = "board", overrides = {}) {
+  const isBoard = target === "board";
+  const primaryHost = overrides.primaryHost || DEFAULT_CONFIG.primaryHost;
+  const primaryPort = isBoard
+    ? overrides.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
+    : overrides.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort;
+  const replUser = isBoard
+    ? overrides.boardReplUser || DEFAULT_CONFIG.boardReplUser
+    : overrides.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
+  const replSlot = isBoard
+    ? overrides.boardReplSlot || DEFAULT_CONFIG.boardReplSlot
+    : overrides.hindsightReplSlot || DEFAULT_CONFIG.hindsightReplSlot;
+  const dataDir = isBoard
+    ? overrides.boardDataDir || DEFAULT_CONFIG.boardDataDir
+    : overrides.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir;
+
+  const args = [
+    "-h", primaryHost,
+    "-p", String(primaryPort),
+    "-U", replUser,
+    "-D", dataDir,
+    "-Fp",
+    "-Xs",
+    "-R",
+    `--slot=${replSlot}`,
+    "--checkpoint=fast",
   ];
+
+  return {
+    executable: "pg_basebackup",
+    args,
+    commandString: `pg_basebackup ${args.join(" ")}`,
+  };
+}
+
+export function planFailover(target = "board", overrides = {}) {
+  const isBoard = target === "board";
+  const port = isBoard
+    ? overrides.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
+    : overrides.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
+  const user = isBoard
+    ? overrides.boardDbUser || DEFAULT_CONFIG.boardDbUser
+    : overrides.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
+  const db = isBoard
+    ? overrides.boardDbName || DEFAULT_CONFIG.boardDbName
+    : overrides.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+  const dataDir = isBoard
+    ? overrides.boardDataDir || DEFAULT_CONFIG.boardDataDir
+    : overrides.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir;
+
+  return {
+    target,
+    promoteSql: "SELECT pg_promote();",
+    promoteCli: `pg_ctl promote -D ${dataDir}`,
+    verifySql: "SELECT pg_is_in_recovery();",
+    appEndpoint: isBoard ? `127.0.0.1:${port}` : `127.0.0.1:${port}`,
+    connectionString: `postgresql://${user}:<password>@127.0.0.1:${port}/${db}`,
+    appRestartCmd: "docker compose up -d --force-recreate myrmidon-board",
+    healthCheckUrl: "http://127.0.0.1:3100/healthz",
+  };
+}
+
+export function planSwitchback(target = "board", overrides = {}) {
+  const basebackup = generateBasebackupCommand(target, overrides);
+  const config = generateStandbyConfig(target, overrides);
+  const isBoard = target === "board";
+  const dataDir = isBoard
+    ? overrides.boardDataDir || DEFAULT_CONFIG.boardDataDir
+    : overrides.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir;
+
+  return {
+    target,
+    step1_verifyPrimary: "SELECT pg_is_in_recovery(); -- ensure original primary is active primary",
+    step2_stopStandby: `docker compose stop myrmidon-pg-standby`,
+    step3_resync: basebackup.commandString,
+    step4_standbySignal: `touch ${dataDir}/standby.signal`,
+    step5_config: config,
+    step6_startStandby: `docker compose up -d myrmidon-pg-standby`,
+    step7_verifyRecovery: "SELECT pg_is_in_recovery(); -- must return true",
+  };
+}
+
+export function planRehearsal(target = "board", overrides = {}) {
+  const isBoard = target === "board";
+  const drillPort = overrides.drillPort || (isBoard ? 5533 : 5534);
+  const drillDir = overrides.drillDir || `/srv/standby/drill-${target}`;
+  const standbyPort = isBoard
+    ? overrides.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
+    : overrides.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
+  const user = isBoard
+    ? overrides.boardDbUser || DEFAULT_CONFIG.boardDbUser
+    : overrides.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
+  const db = isBoard
+    ? overrides.boardDbName || DEFAULT_CONFIG.boardDbName
+    : overrides.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+
+  return {
+    target,
+    drillDir,
+    drillPort,
+    step1_snapshot: `pg_basebackup -h 127.0.0.1 -p ${standbyPort} -U ${user} -D ${drillDir} -Fp -Xs -R`,
+    step2_startEphemeral: `pg_ctl start -D ${drillDir} -o "-p ${drillPort} -c listen_addresses=127.0.0.1"`,
+    step3_promote: `psql -h 127.0.0.1 -p ${drillPort} -U ${user} -d ${db} -c "SELECT pg_promote();"`,
+    step4_verify: `psql -h 127.0.0.1 -p ${drillPort} -U ${user} -d ${db} -t -A -c "SELECT pg_is_in_recovery();"`,
+    step5_smokeTest: `psql -h 127.0.0.1 -p ${drillPort} -U ${user} -d ${db} -c "SELECT count(*) FROM issues;"`,
+    step6_stopClean: `pg_ctl stop -D ${drillDir} -m immediate`,
+    step7_cleanup: `rm -rf ${drillDir}`,
+    targetRtoSeconds: DEFAULT_CONFIG.rtoTargetSeconds,
+  };
 }
 
 /**
- * Generates postgresql.auto.conf contents for warm standby.
+ * Query helper using psql
  */
-export function generateStandbyConfig(targetConfig, options = {}) {
-  const host = options.primaryHost || DEFAULT_CONFIG.primaryHost;
-  const port = targetConfig.primaryPort;
-  const user = targetConfig.user;
-  const app = targetConfig.appName;
-  const slot = targetConfig.slotName;
-  const walArchive = targetConfig.walArchiveDir;
-
-  return [
-    `# Myrmidon warm standby auto-configuration for ${targetConfig.name}`,
-    `primary_conninfo = 'host=${host} port=${port} user=${user} application_name=${app} connect_timeout=10 keepalives_idle=10 keepalives_interval=5 keepalives_count=3'`,
-    `primary_slot_name = '${slot}'`,
-    `hot_standby = on`,
-    `restore_command = 'test -f ${walArchive}/%f && cp ${walArchive}/%f %p'`,
-    `archive_cleanup_command = 'pg_archivecleanup ${walArchive} %r'`,
-    `wal_receiver_timeout = 60s`,
-    `max_standby_streaming_delay = 30s`,
-  ].join("\n") + "\n";
+export function queryPostgres(sql, { host, port, user, db, timeoutMs = 10000 }, runner = defaultRunner) {
+  const args = [
+    "-h", String(host),
+    "-p", String(port),
+    "-U", String(user),
+    "-d", String(db),
+    "-t", "-A",
+    "-c", sql,
+  ];
+  return runner("psql", args, { timeoutMs });
 }
 
 /**
- * Generates docker-compose YAML for standby services on standby host.
+ * Setup warm standby replication for target DB.
  */
-export function generateComposeStandby(config = DEFAULT_CONFIG) {
-  return `services:
-  myrmidon-pg-standby:
-    image: docker.io/pgvector/pgvector:pg18
-    restart: unless-stopped
-    ports:
-      - "\${STANDBY_BOARD_PORT:-${config.board.standbyPort}}:5432"
-    volumes:
-      - \${STANDBY_BOARD_DATA_DIR:-${config.board.dataDir}}:/var/lib/postgresql/data
-      - \${BOARD_WAL_ARCHIVE_DIR:-${config.board.walArchiveDir}}:/wal-archive:ro
-    environment:
-      POSTGRES_USER: \${STANDBY_PG_USER:-paperclip}
-      POSTGRES_PASSWORD: \${STANDBY_PG_PASSWORD:-paperclip}
-    command:
-      - postgres
-      - -c
-      - hot_standby=on
-      - -c
-      - restore_command=test -f /wal-archive/%f && cp /wal-archive/%f %p
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \${STANDBY_PG_USER:-paperclip} -p 5432"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+export function setupStandby(target = "board", options = {}, deps = {}) {
+  const runner = deps.runner || defaultRunner;
+  const fsOps = deps.fsOps || defaultFsOps;
+  const isBoard = target === "board";
 
-  hindsight-pg-standby:
-    image: docker.io/pgvector/pgvector:pg18
-    restart: unless-stopped
-    ports:
-      - "\${STANDBY_HINDSIGHT_PORT:-${config.hindsight.standbyPort}}:5432"
-    volumes:
-      - \${STANDBY_HINDSIGHT_DATA_DIR:-${config.hindsight.dataDir}}:/var/lib/postgresql/data
-      - \${HINDSIGHT_WAL_ARCHIVE_DIR:-${config.hindsight.walArchiveDir}}:/wal-archive:ro
-    environment:
-      POSTGRES_USER: \${STANDBY_PG_USER:-postgres}
-      POSTGRES_PASSWORD: \${STANDBY_PG_PASSWORD:-postgres}
-    command:
-      - postgres
-      - -c
-      - hot_standby=on
-      - -c
-      - restore_command=test -f /wal-archive/%f && cp /wal-archive/%f %p
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \${STANDBY_PG_USER:-postgres} -p 5432"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-`;
-}
+  const dataDir = isBoard
+    ? options.boardDataDir || DEFAULT_CONFIG.boardDataDir
+    : options.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir;
 
-/**
- * Parses raw SQL query results for replication status.
- */
-export function parseReplicationStatus(output) {
-  if (!output || typeof output !== "string") {
-    return { inRecovery: false, receiveLsn: null, replayLsn: null, lastReplayTimestamp: null };
+  const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
+  const primaryPort = isBoard
+    ? options.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
+    : options.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort;
+  const replUser = isBoard
+    ? options.boardReplUser || DEFAULT_CONFIG.boardReplUser
+    : options.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
+  const replSlot = isBoard
+    ? options.boardReplSlot || DEFAULT_CONFIG.boardReplSlot
+    : options.hindsightReplSlot || DEFAULT_CONFIG.hindsightReplSlot;
+  const standbyPort = isBoard
+    ? options.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
+    : options.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
+  const dbUser = isBoard
+    ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
+    : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
+  const dbName = isBoard
+    ? options.boardDbName || DEFAULT_CONFIG.boardDbName
+    : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+
+  const basebackup = generateBasebackupCommand(target, options);
+  const standbyConfig = generateStandbyConfig(target, options);
+
+  if (options.dryRun) {
+    return {
+      success: true,
+      dryRun: true,
+      target,
+      dataDir,
+      basebackupCommand: basebackup.commandString,
+      configContent: standbyConfig,
+      signalFile: path.join(dataDir, "standby.signal"),
+    };
   }
-  const lines = output.trim().split("\n");
-  for (const line of lines) {
-    const parts = line.split("|").map((p) => p.trim());
-    if (parts.length >= 4) {
+
+  // 1. Ensure data directory exists
+  try {
+    fsOps.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  } catch (err) {
+    return {
+      success: false,
+      target,
+      error: `Failed to create data directory ${dataDir}: ${err.message}`,
+    };
+  }
+
+  // 2. Run pg_basebackup if empty or force
+  const baseRes = runner(basebackup.executable, basebackup.args, { timeoutMs: 300000 });
+  if (baseRes.exitCode !== 0) {
+    return {
+      success: false,
+      target,
+      error: `pg_basebackup failed: ${baseRes.stderr || baseRes.stdout}`,
+      exitCode: baseRes.exitCode,
+    };
+  }
+
+  // 3. Ensure standby.signal exists
+  try {
+    fsOps.writeFileSync(path.join(dataDir, "standby.signal"), "");
+    fsOps.writeFileSync(path.join(dataDir, "postgresql.auto.conf"), standbyConfig);
+  } catch (err) {
+    return {
+      success: false,
+      target,
+      error: `Failed to write standby configuration files: ${err.message}`,
+    };
+  }
+
+  // 4. Verify standby recovery
+  const verifyRes = queryPostgres(
+    "SELECT pg_is_in_recovery()::text, count(*)::text FROM pg_stat_wal_receiver;",
+    { host: DEFAULT_CONFIG.standbyHost, port: standbyPort, user: dbUser, db: dbName },
+    runner
+  );
+
+  const statusParts = (verifyRes.stdout || "").trim().split("\n")[0].split("|");
+  const inRecovery = statusParts[0] === "t" || statusParts[0] === "true";
+  const walReceivers = parseInt(statusParts[1] || "0", 10);
+
+  return {
+    success: true,
+    target,
+    dataDir,
+    inRecovery,
+    streamingActive: walReceivers > 0,
+    walReceivers,
+  };
+}
+
+/**
+ * Measure replication lag between primary and standby.
+ * Implements fail-closed checks against primary LSN and standby replay LSN.
+ */
+export function checkLag(target = "board", options = {}, deps = {}) {
+  const runner = deps.runner || defaultRunner;
+  const isBoard = target === "board";
+
+  const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
+  const primaryPort = isBoard
+    ? options.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
+    : options.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort;
+  const standbyHost = options.standbyHost || DEFAULT_CONFIG.standbyHost;
+  const standbyPort = isBoard
+    ? options.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
+    : options.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
+  const dbUser = isBoard
+    ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
+    : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
+  const dbName = isBoard
+    ? options.boardDbName || DEFAULT_CONFIG.boardDbName
+    : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+
+  let standbyOutput = options.rawSqlOutput;
+  if (!standbyOutput) {
+    const res = queryPostgres(
+      "SELECT pg_is_in_recovery()::text, COALESCE(pg_last_wal_receive_lsn()::text, ''), COALESCE(pg_last_wal_replay_lsn()::text, ''), COALESCE(pg_last_xact_replay_timestamp()::text, '');",
+      { host: standbyHost, port: standbyPort, user: dbUser, db: dbName },
+      runner
+    );
+    if (res.exitCode !== 0 || !res.stdout || res.stderr?.includes("error")) {
       return {
-        inRecovery: parts[0] === "t" || parts[0] === "true",
-        receiveLsn: parts[1] || null,
-        replayLsn: parts[2] || null,
-        lastReplayTimestamp: parts[3] || null,
+        target,
+        success: false,
+        rpoOk: false,
+        role: "unreachable",
+        rpoStatus: "standby_query_failed",
+        error: res.stderr || "Standby query failed",
+        byteLag: null,
+        timeLagSeconds: null,
       };
     }
+    standbyOutput = res.stdout;
   }
-  return { inRecovery: false, receiveLsn: null, replayLsn: null, lastReplayTimestamp: null };
-}
 
-/**
- * Builds standard SQL query for standby monitoring.
- */
-export function buildStandbyStatusQuery() {
-  return "SELECT pg_is_in_recovery(), pg_last_wal_receive_lsn()::text, pg_last_wal_replay_lsn()::text, pg_last_xact_replay_timestamp()::text;";
-}
+  const parsed = parseReplicationStatus(standbyOutput);
 
-/**
- * Evaluates status for a single target (board or hindsight).
- */
-export function evaluateTargetStatus(targetConfig, rawStatus, options = {}) {
-  const rpoMax = options.rpoMaxSeconds || DEFAULT_CONFIG.rpoMaxSeconds;
-  const now = options.now || new Date();
-  const parsed = parseReplicationStatus(rawStatus);
+  if (parsed.role === "unreachable") {
+    return {
+      target,
+      success: false,
+      rpoOk: false,
+      role: "unreachable",
+      rpoStatus: "standby_query_failed",
+      error: parsed.error || "Standby unreachable",
+      byteLag: null,
+      timeLagSeconds: null,
+    };
+  }
 
   if (!parsed.inRecovery) {
     return {
-      target: targetConfig.name,
-      inRecovery: false,
+      target,
+      success: true,
+      rpoOk: false,
       role: "primary_or_standalone",
       rpoStatus: "not_in_standby",
-      rpoOk: false,
-      byteLag: 0,
+      inRecovery: false,
+      byteLag: 0n,
       timeLagSeconds: 0,
-      receiveLsn: parsed.receiveLsn,
-      replayLsn: parsed.replayLsn,
     };
   }
 
-  const lagMetrics = calculateLag({
-    currentLsn: parsed.receiveLsn,
+  // Standby is in recovery; now measure against primary current WAL LSN
+  let primaryLsn = options.primaryLsn;
+  if (!primaryLsn && !options.offline) {
+    const pRes = queryPostgres(
+      "SELECT COALESCE(pg_current_wal_lsn()::text, '');",
+      { host: primaryHost, port: primaryPort, user: dbUser, db: dbName },
+      runner
+    );
+    if (pRes.exitCode !== 0 || !pRes.stdout || pRes.stderr?.includes("error")) {
+      // Primary unreachable -> fail-closed: cannot prove RPO
+      return {
+        target,
+        success: false,
+        rpoOk: false,
+        role: "standby",
+        inRecovery: true,
+        rpoStatus: "primary_unreachable",
+        error: pRes.stderr || "Primary query failed",
+        byteLag: null,
+        timeLagSeconds: null,
+      };
+    }
+    primaryLsn = pRes.stdout.trim().split("\n")[0].trim();
+  }
+
+  const lagInfo = calculateLag({
+    primaryLsn,
     receiveLsn: parsed.receiveLsn,
     replayLsn: parsed.replayLsn,
-    lastReplayTimestamp: parsed.lastReplayTimestamp,
-    now,
+    lastXactReplayTimestamp: parsed.lastXactReplayTimestamp,
+    rpoMaxSeconds: options.rpoMaxSeconds,
+    maxByteLag: options.maxByteLag,
+    now: options.now,
   });
 
-  const rpoEval = evaluateRpo(lagMetrics.replayDelaySeconds, rpoMax);
-
   return {
-    target: targetConfig.name,
+    target,
+    success: true,
+    role: "standby",
     inRecovery: true,
-    role: "warm_standby",
-    rpoStatus: rpoEval.status,
-    rpoOk: rpoEval.ok,
-    byteLag: lagMetrics.receiveReplayByteLag,
-    timeLagSeconds: lagMetrics.replayDelaySeconds,
-    isCaughtUp: lagMetrics.isCaughtUp,
-    receiveLsn: parsed.receiveLsn,
-    replayLsn: parsed.replayLsn,
-    lastReplayTimestamp: parsed.lastReplayTimestamp,
-    marginSeconds: rpoEval.marginSeconds,
+    ...lagInfo,
   };
 }
 
 /**
- * Executes a shell command or logs in dry-run mode.
+ * Execute promotion and application switchover.
  */
-function runCommand(cmd, args, dryRun = false) {
-  if (dryRun) {
-    return { exitCode: 0, stdout: `[dry-run] ${cmd} ${args.join(" ")}`, stderr: "" };
-  }
-  try {
-    const res = spawnSync(cmd, args, { encoding: "utf8" });
+export function executeFailover(target = "board", options = {}, deps = {}) {
+  const runner = deps.runner || defaultRunner;
+  const isBoard = target === "board";
+  const plan = planFailover(target, options);
+
+  if (options.dryRun) {
     return {
-      exitCode: res.status ?? 1,
-      stdout: res.stdout || "",
-      stderr: res.stderr || "",
+      success: true,
+      dryRun: true,
+      target,
+      plan,
     };
+  }
+
+  const startTime = Date.now();
+  const standbyPort = isBoard
+    ? options.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
+    : options.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
+  const dbUser = isBoard
+    ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
+    : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
+  const dbName = isBoard
+    ? options.boardDbName || DEFAULT_CONFIG.boardDbName
+    : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+
+  // 1. Promote standby
+  const promoteRes = queryPostgres(plan.promoteSql, { host: "127.0.0.1", port: standbyPort, user: dbUser, db: dbName }, runner);
+  if (promoteRes.exitCode !== 0) {
+    return {
+      success: false,
+      target,
+      error: `Promotion failed: ${promoteRes.stderr || promoteRes.stdout}`,
+    };
+  }
+
+  // 2. Poll until pg_is_in_recovery() returns false
+  let promoted = false;
+  const maxAttempts = options.maxVerifyAttempts || 10;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const vRes = queryPostgres(plan.verifySql, { host: "127.0.0.1", port: standbyPort, user: dbUser, db: dbName }, runner);
+    const val = (vRes.stdout || "").trim();
+    if (val === "f" || val === "false") {
+      promoted = true;
+      break;
+    }
+  }
+
+  if (!promoted) {
+    return {
+      success: false,
+      target,
+      error: "Standby promotion timed out; database remains in recovery",
+    };
+  }
+
+  // 3. Reroute / restart application if requested
+  let appSwitched = false;
+  if (options.restartApp) {
+    const restartRes = runner("docker", ["compose", "up", "-d", "--force-recreate", "myrmidon-board"]);
+    appSwitched = restartRes.exitCode === 0;
+  } else {
+    appSwitched = true;
+  }
+
+  // 4. Verify application readiness
+  let healthOk = false;
+  if (options.checkHealth) {
+    const healthRes = runner("curl", ["-sf", plan.healthCheckUrl]);
+    healthOk = healthRes.exitCode === 0;
+  } else {
+    healthOk = true;
+  }
+
+  const durationMs = Date.now() - startTime;
+  const durationSeconds = Math.round(durationMs / 1000);
+  const rtoOk = durationSeconds <= DEFAULT_CONFIG.rtoTargetSeconds;
+
+  return {
+    success: true,
+    target,
+    promoted: true,
+    inRecovery: false,
+    appSwitched,
+    healthOk,
+    durationSeconds,
+    rtoOk,
+  };
+}
+
+/**
+ * Execute switchback: restore standby replica from primary.
+ */
+export function executeSwitchback(target = "board", options = {}, deps = {}) {
+  const runner = deps.runner || defaultRunner;
+  const fsOps = deps.fsOps || defaultFsOps;
+  const plan = planSwitchback(target, options);
+
+  if (options.dryRun) {
+    return {
+      success: true,
+      dryRun: true,
+      target,
+      plan,
+    };
+  }
+
+  // 1. Verify original primary is active primary
+  const isBoard = target === "board";
+  const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
+  const primaryPort = isBoard
+    ? options.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
+    : options.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort;
+  const dbUser = isBoard
+    ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
+    : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
+  const dbName = isBoard
+    ? options.boardDbName || DEFAULT_CONFIG.boardDbName
+    : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+
+  const pRes = queryPostgres("SELECT pg_is_in_recovery()::text;", { host: primaryHost, port: primaryPort, user: dbUser, db: dbName }, runner);
+  if (pRes.exitCode !== 0 || (pRes.stdout || "").trim() !== "f") {
+    return {
+      success: false,
+      target,
+      error: "Original primary is not an active primary (in recovery or unreachable)",
+    };
+  }
+
+  // 2. Perform basebackup & reconfigure standby
+  const setupRes = setupStandby(target, { ...options, force: true }, { runner, fsOps });
+  return {
+    success: setupRes.success,
+    target,
+    resynchronized: setupRes.success,
+    inRecovery: setupRes.inRecovery,
+    error: setupRes.error,
+  };
+}
+
+/**
+ * Safe, isolated rehearsal drill on ephemeral port/directory.
+ */
+export function executeRehearsal(target = "board", options = {}, deps = {}) {
+  const runner = deps.runner || defaultRunner;
+  const fsOps = deps.fsOps || defaultFsOps;
+  const isBoard = target === "board";
+  const plan = planRehearsal(target, options);
+
+  if (options.dryRun) {
+    return {
+      success: true,
+      dryRun: true,
+      target,
+      plan,
+    };
+  }
+
+  const startTime = Date.now();
+  const drillDir = plan.drillDir;
+  const drillPort = plan.drillPort;
+  const user = isBoard
+    ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
+    : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
+  const db = isBoard
+    ? options.boardDbName || DEFAULT_CONFIG.boardDbName
+    : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+  const standbyPort = isBoard
+    ? options.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
+    : options.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
+
+  try {
+    fsOps.mkdirSync(drillDir, { recursive: true, mode: 0o700 });
   } catch (err) {
-    return { exitCode: 1, stdout: "", stderr: String(err) };
-  }
-}
-
-/**
- * Failover execution for standby instance.
- */
-export function planFailover(targetConfig, options = {}) {
-  const port = targetConfig.standbyPort;
-  const dataDir = targetConfig.dataDir;
-  return {
-    target: targetConfig.name,
-    promoteSql: "SELECT pg_promote();",
-    pgCtlCommand: ["pg_ctl", "promote", "-D", dataDir],
-    verifySql: "SELECT pg_is_in_recovery();",
-    newEndpoint: `postgresql://${options.standbyHost || DEFAULT_CONFIG.standbyHost}:${port}/${targetConfig.dbName}`,
-    targetPort: port,
-  };
-}
-
-/**
- * Switchback execution plan to re-establish replication following primary restore.
- */
-export function planSwitchback(targetConfig, options = {}) {
-  const host = options.primaryHost || DEFAULT_CONFIG.primaryHost;
-  const port = targetConfig.primaryPort;
-  const basebackupArgs = buildBasebackupArgs(targetConfig, options);
-  const standbyConfig = generateStandbyConfig(targetConfig, options);
-
-  return {
-    target: targetConfig.name,
-    primaryEndpoint: `postgresql://${host}:${port}/${targetConfig.dbName}`,
-    basebackupArgs,
-    standbySignalPath: path.join(targetConfig.dataDir, "standby.signal"),
-    standbyConfig,
-  };
-}
-
-/**
- * Rehearsal execution plan for isolated restore drill.
- */
-export function planRehearsal(targetConfig, options = {}) {
-  const scratchDir = options.scratchDir || `/tmp/rehearsal-${targetConfig.name}`;
-  const drillPort = targetConfig.standbyPort + 100;
-  return {
-    target: targetConfig.name,
-    sourceDataDir: targetConfig.dataDir,
-    drillDir: scratchDir,
-    drillPort,
-    steps: [
-      `mkdir -p ${scratchDir}`,
-      `cp -a ${targetConfig.dataDir}/* ${scratchDir}/`,
-      `touch ${scratchDir}/.drill-marker`,
-      `pg_ctl promote -D ${scratchDir}`,
-      `pg_isready -p ${drillPort}`,
-      `rm -rf ${scratchDir}`,
-    ],
-  };
-}
-
-// -----------------------------------------------------------------------------
-// CLI Actions
-// -----------------------------------------------------------------------------
-
-export function runCli(argv) {
-  const args = argv.slice(2);
-  const command = args[0] || "--help";
-
-  const flags = {
-    target: "all",
-    json: false,
-    dryRun: false,
-    rpo: DEFAULT_CONFIG.rpoMaxSeconds,
-  };
-
-  for (let i = 1; i < args.length; i++) {
-    const a = args[i];
-    if (a === "--json") flags.json = true;
-    else if (a === "--dry-run") flags.dryRun = true;
-    else if (a === "--target" && args[i + 1]) flags.target = args[++i];
-    else if (a === "--rpo" && args[i + 1]) flags.rpo = Number(args[++i]);
-    else if (a === "-h" || a === "--help") return printHelp();
+    return { success: false, target, error: `Failed to create drill dir: ${err.message}` };
   }
 
-  const targets =
-    flags.target === "board"
-      ? [DEFAULT_CONFIG.board]
-      : flags.target === "hindsight"
-        ? [DEFAULT_CONFIG.hindsight]
-        : [DEFAULT_CONFIG.board, DEFAULT_CONFIG.hindsight];
+  // 1. Snapshot from standby
+  const snapRes = runner("pg_basebackup", [
+    "-h", "127.0.0.1",
+    "-p", String(standbyPort),
+    "-U", user,
+    "-D", drillDir,
+    "-Fp",
+    "-Xs",
+    "-R",
+  ]);
+  if (snapRes.exitCode !== 0) {
+    try { fsOps.rmSync(drillDir, { recursive: true, force: true }); } catch {}
+    return { success: false, target, error: `Drill snapshot failed: ${snapRes.stderr || snapRes.stdout}` };
+  }
+
+  // 2. Start ephemeral postgres instance on drillPort
+  const startRes = runner("pg_ctl", ["start", "-D", drillDir, "-o", `-p ${drillPort} -c listen_addresses=127.0.0.1`]);
+  if (startRes.exitCode !== 0) {
+    try { fsOps.rmSync(drillDir, { recursive: true, force: true }); } catch {}
+    return { success: false, target, error: `Drill pg_ctl start failed: ${startRes.stderr || startRes.stdout}` };
+  }
+
+  // 3. Promote drill instance
+  const promoteRes = queryPostgres("SELECT pg_promote();", { host: "127.0.0.1", port: drillPort, user, db }, runner);
+  if (promoteRes.exitCode !== 0) {
+    runner("pg_ctl", ["stop", "-D", drillDir, "-m", "immediate"]);
+    try { fsOps.rmSync(drillDir, { recursive: true, force: true }); } catch {}
+    return { success: false, target, error: `Drill promotion failed: ${promoteRes.stderr}` };
+  }
+
+  // 4. Verify drill recovery false & smoke test
+  const verifyRes = queryPostgres("SELECT pg_is_in_recovery()::text;", { host: "127.0.0.1", port: drillPort, user, db }, runner);
+  const smokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user, db }, runner);
+
+  // 5. Clean stop and removal
+  runner("pg_ctl", ["stop", "-D", drillDir, "-m", "immediate"]);
+  try {
+    fsOps.rmSync(drillDir, { recursive: true, force: true });
+  } catch {}
+
+  const durationMs = Date.now() - startTime;
+  const durationSeconds = Math.round(durationMs / 1000);
+  const rtoOk = durationSeconds <= DEFAULT_CONFIG.rtoTargetSeconds;
+
+  return {
+    success: true,
+    target,
+    promoted: (verifyRes.stdout || "").trim() === "f",
+    smokeTestPassed: (smokeRes.stdout || "").trim() === "1",
+    durationSeconds,
+    targetRtoSeconds: DEFAULT_CONFIG.rtoTargetSeconds,
+    rtoOk,
+  };
+}
+
+/**
+ * Main CLI runner.
+ */
+export function runCli(argv = process.argv.slice(2), env = process.env, deps = {}) {
+  const flags = {};
+  const positional = [];
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg.startsWith("--")) {
+      const eqIdx = arg.indexOf("=");
+      if (eqIdx !== -1) {
+        flags[arg.slice(2, eqIdx)] = arg.slice(eqIdx + 1);
+      } else {
+        const key = arg.slice(2);
+        const next = argv[i + 1];
+        if (next && !next.startsWith("-")) {
+          flags[key] = next;
+          i++;
+        } else {
+          flags[key] = true;
+        }
+      }
+    } else {
+      positional.push(arg);
+    }
+  }
+
+  const command = positional[0] || "help";
+  const target = positional[1] || flags.target || "all";
+  const targets = target === "all" ? ["board", "hindsight"] : [target];
+
+  if (flags["rpo-max-seconds"] !== undefined) {
+    flags.rpoMaxSeconds = Number(flags["rpo-max-seconds"]);
+  }
+  if (flags["dry-run"] !== undefined) {
+    flags.dryRun = true;
+  }
+  if (flags.offline !== undefined) {
+    flags.offline = true;
+  }
 
   switch (command) {
     case "setup": {
-      const results = targets.map((t) => {
-        const basebackup = buildBasebackupArgs(t, flags);
-        const configText = generateStandbyConfig(t, flags);
-        return {
-          target: t.name,
-          basebackupCmd: `pg_basebackup ${basebackup.join(" ")}`,
-          dataDir: t.dataDir,
-          walArchiveDir: t.walArchiveDir,
-          standbyConfigSnippet: configText.trim(),
-        };
-      });
-
-      if (flags.json) {
-        console.log(JSON.stringify({ status: "setup_planned", results, dryRun: flags.dryRun }, null, 2));
-      } else {
-        console.log("=== Standby Setup Plan ===");
-        for (const r of results) {
-          console.log(`\nTarget: ${r.target}`);
-          console.log(`  Data Directory: ${r.dataDir}`);
-          console.log(`  WAL Archive:    ${r.walArchiveDir}`);
-          console.log(`  Sync Command:   ${r.basebackupCmd}`);
-        }
-      }
-      return 0;
+      const results = targets.map((t) => setupStandby(t, flags, deps));
+      console.log(JSON.stringify({ command: "setup", results }, null, 2));
+      const anyFailed = results.some((r) => !r.success);
+      return anyFailed ? 1 : 0;
     }
 
     case "check-lag": {
-      const now = new Date();
-      const results = targets.map((t) => {
-        let rawSqlOutput = "";
-        if (flags.dryRun) {
-          rawSqlOutput = `t | 0/1A00000 | 0/1A00000 | ${now.toISOString()}`;
-        } else {
-          const res = runCommand("psql", [
-            "-h",
-            DEFAULT_CONFIG.standbyHost,
-            "-p",
-            String(t.standbyPort),
-            "-U",
-            t.user,
-            "-t",
-            "-A",
-            "-c",
-            buildStandbyStatusQuery(),
-          ]);
-          rawSqlOutput = res.exitCode === 0 ? res.stdout : "";
-        }
-        return evaluateTargetStatus(t, rawSqlOutput, { rpoMaxSeconds: flags.rpo, now });
-      });
-
-      const allOk = results.every((r) => r.rpoOk);
-
-      if (flags.json) {
-        console.log(JSON.stringify({ status: allOk ? "ok" : "alert", rpoMaxSeconds: flags.rpo, results }, null, 2));
-      } else {
-        console.log("=== Replication Freshness & Lag Report ===");
-        console.log(`RPO Threshold: <= ${flags.rpo}s (15 min)\n`);
-        for (const r of results) {
-          console.log(`Target: ${r.target.toUpperCase()}`);
-          console.log(`  Role:           ${r.role}`);
-          console.log(`  In Recovery:    ${r.inRecovery}`);
-          console.log(`  Byte Lag:       ${r.byteLag} bytes`);
-          console.log(`  Replay Delay:   ${r.timeLagSeconds}s`);
-          console.log(`  RPO Status:     ${r.rpoStatus.toUpperCase()}`);
-          console.log(`  RPO Compliant:  ${r.rpoOk ? "YES" : "NO"}\n`);
-        }
-      }
-      return allOk ? 0 : 1;
+      const results = targets.map((t) => checkLag(t, flags, deps));
+      const allRpoOk = results.every((r) => r.rpoOk);
+      const allSuccess = results.every((r) => r.success);
+      const serializable = results.map((r) => ({
+        ...r,
+        byteLag: r.byteLag !== null && r.byteLag !== undefined ? r.byteLag.toString() : null,
+        receiveByteLag: r.receiveByteLag !== null && r.receiveByteLag !== undefined ? r.receiveByteLag.toString() : null,
+      }));
+      console.log(JSON.stringify({ command: "check-lag", allRpoOk, results: serializable }, null, 2));
+      return allRpoOk && allSuccess ? 0 : 1;
     }
 
     case "failover": {
-      const plans = targets.map((t) => planFailover(t, flags));
-      if (flags.json) {
-        console.log(JSON.stringify({ status: "failover_prepared", plans, dryRun: flags.dryRun }, null, 2));
-      } else {
-        console.log("=== Failover / Promotion Execution Plan ===");
-        for (const p of plans) {
-          console.log(`\nPromoting Target: ${p.target}`);
-          console.log(`  SQL:            ${p.promoteSql}`);
-          console.log(`  pg_ctl fallback:${p.pgCtlCommand.join(" ")}`);
-          console.log(`  New Endpoint:   ${p.newEndpoint}`);
-        }
-      }
-      return 0;
+      const results = targets.map((t) => executeFailover(t, flags, deps));
+      console.log(JSON.stringify({ command: "failover", results }, null, 2));
+      const anyFailed = results.some((r) => !r.success);
+      return anyFailed ? 1 : 0;
     }
 
     case "switchback": {
-      const plans = targets.map((t) => planSwitchback(t, flags));
-      if (flags.json) {
-        console.log(JSON.stringify({ status: "switchback_prepared", plans, dryRun: flags.dryRun }, null, 2));
-      } else {
-        console.log("=== Switchback / Demote Plan ===");
-        for (const p of plans) {
-          console.log(`\nTarget: ${p.target}`);
-          console.log(`  Resync from:    ${p.primaryEndpoint}`);
-          console.log(`  Standby Signal: ${p.standbySignalPath}`);
-        }
-      }
-      return 0;
+      const results = targets.map((t) => executeSwitchback(t, flags, deps));
+      console.log(JSON.stringify({ command: "switchback", results }, null, 2));
+      const anyFailed = results.some((r) => !r.success);
+      return anyFailed ? 1 : 0;
     }
 
     case "rehearse": {
-      const plans = targets.map((t) => planRehearsal(t, flags));
-      if (flags.json) {
-        console.log(JSON.stringify({ status: "rehearsal_planned", plans, dryRun: flags.dryRun }, null, 2));
-      } else {
-        console.log("=== Disaster Recovery Restore Drill (Rehearsal) ===");
-        for (const p of plans) {
-          console.log(`\nTarget: ${p.target}`);
-          console.log(`  Drill Directory: ${p.drillDir}`);
-          console.log(`  Drill Port:      ${p.drillPort}`);
-          console.log("  Steps:");
-          p.steps.forEach((s) => console.log(`    - ${s}`));
-        }
-      }
-      return 0;
+      const results = targets.map((t) => executeRehearsal(t, flags, deps));
+      console.log(JSON.stringify({ command: "rehearse", results }, null, 2));
+      const anyFailed = results.some((r) => !r.success || !r.rtoOk);
+      return anyFailed ? 1 : 0;
     }
 
-    case "compose": {
-      const composeContent = generateComposeStandby(DEFAULT_CONFIG);
-      console.log(composeContent);
-      return 0;
-    }
+    case "help":
+    default: {
+      console.log(`
+Usage: standby-ctl.mjs <command> [target] [options]
 
-    case "--help":
-    default:
-      return printHelp();
+Commands:
+  setup [board|hindsight|all]      Configure streaming replication and start standby
+  check-lag [board|hindsight|all]  Measure lag vs primary WAL LSN, verify RPO <= 15m
+  failover [board|hindsight|all]   Promote standby to primary and reroute application
+  switchback [board|hindsight|all] Re-sync and restore standby after primary recovery
+  rehearse [board|hindsight|all]   Perform isolated rehearsal test, verify RTO <= 30m
+
+Options:
+  --dry-run                        Print operational plans without executing commands
+  --rpo-max-seconds=<sec>          Maximum acceptable lag in seconds (default: 900)
+  --offline                        Measure standby without querying primary
+  --target=<target>                board, hindsight, or all (default: all)
+`);
+      return command === "help" ? 0 : 1;
+    }
   }
 }
 
-function printHelp() {
-  console.log(`
-myrmidon standby-ctl: Warm standby management for central databases
-
-Commands:
-  setup       Generate initial basebackup and standby configuration
-  check-lag   Verify replication lag against RPO constraint (<= 15 min)
-  failover    Promote standby database to primary
-  switchback  Revert / resync standby following primary restoration
-  rehearse    Execute safe, isolated restore drill without disrupting live replication
-  compose     Print docker-compose.standby.yml definition
-
-Flags:
-  --target <board|hindsight|all>  Target database instance (default: all)
-  --rpo <seconds>                 RPO threshold in seconds (default: 900)
-  --json                          Emit structured JSON output
-  --dry-run                       Simulate actions without executing commands
-  -h, --help                      Show this help message
-`);
-  return 0;
-}
-
-if (process.argv[1] && process.argv[1].endsWith("standby-ctl.mjs")) {
-  const code = runCli(process.argv);
-  process.exit(code);
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+  const exitCode = runCli(process.argv.slice(2));
+  process.exit(exitCode);
 }

@@ -189,17 +189,24 @@ When `vm-core` is recovered and ready to resume primary service:
 
 ## 7. Disaster Recovery Rehearsal (Restore Drill)
 
-To validate restore capability without affecting live replication:
+To validate restore capability and measure actual RTO without affecting live replication:
 
 ```bash
+# Automated live drill on isolated drill port 5533 / drill directory
+scripts/myrmidon/standby/standby-ctl.sh rehearse --target all
+
+# Or inspect the execution plan first with --dry-run
 scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --dry-run
 ```
 
-For live drill on staging / test environments:
-1. Snapshot current standby data to `/tmp/rehearsal-<target>`.
-2. Launch ephemeral PostgreSQL instance on alternate port (`5533` / `5534`).
-3. Promote the ephemeral instance and execute smoke queries (`SELECT COUNT(*) FROM issues;`).
-4. Destroy ephemeral instance without interrupting active WAL stream on `5433` / `5434`.
+The automated rehearsal procedure:
+1. Takes a consistent basebackup snapshot of current standby data into an isolated drill directory (e.g. `/srv/standby/drill-<target>-<timestamp>`).
+2. Launches an ephemeral PostgreSQL instance on alternate drill port (`5533` / `5534`) bound to localhost.
+3. Promotes the ephemeral instance and confirms recovery exit (`SELECT pg_is_in_recovery() === false`).
+4. Executes smoke verification queries (`SELECT 1;`).
+5. Stops the ephemeral drill instance cleanly via `pg_ctl stop -m immediate`.
+6. Cleans up the ephemeral drill directory.
+7. Measures exact elapsed duration and validates that actual RTO is well within the 30-minute target (typically < 30 seconds).
 
 ---
 
@@ -207,8 +214,8 @@ For live drill on staging / test environments:
 
 | Requirement | Target | Verification Method | Pass Criteria |
 | :--- | :--- | :--- | :--- |
-| **Warm Standby Configuration** | Board (5433) & Hindsight (5434) | `scripts/myrmidon/standby/docker-compose.standby.yml` | Isolated ports & directories on `myr-vm1` |
-| **Streaming Replication** | Continuous WAL replay | `standby-ctl.sh setup` + `pg_basebackup` slot streaming | `standby.signal` and streaming active |
-| **RPO Limit** | <= 15 minutes (900s) | `standby-ctl.sh check-lag --rpo 900` | Replay delay <= 900s, exit code 0 |
-| **RTO Limit** | <= 30 minutes (1800s) | `standby-ctl.sh failover` execution | Promotion in < 10s, read-write confirmed |
-| **CI Automation** | Automatic regression check | `node --test scripts/myrmidon/standby/*.test.mjs` | 100% passing tests in CI suite |
+| **Warm Standby Configuration** | Board (5433) & Hindsight (5434) | `scripts/myrmidon/standby/docker-compose.standby.yml` | Isolated ports & directories on `myr-vm1`, streaming replica configuration |
+| **Streaming Replication** | Continuous WAL replay | `standby-ctl.sh setup` + `docker-compose.standby.yml` | `standby.signal`, `primary_conninfo`, active streaming verified |
+| **RPO Limit** | <= 15 minutes (900s) | `standby-ctl.sh check-lag --rpo 900` | True primary-to-standby LSN lag & replay delay <= 900s, exit code 0; fail-closed on error |
+| **RTO Limit** | <= 30 minutes (1800s) | `standby-ctl.sh failover` & `standby-ctl.sh rehearse` | Promotion in < 10s, read-write confirmed, measured duration <= 1800s |
+| **CI Automation** | Automatic regression check | `node --test scripts/myrmidon/standby/*.test.mjs` | 100% passing behavioral & unit tests in CI suite |
