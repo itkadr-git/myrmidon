@@ -42,10 +42,12 @@ export function startSiteScheduler(
   const env = opts.env ?? process.env;
   if (!isSiteSchedulerEnabled(env)) return () => {};
 
-  const moves = createFleetMoveContext(
-    db,
-    typeof opts.clientManager === "function" ? opts.clientManager : () => opts.clientManager ?? getActiveFleetClientManager(),
-  );
+  const rawManager = opts.clientManager;
+  const clientManager: () => FleetClientManager | null =
+    typeof rawManager === "function"
+      ? rawManager
+      : () => rawManager ?? getActiveFleetClientManager();
+  const moves = createFleetMoveContext(db, clientManager);
   const agentsApi = agentService(db);
 
   const lane = startSiteSchedulerLane({

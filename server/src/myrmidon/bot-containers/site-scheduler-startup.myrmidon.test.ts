@@ -39,7 +39,10 @@ describe("startSiteScheduler", () => {
 
   it("passes clientManager closure to createFleetMoveContext when enabled", () => {
     const spy = vi.spyOn(fleetMoveWiring, "createFleetMoveContext").mockReturnValue({} as any);
-    const laneSpy = vi.spyOn(laneModule, "startSiteSchedulerLane").mockReturnValue(() => {});
+    const laneSpy = vi.spyOn(laneModule, "startSiteSchedulerLane").mockReturnValue({
+      stop: vi.fn(),
+      tick: vi.fn(async () => ({} as any)),
+    });
 
     const m = mockManager();
     const env = { [BOT_CONTAINERS_ENV]: "1", [SITE_SCHEDULER_ENV]: "1" };
