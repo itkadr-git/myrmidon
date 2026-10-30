@@ -10,7 +10,7 @@ import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@myrmidon/adapter-utils";
-import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
+import { executionProjectionForRun, executionProjectionsForRuns, sanitizeExecutionProjectionForActor } from "../services/execution-projection.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): a run response carries one continuation copy.
 import { withoutDuplicateExecutionContinuation } from "../services/run-continuation-snapshot.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
@@ -4355,7 +4355,12 @@ function getActorIdentityPart(req: Request): string {
         goalId: issue.goalId,
         parentId: issue.parentId,
         updatedAt: issue.updatedAt,
-        activeRun: issue.activeRun,
+        activeRun: issue.activeRun && req.actor?.type === "agent" && issue.activeRun.execution
+          ? {
+              ...issue.activeRun,
+              execution: sanitizeExecutionProjectionForActor(issue.activeRun.execution, req.actor) ?? undefined,
+            }
+          : issue.activeRun,
         activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
         dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
         unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
@@ -4379,7 +4384,13 @@ function getActorIdentityPart(req: Request): string {
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
 
-    res.json(rows);
+    res.json(rows.map((row: any) => row.activeRun && req.actor?.type === "agent" && row.activeRun.execution ? {
+      ...row,
+      activeRun: {
+        ...row.activeRun,
+        execution: sanitizeExecutionProjectionForActor(row.activeRun.execution, req.actor) ?? undefined,
+      },
+    } : row));
   });
 
   router.get("/agents/:id", async (req, res) => {
@@ -7306,7 +7317,7 @@ function getActorIdentityPart(req: Request): string {
       const projections = await executionProjectionsForRuns(db, companyId, rows.map(run => run.id));
       res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (run) => ({
         ...heartbeat.decorateActiveRunStatus(run),
-        execution: projections.get(run.id) ?? null,
+        execution: sanitizeExecutionProjectionForActor(projections.get(run.id) ?? null, req.actor),
         outputSilence: await heartbeat.buildRunOutputSilence(run),
       })))));
       return;
@@ -7315,7 +7326,7 @@ function getActorIdentityPart(req: Request): string {
     const projections = await executionProjectionsForRuns(db, companyId, liveRuns.map(run => run.id));
     res.json(await runRedactions.redactForRuns(companyId, await Promise.all(liveRuns.map(async (run) => ({
       ...heartbeat.decorateActiveRunStatus(run),
-        execution: projections.get(run.id) ?? null,
+        execution: sanitizeExecutionProjectionForActor(projections.get(run.id) ?? null, req.actor),
       outputSilence: await heartbeat.buildRunOutputSilence(run),
     })))));
   });
@@ -7350,7 +7361,7 @@ function getActorIdentityPart(req: Request): string {
       run.companyId,
       run.id,
       redactCurrentUserValue(
-        { ...singleContinuationRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        { ...singleContinuationRun, execution: sanitizeExecutionProjectionForActor(await executionProjectionForRun(db, run.companyId, run.id), req.actor), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
     ));
@@ -7932,7 +7943,7 @@ function getActorIdentityPart(req: Request): string {
     const projections = await executionProjectionsForRuns(db, issue.companyId, liveRuns.map(run => run.id));
     res.json(await Promise.all(liveRuns.map(async (run) => ({
       ...heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id }),
-      execution: projections.get(run.id) ?? null,
+      execution: sanitizeExecutionProjectionForActor(projections.get(run.id) ?? null, req.actor),
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
     }))));
   });
@@ -7944,7 +7955,9 @@ function getActorIdentityPart(req: Request): string {
       eq(heartbeatRuns.companyId, issue.companyId),
       sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
     )).orderBy(sql`case when ${heartbeatRuns.id} = ${issue.executionRunId} then 0 when ${heartbeatRuns.status} = 'running' then 1 else 2 end`, desc(heartbeatRuns.createdAt)).limit(1);
-    res.json(run ? { runId: run.id, agentId: run.agentId, recoveryAction: await issueRecoveryActionService(db).getActiveForIssue(issue.companyId, issue.id), execution: await executionProjectionForRun(db, issue.companyId, run.id) } : null);
+    const rawExecution = run ? await executionProjectionForRun(db, issue.companyId, run.id) : null;
+    const execution = sanitizeExecutionProjectionForActor(rawExecution, req.actor);
+    res.json(run ? { runId: run.id, agentId: run.agentId, recoveryAction: await issueRecoveryActionService(db).getActiveForIssue(issue.companyId, issue.id), execution } : null);
   });
 
   router.get("/issues/:issueId/active-run", async (req, res) => {
@@ -7989,9 +8002,10 @@ function getActorIdentityPart(req: Request): string {
     }
 
     const decoratedRun = heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id });
+    const rawExecution = await executionProjectionForRun(db, issue.companyId, run.id);
     res.json({
       ...decoratedRun,
-      execution: await executionProjectionForRun(db, issue.companyId, run.id),
+      execution: sanitizeExecutionProjectionForActor(rawExecution, req.actor),
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,
