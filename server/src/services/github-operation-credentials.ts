@@ -187,6 +187,30 @@ async function inferRunRepository(
   return distinct.size === 1 ? [...distinct][0]! : null;
 }
 
+const GITHUB_CREDENTIAL_CACHE_TTL_MS = 50 * 60 * 1000; // ~50 minutes
+
+interface CachedGitHubCredentialEntry {
+  result: {
+    identityContextId: string | null;
+    revision: number | null;
+    status: GitHubCredentialSummary["status"];
+    source?: string;
+    login?: string;
+    connectionId?: string | null;
+    grantId?: string | null;
+    authenticationMode?: string;
+    reason?: string;
+    env: Record<string, string>;
+  };
+  cachedAt: number;
+}
+
+const githubCredentialCache = new Map<string, CachedGitHubCredentialEntry>();
+
+export function clearGitHubOperationCredentialCache(): void {
+  githubCredentialCache.clear();
+}
+
 /** No company secrets or ambient credentials are consulted by this path. */
 export async function resolveGitHubOperationCredentials(
   db: Db,
@@ -198,6 +222,13 @@ export async function resolveGitHubOperationCredentials(
     repository?: string | null;
   },
 ) {
+  const normalizedRepo = normalizeGitHubRepository(input.repository) ?? "";
+  const cacheKey = `${input.companyId}:${input.agentId}:${input.runId}:${normalizedRepo}`;
+  const cached = githubCredentialCache.get(cacheKey);
+  if (cached && Date.now() - cached.cachedAt < GITHUB_CREDENTIAL_CACHE_TTL_MS) {
+    return cached.result;
+  }
+
   const { run, context } = await captureRunIdentity(db, input);
   if (!context) throw forbidden("This run predates managed GitHub credentials");
   let summary: GitHubCredentialSummary;
@@ -293,10 +324,25 @@ export async function resolveGitHubOperationCredentials(
       .update(runIdentityContexts)
       .set({ github: summary })
       .where(eq(runIdentityContexts.id, context.id));
-  return {
+  const result = {
     identityContextId: context?.id ?? null,
     revision: context?.revision ?? null,
     ...summary,
     env,
   };
+  if (summary.status === "available" && Object.keys(env).length > 0) {
+    if (githubCredentialCache.size > 2000) {
+      const now = Date.now();
+      for (const [k, v] of githubCredentialCache.entries()) {
+        if (now - v.cachedAt >= GITHUB_CREDENTIAL_CACHE_TTL_MS) {
+          githubCredentialCache.delete(k);
+        }
+      }
+    }
+    githubCredentialCache.set(cacheKey, {
+      result,
+      cachedAt: Date.now(),
+    });
+  }
+  return result;
 }
