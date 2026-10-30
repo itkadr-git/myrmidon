@@ -11,11 +11,12 @@
       "message": "отдельный managed Windows/deploy слот и scoped Checks/Actions access не подтверждены"
     },
     "expectedClassification": {
-      "kind": "workspace_myr_ws",
-      "cause": "isolated_windows_build_slot"
+      "kind": "operator_action",
+      "cause": "ci_access",
+      "scope": "operator"
     },
     "policy": {
-      "role": "infra_operator",
+      "role": "operator",
       "slaMinutes": 120
     }
   },
@@ -31,12 +32,13 @@
       "message": "невозможно безопасно настроить aria2 egress/quota"
     },
     "expectedClassification": {
-      "kind": "disk_space",
-      "cause": "hard_quota_and_egress_configuration"
+      "kind": "operator_action",
+      "cause": "infra_config",
+      "scope": "operator"
     },
     "policy": {
-      "role": "disk_operator",
-      "slaMinutes": 60
+      "role": "operator",
+      "slaMinutes": 120
     }
   },
   {
@@ -52,7 +54,8 @@
     },
     "expectedClassification": {
       "kind": "operator_action",
-      "cause": "human_only_verdict_decision"
+      "cause": "head_decision",
+      "scope": "operator"
     },
     "policy": {
       "role": "operator",
@@ -71,12 +74,13 @@
       "message": "обеспечить доступ к head/CI независимый рецензент PR"
     },
     "expectedClassification": {
-      "kind": "github_access",
-      "cause": "reviewer_head_ci_access"
+      "kind": "operator_action",
+      "cause": "review_route",
+      "scope": "operator"
     },
     "policy": {
-      "role": "security_admin",
-      "slaMinutes": 60
+      "role": "operator",
+      "slaMinutes": 120
     }
   },
   {
@@ -91,12 +95,13 @@
       "message": "установленный GitHub relay не имеет нужной identity/артефакта"
     },
     "expectedClassification": {
-      "kind": "branch_relay",
-      "cause": "authorized_artifact_branch_relay"
+      "kind": "operator_action",
+      "cause": "branch_relay",
+      "scope": "operator"
     },
     "policy": {
-      "role": "release_engineer",
-      "slaMinutes": 60
+      "role": "operator",
+      "slaMinutes": 120
     }
   },
   {
@@ -111,11 +116,12 @@
       "message": "решение по новому head ca01bddcbb029e98bfc4722abd06e4d4cbdd6254 PR #842 после зелёного CI"
     },
     "expectedClassification": {
-      "kind": "devbuild",
-      "cause": "green_ci_head_decision"
+      "kind": "operator_action",
+      "cause": "head_decision",
+      "scope": "operator"
     },
     "policy": {
-      "role": "build_engineer",
+      "role": "operator",
       "slaMinutes": 120
     }
   },
@@ -131,12 +137,13 @@
       "message": "явное разрешение продолжить ранее отклонённую маршрутизацию review/merge PR #1178"
     },
     "expectedClassification": {
-      "kind": "configuration_validation",
-      "cause": "review_merge_routing_policy"
+      "kind": "operator_action",
+      "cause": "review_route",
+      "scope": "operator"
     },
     "policy": {
-      "role": "policy_admin",
-      "slaMinutes": 60
+      "role": "operator",
+      "slaMinutes": 120
     }
   },
   {
@@ -151,12 +158,13 @@
       "message": "восстановить execution review participant/runtime"
     },
     "expectedClassification": {
-      "kind": "review_participant_restore",
-      "cause": "execution_participant_runtime_restore"
+      "kind": "operator_action",
+      "cause": "review_participant_restore",
+      "scope": "operator"
     },
     "policy": {
-      "role": "review_admin",
-      "slaMinutes": 60
+      "role": "operator",
+      "slaMinutes": 120
     }
   },
   {
@@ -171,12 +179,13 @@
       "message": "оператор с repo write: rerun/fresh CI PR #1364 и base update"
     },
     "expectedClassification": {
-      "kind": "ci_restart",
-      "cause": "operator_ci_rerun"
+      "kind": "operator_action",
+      "cause": "ci_rerun",
+      "scope": "operator"
     },
     "policy": {
-      "role": "ci_operator",
-      "slaMinutes": 30
+      "role": "operator",
+      "slaMinutes": 120
     }
   }
 ]
