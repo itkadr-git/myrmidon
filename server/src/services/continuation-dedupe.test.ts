@@ -334,5 +334,52 @@ const support = await getEmbeddedPostgresTestSupport();
       });
       expect(duplicateRecovery).toBeNull();
     });
+
+    it("recovery through production reconcileStrandedAssignedIssues preserves lineage and revision end-to-end", async () => {
+      const heartbeat = heartbeatService(db);
+      const producerAgentId = randomUUID();
+      const producerIssueId = randomUUID();
+      const priorRunId = randomUUID();
+
+      await db.insert(agents).values({
+        id: producerAgentId,
+        companyId,
+        name: "Producer Recovery Agent",
+        status: "active",
+        adapterType: "paperclip_runner",
+      });
+      await db.insert(issues).values({
+        id: producerIssueId,
+        companyId,
+        title: "Stranded Producer Task",
+        status: "in_progress",
+        assigneeAgentId: producerAgentId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: priorRunId,
+        companyId,
+        agentId: producerAgentId,
+        status: "failed",
+        startedAt: new Date(Date.now() - 60_000),
+        finishedAt: new Date(Date.now() - 30_000),
+        contextSnapshot: { issueId: producerIssueId },
+      });
+
+      const sweepResult = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(sweepResult.continuationRequeued).toBe(1);
+      expect(sweepResult.issueIds).toContain(producerIssueId);
+
+      const agentRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, producerAgentId));
+      const retryRun = agentRuns.find((r) => r.id !== priorRunId);
+      expect(retryRun).toBeDefined();
+      expect(retryRun?.retryOfRunId).toBe(priorRunId);
+      const retrySnapshot = retryRun?.contextSnapshot as Record<string, unknown>;
+      expect(retrySnapshot?.retryOfRunId).toBe(priorRunId);
+      expect(retrySnapshot?.continuationEventRevision).toBe(`recovery:${priorRunId}`);
+
+      // Second sweep does not duplicate the recovery
+      const repeatSweep = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(repeatSweep.continuationRequeued).toBe(0);
+    });
   });
 });
