@@ -724,7 +724,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(deps.enqueueWakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
       source: "automation",
       reason: IDLE_WAKE_REASON,
-      payload: expect.objectContaining({ issueId }),
+      contextSnapshot: expect.objectContaining({ issueId }),
     }));
   });
 
