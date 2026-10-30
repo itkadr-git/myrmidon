@@ -73,6 +73,13 @@
   "sidebar": {
     "version": "Myrmidon {{version}}"
   },
+  "uiSwitch": {
+    "label": "Інтерфейс",
+    "new": "Нова",
+    "legacy": "Попередня",
+    "instanceDefault": "За налаштуванням екземпляра",
+    "switchTo": "Перемкнути версію інтерфейсу"
+  },
   "ui2": {
     "nav": {
       "railLabel": "Main navigation",
