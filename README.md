@@ -137,8 +137,9 @@ by default — the full reference is
 ## What it does today
 
 Release notes live in [docs/myrmidon/CHANGELOG.md](docs/myrmidon/CHANGELOG.md)
-(Russian: [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)). Highlights of
-what exists as of 1.6.4 (latest release; 1.6.5-rc.14 is the current release candidate):
+(Russian: [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)). The current
+pre-release is [1.6.6-rc.18](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6-rc.18);
+the latest stable release remains [1.6.5](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5).
 
 ### Work and agents
 
@@ -268,14 +269,16 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.14 is the current release cand
 - **UI 2.0 + language.** The 2.0 shell with six re-skinned data screens
   (behind the `enableMyrmidonUi2` flag, off by default) and a per-user board
   language RU/EN ([ui2-shell](docs/myrmidon/guides/ui2-shell.md)).
+- **1.6.6 — bounded run-output guardrails.** Optional, flag-only detection scans
+  a bounded output window, caps recorded events, and redacts/clamps snippets;
+  see the [run-output guide](docs/myrmidon/guides/guardrails-run-output.md).
 
 ### New in the 1.6 line
 
 Full notes per release: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md) and the
-[releases page](https://github.com/itkadr-git/myrmidon/releases) — latest is
-[1.6.4](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.4);
-[1.6.5-rc.14](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.14)
-is the current release candidate.
+[releases page](https://github.com/itkadr-git/myrmidon/releases). Latest stable:
+[1.6.5](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5); current
+pre-release: [1.6.6-rc.18](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6-rc.18).
 
 - **1.6.3 — one deploy for every component.** `deploy.sh --release` updates
   the board, dockergate, fleetd and the bot images in one all-or-nothing
