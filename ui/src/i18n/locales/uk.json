@@ -140,7 +140,8 @@
       "autonomy": "Autonomy",
       "guards": "Guardrails",
       "castes": "Castes and models",
-      "system": "System"
+      "system": "System",
+      "language": "Language"
     }
   },
   "connectorPanel": {
