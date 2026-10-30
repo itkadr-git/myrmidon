@@ -537,7 +537,14 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
     const warmCandidate = warmCandidates.find((c) => c.issueId === issueId);
     expect(warmCandidate!.failedRunsSinceLastChange).toBe(1);
 
-    // After cache invalidation (or TTL expiration), penalty is lifted
+    // After TTL expiration (> 60s), the cache re-queries DB and penalty is lifted
+    const expiredCandidates = await listRoleQueue(db, companyId, "engineer", undefined, {
+      now: new Date(Date.now() + 61_000),
+    });
+    const expiredCandidate = expiredCandidates.find((c) => c.issueId === issueId);
+    expect(expiredCandidate!.failedRunsSinceLastChange).toBe(0);
+
+    // Manual invalidation also lifts penalty immediately
     clearFailedRunsCache(companyId);
     const refreshedCandidates = await listRoleQueue(db, companyId, "engineer");
     const refreshedCandidate = refreshedCandidates.find((c) => c.issueId === issueId);
