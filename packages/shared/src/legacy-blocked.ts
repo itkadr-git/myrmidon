@@ -1,15 +1,5 @@
 export const LEGACY_BLOCKED_IMPORT_RULE_VERSION = "1";
 
-export const legacyBlockedClassSchema = {
-  safeParse(val: unknown) {
-    const classes = ["dependency", "recovery", "human_decision", "external_wait", "resource", "terminal", "unknown"] as const;
-    if (typeof val === "string" && (classes as readonly string[]).includes(val)) {
-      return { success: true, data: val as (typeof classes)[number] };
-    }
-    return { success: false, error: new Error(`Invalid legacy blocked class: ${val}`) };
-  },
-};
-
 export type LegacyBlockedClass =
   | "dependency"
   | "recovery"
@@ -18,6 +8,16 @@ export type LegacyBlockedClass =
   | "resource"
   | "terminal"
   | "unknown";
+
+export const legacyBlockedClassSchema = {
+  safeParse(val: unknown): { success: true; data: LegacyBlockedClass } | { success: false; error: Error } {
+    const classes = ["dependency", "recovery", "human_decision", "external_wait", "resource", "terminal", "unknown"] as const;
+    if (typeof val === "string" && (classes as readonly string[]).includes(val)) {
+      return { success: true, data: val as LegacyBlockedClass };
+    }
+    return { success: false, error: new Error(`Invalid legacy blocked class: ${val}`) };
+  },
+};
 
 export type LegacyBlockedReportRow = {
   issueId: string;
@@ -34,7 +34,7 @@ export type LegacyBlockedReportRow = {
 const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const legacyBlockedReportRowSchema = {
-  safeParse(val: unknown) {
+  safeParse(val: unknown): { success: true; data: LegacyBlockedReportRow } | { success: false; error: Error } {
     if (!val || typeof val !== "object") {
       return { success: false, error: new Error("Row must be an object") };
     }
@@ -55,7 +55,7 @@ export const legacyBlockedReportRowSchema = {
     if (!classCheck.success) {
       return { success: false, error: classCheck.error };
     }
-    const blockClass = classCheck.data;
+    const blockClass: LegacyBlockedClass = classCheck.data ?? "unknown";
     if (blockClass === "unknown") {
       if (r.proposedOwner !== undefined && (typeof r.proposedOwner !== "string" || r.proposedOwner.trim().length === 0)) {
         return { success: false, error: new Error("Invalid proposedOwner") };
@@ -79,7 +79,7 @@ export const legacyBlockedReportRowSchema = {
       identifier: (r.identifier as string).trim(),
       oldStatus: (r.oldStatus as string).trim(),
       oldBlockers: r.oldBlockers as string[],
-      class: blockClass,
+      class: blockClass ?? "unknown",
       evidence: (r.evidence as string).trim(),
       importKey: (r.importKey as string).trim(),
     };
