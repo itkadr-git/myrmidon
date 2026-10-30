@@ -651,11 +651,9 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         expect.objectContaining({ clientKey: "child" }),
       ],
     });
-    // Interaction-created suggested tasks preserve their explicit unassigned
-    // intent; ordinary createChild calls separately test parent assignment inheritance.
     expect(accepted.createdIssues).toEqual([
       expect.objectContaining({
-        assigneeAgentId: null,
+        assigneeAgentId,
         status: "todo",
       }),
       expect.objectContaining({

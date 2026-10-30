@@ -553,7 +553,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       hasScheduledIssueMonitorPath(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
-      hasWaitingPath(issue.companyId, issue.id, pendingApprovals);
+      hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
+      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
   }
 
   for (const issue of input.issues) {

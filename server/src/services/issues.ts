@@ -5556,7 +5556,6 @@ async function listIssueBlockedInboxAttentionMap(
           and(
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
-            inArray(issueRelations.relatedIssueId, rowIssueIds),
           ),
         ),
       dbOrTx
@@ -6154,34 +6153,6 @@ async function listIssueBlockedInboxAttentionMap(
             detail: "Assign an eligible owner to this blocked issue.",
           },
           sourceIssue: source,
-        }),
-      );
-      continue;
-    }
-    if (finding && finding.recoveryIssueId === row.id) {
-      result.set(
-        row.id,
-        attentionBase({
-          state: "recovery_open",
-          reason: finding.state,
-          severity: "medium",
-          stoppedSinceAt: row.createdAt,
-          owner: {
-            type: row.assigneeAgentId
-              ? "agent"
-              : row.assigneeUserId
-                ? "user"
-                : "unknown",
-            agentId: row.assigneeAgentId,
-            userId: row.assigneeUserId,
-            label: null,
-          },
-          action: {
-            label: "Review existing recovery issue",
-            detail: "Update the existing recovery issue rather than creating another one.",
-          },
-          sourceIssue: issueRef(row),
-          recoveryIssue: issueRef(row),
         }),
       );
       continue;
