@@ -2515,6 +2515,13 @@
       "when": 1793037062471,
       "tag": "0421_fixed_grim_reaper",
       "breakpoints": true
+    },
+    {
+      "idx": 422,
+      "version": "7",
+      "when": 1793323804912,
+      "tag": "0422_clear_stale_replay_holds",
+      "breakpoints": true
     }
   ]
 }

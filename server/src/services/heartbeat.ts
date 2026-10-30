@@ -47,6 +47,7 @@ import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from
 // replay" hold; see docs/myrmidon/DIVERGENCE.md "L2".
 import { bypassesSettledHold } from "../myrmidon/settled-holds/explicit-wake-gate.js";
 import { userCommentMentionsWokenAgent } from "../myrmidon/settled-holds/mention-wake.js";
+import { clearSettledReplayHoldsOnAuthoritativeRunSuccess } from "../myrmidon/settled-holds/clear.js";
 // myrmidon(L2, round 1 fix): supersede the bypassed hold atomically with the
 // successor run, so the run's own claim and every later automatic
 // continuation see no hold. See docs/myrmidon/DIVERGENCE.md "L2".
@@ -13439,6 +13440,7 @@ export function heartbeatService(
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     if (!issueId) return;
+
     if (isWaitingConversation(await getIssueExecutionContext(run.companyId, issueId))) return;
     if (
       readNonEmptyString(context.goalControlRequestId) ||
@@ -13470,6 +13472,16 @@ export function heartbeatService(
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
       .then((rows) => rows[0] ?? null);
+
+    try {
+      await clearSettledReplayHoldsOnAuthoritativeRunSuccess(
+        db,
+        run,
+        issue,
+      );
+    } catch (err) {
+      logger.warn({ err, issueId, runId: run.id }, "failed to clear settled replay holds on successful run");
+    }
     const idempotencyKey = issue
       ? buildFinishSuccessfulRunHandoffIdempotencyKey({
           issueId: issue.id,

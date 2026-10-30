@@ -67,10 +67,9 @@ export function isAssigneeChangePatch(input: {
   if (nextAgent === input.existing.assigneeAgentId && nextUser === input.existing.assigneeUserId) {
     return false;
   }
-  // Only a hand-off to another agent-executor matters: a hold on a task
-  // reassigned to a human (or unassigned) is the board's to clear by assigning
-  // an executor first, exactly as in the OPE-6011 card population.
-  return Boolean(nextAgent);
+  // Any change of assignment (including unassigning to return to pool or handing to a human)
+  // lifts the previous executor's replay hold.
+  return true;
 }
 
 interface UnblockActor {
@@ -90,8 +89,12 @@ export function mayBeHumanUnblock(input: UnblockActor & {
   assigneeChangeRequested: boolean;
   /** myrmidon(OPE-6954): the PATCH asks for a different status (see below). */
   statusChangeRequested?: boolean;
+  actorRole?: string | null;
 }): boolean {
-  if (input.requestActorType !== "board" || input.runId) return false;
+  const isHumanOrLead =
+    (input.requestActorType === "board" || input.requestActorType === "user" || input.actorRole === "lead") &&
+    !input.runId;
+  if (!isHumanOrLead) return input.assigneeChangeRequested;
   // myrmidon(OPE-6954): a status change is what a person has left to lift a
   // hold the settle no longer parks behind `blocked` (REQUEUE-HOLD leaves a
   // re-queued task in `todo`/`backlog`).
@@ -109,10 +112,17 @@ export function mayBeHumanUnblock(input: UnblockActor & {
  * reassigned a workable issue to another agent. Either way the issue ends
  * assigned to an agent.
  */
-export function isHumanUnblock(input: UnblockActor & { before: IssueSide; after: IssueSide }): boolean {
-  if (input.requestActorType !== "board" || input.runId) return false;
+export function isHumanUnblock(input: UnblockActor & {
+  before: IssueSide;
+  after: IssueSide;
+  actorRole?: string | null;
+}): boolean {
+  const isHumanOrLead =
+    (input.requestActorType === "board" || input.requestActorType === "user" || input.actorRole === "lead") &&
+    !input.runId;
+  if (!isHumanOrLead) return false;
   const { before, after } = input;
-  if (!after.assigneeAgentId || after.assigneeUserId) return false;
+  if (after.assigneeUserId) return false;
   if (!(WORKABLE_STATUSES as readonly string[]).includes(after.status)) return false;
   const leftBlocked = before.status === "blocked";
   const reassigned = before.assigneeAgentId !== after.assigneeAgentId;
@@ -154,7 +164,7 @@ export async function issueHasSettledReplayHold(db: Db, companyId: string, issue
   }
 }
 
-function settledReplayHoldWhere(companyId: string, issueId: string) {
+export function settledReplayHoldWhere(companyId: string, issueId: string) {
   return and(
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
@@ -183,7 +193,7 @@ export async function clearReplayHoldsOnHumanUnblock(input: {
   tx: Db;
   companyId: string;
   issueId: string;
-  assigneeAgentId: string;
+  assigneeAgentId?: string | null;
   actor: { actorType: "user" | "agent"; actorId: string };
   /** Activity note on each cleared hold (defaults to the operator unblock). */
   note?: string;
@@ -208,24 +218,29 @@ export async function clearReplayHoldsOnHumanUnblock(input: {
     clearedActionIds.push(action.id);
   }
 
-  const [parked] = await tx
-    .select({ id: agentWakeupRequests.id })
-    .from(agentWakeupRequests)
-    .where(
-      and(
-        eq(agentWakeupRequests.companyId, companyId),
-        eq(agentWakeupRequests.agentId, input.assigneeAgentId),
-        eq(agentWakeupRequests.status, "deferred_issue_execution"),
-        sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
-        sql`jsonb_typeof(${agentWakeupRequests.payload} -> 'executionWait') = 'object'`,
-      ),
-    )
-    .limit(1);
+  const [parked] = input.assigneeAgentId
+    ? await tx
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, input.assigneeAgentId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+            sql`jsonb_typeof(${agentWakeupRequests.payload} -> 'executionWait') = 'object'`,
+          ),
+        )
+        .limit(1)
+    : [];
   if (clearedActionIds.length === 0 && !parked) return { clearedActionIds, replanAgentId: null };
   // An active/escalated hold is the vendor's own recovery card and is not
   // lifted here; while one remains, a re-plan wake would only park again.
   const stillBlocked = await getExecutionBlocker(tx, companyId, issueId);
-  return { clearedActionIds, replanAgentId: stillBlocked ? null : input.assigneeAgentId };
+  return {
+    clearedActionIds,
+    replanAgentId: stillBlocked || !input.assigneeAgentId ? null : input.assigneeAgentId,
+  };
 }
 
 type WakeupFn = (

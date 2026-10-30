@@ -4,10 +4,12 @@
 // POST /issues/:id/recovery-actions/resolve for a closed (resolved/
 // cancelled) action targeted by `actionId`; see
 // docs/myrmidon/DIVERGENCE.md "L2".
-import { eq } from "drizzle-orm";
-import { issueRecoveryActions, type Db } from "@myrmidon/db";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { issueRecoveryActions, issues, type Db } from "@myrmidon/db";
 import { notFound } from "../../errors.js";
 import { logActivity, type ActivityPublication } from "../../services/activity-log.js";
+import { executionBlockerPredicate } from "../../services/execution-blocker.js";
+import { settledReplayHoldWhere } from "./human-unblock.js";
 
 type IssueRecoveryAction = typeof issueRecoveryActions.$inferSelect;
 
@@ -84,4 +86,124 @@ export async function clearSettledReplayBlock(input: {
     },
   }, postCommitActivityPublications);
   return updated;
+}
+
+/**
+ * Clears all settled replay holds for an issue (e.g. after a run of an executor succeeds).
+ */
+export async function clearSettledReplayHoldsForIssue(
+  db: Db,
+  companyId: string,
+  issueId: string,
+  actor: ClearSettledReplayBlockActor,
+  note: string,
+  postCommitActivityPublications?: ActivityPublication[],
+): Promise<string[]> {
+  const held = await db
+    .select()
+    .from(issueRecoveryActions)
+    .where(settledReplayHoldWhere(companyId, issueId));
+  const clearedActionIds: string[] = [];
+  for (const action of held) {
+    await clearSettledReplayBlock({
+      db,
+      companyId,
+      action,
+      actor,
+      note,
+      postCommitActivityPublications,
+    });
+    clearedActionIds.push(action.id);
+  }
+  return clearedActionIds;
+}
+
+/**
+ * Clears all settled replay holds for an issue on successful run completion,
+ * gated on authoritative current ownership/execution. Stale or unrelated runs
+ * for an issue must NOT lift the replay guard.
+ */
+export async function clearSettledReplayHoldsOnAuthoritativeRunSuccess(
+  db: Db,
+  run: { id: string; companyId: string; agentId: string; status: string },
+  issue: { id: string; assigneeAgentId: string | null; assigneeUserId: string | null; status: string } | null,
+  postCommitActivityPublications?: ActivityPublication[],
+): Promise<string[] | null> {
+  if (run.status !== "succeeded") return null;
+  if (!issue) return null;
+  if (issue.assigneeAgentId !== run.agentId || issue.assigneeUserId !== null) {
+    return null;
+  }
+  if (issue.status === "done" || issue.status === "cancelled") {
+    return null;
+  }
+  return clearSettledReplayHoldsForIssue(
+    db,
+    run.companyId,
+    issue.id,
+    { actorType: "agent", actorId: run.agentId },
+    `run ${run.id} succeeded`,
+    postCommitActivityPublications,
+  );
+}
+
+/**
+ * Periodically clears settled replay holds older than 24 hours on open tasks
+ * without side effects (safe class: todo/in_progress without pending interactions,
+ * approvals, unblock descriptors or active blockers). One-shot replay protection
+ * should not keep workable tasks permanently stuck if nobody manually intervenes.
+ */
+export async function clearExpiredReplayHolds(db: Db): Promise<number> {
+  const rows = await db
+    .select({
+      action: issueRecoveryActions,
+    })
+    .from(issueRecoveryActions)
+    .innerJoin(issues, eq(issues.id, issueRecoveryActions.sourceIssueId))
+    .where(
+      and(
+        inArray(issueRecoveryActions.status, ["resolved", "cancelled"]),
+        executionBlockerPredicate(),
+        sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+        sql`${issueRecoveryActions.createdAt} < now() - interval '24 hours'`,
+        // Only safe workable statuses without side effects
+        inArray(issues.status, ["todo", "in_progress"]),
+        isNull(issues.unblockDescriptor),
+        sql`not exists (
+          select 1 from issue_thread_interactions iti
+          where iti.issue_id = ${issues.id}
+            and iti.status = 'pending'
+        )`,
+        sql`not exists (
+          select 1 from issue_approvals ia
+          join approvals a on ia.approval_id = a.id
+          where ia.issue_id = ${issues.id}
+            and a.status in ('pending', 'revision_requested')
+        )`,
+        sql`not exists (
+          select 1 from issue_relations ir
+          join issues b on ir.issue_id = b.id
+          where ir.related_issue_id = ${issues.id}
+            and ir.type = 'blocks'
+            and b.status not in ('done', 'cancelled')
+        )`,
+      ),
+    );
+
+  let clearedCount = 0;
+  for (const { action } of rows) {
+    try {
+      await clearSettledReplayBlock({
+        db,
+        companyId: action.companyId,
+        action,
+        actor: { actorType: "agent", actorId: "replay_hold_expiration" },
+        note: "replay hold expired (>24h old on safe workable issue)",
+      });
+      clearedCount++;
+    } catch {
+      // Best effort
+    }
+  }
+  return clearedCount;
 }

@@ -18,6 +18,7 @@ import {
   createDb,
   heartbeatRuns,
   issueRecoveryActions,
+  issueThreadInteractions,
   issues,
 } from "@myrmidon/db";
 import {
@@ -224,6 +225,36 @@ describeEmbeddedPostgres("HOLD-READY: ready means not held, and a parked wake is
       expect(enqueueWakeup).toHaveBeenCalledTimes(1);
     });
 
+    it("idle-pickup skips tasks waiting on pending thread interactions (OPE-7707)", async () => {
+      const { companyId, agentId, issueId } = await seed();
+      await db.insert(issueThreadInteractions).values({
+        companyId,
+        issueId,
+        status: "pending",
+        kind: "ask_user_questions",
+        payload: { questions: ["clarify requirements"] },
+      });
+
+      const enqueueWakeup = enqueueSpy();
+      const result = await pickup(enqueueWakeup, { id: agentId, companyId });
+      expect(result.considered).toBe(0);
+      expect(result.woken).toBe(0);
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    });
+
+    it("idle-pickup skips tasks with unblockDescriptor (OPE-7707)", async () => {
+      const { companyId, agentId, issueId } = await seed();
+      await db.update(issues).set({
+        unblockDescriptor: { reason: "waiting_on_human" } as any,
+      }).where(eq(issues.id, issueId));
+
+      const enqueueWakeup = enqueueSpy();
+      const result = await pickup(enqueueWakeup, { id: agentId, companyId });
+      expect(result.considered).toBe(0);
+      expect(result.woken).toBe(0);
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    });
+
     it("myrmidon(1.6.6 OPE-8988): revisiting an already-settled terminal run opens no new recovery action", async () => {
       const { companyId, agentId, issueId } = await seed();
       const [run] = await db
@@ -351,6 +382,21 @@ describeEmbeddedPostgres("HOLD-READY: ready means not held, and a parked wake is
       const ordinary = await seed();
       await seedParkedWake({ ...ordinary, recoveryActionId: null });
       expect(await issueHasLiveClaimOrWake(db, ordinary.companyId, ordinary)).toBe(true);
+    });
+
+    it("tasks waiting on pending thread interactions are excluded from swarm queues (OPE-7707)", async () => {
+      const { companyId, issueId } = await seed();
+      await seedSettledAction(companyId, issueId, "cleared");
+      await db.insert(issueThreadInteractions).values({
+        companyId,
+        issueId,
+        status: "pending",
+        kind: "ask_user_questions",
+        payload: { questions: ["clarify"] },
+      });
+
+      expect(await listRoleQueue(db, companyId, "engineer")).toEqual([]);
+      expect(await listIdleRolePairs(db, companyId)).toEqual([]);
     });
   });
 });

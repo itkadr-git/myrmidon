@@ -1,15 +1,20 @@
 // myrmidon(L2): clearSettledReplayBlock — see clear.ts.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
-import { activityLog, agents, companies, createDb, issueRecoveryActions, issues } from "@myrmidon/db";
+import { eq, sql } from "drizzle-orm";
+import { activityLog, agents, companies, createDb, issueRecoveryActions, issues, issueThreadInteractions } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import { subscribeCompanyLiveEvents } from "../../services/live-events.js";
-import { clearSettledReplayBlock } from "./clear.js";
+import {
+  clearExpiredReplayHolds,
+  clearSettledReplayBlock,
+  clearSettledReplayHoldsForIssue,
+  clearSettledReplayHoldsOnAuthoritativeRunSuccess,
+} from "./clear.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -142,5 +147,183 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
         actor: { actorType: "user", actorId: "board" }, note: null,
       }),
     ).rejects.toThrow(/not found/);
+  });
+
+  it("clears all settled replay holds for an issue (e.g. on run success)", async () => {
+    const { companyId, issueId, action } = await seed();
+    const clearedIds = await clearSettledReplayHoldsForIssue(
+      db,
+      companyId,
+      issueId,
+      { actorType: "agent", actorId: "test-agent" },
+      "run succeeded",
+    );
+    expect(clearedIds).toContain(action.id);
+    const [persisted] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    expect((persisted!.evidence as any).automaticRecovery.replay).toBe("cleared");
+  });
+
+  it("clears expired replay holds older than 24 hours on safe workable tasks", async () => {
+    const { companyId, issueId, action } = await seed();
+    // Age the recovery action past 24 hours
+    await db
+      .update(issueRecoveryActions)
+      .set({ createdAt: sql`now() - interval '25 hours'` })
+      .where(eq(issueRecoveryActions.id, action.id));
+
+    const clearedCount = await clearExpiredReplayHolds(db);
+    expect(clearedCount).toBeGreaterThanOrEqual(1);
+    const [persisted] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    expect((persisted!.evidence as any).automaticRecovery.replay).toBe("cleared");
+    expect((persisted!.evidence as any).automaticRecovery.replayClearedNote).toContain("expired (>24h");
+  });
+
+  it("leaves expired replay hold intact if task is blocked or has side effects/external wait", async () => {
+    // 1. Task in blocked status
+    const { companyId, issueId: blockedIssueId, action: blockedAction } = await seed();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, blockedIssueId));
+    await db
+      .update(issueRecoveryActions)
+      .set({ createdAt: sql`now() - interval '25 hours'` })
+      .where(eq(issueRecoveryActions.id, blockedAction.id));
+
+    // 2. Task in in_review status
+    const { issueId: reviewIssueId, action: reviewAction } = await seed();
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, reviewIssueId));
+    await db
+      .update(issueRecoveryActions)
+      .set({ createdAt: sql`now() - interval '25 hours'` })
+      .where(eq(issueRecoveryActions.id, reviewAction.id));
+
+    // 3. Task with unblockDescriptor
+    const { issueId: descIssueId, action: descAction } = await seed();
+    await db
+      .update(issues)
+      .set({ unblockDescriptor: { reason: "waiting on human", owner: "user" } })
+      .where(eq(issues.id, descIssueId));
+    await db
+      .update(issueRecoveryActions)
+      .set({ createdAt: sql`now() - interval '25 hours'` })
+      .where(eq(issueRecoveryActions.id, descAction.id));
+
+    // 4. Task with pending thread interaction
+    const { issueId: pendingInterIssueId, action: pendingInterAction } = await seed();
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId: pendingInterIssueId,
+      status: "pending",
+      kind: "request_confirmation",
+      payload: { questions: ["confirm?"] },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db
+      .update(issueRecoveryActions)
+      .set({ createdAt: sql`now() - interval '25 hours'` })
+      .where(eq(issueRecoveryActions.id, pendingInterAction.id));
+
+    await clearExpiredReplayHolds(db);
+
+    const [persistedBlocked] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, blockedAction.id));
+    expect((persistedBlocked!.evidence as any).automaticRecovery.replay).toBe("blocked");
+
+    const [persistedReview] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, reviewAction.id));
+    expect((persistedReview!.evidence as any).automaticRecovery.replay).toBe("blocked");
+
+    const [persistedDesc] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, descAction.id));
+    expect((persistedDesc!.evidence as any).automaticRecovery.replay).toBe("blocked");
+
+    const [persistedPendingInter] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, pendingInterAction.id));
+    expect((persistedPendingInter!.evidence as any).automaticRecovery.replay).toBe("blocked");
+  });
+
+  describe("clearSettledReplayHoldsOnAuthoritativeRunSuccess", () => {
+    it("clears hold when run succeeded and matches current authoritative assignee", async () => {
+      const { companyId, issueId, agentId, action } = await seed();
+      const run = {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        status: "succeeded",
+      };
+      const issue = {
+        id: issueId,
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+        status: "in_progress",
+      };
+
+      const result = await clearSettledReplayHoldsOnAuthoritativeRunSuccess(db, run, issue);
+      expect(result).toContain(action.id);
+
+      const [persisted] = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.id, action.id));
+      expect((persisted!.evidence as any).automaticRecovery.replay).toBe("cleared");
+    });
+
+    it("leaves hold intact when run is stale/non-current (assignee mismatch)", async () => {
+      const { companyId, issueId, action } = await seed();
+      const run = {
+        id: randomUUID(),
+        companyId,
+        agentId: "stale-past-agent",
+        status: "succeeded",
+      };
+      const issue = {
+        id: issueId,
+        assigneeAgentId: "current-new-agent",
+        assigneeUserId: null,
+        status: "in_progress",
+      };
+
+      const result = await clearSettledReplayHoldsOnAuthoritativeRunSuccess(db, run, issue);
+      expect(result).toBeNull();
+
+      const [persisted] = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.id, action.id));
+      expect((persisted!.evidence as any).automaticRecovery.replay).toBe("blocked");
+    });
+
+    it("leaves hold intact when issue is assigned to a user", async () => {
+      const { companyId, issueId, agentId, action } = await seed();
+      const run = {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        status: "succeeded",
+      };
+      const issue = {
+        id: issueId,
+        assigneeAgentId: agentId,
+        assigneeUserId: "some-user-id",
+        status: "in_progress",
+      };
+
+      const result = await clearSettledReplayHoldsOnAuthoritativeRunSuccess(db, run, issue);
+      expect(result).toBeNull();
+
+      const [persisted] = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.id, action.id));
+      expect((persisted!.evidence as any).automaticRecovery.replay).toBe("blocked");
+    });
   });
 });
