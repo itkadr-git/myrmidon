@@ -102,13 +102,6 @@ async function loadSerializeAppliedMarker() {
   const src = path.join(serverPkg, "src/myrmidon/bot-containers/docker-driver.ts");
   if (!fs.existsSync(src)) throw new Error(`missing ${src}`);
 
-  try {
-    const mod = await import(pathToFileURL(src).href);
-    if (typeof mod.serializeAppliedMarker === "function") {
-      return mod.serializeAppliedMarker;
-    }
-  } catch {}
-
   // Hash every source file of the module graph: docker-driver.ts plus the
   // relative imports it actually reaches (driver.js, types.js, ustar.js —
   // anything new flows into the hash automatically).

@@ -1833,10 +1833,6 @@ describe("myrmidon(G2) classifyProfileChange integration", () => {
     ).toBe("restart");
   });
 
-  // Skills are restart-class, not files-class: the vendor gateway's skills
-  // index is cached in-process (LRU + disk snapshot) and does not watch the
-  // skills directory, so a running gateway never picks up an added,
-  // removed or edited skill on its own — see the compiler's comment at the
   // OPE-9838: skills are hot-delivered into hermes/skills/paperclip-managed
   // and picked up run-scoped without container restart or maintenance.
   it("reports \"files\" when an existing skill's content changes (skills are files-class)", () => {

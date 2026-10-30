@@ -1512,7 +1512,7 @@ export function dockerBotContainerDriver(
    * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the bot's own skills
    * (hermes/skills/ — the container's ~/.hermes/skills) as (directory name,
    * files), for the reconcile pass's back-import into the company catalog.
-   * The board's own delivery (hermes/skills-board/) is NOT part of the
+   * The board's own delivery (hermes/skills/paperclip-managed/) is NOT part of the
    * result: it is the profile's managed directory, and reading it back would
    * re-import the catalog's own copy. Works on a live container (the Docker
    * archive API does not need exec); a stopped or missing container yields
