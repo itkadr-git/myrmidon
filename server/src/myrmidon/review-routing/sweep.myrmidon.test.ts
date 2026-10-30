@@ -18,7 +18,7 @@ import { readReviewRoutingSignals, resetReviewRoutingSignals } from "./attention
 import type { CreatePrRoutingTaskInput, InReviewIssueRow, PrCandidateRow, PrRoutingKind, ReviewRoutingStore, RoutingHistory } from "./store.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
-import { createReviewRoutingSweep } from "./sweep.js";
+import { createReviewRoutingSweep, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep.js";
 import type { PullRequestHeadResolver } from "./github.js";
 import type { PullRequestHeadState } from "./pr-policy.js";
 
@@ -70,7 +70,6 @@ function makeStore(fx: Fixture) {
     },
     recordReviewWake: async ({ issueId, at, attempt }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }) => {
       const existing = fx.wakeStates?.get(issueId);
-      if (existing?.lastWakeAt && at.getTime() - existing.lastWakeAt.getTime() < 10 * 60_000) return;
       const state = existing ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
       fx.wakeStates?.set(issueId, { ...state, lastWakeAt: at, attempts: attempt });
     },
@@ -127,6 +126,13 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
     wakeReviewer,
     logActivity: async (entry) => {
       activities.push({ action: entry.action, issueId: entry.issueId, details: entry.details });
+      if (entry.action === REVIEW_ROUTING_WAKE_ACTION && existingWake) {
+        fixture.wakeStates?.set(entry.issueId, {
+          ...existingWake,
+          lastWakeAt: new Date(String(entry.createdAt)),
+          attempts: Number(entry.details.attempt ?? existingWake.attempts),
+        });
+      }
       if (entry.action === REVIEW_ROUTING_ASSIGNED_ACTION) {
         const previous = fixture.history.get(entry.issueId);
         fixture.history.set(entry.issueId, {
@@ -189,20 +195,32 @@ describe("review wake liveness", () => {
     expect(result.woken).toBe(1);
     expect(t.wakes).toHaveLength(1);
     expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1", retryAttempt: 1 });
-    expect(t.activities).toEqual(expect.arrayContaining([
-      expect.objectContaining({ action: REVIEW_ROUTING_WAKE_ACTION, issueId: "1" }),
-    ]));
+    expect(t.activities).toEqual([
+      expect.objectContaining({ action: REVIEW_ROUTING_WAKE_ACTION, issueId: "1", details: expect.objectContaining({ reviewerAgentId: REV_A, stageId: "stage-1", attempt: 1 }) }),
+    ]);
     expect(t.fixture.history.get("1")).toBeUndefined();
   });
 
-  it("records a wake after requesting it so the next pass uses cooldown", async () => {
+  it("records one wake activity event for a successful retry", async () => {
     const t = setup({}, { wakeStates: new Map() });
     t.fixture.rows.set("1", pending("1", REV_A));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(1);
+    expect(t.fixture.wakeStates!.get("1")).toEqual({ activeRun: false, pendingWake: false, lastWakeAt: NOW, attempts: 1 });
+    expect(t.activities).toEqual([
+      expect.objectContaining({ action: REVIEW_ROUTING_WAKE_ACTION, issueId: "1", details: expect.objectContaining({ reviewerAgentId: REV_A, stageId: "stage-1", attempt: 1 }) }),
+    ]);
+  });
+  it("records a wake before dispatch; dispatch failures still respect persisted backoff", async () => {
+    const t = setup({}, { wakeStates: new Map() });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    t.wakeReviewer.mockRejectedValueOnce(new Error("dispatch unavailable"));
     const first = await t.sweep.sweep(NOW, { force: true });
-    expect(first.woken).toBe(1);
+    expect(first.failed).toBe(1);
+    expect(t.fixture.wakeStates!.get("1")).toEqual({ activeRun: false, pendingWake: false, lastWakeAt: NOW, attempts: 1 });
     const second = await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true });
     expect(second.woken).toBe(0);
-    expect(t.wakes).toHaveLength(1);
+    expect(t.wakeReviewer).toHaveBeenCalledTimes(1);
   });
 
   it("measures the 30-minute stale threshold from last update, not issue creation", async () => {
@@ -213,18 +231,33 @@ describe("review wake liveness", () => {
     expect(t.wakes).toHaveLength(0);
   });
 
-  it("does not wake when a run is active or the load limit is reached", async () => {
-    const t = setup({ maxLoadPerReviewer: 2 }, { wakeStates: new Map() });
-    t.fixture.load.set(REV_B, 2);
-    t.fixture.wakeStates!.set("1", { activeRun: true, pendingWake: false, lastWakeAt: null, attempts: 0 });
-    t.fixture.wakeStates!.set("2", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
+  it("recovers stale reviews regardless of assignment load, while respecting active runs and pending wakes", async () => {
+    const t = setup({ maxLoadPerReviewer: 1 }, { wakeStates: new Map() });
+    t.fixture.load.set(REV_A, 12);
+    t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
+    t.fixture.wakeStates!.set("2", { activeRun: true, pendingWake: false, lastWakeAt: null, attempts: 0 });
+    t.fixture.wakeStates!.set("3", { activeRun: false, pendingWake: true, lastWakeAt: null, attempts: 0 });
     t.fixture.rows.set("1", pending("1", REV_A));
-    t.fixture.rows.set("2", pending("2", REV_B));
+    t.fixture.rows.set("2", pending("2", REV_A));
+    t.fixture.rows.set("3", pending("3", REV_A));
     const result = await t.sweep.sweep(NOW, { force: true });
-    expect(result.woken).toBe(0);
-    expect(t.wakes).toHaveLength(0);
+    expect(result.woken).toBe(1);
+    expect(t.wakes.map(({ issueId }) => issueId)).toEqual(["1"]);
   });
 
+  it("caps exponential retry backoff at 60 minutes", async () => {
+    const t = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 59 * 60_000), attempts: 12 }],
+    ]) });
+    expect(REVIEW_WAKE_MAX_BACKOFF_MS).toBe(60 * 60_000);
+    expect(Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** 12)).toBe(60 * 60_000);
+    expect(Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** 11)).toBe(60 * 60_000);
+    t.fixture.rows.set("1", pending("1", REV_A));
+    expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(0);
+    const retryAt = new Date(NOW.getTime() + 60_000);
+    expect((await t.sweep.sweep(retryAt, { force: true })).woken).toBe(1);
+    expect(t.wakes[0]?.retryAttempt).toBe(13);
+  });
   it("does not wake a review before 30 minutes or inside retry backoff", async () => {
     const t = setup({ maxLoadPerReviewer: 2 }, { wakeStates: new Map([
       ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 5 * 60_000), attempts: 1 }],

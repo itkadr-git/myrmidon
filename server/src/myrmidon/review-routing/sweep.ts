@@ -41,7 +41,6 @@ import {
   REVIEW_ROUTING_ASSIGNED_ACTION,
   REVIEW_ROUTING_PR_TASK_CREATED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
-  REVIEW_ROUTING_WAKE_ACTION,
   REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
@@ -202,7 +201,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       const participant = typeof state.currentParticipant === "object" && state.currentParticipant !== null
         ? (state.currentParticipant as Record<string, unknown>)
         : {};
-      return participant.type === "agent" && participant.agentId === review.reviewerAgentId;
+      return state.status === "pending" && state.currentStageType === "review" && state.currentStageId === review.stageId && participant.type === "agent" && participant.agentId === review.reviewerAgentId;
     });
     const orderedPending = [...activeStages].sort((a, b) => a.row.createdAt.getTime() - b.row.createdAt.getTime());
     const reviewersWoken = new Set<string>();
@@ -216,7 +215,6 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           stageId: review.stageId,
         });
         if (wakeState.activeRun || wakeState.pendingWake) continue;
-        if ((liveByReviewer.get(review.reviewerAgentId) ?? 0) >= settings.maxLoadPerReviewer) continue;
         const lastActivity = row.updatedAt ?? row.createdAt;
         const idleMs = now.getTime() - lastActivity.getTime();
         if (idleMs < REVIEW_WAKE_STALE_AFTER_MS) continue;
@@ -227,13 +225,8 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           (row.executionState ?? {}) as Record<string, unknown>,
         );
         const currentStage = review.stageId;
-        await deps.wakeReviewer(review.reviewerAgentId, {
-          issueId: row.id,
-          reason: "execution_review_requested",
-          mutation: "myrmidon_review_wakeup_retry",
-          executionStage: wakeContext as unknown as Record<string, unknown>,
-          retryAttempt: attempt,
-        });
+        // Persist the wake request before dispatch: a failure while enqueuing
+        // still observes the cooldown on the next sweep rather than looping.
         await deps.store.recordReviewWake({
           companyId,
           issueId: row.id,
@@ -242,16 +235,12 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           at: now,
           attempt,
         });
-        await deps.logActivity({
-          companyId,
-          action: REVIEW_ROUTING_WAKE_ACTION,
+        await deps.wakeReviewer(review.reviewerAgentId, {
           issueId: row.id,
-          details: {
-            reviewerAgentId: review.reviewerAgentId,
-            stageId: currentStage,
-            mutation: "myrmidon_review_wakeup_retry",
-            attempt,
-          },
+          reason: "execution_review_requested",
+          mutation: "myrmidon_review_wakeup_retry",
+          executionStage: wakeContext as unknown as Record<string, unknown>,
+          retryAttempt: attempt,
         });
         reviewersWoken.add(review.reviewerAgentId);
         liveByReviewer.set(review.reviewerAgentId, (liveByReviewer.get(review.reviewerAgentId) ?? 0) + 1);
@@ -737,12 +726,6 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     mutation: string,
   ) {
     try {
-      await deps.wakeReviewer(reviewerId, {
-        issueId: row.id,
-        reason: "execution_review_requested",
-        mutation,
-        executionStage: { ...buildReviewRoutingWakeContext(state ?? {}) },
-      });
       await deps.store.recordReviewWake({
         companyId: row.companyId,
         issueId: row.id,
@@ -750,6 +733,12 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         stageId: typeof state?.currentStageId === "string" ? state.currentStageId : "review",
         at: new Date(),
         attempt: 1,
+      });
+      await deps.wakeReviewer(reviewerId, {
+        issueId: row.id,
+        reason: "execution_review_requested",
+        mutation,
+        executionStage: { ...buildReviewRoutingWakeContext(state ?? {}) },
       });
       await deps.logActivity({
         companyId: row.companyId,
