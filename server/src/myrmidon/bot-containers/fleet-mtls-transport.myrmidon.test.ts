@@ -387,7 +387,7 @@ describe("fleet mTLS transport wiring", () => {
       const logsRes = await request(app).get(`/myrmidon/fleet/bots/${BOT_KEY}/logs?tail=50`);
       expect(logsRes.status).toBe(502);
       expect(logsRes.body.error).toContain(
-        'Site "remote-vm1" logs failed: site "remote-vm1" has no valid mTLS client certificate, key, or CA',
+        'Site "remote-vm1" could not give the log of bot "' + BOT_KEY + '": site "remote-vm1" has no valid mTLS client certificate, key, or CA',
       );
     });
   });
