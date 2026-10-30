@@ -510,6 +510,21 @@ export interface ServerAdapterModule {
       reason: string;
     };
   }) => Promise<{ stopped: boolean }>;
+  /**
+   * myrmidon(HERMES-RUN-REATTACH, OPE-10023): probe whether a remote gateway run
+   * is still alive on the bot gateway, completed, missing (404), or unreachable.
+   */
+  probeGatewayRunForBoard?: (input: {
+    baseUrl: string;
+    apiKey?: string | null;
+    headers?: Record<string, string> | string | null;
+    gatewayRunId: string;
+    timeoutMs?: number;
+  }) => Promise<{
+    state: "live" | "terminal" | "not_found" | "unreachable";
+    status: string | null;
+    error?: string;
+  }>;
   supportsLocalAgentJwt?: boolean;
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;

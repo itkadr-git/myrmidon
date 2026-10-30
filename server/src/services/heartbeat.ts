@@ -19536,6 +19536,87 @@ export function heartbeatService(
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
+      // myrmidon(OPE-10023): hermes_gateway runs execute remotely on the bot gateway.
+      // Do not reap them as lost unless the gateway explicitly confirms the run is gone (404).
+      // If the run is still live or terminal, spare it and reattach. If unreachable, wait
+      // a reasonable grace period (15m) before finalizing.
+      if (adapterType === "hermes_gateway" && run.externalRunId) {
+        const gatewayAdapter = getServerAdapter("hermes_gateway");
+        const probeFn = gatewayAdapter?.probeGatewayRunForBoard;
+        const rawConfig = parseObject(adapterConfig);
+        const baseUrl =
+          readNonEmptyString(rawConfig.apiBaseUrl) ??
+          readNonEmptyString(rawConfig.baseUrl) ??
+          readNonEmptyString(rawConfig.url);
+        const apiKey =
+          readNonEmptyString(rawConfig.apiKey) ??
+          readNonEmptyString(rawConfig.token);
+        if (baseUrl && probeFn) {
+          try {
+            const probe = await probeFn({
+              baseUrl,
+              apiKey,
+              headers: rawConfig.headers as any,
+              gatewayRunId: run.externalRunId,
+            });
+            if (probe.state === "live" || probe.state === "terminal") {
+              logger.info(
+                { runId: run.id, externalRunId: run.externalRunId, status: probe.status },
+                "reapOrphanedRuns: hermes_gateway run is still alive/terminal on gateway; sparing from orphan reaper and triggering reattach",
+              );
+              try {
+                const execution = executeRun(run.id, {
+                  gatewayRunReattach: run.externalRunId,
+                }).catch((error) => {
+                  logger.error(
+                    { err: error, runId: run.id, gatewayRunId: run.externalRunId },
+                    "gateway run reattach execution failed during reapOrphanedRuns",
+                  );
+                });
+                activeRunExecutionPromises.add(execution);
+                void execution.finally(() => {
+                  activeRunExecutionPromises.delete(execution);
+                });
+                resumedRunIds.add(run.id);
+              } catch (reDispatchErr) {
+                logger.warn(
+                  { err: reDispatchErr, runId: run.id, externalRunId: run.externalRunId },
+                  "reapOrphanedRuns: failed to re-dispatch live gateway run during reap",
+                );
+              }
+              continue;
+            }
+            if (probe.state === "unreachable") {
+              const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+              const GATEWAY_UNREACHABLE_GRACE_MS = 15 * 60 * 1000;
+              if (now.getTime() - refTime < GATEWAY_UNREACHABLE_GRACE_MS) {
+                logger.warn(
+                  { runId: run.id, externalRunId: run.externalRunId, error: probe.error },
+                  "reapOrphanedRuns: hermes_gateway is unreachable; sparing run from orphan reaper during grace period",
+                );
+                continue;
+              }
+              logger.warn(
+                { runId: run.id, externalRunId: run.externalRunId, error: probe.error },
+                "reapOrphanedRuns: hermes_gateway remained unreachable past grace period; proceeding with reap",
+              );
+            }
+            if (probe.state === "not_found") {
+              logger.info(
+                { runId: run.id, externalRunId: run.externalRunId },
+                "reapOrphanedRuns: hermes_gateway confirmed run not found (404); proceeding with reap as process_lost",
+              );
+            }
+          } catch (probeErr) {
+            logger.warn(
+              { err: probeErr, runId: run.id, externalRunId: run.externalRunId },
+              "reapOrphanedRuns: error probing hermes_gateway; sparing run from orphan reaper",
+            );
+            continue;
+          }
+        }
+      }
+
       const currentAdapterTracksLocalChild =
         isTrackedLocalChildProcessAdapter(adapterType);
       const tracksLegacyLocalChild =
@@ -32695,6 +32776,25 @@ export function heartbeatService(
       void execution.finally(() => {
         activeRunExecutionPromises.delete(execution);
       });
+    },
+
+    // myrmidon(HERMES-RUN-REATTACH, OPE-10023): probe remote gateway run liveness.
+    probeGatewayRun: async (input: {
+      baseUrl: string;
+      apiKey?: string | null;
+      headers?: Record<string, string> | string | null;
+      gatewayRunId: string;
+      timeoutMs?: number;
+    }) => {
+      const adapter = getServerAdapter("hermes_gateway");
+      if (!adapter?.probeGatewayRunForBoard) {
+        return {
+          state: "unreachable" as const,
+          status: null,
+          error: "Adapter probeGatewayRunForBoard not found",
+        };
+      }
+      return adapter.probeGatewayRunForBoard(input);
     },
 
     // myrmidon(1.6.6 REMOTE-SITES-T4): finalize one run of a lost execution site as

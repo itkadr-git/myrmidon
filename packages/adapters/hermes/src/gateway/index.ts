@@ -1,7 +1,7 @@
 import type { AdapterSessionManagement, ServerAdapterModule } from "@myrmidon/adapter-utils";
 import { ADAPTER_LABEL, ADAPTER_TYPE } from "./shared/constants.js";
 import { listGatewaySkills, syncGatewaySkills } from "./server/myrmidon-skills.js";
-import { execute, getConfigSchema, sessionCodec, stopGatewayRunForBoard, testEnvironment } from "./server/index.js";
+import { execute, getConfigSchema, probeGatewayRunForBoard, sessionCodec, stopGatewayRunForBoard, testEnvironment } from "./server/index.js";
 
 export const type = ADAPTER_TYPE;
 export const label = ADAPTER_LABEL;
@@ -76,6 +76,9 @@ export function createServerAdapter(): ServerAdapterModule {
     // not actively supervising; the heartbeat cancellation path uses it to
     // free the gateway slot immediately.
     stopGatewayRunForBoard,
+    // myrmidon(HERMES-RUN-REATTACH, OPE-10023): probe gateway for run liveness
+    // so the board reattaches live runs and protects them from orphan reaper.
+    probeGatewayRunForBoard,
     supportsLocalAgentJwt: false,
     // myrmidon(G4): the server materializes the managed instructions bundle
     // into adapterConfig.instructionsFilePath (instructionsPathKey default)
