@@ -32227,9 +32227,7 @@ export function heartbeatService(
         .from(heartbeatRuns)
         .where(
           and(
-            agentId
-              ? eq(heartbeatRuns.companyId, companyId)
-              : eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.companyId, companyId),
             agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
             options.wakeReason
               ? sql`(${heartbeatRuns.contextWakeReason} = ${options.wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${options.wakeReason})`
