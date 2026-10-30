@@ -66,6 +66,7 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
       harnessKind: issues.harnessKind,
       executionWorkspacePreference: issues.executionWorkspacePreference,
       executionState: issues.executionState,
+      since: sql<Date>`coalesce((select max(a.created_at) from ${activityLog} a where a.company_id = ${issues.companyId} and a.entity_type = 'issue' and a.entity_id = ${issues.id}::text and a.action = 'issue.updated' and a.details->>'assigneeAgentId' = ${issues.assigneeAgentId}::text), ${issues.updatedAt}, ${issues.createdAt})`,
       updatedAt: issues.updatedAt,
       projectDefaultCasteKey: projects.defaultCasteKey,
       projectName: projects.name,
@@ -107,7 +108,7 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
         subjectKind: "issue",
         title: issue.title,
         metric: "codeTasksOnNoncodingRolesMs",
-        since: new Date(issue.updatedAt).toISOString(),
+        since: new Date((issue as any).since ?? issue.updatedAt).toISOString(),
       });
     }
   }

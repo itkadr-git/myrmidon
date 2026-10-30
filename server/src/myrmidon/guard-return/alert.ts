@@ -2,11 +2,10 @@
 // 1.6.6 GUARD-RETURN (OPE-9962): Alert evaluation for code tasks on non-coding roles.
 // Triggers an alert when myrmidon_code_tasks_on_noncoding_roles > 0 for longer than 30 minutes.
 
-import { and, eq, inArray, isNull } from "drizzle-orm";
-import { agents, issues, issueWorkProducts, projects, type Db } from "@myrmidon/db";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { activityLog, agents, issues, issueWorkProducts, projects, type Db } from "@myrmidon/db";
 import {
   DEFAULT_NONCODING_ROLE_ALERT_THRESHOLD_MS,
-  NONCODING_ROLES,
   isDevProjectCodeIssue,
 } from "./domain.js";
 
@@ -32,7 +31,7 @@ export async function evaluateCodeTasksOnNoncodingRolesAlert(
   const conditions = [
     inArray(issues.status, ["in_progress", "in_review"]),
     isNull(issues.hiddenAt),
-    inArray(agents.role, Array.from(NONCODING_ROLES)),
+    ne(agents.role, "engineer"),
   ];
   if (companyId) {
     conditions.push(eq(issues.companyId, companyId));
@@ -49,6 +48,7 @@ export async function evaluateCodeTasksOnNoncodingRolesAlert(
       labels: issues.labels,
       harnessKind: issues.harnessKind,
       executionWorkspacePreference: issues.executionWorkspacePreference,
+      since: sql<Date>`coalesce((select max(a.created_at) from ${activityLog} a where a.company_id = ${issues.companyId} and a.entity_type = 'issue' and a.entity_id = ${issues.id}::text and a.action = 'issue.updated' and a.details->>'assigneeAgentId' = ${issues.assigneeAgentId}::text), ${issues.updatedAt}, ${issues.createdAt})`,
       updatedAt: issues.updatedAt,
       createdAt: issues.createdAt,
       assigneeRole: agents.role,
@@ -107,7 +107,7 @@ export async function evaluateCodeTasksOnNoncodingRolesAlert(
     if (!isCode) continue;
     codeTaskCount++;
 
-    const sinceDate = row.updatedAt ?? row.createdAt;
+    const sinceDate = (row as any).since ?? row.updatedAt ?? row.createdAt;
     const durationMs = Math.max(0, now.getTime() - new Date(sinceDate).getTime());
     if (durationMs > maxDurationMs) {
       maxDurationMs = durationMs;

@@ -543,6 +543,7 @@ describe("1.6.6 GUARD-RETURN: alert evaluation", () => {
       labels: [],
       harnessKind: null,
       executionWorkspacePreference: null,
+      since: assigned40MinAgo,
       updatedAt: recentUpdatedAt,
       createdAt: assigned40MinAgo,
       assigneeRole: "lead",
