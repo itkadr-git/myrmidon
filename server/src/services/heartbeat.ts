@@ -30491,8 +30491,66 @@ export function heartbeatService(
           const explicitRewake = opts.requestedByActorType === "user" ||
             Boolean(explicitResumeSession && opts.requestedByActorType !== "agent") ||
             reason === "ci_completed";
-          if (
-            (rewakeState?.agentId === agentId) ||
+
+          if (rewakeState?.agentId === agentId) {
+            let shouldThaw = explicitRewake || issueStateChanged;
+            if (!shouldThaw) {
+              const newInputRows = await tx
+                .select({ id: activityLog.id })
+                .from(activityLog)
+                .where(
+                  and(
+                    eq(activityLog.companyId, agent.companyId),
+                    eq(activityLog.entityType, "issue"),
+                    eq(activityLog.entityId, issue.id),
+                    gt(activityLog.createdAt, new Date(rewakeState.frozenAt)),
+                    or(
+                      and(
+                        eq(activityLog.actorType, "user"),
+                        ne(activityLog.actorId, agentId),
+                      ),
+                      and(
+                        eq(activityLog.actorType, "system"),
+                        inArray(activityLog.action, [
+                          "issue.blockers_resolved_wake_emitted",
+                          "issue.work_product_updated",
+                          "myrmidon.task_pr_sync.settled",
+                          "myrmidon.task_pr_sync.returned",
+                        ]),
+                      ),
+                    ),
+                    inArray(activityLog.action, [
+                      "issue.comment_added",
+                      "issue.updated",
+                      "issue.assigned",
+                      "issue.blockers_resolved_wake_emitted",
+                      "issue.work_product_updated",
+                      "myrmidon.task_pr_sync.settled",
+                      "myrmidon.task_pr_sync.returned",
+                    ]),
+                  ),
+                )
+                .limit(1);
+              if (newInputRows.length > 0) {
+                shouldThaw = true;
+              }
+            }
+
+            if (shouldThaw) {
+              const nextBlocker = issue.blockerMetadata?.blockReason
+                ? { ...issue.blockerMetadata, issueRewakeFreeze: null }
+                : null;
+              await tx
+                .update(issues)
+                .set({ blockerMetadata: nextBlocker })
+                .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+              issue.blockerMetadata = nextBlocker;
+              // Thawed: proceed to normal admission below
+            } else {
+              // Strictly sticky freeze: remain frozen until an explicit thaw event occurs
+              return { kind: "skipped" as const };
+            }
+          } else if (
             isThrottleCandidateIssueRewake({
               reason,
               wakeCommentId: wakeCommentId ?? null,
@@ -30518,7 +30576,7 @@ export function heartbeatService(
                   eq(heartbeatRuns.companyId, agent.companyId),
                   eq(heartbeatRuns.agentId, agentId),
                   sql`${heartbeatRuns.finishedAt} is not null`,
-                  rewakeState?.agentId === agentId ? undefined : gte(
+                  gte(
                     heartbeatRuns.finishedAt,
                     new Date(throttleNow.getTime() - ISSUE_REWAKE_LOOKBACK_MS),
                   ),
@@ -30558,25 +30616,8 @@ export function heartbeatService(
                         eq(activityLog.companyId, agent.companyId),
                         eq(activityLog.entityType, "issue"),
                         eq(activityLog.entityId, issue.id),
-                        gt(activityLog.createdAt, rewakeState?.agentId === agentId
-                          ? new Date(rewakeState.frozenAt) : lastRunFinishedAt),
-                        rewakeState?.agentId === agentId
-                          ? or(
-                              and(eq(activityLog.actorType, "user"),
-                                ne(activityLog.actorId, agentId)),
-                              and(eq(activityLog.actorType, "system"), inArray(activityLog.action, [
-                                "issue.blockers_resolved_wake_emitted", "issue.work_product_updated",
-                                "myrmidon.task_pr_sync.settled", "myrmidon.task_pr_sync.returned",
-                              ])),
-                            )
-                          : undefined,
-                        rewakeState?.agentId === agentId
-                          ? inArray(activityLog.action, [
-                              "issue.comment_added", "issue.updated", "issue.assigned",
-                              "issue.blockers_resolved_wake_emitted", "issue.work_product_updated",
-                              "myrmidon.task_pr_sync.settled", "myrmidon.task_pr_sync.returned",
-                            ])
-                          : inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+                        gt(activityLog.createdAt, lastRunFinishedAt),
+                        inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
                         wakeCommentId && opts.requestedByActorType === "agent"
                           ? ne(activityLog.actorType, "agent")
                           : undefined,
@@ -30602,9 +30643,8 @@ export function heartbeatService(
                 hasNewIssueInputSinceLastRun: newInputRows.length > 0,
               });
 
-              if (throttleDecision.blocked && !explicitRewake && !issueStateChanged &&
-                !(rewakeState?.agentId === agentId && newInputRows.length > 0)) {
-                if (throttleDecision.frozen && rewakeState?.agentId !== agentId) {
+              if (throttleDecision.blocked && !explicitRewake) {
+                if (throttleDecision.frozen) {
                   await tx
                     .select({ id: issues.id })
                     .from(issues)
@@ -30741,24 +30781,6 @@ export function heartbeatService(
                 }
                 return { kind: "skipped" as const };
               }
-              if (rewakeState?.agentId === agentId && (newInputRows.length > 0 || explicitRewake || issueStateChanged)) {
-                const nextBlocker = issue.blockerMetadata?.blockReason
-                  ? { ...issue.blockerMetadata, issueRewakeFreeze: null }
-                  : null;
-                await tx.update(issues).set({
-                  blockerMetadata: nextBlocker,
-                }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
-                issue.blockerMetadata = nextBlocker;
-              }
-            }
-            if (rewakeState?.agentId === agentId && (explicitRewake || issueStateChanged) && recentTerminalRuns.length === 0) {
-              const nextBlocker = issue.blockerMetadata?.blockReason
-                ? { ...issue.blockerMetadata, issueRewakeFreeze: null }
-                : null;
-              await tx.update(issues).set({
-                blockerMetadata: nextBlocker,
-              }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
-              issue.blockerMetadata = nextBlocker;
             }
           }
 

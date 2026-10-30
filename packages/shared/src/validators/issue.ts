@@ -500,7 +500,7 @@ export const issueBlockerMetadataSchema: z.ZodType<IssueBlockerMetadata> = z
     const parsed = targetSchema.safeParse(val);
     if (!parsed.success) {
       for (const issue of parsed.error.issues) {
-        ctx.addIssue(issue);
+        ctx.addIssue(issue as any);
       }
     }
   }) as unknown as z.ZodType<IssueBlockerMetadata>;

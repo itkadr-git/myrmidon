@@ -275,6 +275,38 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(thawedIssueCi?.blocker?.issueRewakeFreeze).toBeFalsy();
   });
 
+  it("remains sticky-frozen even when runs age out of the lookback window until explicit thaw", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    for (let i = 0; i < 6; i += 1) {
+      await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 60 - i * 5 });
+    }
+    const poll = () => heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_continuation_needed",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system", requestedByActorId: "test",
+    });
+    expect(await poll()).toBeNull();
+    const [frozenIssue] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(frozenIssue?.blocker?.issueRewakeFreeze).toMatchObject({ agentId, noProgressStreak: 6 });
+
+    // Delete all terminal runs to simulate lookback window aging / sample truncation
+    await db.delete(heartbeatRuns);
+
+    // Poll still returns null (sticky freeze remains active)
+    expect(await poll()).toBeNull();
+    const [stillFrozen] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(stillFrozen?.blocker?.issueRewakeFreeze).toBeTruthy();
+
+    // Only authorized thaw event thaws it
+    await db.insert(activityLog).values({
+      companyId, actorType: "user", actorId: "board-user", action: "issue.comment_added",
+      entityType: "issue", entityId: issueId,
+    });
+    expect(await poll()).not.toBeNull();
+    const [thawedIssue] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(thawedIssue?.blocker?.issueRewakeFreeze).toBeFalsy();
+  });
+
   it("does not throttle direct issue_assigned wakes after no-progress handoff runs", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
