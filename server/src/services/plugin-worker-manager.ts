@@ -3183,6 +3183,7 @@ export function createPluginWorkerHandle(
     cancelPendingRestart();
 
     if (status === "stopped") {
+      intentionalStop = false;
       return;
     }
     if (status === "stopping") {
@@ -3190,6 +3191,7 @@ export function createPluginWorkerHandle(
         await waitForExit(500);
       }
       if (!childProcess) {
+        intentionalStop = false;
         setStatus("stopped");
         return;
       }
@@ -3198,54 +3200,60 @@ export function createPluginWorkerHandle(
     intentionalStop = true;
     setStatus("stopping");
 
-    if (!childProcess) {
-      setStatus("stopped");
-      return;
-    }
-
-    // Step 1: Send shutdown RPC and wait for the worker to exit gracefully.
-    // We race the shutdown call against a timeout. The worker should process
-    // the shutdown and exit on its own within the drain period.
     try {
-      await Promise.race([
-        callInternal("shutdown", {} as Record<string, never>, SHUTDOWN_DRAIN_MS),
-        waitForExit(SHUTDOWN_DRAIN_MS),
-      ]);
-    } catch {
-      // Shutdown call failed or timed out — proceed to kill
-      log.warn("shutdown RPC failed or timed out, escalating to SIGTERM");
-    }
+      if (!childProcess) {
+        setStatus("stopped");
+        return;
+      }
 
-    // Give the process a brief moment to exit after the shutdown response
-    if (childProcess) {
-      await waitForExit(500);
-    }
+      // Step 1: Send shutdown RPC and wait for the worker to exit gracefully.
+      // We race the shutdown call against a timeout. The worker should process
+      // the shutdown and exit on its own within the drain period.
+      try {
+        await Promise.race([
+          callInternal("shutdown", {} as Record<string, never>, SHUTDOWN_DRAIN_MS),
+          waitForExit(SHUTDOWN_DRAIN_MS),
+        ]);
+      } catch {
+        // Shutdown call failed or timed out — proceed to kill
+        log.warn("shutdown RPC failed or timed out, escalating to SIGTERM");
+      }
 
-    // Check if process already exited
-    if (!childProcess) {
+      // Give the process a brief moment to exit after the shutdown response
+      if (childProcess) {
+        await waitForExit(500);
+      }
+
+      // Check if process already exited
+      if (!childProcess) {
+        setStatus("stopped");
+        return;
+      }
+
+      // Step 2: Send SIGTERM and wait
+      log.info("worker did not exit after shutdown RPC, sending SIGTERM");
+      await killWithSignal("SIGTERM", SIGTERM_GRACE_MS);
+
+      if (!childProcess) {
+        setStatus("stopped");
+        return;
+      }
+
+      // Step 3: Forcefully kill with SIGKILL
+      log.warn("worker did not exit after SIGTERM, sending SIGKILL");
+      await killWithSignal("SIGKILL", 2_000);
+
+      if (childProcess) {
+        log.error("worker process still alive after SIGKILL — this should not happen");
+        throw new Error(`Worker for plugin "${pluginId}" did not stop`);
+      }
+
       setStatus("stopped");
-      return;
+    } finally {
+      if (!childProcess) {
+        intentionalStop = false;
+      }
     }
-
-    // Step 2: Send SIGTERM and wait
-    log.info("worker did not exit after shutdown RPC, sending SIGTERM");
-    await killWithSignal("SIGTERM", SIGTERM_GRACE_MS);
-
-    if (!childProcess) {
-      setStatus("stopped");
-      return;
-    }
-
-    // Step 3: Forcefully kill with SIGKILL
-    log.warn("worker did not exit after SIGTERM, sending SIGKILL");
-    await killWithSignal("SIGKILL", 2_000);
-
-    if (childProcess) {
-      log.error("worker process still alive after SIGKILL — this should not happen");
-      throw new Error(`Worker for plugin "${pluginId}" did not stop`);
-    }
-
-    setStatus("stopped");
   }
 
   /**
