@@ -1710,5 +1710,6 @@
     "journalEmpty": "No guardrail events recorded yet.",
     "journalLoading": "Loading the journal...",
     "journalError": "Could not load the guardrail journal."
-  }
+  },
+  "ui2.nav.group.plugins": "Plugins"
 }
