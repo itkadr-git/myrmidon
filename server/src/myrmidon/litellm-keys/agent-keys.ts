@@ -9,6 +9,8 @@ import {
 } from "@myrmidon/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../errors.js";
 import { secretService } from "../../services/index.js";
+import { readBudgetProjectionSettings } from "../litellm-budget-sync/settings.js";
+import type { KeyBudgetLimitView } from "./key-budget-adapter.js";
 
 /**
  * myrmidon(M2-B): one LLM gateway virtual key per agent, held in the company
@@ -80,6 +82,8 @@ export interface GatewayKeyAdminPort {
 /** What a card's gateway key looks like to a caller: never the value itself. */
 export interface AgentGatewayKeyView {
   agentId: string;
+  agentName?: string | null;
+  role?: string | null;
   /** The secret-store name that carries the key. */
   secretName: string;
   /** True when the store holds a value for it. */
@@ -88,6 +92,7 @@ export interface AgentGatewayKeyView {
   valueHash: string | null;
   /** Whether this instance may manage gateway keys at all. */
   canManageKeys: boolean;
+  budget?: KeyBudgetLimitView | null;
 }
 
 export interface AgentGatewayKeyInput {
@@ -221,19 +226,47 @@ export async function listAgentGatewayKeys(
 ): Promise<AgentGatewayKeyView[]> {
   const settings = readGatewayKeySettings(deps.env ?? process.env);
   const rows = await deps.db
-    .select({ id: agents.id, name: agents.name })
+    .select({ id: agents.id, name: agents.name, role: agents.role })
     .from(agents)
     .where(eq(agents.companyId, companyId));
+
+  let projection = null;
+  try {
+    projection = await readBudgetProjectionSettings(deps.db, companyId);
+  } catch {
+    // If table or mock is absent, proceed without projection
+  }
+
   const views: AgentGatewayKeyView[] = [];
   for (const row of rows) {
     const secretName = agentKeySecretName({ agentId: row.id, agentSlug: row.name });
     const value = await deps.readSecretValue(companyId, secretName);
+
+    let budget: KeyBudgetLimitView | null = null;
+    if (projection && row.role) {
+      const match = projection.limits.find(
+        (l) => l.level === "caste" && l.scopeId === row.role && l.amountUsd > 0,
+      );
+      if (match) {
+        budget = {
+          amountUsd: match.amountUsd,
+          periodHours: match.periodHours,
+          mode: match.mode,
+          effectiveMode: projection.signalOnly || match.mode === "soft" ? "soft" : "block",
+          caste: row.role,
+        };
+      }
+    }
+
     views.push({
       agentId: row.id,
+      agentName: row.name,
+      role: row.role ?? null,
       secretName,
       present: Boolean(value),
       valueHash: value ? gatewayKeyValueHash(value) : null,
       canManageKeys: settings.canManageKeys,
+      budget,
     });
   }
   return views;

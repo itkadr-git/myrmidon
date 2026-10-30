@@ -178,8 +178,12 @@
           "description": "Each agent authenticates with its own gateway key, so the gateway attributes its spend to that key. Only the secret name and the key's fingerprint are shown — never the value.",
           "empty": "No agents yet.",
           "keySet": "key set",
+          "limit": "${{amount}}{{period}} ({{mode}})",
           "loading": "Loading gateway keys…",
           "noKey": "no key yet",
+          "noLimit": "no limit",
+          "servicesEmpty": "No service limits configured.",
+          "servicesTitle": "Service keys & budgets",
           "summary": "{{keyed}} of {{total}} agents have a key of their own.",
           "title": "Keys per agent"
         },

@@ -1,14 +1,6 @@
-// myrmidon(M2-B): the "Gateway keys" tab — one gateway key per agent, held in
-// the company secret store, plus the gateway's fallback topology with the loops
-// the same walk the save path uses finds in it.
-//
-// Two cards. The keys card reads /api/myrmidon/companies/:id/litellm/keys and
-// shows, per agent, whether a key of its own exists and under which secret name
-// — never the value. The fallbacks card reads …/litellm/fallbacks and lists the
-// loops; a loop is what a save would reject, so seeing it here is how an
-// operator finds one before a write. When the instance switch is off both
-// endpoints answer 503 and the cards say so.
-
+// myrmidon(M2-B): the "Gateway keys" tab in the Costs & Budgets page.
+// Shows per-agent gateway keys and flags fallback-loop misconfigurations.
+// myrmidon(OPE-9859): Displays projected budgets/limits for agent and service keys.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { KeyRound, TriangleAlert } from "lucide-react";
@@ -21,18 +13,39 @@ import {
   countKeyedAgents,
   isKeysNotEnabledError,
   litellmFallbacksKey,
+  litellmKeyBudgetsKey,
   litellmKeysApi,
   litellmKeysKey,
   type AgentGatewayKeyView,
   type GatewayFallbackReport,
+  type KeyBudgetLimitView,
 } from "./litellmKeysApi";
 
 /** One line per agent: the display name, the secret, and whether it is set. */
 export interface GatewayKeyRow {
   agentId: string;
   agentName: string | null;
+  role: string | null;
   secretName: string;
   present: boolean;
+  budget: KeyBudgetLimitView | null;
+}
+
+/** Formats a budget ceiling limit for display in key rows. */
+export function formatKeyBudget(
+  budget: KeyBudgetLimitView | null | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  if (!budget || budget.amountUsd === null || budget.amountUsd === undefined) {
+    return t("area.costs-budgets-2.gateway-keys-tab.keysCard.noLimit");
+  }
+  const mode = budget.effectiveMode === "block" ? "block" : "soft";
+  const period = budget.periodHours === 720 ? "/mo" : `/${budget.periodHours}h`;
+  return t("area.costs-budgets-2.gateway-keys-tab.keysCard.limit", {
+    amount: budget.amountUsd,
+    period,
+    mode,
+  });
 }
 
 /** Joins the key views with the agent names the page already knows. */
@@ -40,9 +53,11 @@ export function keyRows(keys: AgentGatewayKeyView[], agentNames: Map<string, str
   return keys
     .map((entry) => ({
       agentId: entry.agentId,
-      agentName: agentNames.get(entry.agentId) ?? null,
+      agentName: agentNames.get(entry.agentId) ?? entry.agentName ?? null,
+      role: entry.role ?? null,
       secretName: entry.secretName,
       present: entry.present,
+      budget: entry.budget ?? null,
     }))
     .sort((a, b) => (a.agentName ?? a.agentId).localeCompare(b.agentName ?? b.agentId));
 }
@@ -58,6 +73,11 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
   const { data, isLoading, error } = useQuery({
     queryKey: litellmKeysKey(companyId),
     queryFn: () => litellmKeysApi.keys(companyId),
+    staleTime: 60_000,
+  });
+  const { data: budgetData } = useQuery({
+    queryKey: litellmKeyBudgetsKey(companyId),
+    queryFn: () => litellmKeysApi.keyBudgets(companyId),
     staleTime: 60_000,
   });
   const agents = useQuery({ queryKey: queryKeys.agents.list(companyId), queryFn: () => agentsApi.list(companyId) });
@@ -94,12 +114,38 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
             {rows.map((row) => (
               <div key={row.agentId} className="flex items-center gap-3 border border-border px-4 py-3">
                 <span className="text-sm font-medium">{row.agentName ?? row.agentId.slice(0, 8)}</span>
+                {row.role && (
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    {row.role}
+                  </span>
+                )}
                 <span className="truncate font-mono text-xs text-muted-foreground">{row.secretName}</span>
-                <span className="ml-auto text-xs tabular-nums">
-                  {row.present ? t("area.costs-budgets-2.gateway-keys-tab.keysCard.keySet") : t("area.costs-budgets-2.gateway-keys-tab.keysCard.noKey")}
+                <span className="ml-auto flex items-center gap-3">
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {formatKeyBudget(row.budget, t)}
+                  </span>
+                  <span className="text-xs tabular-nums">
+                    {row.present ? t("area.costs-budgets-2.gateway-keys-tab.keysCard.keySet") : t("area.costs-budgets-2.gateway-keys-tab.keysCard.noKey")}
+                  </span>
                 </span>
               </div>
             ))}
+            {budgetData && budgetData.services.length > 0 && (
+              <div className="mt-4 space-y-2 border-t border-border pt-4">
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                  {t("area.costs-budgets-2.gateway-keys-tab.keysCard.servicesTitle")}
+                </div>
+                {budgetData.services.map((svc) => (
+                  <div key={svc.serviceId} className="flex items-center gap-3 border border-border px-4 py-3">
+                    <span className="text-sm font-medium">{svc.serviceName}</span>
+                    <span className="truncate font-mono text-xs text-muted-foreground">{svc.tag}</span>
+                    <span className="ml-auto font-mono text-xs text-muted-foreground">
+                      {formatKeyBudget(svc.budget, t)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
       </CardContent>
