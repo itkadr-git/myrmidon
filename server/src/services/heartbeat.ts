@@ -898,7 +898,11 @@ import {
   appendOwnerViaBotBlock,
   buildOwnerViaBotPromptBlock,
 } from "../myrmidon/owner-delivery/owner-message.js";
-import { looksLikeOwnerExplainWake } from "../modules/run-dispatch/myrmidon-pending-interaction-wake.js";
+import {
+  looksLikeOwnerExplainWake,
+  looksLikePendingInteractionAddresseeWake,
+  PENDING_INTERACTION_WAKE_REASON,
+} from "../modules/run-dispatch/myrmidon-pending-interaction-wake.js";
 
 // myrmidon(M3): owner signal on a budget hard-stop (see budget-signal.ts)
 import {
@@ -1092,8 +1096,13 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
 export {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+  PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON,
+  PENDING_INTERACTION_PROCESS_LOSS_MAX_ATTEMPTS,
 };
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 2;
+const PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON =
+  "pending_interaction_process_loss_retry";
+const PENDING_INTERACTION_PROCESS_LOSS_MAX_ATTEMPTS = 2;
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
@@ -15967,6 +15976,7 @@ export function heartbeatService(
     // retry scheduler, not failure-reconciliation, owns its attempt budget.
     if (
       run.errorCode !== MAINTENANCE_INTERRUPT_ERROR_CODE &&
+      retryReason !== PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON &&
       legacyExecutionNeedsReconciliation(run)
     ) {
       return {
@@ -16069,7 +16079,16 @@ export function heartbeatService(
               contextSnapshot.continuationPolicy,
             ),
           }
-        : {};
+        : retryReason === PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON
+          ? {
+              mutation: "interaction",
+              interactionId: readNonEmptyString(contextSnapshot.interactionId),
+              interactionKind: readNonEmptyString(
+                contextSnapshot.interactionKind,
+              ),
+              interactionStatus: "pending",
+            }
+          : {};
     const workspaceValidationRetryPayload =
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON &&
       isWorkspaceValidationFailedRun(run)
@@ -16179,7 +16198,8 @@ export function heartbeatService(
         // duplicate monitor, restart sweep or wake must reuse its successor.
         if (
           retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON &&
-          retryReason !== INTERACTION_CONTINUATION_INFRA_RETRY_REASON
+          retryReason !== INTERACTION_CONTINUATION_INFRA_RETRY_REASON &&
+          retryReason !== PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON
         ) {
           if (issueId)
             await tx.execute(
@@ -16226,13 +16246,15 @@ export function heartbeatService(
               head: `${retryReason}:${humanComment?.id ?? run.id}`,
             });
           } else {
-            // Taskless retries have no issue registry row; keep their old path.
             const prefix = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
               ? "max-turn-continuation" : "interaction-continuation";
             continuationRetryIdempotencyKey = `${prefix}:${run.companyId}:no-issue:${run.id}:${schedule.attempt}`;
           }
         }
-        if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
+        if (
+          retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON ||
+          retryReason === PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON
+        ) {
           if (issueId) {
             await tx.execute(
               sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
@@ -16299,6 +16321,47 @@ export function heartbeatService(
               run: existingContinuation,
               reusedExisting: true,
             };
+          }
+        }
+
+        if (retryReason === PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON) {
+          const interactionId = readNonEmptyString(
+            contextSnapshot.interactionId,
+          );
+          if (interactionId) {
+            const [lockedInteraction] = await tx
+              .select({
+                id: issueThreadInteractions.id,
+                status: issueThreadInteractions.status,
+                addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+              })
+              .from(issueThreadInteractions)
+              .where(
+                and(
+                  eq(issueThreadInteractions.id, interactionId),
+                  eq(issueThreadInteractions.companyId, run.companyId),
+                ),
+              )
+              .for("update");
+
+            if (
+              !lockedInteraction ||
+              lockedInteraction.status !== "pending" ||
+              lockedInteraction.addresseeAgentId !== run.agentId
+            ) {
+              return {
+                outcome: "not_scheduled",
+                reason:
+                  "Scheduled pending interaction retry suppressed because interaction is no longer pending or addressee changed",
+                errorCode: "issue_terminal_status",
+                issueId,
+                details: {
+                  interactionId,
+                  status: lockedInteraction?.status,
+                  addresseeAgentId: lockedInteraction?.addresseeAgentId,
+                },
+              };
+            }
           }
         }
 
@@ -17082,6 +17145,60 @@ export function heartbeatService(
       wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
       maxAttempts: INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS,
     });
+  }
+
+  async function schedulePendingInteractionProcessLossRetryIfEligible(
+    run: Pick<
+      typeof heartbeatRuns.$inferSelect,
+      | "id"
+      | "companyId"
+      | "agentId"
+      | "status"
+      | "errorCode"
+      | "contextSnapshot"
+      | "scheduledRetryAttempt"
+      | "scheduledRetryReason"
+      | "runtimeMode"
+    >,
+    agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">,
+  ) {
+    if (run.errorCode !== "process_lost") return null;
+    const context = parseObject(run.contextSnapshot);
+    if (!looksLikePendingInteractionAddresseeWake(context)) return null;
+    const interactionId = readNonEmptyString(context.interactionId);
+    if (!interactionId) return null;
+
+    const [interaction] = await db
+      .select({
+        id: issueThreadInteractions.id,
+        status: issueThreadInteractions.status,
+        addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+      })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, run.companyId),
+        ),
+      );
+
+    if (
+      !interaction ||
+      interaction.status !== "pending" ||
+      interaction.addresseeAgentId !== run.agentId
+    ) {
+      return null;
+    }
+
+    return scheduleBoundedRetryForRun(
+      run as typeof heartbeatRuns.$inferSelect,
+      agent as typeof agents.$inferSelect,
+      {
+        retryReason: PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON,
+        wakeReason: PENDING_INTERACTION_WAKE_REASON,
+        maxAttempts: PENDING_INTERACTION_PROCESS_LOSS_MAX_ATTEMPTS,
+      },
+    );
   }
 
   async function promoteDueScheduledRetries(now = new Date()) {
@@ -20188,6 +20305,17 @@ export function heartbeatService(
             retryAgent,
           );
         retriedRun = scheduled?.outcome === "scheduled" ? scheduled.run : null;
+        if (!retriedRun) {
+          const pendingScheduled =
+            await schedulePendingInteractionProcessLossRetryIfEligible(
+              finalizedRun,
+              retryAgent,
+            );
+          retriedRun =
+            pendingScheduled?.outcome === "scheduled"
+              ? pendingScheduled.run
+              : null;
+        }
       }
 
       if (!retriedRun) {
@@ -20198,7 +20326,7 @@ export function heartbeatService(
         eventType: "lifecycle",
         stream: "system",
         level: "error",
-        message: shouldRetry
+        message: shouldRetry || retriedRun
           ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
           : baseMessage,
         payload: {
@@ -27733,10 +27861,17 @@ export function heartbeatService(
             outcome === "failed" &&
             !legacyExecutionNeedsReconciliation(livenessRun)
           ) {
-            await scheduleInteractionContinuationInfrastructureRetryIfEligible(
-              livenessRun,
-              agent,
-            );
+            const scheduled =
+              await scheduleInteractionContinuationInfrastructureRetryIfEligible(
+                livenessRun,
+                agent,
+              );
+            if (!scheduled || scheduled.outcome !== "scheduled") {
+              await schedulePendingInteractionProcessLossRetryIfEligible(
+                livenessRun,
+                agent,
+              );
+            }
           }
           const issueCommentPolicyResult = await finalizeIssueCommentPolicy(
             livenessRun,
@@ -28207,10 +28342,17 @@ export function heartbeatService(
           ) {
             await finalizeIssueCommentPolicy(livenessRun, agent);
           }
-          await scheduleInteractionContinuationInfrastructureRetryIfEligible(
-            livenessRun,
-            agent,
-          );
+          const scheduled =
+            await scheduleInteractionContinuationInfrastructureRetryIfEligible(
+              livenessRun,
+              agent,
+            );
+          if (!scheduled || scheduled.outcome !== "scheduled") {
+            await schedulePendingInteractionProcessLossRetryIfEligible(
+              livenessRun,
+              agent,
+            );
+          }
           await releaseIssueExecutionAndPromote(livenessRun, {
             // Native recovery owns the original heartbeat run through
             // exhaustion. Once its durable coordinator has classified a
@@ -28491,7 +28633,18 @@ export function heartbeatService(
               });
             await (setupTransient
               ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
-              : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
+              : scheduleInteractionContinuationInfrastructureRetryIfEligible(
+                  livenessRun,
+                  failedAgent,
+                ).then(async (res) => {
+                  if (!res || res.outcome !== "scheduled") {
+                    return schedulePendingInteractionProcessLossRetryIfEligible(
+                      livenessRun,
+                      failedAgent,
+                    );
+                  }
+                  return res;
+                })
             ).catch((retryError) => {
               logger.warn(
                 { err: retryError, runId: livenessRun.id },

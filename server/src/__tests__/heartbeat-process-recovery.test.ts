@@ -208,6 +208,7 @@ vi.mock("../adapters/index.ts", async () => {
 import {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+  PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON,
   heartbeatService,
   parseSandboxProviderPluginNotReadyFailureMessage,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
@@ -5110,6 +5111,150 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         runId,
         retryRunId: retryRun?.id ?? null,
       },
+    });
+    mockAdapterExecute.mockClear();
+  });
+
+  it("retries a pending interaction addressee wake lost as process_lost while the card is still pending (OPE-2587)", async () => {
+    mockAdapterExecute.mockClear();
+    const { companyId, agentId, runId, issueId } =
+      await seedQueuedIssueRunFixture();
+    const interactionId = randomUUID();
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      addresseeAgentId: agentId,
+      sourceRunId: null,
+      sourceCommentId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "running",
+        runtimeMode: "legacy",
+        processPid: null,
+        processGroupId: null,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "interaction_pending",
+          source: "issue.interaction.created",
+          interactionId,
+          interactionKind: "request_confirmation",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await heartbeat.reapOrphanedRuns();
+
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId));
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      errorCode: "process_lost",
+    });
+    expect(retryRun).toMatchObject({
+      status: "scheduled_retry",
+      retryOfRunId: runId,
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON,
+    });
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId,
+      interactionId,
+      wakeReason: "interaction_pending",
+      retryReason: PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON,
+      scheduledRetryAttempt: 1,
+    });
+
+    const retryWakeup = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+        status: agentWakeupRequests.status,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.runId, retryRun?.id ?? ""))
+      .then((rows) => rows[0] ?? null);
+    expect(retryWakeup).toMatchObject({
+      reason: "interaction_pending",
+      status: "queued",
+    });
+    mockAdapterExecute.mockClear();
+  });
+
+  it("does not retry a process_lost interaction wake if the card is no longer pending (OPE-2587)", async () => {
+    mockAdapterExecute.mockClear();
+    const { companyId, agentId, runId, issueId } =
+      await seedQueuedIssueRunFixture();
+    const interactionId = randomUUID();
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "answered",
+      addresseeAgentId: agentId,
+      sourceRunId: null,
+      sourceCommentId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "running",
+        runtimeMode: "legacy",
+        processPid: null,
+        processGroupId: null,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "interaction_pending",
+          source: "issue.interaction.created",
+          interactionId,
+          interactionKind: "request_confirmation",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await heartbeat.reapOrphanedRuns();
+
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId));
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      id: runId,
+      status: "failed",
+      errorCode: "process_lost",
     });
     mockAdapterExecute.mockClear();
   });
