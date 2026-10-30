@@ -5,6 +5,7 @@ import {
   createPullRequestCiResolver,
   type PullRequestCiJob,
 } from "../github-pull-request-ci.js";
+import { buildPaperclipTaskMarkdown } from "../heartbeat.js";
 
 describe("summarizeCheckRuns", () => {
   it("returns no_checks and non-authoritative for empty runs", () => {
@@ -552,5 +553,70 @@ describe("createPullRequestCiResolver", () => {
     const myrmidonCi = results.find((r) => r.repository === "itkadr-git/myrmidon");
     expect(myrmidonCi).toBeDefined();
     expect(myrmidonCi?.pullNumber).toBe(2024);
+
+    // Behavioral test: verify reviewer-run context includes exact deploy PR CI and directive
+    const reviewerMarkdown = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "OPE-9964",
+        title: "Task with deploy",
+        status: "in_review",
+        workMode: "standard",
+      },
+      wakePayload: {
+        pullRequestsCi: results,
+      },
+    });
+
+    expect(reviewerMarkdown).toContain("Pull Request CI Status (board-verified on exact head SHA):");
+    expect(reviewerMarkdown).toContain("- Repository: itkadr-git/myrmidon-deploy (PR #57)");
+    expect(reviewerMarkdown).toContain("  - Head SHA: 028fc07deploy");
+    expect(reviewerMarkdown).toContain("  - CI Result: SUCCESS (success (1/1 passed))");
+    expect(reviewerMarkdown).toContain("  - Authoritative: true");
+    expect(reviewerMarkdown).toContain("Reviewer directive:");
+    expect(reviewerMarkdown).toContain(
+      "Base your review verdict strictly on this board-provided CI status for the exact head SHA. Do not call `gh pr checks`.",
+    );
+  });
+
+  it("renders non-authoritative warning in reviewer context when deploy PR checks are denied or incomplete", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "OPE-9964",
+        title: "Task with deploy",
+        status: "in_review",
+        workMode: "standard",
+      },
+      wakePayload: {
+        pullRequestsCi: [
+          {
+            repository: "itkadr-git/myrmidon-deploy",
+            pullNumber: 57,
+            headSha: "028fc07deploy",
+            headRef: "bot/OPE-7264",
+            status: "unavailable",
+            conclusion: "denied",
+            summary: "checks unavailable (access denied)",
+            authoritative: false,
+            checkedAt: "2026-10-30T05:00:00Z",
+            completedAt: null,
+            totalRuns: 0,
+            successfulRuns: 0,
+            failedRuns: 0,
+            failedJobs: [],
+            runs: [],
+          },
+        ],
+      },
+    });
+
+    expect(markdown).toContain("- Repository: itkadr-git/myrmidon-deploy (PR #57)");
+    expect(markdown).toContain("  - Authoritative: false");
+    expect(markdown).toContain("  - CI Result: DENIED (checks unavailable (access denied))");
+    expect(markdown).toContain("Reviewer directive:");
+    expect(markdown).toContain(
+      "Some or all PR check runs are non-authoritative (missing, denied, or incomplete). Do not assume unverified checks passed.",
+    );
   });
 });
