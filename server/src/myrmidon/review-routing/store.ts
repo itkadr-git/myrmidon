@@ -16,6 +16,7 @@
 import { sql, and, eq, inArray, desc, isNull } from "drizzle-orm";
 import {
   activityLog,
+  agentCastes,
   agentWakeupRequests,
   agents,
   companies,
@@ -52,6 +53,7 @@ export interface InReviewIssueRow extends RoutingIssue {
 export interface ReviewerAgentRow {
   id: string;
   role: string;
+  model?: string | null;
   invokable?: boolean;
 }
 
@@ -73,6 +75,7 @@ export interface ReviewRoutingStore {
   countBlockedWithoutAssignee(): Promise<number>;
   /** Invokable agents of the company whose role is one of `roles`. */
   listReviewerAgents(companyId: string, roles: readonly string[]): Promise<ReviewerAgentRow[]>;
+  getAgentModel?(companyId: string, agentId: string): Promise<string | null>;
   /** Tasks in flight (in progress + in review) per assignee agent. */
   loadByAgent(companyId: string): Promise<Map<string, number>>;
   countActiveRunsForAgent(companyId: string, agentId: string): Promise<number>;
@@ -250,7 +253,14 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
     async listManagerChainReviewerAgents(companyId, engineerId, roles) {
       if (roles.length === 0) return [];
       const rows = await db
-        .select({ id: agents.id, role: agents.role, status: agents.status, reportsTo: agents.reportsTo })
+        .select({
+          id: agents.id,
+          role: agents.role,
+          status: agents.status,
+          reportsTo: agents.reportsTo,
+          model: sql<string | null>`coalesce(${agents.adapterConfig}->>'model', (select ${agentCastes.defaultModel} from ${agentCastes} where ${agentCastes.companyId} = ${agents.companyId} and ${agentCastes.key} = ${agents.role} limit 1))`,
+          lastRunModel: sql<string | null>`(select ${heartbeatRuns.usageJson}->>'model' from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${agents.id} and ${heartbeatRuns.companyId} = ${agents.companyId} and ${heartbeatRuns.status} = 'completed' order by ${heartbeatRuns.finishedAt} desc nulls last, ${heartbeatRuns.id} desc limit 1)`,
+        })
         .from(agents)
         .where(eq(agents.companyId, companyId));
       const byId = new Map(rows.map((row) => [row.id, row]));
@@ -262,7 +272,11 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         const manager = byId.get(managerId);
         if (!manager) break;
         if (roles.includes(manager.role) && isAgentStatusInvokable(manager.status)) {
-          result.push({ id: manager.id, role: manager.role });
+          result.push({
+            id: manager.id,
+            role: manager.role,
+            model: manager.lastRunModel ?? manager.model,
+          });
         }
         managerId = manager.reportsTo ?? null;
       }
@@ -314,10 +328,33 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
     async listReviewerAgents(companyId, roles) {
       if (roles.length === 0) return [];
       const rows = await db
-        .select({ id: agents.id, role: agents.role, status: agents.status })
+        .select({
+          id: agents.id,
+          role: agents.role,
+          status: agents.status,
+          model: sql<string | null>`coalesce(${agents.adapterConfig}->>'model', (select ${agentCastes.defaultModel} from ${agentCastes} where ${agentCastes.companyId} = ${agents.companyId} and ${agentCastes.key} = ${agents.role} limit 1))`,
+          lastRunModel: sql<string | null>`(select ${heartbeatRuns.usageJson}->>'model' from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${agents.id} and ${heartbeatRuns.companyId} = ${agents.companyId} and ${heartbeatRuns.status} = 'completed' order by ${heartbeatRuns.finishedAt} desc nulls last, ${heartbeatRuns.id} desc limit 1)`,
+        })
         .from(agents)
         .where(and(eq(agents.companyId, companyId), inArray(agents.role, [...roles])));
-      return rows.map(({ id, role, status }) => ({ id, role, invokable: isAgentStatusInvokable(status) }));
+      return rows.map((row) => ({
+        id: row.id,
+        role: row.role,
+        model: row.lastRunModel ?? row.model,
+        invokable: isAgentStatusInvokable(row.status),
+      }));
+    },
+
+    async getAgentModel(companyId, agentId) {
+      const [row] = await db
+        .select({
+          model: sql<string | null>`coalesce(${agents.adapterConfig}->>'model', (select ${agentCastes.defaultModel} from ${agentCastes} where ${agentCastes.companyId} = ${agents.companyId} and ${agentCastes.key} = ${agents.role} limit 1))`,
+          lastRunModel: sql<string | null>`(select ${heartbeatRuns.usageJson}->>'model' from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${agents.id} and ${heartbeatRuns.companyId} = ${agents.companyId} and ${heartbeatRuns.status} = 'completed' order by ${heartbeatRuns.finishedAt} desc nulls last, ${heartbeatRuns.id} desc limit 1)`,
+        })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)))
+        .limit(1);
+      return row ? (row.lastRunModel ?? row.model ?? null) : null;
     },
 
     async loadByAgent(companyId) {

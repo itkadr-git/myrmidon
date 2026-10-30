@@ -99,6 +99,7 @@ function registerModuleMocks() {
     createPgReviewRoutingStore: () => ({
       listReviewerAgents: vi.fn(async () => []),
       loadByAgent: vi.fn(async () => new Map()),
+      getAgentModel: vi.fn(async () => null),
     }),
   }));
   vi.doMock("../services/index.js", () => ({
