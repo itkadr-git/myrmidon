@@ -450,6 +450,33 @@ describe("resolveRecoveryOwner", () => {
       expect(result.owner).toHaveProperty("serviceQueue", "ops-triage-queue");
     });
 
+    it("rejects candidate with malformed serviceQueue and does not select it as owner", () => {
+      const poolMalformed: RecoveryOwnerCandidate[] = [
+        { serviceQueue: "../other-tenant" },
+      ];
+
+      expect(() =>
+        resolveRecoveryOwner({
+          kind: "operator_action",
+          candidates: poolMalformed,
+        }),
+      ).toThrow(RecoveryOwnerUnresolvedError);
+    });
+
+    it("falls back to input.serviceQueue when only candidate has malformed serviceQueue", () => {
+      const poolMalformed: RecoveryOwnerCandidate[] = [
+        { serviceQueue: "../other-tenant" },
+      ];
+
+      const result = resolveRecoveryOwner({
+        kind: "operator_action",
+        candidates: poolMalformed,
+        serviceQueue: "ops-fallback",
+      });
+
+      expect(result.owner).toHaveProperty("serviceQueue", "ops-fallback");
+    });
+
     it("falls back to input.serviceQueue for operator_action when candidate pool is empty", () => {
       const result = resolveRecoveryOwner({
         kind: "operator_action",

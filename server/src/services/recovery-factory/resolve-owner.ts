@@ -80,6 +80,12 @@ const INELIGIBLE_STATUSES = new Set([
   "pending_approval",
 ]);
 
+const SERVICE_QUEUE_PATTERN = /^[a-z0-9][a-z0-9_.:-]*$/i;
+
+function isValidServiceQueue(queue: string): boolean {
+  return SERVICE_QUEUE_PATTERN.test(queue);
+}
+
 function isUserCandidate(candidate: RecoveryOwnerCandidate): boolean {
   if (candidate.isUser === true) return true;
   if (typeof candidate.userId === "string" && candidate.userId.trim().length > 0) return true;
@@ -91,18 +97,21 @@ function resolveCandidateOwner(
   candidate: RecoveryOwnerCandidate,
   isOperatorAction: boolean,
 ): { owner: RecoveryFactoryOwner; ownerKind: CandidateOwnerKind } | null {
-  const serviceQueue = typeof candidate.serviceQueue === "string" && candidate.serviceQueue.trim().length > 0
+  const rawServiceQueue = typeof candidate.serviceQueue === "string" && candidate.serviceQueue.trim().length > 0
     ? candidate.serviceQueue.trim()
+    : null;
+  const serviceQueue = rawServiceQueue && isValidServiceQueue(rawServiceQueue)
+    ? rawServiceQueue
     : null;
   const userId = [candidate.userId, candidate.assigneeUserId]
     .find((value) => typeof value === "string" && value.trim().length > 0)?.trim() ?? null;
   const agentId = candidate.isUser === true ? null : (candidate.agentId ?? candidate.id)?.trim() || null;
   const hasUser = candidate.isUser === true || userId !== null;
-  const identityCount = Number(serviceQueue !== null) + Number(hasUser) + Number(agentId !== null);
+  const identityCount = Number(rawServiceQueue !== null) + Number(hasUser) + Number(agentId !== null);
   if (identityCount !== 1) return null;
 
-  if (serviceQueue !== null) {
-    if (!isOperatorAction) return null;
+  if (rawServiceQueue !== null) {
+    if (!isOperatorAction || !serviceQueue) return null;
     return { owner: { serviceQueue }, ownerKind: "serviceQueue" };
   }
   if (hasUser) {
@@ -223,7 +232,7 @@ export function resolveRecoveryOwner(input: ResolveRecoveryOwnerInput): ResolveR
 
   if (kind === "operator_action" && input.serviceQueue !== undefined && input.serviceQueue !== null) {
     const queue = input.serviceQueue.trim();
-    if (!/^[a-z0-9][a-z0-9_.:-]*$/i.test(queue)) {
+    if (!isValidServiceQueue(queue)) {
       throw new RecoveryOwnerUnresolvedError("Invalid operator_action serviceQueue", { kind, projectId: input.projectId ?? null });
     }
   }
@@ -233,7 +242,7 @@ export function resolveRecoveryOwner(input: ResolveRecoveryOwnerInput): ResolveR
     if (
       kind === "operator_action" &&
       typeof input.serviceQueue === "string" &&
-      /^[a-z0-9][a-z0-9_.:-]*$/i.test(input.serviceQueue.trim())
+      isValidServiceQueue(input.serviceQueue.trim())
     ) {
       const slaMinutes = resolveRecoverySlaMinutes(kind, input.slaOverrides);
       const baseDate = input.now
@@ -348,7 +357,7 @@ export function resolveRecoveryOwner(input: ResolveRecoveryOwnerInput): ResolveR
     if (
       isOperatorAction &&
       typeof input.serviceQueue === "string" &&
-      /^[a-z0-9][a-z0-9_.:-]*$/i.test(input.serviceQueue.trim())
+      isValidServiceQueue(input.serviceQueue.trim())
     ) {
       return {
         owner: { serviceQueue: input.serviceQueue.trim() },
