@@ -94,6 +94,22 @@ describe("issueNeedsReviewer", () => {
     expect(issueNeedsReviewer(issue({ executionState: { status: "idle", monitor: { status: "cleared" } } }))).toBe(false);
   });
 
+  it("requires explicit recovery clock and updatedAt, and enforces the grace period", () => {
+    const now = new Date("2026-10-26T12:00:00Z");
+    const updatedAt = new Date("2026-10-26T11:45:00Z");
+    expect(issueNeedsReviewer(issue({ reviewPathRecoveryEligible: true }))).toBe(false);
+    expect(issueNeedsReviewer(issue({
+      reviewPathRecoveryEligible: true,
+      reviewRecoveryNow: now,
+      reviewRecoveryUpdatedAt: new Date("2026-10-26T11:50:01Z"),
+    }))).toBe(false);
+    expect(issueNeedsReviewer(issue({
+      reviewPathRecoveryEligible: true,
+      reviewRecoveryNow: now,
+      reviewRecoveryUpdatedAt: updatedAt,
+    }))).toBe(true);
+  });
+
   it("myrmidon(HUMAN-REVIEW-WAIT): never routes a human-only wait to an agent reviewer", () => {
     expect(issueNeedsReviewer(issue({ reviewPolicy: "human_only", responsibleUserId: "owner" }))).toBe(false);
     // other policies do not declare a human wait — routing stays available
