@@ -4146,4 +4146,93 @@ describe.sequential("issue comment reopen routes", () => {
       ),
     );
   });
+
+  it("returns changes_requested on a blocked issue to the executor in_progress and wakes them", async () => {
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [
+            { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+          ],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("blocked"),
+      status: "blocked",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      blockerMetadata: { blockReason: "execution_review_participant" },
+      unblockDescriptor: { owner: "board" },
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: {
+          type: "agent",
+          agentId: "33333333-3333-4333-8333-333333333333",
+        },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    let capturedUpdatePatch: Record<string, unknown> | null = null;
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => {
+        capturedUpdatePatch = patch;
+        return {
+          ...issue,
+          ...patch,
+          updatedAt: new Date(),
+        };
+      },
+    );
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        runId: "run-2",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "in_progress",
+        comment: "Please revise this implementation",
+      });
+
+    expect(res.status).toBe(200);
+    expect(capturedUpdatePatch).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      blockerMetadata: null,
+      unblockDescriptor: null,
+    });
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "execution_changes_requested",
+          payload: expect.objectContaining({
+            issueId: "11111111-1111-4111-8111-111111111111",
+            executionStage: expect.objectContaining({
+              wakeRole: "executor",
+              stageType: "review",
+              lastDecisionOutcome: "changes_requested",
+            }),
+          }),
+        }),
+      ),
+    );
+  });
 });
