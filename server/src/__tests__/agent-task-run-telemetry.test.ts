@@ -476,6 +476,8 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
         issueId,
         createdByRunId: runId,
         type: "commit",
+        provider: "git",
+        status: "created",
         title: "commit: feat(telemetry)",
       },
       {
@@ -484,6 +486,8 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
         issueId,
         createdByRunId: runId,
         type: "pull_request",
+        provider: "github",
+        status: "open",
         title: "PR #1888",
       },
       {
@@ -492,6 +496,8 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
         issueId,
         createdByRunId: runId,
         type: "branch",
+        provider: "git",
+        status: "active",
         title: "bot/OPE-9499",
       },
     ]);
