@@ -40,21 +40,19 @@ function bindQuery(text: string, values: readonly unknown[]) {
   return query;
 }
 
-type QueryRunner = Pick<Db, "execute">;
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+export type DbOrTx = Db | DbTransaction;
 
-function createSqlExecutor(db: Db): SqlExecutor {
-  const over = (runner: QueryRunner): SqlExecutor => ({
+export function createSqlExecutor(db: DbOrTx): SqlExecutor {
+  const over = (runner: DbOrTx): SqlExecutor => ({
     async query<Row extends Record<string, unknown>>(text: string, values: readonly unknown[] = []): Promise<Row[]> {
       return runner.execute(bindQuery(text, values)) as unknown as Promise<Row[]>;
     },
     async withTransaction<T>(run: (transaction: SqlExecutor) => Promise<T>): Promise<T> {
-      return run(over(runner));
+      return (runner.transaction as Db["transaction"])(async (tx) => run(over(tx)));
     },
   });
-  return {
-    query: (text, values) => over(db).query(text, values),
-    withTransaction: (run) => db.transaction(async (tx) => run(over(tx as unknown as QueryRunner))),
-  };
+  return over(db);
 }
 
 export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Config): CorpusPorts {
