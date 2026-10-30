@@ -382,7 +382,11 @@ export function resolveHeartbeatRunResponse(input: {
   // Retryable adapter failures are control-plane outcomes, never user-facing prose.
   // Guard every candidate source, including independently captured final events.
   const errorFamily = typeof resultJson?.errorFamily === "string" ? resultJson.errorFamily : null;
-  const retryableProviderFailure = errorFamily === "transient_upstream" || errorFamily === "provider_quota";
+  const providerErrorAsContent = Boolean(resultJson?.provider_error_as_content);
+  const retryableProviderFailure =
+    errorFamily === "transient_upstream" ||
+    errorFamily === "provider_quota" ||
+    providerErrorAsContent;
   if (retryableProviderFailure) {
     return {
       text: null,
@@ -606,4 +610,60 @@ export function findHeartbeatRunCompletionComment<T extends { id: string }>(
   return (
     comments.find((comment) => !progressCommentIds.has(comment.id)) ?? null
   );
+}
+
+export async function deliverHeartbeatRunResponseComment<TComment = unknown>(params: {
+  resolved: ResolvedHeartbeatRunResponse;
+  issueId: string | null | undefined;
+  skipRunIssueComment?: boolean;
+  addComment: (text: string) => Promise<TComment>;
+}): Promise<{
+  decision: RunPresentationDecision;
+  comment: TComment | null;
+}> {
+  const { resolved, issueId, skipRunIssueComment, addComment } = params;
+  let presentationDecision = resolved.decision;
+
+  if (
+    issueId &&
+    !skipRunIssueComment &&
+    presentationDecision.commentAction === "create" &&
+    resolved.text
+  ) {
+    const comment = await addComment(resolved.text);
+    return {
+      comment,
+      decision: {
+        ...presentationDecision,
+        commentId:
+          (comment as { id?: string } | null | undefined)?.id ??
+          presentationDecision.commentId,
+        reasonCodes: [
+          ...presentationDecision.reasonCodes,
+          "resolved_response_materialized",
+        ],
+      },
+    };
+  }
+
+  if (presentationDecision.commentAction === "create") {
+    return {
+      comment: null,
+      decision: {
+        ...presentationDecision,
+        commentAction: "none",
+        reasonCodes: [
+          ...presentationDecision.reasonCodes,
+          skipRunIssueComment
+            ? "issue_comment_suppressed"
+            : "run_has_no_issue",
+        ],
+      },
+    };
+  }
+
+  return {
+    comment: null,
+    decision: presentationDecision,
+  };
 }

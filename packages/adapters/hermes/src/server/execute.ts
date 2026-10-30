@@ -734,6 +734,7 @@ export async function execute(
     session_id: parsed.sessionId || null,
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
+    ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
   };
 
   // Store session ID for next run

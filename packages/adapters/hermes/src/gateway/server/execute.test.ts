@@ -591,9 +591,47 @@ describe("execute", () => {
     vi.stubGlobal("fetch", fetchMock);
     const result = await execute(ctx);
     expect(bodies.map((body) => body.model)).toEqual(["primary", "backup-a"]);
+    expect(bodies[1].model_attempt_id).toContain("fallback:backup-a");
     expect(result.exitCode).toBe(0);
     expect(result.model).toBe("backup-a");
     expect(result.summary).toBe("fallback answer");
+    expect(result.resultJson?.result).toBe("fallback answer");
+  });
+
+  it("suppresses provider error text from the final response when no fallback models are configured", async () => {
+    const ctx = makeCtx({ ...wsBaseConfig, model: "primary", provider: "openai" });
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        const body = JSON.parse(String(init?.body));
+        bodies.push(body);
+        return new Response(JSON.stringify({ run_id: `run-${String(body.model)}`, status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream([
+            "event: run.completed",
+            `data: ${JSON.stringify({
+              status: "completed",
+              output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+            })}`,
+            "",
+          ].join("\n")),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(ctx);
+    expect(bodies.map((body) => body.model)).toEqual(["primary"]);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.summary).toBeUndefined();
+    expect(result.resultJson?.result).toBe("");
+    expect(result.resultJson?.output).toBe("");
+    expect(result.resultJson?.provider_error_as_content).toBe(true);
   });
 
   // myrmidon(F06-D): a chat's `/model` and `/think` choice is stored as an issue

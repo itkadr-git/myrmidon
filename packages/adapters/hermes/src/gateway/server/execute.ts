@@ -1511,7 +1511,7 @@ export function mapFinalResultForTest(input: {
     provider: "hermes_gateway",
     // myrmidon(F06-MODEL-TELEMETRY): payload first, configured model last —
     // see extractModel().
-    model: input.modelAttemptId ?? extractModel(payload) ?? nonEmptyModel(input.configuredModel),
+    model: extractModel(payload) ?? nonEmptyModel(input.configuredModel),
     ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
@@ -1544,6 +1544,7 @@ export function mapFinalResultForTest(input: {
       usage: usage ?? null,
       cost_usd: costUsd,
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
+      ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
     },
   };
 }
@@ -1866,6 +1867,7 @@ function isUnambiguousCreateNonStart(err: unknown): boolean {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const fallbackModels = readGatewayFallbackModels(ctx.config);
   const apiBaseUrlValue = asString(ctx.config.apiBaseUrl ?? ctx.config.url, "").trim();
   if (!apiBaseUrlValue) {
     return {
@@ -2586,20 +2588,64 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
     };
   }
-  if (finalResult.errorCode === "hermes_gateway_run_failed" &&
-      finalResult.errorFamily === "transient_upstream" && fallbackModels.length > 0) {
-    await ctx.onLog("stderr", `[hermes-gateway] provider_error_as_content; retrying with configured fallback ${fallbackModels[0]}\n`);
+  const isProviderError =
+    finalResult.errorCode === "hermes_gateway_run_failed" &&
+    finalResult.errorFamily === "transient_upstream" &&
+    (Boolean(finalResult.resultJson?.provider_error_as_content) ||
+      finalResult.errorMessage === "Provider returned an overload or quota error as successful response content");
+
+  const shouldTryFallback =
+    finalResult.errorCode === "hermes_gateway_run_failed" &&
+    finalResult.errorFamily === "transient_upstream" &&
+    fallbackModels.length > 0;
+
+  if (shouldTryFallback) {
+    await ctx.onLog(
+      "stderr",
+      `[hermes-gateway] ${isProviderError ? "provider_error_as_content" : "transient_upstream"}; retrying with configured fallback ${fallbackModels[0]}\n`,
+    );
     const fallbackAttemptId = `${ctx.runId}:fallback:${fallbackModels[0]}`;
     const fallbackResult = await execute({
       ...ctx,
       runId: fallbackAttemptId,
-      config: { ...ctx.config, model: fallbackModels[0], models: { fallbacks: fallbackModels.slice(1) }, modelAttemptId: fallbackAttemptId },
+      config: {
+        ...ctx.config,
+        model: fallbackModels[0],
+        models: { fallbacks: fallbackModels.slice(1) },
+        modelAttemptId: fallbackAttemptId,
+      },
       onDispatch: undefined,
       onExternalRunId: undefined,
       onMeta: undefined,
     });
     if (fallbackResult.exitCode === 0) return fallbackResult;
-    return { ...finalResult, resultJson: { ...finalResult.resultJson, provider_error_as_content: true } };
+    if (isProviderError) {
+      return {
+        ...finalResult,
+        summary: undefined,
+        resultJson: {
+          ...finalResult.resultJson,
+          result: "",
+          output: "",
+          provider_error_as_content: true,
+        },
+      };
+    }
+    return fallbackResult;
   }
+
+  if (isProviderError) {
+    return {
+      ...finalResult,
+      summary: undefined,
+      resultJson: {
+        ...finalResult.resultJson,
+        result: "",
+        output: "",
+        provider_error_as_content: true,
+      },
+    };
+  }
+
   return finalResult;
 }

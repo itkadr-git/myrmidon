@@ -403,6 +403,7 @@ import {
   isExternalChatPresentationContext,
   mergeHeartbeatRunResultJson,
   readCompletedAssistantMessageCandidate,
+  deliverHeartbeatRunResponseComment,
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
   type RunPresentationDecision,
@@ -27036,82 +27037,63 @@ export function heartbeatService(
                 externalChatPresentationAuthorization ===
                   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
             });
-            let presentationDecision: RunPresentationDecision =
-              resolved.decision;
-
-            if (
-              issueId &&
-              !skipRunIssueComment &&
-              presentationDecision.commentAction === "create" &&
-              resolved.text
-            ) {
-              // myrmidon(1.6-GRD): flag-only output scan of the final run text
-              // before it becomes the visible issue comment; never blocks,
-              // never masks here — the event journal records the hits.
-              await guardrailsOnRunOutput({
-                db,
-                companyId: livenessRun.companyId,
-                runId: livenessRun.id,
-                issueId,
-                text: resolved.text,
-              }).catch(() => null);
-              // The presentation resolver exposes only the final assistant
-              // surface selected from completed final messages or accepted
-              // semantic results. For an exactly bound external-chat run,
-              // authorize that narrow presentation as the provider reply;
-              // ordinary internal runs retain the private default.
-              const presentationAuthorizationReason =
-                await resolveChatRunPresentationAuthorizationReason(db, {
+            const delivery = await deliverHeartbeatRunResponseComment({
+              resolved,
+              issueId,
+              skipRunIssueComment,
+              addComment: async (text) => {
+                // myrmidon(1.6-GRD): flag-only output scan of the final run text
+                // before it becomes the visible issue comment; never blocks,
+                // never masks here — the event journal records the hits.
+                await guardrailsOnRunOutput({
+                  db,
                   companyId: livenessRun.companyId,
-                  issueId,
                   runId: livenessRun.id,
+                  issueId: issueId!,
+                  text,
+                }).catch(() => null);
+                // The presentation resolver exposes only the final assistant
+                // surface selected from completed final messages or accepted
+                // semantic results. For an exactly bound external-chat run,
+                // authorize that narrow presentation as the provider reply;
+                // ordinary internal runs retain the private default.
+                const presentationAuthorizationReason =
+                  await resolveChatRunPresentationAuthorizationReason(db, {
+                    companyId: livenessRun.companyId,
+                    issueId: issueId!,
+                    runId: livenessRun.id,
+                  });
+                const comment = await issuesSvc.addComment(
+                  issueId!,
+                  text,
+                  { agentId: agent.id, runId: livenessRun.id },
+                  { authorizationReason: presentationAuthorizationReason },
+                );
+                await logActivity(db, {
+                  companyId: livenessRun.companyId,
+                  actorType: "agent",
+                  actorId: agent.id,
+                  agentId: agent.id,
+                  runId: livenessRun.id,
+                  issueId: issueId!,
+                  action: "issue.comment_added",
+                  entityType: "issue",
+                  entityId: issueId!,
+                  details: {
+                    commentId: comment.id,
+                    bodySnippet: comment.body.slice(0, 120),
+                    identifier: issueRef?.identifier ?? null,
+                    issueTitle: issueRef?.title ?? null,
+                    authorizationReason: presentationAuthorizationReason,
+                    source: "run_presentation_resolver",
+                    presentationSource: resolved.decision.chosenSource,
+                  },
                 });
-              const comment = await issuesSvc.addComment(
-                issueId,
-                resolved.text,
-                { agentId: agent.id, runId: livenessRun.id },
-                { authorizationReason: presentationAuthorizationReason },
-              );
-              presentationDecision = {
-                ...presentationDecision,
-                commentId: comment.id,
-                reasonCodes: [
-                  ...presentationDecision.reasonCodes,
-                  "resolved_response_materialized",
-                ],
-              };
-              await logActivity(db, {
-                companyId: livenessRun.companyId,
-                actorType: "agent",
-                actorId: agent.id,
-                agentId: agent.id,
-                runId: livenessRun.id,
-                issueId,
-                action: "issue.comment_added",
-                entityType: "issue",
-                entityId: issueId,
-                details: {
-                  commentId: comment.id,
-                  bodySnippet: comment.body.slice(0, 120),
-                  identifier: issueRef?.identifier ?? null,
-                  issueTitle: issueRef?.title ?? null,
-                  authorizationReason: presentationAuthorizationReason,
-                  source: "run_presentation_resolver",
-                  presentationSource: presentationDecision.chosenSource,
-                },
-              });
-            } else if (presentationDecision.commentAction === "create") {
-              presentationDecision = {
-                ...presentationDecision,
-                commentAction: "none",
-                reasonCodes: [
-                  ...presentationDecision.reasonCodes,
-                  skipRunIssueComment
-                    ? "issue_comment_suppressed"
-                    : "run_has_no_issue",
-                ],
-              };
-            }
+                return comment;
+              },
+            });
+            let presentationDecision: RunPresentationDecision =
+              delivery.decision;
 
             await db
               .update(heartbeatRuns)
