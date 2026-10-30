@@ -19,6 +19,11 @@ export interface RoutingIssue {
   // myrmidon(HUMAN-REVIEW-WAIT): a declared human-only wait is never routed to
   // an agent reviewer — the verdict belongs to a person by policy.
   reviewPolicy?: string | null;
+  /** Explicit recovery evaluation; omitted by callers that do not evaluate age. */
+  reviewPathRecoveryEligible?: boolean;
+  /** Current evaluation clock and issue timestamp, supplied by recovery callers. */
+  reviewRecoveryNow?: Date;
+  reviewRecoveryUpdatedAt?: Date;
 }
 
 export interface ReviewerCandidate {
@@ -55,6 +60,11 @@ export function issueNeedsReviewer(issue: RoutingIssue): boolean {
   // myrmidon(HUMAN-REVIEW-WAIT): see the RoutingIssue field.
   if (issue.reviewPolicy === "human_only") return false;
   if (policyHasReviewerParticipant(issue.executionPolicy)) return false;
+  if (issue.reviewPathRecoveryEligible === false) return false;
+  if (issue.reviewPathRecoveryEligible === true) {
+    if (!issue.reviewRecoveryNow || !issue.reviewRecoveryUpdatedAt) return false;
+    if (issue.reviewRecoveryUpdatedAt.getTime() > issue.reviewRecoveryNow.getTime() - 15 * 60 * 1000) return false;
+  }
   const state = asRecord(issue.executionState);
   if (state) {
     if (typeof state.status === "string" && state.status !== "idle") return false;
