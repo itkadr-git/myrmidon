@@ -98,7 +98,7 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
       escalationChain: [
         { recipient: { userId: "user-manager" }, afterMinutes: 10 },
       ],
-      payload: { prompt: "Confirm changes" },
+      payload: { version: 1, prompt: "Confirm changes" },
     });
 
     // 1. Первый вызов выбирает просроченную карточку и фиксирует журнал
@@ -154,7 +154,7 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
         addresseeAgentId: agentId,
         timeoutAt: new Date(now.getTime() - 60_000),
         escalationLevel: 0,
-        payload: {},
+        payload: { version: 1, prompt: "Confirm changes" },
       },
       // Pending, но срок ещё не вышел (в будущем)
       {
@@ -167,7 +167,7 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
         addresseeAgentId: agentId,
         timeoutAt: new Date(now.getTime() + 60_000),
         escalationLevel: 0,
-        payload: {},
+        payload: { version: 1, prompt: "Confirm changes" },
       },
       // Pending, но timeoutAt is null
       {
@@ -179,7 +179,7 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
         addresseeAgentId: agentId,
         timeoutAt: null,
         escalationLevel: 0,
-        payload: {},
+        payload: { version: 1, prompt: "Confirm changes" },
       },
     ]);
 
@@ -208,14 +208,14 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
         id: interactionIds[i],
         companyId,
         issueId,
-        kind: "ask_user_questions",
+        kind: "request_confirmation",
         status: "pending",
         routeType: "agent",
         addresseeAgentId: agentId,
         // Разный timeoutAt для проверки детерминированного порядка
         timeoutAt: new Date(now.getTime() - (10 - i) * 60_000),
         escalationLevel: 0,
-        payload: {},
+        payload: { version: 1, prompt: "Confirm changes" },
       });
     }
 
@@ -272,7 +272,7 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
         { recipient: { userId: "user-step-1" }, afterMinutes: 5 },
         { recipient: { serviceQueue: "ops-lead" }, afterMinutes: 15 },
       ],
-      payload: {},
+      payload: { version: 1, prompt: "Confirm changes" },
     });
 
     // В журнале уже есть запись для level 1
