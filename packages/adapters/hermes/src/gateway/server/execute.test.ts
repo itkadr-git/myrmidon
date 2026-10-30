@@ -1383,6 +1383,179 @@ describe("mapFinalResultForTest", () => {
     expect(result.summary?.endsWith("КОНЕЦ")).toBe(true);
   });
 
+  it("persists only gateway call identifiers and count metadata with usage, not prompt data", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-telemetry",
+        status: "completed",
+        payload: {
+          status: "completed",
+          call_id: "call-456",
+          usage: {
+            model_call_count: 2,
+            litellm_request_ids: ["req-123"],
+            input_tokens: 120,
+            cached_input_tokens: 30,
+            output_tokens: 45,
+          },
+          prompt: "must not be recorded",
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(result.resultJson).toMatchObject({
+      gatewayCallIds: ["call-456"],
+      litellmRequestIds: ["req-123"],
+      modelCallCount: 2,
+      modelCallCountSource: "gateway_count",
+      usage: { inputTokens: 120, cachedInputTokens: 30, outputTokens: 45 },
+    });
+    expect(JSON.stringify(result.resultJson)).not.toContain("must not be recorded");
+  });
+
+  it("uses explicit gateway model-call count only when call IDs are absent", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-telemetry",
+        status: "completed",
+        payload: { status: "completed", model_call_count: 3, usage: { input_tokens: 1 } },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(result.resultJson?.modelCallCount).toBe(3);
+    expect(result.resultJson?.gatewayCallIds).toEqual([]);
+  });
+
+  it("prefers an explicit call count and keeps partial ID namespaces independent", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-telemetry",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model_call_count: 7,
+          gateway_call_ids: ["gw-1"],
+          litellm_request_ids: ["gw-1"],
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(7);
+    expect(result.resultJson?.gatewayCallIds).toEqual(["gw-1"]);
+    expect(result.resultJson?.litellmRequestIds).toEqual(["gw-1"]);
+  });
+
+  it("does not infer a count when gateway IDs are partial and LiteLLM IDs are missing", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-partial-ids",
+        status: "completed",
+        payload: { gateway_call_ids: ["gw-1", "gw-2"] },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBeNull();
+    expect(result.resultJson?.modelCallCountSource).toBe("unknown");
+  });
+
+  it("preserves explicit counts when ID metadata is partial", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-partial-count",
+        status: "completed",
+        payload: { usage: { model_call_count: 4 }, gateway_call_ids: ["gw-1"] },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(4);
+  });
+
+  it("prefers reported gateway count when identifier namespaces are partial", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-count-partial",
+        status: "completed",
+        payload: { model_call_count: 4, gateway_call_ids: ["call-a"], litellm_request_ids: ["req-a", "req-b"] },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(4);
+    expect(result.resultJson?.gatewayCallIds).toEqual(["call-a"]);
+    expect(result.resultJson?.litellmRequestIds).toEqual(["req-a", "req-b"]);
+  });
+
+  it("uses explicit count carried in usage when terminal envelope lacks one", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-usage-count",
+        status: "completed",
+        payload: { usage: { model_call_count: 4 }, gateway_call_ids: ["call-a"] },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(4);
+    expect(result.resultJson?.modelCallCountSource).toBe("gateway_count");
+  });
+
+  it("does not infer count by adding IDs from distinct namespaces", () => {
+    const ids = Array.from({ length: 550 }, (_, index) => `call-${index}`);
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-overflow",
+        status: "completed",
+        payload: { gateway_call_ids: ids, litellm_request_ids: ids.map((id) => `req-${id}`) },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.gatewayCallIds).toEqual(ids.slice(0, 500));
+    expect(result.resultJson?.gatewayCallIdsTruncated).toBe(true);
+    expect(result.resultJson?.litellmRequestIds).toEqual(ids.map((id) => `req-${id}`).slice(0, 500));
+    expect(result.resultJson?.litellmRequestIdsTruncated).toBe(true);
+    expect(result.resultJson?.modelCallCount).toBeNull();
+  });
+  it("counts gateway output call entries when the response has no count metadata", () => {
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-output-count", status: "completed", payload: {} },
+      outputChunks: ["🔧 Calling gpt-6-luna", "🔧 Calling gpt-6.1-sol"],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(2);
+    expect(result.resultJson?.modelCallCountSource).toBe("gateway_metadata");
+  });
+
+  it("keeps explicit count when a gateway call ID list is capped", () => {
+    const ids = Array.from({ length: 125 }, (_, index) => `call-${index}`);
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-count", status: "completed", payload: { model_call_count: 125, gateway_call_ids: ids } },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    const resultJson = result.resultJson as Record<string, unknown>;
+    expect(resultJson.modelCallCount).toBe(125);
+    expect((resultJson.gatewayCallIds as string[]).length).toBe(125);
+    expect(resultJson.gatewayCallIdsTruncated).toBe(false);
+  });
+
   it("maps failed statuses into adapter errors", () => {
     const result = mapFinalResultForTest({
       terminal: {
