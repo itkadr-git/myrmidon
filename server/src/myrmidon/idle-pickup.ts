@@ -96,6 +96,7 @@ export const IDLE_PICKUP_WAKE_WINDOW_MS = 60_000;
 
 const WAKEABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const IDLE_PICKUP_BOARD_CANCELLATION_SOURCES = new Set(["board_operator", "reassignment"]);
 
 /** Interval in seconds; invalid or too-small values fall back to the default. */
 export function readIdlePickupIntervalSec(env: NodeJS.ProcessEnv = process.env): number {
@@ -253,7 +254,9 @@ export interface IdlePickupIssueCandidate {
   id: string;
   identifier: string | null;
   priority: string | null;
+  status: string;
   blockedTransitionAt: Date | null;
+  executionState: Record<string, unknown> | null;
 }
 
 export interface IdlePickupDeps {
@@ -367,7 +370,9 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
       id: issues.id,
       identifier: issues.identifier,
       priority: issues.priority,
+      status: issues.status,
       blockedTransitionAt: issues.blockedTransitionAt,
+      executionState: issues.executionState,
     })
     .from(issues)
     .where(
@@ -492,6 +497,7 @@ export async function idlePickupForAgent(
         id: heartbeatRuns.id,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         status: heartbeatRuns.status,
+        cancellationSource: sql<string | null>`(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code')`,
         finishedAt: heartbeatRuns.finishedAt,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -507,6 +513,11 @@ export async function idlePickupForAgent(
                 and(
                   eq(heartbeatRuns.status, "succeeded"),
                   sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff.toISOString()}::timestamptz`,
+                ),
+                and(
+                  eq(heartbeatRuns.status, "cancelled"),
+                  sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff.toISOString()}::timestamptz`,
+                  sql`coalesce(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code', '') in ('board_operator', 'reassignment')`,
                 ),
               )
             : inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
@@ -524,27 +535,27 @@ export async function idlePickupForAgent(
       .filter((id): id is string => Boolean(id)),
   );
 
-  // A succeeded run that ended recently on an open issue is not idle work: the
-  // vendor's successful-run-handoff / stranded-recovery machinery owns the next
-  // step for exactly that shape (a disposition is missing, and those paths send
-  // the instructive wake). Waking it again here only races them — and in tests
-  // it turns one background run into a chain that leaks into the next suite.
-  //
-  // myrmidon(IDLE-PICKUP-QUIET): the run is not the whole story — what happened
-  // on the issue after it ended is. A success that moved nothing (no new
-  // comment, nobody asking) leaves nothing to wake for, while a success whose
-  // issue got a new comment meanwhile is work waiting for the agent. The latest
-  // success per issue decides, because its silence is the one that must hold.
-  const recentSuccessesByIssueId = new Map<string, { runId: string; endedAt: Date }>();
+  // Track the latest recent terminal run for each issue. A board/reassignment
+  // cancellation paired with review changes is ready work; other cancellations
+  // remain recent activity and must not cause a wake on every sweep.
+  const recentRunsByIssueId = new Map<
+    string,
+    { runId: string; endedAt: Date; status: string; cancellationSource: string | null }
+  >();
   for (const run of liveRuns) {
-    if (run.status !== "succeeded") continue;
+    if (run.status !== "succeeded" && run.status !== "cancelled") continue;
     const issueId = readNonEmptyString(run.contextSnapshot?.issueId);
     if (!issueId) continue;
     const endedAt = run.finishedAt ?? run.startedAt ?? run.createdAt;
     if (Date.now() - endedAt.getTime() >= recentSuccessWindowMs) continue;
-    const known = recentSuccessesByIssueId.get(issueId);
+    const known = recentRunsByIssueId.get(issueId);
     if (!known || known.endedAt.getTime() < endedAt.getTime()) {
-      recentSuccessesByIssueId.set(issueId, { runId: run.id, endedAt });
+      recentRunsByIssueId.set(issueId, {
+        runId: run.id,
+        endedAt,
+        status: run.status,
+        cancellationSource: run.cancellationSource,
+      });
     }
   }
 
@@ -576,8 +587,22 @@ export async function idlePickupForAgent(
       result.alreadyActive += 1;
       continue;
     }
-    const recentSuccess = recentSuccessesByIssueId.get(candidate.id);
-    if (recentSuccess) {
+    const recentRun = recentRunsByIssueId.get(candidate.id);
+    const executionState = candidate.executionState;
+    const reviewChangesRequested =
+      executionState !== null &&
+      typeof executionState === "object" &&
+      executionState.status === "changes_requested";
+    const boardCancelledLatestRun =
+      recentRun?.status === "cancelled" &&
+      IDLE_PICKUP_BOARD_CANCELLATION_SOURCES.has(recentRun.cancellationSource ?? "");
+    const readyFromReviewCancellation =
+      candidate.status === "in_progress" && boardCancelledLatestRun && reviewChangesRequested;
+    const shouldSuppressRecentRun =
+      recentRun?.status === "succeeded" ||
+      (recentRun?.status === "cancelled" && !readyFromReviewCancellation);
+
+    if (recentRun && shouldSuppressRecentRun) {
       // The issue just had a successful run without a disposition; the
       // successful-run-handoff / stranded-recovery paths own that next step.
       //
@@ -588,8 +613,8 @@ export async function idlePickupForAgent(
       const spokenSinceRun = await issueHasInboundActivitySince(deps.db, {
         companyId: agent.companyId,
         issueId: candidate.id,
-        since: recentSuccess.endedAt,
-        excludeRunId: recentSuccess.runId,
+        since: recentRun.endedAt,
+        excludeRunId: recentRun.runId,
       });
       if (!spokenSinceRun) {
         result.alreadyActive += 1;

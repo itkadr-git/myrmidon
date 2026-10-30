@@ -45,3 +45,19 @@ export async function clearExpiredContinuationKeys(
     .returning({ key: issueContinuationKeys.key });
   return deleted.length;
 }
+
+export async function releaseContinuationKey(
+  db: Db,
+  input: { companyId: string; key: string },
+): Promise<number> {
+  const deleted = await db
+    .delete(issueContinuationKeys)
+    .where(
+      and(
+        eq(issueContinuationKeys.companyId, input.companyId),
+        eq(issueContinuationKeys.key, input.key),
+      ),
+    )
+    .returning({ key: issueContinuationKeys.key });
+  return deleted.length;
+}
