@@ -96,6 +96,7 @@ import { preserveBudgetLimitsGeneralKey } from "../myrmidon/budget-limits/settin
 import { preserveDatastoreCareGeneralKey } from "../myrmidon/datastore-care/retention/settings.js";
 // myrmidon(DB-PERF-C-P4): keep the tool gateway policy cache TTL across vendor writes of `general`
 import { preserveToolPolicyCacheGeneralKey } from "../myrmidon/tool-policy-cache/settings.js";
+import { preserveCustomLocalesGeneralKey } from "../myrmidon/locale-upload/settings.js"; // myrmidon(1.7 LOCALE-UPLOAD, OPE-8650)
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -867,6 +868,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preservePluginEntitlementPublicKeyGeneralKey(current.general), // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A)
               ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
               ...preserveBridgeLanguageGeneralKey(current.general), // myrmidon(1.6.5-TG-LOCALE-C)
+              ...preserveCustomLocalesGeneralKey(current.general), // myrmidon(1.7 LOCALE-UPLOAD, OPE-8650)
               // The preserve line above restores the stored value: a patch that
               // carries the key wins, the same rule as DM-PROGRESS.
               ...(patch.bridgeLanguage !== undefined ? { bridgeLanguage: nextGeneral.bridgeLanguage } : {}),

@@ -3033,3 +3033,6 @@ export {
 // contract of the recovery factory — how CI, GitHub, myr-ws, devbuild, disk and
 // operator failures ask for a recovery issue with a deterministic dedupe key.
 export * from "./recovery-factory.js";
+
+// myrmidon(1.7 LOCALE-UPLOAD, OPE-8650): locale catalog upload and validation
+export * from "./locale-upload.js";
