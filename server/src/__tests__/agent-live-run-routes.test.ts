@@ -118,11 +118,6 @@ const mockChatRunRetries = vi.hoisted(() => ({
 
 function registerModuleMocks() {
   vi.doMock("../services/execution-projection.js", () => mockExecutionProjection);
-  vi.doMock("../services/issue-recovery-actions.js", () => ({
-    issueRecoveryActionService: () => ({
-      getActiveForIssue: vi.fn(async () => null),
-    }),
-  }));
   vi.doMock("../routes/authz.js", async () =>
     vi.importActual("../routes/authz.js"),
   );
@@ -176,6 +171,9 @@ function registerModuleMocks() {
     budgetService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => ({}),
+    issueRecoveryActionService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+    }),
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     secretService: () => ({}),
