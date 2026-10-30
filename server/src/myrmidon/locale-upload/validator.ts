@@ -2,66 +2,66 @@ import type {
   LocaleKeyDiffReport,
   LocaleValidationError,
   LocaleValidationResult,
-} from \"@myrmidon/shared\";
+} from "@myrmidon/shared";
 
 export const MAX_CATALOG_STRING_LENGTH = 2_000;
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === \"object\" && !Array.isArray(value);
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 export function formatPath(path: string[]): string {
-  return path.length > 0 ? path.join(\".\") : \"<root>\";
+  return path.length > 0 ? path.join(".") : "<root>";
 }
 
 export function extractPlaceholders(value: string): string[] {
   return Array.from(
-    value.matchAll(/(?:\\{\\{\\s*([A-Za-z0-9_.-]+)\\s*\\}\\}|\\{\\s*([A-Za-z0-9_.-]+)\\s*\\})/g),
+    value.matchAll(/(?:\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}|\{\s*([A-Za-z0-9_.-]+)\s*\})/g),
     (match) => match[1] || match[2],
   ).sort();
 }
 
 function hasRawHtml(value: string): boolean {
-  return /<\\/?[A-Za-z][A-Za-z0-9:-]*(?:\\s[^>]*)?>/.test(value);
+  return /<\/?[A-Za-z][A-Za-z0-9:-]*(?:\s[^>]*)?>/.test(value);
 }
 
 function hasEventHandlerAttribute(value: string): boolean {
-  return /\\son[A-Za-z]+\\s*=/i.test(value);
+  return /\son[A-Za-z]+\s*=/i.test(value);
 }
 
 function extractUrls(value: string): string[] {
-  return Array.from(value.matchAll(/\\bhttps?:\\/\\/[^\\s<>\"')]+/gi), (match) => match[0]).sort();
+  return Array.from(value.matchAll(/\bhttps?:\/\/[^\s<>"')]+/gi), (match) => match[0]).sort();
 }
 
 export function findDisallowedPayloads(value: string, baseValue?: string): string[] {
-  const baseHasScript = baseValue ? /<script\\b/i.test(baseValue) : false;
+  const baseHasScript = baseValue ? /<script\b/i.test(baseValue) : false;
   const baseHasEventHandler = baseValue ? hasEventHandlerAttribute(baseValue) : false;
-  const baseHasJavascriptUri = baseValue ? /\\bjavascript\\s*:/i.test(baseValue) : false;
-  const baseHasDataUri = baseValue ? /\\bdata\\s*:/i.test(baseValue) : false;
+  const baseHasJavascriptUri = baseValue ? /\bjavascript\s*:/i.test(baseValue) : false;
+  const baseHasDataUri = baseValue ? /\bdata\s*:/i.test(baseValue) : false;
   const baseHasRawHtml = baseValue ? hasRawHtml(baseValue) : false;
 
   const disallowed: string[] = [];
-  if (/<script\\b/i.test(value) && !baseHasScript) {
-    disallowed.push(\"<script\");
+  if (/<script\b/i.test(value) && !baseHasScript) {
+    disallowed.push("<script");
   }
   if (hasEventHandlerAttribute(value) && !baseHasEventHandler) {
-    disallowed.push(\"event-handler attribute\");
+    disallowed.push("event-handler attribute");
   }
-  if (/\\bjavascript\\s*:/i.test(value) && !baseHasJavascriptUri) {
-    disallowed.push(\"javascript:\");
+  if (/\bjavascript\s*:/i.test(value) && !baseHasJavascriptUri) {
+    disallowed.push("javascript:");
   }
-  if (/\\bdata\\s*:/i.test(value) && !baseHasDataUri) {
-    disallowed.push(\"data:\");
+  if (/\bdata\s*:/i.test(value) && !baseHasDataUri) {
+    disallowed.push("data:");
   }
   if (hasRawHtml(value) && !baseHasRawHtml) {
-    disallowed.push(\"raw HTML tag\");
+    disallowed.push("raw HTML tag");
   }
 
   if (baseValue) {
     const baseUrls = new Set(extractUrls(baseValue));
     const unexpectedUrl = extractUrls(value).find((url) => !baseUrls.has(url));
     if (unexpectedUrl) {
-      disallowed.push(\"unexpected URL\");
+      disallowed.push("unexpected URL");
     }
   }
 
@@ -70,10 +70,10 @@ export function findDisallowedPayloads(value: string, baseValue?: string): strin
 
 export function flattenCatalog(
   node: unknown,
-  prefix = \"\",
+  prefix = "",
   acc: Map<string, string> = new Map(),
 ): Map<string, string> {
-  if (typeof node === \"string\") {
+  if (typeof node === "string") {
     if (prefix) acc.set(prefix, node);
     return acc;
   }
@@ -82,7 +82,7 @@ export function flattenCatalog(
   }
   for (const [key, value] of Object.entries(node)) {
     const nextKey = prefix ? `${prefix}.${key}` : key;
-    if (typeof value === \"string\") {
+    if (typeof value === "string") {
       acc.set(nextKey, value);
     } else if (isPlainObject(value)) {
       flattenCatalog(value, nextKey, acc);
@@ -95,13 +95,13 @@ export function parseCatalogJson(raw: string | Buffer): {
   catalog: Record<string, unknown> | null;
   error: string | null;
 } {
-  const text = typeof raw === \"string\" ? raw : raw.toString(\"utf-8\");
+  const text = typeof raw === "string" ? raw : raw.toString("utf-8");
   try {
     const parsed = JSON.parse(text);
     if (!isPlainObject(parsed)) {
       return {
         catalog: null,
-        error: \"Catalog root must be a JSON object, received \" + (Array.isArray(parsed) ? \"array\" : typeof parsed),
+        error: "Catalog root must be a JSON object, received " + (Array.isArray(parsed) ? "array" : typeof parsed),
       };
     }
     return { catalog: parsed, error: null };
@@ -122,16 +122,16 @@ export function validateCatalog(
   baseCatalog: Record<string, unknown>,
   options: ValidateCatalogOptions = {},
 ): LocaleValidationResult {
-  const targetLocale = options.targetLocale ?? \"custom\";
-  const baseLocale = options.baseLocale ?? \"en\";
+  const targetLocale = options.targetLocale ?? "custom";
+  const baseLocale = options.baseLocale ?? "en";
   const errors: LocaleValidationError[] = [];
   const warnings: string[] = [];
 
   if (!isPlainObject(candidate)) {
-    const type = candidate === null ? \"null\" : Array.isArray(candidate) ? \"array\" : typeof candidate;
+    const type = candidate === null ? "null" : Array.isArray(candidate) ? "array" : typeof candidate;
     errors.push({
-      path: \"<root>\",
-      code: \"INVALID_ROOT\",
+      path: "<root>",
+      code: "INVALID_ROOT",
       message: `Catalog root must be a JSON object, received ${type}`,
     });
 
@@ -165,26 +165,26 @@ export function validateCatalog(
   const candidateMap = new Map<string, string>();
 
   function walk(path: string[], node: unknown) {
-    if (path.length > 0 && path[path.length - 1] === \"\") {
+    if (path.length > 0 && path[path.length - 1] === "") {
       errors.push({
         path: formatPath(path),
-        code: \"EMPTY_KEY\",
+        code: "EMPTY_KEY",
         message: `${formatPath(path)} key cannot be empty`,
       });
     }
 
-    if (typeof node === \"string\") {
-      const fullPath = path.join(\".\");
+    if (typeof node === "string") {
+      const fullPath = path.join(".");
       candidateMap.set(fullPath, node);
 
       const baseVal = baseMap.get(fullPath);
       if (baseVal !== undefined) {
         const candidatePlaceholders = extractPlaceholders(node);
         const basePlaceholders = extractPlaceholders(baseVal);
-        if (candidatePlaceholders.join(\"\\0\") !== basePlaceholders.join(\"\\0\")) {
+        if (candidatePlaceholders.join("\0") !== basePlaceholders.join("\0")) {
           errors.push({
             path: fullPath,
-            code: \"PLACEHOLDER_MISMATCH\",
+            code: "PLACEHOLDER_MISMATCH",
             message: `${fullPath} interpolation placeholders must match base locale: expected ${JSON.stringify(
               basePlaceholders,
             )}, received ${JSON.stringify(candidatePlaceholders)}`,
@@ -196,7 +196,7 @@ export function validateCatalog(
       for (const payload of disallowed) {
         errors.push({
           path: fullPath,
-          code: \"DISALLOWED_PAYLOAD\",
+          code: "DISALLOWED_PAYLOAD",
           message: `${fullPath} contains disallowed ${payload}`,
         });
       }
@@ -208,7 +208,7 @@ export function validateCatalog(
       if (node.length > lengthLimit) {
         errors.push({
           path: fullPath,
-          code: \"STRING_TOO_LONG\",
+          code: "STRING_TOO_LONG",
           message: `${fullPath} is too long: ${node.length} characters exceeds limit of ${lengthLimit}`,
         });
       }
@@ -222,10 +222,10 @@ export function validateCatalog(
       return;
     }
 
-    const type = node === null ? \"null\" : Array.isArray(node) ? \"array\" : typeof node;
+    const type = node === null ? "null" : Array.isArray(node) ? "array" : typeof node;
     errors.push({
       path: formatPath(path),
-      code: \"INVALID_TYPE\",
+      code: "INVALID_TYPE",
       message: `${formatPath(path)} must be a string or object, received ${type}`,
     });
   }
@@ -283,8 +283,27 @@ export function validateCatalog(
   };
 
   let valid = errors.length === 0;
-  if (options.strict && (missingCount > 0 || extraCount > 0)) {
-    valid = false;
+  if (options.strict) {
+    if (missingCount > 0) {
+      valid = false;
+      for (const missingKey of missingKeys) {
+        errors.push({
+          path: missingKey,
+          code: "MISSING_KEY",
+          message: `Missing required translation key in strict mode: ${missingKey}`,
+        });
+      }
+    }
+    if (extraCount > 0) {
+      valid = false;
+      for (const extraKey of extraKeys) {
+        errors.push({
+          path: extraKey,
+          code: "EXTRA_KEY",
+          message: `Extra unexpected translation key in strict mode: ${extraKey}`,
+        });
+      }
+    }
   }
 
   return {

@@ -1,13 +1,13 @@
-import { Router, type Request, type Response, type NextFunction } from \"express\";
-import multer from \"multer\";
-import type { Db } from \"@myrmidon/db\";
-import { badRequest, notFound } from \"../../errors.js\";
-import { assertAuthenticated, assertBoard } from \"../../routes/authz.js\";
-import { parseCatalogJson } from \"./validator.js\";
+import { Router, type Request, type Response, type NextFunction } from "express";
+import multer from "multer";
+import type { Db } from "@myrmidon/db";
+import { badRequest, notFound } from "../../errors.js";
+import { assertAuthenticated, assertBoard } from "../../routes/authz.js";
+import { parseCatalogJson } from "./validator.js";
 import {
   createLocaleUploadService,
   type LocaleUploadService,
-} from \"./service.js\";
+} from "./service.js";
 
 const multerUpload = multer({
   storage: multer.memoryStorage(),
@@ -18,11 +18,11 @@ const multerUpload = multer({
 });
 
 function handleFileUpload(req: Request, res: Response, next: NextFunction) {
-  const contentType = req.headers[\"content-type\"] || \"\";
-  if (contentType.includes(\"multipart/form-data\")) {
+  const contentType = req.headers["content-type"] || "";
+  if (contentType.includes("multipart/form-data")) {
     multerUpload.fields([
-      { name: \"file\", maxCount: 1 },
-      { name: \"catalog\", maxCount: 1 },
+      { name: "file", maxCount: 1 },
+      { name: "catalog", maxCount: 1 },
     ])(req, res, (err) => {
       if (err instanceof multer.MulterError) {
         return next(badRequest(`Upload error: ${err.message}`));
@@ -49,16 +49,16 @@ function extractUploadInput(req: Request): ParsedUploadInput {
   const file = files?.file?.[0] || files?.catalog?.[0] || req.file;
 
   let catalog: Record<string, unknown> | null = null;
-  let detectedLocale = \"\";
+  let detectedLocale = "";
 
   if (file) {
     const parseResult = parseCatalogJson(file.buffer);
     if (parseResult.error || !parseResult.catalog) {
-      throw badRequest(parseResult.error || \"Failed to parse JSON file\");
+      throw badRequest(parseResult.error || "Failed to parse JSON file");
     }
     catalog = parseResult.catalog;
 
-    const originalName = file.originalname || \"\";
+    const originalName = file.originalname || "";
     const match = originalName.match(/^([a-zA-Z0-9_-]+)\.json$/i);
     if (match) {
       detectedLocale = match[1].toLowerCase();
@@ -75,42 +75,42 @@ function extractUploadInput(req: Request): ParsedUploadInput {
   )?.toString().trim();
 
   if (!locale) {
-    throw badRequest(\"Locale identifier is required (e.g. 'fr', 'de', 'custom-1')\");
+    throw badRequest("Locale identifier is required (e.g. 'fr', 'de', 'custom-1')");
   }
 
   if (!/^[a-zA-Z0-9_-]{2,35}$/.test(locale)) {
-    throw badRequest(\"Invalid locale identifier format: must be 2-35 alphanumeric chars, dashes or underscores\");
+    throw badRequest("Invalid locale identifier format: must be 2-35 alphanumeric chars, dashes or underscores");
   }
 
   if (!catalog) {
-    if (body.catalog && typeof body.catalog === \"object\" && !Array.isArray(body.catalog)) {
+    if (body.catalog && typeof body.catalog === "object" && !Array.isArray(body.catalog)) {
       catalog = body.catalog;
-    } else if (body.content && typeof body.content === \"string\") {
+    } else if (body.content && typeof body.content === "string") {
       const parsed = parseCatalogJson(body.content);
       if (parsed.error || !parsed.catalog) {
-        throw badRequest(parsed.error || \"Invalid JSON in content field\");
+        throw badRequest(parsed.error || "Invalid JSON in content field");
       }
       catalog = parsed.catalog;
-    } else if (typeof body === \"object\" && !Array.isArray(body) && !body.catalog && Object.keys(body).length > 0 && !body.locale) {
+    } else if (typeof body === "object" && !Array.isArray(body) && !body.catalog && Object.keys(body).length > 0 && !body.locale) {
       catalog = body;
     }
   }
 
   if (!catalog) {
-    throw badRequest(\"Missing localization catalog data. Send a JSON file or catalog object in request body\");
+    throw badRequest("Missing localization catalog data. Send a JSON file or catalog object in request body");
   }
 
   const dryRun =
     body.dryRun === true ||
-    body.dryRun === \"true\" ||
-    query.dryRun === \"true\" ||
-    query.dryRun === \"1\";
+    body.dryRun === "true" ||
+    query.dryRun === "true" ||
+    query.dryRun === "1";
 
   const strict =
     body.strict === true ||
-    body.strict === \"true\" ||
-    query.strict === \"true\" ||
-    query.strict === \"1\";
+    body.strict === "true" ||
+    query.strict === "true" ||
+    query.strict === "1";
 
   return {
     locale,
@@ -128,7 +128,7 @@ export function localeUploadRoutes(
   const service = serviceOverride ?? createLocaleUploadService(db);
 
   // POST /myrmidon/locales/validate - pre-upload validation without saving
-  router.post(\"/myrmidon/locales/validate\", handleFileUpload, async (req, res, next) => {
+  router.post("/myrmidon/locales/validate", handleFileUpload, async (req, res, next) => {
     try {
       assertBoard(req);
       const input = extractUploadInput(req);
@@ -181,11 +181,11 @@ export function localeUploadRoutes(
     }
   };
 
-  router.post(\"/myrmidon/locales/upload\", handleFileUpload, handleUpload);
-  router.post(\"/myrmidon/locale-upload\", handleFileUpload, handleUpload);
+  router.post("/myrmidon/locales/upload", handleFileUpload, handleUpload);
+  router.post("/myrmidon/locale-upload", handleFileUpload, handleUpload);
 
   // GET /myrmidon/locales/custom - list custom uploaded locales
-  router.get(\"/myrmidon/locales/custom\", async (req, res, next) => {
+  router.get("/myrmidon/locales/custom", async (req, res, next) => {
     try {
       assertAuthenticated(req);
       const customLocales = await service.listCustomLocales();
@@ -196,7 +196,7 @@ export function localeUploadRoutes(
   });
 
   // GET /myrmidon/locales/custom/:locale - get specific custom locale
-  router.get(\"/myrmidon/locales/custom/:locale\", async (req, res, next) => {
+  router.get("/myrmidon/locales/custom/:locale", async (req, res, next) => {
     try {
       assertAuthenticated(req);
       const locale = req.params.locale;
@@ -211,7 +211,7 @@ export function localeUploadRoutes(
   });
 
   // DELETE /myrmidon/locales/custom/:locale - delete custom locale
-  router.delete(\"/myrmidon/locales/custom/:locale\", async (req, res, next) => {
+  router.delete("/myrmidon/locales/custom/:locale", async (req, res, next) => {
     try {
       assertBoard(req);
       const locale = req.params.locale;

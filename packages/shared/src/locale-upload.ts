@@ -1,6 +1,6 @@
-import { z } from \"zod\";
+import { z } from "zod";
 
-export const CUSTOM_LOCALES_SETTINGS_KEY = \"customLocales\";
+export const CUSTOM_LOCALES_SETTINGS_KEY = "customLocales";
 
 export const localeKeyDiffReportSchema = z.object({
   totalBaseKeys: z.number(),
@@ -18,13 +18,15 @@ export const localeKeyDiffReportSchema = z.object({
 export type LocaleKeyDiffReport = z.infer<typeof localeKeyDiffReportSchema>;
 
 export const localeValidationErrorCodeSchema = z.enum([
-  \"INVALID_ROOT\",
-  \"INVALID_TYPE\",
-  \"DISALLOWED_PAYLOAD\",
-  \"PLACEHOLDER_MISMATCH\",
-  \"STRING_TOO_LONG\",
-  \"EMPTY_KEY\",
-  \"PARSE_ERROR\",
+  "INVALID_ROOT",
+  "INVALID_TYPE",
+  "DISALLOWED_PAYLOAD",
+  "PLACEHOLDER_MISMATCH",
+  "STRING_TOO_LONG",
+  "EMPTY_KEY",
+  "PARSE_ERROR",
+  "MISSING_KEY",
+  "EXTRA_KEY",
 ]);
 
 export type LocaleValidationErrorCode = z.infer<typeof localeValidationErrorCodeSchema>;

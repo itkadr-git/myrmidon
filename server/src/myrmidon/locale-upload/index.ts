@@ -1,11 +1,11 @@
-export { localeUploadRoutes } from \"./routes.js\";
+export { localeUploadRoutes } from "./routes.js";
 export {
   createLocaleUploadService,
   loadBaseEnglishCatalog,
   resetBaseCatalogCache,
   type LocaleUploadService,
   type UploadLocaleParams,
-} from \"./service.js\";
+} from "./service.js";
 export {
   validateCatalog,
   parseCatalogJson,
@@ -15,8 +15,8 @@ export {
   isPlainObject,
   formatPath,
   type ValidateCatalogOptions,
-} from \"./validator.js\";
+} from "./validator.js";
 export {
   preserveCustomLocalesGeneralKey,
   CUSTOM_LOCALES_SETTINGS_KEY,
-} from \"./settings.js\";
+} from "./settings.js";

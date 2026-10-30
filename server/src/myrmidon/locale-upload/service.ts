@@ -1,41 +1,43 @@
-import fs from \"node:fs\";
-import path from \"node:path\";
-import crypto from \"node:crypto\";
-import { fileURLToPath } from \"node:url\";
-import { eq } from \"drizzle-orm\";
-import { instanceSettings, type Db } from \"@myrmidon/db\";
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { eq } from "drizzle-orm";
+import { instanceSettings, type Db } from "@myrmidon/db";
 import {
   CUSTOM_LOCALES_SETTINGS_KEY,
   type StoredCustomLocale,
   type StoredCustomLocaleSummary,
   type LocaleValidationResult,
-} from \"@myrmidon/shared\";
-import { badRequest } from \"../../errors.js\";
-import { validateCatalog, type ValidateCatalogOptions } from \"./validator.js\";
+} from "@myrmidon/shared";
+import { badRequest } from "../../errors.js";
+import { validateCatalog, type ValidateCatalogOptions } from "./validator.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let cachedBaseCatalog: Record<string, unknown> | null = null;
 
-export function loadBaseEnglishCatalog(): Record<string, unknown> {
-  if (cachedBaseCatalog) {
+export function loadBaseEnglishCatalog(customCandidates?: string[]): Record<string, unknown> {
+  if (cachedBaseCatalog && !customCandidates) {
     return cachedBaseCatalog;
   }
 
-  const candidatePaths = [
-    path.resolve(process.cwd(), \"ui/src/i18n/locales/en.json\"),
-    path.resolve(__dirname, \"../../../ui/src/i18n/locales/en.json\"),
-    path.resolve(__dirname, \"./en-reference.json\"),
+  const candidatePaths = customCandidates ?? [
+    path.resolve(process.cwd(), "ui/src/i18n/locales/en.json"),
+    path.resolve(__dirname, "../../../ui/src/i18n/locales/en.json"),
+    path.resolve(__dirname, "./en-reference.json"),
   ];
 
   for (const candidate of candidatePaths) {
     try {
       if (fs.existsSync(candidate)) {
-        const content = fs.readFileSync(candidate, \"utf-8\");
+        const content = fs.readFileSync(candidate, "utf-8");
         const parsed = JSON.parse(content);
-        if (parsed && typeof parsed === \"object\" && !Array.isArray(parsed)) {
-          cachedBaseCatalog = parsed as Record<string, unknown>;
-          return cachedBaseCatalog;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          if (!customCandidates) {
+            cachedBaseCatalog = parsed as Record<string, unknown>;
+          }
+          return parsed as Record<string, unknown>;
         }
       }
     } catch {
@@ -43,11 +45,7 @@ export function loadBaseEnglishCatalog(): Record<string, unknown> {
     }
   }
 
-  // Fallback minimal catalog if filesystem read fails
-  cachedBaseCatalog = {
-    app: { title: \"Myrmidon\" },
-  };
-  return cachedBaseCatalog;
+  throw new Error("BASE_CATALOG_NOT_FOUND: Failed to load base English catalog: no valid base catalog file found");
 }
 
 export function resetBaseCatalogCache(): void {
@@ -92,24 +90,24 @@ export function createLocaleUploadService(
     let [row] = await db
       .select({ id: instanceSettings.id, general: instanceSettings.general })
       .from(instanceSettings)
-      .where(eq(instanceSettings.singletonKey, \"default\"))
+      .where(eq(instanceSettings.singletonKey, "default"))
       .limit(1);
 
     if (!row) {
       await db
         .insert(instanceSettings)
-        .values({ singletonKey: \"default\", general: {} })
+        .values({ singletonKey: "default", general: {} })
         .onConflictDoNothing({ target: [instanceSettings.singletonKey] });
 
       [row] = await db
         .select({ id: instanceSettings.id, general: instanceSettings.general })
         .from(instanceSettings)
-        .where(eq(instanceSettings.singletonKey, \"default\"))
+        .where(eq(instanceSettings.singletonKey, "default"))
         .limit(1);
     }
 
     const general =
-      row && row.general && typeof row.general === \"object\" && !Array.isArray(row.general)
+      row && row.general && typeof row.general === "object" && !Array.isArray(row.general)
         ? (row.general as Record<string, unknown>)
         : {};
 
@@ -129,7 +127,7 @@ export function createLocaleUploadService(
     });
 
     if (!validation.valid && !params.dryRun) {
-      throw badRequest(\"CATALOG_VALIDATION_FAILED\", {
+      throw badRequest("CATALOG_VALIDATION_FAILED", {
         errors: validation.errors,
         report: validation.report,
       });
@@ -143,12 +141,12 @@ export function createLocaleUploadService(
     }
 
     const normalizedJson = JSON.stringify(params.catalog);
-    const checksum = crypto.createHash(\"sha256\").update(normalizedJson).digest(\"hex\");
+    const checksum = crypto.createHash("sha256").update(normalizedJson).digest("hex");
 
     const { id, general } = await ensureSettingsRow();
     const customLocales = (
       general[CUSTOM_LOCALES_SETTINGS_KEY] &&
-      typeof general[CUSTOM_LOCALES_SETTINGS_KEY] === \"object\" &&
+      typeof general[CUSTOM_LOCALES_SETTINGS_KEY] === "object" &&
       !Array.isArray(general[CUSTOM_LOCALES_SETTINGS_KEY])
         ? general[CUSTOM_LOCALES_SETTINGS_KEY]
         : {}
@@ -194,7 +192,7 @@ export function createLocaleUploadService(
     const { general } = await ensureSettingsRow();
     const customLocales = (
       general[CUSTOM_LOCALES_SETTINGS_KEY] &&
-      typeof general[CUSTOM_LOCALES_SETTINGS_KEY] === \"object\" &&
+      typeof general[CUSTOM_LOCALES_SETTINGS_KEY] === "object" &&
       !Array.isArray(general[CUSTOM_LOCALES_SETTINGS_KEY])
         ? general[CUSTOM_LOCALES_SETTINGS_KEY]
         : {}
@@ -214,7 +212,7 @@ export function createLocaleUploadService(
     const { general } = await ensureSettingsRow();
     const customLocales = (
       general[CUSTOM_LOCALES_SETTINGS_KEY] &&
-      typeof general[CUSTOM_LOCALES_SETTINGS_KEY] === \"object\" &&
+      typeof general[CUSTOM_LOCALES_SETTINGS_KEY] === "object" &&
       !Array.isArray(general[CUSTOM_LOCALES_SETTINGS_KEY])
         ? general[CUSTOM_LOCALES_SETTINGS_KEY]
         : {}
@@ -227,7 +225,7 @@ export function createLocaleUploadService(
     const { id, general } = await ensureSettingsRow();
     const customLocales = (
       general[CUSTOM_LOCALES_SETTINGS_KEY] &&
-      typeof general[CUSTOM_LOCALES_SETTINGS_KEY] === \"object\" &&
+      typeof general[CUSTOM_LOCALES_SETTINGS_KEY] === "object" &&
       !Array.isArray(general[CUSTOM_LOCALES_SETTINGS_KEY])
         ? general[CUSTOM_LOCALES_SETTINGS_KEY]
         : {}
