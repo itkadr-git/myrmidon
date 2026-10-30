@@ -3015,6 +3015,7 @@ export function createPluginWorkerHandle(
       // Graceful stop — status is already "stopping" or will be set to "stopped"
       setStatus("stopped");
       log.info({ code, signal }, "worker process stopped");
+      intentionalStop = false;
       return;
     }
 
@@ -3181,8 +3182,17 @@ export function createPluginWorkerHandle(
   async function stopInternal(): Promise<void> {
     cancelPendingRestart();
 
-    if (status === "stopped" || status === "stopping") {
+    if (status === "stopped") {
       return;
+    }
+    if (status === "stopping") {
+      if (childProcess) {
+        await waitForExit(500);
+      }
+      if (!childProcess) {
+        setStatus("stopped");
+        return;
+      }
     }
 
     intentionalStop = true;
@@ -3459,8 +3469,10 @@ export function createPluginWorkerHandle(
     },
 
     async restart() {
+      cancelPendingRestart();
       await serializeOperation(async () => {
         await stopInternal();
+        intentionalStop = false;
         await startInternal();
       });
     },
