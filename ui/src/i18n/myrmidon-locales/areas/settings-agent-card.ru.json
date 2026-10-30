@@ -193,7 +193,20 @@
         "probeTitle": "Живая проверка recall",
         "probeQueryPlaceholder": "Введите проверочный запрос...",
         "probeRun": "Проверить recall",
-        "probeSuccess": "Recall выполнен за {{durationMs}} мс (возвращено записей: {{count}})"
+        "probeSuccess": "Recall выполнен за {{durationMs}} мс (возвращено записей: {{count}})",
+        "customRolePlaceholder": "Своя роль...",
+        "addRole": "Добавить",
+        "agentIdsLabel": "ID агентов (через запятую или перевод строки)",
+        "refresh": "Обновить",
+        "noProbesRecorded": "Замеров не зафиксировано",
+        "lastRecall": "Последний recall: {{duration}}",
+        "pendingLabel": "В очереди: {{count}}",
+        "failedLabel": "С ошибкой: {{count}}",
+        "processingAndTotal": "В обработке: {{processing}} | Всего: {{total}}",
+        "workloadLoading": "Загрузка метрик нагрузки...",
+        "recentOperations": "Недавние асинхронные операции:",
+        "probeTesting": "Проверка...",
+        "probeFailed": "Ошибка проверки: {{error}}"
       },
       "agent-tool-access-section": {
         "title": "Доступ к инструментам и подключениям",

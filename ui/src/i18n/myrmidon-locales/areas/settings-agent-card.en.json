@@ -193,7 +193,20 @@
         "probeTitle": "Live recall probe",
         "probeQueryPlaceholder": "Enter test query...",
         "probeRun": "Test recall",
-        "probeSuccess": "Recall completed in {{durationMs}} ms ({{count}} memories returned)"
+        "probeSuccess": "Recall completed in {{durationMs}} ms ({{count}} memories returned)",
+        "customRolePlaceholder": "Custom role...",
+        "addRole": "Add",
+        "agentIdsLabel": "Agent IDs (comma or line separated)",
+        "refresh": "Refresh",
+        "noProbesRecorded": "No probes recorded",
+        "lastRecall": "Last recall: {{duration}}",
+        "pendingLabel": "Pending: {{count}}",
+        "failedLabel": "Failed: {{count}}",
+        "processingAndTotal": "Processing: {{processing}} | Total: {{total}}",
+        "workloadLoading": "Loading workload metrics...",
+        "recentOperations": "Recent async operations:",
+        "probeTesting": "Testing...",
+        "probeFailed": "Probe failed: {{error}}"
       },
       "agent-tool-access-section": {
         "title": "Tool and connection access",

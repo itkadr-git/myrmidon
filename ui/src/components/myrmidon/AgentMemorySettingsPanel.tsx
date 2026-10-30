@@ -316,7 +316,7 @@ export function AgentMemorySettingsPanelView({
                   <Input
                     size={28}
                     className="h-8 text-xs"
-                    placeholder="Custom role..."
+                    placeholder={t("area.settings-agent-card.agent-memory-settings-panel.customRolePlaceholder")}
                     value={customRoleInput}
                     onChange={(e) => setCustomRoleInput(e.target.value)}
                     onKeyDown={(e) => {
@@ -327,7 +327,7 @@ export function AgentMemorySettingsPanelView({
                     }}
                   />
                   <Button type="button" size="sm" variant="outline" className="h-8 text-xs" onClick={addCustomRole}>
-                    Add
+                    {t("area.settings-agent-card.agent-memory-settings-panel.addRole")}
                   </Button>
                 </div>
               </div>
@@ -336,7 +336,7 @@ export function AgentMemorySettingsPanelView({
             {current.accessMode === "selected" ? (
               <div className="space-y-1 pt-2 border-t">
                 <Label htmlFor="agent-memory-ids" className="text-xs">
-                  Agent IDs (comma or line separated)
+                  {t("area.settings-agent-card.agent-memory-settings-panel.agentIdsLabel")}
                 </Label>
                 <textarea
                   id="agent-memory-ids"
@@ -430,7 +430,7 @@ export function AgentMemorySettingsPanelView({
                     className="h-7 px-2 text-xs"
                     onClick={() => void workloadQuery.refetch()}
                   >
-                    <RefreshCw className="h-3 w-3 mr-1" /> Refresh
+                    <RefreshCw className="h-3 w-3 mr-1" /> {t("area.settings-agent-card.agent-memory-settings-panel.refresh")}
                   </Button>
                 </div>
                 {workloadQuery.data ? (
@@ -444,10 +444,12 @@ export function AgentMemorySettingsPanelView({
                           ? `${workloadQuery.data.avgRecallDurationMs} ms`
                           : workloadQuery.data.lastRecallDurationMs !== null
                           ? `${workloadQuery.data.lastRecallDurationMs} ms`
-                          : "No probes recorded"}
+                          : t("area.settings-agent-card.agent-memory-settings-panel.noProbesRecorded")}
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        Last recall: {workloadQuery.data.lastRecallDurationMs ? `${workloadQuery.data.lastRecallDurationMs} ms` : "—"}
+                        {t("area.settings-agent-card.agent-memory-settings-panel.lastRecall", {
+                          duration: workloadQuery.data.lastRecallDurationMs ? `${workloadQuery.data.lastRecallDurationMs} ms` : "—",
+                        })}
                       </div>
                     </div>
                     <div className="rounded border bg-background p-3 space-y-1">
@@ -455,25 +457,40 @@ export function AgentMemorySettingsPanelView({
                         {t("area.settings-agent-card.agent-memory-settings-panel.consolidationQueue")} (async_operations)
                       </div>
                       <div className="text-lg font-semibold flex items-center gap-3">
-                        <span>Pending: {workloadQuery.data.consolidationQueue.pending}</span>
+                        <span>
+                          {t("area.settings-agent-card.agent-memory-settings-panel.pendingLabel", {
+                            count: workloadQuery.data.consolidationQueue.pending,
+                          })}
+                        </span>
                         {workloadQuery.data.consolidationQueue.failed > 0 ? (
-                          <span className="text-destructive">Failed: {workloadQuery.data.consolidationQueue.failed}</span>
+                          <span className="text-destructive">
+                            {t("area.settings-agent-card.agent-memory-settings-panel.failedLabel", {
+                              count: workloadQuery.data.consolidationQueue.failed,
+                            })}
+                          </span>
                         ) : null}
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        Processing: {workloadQuery.data.consolidationQueue.processing} | Total: {workloadQuery.data.consolidationQueue.total}
+                        {t("area.settings-agent-card.agent-memory-settings-panel.processingAndTotal", {
+                          processing: workloadQuery.data.consolidationQueue.processing,
+                          total: workloadQuery.data.consolidationQueue.total,
+                        })}
                       </div>
                     </div>
                   </div>
                 ) : (
-                  <p className="text-xs text-muted-foreground">Loading workload metrics...</p>
+                  <p className="text-xs text-muted-foreground">
+                    {t("area.settings-agent-card.agent-memory-settings-panel.workloadLoading")}
+                  </p>
                 )}
 
                 {/* Operations list with retry */}
                 {workloadQuery.data?.consolidationQueue.recentOperations &&
                 workloadQuery.data.consolidationQueue.recentOperations.length > 0 ? (
                   <div className="mt-3 space-y-2 border-t pt-2">
-                    <div className="text-xs font-medium text-muted-foreground">Recent Async Operations:</div>
+                    <div className="text-xs font-medium text-muted-foreground">
+                      {t("area.settings-agent-card.agent-memory-settings-panel.recentOperations")}
+                    </div>
                     <div className="max-h-40 overflow-y-auto space-y-1 font-mono text-xs">
                       {workloadQuery.data.consolidationQueue.recentOperations.map((op) => (
                         <div
@@ -529,7 +546,7 @@ export function AgentMemorySettingsPanelView({
                     onClick={() => probeMutation.mutate()}
                   >
                     {probeMutation.isPending
-                      ? "Testing..."
+                      ? t("area.settings-agent-card.agent-memory-settings-panel.probeTesting")
                       : t("area.settings-agent-card.agent-memory-settings-panel.probeRun")}
                   </Button>
                 </div>
@@ -558,7 +575,11 @@ export function AgentMemorySettingsPanelView({
                         ) : null}
                       </>
                     ) : (
-                      <div>Probe failed: {probeResult.error}</div>
+                      <div>
+                        {t("area.settings-agent-card.agent-memory-settings-panel.probeFailed", {
+                          error: probeResult.error,
+                        })}
+                      </div>
                     )}
                   </div>
                 ) : null}

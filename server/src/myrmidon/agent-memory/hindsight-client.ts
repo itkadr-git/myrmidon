@@ -92,16 +92,29 @@ export function parseMemoryPage(payload: unknown): HindsightMemoryPage | null {
   };
 }
 
+export type CreateMemoryHindsightClientOptions = {
+  baseUrl: string;
+  apiKey?: string;
+  fetchImpl?: FetchLike;
+  timeoutMs?: number;
+};
+
 export function createMemoryHindsightClient(
-  baseUrl: string,
-  apiKey: string | undefined,
+  baseUrlOrOptions: string | CreateMemoryHindsightClientOptions,
+  apiKey?: string,
   deps: HindsightClientDeps = {},
-): MemoryHindsightClient {
-  const fetchImpl = deps.fetchImpl ?? globalThis.fetch.bind(globalThis);
-  const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+): HindsightControlClient {
+  const options: CreateMemoryHindsightClientOptions =
+    typeof baseUrlOrOptions === "string"
+      ? { baseUrl: baseUrlOrOptions, apiKey, ...deps }
+      : baseUrlOrOptions;
+  const baseUrl = options.baseUrl;
+  const key = options.apiKey;
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const root = baseUrl.replace(/\/$/, "");
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+  if (key) headers["Authorization"] = `Bearer ${key}`;
 
   async function request(method: string, path: string, body?: unknown): Promise<unknown> {
     const controller = new AbortController();
@@ -250,6 +263,16 @@ export interface MemoryHindsightClient {
   list(bankId: string, opts?: { limit?: number; offset?: number; state?: string }): Promise<HindsightMemoryPage>;
   invalidate(bankId: string, memoryId: string, reason: string): Promise<void>;
   clear(bankId: string): Promise<{ deletedCount: number | null }>;
+  listBanks?(): Promise<HindsightBankSummary[]>;
+  getBankConfig?(bankId: string): Promise<HindsightBankConfig>;
+  updateBankConfig?(bankId: string, patch: Record<string, unknown>): Promise<HindsightBankConfig>;
+  getBankStats?(bankId: string): Promise<{ memoriesCount: number; pendingConsolidations: number; failedConsolidations: number }>;
+  getOperations?(bankId: string, opts?: { limit?: number; status?: string }): Promise<HindsightAsyncOperation[]>;
+  retryOperation?(bankId: string, operationId: string): Promise<{ success: boolean; id: string }>;
+  recall?(bankId: string, query: string, budget?: string): Promise<{ results: Array<{ text: string; score?: number }>; durationMs: number }>;
+}
+
+export interface HindsightControlClient extends MemoryHindsightClient {
   listBanks(): Promise<HindsightBankSummary[]>;
   getBankConfig(bankId: string): Promise<HindsightBankConfig>;
   updateBankConfig(bankId: string, patch: Record<string, unknown>): Promise<HindsightBankConfig>;

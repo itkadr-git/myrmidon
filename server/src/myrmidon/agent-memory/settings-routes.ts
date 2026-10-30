@@ -89,8 +89,7 @@ export function agentMemorySettingsService(deps: AgentMemorySettingsServiceDeps)
       const general = await deps.getGeneral();
       const viewResult = view(normalizeAgentMemorySettings(general.agentMemory));
       if (!viewResult.effective.apiUrl) return [];
-      const client = createMemoryHindsightClient({
-        baseUrl: viewResult.effective.apiUrl,
+      const client = createMemoryHindsightClient(viewResult.effective.apiUrl, undefined, {
         fetchImpl: deps.fetchImpl,
       });
       return client.listBanks();
@@ -99,8 +98,7 @@ export function agentMemorySettingsService(deps: AgentMemorySettingsServiceDeps)
       const general = await deps.getGeneral();
       const viewResult = view(normalizeAgentMemorySettings(general.agentMemory));
       if (!viewResult.effective.apiUrl) throw new Error("Memory service is not configured");
-      const client = createMemoryHindsightClient({
-        baseUrl: viewResult.effective.apiUrl,
+      const client = createMemoryHindsightClient(viewResult.effective.apiUrl, undefined, {
         fetchImpl: deps.fetchImpl,
       });
       return client.getBankConfig(bankId);
@@ -109,8 +107,7 @@ export function agentMemorySettingsService(deps: AgentMemorySettingsServiceDeps)
       const general = await deps.getGeneral();
       const viewResult = view(normalizeAgentMemorySettings(general.agentMemory));
       if (!viewResult.effective.apiUrl) throw new Error("Memory service is not configured");
-      const client = createMemoryHindsightClient({
-        baseUrl: viewResult.effective.apiUrl,
+      const client = createMemoryHindsightClient(viewResult.effective.apiUrl, undefined, {
         fetchImpl: deps.fetchImpl,
       });
       return client.updateBankConfig(bankId, patch);
@@ -126,8 +123,7 @@ export function agentMemorySettingsService(deps: AgentMemorySettingsServiceDeps)
           consolidationQueue: { pending: 0, processing: 0, failed: 0, total: 0, recentOperations: [] },
         };
       }
-      const client = createMemoryHindsightClient({
-        baseUrl: viewResult.effective.apiUrl,
+      const client = createMemoryHindsightClient(viewResult.effective.apiUrl, undefined, {
         fetchImpl: deps.fetchImpl,
       });
       const targetBank = bankId ?? "default";
@@ -159,8 +155,7 @@ export function agentMemorySettingsService(deps: AgentMemorySettingsServiceDeps)
       const general = await deps.getGeneral();
       const viewResult = view(normalizeAgentMemorySettings(general.agentMemory));
       if (!viewResult.effective.apiUrl) throw new Error("Memory service is not configured");
-      const client = createMemoryHindsightClient({
-        baseUrl: viewResult.effective.apiUrl,
+      const client = createMemoryHindsightClient(viewResult.effective.apiUrl, undefined, {
         fetchImpl: deps.fetchImpl,
       });
       return client.retryOperation(bankId, operationId);
@@ -169,8 +164,7 @@ export function agentMemorySettingsService(deps: AgentMemorySettingsServiceDeps)
       const general = await deps.getGeneral();
       const viewResult = view(normalizeAgentMemorySettings(general.agentMemory));
       if (!viewResult.effective.apiUrl) throw new Error("Memory service is not configured");
-      const client = createMemoryHindsightClient({
-        baseUrl: viewResult.effective.apiUrl,
+      const client = createMemoryHindsightClient(viewResult.effective.apiUrl, undefined, {
         fetchImpl: deps.fetchImpl,
       });
       try {
