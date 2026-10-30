@@ -37,6 +37,7 @@
     "skills"
   ],
   "scripts": {
+    "corpus:import:ragflow": "tsx ../scripts/myrmidon/ragflow-corpus-import.ts",
     "dev": "tsx src/index.ts",
     "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
     "worker": "tsx src/worker.ts",

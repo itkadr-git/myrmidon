@@ -325,6 +325,8 @@ describe("metrics endpoint routes", () => {
       runDurationSecondsP50: null,
       runDurationSecondsP95: null,
       roleQueueTasks: [],
+      reviewTasksWithoutReviewer: 0,
+      blockedTasksWithoutAssignee: 0,
       swarmClaimsActive: 0,
       swarmClaimsTotal: 0,
       agentErrorSignals: 0,

@@ -256,6 +256,86 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     return app;
   }
 
+  it("resolves a recovery action and wakes its return owner once when the recovery issue closes", async () => {
+    const { companyId, managerId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const [source] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: recoveryIssueId, companyId, title: "Recovery", status: "in_progress",
+      priority: "medium", assigneeAgentId: managerId, parentId: sourceIssueId,
+      issueNumber: 2, identifier: `${prefix}-2`,
+      originKind: "stranded_issue_recovery", originId: sourceIssueId,
+      originFingerprint: `stranded_issue_recovery:${sourceIssueId}`,
+    });
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, recoveryIssueId, kind: "stranded_assigned_issue",
+      ownerType: "agent", ownerAgentId: managerId, returnOwnerAgentId: coderId,
+      cause: "stranded_assigned_issue", fingerprint: "recovery-close-test",
+      nextAction: "Restore the source task.", wakePolicy: { type: "wake_owner" },
+    });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    const enqueueRecoveryActionWakeup = vi.fn(async () => null);
+    const app = createApp(undefined, { recoveryActionEnqueueWakeup: enqueueRecoveryActionWakeup });
+
+    await request(app).patch(`/api/issues/${recoveryIssueId}`).send({ status: "done" }).expect(200);
+    const [resolved] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    const [updatedSource] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(resolved).toMatchObject({ status: "resolved", outcome: "restored", returnOwnerAgentId: coderId });
+    expect(resolved?.resolvedAt).toBeTruthy();
+    expect(updatedSource).toMatchObject({ status: "todo", assigneeAgentId: coderId });
+    expect(enqueueRecoveryActionWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueRecoveryActionWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({ idempotencyKey: `recovery_resolved:${action.id}` }));
+
+    await request(app).patch(`/api/issues/${recoveryIssueId}`).send({ status: "done" }).expect(200);
+    expect(enqueueRecoveryActionWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks recovery actions cancelled when their recovery issue is cancelled", async () => {
+    const { companyId, managerId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: recoveryIssueId, companyId, title: "Cancelled recovery", status: "in_progress",
+      priority: "medium", assigneeAgentId: managerId, parentId: sourceIssueId,
+      issueNumber: 2, identifier: `${prefix}-2`,
+      originKind: "stranded_issue_recovery", originId: sourceIssueId,
+      originFingerprint: `stranded_issue_recovery:${sourceIssueId}`,
+    });
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, recoveryIssueId, kind: "stranded_assigned_issue",
+      ownerType: "agent", ownerAgentId: managerId, returnOwnerAgentId: coderId,
+      cause: "stranded_assigned_issue", fingerprint: "recovery-cancel-test",
+      nextAction: "Restore the source task.", wakePolicy: { type: "wake_owner" },
+    });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    const enqueueRecoveryActionWakeup = vi.fn(async () => null);
+
+    await request(createApp(undefined, { recoveryActionEnqueueWakeup: enqueueRecoveryActionWakeup }))
+      .patch(`/api/issues/${recoveryIssueId}`).send({ status: "cancelled" }).expect(200);
+
+    const [resolved] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    const [updatedSource] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(resolved).toMatchObject({ status: "cancelled", outcome: "cancelled" });
+    expect(resolved?.resolvedAt).toBeTruthy();
+    expect(updatedSource).toMatchObject({ status: "todo", assigneeAgentId: coderId });
+    expect(enqueueRecoveryActionWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueRecoveryActionWakeup).toHaveBeenCalledWith(
+      coderId, expect.objectContaining({ idempotencyKey: `recovery_resolved:${action.id}` }),
+    );
+  });
+
+  it("does not fail when closing a recovery issue without an associated action", async () => {
+    const { companyId, managerId, sourceIssueId, prefix } = await seedCompany();
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: recoveryIssueId, companyId, title: "Recovery without action", status: "in_progress",
+      priority: "medium", assigneeAgentId: managerId, parentId: sourceIssueId,
+      issueNumber: 2, identifier: `${prefix}-2`,
+      originKind: "stranded_issue_recovery", originId: sourceIssueId,
+      originFingerprint: `stranded_issue_recovery:${sourceIssueId}`,
+    });
+    await request(createApp()).patch(`/api/issues/${recoveryIssueId}`).send({ status: "cancelled" }).expect(200);
+  });
+
   it("upserts one active source-scoped action per issue and keeps company scoping explicit", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const svc = issueRecoveryActionService(db);
@@ -900,6 +980,90 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
       expect(actions).toHaveLength(0);
+    });
+
+    it("keeps a no-PR issue in progress with one wake while the retry budget remains", async () => {
+      const { companyId, coderId, sourceIssue } = await seedCompany();
+      const enqueueWakeup = fakeRetryWakeEnqueue({ companyId });
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      // Start with no prior tagged retries and recover once; replay is covered separately.
+      const updated = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: await succeededRun({ companyId, agentId: coderId }),
+        recoveryCause: "successful_run_missing_state",
+      });
+
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+        reason: "issue_continuation_needed",
+      }));
+      expect(updated?.status).toBe("in_progress");
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      expect(persisted?.status).toBe("in_progress");
+      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.blockerMetadata).toBeNull();
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id))).toHaveLength(0);
+    });
+
+    it("keeps a no-PR issue in progress with one wake when a replay reaches the daily cap", async () => {
+      const { companyId, coderId, sourceIssue } = await seedCompany();
+      await seedStrandedAutoPolicyRetryRun({ companyId, agentId: coderId, issueId: sourceIssue.id });
+      const enqueueWakeup = fakeRetryWakeEnqueue({ companyId });
+      const recovery = recoveryService(db, { enqueueWakeup });
+      const latestRun = await succeededRun({ companyId, agentId: coderId });
+      const input = {
+        issue: sourceIssue,
+        previousStatus: "in_progress" as const,
+        latestRun,
+        recoveryCause: "successful_run_missing_state" as const,
+        rerouteToSharedQueue: true,
+      };
+
+      await recovery.escalateStrandedAssignedIssue(input);
+      const replay = await recovery.escalateStrandedAssignedIssue(input);
+
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+        reason: "issue_continuation_needed",
+      }));
+      expect(replay?.status).toBe("in_progress");
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      expect(persisted?.status).toBe("in_progress");
+      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.blockerMetadata).toBeNull();
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id))).toHaveLength(0);
+    });
+
+    it("blocks for the senior agent only after the corrective handoff is exhausted", async () => {
+      const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+      const latestRun = await succeededRun({ companyId, agentId: coderId });
+
+      const updated = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun,
+        recoveryCause: "successful_run_missing_state",
+        rerouteToSharedQueue: true,
+        successfulRunHandoffEvidence: {
+          sourceRunId: randomUUID(),
+          correctiveRunId: latestRun.id,
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      });
+
+      expect(updated?.status).toBe("blocked");
+      expect(updated?.assigneeAgentId).toBe(coderId);
+      expect(updated?.blockerMetadata).toMatchObject({ owner: { agentId: managerId } });
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(enqueueWakeup).toHaveBeenCalledWith(managerId, expect.objectContaining({
+        reason: "issue_unblock_requested",
+      }));
     });
 
     it("hands the issue to the direct manager once the daily retry cap is exhausted, end to end", async () => {

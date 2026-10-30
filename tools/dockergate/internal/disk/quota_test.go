@@ -53,8 +53,18 @@ func (f *fakeExec) journal() []string {
 func newQuota(t *testing.T, state string) (*Quota, *fakeExec) {
 	t.Helper()
 	dir := t.TempDir()
+	volumeRoot := filepath.Join(dir, "bots")
+	if err := os.MkdirAll(volumeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(volumeRoot, qKeyA), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(volumeRoot, qKeyB), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	f := &fakeExec{state: state}
-	q := NewQuota(root, f)
+	q := NewQuota(volumeRoot, f)
 	q.ProjectsFile = filepath.Join(dir, "projects")
 	q.ProjidFile = filepath.Join(dir, "projid")
 	return q, f
@@ -69,6 +79,86 @@ func read(t *testing.T, path string) string {
 	return string(b)
 }
 
+func TestEnsure_RegistersSafeDirectoryAndIsIdempotent(t *testing.T) {
+	q, f := newQuota(t, stateOn)
+	if err := os.MkdirAll(q.VolumeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	botDir := filepath.Join(q.VolumeRoot, qKeyA)
+	if err := os.MkdirAll(botDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id, err := q.Ensure(context.Background(), qKeyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != FirstProjectID {
+		t.Fatalf("project id %d", id)
+	}
+	if got := read(t, q.ProjidFile); got != qKeyA+":1000\n" {
+		t.Fatalf("projid %q", got)
+	}
+	if got := read(t, q.ProjectsFile); got != "1000:"+botDir+"\n" {
+		t.Fatalf("projects %q", got)
+	}
+	if calls := f.journal(); len(calls) != 2 || calls[0] != "xfs_quota|-x|-c|state -p|"+q.VolumeRoot || calls[1] != "xfs_quota|-x|-c|project -s -p "+botDir+" 1000|"+q.VolumeRoot {
+		t.Fatalf("repair did not use a single project setup command: %q", calls)
+	}
+	if _, err := q.Ensure(context.Background(), qKeyA); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsure_RejectsSymlinkedBotDir(t *testing.T) {
+	q, f := newQuota(t, stateOn)
+	if err := os.MkdirAll(q.VolumeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(q.VolumeRoot, qKeyA), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(q.VolumeRoot, qKeyA+"-link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Ensure(context.Background(), qKeyA+"-link"); err == nil {
+		t.Fatal("symlinked bot directory accepted")
+	}
+	if len(f.journal()) != 0 {
+		t.Fatalf("unexpected xfs calls %v", f.journal())
+	}
+}
+
+func TestEnsure_RepairsZeroProjectID(t *testing.T) {
+	q, f := newQuota(t, stateOn)
+	if err := os.MkdirAll(q.VolumeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	botDir := filepath.Join(q.VolumeRoot, qKeyA)
+	if err := os.MkdirAll(botDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(q.ProjidFile, []byte(qKeyA+":0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(q.ProjectsFile, []byte("0:"+botDir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id, err := q.Ensure(context.Background(), qKeyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != FirstProjectID || read(t, q.ProjidFile) != qKeyA+":1000\n" {
+		t.Fatalf("id=%d projid=%q", id, read(t, q.ProjidFile))
+	}
+	if got := read(t, q.ProjectsFile); got != "1000:"+botDir+"\n" {
+		t.Fatalf("projects %q", got)
+	}
+	calls := f.journal()
+	if len(calls) != 2 || calls[0] != "xfs_quota|-x|-c|state -p|"+q.VolumeRoot || calls[1] != "xfs_quota|-x|-c|project -s -p "+botDir+" 1000|"+q.VolumeRoot {
+		t.Fatalf("repair did not initialize the project: %q", calls)
+	}
+}
+
 func TestPut_ValidCallsXfsQuotaWithTheContractArguments(t *testing.T) {
 	q, f := newQuota(t, stateOn)
 	const hard = int64(6442450944)
@@ -79,6 +169,7 @@ func TestPut_ValidCallsXfsQuotaWithTheContractArguments(t *testing.T) {
 	if res.ProjectID != FirstProjectID || res.HardBytes != hard {
 		t.Fatalf("result %+v", res)
 	}
+	root := q.VolumeRoot
 	want := []string{
 		"xfs_quota|-x|-c|state -p|" + root,
 		"xfs_quota|-x|-c|project -s -p " + root + "/" + qKeyA + " 1000|-c|limit -p bhard=6442450944 bsoft=5153960755 1000|" + root,
@@ -203,12 +294,15 @@ func TestPut_SameRequestTwiceIsIdempotent(t *testing.T) {
 	}
 	j := f.journal()
 	if len(j) != 4 || j[1] != j[3] {
-		t.Errorf("the set command differs between the runs: %q", j)
+		t.Errorf("xfs_quota calls: %q", j)
 	}
 }
 
 func TestPut_ExistingFilesAreKeptAndIDsNotReused(t *testing.T) {
 	q, _ := newQuota(t, stateOn)
+	if err := os.MkdirAll(filepath.Join(q.VolumeRoot, qKeyA), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(q.ProjidFile, []byte("# bots\nlegacy:1500\nsomebody:12\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +322,7 @@ func TestPut_ExistingFilesAreKeptAndIDsNotReused(t *testing.T) {
 	if got, want := read(t, q.ProjidFile), "# bots\nlegacy:1500\nsomebody:12\n"+qKeyA+":1701\n"; got != want {
 		t.Errorf("projid %q, want %q", got, want)
 	}
-	if got, want := read(t, q.ProjectsFile), "1500:/srv/legacy\n1700:/srv/other\n1701:"+root+"/"+qKeyA+"\n"; got != want {
+	if got, want := read(t, q.ProjectsFile), "1500:/srv/legacy\n1700:/srv/other\n1701:"+filepath.Join(q.VolumeRoot, qKeyA)+"\n"; got != want {
 		t.Errorf("projects %q, want %q", got, want)
 	}
 	fi, err := os.Stat(q.ProjidFile)
@@ -242,7 +336,10 @@ func TestPut_ExistingFilesAreKeptAndIDsNotReused(t *testing.T) {
 
 func TestPut_ExistingNameKeepsItsID(t *testing.T) {
 	q, _ := newQuota(t, stateOn)
-	if err := os.WriteFile(q.ProjidFile, []byte("other:2000\n"+qKeyA+":1234\n"), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(q.VolumeRoot, qKeyA), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(q.ProjidFile, []byte(qKeyA+":1234\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	res, err := q.Put(context.Background(), qKeyA, MinQuotaBytes)
@@ -252,7 +349,7 @@ func TestPut_ExistingNameKeepsItsID(t *testing.T) {
 	if res.ProjectID != 1234 {
 		t.Errorf("project id %d, want 1234", res.ProjectID)
 	}
-	if got := read(t, q.ProjectsFile); got != "1234:"+root+"/"+qKeyA+"\n" {
+	if got := read(t, q.ProjectsFile); got != "1234:"+filepath.Join(q.VolumeRoot, qKeyA)+"\n" {
 		t.Errorf("projects %q", got)
 	}
 }
@@ -265,8 +362,12 @@ func TestPut_QuotaUnavailable(t *testing.T) {
 		"only accounting": {state: "  Accounting: ON\n  Enforcement: OFF\n"},
 	}
 	for name, f := range cases {
-		q := NewQuota(root, f)
 		dir := t.TempDir()
+		volumeRoot := filepath.Join(dir, "bots")
+		q := NewQuota(volumeRoot, f)
+		if err := os.MkdirAll(filepath.Join(volumeRoot, qKeyA), 0o700); err != nil {
+			t.Fatal(err)
+		}
 		q.ProjectsFile, q.ProjidFile = filepath.Join(dir, "projects"), filepath.Join(dir, "projid")
 		_, err := q.Put(context.Background(), qKeyA, MinQuotaBytes)
 		if !errors.Is(err, ErrQuotaUnavailable) {
