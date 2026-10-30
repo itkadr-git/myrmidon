@@ -4,8 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentListItem } from "@myrmidon/shared";
-import i18n from "i18next";
-import { initReactI18next } from "react-i18next";
+import { i18n } from "@/i18n";
 import {
   MaintenanceBannerView,
   aggregateMaintenance,
@@ -13,8 +12,6 @@ import {
 } from "./MaintenanceBanner";
 import { MaintenanceSettingsPanelView } from "./MaintenanceSettingsPanel";
 import type { MaintenanceStatus, MaintenanceWindowView } from "./maintenanceApi";
-import en from "../../i18n/locales/en.json";
-import ru from "../../i18n/locales/ru.json";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -23,15 +20,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(async () => {
-  await i18n.use(initReactI18next).init({
-    lng: "en",
-    fallbackLng: "en",
-    resources: {
-      en: { translation: en },
-      ru: { translation: ru },
-    },
-    interpolation: { escapeValue: false },
-  });
+  await i18n.changeLanguage("en");
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -290,20 +279,6 @@ describe("MaintenanceBanner", () => {
 });
 
 describe("MaintenanceSettingsPanel", () => {
-  let container: HTMLDivElement;
-  let root: Root;
-
-  beforeEach(() => {
-    container = document.createElement("div");
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(() => {
-    flushSync(() => root.unmount());
-    container.remove();
-  });
-
   function renderPanel(value: MaintenanceStatus, onEnter = vi.fn(), onExit = vi.fn()) {
     flushSync(() =>
       root.render(
