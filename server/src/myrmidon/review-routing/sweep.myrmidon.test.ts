@@ -57,6 +57,7 @@ interface Fixture {
   activities: Array<{ action: string; issueId: string; details: Record<string, unknown> }>;
   wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number }>;
   reviewerActiveRuns?: Map<string, number>;
+  escalations: Array<Record<string, unknown>>;
 }
 
 function makeStore(fx: Fixture) {
@@ -123,6 +124,7 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
     load: new Map(),
     history: new Map(),
     activities: [],
+    escalations: [],
     wakeStates: new Map(),
     ...fx,
   };
