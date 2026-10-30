@@ -55,6 +55,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueApprovals,
+  issueContinuationKeys,
   issueDocuments,
   issuePlanDecompositions,
   issueRecoveryActions,
@@ -15134,6 +15135,94 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryRun?.contextSnapshot as Record<string, unknown>,
     ).not.toHaveProperty("modelProfile");
   });
+
+  it("queues only one continuation for 30 concurrent identical recovery events", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.continuation_recovery",
+      livenessState: "advanced",
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 30 }, () =>
+        heartbeatService(db).reconcileStrandedAssignedIssues(),
+      ),
+    );
+    expect(
+      results.reduce((total, result) => total + result.continuationRequeued, 0),
+    ).toBe(1);
+
+    const continuationWakes = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.reason, "issue_continuation_needed"),
+        ),
+      );
+    expect(continuationWakes).toHaveLength(1);
+
+    const continuationClaims = await db
+      .select({ key: issueContinuationKeys.key })
+      .from(issueContinuationKeys)
+      .where(
+        and(
+          eq(issueContinuationKeys.companyId, companyId),
+          eq(issueContinuationKeys.issueId, issueId),
+        ),
+      );
+    expect(continuationClaims).toHaveLength(1);
+  }, 30_000);
+
+  it("retries a continuation with the same head when the first enqueue returns null", async () => {
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.continuation_recovery",
+      livenessState: "advanced",
+    });
+    let attempts = 0;
+    const enqueueWakeup = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) return null;
+      const [sourceRun] = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      return {
+        ...sourceRun!,
+        id: randomUUID(),
+        status: "queued",
+      } as typeof heartbeatRuns.$inferSelect;
+    });
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const first = await recovery.reconcileStrandedAssignedIssues({
+      issueIds: [issueId],
+    });
+    expect(first.continuationRequeued).toBe(0);
+    expect(
+      await db
+        .select({ key: issueContinuationKeys.key })
+        .from(issueContinuationKeys)
+        .where(
+          and(
+            eq(issueContinuationKeys.companyId, companyId),
+            eq(issueContinuationKeys.issueId, issueId),
+          ),
+        ),
+    ).toHaveLength(0);
+
+    const second = await recovery.reconcileStrandedAssignedIssues({
+      issueIds: [issueId],
+    });
+    expect(second.continuationRequeued).toBe(1);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
+  }, 30_000);
 
   it("does not treat a productive terminal run as healthy when in-progress work has no live path", async () => {
     const { companyId, agentId, issueId, runId } =

@@ -7,8 +7,14 @@
 import { useState } from "react";
 import { useCompany } from "@/context/CompanyContext";
 import { useInstanceSecretSettings } from "@/hooks/useInstanceSecretSettings";
-import { useUi2I18n } from "../../../i18n/Ui2I18n";
+import { useUi2I18n, type Ui2I18nContextValue } from "../../../i18n/Ui2I18n";
 import { Ui2Section } from "../../../components/ui2Primitives";
+
+function ui2SettingDescription(t: Ui2I18nContextValue["t"], name: string, fallback: string): string {
+  const key = `ui2.settings.system.secretRefs.settingDescriptions.${name.replace(/[.-]/g, "_")}`;
+  const translated = t(key as never);
+  return translated === key ? fallback : translated;
+}
 
 export function Ui2InstanceSecretSettings() {
   const { t } = useUi2I18n();
@@ -28,7 +34,7 @@ export function Ui2InstanceSecretSettings() {
               ? t("ui2.settings.system.secretRefs.toolOauthProvider", {
                   provider: setting.name.slice("tool-oauth.".length, -".client-secret".length).replace(/_/g, " "),
                 })
-              : setting.description}
+              : ui2SettingDescription(t, setting.name, setting.description)}
           </span>
           <span className="font-mono text-xs text-muted-foreground">{setting.name}</span>
           <span className="text-sm" data-testid={`ui2-secret-setting-source-${setting.name}`}>

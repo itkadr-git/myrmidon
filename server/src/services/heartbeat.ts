@@ -32547,8 +32547,6 @@ export function heartbeatService(
           skipped: 0,
         };
       }
-      const cutoff = await getWorktreeExecutionCutoff();
-
       const allAgents = await db
         .select({ ...getTableColumns(agents) })
         .from(agents)
@@ -32571,24 +32569,6 @@ export function heartbeatService(
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
-        if (cutoff) {
-          const eligibleIssue = await db
-            .select({ id: issues.id })
-            .from(issues)
-            .where(
-              and(
-                eq(issues.companyId, agent.companyId),
-                eq(issues.assigneeAgentId, agent.id),
-                inArray(issues.status, ["todo", "in_progress"]),
-                gte(issues.createdAt, cutoff),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          if (!eligibleIssue) continue;
-        }
-
-        checked += 1;
         const baseline = new Date(
           agent.lastHeartbeatAt ?? agent.createdAt,
         ).getTime();
@@ -32600,6 +32580,29 @@ export function heartbeatService(
           policy.intervalSec,
         );
         if (!timerClaim) continue;
+        checked += 1;
+
+        // Only inspect readiness after this agent's timer is due and claimed.
+        // This avoids a database scan and repeated no-work activity on every
+        // scheduler tick. Keep the candidate set aligned with idle pickup so a
+        // timer wake always carries task source context required by the P5 guard.
+        const timerIssue = await findTopReadyIssueForAgent(db, {
+          id: agent.id,
+          companyId: agent.companyId,
+        });
+        if (!timerIssue) {
+          await logActivity(db, {
+            companyId: agent.companyId,
+            actorType: "system",
+            actorId: "heartbeat_scheduler",
+            agentId: agent.id,
+            action: "heartbeat.timer.no_actionable_work",
+            entityType: "agent",
+            entityId: agent.id,
+            details: { reason: "no_actionable_work" },
+          });
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
@@ -32612,6 +32615,7 @@ export function heartbeatService(
             reason: "interval_elapsed",
             now: now.toISOString(),
             timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat,
+            issueId: timerIssue.id,
           },
         });
         if (run) enqueued += 1;
