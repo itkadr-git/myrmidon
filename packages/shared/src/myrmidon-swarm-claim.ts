@@ -106,7 +106,7 @@ export const MAX_SWARM_LEASE_TTL_SEC = 24 * 60 * 60;
  * Ceiling of concurrently held tasks per agent. `null` means "no ceiling from
  * this setting": the run admission limits (C0) still cap what actually starts.
  */
-export const DEFAULT_SWARM_MAX_ACTIVE_TASKS: number | null = 3;
+export const DEFAULT_SWARM_MAX_ACTIVE_TASKS: number | null = 2;
 export const MIN_SWARM_MAX_ACTIVE_TASKS = 1;
 export const MAX_SWARM_MAX_ACTIVE_TASKS = 100;
 
