@@ -38,10 +38,19 @@ describe("decideStalledReviewRecovery", () => {
     });
   });
 
-  it("asks for the decision when the CI state cannot be read or there is no PR", () => {
-    expect(decideStalledReviewRecovery({ ci: "unknown", ciWaitsUsed: 0, decisionRewakesUsed: 1 }).kind).toBe(
-      "retry_decision",
-    );
+  it("waits like for a running CI when the CI state cannot be read", () => {
+    // OPE-10063: an unreadable CI (no token, GitHub error) must not turn into a block.
+    expect(decideStalledReviewRecovery({ ci: "unknown", ciWaitsUsed: 0, decisionRewakesUsed: 1 })).toEqual({
+      kind: "wait_for_ci",
+      attempt: 1,
+      maxAttempts: REVIEW_CI_WAIT_MAX_ATTEMPTS,
+    });
+    expect(
+      decideStalledReviewRecovery({ ci: "unknown", ciWaitsUsed: 7, decisionRewakesUsed: REVIEW_DECISION_MAX_REWAKES }),
+    ).toMatchObject({ kind: "wait_for_ci", attempt: 8 });
+  });
+
+  it("asks for the decision when there is no PR", () => {
     expect(decideStalledReviewRecovery({ ci: "no_pull_request", ciWaitsUsed: 0, decisionRewakesUsed: 1 }).kind).toBe(
       "retry_decision",
     );
@@ -55,20 +64,22 @@ describe("decideStalledReviewRecovery", () => {
   });
 
   it("stops waiting for CI after the bounded number of waits", () => {
-    expect(
-      decideStalledReviewRecovery({
-        ci: "pending",
-        ciWaitsUsed: REVIEW_CI_WAIT_MAX_ATTEMPTS,
-        decisionRewakesUsed: 1,
-      }),
-    ).toMatchObject({ kind: "retry_decision" });
-    expect(
-      decideStalledReviewRecovery({
-        ci: "pending",
-        ciWaitsUsed: REVIEW_CI_WAIT_MAX_ATTEMPTS,
-        decisionRewakesUsed: 2,
-      }),
-    ).toEqual({ kind: "escalate", reason: "ci_wait_exhausted" });
+    for (const ci of ["pending", "unknown"] as const) {
+      expect(
+        decideStalledReviewRecovery({
+          ci,
+          ciWaitsUsed: REVIEW_CI_WAIT_MAX_ATTEMPTS,
+          decisionRewakesUsed: 1,
+        }),
+      ).toMatchObject({ kind: "retry_decision" });
+      expect(
+        decideStalledReviewRecovery({
+          ci,
+          ciWaitsUsed: REVIEW_CI_WAIT_MAX_ATTEMPTS,
+          decisionRewakesUsed: 2,
+        }),
+      ).toEqual({ kind: "escalate", reason: "ci_wait_exhausted" });
+    }
   });
 
   it("names both decisions in the instruction", () => {
@@ -96,48 +107,55 @@ describe("countStalledReviewDeferrals", () => {
 });
 
 describe("pullRequestHeadCiStateFromChecks", () => {
-  it("is pending while a check run is queued or in progress", () => {
-    expect(
-      pullRequestHeadCiStateFromChecks({
-        checkRuns: [{ status: "completed", conclusion: "success" }, { status: "queued" }],
-        combinedStatus: { state: "success", statuses: [] },
-      }),
-    ).toBe("pending");
-    expect(
-      pullRequestHeadCiStateFromChecks({
-        checkRuns: [{ status: "in_progress" }],
-        combinedStatus: { state: "success", statuses: [] },
-      }),
-    ).toBe("pending");
-  });
+  const done = (conclusion: string) => ({ name: "CI result", status: "completed", conclusion });
 
-  it("is pending while a commit status is pending", () => {
-    expect(
-      pullRequestHeadCiStateFromChecks({
-        checkRuns: [],
-        combinedStatus: { state: "pending", statuses: [{ context: "ci", state: "pending" }] },
-      }),
-    ).toBe("pending");
-  });
-
-  it("is complete when every check finished, whatever the conclusion", () => {
+  it("is pending while the final CI result check is missing, however many other checks failed", () => {
+    // OPE-8077: `checks` failed, typecheck and tests are still queued.
     expect(
       pullRequestHeadCiStateFromChecks({
         checkRuns: [
-          { status: "completed", conclusion: "failure" },
-          { status: "completed", conclusion: "cancelled" },
+          { name: "checks", status: "completed", conclusion: "failure" },
+          { name: "typecheck + build", status: "queued" },
+          { name: "tests (server 1/3)", status: "queued" },
         ],
-        // GitHub answers "pending" with no statuses when a commit has no status contexts.
-        combinedStatus: { state: "pending", statuses: [] },
       }),
-    ).toBe("complete");
+    ).toBe("pending");
+    // The release freeze gate is red on every PR while the tag CI runs.
+    expect(
+      pullRequestHeadCiStateFromChecks({
+        checkRuns: [{ name: "freeze", status: "completed", conclusion: "failure" }],
+      }),
+    ).toBe("pending");
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [] })).toBe("pending");
   });
 
-  it("is unknown when a read failed", () => {
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: null, combinedStatus: { state: "success" } })).toBe(
-      "unknown",
+  it("is pending while the final check is queued or in progress", () => {
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [{ name: "CI result", status: "queued" }] })).toBe("pending");
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [{ name: "CI result", status: "in_progress" }] })).toBe(
+      "pending",
     );
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [], combinedStatus: null })).toBe("unknown");
+  });
+
+  it("is complete when the final check is completed, whatever the other checks do", () => {
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("success")] })).toBe("complete");
+    expect(
+      pullRequestHeadCiStateFromChecks({
+        checkRuns: [done("failure"), { name: "tests (other + runner)", status: "queued" }],
+      }),
+    ).toBe("complete");
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [{ name: "CI result", status: "completed" }] })).toBe(
+      "complete",
+    );
+  });
+
+  it("does not take the leftovers of a superseded workflow run for a verdict", () => {
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("cancelled")] })).toBe("pending");
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("skipped")] })).toBe("pending");
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("cancelled"), done("success")] })).toBe("complete");
+  });
+
+  it("is unknown when the read failed", () => {
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: null })).toBe("unknown");
   });
 });
 

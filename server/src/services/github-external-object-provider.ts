@@ -348,7 +348,7 @@ const READ_ONLY_APP_PERMISSIONS = {
  *   3. null (anonymous), as before.
  * Neither a token nor an App key is logged or returned in an error.
  */
-async function defaultTokenProvider(
+export async function defaultTokenProvider(
   db: Db,
   companyId: string,
   repository: string,
