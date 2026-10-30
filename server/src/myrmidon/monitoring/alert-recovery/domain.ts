@@ -30,11 +30,16 @@ export interface AlertRecoveryAlert {
   companyId: string;
   /** Alert source: `zabbix` or `alertmanager`. */
   source: string;
+  /** Source event key for distinct event ids sharing a triggerid. */
+  eventKey?: string | null;
   /** Trigger name (Zabbix) or alertname (Alertmanager). */
   trigger: string;
+  /** Raw Zabbix trigger id, used as the dedup identity. */
+  triggerId?: string | null;
   status: "firing" | "resolved";
   severity?: string | null;
   summary?: string | null;
+  title?: string | null;
   /** Hosts the alert covers; part of the alert identity. */
   hosts?: readonly string[] | null;
   /** When the source saw the transition, ISO. */
@@ -97,18 +102,19 @@ export function alertRecoveryPriority(severity: string | null | undefined): "cri
 export function alertRecoveryIssueTitle(alert: AlertRecoveryAlert): string {
   const hosts = normalizeAlertHosts(alert.hosts);
   const suffix = hosts.length ? ` — ${hosts.join(", ")}` : "";
-  return `Тревога ${alert.source}: ${alert.trigger.trim()}${suffix}`;
+  return `Тревога ${alert.source}: ${alert.title?.trim() || alert.trigger.trim()}${suffix}`;
 }
 
 function alertFacts(alert: AlertRecoveryAlert): string[] {
   const hosts = normalizeAlertHosts(alert.hosts);
   const lines = [
     `- Источник: \`${alert.source}\``,
-    `- Триггер: \`${alert.trigger.trim()}\``,
+    `- Триггер: \`${alert.title?.trim() || alert.trigger.trim()}\``,
+    ...(alert.summary?.trim() ? [`- Детали: ${alert.summary.trim()}`] : []),
+    ...(alert.triggerId ? [`- Trigger ID: \`${alert.triggerId}\``] : []),
   ];
   if (hosts.length) lines.push(`- Хосты: ${hosts.join(", ")}`);
   if (alert.severity) lines.push(`- Важность: ${alert.severity}`);
-  if (alert.summary?.trim()) lines.push(`- Описание: ${alert.summary.trim()}`);
   if (alert.url?.trim()) lines.push(`- Тревога в источнике: ${alert.url.trim()}`);
   lines.push(`- Сработала: ${alert.happenedAt}`);
   return lines;
@@ -223,7 +229,12 @@ export function planAlertRecoveryEvent(input: {
 }): AlertRecoveryPlan {
   const { alert, record, settings, now } = input;
   const nowIso = now.toISOString();
-  const identity = alertRecoveryIdentity(alert);
+  const identity = alertRecoveryIdentity({
+    source: alert.source,
+    trigger: alert.triggerId?.trim() || alert.eventKey?.trim() || alert.trigger.trim(),
+    triggerId: alert.triggerId?.trim() || null,
+    hosts: alert.hosts,
+  });
   const runbook = selectAlertRecoveryRunbook(alert.trigger);
   const ownerRole = resolveAlertRecoveryOwnerRole(alert.trigger, runbook, settings);
   const firing = alert.status === "firing";
@@ -252,6 +263,7 @@ export function planAlertRecoveryEvent(input: {
             issueIdentifier: null,
             state: "open",
             firedCount: 1,
+            heldAt: null,
             firstFiredAt: alert.happenedAt,
             lastFiredAt: alert.happenedAt,
             resolvedAt: null,
@@ -273,7 +285,7 @@ export function planAlertRecoveryEvent(input: {
       record.state === "open" ? "join" : record.state === "awaiting-close" ? "cancel-close" : isAlertRecoveryRecurrence(record, now, settings.recurrenceWindowMinutes) ? "reopen" : "create";
     if (kind === "create") {
       return {
-        kind,
+        kind: "create",
         identity,
         runbook,
         ownerRole,
@@ -285,6 +297,7 @@ export function planAlertRecoveryEvent(input: {
           issueIdentifier: null,
           state: "open",
           firedCount: 1,
+          heldAt: null,
           firstFiredAt: alert.happenedAt,
           lastFiredAt: alert.happenedAt,
           resolvedAt: null,

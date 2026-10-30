@@ -25,12 +25,12 @@ import {
   runIdentityContexts,
   type Db,
 } from "@myrmidon/db";
-import { isAgentStatusInvokable } from "@myrmidon/shared";
 import {
   REVIEW_ROUTING_ASSIGNED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
   REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY,
   REVIEW_ROUTING_PR_KIND_METADATA_KEY,
+  isAgentStatusInvokable,
 } from "@myrmidon/shared";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
@@ -44,6 +44,7 @@ export interface InReviewIssueRow extends RoutingIssue {
 export interface ReviewerAgentRow {
   id: string;
   role: string;
+  invokable?: boolean;
 }
 
 export interface RoutingHistory {
@@ -230,7 +231,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         .select({ id: agents.id, role: agents.role, status: agents.status })
         .from(agents)
         .where(and(eq(agents.companyId, companyId), inArray(agents.role, [...roles])));
-      return rows.filter((row) => isAgentStatusInvokable(row.status)).map((row) => ({ id: row.id, role: row.role }));
+      return rows.map(({ id, role, status }) => ({ id, role, invokable: isAgentStatusInvokable(status) }));
     },
 
     async loadByAgent(companyId) {
