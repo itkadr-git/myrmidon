@@ -48,8 +48,9 @@ export function runtimeConnectionIntentRoutes(db: Db) {
     // This capability is never accepted as board/session authentication.
     // Node fetch sends Sec-Fetch-Mode too; browsers additionally send Origin or Sec-Fetch-Site.
     if (req.headers.origin || req.headers.cookie || req.headers["sec-fetch-site"]) throw forbidden("GitHub credentials require runtime authentication");
-    const claims = verifyRuntimeToolsToken(typeof req.headers["x-paperclip-github-capability"] === "string"
-      ? req.headers["x-paperclip-github-capability"] : bearer(req), "github_credentials");
+    const capabilityHeader = req.headers["x-myrmidon-github-capability"] ?? req.headers["x-paperclip-github-capability"];
+    const claims = verifyRuntimeToolsToken(typeof capabilityHeader === "string"
+      ? capabilityHeader : bearer(req), "github_credentials");
     if (!claims) throw unauthorized("Invalid GitHub runtime capability");
     res.setHeader("Cache-Control", "no-store");
     // myrmidon(GITHUB-SHARED-IDENTITY): the optional `repository` (owner/repo) the

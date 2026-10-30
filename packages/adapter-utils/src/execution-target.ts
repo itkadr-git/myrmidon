@@ -1767,7 +1767,7 @@ function buildBridgeResponseHeaders(response: Response): Record<string, string> 
   // server reads that header to map the 504 to a terminal 409. If the forward
   // drops the header, the server keeps the retryable 504 and a caller that
   // retries 5xx can repeat a mutation that already committed.
-  for (const key of ["content-type", "etag", "last-modified", "x-paperclip-bridge-outcome"]) {
+  for (const key of ["content-type", "etag", "last-modified", "x-paperclip-bridge-outcome", "x-myrmidon-bridge-outcome"]) {
     const value = response.headers.get(key);
     if (value && value.trim().length > 0) out[key] = value.trim();
   }
@@ -4421,7 +4421,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       headers.set(key, value);
     }
     headers.set("authorization", `Bearer ${hostApiToken}`);
-    headers.set("x-paperclip-run-id", input.runId);
+    headers.set("x-myrmidon-run-id", input.runId);
     // Abort the forward when the caller aborts the request (its per-iteration
     // timeout or watchdog fired, or the broker's forward budget ended), or after
     // the forward budget here, whichever comes first.
@@ -4497,7 +4497,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         status: 504,
         headers: {
           "content-type": "application/json",
-          "x-paperclip-bridge-outcome": "indeterminate",
+          "x-myrmidon-bridge-outcome": "indeterminate",
         },
         body: Buffer.from(
           JSON.stringify({

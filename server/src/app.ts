@@ -19,7 +19,7 @@ import {
 } from "@myrmidon/shared";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
-import { httpLogger, errorHandler } from "./middleware/index.js";
+import { httpLogger, errorHandler, brandHeadersMiddleware } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardKeyScopeMiddleware } from "./middleware/board-key-scope.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
@@ -808,6 +808,8 @@ export async function createApp(
   // workspace-runtime) to the worker. Before the body parsers on purpose — the
   // request body is streamed through unread. Absent in the single process.
   if (opts.singletonProxy) app.use(singletonProxyMiddleware(opts.singletonProxy));
+
+  app.use(brandHeadersMiddleware());
 
   // myrmidon(1.6.6 OPE-9058): the http_route lane is attached before every
   // other middleware — the actor / run-identity lookups and the provider
