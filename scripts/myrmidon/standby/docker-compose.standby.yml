@@ -1,0 +1,51 @@
+# Warm standby compose configuration for central databases (T9 Option A2 on myr-vm1)
+# Standby services run on dedicated, isolated ports (5433 for board DB, 5434 for Hindsight DB)
+# and dedicated directories to avoid conflicts with any local processes or databases.
+services:
+  myrmidon-pg-standby:
+    image: docker.io/pgvector/pgvector:pg18
+    container_name: myrmidon-pg-standby
+    restart: unless-stopped
+    ports:
+      - "${STANDBY_BOARD_PORT:-5433}:5432"
+    volumes:
+      - ${STANDBY_BOARD_DATA_DIR:-/srv/standby/myrmidon-pg/data}:/var/lib/postgresql/data
+      - ${BOARD_WAL_ARCHIVE_DIR:-/srv/backups/wal/myrmidon-pg}:/wal-archive:ro
+    environment:
+      POSTGRES_USER: ${STANDBY_PG_USER:-paperclip}
+      POSTGRES_PASSWORD: ${STANDBY_PG_PASSWORD:-paperclip}
+    command:
+      - postgres
+      - -c
+      - hot_standby=on
+      - -c
+      - restore_command=test -f /wal-archive/%f && cp /wal-archive/%f %p
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${STANDBY_PG_USER:-paperclip} -p 5432"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  hindsight-pg-standby:
+    image: docker.io/pgvector/pgvector:pg18
+    container_name: hindsight-pg-standby
+    restart: unless-stopped
+    ports:
+      - "${STANDBY_HINDSIGHT_PORT:-5434}:5432"
+    volumes:
+      - ${STANDBY_HINDSIGHT_DATA_DIR:-/srv/standby/hindsight-pg/data}:/var/lib/postgresql/data
+      - ${HINDSIGHT_WAL_ARCHIVE_DIR:-/srv/backups/wal/hindsight-pg}:/wal-archive:ro
+    environment:
+      POSTGRES_USER: ${STANDBY_PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${STANDBY_PG_PASSWORD:-postgres}
+    command:
+      - postgres
+      - -c
+      - hot_standby=on
+      - -c
+      - restore_command=test -f /wal-archive/%f && cp /wal-archive/%f %p
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${STANDBY_PG_USER:-postgres} -p 5432"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
