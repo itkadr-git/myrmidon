@@ -348,12 +348,11 @@ publishes `settings_changed` and each process (including the writer) applies the
 value through the applier registry; the supervisor in the worker reconciles the desired
 `apiCount` with the live children (fork new ones up, `drain` one down).
 
-The feature adds **no new environment variables** except one emergency override and one memory ceiling:
+The feature adds **no new environment variables** except one emergency override:
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `PAPERCLIP_PROCESS_MODE` | BOARD-PROCESSES | unset | Emergency override read **before** the database: `single` forces the one-process mode on boot when a stored settings value broke the start. Not a configuration path — the switch belongs in the interface | Unset — the stored `general.processes.mode` applies. `single` — force one process |
-| `MYRMIDON_API_MAX_OLD_SPACE_MB` | BOARD-PROCESSES (OPE-10011) | unset (`1024`) | V8 old-space ceiling, MB, passed as `--max-old-space-size` to each api child the worker forks in `split`. Read by the worker when it forks a child | Unset, non-integer or outside `256..8192` — the default `1024` |
 
 ## BOT-ROLLOUT — release bot-image rollout status and settings (1.6.5, part B)
 
