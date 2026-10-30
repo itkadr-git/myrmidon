@@ -119,7 +119,13 @@ export class AdmContextBudget {
     const compact = items.map(({ slug, revision_id, title, summary, triggers }) => ({
       slug, revision_id, title: title.slice(0, 160), summary: summary.slice(0, 300), triggers,
     }));
-    return this.emit(JSON.stringify(compact), this.sessionLimit, "session_start");
+    const payload = JSON.stringify(compact);
+    const bytes = Buffer.byteLength(payload, "utf8");
+    if (bytes > this.sessionLimit) {
+      this.metrics?.({ kind: "session_start", bytesAdded: 0, sessionBytes: this.sessionBytes });
+      throw new Error("Mandatory policies exceed budget");
+    }
+    return this.emit(payload, this.sessionLimit, "session_start");
   }
   prompt(items: readonly AdmKnowledgeMetadata[], trigger: string): string {
     const selected = items.filter((item) => item.triggers.includes(trigger as never))

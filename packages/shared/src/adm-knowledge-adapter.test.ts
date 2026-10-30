@@ -377,8 +377,7 @@ describe("ADM knowledge REST adapter", () => {
       approver_kind: "owner" as const,
     }));
 
-    const startResult = budget.sessionStart(hugeItems);
-    expect(startResult).toBe("");
+    expect(() => budget.sessionStart(hugeItems)).toThrow("Mandatory policies exceed budget");
     expect(metrics[metrics.length - 1]).toEqual(expect.objectContaining({
       kind: "session_start",
       bytesAdded: 0,

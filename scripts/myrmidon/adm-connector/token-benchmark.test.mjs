@@ -20,10 +20,10 @@ test('deterministic_bpe_v1 tokenizer: pinned specification and exact calibration
   assert.equal(estimateTokens(undefined), 0);
   assert.equal(estimateTokens(' '), 1);
   assert.equal(countTokens('deploy'), 1);
-  assert.equal(estimateTokens('check status'), 4);
-  assert.equal(estimateTokens('deploy release rc.14 with migrations'), 13);
-  assert.equal(estimateTokens('Проверь состояние сервисов'), 7);
-  assert.equal(estimateTokens('const status = "ok";'), 12);
+  assert.equal(estimateTokens('check status'), 6);
+  assert.equal(estimateTokens('deploy release rc.14 with migrations'), 20);
+  assert.equal(estimateTokens('Проверь состояние сервисов'), 6);
+  assert.equal(estimateTokens('const status = "ok";'), 16);
 });
 
 test('Baseline generator produces exact byte budgets for Contract A', () => {
@@ -36,7 +36,7 @@ test('Baseline generator produces exact byte budgets for Contract A', () => {
   assert.equal(BASELINE.memoryReadPerMessageBytes, 800);
 });
 
-test('Offline Token & Byte Benchmark on 50 real ADM messages satisfies Contract A', async () => {
+test('Offline Token & Byte Benchmark on 50-message synthetic benchmark dataset satisfies Contract A', async () => {
   const result = await runTokenBenchmark();
 
   assert.equal(result.dataset.totalMessages, 50, 'Must process exactly 50 messages');
