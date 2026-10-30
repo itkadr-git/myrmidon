@@ -233,7 +233,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         });
         if (wakeState.activeRun || wakeState.pendingWake) continue;
         if (wakeState.attempts >= REVIEW_WAKE_MAX_ATTEMPTS) {
-          log.error({ companyId, issueId: row.id, reviewerId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts }, "review routing wake retries exhausted; operator action required");
+          log.warn({ companyId, issueId: row.id, reviewerId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts }, "review routing wake retries exhausted; operator action required");
           continue;
         }
         // Recorded failed dispatches retry on bounded backoff, independent of
