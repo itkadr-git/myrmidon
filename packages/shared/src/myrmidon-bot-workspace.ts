@@ -541,6 +541,9 @@ export const wsBotDiskSettingsSchema = z
     /** myrmidon(1.6.5-BOT-DISK-H5c): seconds between two passes of the in-container
      *  disk daemon (botd). Compiled into the bot profile; absent = the in-image default. */
     botdIntervalSec: z.number().int().min(30).max(24 * 60 * 60).optional(),
+    hermesPruneEnabled: z.boolean().optional(),
+    hermesPruneDays: z.number().int().min(1).max(365).optional(),
+    gitMigrationEnabled: z.boolean().optional(),
   })
   .passthrough();
 export type WsBotDiskSettings = z.infer<typeof wsBotDiskSettingsSchema>;
@@ -573,6 +576,9 @@ export const WS_PROFILE_ENV = {
   scratchTtlHours: "MYRMIDON_BOTD_SCRATCH_TTL_HOURS",
   boardUrl: "MYRMIDON_BOTD_BOARD_URL",
   boardKeyEnv: "MYRMIDON_BOTD_BOARD_KEY_ENV",
+  hermesPruneEnabled: "MYRMIDON_HERMES_PRUNE_ENABLED",
+  hermesPruneDays: "MYRMIDON_HERMES_PRUNE_DAYS",
+  gitMigrationEnabled: "MYRMIDON_GIT_MIGRATION_ENABLED",
 } as const;
 
 /** The value {@link WS_PROFILE_ENV.boardKeyEnv} always carries: the board key

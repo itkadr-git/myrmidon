@@ -172,6 +172,22 @@ function withSyncLock(dir, fn) {
   }
 }
 
+const REPACK_MIGRATED_MARKER = ".repack-migrated";
+
+function cleanTmpPacks(packDir) {
+  try {
+    if (!fs.existsSync(packDir)) return;
+    const entries = fs.readdirSync(packDir);
+    for (const f of entries) {
+      if (f.startsWith(".tmp-")) {
+        try {
+          fs.rmSync(path.join(packDir, f), { force: true });
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
 function syncMirrorAlternates(env, dir, parsed, opts = {}) {
   try {
     const mirror = findMirror(parsed, env);
@@ -184,6 +200,7 @@ function syncMirrorAlternates(env, dir, parsed, opts = {}) {
       : path.join(dir, "objects");
 
     const alternatesFile = path.join(targetObjectsDir, "info", "alternates");
+    const markerFile = path.join(targetObjectsDir, "info", REPACK_MIGRATED_MARKER);
     const targetLine = `${objectsDir}\n`;
 
     return withSyncLock(dir, () => {
@@ -201,25 +218,19 @@ function syncMirrorAlternates(env, dir, parsed, opts = {}) {
         .filter(Boolean);
 
       if (lines.includes(objectsDir)) {
-        return mirror;
+        if (opts.skipRepack) return mirror;
+        if (fs.existsSync(markerFile)) return mirror;
+        try {
+          mustGit(env, dir, ["repack", "-a", "-d", "-l", "--keep-unreachable"], EXIT.usage);
+          fs.writeFileSync(markerFile, `${new Date().toISOString()}\n`, "utf8");
+          return mirror;
+        } catch {
+          cleanTmpPacks(path.join(targetObjectsDir, "pack"));
+          return null;
+        }
       }
 
       fs.mkdirSync(path.dirname(alternatesFile), { recursive: true });
-      const originalContent = hasExisting ? existing : null;
-
-      const revertAlternates = () => {
-        try {
-          if (originalContent !== null) {
-            const tmpRevert = `${alternatesFile}.tmp.${process.pid}.${Date.now()}`;
-            fs.writeFileSync(tmpRevert, originalContent, "utf8");
-            fs.renameSync(tmpRevert, alternatesFile);
-          } else {
-            fs.rmSync(alternatesFile, { force: true });
-          }
-        } catch {
-          // ignore revert error
-        }
-      };
 
       const newContent = existing ? (existing.endsWith("\n") ? `${existing}${targetLine}` : `${existing}\n${targetLine}`) : targetLine;
       const tmpNew = `${alternatesFile}.tmp.${process.pid}.${Date.now()}`;
@@ -230,10 +241,16 @@ function syncMirrorAlternates(env, dir, parsed, opts = {}) {
         return mirror;
       }
 
+      if (fs.existsSync(markerFile)) {
+        return mirror;
+      }
+
       try {
         mustGit(env, dir, ["repack", "-a", "-d", "-l", "--keep-unreachable"], EXIT.usage);
+        fs.writeFileSync(markerFile, `${new Date().toISOString()}\n`, "utf8");
       } catch (err) {
-        revertAlternates();
+        // Failure path: clean up temporary pack files, never revert alternates!
+        cleanTmpPacks(path.join(targetObjectsDir, "pack"));
         return null;
       }
       return mirror;
@@ -275,29 +292,15 @@ function ensureBase(repoInput, opts = {}) {
     try {
       mustGit(env, undefined, ["init", "--bare", "--quiet", dir], EXIT.usage);
       configureBase(env, dir, originUrl(parsed, env));
-      let mirrorConnected = false;
       try {
-        mirrorConnected = Boolean(syncMirrorAlternates(env, dir, parsed, { skipRepack: true }));
+        syncMirrorAlternates(env, dir, parsed, { skipRepack: true });
       } catch {
         // mirror attach failure does not break base creation
       }
-      try {
-        fetchBase(env, dir);
-      } catch (fetchErr) {
-        if (mirrorConnected) {
-          // Fallback: if fetch failed with mirror connected, remove alternates and retry full fetch
-          try {
-            const alternatesFile = path.join(dir, "objects", "info", "alternates");
-            fs.rmSync(alternatesFile, { force: true });
-          } catch {}
-          fetchBase(env, dir);
-        } else {
-          throw fetchErr;
-        }
-      }
+      fetchBase(env, dir);
       fetched = true;
       try {
-        syncMirrorAlternates(env, dir, parsed);
+        syncMirrorAlternates(env, dir, parsed, { skipRepack: true });
       } catch {
         // Graceful degradation: mirror sync failure does not break base creation
       }
@@ -308,7 +311,7 @@ function ensureBase(repoInput, opts = {}) {
     created = true;
   } else {
     try {
-      syncMirrorAlternates(env, dir, parsed);
+      syncMirrorAlternates(env, dir, parsed, { skipRepack: true });
     } catch {
       // Graceful degradation
     }
@@ -329,4 +332,4 @@ function ensureBase(repoInput, opts = {}) {
   return { path: dir, repo: parsed.slug, created, fetched };
 }
 
-module.exports = { ensureBase, listBases, findMirror, syncMirrorAlternates, MyrWsError, EXIT, FETCH_STAMP };
+module.exports = { ensureBase, listBases, findMirror, syncMirrorAlternates, REPACK_MIGRATED_MARKER, MyrWsError, EXIT, FETCH_STAMP };

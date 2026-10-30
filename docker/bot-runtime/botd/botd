@@ -176,7 +176,7 @@ function listArchives() {
 }
 
 async function main() {
-  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod, hermesRetentionMod] = await Promise.all([
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod, gitMigrationMod] = await Promise.all([
     tryImport("desired.js"),
     tryImport("rules.js"),
     tryImport("classify.js"),
@@ -188,7 +188,7 @@ async function main() {
     import(path.join(__dirname, "lib", "remove.js")),
     import(path.join(__dirname, "lib", "cache.js")),
     tryImport("repair.js"),
-    tryImport("hermes-retention.js"),
+    tryImport("git-migration.js"),
   ]);
   guardedRemove = (p, roots) => removeMod.guardedRemove(p, roots);
   // One attention signal per path per TTL (botd-attention.json); the uid of the
@@ -364,28 +364,25 @@ async function main() {
     if (!r.ok) throw new Error(r.reason);
     if (r.removed.length > 0) log(`botd: archive retention retired ${r.removed.length} entries (${r.removed.map((x) => x.reason).join(",")}), ${r.remaining} left, ${r.remainingBytes} bytes`);
 
-    // Hermes session retention (OPE-9673):
-    // Only remove sessions for CLOSED tasks older than 7 days, then VACUUM when idle.
-    const retentionEnabled = process.env.MYRMIDON_HERMES_RETENTION !== "0" && process.env.MYRMIDON_HERMES_RETENTION !== "false";
-    if (retentionEnabled && hermesRetentionMod && typeof hermesRetentionMod.pruneHermesClosedTaskSessions === "function") {
+    // Idle git migration (OPE-9673):
+    // Repack repositories with alternates when bot is idle, gated by gitMigrationEnabled,
+    // serialized across fleet with nice/ionice and durable .repack-migrated marker.
+    const migrationEnabled = process.env.MYRMIDON_GIT_MIGRATION_ENABLED === "1" || process.env.MYRMIDON_GIT_MIGRATION_ENABLED === "true";
+    if (migrationEnabled && gitMigrationMod && typeof gitMigrationMod.migrateIdleGitRepos === "function") {
       try {
-        const payload = passDesired || {};
         const isIdle = runProbe ? (runProbe.probe().live === false) : false;
-        const res = hermesRetentionMod.pruneHermesClosedTaskSessions({
-          desiredState: payload,
-          workspaces: Array.isArray(payload.workspaces) ? payload.workspaces : [],
-          protectKeys: Array.isArray(payload.protectKeys) ? payload.protectKeys : [],
-          closedKeys: Array.isArray(payload.closedKeys) ? payload.closedKeys : [],
-          closedTasks: Array.isArray(payload.closedTasks) ? payload.closedTasks : [],
-          retentionDays: 7,
+        const res = gitMigrationMod.migrateIdleGitRepos({
+          baseDir: BASE_DIR,
+          workspacesDir: WORKSPACE_DIR,
           idle: isIdle,
+          enabled: migrationEnabled,
           log,
         });
-        if (res && res.prunedCount > 0) {
-          log(`botd: hermes session retention pruned ${res.prunedCount} closed-task sessions (vacuumed: ${res.vacuumed})`);
+        if (res && res.migrated > 0) {
+          log(`botd: git migration repacked ${res.migrated} repos (idle-gated)`);
         }
       } catch (err) {
-        log(`botd: hermes retention warning: ${err.message}`);
+        log(`botd: git migration warning: ${err.message}`);
       }
     }
   };

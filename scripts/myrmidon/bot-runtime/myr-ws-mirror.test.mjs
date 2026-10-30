@@ -255,7 +255,7 @@ test("ensureBase and myr-ws open utilize shared mirror alternates and degrade gr
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-test("BEHAVIORAL: syncMirrorAlternates safely rolls back exact alternates on repack failure without losing existing entries", () => {
+test("BEHAVIORAL: syncMirrorAlternates preserves alternates and cleans up temporary packs on repack failure", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "myr-ws-repack-fail-test-"));
   const mirrorRoot = path.join(tmp, "cache", "git");
   const parsed = { owner: "itkadr-git", repo: "myrmidon", slug: "itkadr-git/myrmidon" };
@@ -292,9 +292,14 @@ test("BEHAVIORAL: syncMirrorAlternates safely rolls back exact alternates on rep
   const res = syncMirrorAlternates(env, baseDir, parsed);
   assert.strictEqual(res, null, "syncMirrorAlternates should return null on repack failure");
 
-  // Verify atomic rollback restored EXACT original content without corruption
-  const restoredContent = fs.readFileSync(altFile, "utf8");
-  assert.strictEqual(restoredContent, `${customAlt}\n`, "original alternates content must be restored exactly");
+  // Invariant OPE-9673: alternates line persists on repack failure so it can be retried; never reverted
+  const currentContent = fs.readFileSync(altFile, "utf8");
+  assert.ok(currentContent.includes(customAlt), "original alternates entry must be preserved");
+  assert.ok(currentContent.includes(path.join(mirrorDir, "objects")), "mirror alternates entry must be kept for future retry");
+
+  // Marker must not be written on failure
+  const markerFile = path.join(baseDir, "objects", "info", ".repack-migrated");
+  assert.strictEqual(fs.existsSync(markerFile), false, "repack marker must not be written on failure");
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
@@ -319,6 +324,8 @@ test("BEHAVIORAL: withSyncLock exclusivity, PID tracking, and idempotency", () =
   // 1. First sync succeeds
   const firstSync = syncMirrorAlternates(env, baseDir, parsed);
   assert.strictEqual(firstSync, mirrorDir);
+  const markerFile = path.join(baseDir, "objects", "info", ".repack-migrated");
+  assert.strictEqual(fs.existsSync(markerFile), true, "marker file must be created on successful repack");
 
   // 2. Second sync is idempotent and doesn't duplicate lines
   const secondSync = syncMirrorAlternates(env, baseDir, parsed);

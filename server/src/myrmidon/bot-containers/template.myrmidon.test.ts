@@ -609,6 +609,22 @@ describe("botdProfileEnv (1.6.5-BOT-DISK-H5c)", () => {
     expect(botdProfileEnv(resolvedDefaults, "http://board:3100")).not.toHaveProperty(WS_PROFILE_ENV.botdIntervalSec);
   });
 
+  it("writes hermesPruneEnabled, hermesPruneDays, and gitMigrationEnabled when set", () => {
+    const withPrune = botdProfileEnv(
+      {
+        ...resolvedDefaults,
+        hermesPruneEnabled: true,
+        hermesPruneDays: 14,
+        gitMigrationEnabled: true,
+      },
+      "http://board:3100",
+    );
+    expect(withPrune[WS_PROFILE_ENV.hermesPruneEnabled]).toBe("1");
+    expect(withPrune[WS_PROFILE_ENV.hermesPruneDays]).toBe("14");
+    expect(withPrune[WS_PROFILE_ENV.gitMigrationEnabled]).toBe("1");
+    expect(botdProfileEnv(resolvedDefaults, "http://board:3100")).not.toHaveProperty(WS_PROFILE_ENV.hermesPruneEnabled);
+  });
+
   it("is deterministic: the same mechanics and board give byte-identical entries", () => {
     expect(botdProfileEnv({ ...resolvedDefaults, botdIntervalSec: 300 }, "http://board:3100")).toEqual(
       botdProfileEnv({ ...resolvedDefaults, botdIntervalSec: 300 }, "http://board:3100"),

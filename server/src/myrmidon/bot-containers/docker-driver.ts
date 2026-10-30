@@ -72,6 +72,7 @@ import { ISOLATED_LAYOUT, type ScopeLayout } from "@myrmidon/shared";
 import type { CompiledProfile } from "./types.js";
 import { logger } from "../../middleware/logger.js";
 import { prepareBotSharedMount, resolveSpecSharedMount } from "./shared-mount.js"; // myrmidon(1.6.1-BOT-DISK-D)
+import { botHasGitAlternates } from "./bot-disk-service.js"; // myrmidon(1.6.6-OPE-9673)
 import {
   assertBotRuntimeContract,
   botVolumeLayout,
@@ -1247,11 +1248,14 @@ export function dockerBotContainerDriver(
       if (cached && Date.now() - cached.atMs < templateContextTtlMs) {
         return { ...cached, layout: layoutOverride };
       }
-      const [cachePath, runtimePath, gitMirror] = await Promise.all([
+      let [cachePath, runtimePath, gitMirror] = await Promise.all([
         readSharedPackageCachePath(botKey),
         readSharedBotRuntimePath(botKey),
         readGitMirrorEnabled(botKey),
       ]);
+      if (!gitMirror && (await botHasGitAlternates(config.volumeRoot, botKey))) {
+        gitMirror = true;
+      }
       const fresh: TemplateContext = { atMs: Date.now(), cachePath, runtimePath, gitMirror, layout: layoutOverride };
       templateContextCache.set(botKey, fresh);
       return fresh;
@@ -1261,12 +1265,15 @@ export function dockerBotContainerDriver(
     const pending = templateContextInFlight.get(botKey);
     if (pending) return pending;
     const read = (async (): Promise<TemplateContext> => {
-      const [cachePath, runtimePath, gitMirror, layout] = await Promise.all([
+      let [cachePath, runtimePath, gitMirror, layout] = await Promise.all([
         readSharedPackageCachePath(botKey),
         readSharedBotRuntimePath(botKey),
         readGitMirrorEnabled(botKey),
         readScopeLayout(botKey),
       ]);
+      if (!gitMirror && (await botHasGitAlternates(config.volumeRoot, botKey))) {
+        gitMirror = true;
+      }
       const fresh: TemplateContext = { atMs: Date.now(), cachePath, runtimePath, gitMirror, layout };
       templateContextCache.set(botKey, fresh);
       return fresh;

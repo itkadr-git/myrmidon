@@ -509,3 +509,24 @@ describe("myrmidon(1.6.5-BOT-DISK-H4b) general.botDisk.defaultRepo", () => {
     expect(resolveBotDiskSettings({ stored: { defaultRepo: "bad value" } }).settings.defaultRepo).toBeUndefined();
   });
 });
+
+describe("myrmidon(1.6.6-OPE-9673) botHasGitAlternates and retention/migration settings", () => {
+  it("validates hermesPruneEnabled, hermesPruneDays, and gitMigrationEnabled", () => {
+    expect(
+      patchBotDiskSettingsSchema.safeParse({
+        hermesPruneEnabled: true,
+        hermesPruneDays: 14,
+        gitMigrationEnabled: true,
+      }).success,
+    ).toBe(true);
+
+    const stored = normalizeStoredBotDiskSettings({
+      hermesPruneEnabled: true,
+      hermesPruneDays: 10,
+      gitMigrationEnabled: true,
+    });
+    expect(stored.hermesPruneEnabled).toBe(true);
+    expect(stored.hermesPruneDays).toBe(10);
+    expect(stored.gitMigrationEnabled).toBe(true);
+  });
+});
