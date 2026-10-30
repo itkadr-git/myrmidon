@@ -4,3 +4,5 @@
 3ba1594facc8459895d818f7eddbe42e1d338ebb:scripts/myrmidon/bot-runtime/botd-desired.test.mjs:generic-api-key:14
 # Ephemeral test marker fixture in 1.6.6 T10-A site-agent-security-harness (OPE-8109)
 9a391c74b190d21e84e99cd983a34a8dc3bdc466:server/src/myrmidon/bot-containers/site-agent-security-harness.ts:generic-api-key:572
+# Public key of the extension manifest (pins the extension id); not a secret, the private key is kept outside the repository.
+41d7ab6dde4072e05f75f9be8438886d90cc8693:extension/manifest.json:generic-api-key:5

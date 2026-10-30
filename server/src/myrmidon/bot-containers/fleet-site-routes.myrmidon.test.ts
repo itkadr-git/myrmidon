@@ -231,6 +231,27 @@ describe("fleet site enroll routes", () => {
     expect(JSON.stringify(res.body)).toContain("not signed by caCert");
     expect(foreign.deps.createSite).not.toHaveBeenCalled();
   });
+
+  it("stores the end of the client certificate's validity as the key TTL and shows it", async () => {
+    const { app, deps } = harness(undefined, {
+      secretValues: { "fleetd-myr-vm1-client-cert": pki.clientCert, "fleetd-myr-vm1-client-key": pki.clientKey },
+    });
+    const res = await request(app).post(path).send(body()).expect(201);
+    const stored = deps.createSite.mock.calls[0]![0].clientCertNotAfter;
+    expect(stored).toBeInstanceOf(Date);
+    const days = (stored!.getTime() - Date.now()) / 86_400_000;
+    expect(days).toBeGreaterThan(29);
+    expect(days).toBeLessThan(31);
+    expect(res.body.site.clientCertNotAfter).toBe(stored!.toISOString());
+  });
+
+  it("refuses to enroll a site whose client certificate has expired", async () => {
+    const { app, deps } = harness(undefined, {
+      secretValues: { "fleetd-myr-vm1-client-cert": pki.expiredClientCert, "fleetd-myr-vm1-client-key": pki.expiredClientKey },
+    });
+    await request(app).post(path).send(body()).expect(400);
+    expect(deps.createSite).not.toHaveBeenCalled();
+  });
 });
 
 describe("fleet site helpers", () => {

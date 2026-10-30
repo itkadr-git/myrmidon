@@ -141,6 +141,7 @@ function run(sb, args = [], env = {}) {
       MYRMIDON_INSTALL_SKIP_DOCKER_INSTALL: "1",
       MYRMIDON_INSTALL_LANG: "en",
       MYRMIDON_INSTALL_HEALTH_TIMEOUT: "5",
+      MYR_LICENSE_INSTANCE_ID: "test-instance-id",
       ...env,
     },
   });
@@ -170,7 +171,7 @@ describe("install.sh", () => {
     assert.match(env, /MYRMIDON_VERSION=1\.6\.6/);
     assert.match(env, /POSTGRES_PASSWORD=[0-9a-f]{48}/);
     assert.match(env, /BETTER_AUTH_SECRET=[0-9a-f]{64}/);
-    assert.match(env, /MYR_LICENSE_INSTANCE_ID=$/m);
+    assert.match(env, /MYR_LICENSE_INSTANCE_ID=test-instance-id$/m);
     assert.equal(fs.statSync(path.join(sb.opt, "deploy.env")).mode & 0o777, 0o600);
     // The daemon socket is root:docker 0660 and dockergate runs as the nonroot
     // user 65532: without the socket's group the container dies on
@@ -190,6 +191,9 @@ describe("install.sh", () => {
     );
     const config = JSON.parse(fs.readFileSync(path.join(sb.opt, "dockergate", "config.json"), "utf8"));
     assert.deepEqual(config.images, [`ghcr.io/itkadr-git/myrmidon-hermes@${C}`]);
+    assert.match(compose, /container_name:\s*myrmidon-board/, "fresh installs must use the branded board container name");
+    assert.match(compose, /myrmidon-bots:\s*\n\s+aliases:[\s\S]{0,600}- paperclip-server-1/, "legacy DNS name stays available on the bot network");
+    assert.equal(config.caller.container, "myrmidon-board", "dockergate tracks the renamed board container");
     assert.equal(config.caller.mode, "container-main-process");
     assert.ok(calls(sb).includes("pull --quiet"));
     assert.ok(calls(sb).includes("up -d"));

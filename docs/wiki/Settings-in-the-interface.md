@@ -2,7 +2,11 @@
 
 > Русская версия: [Settings-in-the-interface.ru](Settings-in-the-interface.ru)
 
-Where day-to-day setup happens in the board UI. Sources: the
+Where day-to-day setup happens in the board UI. The UI 2.0 company-settings sidebar
+currently lists General, Members, Access, Secrets, Budgets, Autonomy, and
+Agent castes, alongside the sections implemented in the UI 2.0 route table.
+Guardrails is intentionally not shown: its screen and route are not implemented
+in this release. Sources: the
 [README](https://github.com/itkadr-git/myrmidon/blob/main/README.md)
 configuration section and the operator guides under
 [`docs/myrmidon/guides/`](https://github.com/itkadr-git/myrmidon/tree/main/docs/myrmidon/guides).
@@ -47,6 +51,20 @@ and queue-aging step/cap. Each field shows whether its value comes from saved
 settings, the server environment or defaults. Changes apply on the next
 admission pass without a server restart. The panel reports when the server
 endpoint is not available instead of implying that a save succeeded.
+
+## Access hub
+
+The access hub is under **Company Settings → Access hub**. Its list endpoints
+return access and host arrays when the module is enabled. When the module is
+disabled, they return HTTP 200 with `enabled: false` and empty arrays. The UI
+shows a "not available yet" notice instead of the access list. This is an
+off-feature state, not an API failure. Check `GET
+/api/myrmidon/access-hub/status` and `MYRMIDON_ACCESS_HUB_ENABLED` to confirm
+whether the module is off. If status says enabled but a list request fails or
+returns malformed data, investigate the API/service fault.
+
+See the full [Access hub operator guide](../myrmidon/guides/access-hub.md) for
+routes and behavior.
 
 ## Per-agent parallelism
 

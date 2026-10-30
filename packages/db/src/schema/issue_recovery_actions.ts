@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  check,
   index,
   integer,
   jsonb,
@@ -29,6 +30,11 @@ export const issueRecoveryActions = pgTable(
     returnOwnerAgentId: uuid("return_owner_agent_id").references(() => agents.id, { onDelete: "set null" }),
     cause: text("cause").notNull(),
     fingerprint: text("fingerprint").notNull(),
+    dedupeKey: text("dedupe_key"),
+    ownerQueue: text("owner_queue"),
+    slaDueAt: timestamp("sla_due_at", { withTimezone: true }),
+    nextCheckAt: timestamp("next_check_at", { withTimezone: true }),
+    runbookRef: text("runbook_ref"),
     evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull().default({}),
     nextAction: text("next_action").notNull(),
     wakePolicy: jsonb("wake_policy").$type<Record<string, unknown>>(),
@@ -60,9 +66,26 @@ export const issueRecoveryActions = pgTable(
     ),
     activeSourceIdx: uniqueIndex("issue_recovery_actions_active_source_uq")
       .on(table.companyId, table.sourceIssueId)
-      .where(sql`${table.status} in ('active', 'escalated')`),
+      .where(
+        sql`${table.status} in ('active', 'escalated') and ${table.dedupeKey} is null`,
+      ),
+    activeDedupeKeyIdx: uniqueIndex("issue_recovery_actions_active_dedupe_key_uq")
+      .on(table.companyId, table.dedupeKey)
+      .where(
+        sql`${table.status} in ('active', 'escalated') and ${table.dedupeKey} is not null`,
+      ),
     activeFingerprintIdx: uniqueIndex("issue_recovery_actions_active_fingerprint_uq")
       .on(table.companyId, table.sourceIssueId, table.cause, table.fingerprint)
       .where(sql`${table.status} in ('active', 'escalated')`),
+    dedupeOwnerSlaCheck: check(
+      "issue_recovery_actions_dedupe_owner_sla_check",
+      sql`${table.dedupeKey} is null or (
+        (case when ${table.ownerAgentId} is not null then 1 else 0 end
+          + case when ${table.ownerUserId} is not null then 1 else 0 end
+          + case when ${table.ownerQueue} is not null then 1 else 0 end) = 1
+        and ${table.slaDueAt} is not null
+        and ${table.nextCheckAt} is not null
+      )`,
+    ),
   }),
 );

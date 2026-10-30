@@ -35,6 +35,7 @@ import { SidebarNavItem } from "./SidebarNavItem.production";
 import { useAccessHubAvailability } from "@/components/myrmidon/access-hub/accessHubAvailability";
 import { LICENSES_PATH, useIsInstanceAdmin } from "@/components/myrmidon/licensingApi"; // myrmidon(LICENSING)
 import { useTranslation } from "@/i18n"; // myrmidon(LICENSING)
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 
 /**
  * Sandbox-provider-only plugins (e.g. E2B, exe.dev, Modal) have no per-plugin
@@ -135,7 +136,7 @@ export function CompanySettingsSidebar() {
               <SidebarNavItem
                 key={`${slot.pluginKey}:${slot.id}`}
                 to={`/company/settings/${slot.routePath}`}
-                label={slot.displayName}
+                label={pluginLabel(t, slot.pluginKey, slot.id, slot.displayName)} // myrmidon(OPE-9352)
                 icon={Puzzle}
                 end
               />
@@ -237,7 +238,7 @@ export function CompanySettingsSidebar() {
                     ].join(" ")
                   }
                 >
-                  {plugin.manifestJson.displayName ?? plugin.packageName}
+                  {pluginLabel(t, plugin.pluginKey, null, plugin.manifestJson.displayName ?? plugin.packageName) /* myrmidon(OPE-9352) */}
                 </NavLink>
               ))}
             </div>

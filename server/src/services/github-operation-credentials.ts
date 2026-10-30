@@ -4,6 +4,7 @@ import {
   agents,
   heartbeatRuns,
   issues,
+  projectWorkspaces,
   projects,
   runIdentityContexts,
   type Db,
@@ -19,6 +20,7 @@ import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { isLowTrustQuarantined } from "./source-trust.js";
 // myrmidon(GITHUB-SHARED-IDENTITY): self-hosted GitHub App identities, chosen by the target repository
 import { applyGitHubAppIdentity } from "../myrmidon/github-shared-identity/broker.js";
+import { normalizeGitHubRepository } from "../myrmidon/github-shared-identity/settings.js";
 
 export type GitHubCredentialSummary = {
   status: "available" | "absent" | "unavailable";
@@ -27,6 +29,10 @@ export type GitHubCredentialSummary = {
   repository?: string;
   login?: string;
   reason?: string;
+  // myrmidon(GITHUB-SHARED-IDENTITY): machine-readable cause of an `absent` answer and the repository patterns
+  // the agent may name, so a client can explain "access exists, say which repository"
+  reasonCode?: "repository_required";
+  availableRepositories?: string[];
   connectionId?: string;
   grantId?: string;
   authenticationMode?: "managed" | "host" | "anonymous";
@@ -144,6 +150,43 @@ async function allowsGitHubCredentialExport(
   };
 }
 
+/**
+ * myrmidon(GITHUB-SHARED-IDENTITY): the repository of the run's task when the
+ * caller named none (`gh auth status` or `gh api user` outside a clone). The
+ * task's own workspace wins, then the project's primary workspace; only a
+ * single distinct github.com repository counts, anything else stays unknown
+ * and the broker answers `repository_required`.
+ */
+async function inferRunRepository(
+  db: Db,
+  run: typeof heartbeatRuns.$inferSelect,
+): Promise<string | null> {
+  const issueId = run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId ?? run.nativeIssueId;
+  if (typeof issueId !== "string" || !isUuidLike(issueId)) return null;
+  const [issue] = await db
+    .select({ projectId: issues.projectId, projectWorkspaceId: issues.projectWorkspaceId })
+    .from(issues)
+    .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+  if (!issue) return null;
+  if (issue.projectWorkspaceId) {
+    const [own] = await db
+      .select({ repoUrl: projectWorkspaces.repoUrl })
+      .from(projectWorkspaces)
+      .where(and(eq(projectWorkspaces.id, issue.projectWorkspaceId), eq(projectWorkspaces.companyId, run.companyId)));
+    const repository = normalizeGitHubRepository(own?.repoUrl);
+    if (repository) return repository;
+  }
+  if (!issue.projectId) return null;
+  const rows = await db
+    .select({ repoUrl: projectWorkspaces.repoUrl, isPrimary: projectWorkspaces.isPrimary })
+    .from(projectWorkspaces)
+    .where(and(eq(projectWorkspaces.projectId, issue.projectId), eq(projectWorkspaces.companyId, run.companyId)));
+  const primary = rows.filter((row) => row.isPrimary).map((row) => normalizeGitHubRepository(row.repoUrl)).find(Boolean);
+  if (primary) return primary;
+  const distinct = new Set(rows.map((row) => normalizeGitHubRepository(row.repoUrl)).filter((value): value is string => Boolean(value)));
+  return distinct.size === 1 ? [...distinct][0]! : null;
+}
+
 /** No company secrets or ambient credentials are consulted by this path. */
 export async function resolveGitHubOperationCredentials(
   db: Db,
@@ -230,7 +273,7 @@ export async function resolveGitHubOperationCredentials(
             context?.cause === "company_default"
               ? null
               : (context?.responsibleUserId ?? null),
-          repository: input.repository ?? null,
+          repository: normalizeGitHubRepository(input.repository) ?? (await inferRunRepository(db, run)),
         });
         if (app) {
           summary = app.summary;

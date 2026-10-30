@@ -57,7 +57,7 @@ def main() -> None:
     field = {"key": "OPE-1", "repo": "acme/widgets", "baseRef": "main"}
     opened = open_task_workspace(field)
     assert opened == {"path": "/workspace/OPE-1", "fallback": False,
-                      "exit_code": 0, "error": ""}
+                      "exit_code": 0, "error": "", "recovered": []}
     with open(record) as fh:
         argv_seen = fh.read().strip()
     assert argv_seen == "open OPE-1 acme/widgets --base main --json", argv_seen
@@ -86,6 +86,35 @@ def main() -> None:
     open_task_workspace({"key": "OPE-2", "repo": "acme/widgets"})
     with open(record) as fh:
         assert fh.read().strip() == "open OPE-2 acme/widgets --json"
+
+    # MYR-WS-RECOVER: a PR branch is passed as --branch; invalid branches are rejected
+    # before any process starts; a repaired copy is reported through ``recovered``.
+    os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
+        tmpdir, code=0,
+        payload={"ok": True, "key": "OPE-7", "path": "/workspace/OPE-7.deploy",
+                 "class": "E", "repo": "acme/deploy", "branch": "fix/x", "reused": True,
+                 "recoveryRef": "refs/myr-ws/recovery/OPE-7",
+                 "recovered": [{"problem": "merge_in_progress", "action": "aborted"}]},
+        record=record)
+    opened = open_task_workspace({"key": "OPE-7", "repo": "acme/deploy", "branch": "fix/x"})
+    with open(record) as fh:
+        assert fh.read().strip() == "open OPE-7 acme/deploy --branch fix/x --json"
+    assert opened["fallback"] is False and opened["path"] == "/workspace/OPE-7.deploy"
+    assert opened["recovered"] == [{"problem": "merge_in_progress", "action": "aborted"}], opened
+    assert _validate_workspace_field(
+        {"key": "A-1", "repo": "a/b", "branch": "fix/x"})["branch"] == "fix/x"
+    for bad_branch in ("", " x", "-x", "a..b", "a b", 5):
+        try:
+            _validate_workspace_field({"key": "A-1", "repo": "a/b", "branch": bad_branch})
+            raise AssertionError(f"accepted malformed branch: {bad_branch!r}")
+        except ValueError:
+            pass
+    os.environ["MYRMIDON_WS_BIN"] = _fake_myr_ws(
+        tmpdir, code=0,
+        payload={"ok": True, "key": "OPE-1", "path": "/workspace/OPE-1",
+                 "class": "E", "repo": "acme/widgets", "branch": "bot/OPE-1",
+                 "base": "origin/main", "reused": False},
+        record=record)
 
     # Contract refusal family 3/4/5: fallback to /scratch with the CLI's error
     # text as the warning (never a silent wrong-directory run, never a raise).

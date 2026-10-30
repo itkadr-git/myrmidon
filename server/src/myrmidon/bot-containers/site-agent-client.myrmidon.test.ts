@@ -54,4 +54,28 @@ describe("site-agent client memoryExport", () => {
     await Promise.all(servers.splice(0).map((s) => new Promise((resolve) => s.close(resolve))));
     await expect(createSiteAgentClient({ baseUrl }).memoryExport("work-qa")).rejects.toThrow();
   });
+
+  it("reads the bot log with the bearer token", async () => {
+    let seen: { method?: string; url?: string; auth?: string } = {};
+    const baseUrl = await serve((req, res) => {
+      seen = { method: req.method, url: req.url, auth: req.headers.authorization };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ logs: "line 1\nline 2\n" }));
+    });
+    const logs = await createSiteAgentClient({ baseUrl, token: "tok" }).botLogs("work-qa");
+    expect(logs).toBe("line 1\nline 2\n");
+    expect(seen).toEqual({ method: "GET", url: "/v1/bots/work-qa/logs", auth: "Bearer tok" });
+  });
+
+  it("rejects a log answer that is an error or not the logs contract", async () => {
+    const refused = await serve((_req, res) => {
+      res.writeHead(403);
+      res.end("bot_not_enrolled");
+    });
+    await expect(createSiteAgentClient({ baseUrl: refused }).botLogs("work-qa")).rejects.toThrow(
+      "Site-agent logs work-qa failed with 403: bot_not_enrolled",
+    );
+    const odd = await serve((_req, res) => res.end("<html>"));
+    await expect(createSiteAgentClient({ baseUrl: odd }).botLogs("work-qa")).rejects.toThrow("not the logs contract");
+  });
 });

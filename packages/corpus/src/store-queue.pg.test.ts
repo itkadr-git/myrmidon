@@ -212,8 +212,14 @@ d("corpus store/queue on embedded Postgres", () => {
     expect(retry.attempts).toBe(1);
     expect(retry.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
 
-    // Not claimable before the backoff elapses.
     expect(await queue.claimNext(companyId)).toBeNull();
+
+    // The SQL cutoff must not claim work whose retry timestamp is still ahead.
+    await db.execute(rawSql`
+      update corpus_parse_jobs set next_attempt_at = now() + interval '5 seconds'
+      where id = ${job.id}
+    `);
+    expect(await queue.claimNext(companyId, new Date(Date.now() + 1000))).toBeNull();
 
     // Force the backoff due and fail the second attempt -> exhausted, failed.
     await db.execute(rawSql`

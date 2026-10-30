@@ -213,6 +213,7 @@ import {
   splitRemoteUrlCredential,
 } from "./remote-url-credentials.js";
 import { secretService } from "./secrets.js";
+import { remoteEndpointOfConfig, toolOauthProviderForConnection } from "./tool-oauth-provider.js"; // myrmidon(SETTINGS-UI E2.4)
 import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js"; // myrmidon(SETTINGS-UI E2.4)
 import { createToolOauthClientSecretLookup } from "../myrmidon/secret-settings/tool-oauth.js";
 import { agentmailApi } from "./agentmail-api.js";
@@ -2914,11 +2915,7 @@ function sanitizeHttpFailure(error: unknown): {
 }
 
 function remoteEndpoint(config: Record<string, unknown>): string {
-  const value = config.url ?? config.endpoint ?? config.remoteUrl;
-  const parsed = parseRemoteHttpEndpoint(value, (message, code) =>
-    badRequest(message, { code }),
-  );
-  return parsed.toString();
+  return remoteEndpointOfConfig(config);
 }
 
 function vercelConnectResourcesFor(
@@ -9024,25 +9021,7 @@ export function toolAccessService(
     connection: typeof toolConnections.$inferSelect,
     metadataUrl?: string | null,
   ): string {
-    const oauth = oauthConfig(connection);
-    if (typeof oauth.provider === "string" && oauth.provider.trim())
-      return oauth.provider.trim();
-    const sourceTemplateKey =
-      typeof connection.config.sourceTemplateKey === "string"
-        ? connection.config.sourceTemplateKey.trim()
-        : "";
-    if (sourceTemplateKey) return sourceTemplateKey;
-    const url = metadataUrl ?? remoteEndpoint(connection.config);
-    try {
-      return (
-        new URL(url).hostname
-          .replace(/[^a-z0-9]+/gi, "_")
-          .replace(/^_+|_+$/g, "")
-          .toLowerCase() || "generic"
-      );
-    } catch {
-      return "generic";
-    }
+    return toolOauthProviderForConnection(connection, metadataUrl);
   }
 
   function parseWwwAuthenticateParams(value: string): Record<string, string> {

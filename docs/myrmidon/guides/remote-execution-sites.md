@@ -352,6 +352,7 @@ Copy `ca.crt`, `server.crt` and `server.key` to `/etc/myrmidon/pki/` (key `0600`
   "network": "myrmidon-bots",
   "images": ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
   "boardAddress": "192.0.2.1:3100",
+  // Legacy hostname stays resolvable as a compatibility alias during rollout.
   "boardExtraHost": "paperclip-server-1:192.0.2.1",
   "gatewayBindIp": "192.0.2.10",
   "gatewayPortStart": 18700,

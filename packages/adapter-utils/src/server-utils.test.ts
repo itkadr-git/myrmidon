@@ -3764,6 +3764,10 @@ describe("appendWithByteCap", () => {
 
 describe("buildPaperclipEnv", () => {
   const ENV_KEYS = [
+    "MYRMIDON_API_URL",
+    "MYRMIDON_RUNTIME_API_URL",
+    "MYRMIDON_LISTEN_HOST",
+    "MYRMIDON_LISTEN_PORT",
     "PAPERCLIP_API_URL",
     "PAPERCLIP_RUNTIME_API_URL",
     "PAPERCLIP_LISTEN_HOST",
@@ -3799,7 +3803,10 @@ describe("buildPaperclipEnv", () => {
           id: "agent-1",
           companyId: "company-1",
         });
+        expect(env.MYRMIDON_API_URL).toBe("http://localhost:3100");
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3100");
+        expect(env.MYRMIDON_AGENT_ID).toBe("agent-1");
+        expect(env.MYRMIDON_COMPANY_ID).toBe("company-1");
         expect(env.PAPERCLIP_AGENT_ID).toBe("agent-1");
         expect(env.PAPERCLIP_COMPANY_ID).toBe("company-1");
       },
@@ -3809,6 +3816,7 @@ describe("buildPaperclipEnv", () => {
   it("falls back to the derived runtime URL when no explicit override is set", () => {
     withEnv({ PAPERCLIP_RUNTIME_API_URL: "http://203.0.113.7:3100" }, () => {
       const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+      expect(env.MYRMIDON_API_URL).toBe("http://203.0.113.7:3100");
       expect(env.PAPERCLIP_API_URL).toBe("http://203.0.113.7:3100");
     });
   });
@@ -3821,6 +3829,7 @@ describe("buildPaperclipEnv", () => {
           id: "agent-1",
           companyId: "company-1",
         });
+        expect(env.MYRMIDON_API_URL).toBe("http://localhost:3200");
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3200");
       },
     );

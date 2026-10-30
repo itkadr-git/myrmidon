@@ -8,6 +8,7 @@ import {
   PluginSlotMount,
   _collectRegisterableExportNamesForTests,
   _resetPluginModuleLoader,
+  _rewriteBareSpecifiersForTests,
   registerPluginWebComponent,
   type ResolvedPluginSlot,
 } from "./slots";
@@ -83,5 +84,29 @@ describe("plugin slot export registration", () => {
 
     expect(container.textContent).not.toContain("Content Machine: Content");
     expect(container.querySelector("paperclip-test-sidebar")).not.toBeNull();
+  });
+});
+
+describe("plugin bundle bare specifier rewriting", () => {
+  it("rewrites legacy @paperclipai SDK specifiers to the same shim as @myrmidon", () => {
+    let counter = 0;
+    const original = URL.createObjectURL;
+    URL.createObjectURL = () => `blob:shim-${++counter}`;
+    try {
+      const bundle = (scope: string) =>
+        [
+          `import { usePluginData } from "${scope}/plugin-sdk/ui";`,
+          `import { useHostContext } from '${scope}/plugin-sdk/ui/hooks';`,
+          `import * as Q from '${scope}/plugin-sdk/ui';`,
+        ].join("\n");
+      const mine = _rewriteBareSpecifiersForTests(bundle("@myrmidon"));
+      const legacy = _rewriteBareSpecifiersForTests(bundle("@paperclipai"));
+      expect(legacy).toBe(mine);
+      expect(legacy).not.toContain("plugin-sdk");
+      expect(legacy.match(/blob:shim-\d+/g)?.length).toBe(3);
+      expect(new Set(legacy.match(/blob:shim-\d+/g)).size).toBe(1);
+    } finally {
+      URL.createObjectURL = original;
+    }
   });
 });

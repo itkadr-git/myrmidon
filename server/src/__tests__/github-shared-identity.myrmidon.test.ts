@@ -38,6 +38,8 @@ import {
   heartbeatRuns,
   instanceSettings,
   issues,
+  projectWorkspaces,
+  projects,
   runIdentityContexts,
   toolApplications,
   toolConnectionInstalls,
@@ -535,6 +537,63 @@ const support = await getEmbeddedPostgresTestSupport();
     );
     expect(await resolveGitHubOperationCredentials(db, { ...input, repository: "owner-a/repo-a" }))
       .toMatchObject({ status: "absent", env: {} });
+  });
+
+  it("answers absent with repository_required and the allowed repositories when none is named", async () => {
+    const input = await seed();
+    const secretId = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-a", repos: ["owner-a/repo-a"] });
+    await writeGitHubSharedIdentitySettings(db, input.companyId, rules([entry(secretId, { allowedRepos: ["owner-a/repo-a", "owner-a/tools-*"] })]));
+    const result = await resolveGitHubOperationCredentials(db, input);
+    expect(result).toMatchObject({
+      status: "absent",
+      reasonCode: "repository_required",
+      availableRepositories: ["owner-a/repo-a", "owner-a/tools-*"],
+      env: {},
+    });
+    expect(result.reason).toMatch(/-R owner\/repo/);
+    // Neither minting nor the key read happens without a repository.
+    expect(github.calls).toEqual([]);
+    expect(vault.resolveSecretValue).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain("tok-a");
+    const [stored] = await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.runId, input.runId));
+    expect(stored!.github).toMatchObject({ status: "absent", reasonCode: "repository_required" });
+  });
+
+  it("names no repositories to an agent that no entry serves, or when the feature is off", async () => {
+    const input = await seed("designer");
+    const secretId = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-a", repos: [] });
+    await writeGitHubSharedIdentitySettings(db, input.companyId, rules([entry(secretId)]));
+    const unserved = await resolveGitHubOperationCredentials(db, input);
+    expect(unserved).toMatchObject({ status: "absent", env: {} });
+    expect(unserved.reasonCode).toBeUndefined();
+    expect(unserved.availableRepositories).toBeUndefined();
+    await writeGitHubSharedIdentitySettings(db, input.companyId, rules([entry(secretId, { roles: [], agentIds: [input.agentId] })], { enabled: false }));
+    const off = await resolveGitHubOperationCredentials(db, input);
+    expect(off.reasonCode).toBeUndefined();
+    expect(off.availableRepositories).toBeUndefined();
+  });
+
+  it("takes the repository from the task's project workspace when the caller names none", async () => {
+    const input = await seed();
+    const secretId = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-a", repos: ["owner-a/repo-a"] });
+    await writeGitHubSharedIdentitySettings(db, input.companyId, rules([entry(secretId)]));
+    const projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId: input.companyId, name: "Project A" });
+    await db.insert(projectWorkspaces).values({
+      companyId: input.companyId,
+      projectId,
+      name: "main",
+      sourceType: "git_repo",
+      repoUrl: "https://github.com/owner-a/repo-a.git",
+      isPrimary: true,
+    });
+    await db.update(issues).set({ projectId }).where(eq(issues.id, input.issueId));
+    const result = await resolveGitHubOperationCredentials(db, input);
+    expect(result).toMatchObject({ status: "available", source: "app", repository: "owner-a/repo-a" });
+    expect(result.env.GH_TOKEN).toBe("tok-a-repo-a");
+    // An explicit repository still wins over the project's.
+    const explicit = await resolveGitHubOperationCredentials(db, { ...input, repository: "owner-a/repo-a" });
+    expect(explicit).toMatchObject({ status: "available", repository: "owner-a/repo-a" });
   });
 
   it("requests exactly the entry's permission list and re-mints when it is widened", async () => {

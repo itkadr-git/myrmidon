@@ -388,6 +388,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // packages/shared/src/myrmidon-attention-feed.ts.
   attentionFailedRunHorizonDays: z.number().int().min(1).max(365).optional(),
   attentionFeedCacheTtlSeconds: z.number().int().min(0).max(300).optional(),
+  // myrmidon(1.6.6 P1.10): the blocker-graph root fan-out alert limit; absent
+  // means the default (10). Same contract comment as the field in
+  // packages/shared/src/types/instance.ts.
+  blockerRootFanoutAlertLimit: z.number().int().min(1).max(1000).optional(),
   // myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
   // how many HTTP processes (`api`) and scheduler processes (`worker`) the
   // deployment asks for. The stored row is accepted as it is, including the

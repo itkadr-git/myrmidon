@@ -5,6 +5,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { NotFoundPage } from "./NotFound";
 import { useTranslation } from "@/i18n";
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 import { Trans } from "react-i18next";
 
 export function CompanySettingsPluginPage() {
@@ -45,7 +46,7 @@ export function CompanySettingsPluginPage() {
     if (!pageSlot) return;
     setBreadcrumbs([
       { label: t("area.settings-company.company-settings-plugin-page.breadcrumbSettings"), href: "/company/settings" },
-      { label: pageSlot.displayName },
+      { label: pluginLabel(t, pageSlot.pluginKey, pageSlot.id, pageSlot.displayName) }, // myrmidon(OPE-9352)
     ]);
   }, [pageSlot, setBreadcrumbs, t]);
 

@@ -106,15 +106,17 @@ function normalizeFingerprint(raw: string): string {
 
 /**
  * Reads the client certificate the board will present (same lookup order as the client manager)
- * and checks that the site CA signed it. Returns an error message, or null when it is fine or
- * when the secret cannot be read as a certificate here (the manager then reports it).
+ * and checks that the site CA signed it. `error` is a message for a 400, or null when it is fine or
+ * when the secret cannot be read as a certificate here (the manager then reports it). `notAfter` is
+ * the end of the certificate's validity: the key's TTL the fleet screen shows (null when unreadable).
  */
-async function clientCertSignedByCa(
+async function inspectClientCert(
   deps: FleetSiteRoutesDeps,
   companyId: string,
   ref: string,
   caPem: string,
-): Promise<string | null> {
+  now: Date,
+): Promise<{ error: string | null; notAfter: Date | null }> {
   let cert: string | undefined;
   for (const name of [ref, `${ref}-cert`, `${ref}_cert`]) {
     const raw = await deps.readSecret(companyId, name);
@@ -122,16 +124,21 @@ async function clientCertSignedByCa(
     cert = parseTlsCredentials(raw).cert;
     if (cert) break;
   }
-  if (!cert) return null;
+  if (!cert) return { error: null, notAfter: null };
   try {
     const leaf = new X509Certificate(cert);
     if (!leaf.verify(new X509Certificate(caPem).publicKey)) {
-      return "clientCertSecretKey: the client certificate is not signed by caCert";
+      return { error: "clientCertSecretKey: the client certificate is not signed by caCert", notAfter: null };
     }
+    const notAfter = new Date(leaf.validTo);
+    if (Number.isNaN(notAfter.getTime())) return { error: null, notAfter: null };
+    if (notAfter.getTime() <= now.getTime()) {
+      return { error: `clientCertSecretKey: the client certificate expired at ${notAfter.toISOString()}`, notAfter };
+    }
+    return { error: null, notAfter };
   } catch {
-    return "clientCertSecretKey: the client certificate is not a valid PEM certificate";
+    return { error: "clientCertSecretKey: the client certificate is not a valid PEM certificate", notAfter: null };
   }
-  return null;
 }
 
 /**
@@ -157,6 +164,7 @@ function publicSite(site: FleetSite) {
     status: site.status,
     tokenSecret: site.tokenSecret ?? null,
     clientCertSecretKey: site.clientCertSecretKey ?? null,
+    clientCertNotAfter: site.clientCertNotAfter ? new Date(site.clientCertNotAfter).toISOString() : null,
     caCertFingerprint: site.caCertFingerprint ?? null,
     capacity: site.capacity,
     profile: site.profile,
@@ -223,8 +231,8 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
       );
     }
 
-    const certError = await clientCertSignedByCa(deps, companyId, body.clientCertSecretKey, body.caCert);
-    if (certError) throw badRequest(certError);
+    const clientCert = await inspectClientCert(deps, companyId, body.clientCertSecretKey, body.caCert, new Date());
+    if (clientCert.error) throw badRequest(clientCert.error);
 
     if (await deps.getSite(companyId, body.name)) throw conflict(`Site "${body.name}" is already enrolled`);
 
@@ -247,6 +255,7 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
       caCert: body.caCert,
       caCertFingerprint: fingerprint,
       clientCertSecretKey: body.clientCertSecretKey,
+      clientCertNotAfter: clientCert.notAfter,
       status: "active",
       capacity: body.capacity,
       profile,

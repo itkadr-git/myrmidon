@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests,
@@ -246,6 +247,26 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       finishedAt: input.finishedAt,
     });
     return id;
+  }
+
+  /** A cancelled run that finished at the given time, with its persisted cause. */
+  async function seedCancelledRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    finishedAt: Date;
+    cancellationCode: string;
+  }) {
+    await db.insert(heartbeatRuns).values({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      status: "cancelled",
+      invocationSource: "automation",
+      contextSnapshot: { issueId: input.issueId },
+      resultJson: { executionCancellation: { source: { code: input.cancellationCode } } },
+      startedAt: new Date(input.finishedAt.getTime() - 30_000),
+      finishedAt: input.finishedAt,
+    });
   }
 
   /** A comment on the issue, optionally attributed to the run that wrote it. */
@@ -712,6 +733,82 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(result.alreadyActive).toBe(1);
     expect(deps.enqueueWakeup).not.toHaveBeenCalled();
   });
+
+  it.each(["reassignment", "board_operator"])(
+    "wakes an issue with review changes requested after a board cancellation (%s)",
+    async (cancellationCode) => {
+      const { companyId, agentId } = await seedAgent();
+      const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+      await db.update(issues).set({ executionState: { status: "changes_requested" } }).where(eq(issues.id, issueId));
+      await seedSucceededRun({ companyId, agentId, issueId, finishedAt: new Date(Date.now() - 90_000) });
+      const cancelledAt = new Date(Date.now() - 30_000);
+      await seedCancelledRun({ companyId, agentId, issueId, finishedAt: cancelledAt, cancellationCode });
+      const deps = fakeDeps();
+
+      const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(result.woken).toBe(1);
+      expect(result.issueIds).toEqual([issueId]);
+    },
+  );
+
+  it("does not repeatedly wake review changes after a system cancellation", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const systemCancelled = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await db.update(issues).set({ executionState: { status: "changes_requested" } }).where(eq(issues.id, systemCancelled));
+    await seedSucceededRun({ companyId, agentId, issueId: systemCancelled, finishedAt: new Date(Date.now() - 90_000) });
+    await seedCancelledRun({
+      companyId,
+      agentId,
+      issueId: systemCancelled,
+      finishedAt: new Date(Date.now() - 30_000),
+      cancellationCode: "watchdog",
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("cools a genuinely stale todo issue with consecutive succeeded runs", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const staleTodo = await seedIssue({ companyId, agentId, status: "todo" });
+    await seedSucceededRun({ companyId, agentId, issueId: staleTodo, finishedAt: new Date(Date.now() - 15 * 60_000) });
+    const staleInProgress = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await seedSucceededRun({ companyId, agentId, issueId: staleInProgress, finishedAt: new Date(Date.now() - 15 * 60_000) });
+    await seedSucceededRun({ companyId, agentId, issueId: staleInProgress, finishedAt: new Date(Date.now() - 5 * 60_000) });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(result.alreadyActive).toBeGreaterThanOrEqual(2);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it.each(["todo", "in_progress"])(
+    "does not treat board cancellation as review rework when execution state is %s",
+    async (status) => {
+      const { companyId, agentId } = await seedAgent();
+      const issueId = await seedIssue({ companyId, agentId, status });
+      await seedSucceededRun({ companyId, agentId, issueId, finishedAt: new Date(Date.now() - 90_000) });
+      await seedCancelledRun({
+        companyId,
+        agentId,
+        issueId,
+        finishedAt: new Date(Date.now() - 30_000),
+        cancellationCode: "reassignment",
+      });
+      const deps = fakeDeps();
+
+      const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(result.woken).toBe(0);
+      expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps a silent success quiet long past the old 15-minute window (no wake storm)", async () => {
     const { companyId, agentId } = await seedAgent();

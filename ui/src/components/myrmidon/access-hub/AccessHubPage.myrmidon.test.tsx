@@ -142,6 +142,15 @@ describe("AccessHubPage without the access-hub server API", () => {
 });
 
 describe("AccessHubPage with the access-hub server API", () => {
+  it("shows the unavailable notice when the module is disabled in a 200 response", async () => {
+    apiMock.get.mockResolvedValue({ enabled: false, accesses: [], hosts: [] });
+    await renderPage();
+    expect(container.querySelector('[data-testid="access-hub-unavailable"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="access-hub-list"]')).toBeNull();
+    expect(container.textContent).toContain(NOTICE_TITLE);
+    expect(apiMock.get).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the access list and shows no notice", async () => {
     apiMock.get.mockImplementation((path: string) => {
       if (path === "/myrmidon/access-hub/accesses") return Promise.resolve([accessRecord()]);
