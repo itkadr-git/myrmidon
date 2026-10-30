@@ -10,7 +10,7 @@ const manifest: PaperclipPluginManifestV1 = {
   displayName: "GigaAM Speech Recognition",
   description: "Reports readiness, model and VAD loading, fallback mode, transcription totals and p50 latency for the GigaAM STT service.",
   author: "Paperclip",
-  categories: ["monitoring"],
+  categories: ["connector"],
   capabilities: ["http.outbound", "secrets.read-ref"],
   entrypoints: { worker: "./worker.js" },
   instanceConfigSchema: {
