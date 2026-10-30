@@ -88,6 +88,7 @@ export function renderBlockedMetrics(groups: readonly BlockedMetricsGroup[]): st
     }
   }
   lines.push(
+    "",
     "# HELP blocked_missing_fields_total Current blocked issues missing each required field.",
     "# TYPE blocked_missing_fields_total gauge",
   );

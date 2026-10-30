@@ -57,8 +57,9 @@ import {
 import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-containers/fleet-site-metrics.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
 import { collectBlockerRootMetrics, renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
+import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-claim/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
-import { collectBlockedMetrics, renderBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
+import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
 
 // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors —
@@ -109,6 +110,8 @@ export const METRIC_FAMILIES = [
   "myrmidon_role_queue_tasks",
   "myrmidon_swarm_claims_active",
   "myrmidon_swarm_claims_total",
+  "swarm_claim_conflicts_total",
+  "swarm_lease_recovered_total",
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
   "myrmidon_scrape_errors",
@@ -798,18 +801,44 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
   const role = snapshot.role ?? "all";
   const R = `role="${escapeLabelValue(role)}"`;
   const blocks: string[] = [];
-  const blockedHeaders = new Set<string>();
-  const blockedText = (snapshot.blocked?.length ? snapshot.blocked : [{ companyId: "", groups: [] }])
-    .flatMap(({ companyId, groups }) => renderBlockedMetrics(groups).trimEnd().split("\n")
-      .map((line) => line.startsWith("#") ? line
-        : line.replace("{", `{${R},company_id="${escapeLabelValue(companyId)}",`)))
-    .filter((line) => {
-      if (!line.startsWith("#")) return true;
-      if (blockedHeaders.has(line)) return false;
-      blockedHeaders.add(line);
-      return true;
-    });
-  blocks.push(blockedText.join("\n"));
+
+  const blockedAgeSamples: string[] = [];
+  const blockedMissingFieldsSamples: string[] = [];
+  for (const { companyId, groups } of snapshot.blocked ?? []) {
+    const C = companyId ? `,company_id="${escapeLabelValue(companyId)}"` : "";
+    for (const group of groups) {
+      for (const statistic of ["p50", "p95", "max"] as const) {
+        const value = group.ageSeconds[statistic];
+        if (value !== null) {
+          blockedAgeSamples.push(
+            `blocked_age_seconds{${R}${C},legacy="${group.legacy}",statistic="${statistic}"} ${formatSampleValue(value)}`,
+          );
+        }
+      }
+      for (const field of ["reason", "owner", "nextCheckAt"] as const) {
+        blockedMissingFieldsSamples.push(
+          `blocked_missing_fields_total{${R}${C},legacy="${group.legacy}",field="${field}"} ${formatSampleValue(group.missingFields[field])}`,
+        );
+      }
+    }
+  }
+
+  blocks.push(
+    familyBlock(
+      "blocked_age_seconds",
+      "Current blocked age in seconds (nearest-rank percentiles).",
+      "gauge",
+      blockedAgeSamples,
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "blocked_missing_fields_total",
+      "Current blocked issues missing each required field.",
+      "gauge",
+      blockedMissingFieldsSamples,
+    ),
+  );
 
   blocks.push(
     familyBlock(
@@ -942,6 +971,23 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     ),
   );
 
+  const claimCounters = swarmClaimMetrics.read();
+  blocks.push(
+    familyBlock(
+      "swarm_claim_conflicts_total",
+      "Claim attempts refused because a live claim exists, cumulative since process start.",
+      "counter",
+      [`swarm_claim_conflicts_total{${R}} ${formatSampleValue(claimCounters.conflicts)}`],
+    ),
+    familyBlock(
+      "swarm_lease_recovered_total",
+      "Leases successfully recovered by expiry or supervisor rebalance, cumulative since process start.",
+      "counter",
+      SWARM_LEASE_RECOVERY_REASONS.map((reason) =>
+        `swarm_lease_recovered_total{${R},reason="${reason}"} ${formatSampleValue(claimCounters.recovered[reason])}`,
+      ),
+    ),
+  );
   const continuationCounters = continuationDedupeMetrics.read();
   blocks.push(
     familyBlock(
