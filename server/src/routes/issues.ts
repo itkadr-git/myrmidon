@@ -165,6 +165,7 @@ import {
   ISSUE_LIST_AGENT_DEFAULT_LIMIT,
   ISSUE_LIST_AGENT_FULL_VIEW_MAX_LIMIT,
   ISSUE_LIST_AGENT_MAX_LIMIT,
+  shouldApplyIssueListAgentDefaults,
   issueListAgentDefaultsEnabled,
   type CompactIssue,
   type CompanySearchExtractQuery,
@@ -8520,11 +8521,10 @@ export function issueRoutes(
     // get the defect-fix defaults (compact view, limit 200, max 500, description
     // omitted in compact) behind the instance setting `issuesListAgentDefaults`;
     // absent means ON, `{enabled: false}` restores the pre-feature behaviour byte-for-byte.
-    const agentDefaultsEnabled =
-      (req.actor.type === "agent" || req.actor.source === "board_key") &&
-      issueListAgentDefaultsEnabled(
-        (await instanceSettings.getGeneral()).issuesListAgentDefaults,
-      );
+    const agentDefaultsEnabled = shouldApplyIssueListAgentDefaults(
+      req.actor,
+      (await instanceSettings.getGeneral()).issuesListAgentDefaults,
+    );
     const limit =
       parsedLimit === null
         ? agentDefaultsEnabled
