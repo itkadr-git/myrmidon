@@ -324,6 +324,27 @@ describe("issue assignee invokability guard", () => {
     expect(res.body?.details?.code).not.toBe("issue_requires_engineer");
   });
 
+  it("allows assignee change when moving a code task out of in_progress to in_review", async () => {
+    const existing = makeIssue({
+      status: "in_progress",
+      assigneeAgentId: ENGINEER_AGENT_ID,
+      executionWorkspacePreference: "reuse_existing",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({
+      ...existing,
+      status: "in_review",
+      assigneeAgentId: NON_ENGINEER_AGENT_ID,
+    });
+
+    const res = await request(createApp(boardActor()))
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "in_review", assigneeAgentId: NON_ENGINEER_AGENT_ID });
+
+    expect(res.status).not.toBe(422);
+    expect(res.body?.details?.code).not.toBe("issue_requires_engineer");
+  });
+
   it("does not refuse an ordinary issue without any code signal for a non-engineer", async () => {
     const existing = makeIssue({ assigneeAgentId: null, casteKey: null, projectId: null });
     mockIssueService.getById.mockResolvedValue(existing);

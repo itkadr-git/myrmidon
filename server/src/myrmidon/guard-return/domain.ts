@@ -91,7 +91,7 @@ export function isDevProjectCodeIssue(input: {
   harnessKind?: string | null;
   executionWorkspacePreference?: string | null;
   prWorkProducts?: PrWorkProductSummary[];
-  hasPullRequest?: boolean;
+  hasEngineerPr?: boolean;
   hasReviewState?: boolean;
 }): boolean {
   const labelsList = normalizeLabels(input.labels);
@@ -104,12 +104,14 @@ export function isDevProjectCodeIssue(input: {
   });
   if (isExplicitCode) return true;
 
-  if (input.hasPullRequest) return true;
+  if (input.hasEngineerPr) return true;
 
-  // Having a pull_request work product indicates it is an engineering code task
+  // Only PRs created by an engineer count as a code task signal
   if (input.prWorkProducts && input.prWorkProducts.length > 0) {
-    const hasPr = input.prWorkProducts.some((p) => p.type === "pull_request");
-    if (hasPr) return true;
+    const hasEngineerPr = input.prWorkProducts.some(
+      (p) => p.type === "pull_request" && p.creatorRole === "engineer",
+    );
+    if (hasEngineerPr) return true;
   }
 
   // Project default caste is engineer
@@ -135,6 +137,10 @@ export function findEngineerPr(
         return { hasPr: true, authorAgentId: agent.id };
       }
     }
+    // Check creatorRole if directly present
+    if (pr.creatorRole === "engineer") {
+      return { hasPr: true, authorAgentId: pr.creatorAgentId ?? null };
+    }
     // Check createdByRunId
     if (pr.createdByRunId && runAgentMap) {
       const agentId = runAgentMap.get(pr.createdByRunId);
@@ -154,8 +160,6 @@ export function findEngineerPr(
         return { hasPr: true, authorAgentId: agent.id };
       }
     }
-    // Any active or existing PR on a code task counts as having a PR
-    return { hasPr: true, authorAgentId: null };
   }
   return { hasPr: false, authorAgentId: null };
 }
@@ -167,28 +171,63 @@ export function hasChangesRequestedVerdict(
   executionState: Record<string, unknown> | null | undefined,
   comments: CommentSummary[],
 ): boolean {
-  if (executionState) {
-    if (executionState.status === "changes_requested") return true;
-    if (executionState.lastDecisionOutcome === "changes_requested") return true;
-    const stages = Array.isArray(executionState.stages) ? (executionState.stages as Array<Record<string, unknown>>) : [];
-    for (const stage of stages) {
-      if (stage.status === "changes_requested" || stage.lastDecisionOutcome === "changes_requested") {
-        return true;
-      }
+  // 1. Scan comments in reverse chronological order (newest first)
+  // to find the strictly last review verdict.
+  for (const c of comments) {
+    // Ignore system comments (e.g. posted by sweep or automation)
+    if (c.authorType === "system") continue;
+    if (!c.body) continue;
+
+    const text = c.body.trim().toLowerCase();
+
+    const isApproved =
+      text.startsWith("approved") ||
+      text.includes("decision: approved") ||
+      text.includes("verdict: approved") ||
+      text.includes("вердикт: approved") ||
+      text.includes("вердикт: одобрено") ||
+      text.includes("одобрено ревью") ||
+      text.includes("lgtm");
+
+    const isChangesRequested =
+      text.startsWith("request changes") ||
+      text.includes("changes_requested") ||
+      text.includes("changes requested") ||
+      text.includes("decision: changes_requested") ||
+      text.includes("verdict: changes_requested") ||
+      text.includes("вердикт: changes_requested") ||
+      text.includes("замечания ревью") ||
+      text.includes("требуются доработки");
+
+    if (isApproved && !isChangesRequested) {
+      return false;
+    }
+    if (isChangesRequested) {
+      return true;
     }
   }
 
-  // Check recent comments from reviewers for changes_requested markers
-  for (const c of comments) {
-    const text = c.body.toLowerCase();
+  // 2. If no verdict comment was found, consult executionState
+  if (executionState) {
+    if (executionState.lastDecisionOutcome === "approved") return false;
     if (
-      text.includes("changes_requested") ||
-      text.includes("request changes") ||
-      text.includes("changes requested") ||
-      text.includes("замечания ревью") ||
-      text.includes("требуются доработки")
+      executionState.status === "changes_requested" ||
+      executionState.lastDecisionOutcome === "changes_requested"
     ) {
       return true;
+    }
+    const stages = Array.isArray(executionState.stages)
+      ? (executionState.stages as Array<Record<string, unknown>>)
+      : [];
+    if (stages.length > 0) {
+      const latestStage = stages[stages.length - 1];
+      if (latestStage.lastDecisionOutcome === "approved") return false;
+      if (
+        latestStage.status === "changes_requested" ||
+        latestStage.lastDecisionOutcome === "changes_requested"
+      ) {
+        return true;
+      }
     }
   }
 
@@ -203,8 +242,9 @@ export function extractReviewRemarks(
   executionState: Record<string, unknown> | null | undefined,
   reviewerAgentId?: string | null,
 ): string | null {
-  // 1. Look for comments from reviewer or containing changes_requested
+  // 1. Look for comments from reviewer or containing changes_requested, ignoring system comments
   for (const c of comments) {
+    if (c.authorType === "system") continue;
     if (reviewerAgentId && c.authorAgentId === reviewerAgentId) {
       return c.body.trim();
     }
@@ -229,9 +269,12 @@ export function extractReviewRemarks(
     }
   }
 
-  // 3. Fallback: most recent comment if from another agent
-  if (comments.length > 0 && comments[0].body) {
-    return comments[0].body.trim();
+  // 3. Fallback: most recent non-system comment if from another agent
+  for (const c of comments) {
+    if (c.authorType === "system") continue;
+    if (c.body && c.body.trim().length > 0) {
+      return c.body.trim();
+    }
   }
 
   return null;
@@ -279,6 +322,10 @@ export function decideGuardReturn(
     return { action: "skip", reason: `Assignee role ${candidate.assigneeRole} is not a non-coding role` };
   }
 
+  // Check qualification: has PR from engineer OR last verdict is changes_requested
+  const { hasPr, authorAgentId: prAuthorId } = findEngineerPr(candidate.prWorkProducts, agentMap, runAgentMap);
+  const isChangesRequested = hasChangesRequestedVerdict(candidate.executionState, candidate.comments);
+
   // Check if issue is a dev-project code issue
   const isCode = isDevProjectCodeIssue({
     labels: candidate.labels,
@@ -286,15 +333,11 @@ export function decideGuardReturn(
     projectDefaultCasteKey: candidate.projectDefaultCasteKey,
     harnessKind: candidate.harnessKind,
     executionWorkspacePreference: candidate.executionWorkspacePreference,
-    prWorkProducts: candidate.prWorkProducts,
+    hasEngineerPr: hasPr,
   });
   if (!isCode) {
     return { action: "skip", reason: "Issue is not a dev-project code task" };
   }
-
-  // Check qualification: has PR from engineer OR last verdict is changes_requested
-  const { hasPr, authorAgentId: prAuthorId } = findEngineerPr(candidate.prWorkProducts, agentMap, runAgentMap);
-  const isChangesRequested = hasChangesRequestedVerdict(candidate.executionState, candidate.comments);
 
   if (!hasPr && !isChangesRequested) {
     return {

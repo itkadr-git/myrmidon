@@ -176,11 +176,16 @@ export function createGuardReturnSweep(deps: GuardReturnSweepDeps) {
       }
     }
 
-    // Load agents relevant to these issues (assignees, engineers, run agents)
+    // Load agents relevant to these issues (assignees, engineers, run agents, pr authors)
     const neededAgentIds = new Set<string>();
     for (const r of candidateRows) if (r.assigneeAgentId) neededAgentIds.add(r.assigneeAgentId);
     for (const eng of allEngineers) neededAgentIds.add(eng.id);
     for (const aId of runAgentMap.values()) neededAgentIds.add(aId);
+    for (const pr of prRows) {
+      const meta = (pr.metadata ?? {}) as Record<string, unknown>;
+      if (typeof meta.lastCommitAuthorAgentId === "string") neededAgentIds.add(meta.lastCommitAuthorAgentId);
+      if (typeof meta.creatorAgentId === "string") neededAgentIds.add(meta.creatorAgentId);
+    }
 
     const agentsList = await deps.db
       .select({ id: agents.id, name: agents.name, role: agents.role, status: agents.status })

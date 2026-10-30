@@ -111,6 +111,19 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
     const result = findEngineerPr(prs, agentMap, runAgentMap);
     expect(result.hasPr).toBe(true);
     expect(result.authorAgentId).toBe(engineerAgent.id);
+
+    // Rejects PR if creator is not an engineer
+    const nonEngPrs: PrWorkProductSummary[] = [
+      {
+        id: "pr-2",
+        type: "pull_request",
+        status: "open",
+        creatorAgentId: reviewerAgent.id,
+      },
+    ];
+    const nonEngResult = findEngineerPr(nonEngPrs, agentMap);
+    expect(nonEngResult.hasPr).toBe(false);
+    expect(nonEngResult.authorAgentId).toBeNull();
   });
 
   it("detects changes_requested verdict from executionState and comments", () => {
@@ -136,6 +149,21 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
       },
     ];
     expect(hasChangesRequestedVerdict(null, comments)).toBe(true);
+
+    // Strictly respects the latest verdict: if subsequent comment is approved, changes_requested is false
+    const approvedComments: CommentSummary[] = [
+      {
+        id: "c-2",
+        body: "VERDICT: APPROVED LGTM!",
+        createdAt: new Date(Date.now() + 1000),
+      },
+      {
+        id: "c-1",
+        body: "REQUEST CHANGES: fix type error in routes.ts",
+        createdAt: new Date(),
+      },
+    ];
+    expect(hasChangesRequestedVerdict(null, approvedComments)).toBe(false);
   });
 
   it("extracts reviewer remarks and formats return comment", () => {
@@ -496,5 +524,55 @@ describe("1.6.6 GUARD-RETURN: alert evaluation", () => {
     expect(alertResult.count).toBe(1);
     expect(alertResult.firing).toBe(false);
     expect(alertResult.breachedTasks.length).toBe(0);
+  });
+
+  it("calculates duration from activity_log assignment timestamp rather than issue updatedAt", async () => {
+    const now = new Date();
+    // Issue updatedAt was bumped 5 minutes ago by unrelated edit
+    const recentUpdatedAt = new Date(now.getTime() - 5 * 60_000);
+    // But assignment to noncoding role happened 40 minutes ago in activityLog
+    const assigned40MinAgo = new Date(now.getTime() - 40 * 60_000);
+
+    const mockCandidate = {
+      id: "issue-alert-3",
+      identifier: "OPE-9903",
+      title: "Task with recent update but stale noncoding assignment",
+      companyId: "comp-1",
+      status: "in_progress",
+      casteKey: "engineer",
+      labels: [],
+      harnessKind: null,
+      executionWorkspacePreference: null,
+      updatedAt: recentUpdatedAt,
+      createdAt: assigned40MinAgo,
+      assigneeRole: "lead",
+      defaultCasteKey: "engineer",
+    };
+
+    const mockActivityLog = [
+      {
+        issueId: "issue-alert-3",
+        createdAt: assigned40MinAgo,
+      },
+    ];
+
+    const mockDb: any = {
+      select: vi.fn().mockImplementation((fields) => ({
+        from: vi.fn().mockImplementation((table) => ({
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([mockCandidate]),
+            }),
+          }),
+          where: vi.fn().mockResolvedValue(mockActivityLog),
+        })),
+      })),
+    };
+
+    const alertResult = await evaluateCodeTasksOnNoncodingRolesAlert(mockDb, "comp-1", now, 30 * 60_000);
+    expect(alertResult.count).toBe(1);
+    expect(alertResult.firing).toBe(true);
+    expect(alertResult.breachedTasks.length).toBe(1);
+    expect(alertResult.breachedTasks[0].durationMs).toBeGreaterThanOrEqual(40 * 60_000);
   });
 });
