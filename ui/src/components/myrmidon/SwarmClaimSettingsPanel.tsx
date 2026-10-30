@@ -649,12 +649,14 @@ export function SwarmCoolingSettingsPanelView({
   );
 }
 
+type GeneralSwarm = NonNullable<InstanceGeneralSettings["swarm"]>;
+
 export interface SwarmScentSettingsPanelViewProps {
-  swarm: SwarmSettings | undefined;
+  swarm: GeneralSwarm | undefined;
   loading: boolean;
   saving: boolean;
   error: string | null;
-  onSave: (swarm: SwarmSettings) => void;
+  onSave: (swarm: GeneralSwarm) => void;
 }
 
 export function SwarmScentSettingsPanelView({
@@ -860,7 +862,7 @@ export function SwarmClaimSettingsPanel() {
     retry: false,
   });
   const coolingSave = useMutation({
-    mutationFn: (swarm: SwarmSettings) => instanceSettingsApi.updateGeneral({ swarm }),
+    mutationFn: (swarm: GeneralSwarm) => instanceSettingsApi.updateGeneral({ swarm }),
     onMutate: () => {
       setCoolingError(null);
       setCoolingSavedNote(null);
