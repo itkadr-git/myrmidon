@@ -109,13 +109,17 @@ describe("T3 regressions against production profile, placement, routing and drif
 
   it("rejects latest tag without digest on card save via botContainerCardSaveProblem", () => {
     const err = botContainerCardSaveProblem("hermes_gateway", {
-      container: { enabled: true, image: "ghcr.io/example/bot:latest" },
+      container: { enabled: true, image: "ghcr.io/example/bot:latest", memoryMb: 1024, cpus: 1, pidsLimit: 128 },
     });
     expect(err).toMatch(/not pinned by digest/);
     expect(botContainerImageSaveProblem("ghcr.io/example/bot:latest")).toMatch(/not pinned by digest/);
 
     const validDigest = "ghcr.io/example/bot@sha256:" + "a".repeat(64);
-    expect(botContainerCardSaveProblem("hermes_gateway", { container: { enabled: true, image: validDigest } })).toBeNull();
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", {
+        container: { enabled: true, image: validDigest, memoryMb: 1024, cpus: 1, pidsLimit: 128 },
+      }),
+    ).toBeNull();
   });
 
   it("syncs card apiBaseUrl to fleetGatewayApiBaseUrl and handles gatewayPort", async () => {
