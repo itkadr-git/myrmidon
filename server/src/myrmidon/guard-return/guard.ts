@@ -3,7 +3,7 @@
 
 import { and, eq, inArray, ne, isNull } from "drizzle-orm";
 import { agents, issueWorkProducts, heartbeatRuns, projects, type Db } from "@myrmidon/db";
-import { unprocessable } from "../../../errors.js";
+import { unprocessable } from "../../errors.js";
 import { isNoncodingRole, isDevProjectCodeIssue } from "./domain.js";
 
 export interface GuardCheckInput {

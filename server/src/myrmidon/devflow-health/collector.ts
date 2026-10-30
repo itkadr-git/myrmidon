@@ -61,7 +61,6 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
     .select({
       id: issues.id,
       title: issues.title,
-      labels: issues.labels,
       casteKey: issues.casteKey,
       harnessKind: issues.harnessKind,
       executionWorkspacePreference: issues.executionWorkspacePreference,
@@ -92,13 +91,12 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
 
     if (
       isDevProjectCodeIssue({
-        labels: issue.labels as any,
         casteKey: issue.casteKey,
         projectDefaultCasteKey: issue.projectDefaultCasteKey,
         projectName: issue.projectName,
         harnessKind: issue.harnessKind,
         executionWorkspacePreference: issue.executionWorkspacePreference,
-        hasPullRequest: prs.length > 0,
+        hasEngineerPr: prs.length > 0,
         hasReviewState: Boolean(issue.executionState && (issue.executionState as any).stages),
       })
     ) {

@@ -13672,13 +13672,13 @@ export function issueRoutes(
       // may only move it to blocked, todo, or cancelled.
       const targetStatus = typeof req.body.status === "string" ? req.body.status : existing.status;
       const targetAssigneeAgentId = requestedAssigneeAgentId;
-      const assigneeChanged =
+      const isAssigneeChange =
         normalizedAssigneeAgentId !== undefined &&
         normalizedAssigneeAgentId !== existing.assigneeAgentId;
       const movingToOrKeptInCodeInProgress =
         targetStatus === "in_progress" && targetAssigneeAgentId != null;
 
-      if (assigneeChanged || movingToOrKeptInCodeInProgress) {
+      if (isAssigneeChange || movingToOrKeptInCodeInProgress) {
         await assertEngineerForCodeIssue({
           companyId: existing.companyId,
           issue: existing,

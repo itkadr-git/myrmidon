@@ -8,12 +8,14 @@ import {
   agents,
   heartbeatRuns,
   issueComments,
+  issueLabels,
   issues,
   issueWorkProducts,
+  labels,
   projects,
   type Db,
 } from "@myrmidon/db";
-import { logger as rootLogger } from "../../../middleware/logger.js";
+import { logger as rootLogger } from "../../middleware/logger.js";
 import {
   DEFAULT_GUARD_RETURN_SWEEP_INTERVAL_SEC,
   GUARD_RETURN_ACTIVITY_ACTION,
@@ -78,7 +80,6 @@ export function createGuardReturnSweep(deps: GuardReturnSweepDeps) {
         assigneeAgentId: issues.assigneeAgentId,
         projectId: issues.projectId,
         casteKey: issues.casteKey,
-        labels: issues.labels,
         executionState: issues.executionState,
         harnessKind: issues.harnessKind,
         executionWorkspacePreference: issues.executionWorkspacePreference,
@@ -90,7 +91,7 @@ export function createGuardReturnSweep(deps: GuardReturnSweepDeps) {
       })
       .from(issues)
       .innerJoin(agents, eq(issues.assigneeAgentId, agents.id))
-      .leftJoin(projects, eq(issues.projectId, projects.id))
+      .leftJoin(projects, eq(projects.id, issues.projectId))
       .where(
         and(
           inArray(issues.status, ["in_progress", "in_review"]),
@@ -110,6 +111,19 @@ export function createGuardReturnSweep(deps: GuardReturnSweepDeps) {
 
     const companyIds = Array.from(new Set(candidateRows.map((r) => r.companyId)));
     const issueIds = candidateRows.map((r) => r.issueId);
+
+    const labelRows = await deps.db
+      .select({ issueId: issueLabels.issueId, name: labels.name })
+      .from(issueLabels)
+      .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+      .where(inArray(issueLabels.issueId, issueIds));
+
+    const labelsByIssueId = new Map<string, string[]>();
+    for (const l of labelRows) {
+      const list = labelsByIssueId.get(l.issueId) ?? [];
+      list.push(l.name);
+      labelsByIssueId.set(l.issueId, list);
+    }
 
     // Load active engineers across these companies
     const allEngineers = await deps.db
@@ -224,11 +238,11 @@ export function createGuardReturnSweep(deps: GuardReturnSweepDeps) {
         title: row.title,
         companyId: row.companyId,
         status: row.status,
-        assigneeAgentId: row.assigneeAgentId,
+        assigneeAgentId: row.assigneeAgentId!,
         assigneeRole: row.assigneeRole,
         projectId: row.projectId,
         casteKey: row.casteKey,
-        labels: row.labels,
+        labels: labelsByIssueId.get(row.issueId) ?? [],
         executionState: row.executionState as Record<string, unknown> | null,
         harnessKind: row.harnessKind,
         executionWorkspacePreference: row.executionWorkspacePreference,

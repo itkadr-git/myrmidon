@@ -2,7 +2,7 @@
 // 1.6.6 GUARD-RETURN (OPE-9962): Entry point for guard-return subsystem.
 
 import type { Db } from "@myrmidon/db";
-import { logger as rootLogger } from "../../../middleware/logger.js";
+import { logger as rootLogger } from "../../middleware/logger.js";
 import { createGuardReturnSweep, type GuardReturnSweepDeps } from "./sweep.js";
 
 export * from "./domain.js";
@@ -13,7 +13,7 @@ export * from "./alert.js";
 export interface GuardReturnSchedulerDeps {
   db: Db;
   wakeup: (agentId: string, options: Record<string, unknown>) => Promise<unknown>;
-  track?: (work: () => Promise<unknown>) => Promise<unknown>;
+  track?: (work: Promise<unknown>) => void;
   logger?: typeof rootLogger;
 }
 
@@ -24,12 +24,14 @@ export function createGuardReturnScheduler(deps: GuardReturnSchedulerDeps) {
     logger: deps.logger,
   });
 
-  const track = deps.track ?? ((work) => work());
+  const track = deps.track ?? ((work) => { void work; });
 
   function scheduleGuardReturnSweep() {
-    void track(async () => {
-      await sweeper.sweep(new Date());
-    });
+    track(
+      sweeper.sweep(new Date()).catch((err) => {
+        (deps.logger ?? rootLogger).error({ err }, "guard-return sweep failed");
+      }),
+    );
   }
 
   return {

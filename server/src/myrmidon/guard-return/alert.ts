@@ -3,7 +3,7 @@
 // Triggers an alert when myrmidon_code_tasks_on_noncoding_roles > 0 for longer than 30 minutes.
 
 import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
-import { activityLog, agents, issues, issueWorkProducts, projects, type Db } from "@myrmidon/db";
+import { activityLog, agents, issueLabels, issues, issueWorkProducts, labels, projects, type Db } from "@myrmidon/db";
 import {
   DEFAULT_NONCODING_ROLE_ALERT_THRESHOLD_MS,
   isDevProjectCodeIssue,
@@ -45,7 +45,6 @@ export async function evaluateCodeTasksOnNoncodingRolesAlert(
       companyId: issues.companyId,
       status: issues.status,
       casteKey: issues.casteKey,
-      labels: issues.labels,
       harnessKind: issues.harnessKind,
       executionWorkspacePreference: issues.executionWorkspacePreference,
       since: sql<Date>`coalesce((select max(a.created_at) from ${activityLog} a where a.company_id = ${issues.companyId} and a.entity_type = 'issue' and a.entity_id = ${issues.id}::text and a.action = 'issue.updated' and a.details->>'assigneeAgentId' = ${issues.assigneeAgentId}::text), ${issues.updatedAt}, ${issues.createdAt})`,
@@ -56,7 +55,7 @@ export async function evaluateCodeTasksOnNoncodingRolesAlert(
     })
     .from(issues)
     .innerJoin(agents, eq(issues.assigneeAgentId, agents.id))
-    .leftJoin(projects, eq(issues.projectId, projects.id))
+    .leftJoin(projects, eq(projects.id, issues.projectId))
     .where(and(...conditions));
 
   if (candidateRows.length === 0) {
@@ -64,6 +63,20 @@ export async function evaluateCodeTasksOnNoncodingRolesAlert(
   }
 
   const issueIds = candidateRows.map((r) => r.id);
+
+  const labelRows = await db
+    .select({ issueId: issueLabels.issueId, name: labels.name })
+    .from(issueLabels)
+    .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+    .where(inArray(issueLabels.issueId, issueIds));
+
+  const labelsByIssue = new Map<string, string[]>();
+  for (const l of labelRows) {
+    const list = labelsByIssue.get(l.issueId) ?? [];
+    list.push(l.name);
+    labelsByIssue.set(l.issueId, list);
+  }
+
   const prRows = await db
     .select({
       issueId: issueWorkProducts.issueId,
@@ -92,7 +105,7 @@ export async function evaluateCodeTasksOnNoncodingRolesAlert(
 
   for (const row of candidateRows) {
     const isCode = isDevProjectCodeIssue({
-      labels: row.labels,
+      labels: labelsByIssue.get(row.id) ?? [],
       casteKey: row.casteKey,
       projectDefaultCasteKey: row.defaultCasteKey,
       harnessKind: row.harnessKind,

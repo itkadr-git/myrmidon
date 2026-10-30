@@ -4,8 +4,7 @@
 // Automatically returns tasks with PR/changes_requested to the PR author or returnAssignee,
 // puts them into in_progress, relays review remarks, and logs to activity_log.
 
-import { normalizeLabels } from "../../../services/labels.js";
-import { requiresEngineer, isCheckoutRequiredPreference } from "../swarm-claim/requires-engineer.js";
+import { normalizeLabels, requiresEngineer, isCheckoutRequiredPreference } from "../swarm-claim/requires-engineer.js";
 
 export const GUARD_RETURN_ACTIVITY_ACTION = "myrmidon.guard_return.returned";
 export const GUARD_RETURN_ALERT_KEY = "myrmidon_code_tasks_on_noncoding_roles";
@@ -21,6 +20,7 @@ export interface PrWorkProductSummary {
   externalId?: string | null;
   createdByRunId?: string | null;
   creatorAgentId?: string | null;
+  creatorRole?: string | null;
   metadata?: Record<string, unknown> | null;
 }
 
