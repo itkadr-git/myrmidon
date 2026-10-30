@@ -780,36 +780,48 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          echo "Checking CI result start latency relative to predecessor jobs..."
+          echo "Checking CI result start latency relative to predecessor jobs (fail-closed gate)..."
           if ! command -v gh >/dev/null || ! command -v jq >/dev/null; then
-            echo "gh or jq not available, skipping latency verification."
-            exit 0
+            echo "ERROR: gh or jq not available for latency check" >&2
+            exit 1
           fi
-          jobs_data="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" 2>/dev/null || true)"
+
+          jobs_data=""
+          for attempt in 1 2 3; do
+            jobs_data="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" 2>/dev/null || true)"
+            if [ -n "$jobs_data" ] && echo "$jobs_data" | jq -e '.jobs | length > 0' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
           if [ -z "$jobs_data" ]; then
-            echo "Unable to fetch job data from GitHub API; continuing."
-            exit 0
+            echo "ERROR: Unable to fetch job data from GitHub API after retries" >&2
+            exit 1
           fi
+
           res="$(echo "$jobs_data" | jq -r '
             .jobs as $all |
-            ($all[] | select(.name == "CI result") | .started_at) as $ci_start |
+            ([$all[] | select(.name == "CI result" and .started_at != null) | .started_at] | last) as $ci_start |
             ([$all[] | select(.name != "CI result" and .completed_at != null) | .completed_at] | sort | last) as $last_test_end |
             if ($ci_start and $last_test_end) then
               (($ci_start | fromdateiso8601) - ($last_test_end | fromdateiso8601))
             else
               empty
             end
-          ' 2>/dev/null || true)"
-          if [ -n "$res" ]; then
-            echo "CI result started $res seconds after the last predecessor job finished."
-            if [ "$res" -le 120 ]; then
-              echo "PASS: CI result started within 2 minutes ($res <= 120s)."
-            else
-              echo "::warning title=CI Result Queue Delay::CI result started $res seconds after preceding job (>120s)."
-            fi
-          else
-            echo "Latency check: predecessors or CI result timestamps not yet complete."
+          ')"
+
+          if [ -z "$res" ]; then
+            echo "ERROR: Could not compute start latency: missing start/completion timestamps" >&2
+            exit 1
           fi
+
+          echo "CI result started ${res}s after the last predecessor job finished."
+          if [ "$res" -gt 120 ]; then
+            echo "ERROR: CI result start latency exceeded threshold: ${res}s > 120s" >&2
+            exit 1
+          fi
+          echo "PASS: CI result started within 2 minutes (${res}s <= 120s)."
 
       - name: Check lane results
         env:

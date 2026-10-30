@@ -125,6 +125,9 @@ export function compareQueueMetrics(baseline, postChange, { targetReductionPerce
     waitP50DeltaSec,
     waitP50ChangePct,
     cancellationDeltaPct: Number((postChange.cancellationRatePercent - baseline.cancellationRatePercent).toFixed(2)),
+    baselineSource: baseline?.source,
+    postChangeSource: postChange?.source,
+    postChangeType: postChange?.type || 'modeled',
   };
 }
 
@@ -136,16 +139,28 @@ export function formatComparisonMarkdown(comparison) {
     ? `PASSED: -${comparison.p95ReductionPercent.toFixed(1)}% reduction (target >= ${comparison.targetReductionPercent}%)`
     : `PENDING / TARGET NOT MET: ${comparison.waitP95ChangePct > 0 ? '+' : ''}${comparison.waitP95ChangePct}% (target -${comparison.targetReductionPercent}%)`;
 
-  return [
+  const postLabel = comparison.postChangeType === 'measured_operational'
+    ? 'Post-change (Measured)'
+    : 'Post-change (Modeled Projection)';
+
+  const lines = [
     `### CI Queue Wait Comparison & Acceptance Verification`,
-    `| Metric | Baseline | Post-change / Modeled | Change | Target | Status |`,
+    `| Metric | Baseline | ${postLabel} | Change | Target | Status |`,
     `| --- | --- | --- | --- | --- | --- |`,
     `| **Queue wait p95** | ${(comparison.baselineP95Sec / 60).toFixed(1)} min (${comparison.baselineP95Sec}s) | ${(comparison.postChangeP95Sec / 60).toFixed(1)} min (${comparison.postChangeP95Sec}s) | ${comparison.waitP95ChangePct}% (${comparison.waitP95DeltaSec}s) | -${comparison.targetReductionPercent}% | **${comparison.meetsTarget ? 'PASS' : 'PENDING'}** |`,
     `| Queue wait p50 | ${(comparison.baselineP50Sec / 60).toFixed(1)} min (${comparison.baselineP50Sec}s) | ${(comparison.postChangeP50Sec / 60).toFixed(1)} min (${comparison.postChangeP50Sec}s) | ${comparison.waitP50ChangePct}% (${comparison.waitP50DeltaSec}s) | - | - |`,
     `| Cancellation share delta | - | - | ${comparison.cancellationDeltaPct > 0 ? '+' : ''}${comparison.cancellationDeltaPct}% | - | - |`,
     ``,
     `**Acceptance verdict:** ${status}`,
-  ].join('\n');
+  ];
+
+  if (comparison.baselineSource || comparison.postChangeSource) {
+    lines.push(``, `*Data sources:*`);
+    if (comparison.baselineSource) lines.push(`- **Baseline:** ${comparison.baselineSource}`);
+    if (comparison.postChangeSource) lines.push(`- **${postLabel}:** ${comparison.postChangeSource}`);
+  }
+
+  return lines.join('\n');
 }
 
 /**

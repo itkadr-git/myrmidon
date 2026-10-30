@@ -1,5 +1,7 @@
 {
   "baseline": {
+    "source": "GitHub Actions API 14-day production baseline (2026-10-16T14:05:38Z to 2026-10-30T14:05:38Z, 522 merges to main)",
+    "type": "measured_operational",
     "windowDays": 14,
     "totalRuns": 1836,
     "cancelledRuns": 521,
@@ -18,6 +20,8 @@
     }
   },
   "postChange": {
+    "source": "Modeled post-change traffic (with release-freeze/pr-text/hot-files duplicate elimination and vps-ci runner isolation)",
+    "type": "modeled_projection",
     "windowDays": 14,
     "totalRuns": 950,
     "cancelledRuns": 82,
