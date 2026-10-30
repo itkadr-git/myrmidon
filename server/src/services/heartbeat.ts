@@ -30650,8 +30650,38 @@ export function heartbeatService(
             source === "automation" &&
             (opts.requestedByActorType === "system" || !opts.requestedByActorType)
           ) {
-            const recoveryParentRunId = readNonEmptyString(enrichedContextSnapshot.retryOfRunId)
-              ?? readNonEmptyString(payload?.retryOfRunId);
+            const recoveryParentRunId =
+              readNonEmptyString(enrichedContextSnapshot.retryOfRunId) ??
+              readNonEmptyString(payload?.retryOfRunId) ??
+              readNonEmptyString(opts.failedRunId) ??
+              readNonEmptyString(enrichedContextSnapshot.failedRunId) ??
+              readNonEmptyString(payload?.failedRunId);
+
+            const recoveryHead =
+              readNonEmptyString(enrichedContextSnapshot.continuationHead) ??
+              readNonEmptyString(payload?.continuationHead) ??
+              readNonEmptyString(enrichedContextSnapshot.interactionId) ??
+              readNonEmptyString(payload?.interactionId);
+
+            const isRecovery = Boolean(
+              recoveryParentRunId ||
+              recoveryHead ||
+              enrichedContextSnapshot.issueRecovery ||
+              payload?.issueRecovery ||
+              enrichedContextSnapshot.recoveryMode ||
+              payload?.recoveryMode ||
+              (typeof enrichedContextSnapshot.source === "string" && (
+                enrichedContextSnapshot.source.startsWith("issue.") ||
+                enrichedContextSnapshot.source.includes("recovery") ||
+                enrichedContextSnapshot.source.includes("stranded")
+              ))
+            );
+
+            const recoveryToken =
+              recoveryParentRunId ??
+              recoveryHead ??
+              (typeof enrichedContextSnapshot.source === "string" ? enrichedContextSnapshot.source : "recovery");
+
             const lastRunRows = await tx
               .select({ finishedAt: heartbeatRuns.finishedAt })
               .from(heartbeatRuns)
@@ -30675,7 +30705,8 @@ export function heartbeatService(
                     inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
                   )).orderBy(desc(activityLog.createdAt), desc(activityLog.id))
                 : [];
-            if (!recoveryParentRunId && eventRows.length === 0) {
+
+            if (!isRecovery && eventRows.length === 0) {
               await tx.insert(agentWakeupRequests).values({
                 ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
                 reason, payload: { ...(payload ?? {}), issueId, continuationSkipped: "no_new_issue_input" },
@@ -30685,9 +30716,14 @@ export function heartbeatService(
               });
               return { kind: "skipped" as const };
             }
-            const revision = recoveryParentRunId
-              ? `recovery:${recoveryParentRunId}`
-              : eventRows.map((row) => row.id).sort().join(",");
+
+            const eventRevision = eventRows.map((row) => row.id).sort().join(",");
+            const revision = isRecovery
+              ? eventRevision
+                ? `recovery:${recoveryToken}:${eventRevision}`
+                : `recovery:${recoveryToken}`
+              : eventRevision;
+
             const dedupeKey = buildContinuationKey({ issueId: issue.id, event: `${reason}:${agentId}`, head: revision });
             if (await tryClaimContinuationKeyInTransaction(tx as unknown as Db, {
               companyId: agent.companyId, key: dedupeKey, issueId: issue.id, ttl: 365 * 24 * 60 * 60 * 1000,
@@ -30701,12 +30737,20 @@ export function heartbeatService(
               });
               return { kind: "skipped" as const };
             }
+
             enrichedContextSnapshot.continuationEventId = revision;
             enrichedContextSnapshot.continuationEventRevision = revision;
             if (recoveryParentRunId) enrichedContextSnapshot.retryOfRunId = recoveryParentRunId;
-            payload = {
-              ...(payload ?? {}), issueId, continuationEventId: revision, continuationEventRevision: revision,
+            const extraRecoveryProps = {
               ...(recoveryParentRunId ? { retryOfRunId: recoveryParentRunId } : {}),
+              ...(recoveryHead ? { continuationHead: recoveryHead } : {}),
+            };
+            payload = {
+              ...(payload ?? {}),
+              issueId,
+              continuationEventId: revision,
+              continuationEventRevision: revision,
+              ...extraRecoveryProps,
             };
           }
 

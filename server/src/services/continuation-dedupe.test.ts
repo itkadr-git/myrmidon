@@ -316,7 +316,7 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(outcome).not.toBeNull();
       await heartbeat.drainActiveRunExecutions();
 
-      const recoveryRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, outcome!.runId));
+      const recoveryRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, outcome!.id));
       expect(recoveryRuns).toHaveLength(1);
       const snapshot = recoveryRuns[0]?.contextSnapshot as Record<string, unknown>;
       expect(snapshot?.retryOfRunId).toBe(failedRunId);
