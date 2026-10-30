@@ -1,5 +1,5 @@
 {
-  "id": "4865a953-0419-4d9e-bc32-edf8ef082196",
+  "id": "20084129-d97b-4670-b2b3-4ad51c0dc750",
   "prevId": "a90c0131-6075-4e2c-bc24-9e667df14957",
   "version": "7",
   "dialect": "postgresql",
@@ -29526,6 +29526,139 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.interaction_escalations": {
+      "name": "interaction_escalations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "interaction_id": {
+          "name": "interaction_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "level": {
+          "name": "level",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "from_recipient": {
+          "name": "from_recipient",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "to_recipient": {
+          "name": "to_recipient",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "interaction_escalations_interaction_level_uq": {
+          "name": "interaction_escalations_interaction_level_uq",
+          "columns": [
+            {
+              "expression": "interaction_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "level",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "interaction_escalations_company_created_at_idx": {
+          "name": "interaction_escalations_company_created_at_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "interaction_escalations_company_id_companies_id_fk": {
+          "name": "interaction_escalations_company_id_companies_id_fk",
+          "tableFrom": "interaction_escalations",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "interaction_escalations_interaction_id_issue_thread_interactions_id_fk": {
+          "name": "interaction_escalations_interaction_id_issue_thread_interactions_id_fk",
+          "tableFrom": "interaction_escalations",
+          "tableTo": "issue_thread_interactions",
+          "columnsFrom": [
+            "interaction_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.invites": {
       "name": "invites",
       "schema": "",
@@ -35124,12 +35257,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "responsible_agent_id": {
-          "name": "responsible_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "issue_number": {
           "name": "issue_number",
           "type": "integer",
@@ -35477,27 +35604,6 @@
             },
             {
               "expression": "responsible_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issues_company_responsible_agent_idx": {
-          "name": "issues_company_responsible_agent_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "responsible_agent_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -36242,19 +36348,6 @@
           "tableTo": "agents",
           "columnsFrom": [
             "created_by_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "issues_responsible_agent_id_agents_id_fk": {
-          "name": "issues_responsible_agent_id_agents_id_fk",
-          "tableFrom": "issues",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "responsible_agent_id"
           ],
           "columnsTo": [
             "id"
