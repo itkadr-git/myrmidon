@@ -190,6 +190,63 @@ describe("ADM knowledge REST adapter", () => {
     expect(api.proposeRule).toHaveBeenCalledTimes(2);
   });
 
+  it("proves exactly-once effect and stable replay with stateful upstream across adapter instances", async () => {
+    const proposals = new Map<string, AdmWriteResult>();
+    const statefulRest: AdmKnowledgeRestPort = {
+      search: vi.fn(async () => []),
+      list: vi.fn(async () => []),
+      read: vi.fn(async (id) => {
+        for (const p of proposals.values()) {
+          if (p.itemId === id) {
+            return {
+              ...policy,
+              id: p.itemId,
+              deliveredRevisionId: p.revisionId,
+              status: "proposed",
+            } as AdmKnowledgeItem;
+          }
+        }
+        return null;
+      }),
+      proposeRule: vi.fn(async (input) => {
+        const existing = proposals.get(input.idempotencyKey);
+        if (existing) return existing;
+        const result: AdmWriteResult = {
+          itemId: `rule-${proposals.size + 1}`,
+          revisionId: `rev-${proposals.size + 1}`,
+          status: "proposed",
+        };
+        proposals.set(input.idempotencyKey, result);
+        return result;
+      }),
+    };
+
+    const adapter1 = createAdmKnowledgeAdapter(statefulRest);
+    const adapter2 = createAdmKnowledgeAdapter(statefulRest);
+    const key = "ope-9877:stateful-replay:1";
+
+    const res1 = await adapter1.proposeRule({
+      slug: policy.slug,
+      title: policy.title,
+      summary: policy.summary ?? "",
+      body: "Rule body",
+      sourceRef: "test",
+      idempotencyKey: key,
+    });
+    const res2 = await adapter2.proposeRule({
+      slug: policy.slug,
+      title: policy.title,
+      summary: policy.summary ?? "",
+      body: "Rule body",
+      sourceRef: "test",
+      idempotencyKey: key,
+    });
+
+    expect(res1).toEqual(res2);
+    expect(proposals.size).toBe(1);
+    expect(statefulRest.proposeRule).toHaveBeenCalledTimes(2);
+  });
+
   it("requires lesson publication read-back and supports draft and published modes", async () => {
     const draftLesson: AdmKnowledgeItem = {
       ...policy,

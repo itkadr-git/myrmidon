@@ -637,6 +637,33 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(events.some((event) => event.event === "knowledge.suggested")).toBe(true);
   });
 
+  it("suggest with same idempotencyKey returns existing suggestion without creating duplicate (S8 idempotency)", async () => {
+    companyId = await makeCompany();
+    const store = makeStore();
+    await store.create({ companyId, nestId: companyId, slug: "idem-slug", title: "T", content: "c" }, AGENT);
+    const sug1 = await store.suggest(companyId, BOT, {
+      companyId,
+      body: "add deploy note",
+      rationale: "seen in run",
+      targetSlug: "idem-slug",
+      sourceKind: "run",
+      sourceRef: "run-9",
+      idempotencyKey: "idem-test-key-1",
+    });
+    const sug2 = await store.suggest(companyId, BOT, {
+      companyId,
+      body: "add deploy note",
+      rationale: "seen in run",
+      targetSlug: "idem-slug",
+      sourceKind: "run",
+      sourceRef: "run-9",
+      idempotencyKey: "idem-test-key-1",
+    });
+    expect(sug1.id).toBe(sug2.id);
+    expect(sug1.createdAt).toBe(sug2.createdAt);
+    expect((await store.listSuggestions(companyId, "pending")).length).toBe(1);
+  });
+
   it("the pg SearchIndex (tsvector + pg_trgm) finds delivered content through the module (S9 wiring)", async () => {
     companyId = await makeCompany();
     const mod = createKnowledgeModule(db, companyId, {

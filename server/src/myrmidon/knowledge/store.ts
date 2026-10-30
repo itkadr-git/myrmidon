@@ -22,7 +22,7 @@
 //   - `exportTree()/importTree()` are canonical: export → import → export is
 //     byte-for-byte identical.
 
-import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   knowledgeEvents,
@@ -1150,6 +1150,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       sourceRef?: string | null;
       /** Provenance trust (1.7 L-5): set by the callers that propose foreign url content. */
       trust?: KnowledgeSuggestionTrust;
+      idempotencyKey?: string | null;
     },
   ): Promise<{ id: string; targetItemId: string | null; status: string; createdAt: string }> {
     assertSingleLine(input.body, "Suggestion body");
@@ -1157,6 +1158,33 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     if (input.targetSlug) {
       const target = await loadItem(nestId, input.targetSlug);
       targetId = target.id;
+    }
+    if (input.idempotencyKey) {
+      const [existingEvent] = await db
+        .select()
+        .from(knowledgeEvents)
+        .where(
+          and(
+            eq(knowledgeEvents.companyId, input.companyId),
+            eq(knowledgeEvents.nestId, nestId),
+            eq(knowledgeEvents.event, "knowledge.suggested"),
+            sql`${knowledgeEvents.payload}->>'idempotencyKey' = ${input.idempotencyKey}`,
+          ),
+        )
+        .limit(1);
+      if (existingEvent) {
+        const suggestionId = (existingEvent.payload as { suggestionId?: string } | undefined)?.suggestionId;
+        if (suggestionId) {
+          const [row] = await db
+            .select()
+            .from(knowledgeSuggestions)
+            .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, suggestionId)))
+            .limit(1);
+          if (row) {
+            return { id: row.id, targetItemId: row.targetItemId, status: row.status, createdAt: row.createdAt.toISOString() };
+          }
+        }
+      }
     }
     const [row] = await db
       .insert(knowledgeSuggestions)
@@ -1180,7 +1208,11 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       nestId,
       itemId: targetId,
       event: "knowledge.suggested",
-      payload: { body: input.body },
+      payload: {
+        body: input.body,
+        suggestionId: row!.id,
+        ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+      },
       actor,
     });
     return { id: row!.id, targetItemId: row!.targetItemId, status: row!.status, createdAt: row!.createdAt.toISOString() };
