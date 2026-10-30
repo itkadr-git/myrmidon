@@ -38,6 +38,14 @@ const boardActor = {
   companyIds: [COMPANY_ID],
 };
 
+const instanceAdminActor = {
+  type: "board",
+  source: "local_implicit",
+  isInstanceAdmin: true,
+  userId: "user-admin",
+  companyIds: [COMPANY_ID],
+};
+
 const architectActor = {
   type: "agent",
   agentId: ARCHITECT_AGENT_ID,
@@ -104,8 +112,14 @@ describe("ARCH-DATA: secret scrubbing", () => {
 describe("ARCH-DATA: RBAC authorization", () => {
   const url = `/api/myrmidon/companies/${COMPANY_ID}/architect-data/bundle`;
 
-  it("permits board user access", async () => {
+  it("rejects ordinary board user without architect grant or instance admin with 403", async () => {
     const app = harness(boardActor);
+    const res = await request(app).get(url).expect(403);
+    expect(res.body.error).toMatch(/Architect data access restricted/);
+  });
+
+  it("permits instance admin access", async () => {
+    const app = harness(instanceAdminActor);
     const res = await request(app).get(url).expect(200);
     expect(res.body).toHaveProperty("compressionEvents");
     expect(res.body).toHaveProperty("chatgptPool");

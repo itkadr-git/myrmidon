@@ -51,9 +51,14 @@ export async function assertArchitectRoleOrGrant(
     throw unauthorized();
   }
 
-  // Board users have access to company metrics
+  // Board actors: require explicit instance admin grant
   if (actor.type === "board") {
-    return;
+    if (actor.source === "local_implicit" || actor.isInstanceAdmin) {
+      return;
+    }
+    throw forbidden(
+      "Architect data access restricted: architect role or explicit instance admin grant required",
+    );
   }
 
   // For agent actors, verify role
