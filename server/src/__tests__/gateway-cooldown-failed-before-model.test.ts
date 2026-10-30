@@ -290,6 +290,65 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
       expect(result["agent-alpha"]).toBe(3);
       expect(result["agent-beta"]).toBe(1);
     });
+
+    it("simulates full write-to-scrape lifecycle: heartbeat failure persists failedBeforeModel and is exposed in Prometheus scrape", async () => {
+      const agentId = "agent-lifecycle-test";
+      const registry = createFailedBeforeModelMetricsRegistry();
+
+      // 1. Production heartbeat records in-memory metric
+      registry.recordFailure(agentId);
+      expect(registry.get(agentId)).toBe(1);
+
+      // 2. Production heartbeat writes resultJson to DB heartbeat_runs
+      const persistedRun = {
+        agentId,
+        status: "failed",
+        resultJson: {
+          failedBeforeModel: true,
+          failed_before_model: true,
+          errorFamily: "provider_quota",
+        },
+      };
+
+      // 3. Database aggregation reads from heartbeat_runs
+      const mockDb = {
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              groupBy: () =>
+                Promise.resolve([
+                  { agentId: persistedRun.agentId, total: 1 },
+                ]),
+            }),
+          }),
+        }),
+      } as any;
+
+      const dbCounts = await readAgentFailedBeforeModel(mockDb);
+      expect(dbCounts[agentId]).toBe(1);
+
+      // 4. Prometheus scrape collector queries DB counts and formats metrics
+      const snapshot: MetricsSnapshot = {
+        scrapedAt: new Date().toISOString(),
+        agents: [
+          {
+            agentId,
+            companyId: "company-1",
+            agentRole: "engineer",
+            agentStatus: "idle",
+            heartbeatEnabled: true,
+          },
+        ],
+        failedBeforeModel: dbCounts,
+      };
+
+      const scrapeText = renderMetricsText(snapshot);
+      expect(scrapeText).toContain("myrmidon_agent_failed_before_model_total");
+      expect(scrapeText).toContain(`agent_id="${agentId}"`);
+      expect(scrapeText).toMatch(
+        new RegExp(`myrmidon_agent_failed_before_model_total\\{[^}]*agent_id="${agentId}"[^}]*\\}\\s+1`),
+      );
+    });
   });
 });
 
@@ -423,5 +482,60 @@ describeEmbedded("OPE-9476: production heartbeat daily cap exclusion for failedB
         limit: 1,
       },
     });
+  });
+
+  it("aggregates failedBeforeModel runs from real postgres database", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent(10);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "failed",
+        createdAt: new Date(),
+        startedAt: new Date(),
+        finishedAt: new Date(),
+        contextSnapshot: {},
+        resultJson: {
+          failedBeforeModel: true,
+        },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "failed",
+        createdAt: new Date(),
+        startedAt: new Date(),
+        finishedAt: new Date(),
+        contextSnapshot: {},
+        resultJson: {
+          failedBeforeModel: true,
+        },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "failed",
+        createdAt: new Date(),
+        startedAt: new Date(),
+        finishedAt: new Date(),
+        contextSnapshot: {},
+        resultJson: {
+          failedBeforeModel: false,
+        },
+      },
+    ]);
+
+    const aggregated = await readAgentFailedBeforeModel(db);
+    expect(aggregated[agentId]).toBe(2);
   });
 });

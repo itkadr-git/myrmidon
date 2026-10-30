@@ -3583,3 +3583,126 @@ describe("model input limit (OPE-6168)", () => {
     expect(body.input).not.toContain("characters omitted");
   });
 });
+
+describe("OPE-9476: cooldown, structured rate-limits, model response start lifecycle and failed-before-model", () => {
+  it("extracts structured cooldown and retry-after from HTTP 429 create response and marks failedBeforeModel", async () => {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: {
+                message: "No deployments available. All deployments (openai/chatgpt) are in cooldown. Retry after 75s.",
+                type: "rate_limit_error",
+                code: 429,
+                retry_after: 75,
+              },
+            }),
+            {
+              status: 429,
+              headers: {
+                "content-type": "application/json",
+                "retry-after": "75",
+              },
+            },
+          ),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    const ctx = makeCtx();
+    const result = await execute(ctx, { fetch: fetchMock });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.failedBeforeModel).toBe(true);
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBeDefined();
+    const diffMs = new Date(result.retryNotBefore!).getTime() - Date.now();
+    expect(diffMs).toBeGreaterThanOrEqual(70_000);
+    expect(diffMs).toBeLessThanOrEqual(80_000);
+    expect(result.resultJson?.failedBeforeModel).toBe(true);
+    expect(result.resultJson?.modelResponseStarted).toBe(false);
+  });
+
+  it("marks failedBeforeModel = false when model response started before terminal failure", async () => {
+    const runId = "run-delta-then-fail";
+    const sseBody = [
+      'event: run.started\ndata: {"status":"running"}\n\n',
+      'event: message.delta\ndata: {"delta":"Hello world"}\n\n',
+      'event: run.failed\ndata: {"status":"failed","error":"Upstream disconnected"}\n\n',
+    ].join("");
+
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ run_id: runId, status: "started" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes(`/v1/runs/${runId}/events`)) {
+        return Promise.resolve(
+          new Response(sseStream(sseBody), {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    const ctx = makeCtx();
+    const result = await execute(ctx, { fetch: fetchMock });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.failedBeforeModel).toBe(false);
+    expect(result.resultJson?.modelResponseStarted).toBe(true);
+    expect(result.resultJson?.failedBeforeModel).toBe(false);
+  });
+
+  it("handles structured LiteLLM cooldown in terminal event before model response starts", async () => {
+    const runId = "run-cooldown-before-model";
+    const sseBody = [
+      'event: run.started\ndata: {"status":"running"}\n\n',
+      'event: run.failed\ndata: {"status":"failed","error":{"message":"RateLimitError: No deployments available","type":"rate_limit_error","code":429,"retry_after":120},"retry_after":120}\n\n',
+    ].join("");
+
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ run_id: runId, status: "started" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes(`/v1/runs/${runId}/events`)) {
+        return Promise.resolve(
+          new Response(sseStream(sseBody), {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    const ctx = makeCtx();
+    const result = await execute(ctx, { fetch: fetchMock });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.failedBeforeModel).toBe(true);
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBeDefined();
+    const diffMs = new Date(result.retryNotBefore!).getTime() - Date.now();
+    expect(diffMs).toBeGreaterThanOrEqual(115_000);
+    expect(diffMs).toBeLessThanOrEqual(125_000);
+    expect(result.resultJson?.modelResponseStarted).toBe(false);
+    expect(result.resultJson?.failedBeforeModel).toBe(true);
+  });
+});
