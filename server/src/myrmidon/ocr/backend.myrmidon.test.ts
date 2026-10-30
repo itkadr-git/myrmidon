@@ -52,7 +52,7 @@ describe("litellm backend", () => {
 
   it("sends the document as a file content part to the chat endpoint", async () => {
     const fetchImpl = mockFetch(async () => jsonResponse({ choices: [{ message: { content: "recognized text" } }] }));
-    const backend = createLitellmBackend(deps(fetchImpl, { model: "ocr-model" }));
+    const backend = createLitellmBackend(deps(fetchImpl, { model: DEFAULT_OCR_MODEL }));
     const result = await backend.recognize({ name: "tender.pdf", mimeType: "application/pdf", bytes: PDF_BYTES });
 
     expect(result.text).toBe("recognized text");
@@ -63,7 +63,8 @@ describe("litellm backend", () => {
       model: string;
       messages: Array<{ content: Array<{ type: string; file?: { filename: string; file_data: string } }> }>;
     };
-    expect(body.model).toBe("ocr-model");
+    expect(body.model).toBe(DEFAULT_OCR_MODEL);
+    expect(body.model).toBe("chatgpt-pool/gpt-6-luna");
     const filePart = body.messages[0]!.content.find((part) => part.type === "file");
     expect(filePart?.file?.filename).toBe("tender.pdf");
     expect(filePart?.file?.file_data.startsWith("data:application/pdf;base64,")).toBe(true);
