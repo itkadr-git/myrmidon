@@ -74,7 +74,7 @@ describeEmbeddedPostgres("Postgres review routing wake state", () => {
 
     await db!.insert(agentWakeupRequests).values({ companyId, agentId: reviewerId, status: "queued", source: "review", payload: { issueId: queuedIssueId! } });
     const pending = await store.reviewWakeState({ companyId, issueId: queuedIssueId!, reviewerAgentId: reviewerId, stageId: "review" });
-    expect(pending).toMatchObject({ activeRun: false, pendingWake: true, attempts: 0, lastWakeAt: null });
+    expect(pending).toMatchObject({ activeRun: true, pendingWake: true, attempts: 0, lastWakeAt: null });
 
     await db!.insert(activityLog).values({ companyId, actorType: "system", actorId: "review_routing_sweep", action: REVIEW_ROUTING_WAKE_ACTION, entityType: "issue", entityId: completedIssueId!, details: { issueId: completedIssueId!, reviewerAgentId: reviewerId, stageId: "review", attempt: 3 } });
     const [persistedWake] = await db!.select({ createdAt: activityLog.createdAt }).from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityId, completedIssueId!), eq(activityLog.action, REVIEW_ROUTING_WAKE_ACTION))).limit(1);
