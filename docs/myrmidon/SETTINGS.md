@@ -1768,9 +1768,10 @@ settings mean the defaults below.
 | Field | Default | What it does | How to disable / special |
 |---|---|---|---|
 | `enabled` | `true` | Master switch of the routing sweep: a task in `in_review` with no reviewer gets one, a review without a verdict is signalled and reassigned | `false` — the board does nothing and its attention cards disappear (vendor behavior: the task waits for a manual assignment) |
-| `reviewerRoles` | `["reviewer"]` | Caste keys (`agents.role`) whose invokable agents may be picked as reviewers | An empty list — nobody is eligible, so every reviewer-less task is signalled as `no_reviewer` |
-| `maxLoadPerReviewer` | `5` | A reviewer already holding this many tasks in flight (`in_progress` + `in_review`, as assignee) is not picked. From 1 to 100 | — |
+| `reviewerRoles` | `["reviewer", "lead"]` | Caste keys (`agents.role`) whose invokable agents may be picked as reviewers | An empty list — nobody is eligible, so every reviewer-less task is signalled as `no_reviewer` |
+| `maxLoadPerReviewer` | `5` | A reviewer already holding this many tasks in flight is not picked. From 1 to 100 | — |
 | `reassignAfterHours` | `24` | Hours a review this routing started may stay without a verdict before it is signalled (`review_overdue` attention card, one system comment) and moved to another reviewer that has not had the task. From 0 to 2160 | `0` — never signal or reassign |
+| `rebalanceAfterMinutes` | `30` | Minutes a pending review waits before being rebalanced to an idle pool member (`load === 0`) with a wake. From 0 to 43200 | `0` — never rebalance |
 
 How it works. A pass every 60 s (an in-module interval; passes are skipped during maintenance
 mode) looks at the 200 oldest-updated visible `in_review` tasks per company, 20 moves per pass.

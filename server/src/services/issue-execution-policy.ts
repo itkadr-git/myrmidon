@@ -79,6 +79,7 @@ type TransitionInput = {
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
+  candidateLoads?: ReadonlyMap<string, number>;
 };
 
 type TransitionResult = {
@@ -593,6 +594,7 @@ function selectStageParticipant(
   opts?: {
     preferred?: IssueExecutionStagePrincipal | null;
     exclude?: IssueExecutionStagePrincipal | null;
+    candidateLoads?: ReadonlyMap<string, number>;
   },
 ): IssueExecutionStagePrincipal | null {
   const participants = stage.participants.filter((participant) => !principalsEqual(participant, opts?.exclude ?? null));
@@ -600,6 +602,18 @@ function selectStageParticipant(
   if (opts?.preferred) {
     const preferred = participants.find((participant) => principalsEqual(participant, opts.preferred ?? null));
     if (preferred) return preferred;
+  }
+  if (opts?.candidateLoads && participants.length > 1) {
+    const sorted = [...participants].sort((a, b) => {
+      const loadA = a.type === "agent" && a.agentId ? (opts.candidateLoads?.get(a.agentId) ?? 0) : 0;
+      const loadB = b.type === "agent" && b.agentId ? (opts.candidateLoads?.get(b.agentId) ?? 0) : 0;
+      if (loadA !== loadB) return loadA - loadB;
+      const idA = (a.type === "agent" ? a.agentId : a.userId) ?? "";
+      const idB = (b.type === "agent" ? b.agentId : b.userId) ?? "";
+      return idA.localeCompare(idB);
+    });
+    const best = sorted[0];
+    return best ? { type: best.type, agentId: best.agentId ?? null, userId: best.userId ?? null } : null;
   }
   const first = participants[0];
   return first ? { type: first.type, agentId: first.agentId ?? null, userId: first.userId ?? null } : null;
@@ -782,17 +796,18 @@ function safeReturnAssignee(
   actor: IssueExecutionStagePrincipal | null,
 ) {
   const reviewerIds = issue.executionReviewParticipantAgentIds ?? [];
+  const isReviewerRole = (role: string | null | undefined) => role === "reviewer" || role === "lead";
   const isReviewer = (principal: IssueExecutionStagePrincipal | null) => {
     if (principal?.type !== "agent") return false;
     const assignedAgentIsReviewer =
-      principal.agentId === issue.assigneeAgentId && issue.assigneeAgentRole === "reviewer";
+      principal.agentId === issue.assigneeAgentId && isReviewerRole(issue.assigneeAgentRole);
     return assignedAgentIsReviewer ||
       (reviewStage ? stageHasParticipant(reviewStage, principal) : false) ||
       reviewerIds.includes(principal.agentId ?? "");
   };
   if (!isReviewer(currentAssignee)) return currentAssignee;
   if (currentAssignee?.type === "agent" &&
-      currentAssignee.agentId === issue.assigneeAgentId && issue.assigneeAgentRole === "reviewer") return null;
+      currentAssignee.agentId === issue.assigneeAgentId && isReviewerRole(issue.assigneeAgentRole)) return null;
   if (!isReviewer(actor)) return actor;
   return null;
 }
@@ -1272,7 +1287,8 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   if (!pendingStage) return { patch };
 
   // Keep the executor excluded even when it is not a safe return destination.
-  const participantExclusion = input.issue.assigneeAgentRole === "reviewer" &&
+  const isReviewerRole = input.issue.assigneeAgentRole === "reviewer" || input.issue.assigneeAgentRole === "lead";
+  const participantExclusion = isReviewerRole &&
     !existingState?.returnAssignee ? null : existingState?.returnAssignee ?? currentAssignee ?? actor;
   const returnAssignee = canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus })
     ? participantExclusion
@@ -1288,8 +1304,13 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       existingState?.status === CHANGES_REQUESTED_STATUS
         ? explicitAssignee ?? existingState.currentParticipant ?? null
         : explicitAssignee,
-    exclude: pendingStage.participants.length === 1 &&
-      stageHasParticipant(pendingStage, participantExclusion) ? returnAssignee : participantExclusion,
+    exclude:
+      pendingStage.type === "review"
+        ? (returnAssignee ?? participantExclusion)
+        : (pendingStage.participants.length === 1 && stageHasParticipant(pendingStage, participantExclusion)
+            ? returnAssignee
+            : participantExclusion),
+    candidateLoads: input.candidateLoads,
   });
   while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus })) {
     skippedStageIds.push(pendingStage.id);
@@ -1315,6 +1336,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           ? explicitAssignee ?? existingState.currentParticipant ?? null
           : explicitAssignee,
       exclude: participantExclusion,
+      candidateLoads: input.candidateLoads,
     });
   }
   if (!participant) {

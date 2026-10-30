@@ -113,6 +113,15 @@ export function excludedReviewerIds(issue: RoutingIssue, extra: Iterable<string>
   const excluded = new Set<string>(extra);
   if (issue.createdByAgentId) excluded.add(issue.createdByAgentId);
   if (issue.assigneeAgentId) excluded.add(issue.assigneeAgentId);
+  const state = asRecord(issue.executionState);
+  const returnAssignee = asRecord(state?.returnAssignee);
+  if (returnAssignee && returnAssignee.type === "agent" && typeof returnAssignee.agentId === "string") {
+    excluded.add(returnAssignee.agentId);
+  }
+  const pending = readPendingAgentReview(issue);
+  if (pending?.returnAssigneeAgentId) {
+    excluded.add(pending.returnAssigneeAgentId);
+  }
   return excluded;
 }
 

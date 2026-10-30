@@ -13,7 +13,7 @@
 // coverage re-checked inside the same guarded path, so two racing passes never
 // create two tasks for one head.
 
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -302,20 +302,49 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
     },
 
     async loadByAgent(companyId) {
-      const rows = await db
-        .select({ agentId: issues.assigneeAgentId, count: sql<number>`count(*)::int` })
+      const stageRows = await db
+        .select({
+          agentId: sql<string>`coalesce(${issues.executionState} -> 'currentParticipant' ->> 'agentId', ${issues.assigneeAgentId})`,
+          count: sql<number>`count(*)::int`,
+        })
         .from(issues)
         .where(
           and(
             eq(issues.companyId, companyId),
             isNull(issues.hiddenAt),
-            sql`${issues.status} in ('in_progress', 'in_review')`,
-            sql`${issues.assigneeAgentId} is not null`,
+            eq(issues.status, "in_review"),
+            sql`(${issues.executionState} ->> 'status' is null or ${issues.executionState} ->> 'status' = 'pending')`,
+            sql`(${issues.executionState} ->> 'currentStageType' is null or ${issues.executionState} ->> 'currentStageType' = 'review')`,
+            sql`${issues.executionState} ->> 'escalationToParticipant' is null`,
+            sql`${issues.executionState} ->> 'escalationPolicyRevision' is null`,
+            sql`${issues.executionState} ->> 'escalationReason' is null`,
+            sql`coalesce(${issues.executionState} -> 'currentParticipant' ->> 'agentId', ${issues.assigneeAgentId}) is not null`,
           ),
         )
-        .groupBy(issues.assigneeAgentId);
+        .groupBy(sql`coalesce(${issues.executionState} -> 'currentParticipant' ->> 'agentId', ${issues.assigneeAgentId})`);
+
+      const runRows = await db
+        .select({
+          agentId: heartbeatRuns.agentId,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            sql`${heartbeatRuns.status} in ('queued', 'running')`,
+            isNotNull(heartbeatRuns.agentId),
+          ),
+        )
+        .groupBy(heartbeatRuns.agentId);
+
       const load = new Map<string, number>();
-      for (const row of rows) if (row.agentId) load.set(row.agentId, row.count);
+      for (const row of stageRows) {
+        if (row.agentId) load.set(row.agentId, (load.get(row.agentId) ?? 0) + row.count);
+      }
+      for (const row of runRows) {
+        if (row.agentId) load.set(row.agentId, (load.get(row.agentId) ?? 0) + row.count);
+      }
       return load;
     },
 

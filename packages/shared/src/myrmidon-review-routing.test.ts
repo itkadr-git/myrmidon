@@ -6,6 +6,8 @@ import {
   DEFAULT_REVIEW_ROUTING_PR_MAX_OPEN_REVIEWS_PER_REVIEWER,
   DEFAULT_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC,
   DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS,
+  DEFAULT_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES,
+  DEFAULT_REVIEW_ROUTING_REVIEWER_ROLES,
   isReviewRoutingRepositoryEntry,
   normalizeReviewRoutingPrWatch,
   normalizeReviewRoutingSettings,
@@ -33,9 +35,10 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
     for (const raw of [undefined, null, "x", { maxLoadPerReviewer: 0 }, { unknown: 1 }]) {
       expect(normalizeReviewRoutingSettings(raw)).toEqual({
         enabled: true,
-        reviewerRoles: ["reviewer"],
+        reviewerRoles: ["reviewer", "lead"],
         maxLoadPerReviewer: DEFAULT_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER,
         reassignAfterHours: DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS,
+        rebalanceAfterMinutes: DEFAULT_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES,
         prWatch: PR_WATCH_DEFAULTS,
       });
     }
@@ -49,6 +52,7 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
       reviewerRoles: ["qa", "lead"],
       maxLoadPerReviewer: DEFAULT_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER,
       reassignAfterHours: 0,
+      rebalanceAfterMinutes: DEFAULT_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES,
       prWatch: PR_WATCH_DEFAULTS,
     });
   });
@@ -57,6 +61,7 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
     expect(reviewRoutingSettingsSchema.safeParse({ maxLoadPerReviewer: 0 }).success).toBe(false);
     expect(reviewRoutingSettingsSchema.safeParse({ maxLoadPerReviewer: 101 }).success).toBe(false);
     expect(reviewRoutingSettingsSchema.safeParse({ reassignAfterHours: -1 }).success).toBe(false);
+    expect(reviewRoutingSettingsSchema.safeParse({ rebalanceAfterMinutes: -1 }).success).toBe(false);
     expect(reviewRoutingSettingsSchema.safeParse({ reviewerRoles: [""] }).success).toBe(false);
     expect(reviewRoutingSettingsSchema.safeParse({ extra: true }).success).toBe(false);
   });
@@ -88,6 +93,7 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
         reviewerRoles: ["qa"],
         maxLoadPerReviewer: DEFAULT_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER,
         reassignAfterHours: DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS,
+        rebalanceAfterMinutes: DEFAULT_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES,
         prWatch: PR_WATCH_DEFAULTS,
       });
     }
