@@ -762,7 +762,6 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         executionStage: { ...buildReviewRoutingWakeContext(state ?? {}) },
         retryAttempt: attempt,
       });
-      await deps.logActivity({ companyId: row.companyId, action: REVIEW_ROUTING_WAKE_ACTION, issueId: row.id, details: { reviewerAgentId: reviewerId, stageId, mutation, attempt }, at });
     } catch (err) {
       log.warn({ err, issueId: row.id, reviewerId }, "review routing wake failed after the assignment was committed");
     }
