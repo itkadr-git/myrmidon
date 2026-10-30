@@ -52,8 +52,8 @@ export function getRunWakeReason(run: HeartbeatRun): string {
   if (typeof fromSnapshot === "string" && fromSnapshot.trim()) {
     return fromSnapshot.trim();
   }
-  if (run.triggerDetail?.label) {
-    return run.triggerDetail.label;
+  if (typeof run.triggerDetail === "string" && run.triggerDetail.trim()) {
+    return run.triggerDetail.trim();
   }
   return run.invocationSource ?? "unknown";
 }

@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
 import type { ReactNode } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import { flushSync } from "react-dom";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { HeartbeatRun } from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,8 +11,24 @@ import { RunsWithResultPanel } from "./RunsWithResultPanel";
 
 const listAgentsMock = vi.hoisted(() => vi.fn());
 const listRunsMock = vi.hoisted(() => vi.fn());
-const setSearchParamsMock = vi.hoisted(() => vi.fn());
+const searchParamsListeners = new Set<() => void>();
 let currentSearch = "";
+
+const setSearchParamsMock = vi.hoisted(() =>
+  vi.fn((updater: unknown) => {
+    if (typeof updater === "function") {
+      const next = (updater as (prev: URLSearchParams) => URLSearchParams)(
+        new URLSearchParams(currentSearch),
+      );
+      currentSearch = next.toString();
+    } else {
+      currentSearch = new URLSearchParams(updater as string).toString();
+    }
+    for (const listener of searchParamsListeners) {
+      listener();
+    }
+  }),
+);
 
 vi.mock("@/api/agents", () => ({
   agentsApi: { list: (companyId: string) => listAgentsMock(companyId) },
@@ -30,10 +47,76 @@ vi.mock("@/lib/router", () => ({
       {children}
     </a>
   ),
-  useSearchParams: () => [
-    new URLSearchParams(currentSearch),
-    setSearchParamsMock,
-  ],
+  useSearchParams: () => {
+    const [, setTick] = useState(0);
+    useEffect(() => {
+      const update = () => setTick((v) => v + 1);
+      searchParamsListeners.add(update);
+      return () => {
+        searchParamsListeners.delete(update);
+      };
+    }, []);
+    return [new URLSearchParams(currentSearch), setSearchParamsMock];
+  },
+}));
+
+const SelectMockContext = createContext<{
+  value?: string;
+  onValueChange?: (value: string) => void;
+}>({});
+
+vi.mock("@/components/ui/select", () => ({
+  Select: ({
+    value,
+    onValueChange,
+    children,
+  }: {
+    value?: string;
+    onValueChange?: (val: string) => void;
+    children: ReactNode;
+  }) => (
+    <SelectMockContext.Provider value={{ value, onValueChange }}>
+      <div data-testid="select-root" data-value={value}>
+        {children}
+      </div>
+    </SelectMockContext.Provider>
+  ),
+  SelectTrigger: ({
+    children,
+    "aria-label": ariaLabel,
+    ...props
+  }: {
+    children: ReactNode;
+    "aria-label"?: string;
+  }) => (
+    <button type="button" aria-label={ariaLabel} {...props}>
+      {children}
+    </button>
+  ),
+  SelectValue: ({ placeholder }: { placeholder?: string }) => {
+    const { value } = useContext(SelectMockContext);
+    return <span>{value ?? placeholder}</span>;
+  },
+  SelectContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  SelectItem: ({
+    value,
+    children,
+  }: {
+    value: string;
+    children: ReactNode;
+  }) => {
+    const { onValueChange } = useContext(SelectMockContext);
+    return (
+      <button
+        type="button"
+        role="option"
+        data-value={value}
+        onClick={() => onValueChange?.(value)}
+      >
+        {children}
+      </button>
+    );
+  },
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -58,10 +141,12 @@ function run(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
 
 describe("RunsWithResultPanel", () => {
   let container: HTMLDivElement;
+  let root: Root | null = null;
   let queryClient: QueryClient;
 
   beforeEach(() => {
     currentSearch = "";
+    searchParamsListeners.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     queryClient = new QueryClient({
@@ -73,7 +158,7 @@ describe("RunsWithResultPanel", () => {
     });
     listAgentsMock.mockReset();
     listRunsMock.mockReset();
-    setSearchParamsMock.mockReset();
+    setSearchParamsMock.mockClear();
     listAgentsMock.mockResolvedValue([
       { id: "agent-1", name: "Builder Bot" },
       { id: "agent-2", name: "Reviewer Bot" },
@@ -82,14 +167,36 @@ describe("RunsWithResultPanel", () => {
   });
 
   afterEach(() => {
+    if (root) {
+      flushSync(() => {
+        root?.unmount();
+      });
+      root = null;
+    }
     container.remove();
     queryClient.clear();
   });
 
+  async function flushReact() {
+    for (let i = 0; i < 4; i += 1) {
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      flushSync(() => {});
+    }
+  }
+
+  async function flushUntil(predicate: () => boolean, timeoutMs = 3000) {
+    const start = Date.now();
+    while (!predicate()) {
+      if (Date.now() - start > timeoutMs) break;
+      await flushReact();
+    }
+  }
+
   function render() {
-    const root = createRoot(container);
+    root = createRoot(container);
     flushSync(() => {
-      root.render(
+      root?.render(
         <QueryClientProvider client={queryClient}>
           <RunsWithResultPanel companyId="company-1" />
         </QueryClientProvider>,
@@ -107,16 +214,8 @@ describe("RunsWithResultPanel", () => {
     });
     listRunsMock.mockResolvedValue([run1]);
 
-    const root = render();
-    await Promise.resolve();
-    await Promise.resolve();
-    flushSync(() => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <RunsWithResultPanel companyId="company-1" />
-        </QueryClientProvider>,
-      );
-    });
+    render();
+    await flushUntil(() => container.textContent?.includes("Resolved issue OPE-9652") ?? false);
 
     expect(listRunsMock).toHaveBeenCalledWith("company-1", undefined, 200, {
       wakeReason: undefined,
@@ -145,16 +244,8 @@ describe("RunsWithResultPanel", () => {
     });
     listRunsMock.mockResolvedValue([run1]);
 
-    const root = render();
-    await Promise.resolve();
-    await Promise.resolve();
-    flushSync(() => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <RunsWithResultPanel companyId="company-1" />
-        </QueryClientProvider>,
-      );
-    });
+    render();
+    await flushUntil(() => container.textContent?.includes("Answered comment") ?? false);
 
     expect(listRunsMock).toHaveBeenCalledWith("company-1", undefined, 200, {
       wakeReason: "issue_commented",
@@ -173,16 +264,8 @@ describe("RunsWithResultPanel", () => {
     });
     listRunsMock.mockResolvedValue([run2]);
 
-    const root = render();
-    await Promise.resolve();
-    await Promise.resolve();
-    flushSync(() => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <RunsWithResultPanel companyId="company-1" />
-        </QueryClientProvider>,
-      );
-    });
+    render();
+    await flushUntil(() => container.textContent?.includes("Periodic check finished") ?? false);
 
     expect(listRunsMock).toHaveBeenCalledWith("company-1", "agent-2", 200, {
       wakeReason: undefined,
@@ -195,16 +278,8 @@ describe("RunsWithResultPanel", () => {
   it("shows empty state when no runs match", async () => {
     listRunsMock.mockResolvedValue([]);
 
-    const root = render();
-    await Promise.resolve();
-    await Promise.resolve();
-    flushSync(() => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <RunsWithResultPanel companyId="company-1" />
-        </QueryClientProvider>,
-      );
-    });
+    render();
+    await flushUntil(() => container.textContent?.includes("No runs with result found.") ?? false);
 
     expect(container.textContent).toContain("No runs with result found.");
   });
@@ -212,19 +287,101 @@ describe("RunsWithResultPanel", () => {
   it("shows error state with retry button on failure", async () => {
     listRunsMock.mockRejectedValue(new Error("Database connection timed out"));
 
-    const root = render();
-    await Promise.resolve();
-    await Promise.resolve();
-    flushSync(() => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <RunsWithResultPanel companyId="company-1" />
-        </QueryClientProvider>,
-      );
-    });
+    render();
+    await flushUntil(
+      () => container.textContent?.includes("Database connection timed out") ?? false,
+    );
 
     expect(container.textContent).toContain("Database connection timed out");
     const retryButton = container.querySelector("button");
     expect(retryButton?.textContent).toContain("Try again");
+  });
+
+  it("allows changing selectors interactively to update the filtered result set, then clearing filters", async () => {
+    const runAlpha = run({
+      id: "run-alpha",
+      agentId: "agent-1",
+      contextSnapshot: { wakeReason: "issue_assigned" },
+      resultJson: { summary: "Alpha completed task" },
+    });
+    const runBeta = run({
+      id: "run-beta",
+      agentId: "agent-2",
+      contextSnapshot: { wakeReason: "timer" },
+      resultJson: { summary: "Beta periodic sync" },
+    });
+
+    listRunsMock.mockImplementation((_companyId, agentId, _limit, options) => {
+      let filtered = [runAlpha, runBeta];
+      if (agentId) {
+        filtered = filtered.filter((r) => r.agentId === agentId);
+      }
+      if (options?.wakeReason) {
+        filtered = filtered.filter((r) => r.contextSnapshot?.wakeReason === options.wakeReason);
+      }
+      return Promise.resolve(filtered);
+    });
+
+    render();
+    await flushUntil(
+      () =>
+        (container.textContent?.includes("Alpha completed task") &&
+          container.textContent?.includes("Beta periodic sync")) ??
+        false,
+    );
+
+    // Initial state: both runs are visible
+    expect(container.textContent).toContain("Alpha completed task");
+    expect(container.textContent).toContain("Beta periodic sync");
+
+    // 1. Select Agent 2: click option for agent-2
+    const agent2Option = container.querySelector<HTMLButtonElement>(
+      '[role="option"][data-value="agent-2"]',
+    );
+    expect(agent2Option).not.toBeNull();
+    agent2Option?.click();
+
+    await flushUntil(
+      () =>
+        (container.textContent?.includes("Beta periodic sync") &&
+          !container.textContent?.includes("Alpha completed task")) ??
+        false,
+    );
+
+    // Result set is updated: only Agent 2's run is visible
+    expect(container.textContent).toContain("Beta periodic sync");
+    expect(container.textContent).not.toContain("Alpha completed task");
+
+    // 2. Select Wake Reason "issue_assigned": Beta has "timer", so no runs should match
+    const wakeOption = container.querySelector<HTMLButtonElement>(
+      '[role="option"][data-value="issue_assigned"]',
+    );
+    expect(wakeOption).not.toBeNull();
+    wakeOption?.click();
+
+    await flushUntil(
+      () =>
+        container.textContent?.includes("No runs with result match the selected filters.") ??
+        false,
+    );
+    expect(container.textContent).toContain("No runs with result match the selected filters.");
+
+    // 3. Click "Clear filters" button
+    const clearButton = Array.from(container.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("Clear filters"),
+    );
+    expect(clearButton).not.toBeUndefined();
+    clearButton?.click();
+
+    await flushUntil(
+      () =>
+        (container.textContent?.includes("Alpha completed task") &&
+          container.textContent?.includes("Beta periodic sync")) ??
+        false,
+    );
+
+    // Both runs are visible again
+    expect(container.textContent).toContain("Alpha completed task");
+    expect(container.textContent).toContain("Beta periodic sync");
   });
 });
