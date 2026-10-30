@@ -98,7 +98,7 @@ jobs:
           cache-bin: false
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Typecheck all workspaces
         run: pnpm typecheck
@@ -152,7 +152,7 @@ jobs:
           cache-bin: false
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Build Runner issue-thread viewer
         run: pnpm --filter @myrmidon/paperclip-runner build:issue-thread
@@ -215,7 +215,7 @@ jobs:
           restore-keys: myr-pnpm-${{ runner.os }}-
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Run vitest (${{ matrix.label }})
         env:
@@ -271,7 +271,7 @@ jobs:
           restore-keys: myr-pnpm-${{ runner.os }}-
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Build plugin SDK dependencies
         run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
@@ -328,7 +328,7 @@ jobs:
           cache-bin: false
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Verify the runner
         run: pnpm --filter @myrmidon/paperclip-runner check:all
@@ -450,7 +450,7 @@ jobs:
 
       - name: Install dependencies
         if: ${{ !cancelled() }}
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Licenses of production dependencies
         if: ${{ !cancelled() }}
@@ -564,7 +564,7 @@ jobs:
           restore-keys: myr-pnpm-${{ runner.os }}-
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Contract with the driver (fixtures emitted from this commit)
         run: |

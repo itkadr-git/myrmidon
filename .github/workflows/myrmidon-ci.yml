@@ -34,16 +34,15 @@ permissions:
   contents: read
 
 concurrency:
-  # Superseded runs are cancelled on PRs and on main alike; a cancelled run
-  # reports no `CI result`, so it can never look green. A cancelled
-  # merge_group run evicts the group from the queue, so queue runs are never
-  # cancelled.
+  # Superseded runs are cancelled on PRs; a cancelled run reports no `CI result`,
+  # so it can never look green. Main pushes and merge_group runs are never
+  # cancelled so full CI runs on main always run to completion.
   #
   # `labeled` only matters for `full-ci`. A run started
   # by any other label (review-in-progress, needs-rebase, ...) goes to its own
   # group, so it cannot cancel the real run, and every job in it is skipped.
   group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') && '' || '-label-noop' }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -54,7 +53,7 @@ jobs:
   plan:
     name: plan
     if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.CI_RUNNER_PR || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 10
     outputs:
       tier: ${{ steps.plan.outputs.tier }}
@@ -127,7 +126,7 @@ jobs:
     # steps run even when the typecheck failed, so one run shows both failures.
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || vars.CI_RUNNER_PR || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -184,7 +183,7 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Typecheck all workspaces
         if: ${{ needs.plan.outputs.tier == 'full' }}
@@ -218,7 +217,7 @@ jobs:
     name: tests (affected)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_AFFECTED || vars.CI_RUNNER_PR || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 60
     steps:
       - name: Checkout repository
@@ -250,7 +249,7 @@ jobs:
           restore-keys: myr-pnpm-${{ runner.os }}-
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Download plan
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -313,7 +312,7 @@ jobs:
           restore-keys: myr-pnpm-${{ runner.os }}-
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Run vitest (${{ matrix.label }})
         env:
@@ -394,7 +393,7 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Build plugin SDK dependencies
         run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
@@ -411,7 +410,7 @@ jobs:
     # compatibility. Every step runs even if an earlier one failed.
     name: checks
     if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_CHECKS || vars.CI_RUNNER_PR || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GITLEAKS_VERSION: 8.30.1
@@ -537,7 +536,7 @@ jobs:
 
       - name: Install dependencies
         if: ${{ !cancelled() }}
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Licenses of production dependencies
         if: ${{ !cancelled() }}
@@ -570,7 +569,7 @@ jobs:
     # fleetd is folded in (one checkout, one runner): tools/fleetd, see
     # docs/myrmidon/fleetd-vmexec.md. Every step runs even if an earlier one failed.
     if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_DOCKERGATE || vars.CI_RUNNER_PR || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 30
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
@@ -629,7 +628,7 @@ jobs:
 
       - name: Install dependencies
         if: ${{ !cancelled() }}
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Contract with the driver (fixtures emitted from this commit)
         if: ${{ !cancelled() }}
@@ -671,7 +670,7 @@ jobs:
     name: CI result
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
     needs: [plan, typecheck, tests-affected, tests, tests-other, checks, dockergate]
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.CI_RUNNER_PR || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
       - name: Ensure gh and jq (self-hosted runners may lack them)
