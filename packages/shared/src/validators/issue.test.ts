@@ -267,7 +267,6 @@ describe("issue validators", () => {
     };
     expect(updateIssueSchema.safeParse(activeWithFreeze).success).toBe(true);
   });
-  });
 
   it("rejects incomplete typed blocker metadata", () => {
     const result = updateIssueSchema.safeParse({
