@@ -167,7 +167,7 @@ describe("refreshGitMirrors", () => {
     // 2. Advance time past refresh interval
     let now = Date.now() + 10 * 60 * 1000;
     const failingDeps = deps({
-      clock: () => (now += 1000),
+      now: () => (now += 1000),
       runGit: async (args) => {
         if (args.includes("fetch")) throw new Error("git fetch failed");
       },

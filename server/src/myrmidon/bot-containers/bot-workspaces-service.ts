@@ -36,6 +36,7 @@ import {
   myrWsRepoNameSchema,
   wsBotDiskSettingsSchema,
   type WsClosedKeyEntry,
+  type WsClosedKeyObject,
   type WsDesiredState,
   type WsDesiredWorkspace,
 } from "@myrmidon/shared";
