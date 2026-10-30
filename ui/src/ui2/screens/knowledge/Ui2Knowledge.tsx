@@ -217,7 +217,7 @@ function TreeBranch({
   const key = revisionKey(node.item);
   const active = key === activeKey;
   return (
-    <li className="ui2-knowledge-tree-node" data-depth={node.depth}>
+    <li className="ui2-knowledge-tree-node" data-depth={node.depth} data-folder={node.folder}>
       <button
         type="button"
         className={`ui2-knowledge-tree-item w-full rounded-md px-2 py-1 text-left text-sm hover:bg-accent ${
@@ -227,7 +227,7 @@ function TreeBranch({
         aria-current={active ? "page" : undefined}
         onClick={() => onSelect(node.item)}
       >
-        {node.item.title}
+        {node.displayLabel ?? node.item.title}
       </button>
       {node.children.length > 0 ? (
         <ul className="ui2-knowledge-tree-children flex flex-col gap-0.5">

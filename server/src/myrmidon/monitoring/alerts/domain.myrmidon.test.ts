@@ -19,6 +19,7 @@ import {
 
 const zabbixFiring = {
   eventid: "101",
+  triggerid: "7001",
   name: "Free disk space is less than 10% on volume /",
   severity: "4",
   status: "PROBLEM",
@@ -29,6 +30,13 @@ const zabbixFiring = {
 describe("myrmidon(1.6.6-ALERTS) payload parsing", () => {
   it("detects the Zabbix format by eventid+name", () => {
     expect(detectAlertSource(zabbixFiring)).toBe("zabbix");
+  });
+
+  it("uses triggerid as the dedup identity across distinct event ids", () => {
+    const first = parseZabbixAlert({ ...zabbixFiring, eventid: "101" });
+    const second = parseZabbixAlert({ ...zabbixFiring, eventid: "102" });
+    expect(first?.key).toBe(second?.key);
+    expect(first?.triggerId).toBe(second?.triggerId);
   });
 
   it("detects the Alertmanager format by alerts/status", () => {
@@ -45,7 +53,8 @@ describe("myrmidon(1.6.6-ALERTS) payload parsing", () => {
     const alert = parseZabbixAlert(zabbixFiring);
     expect(alert).not.toBeNull();
     expect(alert!.source).toBe("zabbix");
-    expect(alert!.key).toBe("101");
+    expect(alert!.key).toBe("7001");
+    expect(alert!.triggerId).toBe("7001");
     expect(alert!.resolved).toBe(false);
     expect(alert!.hosts).toEqual(["host-a.example.com"]);
   });
@@ -103,7 +112,9 @@ describe("myrmidon(1.6.6-ALERTS) identity and dedup", () => {
   });
 
   it("creates for an unseen firing alert", () => {
-    const alert = parseZabbixAlert(zabbixFiring)!;
+    const alert = parseZabbixAlert({ ...zabbixFiring, triggerid: "12345", eventid: "54321" })!;
+    expect(alert.key).toBe("12345");
+    expect(alert.triggerId).toBe("12345");
     expect(decideDedup(alert, null)).toEqual({ action: "create" });
   });
 
@@ -173,7 +184,7 @@ describe("myrmidon(1.6.6-ALERTS) issue text", () => {
   it("builds a description with the key, severity, the source link and the default runbook", () => {
     const alert = parseZabbixAlert(zabbixFiring)!;
     const body = issueBodyFor(alert);
-    expect(body).toContain("Key: 101");
+    expect(body).toContain("Key: 7001");
     expect(body).toContain("Severity: high");
     expect(body).toContain(zabbixFiring.url);
     expect(body).toContain("auto-closes");

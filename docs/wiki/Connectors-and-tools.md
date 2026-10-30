@@ -61,6 +61,11 @@ workers orchestrate issues, capabilities like `issue.attachments.write` permit
 uploading bounded files (evidence, reports, logs) without granting direct access
 to board admin keys or database storage.
 
+The UI2 shell also exposes installed plugin sidebar contributions and launchers
+in its desktop rail and mobile navigation. Plugin pages load their UI
+contribution on direct navigation. See the [UI2 shell guide](../myrmidon/guides/ui2-shell.md)
+and [1.6.6 change note](../myrmidon/changes/1-6-6-ui2-plugin-nav.md).
+
 ## In detail
 
 - [Browser bridge: gateway and pairing](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/browser-bridge-gateway.md)
