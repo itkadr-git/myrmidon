@@ -3092,3 +3092,6 @@ export * from "./myrmidon-vendor-name.js";
 // myrmidon(1.7 HA-GEO, OPE-10184): site readiness evaluation contract and helpers for geo-check.
 export * from "./geo-check.js";
 export * from "./validators/geo-check.js";
+
+// myrmidon(1.7 WAKE-9, OPE-9501): session-per-task isolation and reviewer containment contracts.
+export * from "./myrmidon-task-session-and-reviewer-isolation.js";
