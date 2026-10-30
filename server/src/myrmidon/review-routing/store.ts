@@ -25,12 +25,12 @@ import {
   runIdentityContexts,
   type Db,
 } from "@myrmidon/db";
-import { isAgentStatusInvokable } from "@myrmidon/shared";
 import {
   REVIEW_ROUTING_ASSIGNED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
   REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY,
   REVIEW_ROUTING_PR_KIND_METADATA_KEY,
+  isAgentStatusInvokable,
 } from "@myrmidon/shared";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
@@ -46,6 +46,7 @@ export interface InReviewIssueRow extends RoutingIssue {
 export interface ReviewerAgentRow {
   id: string;
   role: string;
+  invokable?: boolean;
 }
 
 export interface RoutingHistory {
@@ -57,6 +58,11 @@ export interface RoutingHistory {
 export interface ReviewRoutingStore {
   listActiveCompanyIds(): Promise<string[]>;
   listInReviewIssues(companyId: string, limit: number): Promise<InReviewIssueRow[]>;
+  listManagerChainReviewerAgents(
+    companyId: string,
+    engineerId: string,
+    roles: readonly string[],
+  ): Promise<ReviewerAgentRow[]>;
   countUnroutedReviewIssues(companyId: string, asOf?: Date): Promise<number>;
   countBlockedWithoutAssignee(): Promise<number>;
   /** Invokable agents of the company whose role is one of `roles`. */
@@ -222,6 +228,28 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
       }));
     },
 
+    async listManagerChainReviewerAgents(companyId, engineerId, roles) {
+      if (roles.length === 0) return [];
+      const rows = await db
+        .select({ id: agents.id, role: agents.role, status: agents.status, reportsTo: agents.reportsTo })
+        .from(agents)
+        .where(eq(agents.companyId, companyId));
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      const result: ReviewerAgentRow[] = [];
+      const seen = new Set<string>([engineerId]);
+      let managerId = byId.get(engineerId)?.reportsTo ?? null;
+      while (managerId && !seen.has(managerId)) {
+        seen.add(managerId);
+        const manager = byId.get(managerId);
+        if (!manager) break;
+        if (roles.includes(manager.role) && isAgentStatusInvokable(manager.status)) {
+          result.push({ id: manager.id, role: manager.role });
+        }
+        managerId = manager.reportsTo ?? null;
+      }
+      return result;
+    },
+
     async countUnroutedReviewIssues(companyId, asOf = new Date()) {
       const rows = await db
         .select({
@@ -270,7 +298,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         .select({ id: agents.id, role: agents.role, status: agents.status })
         .from(agents)
         .where(and(eq(agents.companyId, companyId), inArray(agents.role, [...roles])));
-      return rows.filter((row) => isAgentStatusInvokable(row.status)).map((row) => ({ id: row.id, role: row.role }));
+      return rows.map(({ id, role, status }) => ({ id, role, invokable: isAgentStatusInvokable(status) }));
     },
 
     async loadByAgent(companyId) {

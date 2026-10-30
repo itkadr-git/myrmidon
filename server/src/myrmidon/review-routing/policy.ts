@@ -31,6 +31,7 @@ export interface ReviewerCandidate {
   role: string;
   /** Tasks the agent holds in flight (in progress + in review). */
   load: number;
+  readonly invokable?: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -119,14 +120,40 @@ export function excludedReviewerIds(issue: RoutingIssue, extra: Iterable<string>
  * Least-loaded eligible reviewer. Candidates at or above `maxLoad` and
  * excluded ids are skipped; ties break by id so the choice is deterministic.
  */
+export interface ReviewerAvailability {
+  selected: ReviewerCandidate | null;
+}
+
+/** Shared reviewer eligibility/load decision used by both PATCH and sweep. */
+export function evaluateReviewerAvailability(input: {
+  reviewers: readonly { id: string; role: string; invokable?: boolean }[];
+  loadByAgent: ReadonlyMap<string, number>;
+  issue: RoutingIssue;
+  maxLoad: number;
+}): ReviewerAvailability {
+  return {
+    selected: pickReviewer({
+      candidates: input.reviewers.map((reviewer) => ({
+        id: reviewer.id,
+        role: reviewer.role,
+        invokable: reviewer.invokable,
+        load: input.loadByAgent.get(reviewer.id) ?? 0,
+      })),
+      excluded: excludedReviewerIds(input.issue),
+      maxLoad: input.maxLoad,
+    }),
+  };
+}
+
 export function pickReviewer(input: {
   candidates: readonly ReviewerCandidate[];
   excluded: ReadonlySet<string>;
   maxLoad: number;
 }): ReviewerCandidate | null {
-  const eligible = input.candidates.filter(
-    (candidate) => !input.excluded.has(candidate.id) && candidate.load < input.maxLoad,
-  );
+  const eligible = input.candidates.filter((candidate) => {
+    if (candidate.invokable === false) return false;
+    return !input.excluded.has(candidate.id) && candidate.load < input.maxLoad;
+  });
   if (eligible.length === 0) return null;
   return [...eligible].sort((a, b) => a.load - b.load || a.id.localeCompare(b.id))[0] ?? null;
 }

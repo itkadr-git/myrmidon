@@ -27,6 +27,7 @@ import {
   createDb,
   heartbeatRuns,
   issueClaims,
+  issueRelations,
   issues,
   projectMemberships,
   projects,
@@ -37,7 +38,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { matchCompany, matchIssue, quotaHoldsByAgent, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
+import { matchCompany, matchIssue, openLoadByAgent, quotaHoldsByAgent, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -60,6 +61,7 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueClaims);
+    await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(projectMemberships);
     await db.delete(projects);
@@ -264,6 +266,52 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       expect(await assigneeOf(task)).toBe(agent);
     });
 
+    it("ignores three assigned todo tasks held by open blockers and claims ready work", async () => {
+      const companyId = await seedCompany();
+      const agent = await seedAgent(companyId, "agent-with-blocked-todos");
+      const blocker = await seedTask(companyId, { status: "in_progress" });
+      const blockedTasks = await Promise.all(
+        Array.from({ length: 3 }, () => seedTask(companyId, { assigneeAgentId: agent })),
+      );
+      await db.insert(issueRelations).values(
+        blockedTasks.map((blockedIssueId) => ({
+          companyId,
+          issueId: blocker,
+          relatedIssueId: blockedIssueId,
+          type: "blocks" as const,
+        })),
+      );
+      const readyTask = await seedTask(companyId);
+      const wakes: string[] = [];
+
+      expect((await openTasksOf(agent))).toHaveLength(3);
+      expect((await openLoadByAgent(db, companyId)).get(agent) ?? 0).toBe(0);
+
+      const result = await matchCompany(deps(wakes, { maxActiveTasks: 3 }), companyId);
+
+      expect(result.pairs.map((pair) => pair.issueId)).toEqual([readyTask]);
+      expect(result.pairs.map((pair) => pair.agentId)).toEqual([agent]);
+      expect(await assigneeOf(readyTask)).toBe(agent);
+      expect(wakes).toEqual([agent]);
+      expect((await openLoadByAgent(db, companyId)).get(agent)).toBe(1);
+    });
+
+    it("does not event-claim a task with an open blocker", async () => {
+      const companyId = await seedCompany();
+      const agent = await seedAgent(companyId, "agent-blocked-event");
+      const blocker = await seedTask(companyId, { status: "in_progress" });
+      const blocked = await seedTask(companyId);
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blocker,
+        relatedIssueId: blocked,
+        type: "blocks",
+      });
+      const result = await matchIssue(deps([], { maxActiveTasks: 1 }), blocked);
+      expect(result).toBeNull();
+      expect(await assigneeOf(blocked)).toBeNull();
+      expect(await openTasksOf(agent)).toHaveLength(0);
+    });
     it("counts a task that is both assigned and leased once", async () => {
       const companyId = await seedCompany();
       const agent = await seedAgent(companyId, "agent-a");

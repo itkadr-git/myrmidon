@@ -92,6 +92,15 @@ function registerModuleMocks() {
     RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
   }));
 
+  vi.doMock("../myrmidon/review-routing/settings.js", () => ({
+    readReviewRoutingSettings: vi.fn(async () => ({ enabled: false })),
+  }));
+  vi.doMock("../myrmidon/review-routing/store.js", () => ({
+    createPgReviewRoutingStore: () => ({
+      listReviewerAgents: vi.fn(async () => []),
+      loadByAgent: vi.fn(async () => new Map()),
+    }),
+  }));
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1" })),
@@ -210,7 +219,7 @@ async function createApp(actor?: TestActor) {
 }
 
 describe("issue execution policy routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/issues.js");
@@ -265,6 +274,96 @@ describe("issue execution policy routes", () => {
       };
     });
     mockAccessService.hasPermission.mockResolvedValue(false);
+    await import("../routes/issues.js");
+  });
+
+  it("clears return assignee when assigned executor is a reviewer", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1048R",
+      title: "Reviewer assignee should not be returned to",
+      executionPolicy: normalizeIssueExecutionPolicy({
+        stages: [{
+          id: "66666666-6666-4666-8666-666666666666",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        }],
+      }),
+      executionState: null,
+      reviewPolicy: "not_creator",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", executionPolicy: issue.executionPolicy });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.status).toBe("in_review");
+    expect(updatePatch.assigneeAgentId).toBe("44444444-4444-4444-8444-444444444444");
+    // The assigned executor (44444…) is a review participant, so it must not be the return target;
+    // the actor who submitted the issue for review (33333…, not a participant) is the last executor (OPE-9487).
+    expect(updatePatch.executionState).toMatchObject({
+      returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+    });
+  });
+
+  it("keeps an explicit assignee when removing policy from review", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1048",
+      title: "Return to explicit executor",
+      executionPolicy: null,
+      executionState: {
+        status: "pending",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "reviewer-agent" },
+        returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_progress", assigneeAgentId: "new-executor", executionPolicy: null });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: "new-executor",
+    });
   });
 
   it("reauthorizes a terminal verdict against the review policy held under the update lock", async () => {

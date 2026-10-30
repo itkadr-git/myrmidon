@@ -10,12 +10,14 @@ import {
   buildReviewRoutingReassignPatch,
   buildReviewRoutingWakeContext,
   excludedReviewerIds,
+  evaluateReviewerAvailability,
   hoursSince,
   isReviewOverdue,
   issueNeedsReviewer,
   pickPrReviewer,
   pickReviewer,
   readPendingAgentReview,
+  type ReviewerCandidate,
   type RoutingIssue,
 } from "./policy.js";
 import {
@@ -117,12 +119,12 @@ describe("issueNeedsReviewer", () => {
 });
 
 describe("pickReviewer", () => {
-  const candidates = [
+  const candidates: ReviewerCandidate[] = [
     { id: REV_B, role: "reviewer", load: 1 },
-    { id: REV_A, role: "reviewer", load: 1 },
-    { id: AUTHOR, role: "reviewer", load: 0 },
-    { id: ASSIGNEE, role: "reviewer", load: 0 },
-    { id: "cccccccc-0000-4000-8000-000000000001", role: "reviewer", load: 4 },
+    { id: REV_A, role: "reviewer", load: 1, invokable: true },
+    { id: AUTHOR, role: "reviewer", load: 0, invokable: true },
+    { id: ASSIGNEE, role: "reviewer", load: 0, invokable: true },
+    { id: "cccccccc-0000-4000-8000-000000000001", role: "reviewer", load: 4, invokable: true },
   ];
 
   it("picks the least loaded, never the author or the assignee", () => {
@@ -147,6 +149,43 @@ describe("pickReviewer", () => {
     expect(
       pickReviewer({ candidates: [{ id: AUTHOR, role: "reviewer", load: 0 }], excluded: excludedReviewerIds(issue()), maxLoad: 5 }),
     ).toBeNull();
+  });
+});
+
+describe("evaluateReviewerAvailability", () => {
+  it("uses shared reviewer eligibility and load policy, including author exclusions and load ceiling", () => {
+    const result = evaluateReviewerAvailability({
+      reviewers: [
+        { id: AUTHOR, role: "reviewer", invokable: true },
+        { id: ASSIGNEE, role: "reviewer", invokable: true },
+        { id: REV_B, role: "reviewer", invokable: false },
+        { id: REV_A, role: "reviewer", invokable: true },
+      ],
+      loadByAgent: new Map([[REV_B, 2], [REV_A, 1]]),
+      issue: issue(),
+      maxLoad: 3,
+    });
+    expect(result.selected?.id).toBe(REV_A);
+    expect(
+      evaluateReviewerAvailability({
+        reviewers: [{ id: REV_A, role: "reviewer", invokable: true }],
+        loadByAgent: new Map([[REV_A, 3]]),
+        issue: issue(),
+        maxLoad: 3,
+      }).selected,
+    ).toBeNull();
+  });
+  it("filters reviewers whose statuses are not invokable", () => {
+    const result = evaluateReviewerAvailability({
+      reviewers: [
+        { id: REV_A, role: "reviewer", invokable: false },
+        { id: REV_B, role: "reviewer", invokable: true },
+      ],
+      loadByAgent: new Map(),
+      issue: issue(),
+      maxLoad: 2,
+    });
+    expect(result.selected?.id).toBe(REV_B);
   });
 });
 

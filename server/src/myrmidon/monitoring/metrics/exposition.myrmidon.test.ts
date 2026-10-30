@@ -11,6 +11,8 @@ import {
   renderMetricsText,
   type MetricsSnapshot,
 } from "./metrics.js";
+import { swarmClaimMetrics } from "../../swarm-claim/metrics.js";
+import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 
 function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
   return {
@@ -55,6 +57,43 @@ describe("prometheus exposition format", () => {
     }
   });
 
+  it("renders the created and deduped continuation counters after port calls", () => {
+    continuationDedupeMetrics.reset();
+    try {
+      continuationDedupeMetrics.metrics.onContinuationCreated("created-key");
+      continuationDedupeMetrics.metrics.onContinuationCreated("another-created-key");
+      continuationDedupeMetrics.metrics.onContinuationDeduped("deduped-key");
+
+      const text = renderMetricsText(snapshot());
+      expect(text).toContain("# TYPE myrmidon_continuation_created_total counter");
+      expect(text).toContain('myrmidon_continuation_created_total{role="all"} 2');
+      expect(text).toContain("# TYPE myrmidon_continuation_deduped_total counter");
+      expect(text).toContain('myrmidon_continuation_deduped_total{role="all"} 1');
+    } finally {
+      continuationDedupeMetrics.reset();
+    }
+  });
+
+  it("exposes claim conflicts and both bounded recovery reasons, including zero", () => {
+    swarmClaimMetrics.reset();
+    try {
+      expect(renderMetricsText(snapshot())).toContain('swarm_lease_recovered_total{role="all",reason="supervisor_rebalance"} 0');
+      swarmClaimMetrics.conflict();
+      swarmClaimMetrics.recover("lease_expired");
+      swarmClaimMetrics.recover("supervisor_rebalance");
+      swarmClaimMetrics.recover("run_finished");
+      const text = renderMetricsText(snapshot());
+      expect(text).toContain("# TYPE swarm_claim_conflicts_total counter");
+      expect(text).toContain('swarm_claim_conflicts_total{role="all"} 1');
+      expect(text).toContain("# TYPE swarm_lease_recovered_total counter");
+      expect(text).toContain('swarm_lease_recovered_total{role="all",reason="lease_expired"} 1');
+      expect(text).toContain('swarm_lease_recovered_total{role="all",reason="supervisor_rebalance"} 1');
+      expect(text).not.toContain('reason="run_finished"');
+    } finally {
+      swarmClaimMetrics.reset();
+    }
+  });
+
   it("renders exactly one HELP and one TYPE line per family", () => {
     const text = renderMetricsText(snapshot());
     const lines = text.split("\n");
@@ -79,6 +118,8 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_agent_error_signals gauge");
     expect(text).toContain("# TYPE myrmidon_llm_cost_cents_total counter");
     expect(text).toContain("# TYPE myrmidon_scrape_errors gauge");
+    expect(text).toContain("# TYPE myrmidon_review_tasks_without_reviewer gauge");
+    expect(text).toContain("# TYPE myrmidon_blocked_tasks_without_assignee gauge");
     expect(text).toContain("# TYPE myrmidon_board_event_loop_utilization gauge");
   });
 
@@ -88,8 +129,9 @@ describe("prometheus exposition format", () => {
     // 9 single-sample families + 2 quantile samples + 3 role pairs = 14,
     // plus the process half (1.6.5-PROCS-Q3): 3 loop quantiles + 1 RSS +
     // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
-    // plus utilization and two review-routing gauges (1.6.6) = 27.
-    expect(sampleLines).toHaveLength(27);
+    // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
+    // continuation dedupe counters = 27, plus two review/blocked gauges = 29.
+    expect(sampleLines).toHaveLength(29);
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{role="all",quantile="0.99"} 0.13');
@@ -313,10 +355,18 @@ describe("prometheus exposition format", () => {
     const text = renderMetricsText(snapshot());
     expect(text.endsWith("\n")).toBe(true);
     const body = text.slice(0, -1);
-    for (const block of body.split("\n\n")) {
-      // Every block starts with its HELP line (no leading blank lines).
-      expect(block.startsWith("# HELP myrmidon_")).toBe(true);
-    }
+    const blocks = body.split("\n\n");
+    expect(blocks).toHaveLength(METRIC_FAMILIES.length);
+    const names = blocks.map((block) => {
+      const lines = block.split("\n");
+      const help = /^# HELP (\S+) .+$/.exec(lines[0]);
+      expect(help, `block must start with HELP: ${lines[0]}`).not.toBeNull();
+      const name = help![1];
+      expect(lines[1]).toMatch(new RegExp(`^# TYPE ${name} (counter|gauge|summary)$`));
+      expect(lines.slice(2).every((line) => line.startsWith(`${name}{`) || line.startsWith(`${name} `))).toBe(true);
+      return name;
+    });
+    expect(names.sort()).toEqual([...METRIC_FAMILIES].sort());
   });
 
   it("escapes label values the way the exposition format requires", () => {

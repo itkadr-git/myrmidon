@@ -55,6 +55,11 @@ import {
 } from "../../singleton-proxy/counters.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-containers/fleet-site-metrics.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
+import { collectBlockerRootMetrics, renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
+import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-claim/metrics.js";
+import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
+import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
+import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
 
 // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors —
 // the in-process counter the ingress seam keeps (design section 4 and 7).
@@ -94,6 +99,8 @@ const LATENCY_SAMPLE_CAP = 5000;
  * once, followed by its samples; unknown label values are escaped.
  */
 export const METRIC_FAMILIES = [
+  "blocked_age_seconds",
+  "blocked_missing_fields_total",
   "myrmidon_runs_active",
   "myrmidon_runs_queued",
   "myrmidon_runs_failed_total",
@@ -104,9 +111,14 @@ export const METRIC_FAMILIES = [
   "myrmidon_blocked_tasks_without_assignee",
   "myrmidon_swarm_claims_active",
   "myrmidon_swarm_claims_total",
+  "swarm_claim_conflicts_total",
+  "swarm_lease_recovered_total",
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
   "myrmidon_scrape_errors",
+  // Process-local continuation claims; continuation keys are not labels.
+  "myrmidon_continuation_created_total",
+  "myrmidon_continuation_deduped_total",
   // myrmidon(1.6.5-PROCS-Q3): the process families — the loop delay, the
   // memory of this process, and the live-event flow (design §1, этап 0).
   "myrmidon_board_event_loop_lag_seconds",
@@ -153,6 +165,9 @@ export const METRIC_FAMILIES = [
   // flag off the table stays empty and the families render HELP/TYPE only.
   "myrmidon_corpus_shadow_ragflow_latency_seconds",
   "myrmidon_corpus_shadow_module_latency_seconds",
+  "blocker_root_fanout",
+  "blocker_terminal_count",
+  "blocker_roots_over_limit",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -163,6 +178,7 @@ export type MetricFamily = (typeof METRIC_FAMILIES)[number];
 
 /** The per-family values one scrape reads (the selfcheck probe shares them). */
 export interface MetricsSnapshotFields {
+  blocked?: Array<{ companyId: string; groups: BlockedMetricsGroup[] }>;
   /** Live (running) runs right now. */
   runsActive: number;
   /** Queued runs waiting for admission right now. */
@@ -232,6 +248,7 @@ export interface MetricsSnapshotFields {
    * process (in-process, no DB). null renders HELP/TYPE with no samples.
    */
   fleetSites?: FleetSiteMetricsSample | null;
+  blockerRoots?: BlockerRootMetrics | null;
 
   /**
    * myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of the two shadow legs in
@@ -541,6 +558,20 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     }
   }
 
+  const blocked = await guarded(
+    "blocked_age_seconds|blocked_missing_fields_total",
+    async () => {
+      const rows = await deps.db.select({ id: companies.id }).from(companies);
+      const result: NonNullable<MetricsSnapshotFields["blocked"]> = [];
+      for (const company of rows) {
+        const groups = await collectBlockedMetrics((id) => loadBlockedGraph(deps.db, id), company.id, now);
+        result.push({ companyId: company.id, groups });
+      }
+      return result;
+    },
+    [] as NonNullable<MetricsSnapshotFields["blocked"]>,
+  );
+
   // The run counters answer three families with one grouped query; a failure
   // names all three in the selfcheck output.
   const runCounters = await guarded(
@@ -662,6 +693,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
 
   return {
     fields: {
+      blocked,
       runsActive: runCounters.active,
       runsQueued: runCounters.queued,
       runsFailedTotal: runCounters.failedTotal,
@@ -690,6 +722,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       runScratch,
 
       fleetSites,
+      blockerRoots: await guarded(
+        "blocker_root_fanout|blocker_terminal_count|blocker_roots_over_limit",
+        () => collectBlockerRootMetrics(deps.db),
+        null as BlockerRootMetrics | null,
+      ),
     },
     errors,
     now,
@@ -801,6 +838,44 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
   const role = snapshot.role ?? "all";
   const R = `role="${escapeLabelValue(role)}"`;
   const blocks: string[] = [];
+
+  const blockedAgeSamples: string[] = [];
+  const blockedMissingFieldsSamples: string[] = [];
+  for (const { companyId, groups } of snapshot.blocked ?? []) {
+    const C = companyId ? `,company_id="${escapeLabelValue(companyId)}"` : "";
+    for (const group of groups) {
+      for (const statistic of ["p50", "p95", "max"] as const) {
+        const value = group.ageSeconds[statistic];
+        if (value !== null) {
+          blockedAgeSamples.push(
+            `blocked_age_seconds{${R}${C},legacy="${group.legacy}",statistic="${statistic}"} ${formatSampleValue(value)}`,
+          );
+        }
+      }
+      for (const field of ["reason", "owner", "nextCheckAt"] as const) {
+        blockedMissingFieldsSamples.push(
+          `blocked_missing_fields_total{${R}${C},legacy="${group.legacy}",field="${field}"} ${formatSampleValue(group.missingFields[field])}`,
+        );
+      }
+    }
+  }
+
+  blocks.push(
+    familyBlock(
+      "blocked_age_seconds",
+      "Current blocked age in seconds (nearest-rank percentiles).",
+      "gauge",
+      blockedAgeSamples,
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "blocked_missing_fields_total",
+      "Current blocked issues missing each required field.",
+      "gauge",
+      blockedMissingFieldsSamples,
+    ),
+  );
 
   blocks.push(
     familyBlock(
@@ -946,6 +1021,39 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Metric families that failed to collect during this scrape.",
       "gauge",
       [`myrmidon_scrape_errors{${R}} ${formatSampleValue(snapshot.scrapeErrors)}`],
+    ),
+  );
+
+  const claimCounters = swarmClaimMetrics.read();
+  blocks.push(
+    familyBlock(
+      "swarm_claim_conflicts_total",
+      "Claim attempts refused because a live claim exists, cumulative since process start.",
+      "counter",
+      [`swarm_claim_conflicts_total{${R}} ${formatSampleValue(claimCounters.conflicts)}`],
+    ),
+    familyBlock(
+      "swarm_lease_recovered_total",
+      "Leases successfully recovered by expiry or supervisor rebalance, cumulative since process start.",
+      "counter",
+      SWARM_LEASE_RECOVERY_REASONS.map((reason) =>
+        `swarm_lease_recovered_total{${R},reason="${reason}"} ${formatSampleValue(claimCounters.recovered[reason])}`,
+      ),
+    ),
+  );
+  const continuationCounters = continuationDedupeMetrics.read();
+  blocks.push(
+    familyBlock(
+      "myrmidon_continuation_created_total",
+      "Continuation keys claimed for the first time since this process started.",
+      "counter",
+      [`myrmidon_continuation_created_total{${R}} ${formatSampleValue(continuationCounters.created)}`],
+    ),
+    familyBlock(
+      "myrmidon_continuation_deduped_total",
+      "Continuation keys suppressed because they were already claimed, cumulative since process start.",
+      "counter",
+      [`myrmidon_continuation_deduped_total{${R}} ${formatSampleValue(continuationCounters.deduped)}`],
     ),
   );
 
@@ -1186,5 +1294,6 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     ),
   );
 
+  blocks.push(renderBlockerRootMetrics(snapshot.blockerRoots ?? { companies: [] }).trimEnd());
   return `${blocks.join("\n\n")}\n`;
 }

@@ -29,6 +29,9 @@ needs one. It is an independent product maintained as a fork of
   matrix, injection flagging, emergency stop.
 - [Connectors and tools](Connectors-and-tools) — the browser bridge, MCP
   connectors, cloud storage and Microsoft 365, media and OCR, GitHub.
+- [UI2 plugin navigation](../myrmidon/changes/1-6-6-ui2-plugin-nav.md) —
+  desktop and mobile plugin entries and direct plugin-page loading; see the
+  [UI2 shell guide](../myrmidon/guides/ui2-shell.md).
 
 ## Corpus
 
