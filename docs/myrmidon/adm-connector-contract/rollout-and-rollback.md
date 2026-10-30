@@ -71,7 +71,7 @@ node scripts/myrmidon/adm-connector/rollout.mjs kill-switch off
 ## 3. Rollback Procedure (Восстановление последнего кэша без удаления знаний)
 
 ### Core Invariant
-**Knowledge items on the Paperclip board are NEVER deleted during rollback.**
+**Knowledge items on the Myrmidon board are NEVER deleted during rollback.**
 Rollback is an operational safety control for connector consumers and client cache, not a board data purge. Board items remain intact for forensic audit and future re-activation.
 
 ### Rollback Workflow
