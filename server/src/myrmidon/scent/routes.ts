@@ -193,9 +193,28 @@ export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
       assertCompanyAccess(req, companyId);
       const { service, settings } = await buildService(db, companyId, ports);
       const slice = await service.listMarkupQueue(settings.classifierBatchSize);
+      // OPE-7190: the contour booleans the queue silently gates on. Without
+      // them "enabled:true + pending>0 + nothing happening" was undiagnosable
+      // from the board: the acceptance had to guess between off/broken/parked.
+      const env = process.env;
+      const baseUrl =
+        env[SCENT_BASE_URL_ENV]?.trim() || env.MYRMIDON_EVALS_BASE_URL?.trim() || "";
+      const secretName = env[SCENT_KEY_SECRET_ENV]?.trim() || "MYRMIDON_EVALS_API_KEY";
+      const resolve =
+        ports.resolveSecret ??
+        (async (d: Db, cid: string, secret: string) => {
+          const secrets = secretService(d);
+          const row = await secrets.getByName(cid, secret);
+          if (row) return secrets.resolveSecretValue(cid, row.id, "latest");
+          return process.env[secret] ?? null;
+        });
+      const keyConfigured = Boolean(await resolve(db, companyId, secretName));
       res.json({
         enabled: settings.enabled,
         model: settings.model,
+        baseUrlConfigured: Boolean(baseUrl),
+        keyConfigured,
+        contourConfigured: Boolean(baseUrl) && keyConfigured,
         pendingIssues: slice.issueIds.length,
         pendingAgents: slice.agentIds.length,
         totalPending: slice.totalPending,

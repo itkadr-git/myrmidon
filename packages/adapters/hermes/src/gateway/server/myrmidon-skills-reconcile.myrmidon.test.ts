@@ -78,7 +78,7 @@ describe("reconcileGatewayPaperclipSkills", () => {
     await expect(
       reconcileGatewayPaperclipSkills(config, { moduleDir: MODULE_DIR }),
     ).rejects.toThrow(
-      "Cannot start without the required Paperclip-managed skills: company/broken: skill source is missing",
+      "Cannot start without the required Myrmidon-managed skills: company/broken: skill source is missing",
     );
   });
 
@@ -93,7 +93,7 @@ describe("reconcileGatewayPaperclipSkills", () => {
     await expect(
       reconcileGatewayPaperclipSkills(config, { moduleDir: MODULE_DIR, readFile }),
     ).rejects.toThrow(
-      "Cannot start without the required Paperclip-managed skills: company/alpha: cannot read the skill source (ENOENT)",
+      "Cannot start without the required Myrmidon-managed skills: company/alpha: cannot read the skill source (ENOENT)",
     );
   });
 
@@ -186,7 +186,7 @@ describe("factCheckGatewayPaperclipSkills", () => {
         ],
       }),
     ).toThrow(
-      "Cannot start without the required Paperclip-managed skills: company/beta (beta--0123456789): missing from the assembled run-body field",
+      "Cannot start without the required Myrmidon-managed skills: company/beta (beta--0123456789): missing from the assembled run-body field",
     );
   });
 
@@ -196,7 +196,7 @@ describe("factCheckGatewayPaperclipSkills", () => {
         skills: [],
         expected: [{ key: "company/alpha", name: "alpha" }],
       }),
-    ).toThrow("Cannot start without the required Paperclip-managed skills: company/alpha");
+    ).toThrow("Cannot start without the required Myrmidon-managed skills: company/alpha");
   });
 });
 

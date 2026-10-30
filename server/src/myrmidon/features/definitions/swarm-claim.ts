@@ -65,11 +65,11 @@ export const swarmClaimFeature: FeatureDefinition = {
       return makeHealth("failing", `the last sweep pass failed: ${out.lastError ?? "unknown error"}`, base);
     }
     const detail = out.lastDetail ?? {};
-    const freeAgents = typeof detail.idleFreeAgents === "number" ? detail.idleFreeAgents : 0;
-    if (freeAgents > 0 && claims === 0 && out.effect24h === 0) {
+    const unmatchedCount = typeof detail.idleUnmatchedTasks === "number" ? detail.idleUnmatchedTasks : 0;
+    if (unmatchedCount > 0 && claims === 0 && out.effect24h === 0) {
       return makeHealth(
         "failing",
-        `${freeAgents} free agent(s) sit next to a non-empty role queue and nothing was claimed or woken in 24 h`,
+        `${unmatchedCount} ready task(s) were unmatched with no claims or wakes in 24 h`,
         base,
       );
     }
