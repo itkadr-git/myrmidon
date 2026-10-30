@@ -243,6 +243,32 @@ describe("issue validators", () => {
     expect(updateIssueSchema.safeParse({ status: "blocked" }).success).toBe(true);
   });
 
+  it("validates freeze-only and active blocker metadata with issueRewakeFreeze", () => {
+    const freeze = {
+      agentId: "00000000-0000-4000-8000-000000000001",
+      frozenAt: "2026-10-20T00:00:00.000Z",
+      noProgressStreak: 6,
+    };
+    // freeze-only metadata is valid on an issue update without status: blocked
+    expect(updateIssueSchema.safeParse({ blockerMetadata: { issueRewakeFreeze: freeze } }).success).toBe(true);
+
+    // active blocker can optionally carry issueRewakeFreeze
+    const activeWithFreeze = {
+      status: "blocked",
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { agentId: "00000000-0000-4000-8000-000000000001" },
+        blockedByIssueIds: ["00000000-0000-4000-8000-000000000009"],
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
+        issueRewakeFreeze: freeze,
+      },
+    };
+    expect(updateIssueSchema.safeParse(activeWithFreeze).success).toBe(true);
+  });
+  });
+
   it("rejects incomplete typed blocker metadata", () => {
     const result = updateIssueSchema.safeParse({
       status: "blocked",

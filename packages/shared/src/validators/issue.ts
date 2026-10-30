@@ -461,32 +461,31 @@ export const issueRewakeFreezeSchema = z.object({
   assigneeAgentId: z.string().uuid().nullable().optional(),
 });
 
-export const issueBlockerMetadataSchema = z.object({
-  blockReason: issueBlockReasonSchema.optional(),
+export const realIssueBlockerMetadataSchema = z.object({
+  blockReason: issueBlockReasonSchema,
   owner: z.union([
     z.object({ agentId: z.string().uuid() }).strict(),
     z.object({ userId: z.string().uuid() }).strict(),
-  ]).optional(),
+  ]),
   blockedByIssueIds: z.array(z.string().uuid()).max(20).optional(),
   externalRef: z.string().trim().min(1).max(500).optional(),
-  nextCheckAt: z.string().datetime().optional(),
-  timeoutAt: z.string().datetime().optional(),
-  escalationPolicy: z.string().trim().min(1).max(120).optional(),
+  nextCheckAt: z.string().datetime(),
+  timeoutAt: z.string().datetime(),
+  escalationPolicy: z.string().trim().min(1).max(120),
   issueRewakeFreeze: issueRewakeFreezeSchema.nullable().optional(),
 }).strict().refine(
-  (value: {
-    blockReason?: string;
-    blockedByIssueIds?: string[];
-    externalRef?: string;
-    issueRewakeFreeze?: unknown;
-  }) => {
-    if (value.issueRewakeFreeze && !value.blockReason) {
-      return true;
-    }
-    return Boolean(value.blockedByIssueIds?.length || value.externalRef);
-  },
+  (value) => Boolean(value.blockedByIssueIds?.length || value.externalRef),
   { message: "Provide blockedByIssueIds or externalRef", path: ["externalRef"] },
 );
+
+export const issueFreezeOnlyMetadataSchema = z.object({
+  issueRewakeFreeze: issueRewakeFreezeSchema,
+}).strict();
+
+export const issueBlockerMetadataSchema = z.union([
+  realIssueBlockerMetadataSchema,
+  issueFreezeOnlyMetadataSchema,
+]);
 
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),

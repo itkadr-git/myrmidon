@@ -439,6 +439,8 @@ export {
   issueExecutionPolicySchema,
   issueBlockReasonSchema,
   issueBlockerMetadataSchema,
+  realIssueBlockerMetadataSchema,
+  issueFreezeOnlyMetadataSchema,
   issueExecutionStateSchema,
   issueRecoveryActionReadModelSchema,
   resolveIssueRecoveryActionSchema,

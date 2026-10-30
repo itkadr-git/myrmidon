@@ -30610,16 +30610,27 @@ export function heartbeatService(
                     .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
                     .for("update");
 
-                  const nextBlocker: IssueBlockerMetadata = {
-                    ...(issue.blockerMetadata ?? {}),
-                    issueRewakeFreeze: {
-                      agentId,
-                      frozenAt: throttleDecision.frozenAt.toISOString(),
-                      noProgressStreak: throttleDecision.noProgressStreak,
-                      statusVersion: issue.statusVersion,
-                      assigneeAgentId: issue.assigneeAgentId,
-                    },
-                  };
+                  const nextBlocker: IssueBlockerMetadata =
+                    issue.blockerMetadata && "blockReason" in issue.blockerMetadata
+                      ? {
+                          ...issue.blockerMetadata,
+                          issueRewakeFreeze: {
+                            agentId,
+                            frozenAt: throttleDecision.frozenAt.toISOString(),
+                            noProgressStreak: throttleDecision.noProgressStreak,
+                            statusVersion: issue.statusVersion,
+                            assigneeAgentId: issue.assigneeAgentId,
+                          },
+                        }
+                      : {
+                          issueRewakeFreeze: {
+                            agentId,
+                            frozenAt: throttleDecision.frozenAt.toISOString(),
+                            noProgressStreak: throttleDecision.noProgressStreak,
+                            statusVersion: issue.statusVersion,
+                            assigneeAgentId: issue.assigneeAgentId,
+                          },
+                        };
                   await tx.update(issues).set({
                     blockerMetadata: nextBlocker,
                   }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
