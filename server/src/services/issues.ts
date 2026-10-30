@@ -83,6 +83,7 @@ import type {
   IssueCommentMetadata,
   IssueCommentPresentation,
   IssueBlockerAttention,
+  IssueBlockerMetadata,
   IssueReviewAttention,
   IssueReviewAttentionPath,
   IssueBlockedInboxAttention,
@@ -3605,6 +3606,7 @@ type IssueRelationSummaryRow = {
   priority: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  blockerMetadata: IssueBlockerMetadata | null;
 };
 
 function summarizeIssueRelationRow(
@@ -3618,6 +3620,7 @@ function summarizeIssueRelationRow(
     priority: row.priority as IssueRelationIssueSummary["priority"],
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
+    blockerMetadata: row.blockerMetadata,
   };
 }
 
@@ -3655,6 +3658,7 @@ async function terminalExplicitBlockersByRoot(
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          blockerMetadata: issues.blockerMetadata,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -7410,6 +7414,7 @@ export function issueService(db: Db) {
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          blockerMetadata: issues.blockerMetadata,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -7430,6 +7435,7 @@ export function issueService(db: Db) {
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          blockerMetadata: issues.blockerMetadata,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
@@ -8678,6 +8684,7 @@ export function issueService(db: Db) {
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          blockerMetadata: issues.blockerMetadata,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))

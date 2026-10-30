@@ -234,6 +234,7 @@ export interface IssueRelationIssueSummary {
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  blockerMetadata?: IssueBlockerMetadata | null;
   terminalBlockers?: IssueRelationIssueSummary[];
   activeRecoveryAction?: IssueRecoveryAction | null;
   scheduledRetry?: IssueScheduledRetry | null;
