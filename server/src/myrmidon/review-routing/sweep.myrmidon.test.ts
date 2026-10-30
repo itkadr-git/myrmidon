@@ -214,7 +214,7 @@ describe("review wake liveness", () => {
   });
 
   it("does not wake when a run is active or the load limit is reached", async () => {
-    const t = setup({}, { wakeStates: new Map() });
+    const t = setup({ maxLoadPerReviewer: 2 }, { wakeStates: new Map() });
     t.fixture.load.set(REV_B, 2);
     t.fixture.wakeStates!.set("1", { activeRun: true, pendingWake: false, lastWakeAt: null, attempts: 0 });
     t.fixture.wakeStates!.set("2", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
@@ -226,7 +226,7 @@ describe("review wake liveness", () => {
   });
 
   it("does not wake a review before 30 minutes or inside retry backoff", async () => {
-    const t = setup({}, { wakeStates: new Map([
+    const t = setup({ maxLoadPerReviewer: 2 }, { wakeStates: new Map([
       ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 20 * 60_000), attempts: 1 }],
       ["2", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 2 * 60_000), attempts: 1 }],
     ]) });
