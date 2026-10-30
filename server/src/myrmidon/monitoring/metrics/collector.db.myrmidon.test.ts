@@ -187,6 +187,7 @@ describeEmbeddedPostgres("metrics collector", () => {
       owner: { agentId },
       slaMinutes: 30,
       nextCheckAt: new Date(NOW.getTime() + 60_000).toISOString(),
+      evidence: {},
     });
     expect(created.outcome).toBe("created");
 
@@ -198,6 +199,7 @@ describeEmbeddedPostgres("metrics collector", () => {
       owner: { agentId },
       slaMinutes: 30,
       nextCheckAt: new Date(NOW.getTime() + 60_000).toISOString(),
+      evidence: {},
     });
     expect(deduped.outcome).toBe("deduped");
 
@@ -207,7 +209,7 @@ describeEmbeddedPostgres("metrics collector", () => {
       sourceIssueId,
       actionId: created.recoveryActionId,
       status: "resolved",
-      outcome: "succeeded",
+      outcome: "restored",
       resolutionNote: "CI green on retry",
     });
     expect(resolved?.status).toBe("resolved");
