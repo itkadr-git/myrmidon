@@ -70,6 +70,18 @@ export interface BotPartitionThresholdRuntime {
   resolveThresholds(): Promise<WsBotDiskPartitionSettings>;
 }
 
+// A stopped sweep or a replayed gate response is not evidence of a healthy disk.
+export const BOT_PARTITION_SAMPLE_MAX_AGE_MS = 5 * 60 * 1000;
+
+function isFreshPhysicalSample(usage: BotPartitionUsage, nowMs: number): boolean {
+  const age = nowMs - Date.parse(usage.at);
+  return Number.isFinite(age) && age >= 0 && age < BOT_PARTITION_SAMPLE_MAX_AGE_MS
+    && Number.isSafeInteger(usage.totalBytes) && usage.totalBytes > 0
+    && Number.isSafeInteger(usage.usedBytes) && usage.usedBytes >= 0 && usage.usedBytes <= usage.totalBytes
+    && Number.isSafeInteger(usage.freeBytes) && usage.freeBytes >= 0
+    && usage.freeBytes <= usage.totalBytes - usage.usedBytes;
+}
+
 const EMPTY_STATE: BotPartitionThresholdState = {
   partition: null,
   settings: null,
@@ -97,6 +109,11 @@ export function createBotPartitionThresholdRuntime(
 
   async function updateFromPartition(usage: BotPartitionUsage): Promise<BotPartitionThresholdState> {
     const settings = await resolveThresholds();
+    if (!isFreshPhysicalSample(usage, now().getTime())) return markUnmeasured();
+    // statfs counts shared reflink extents once. Project quota counters are
+    // logical charges, not additive physical usage. The wire percent is rounded
+    // for display; derive the decision from bytes so 84.999% does not alert.
+    usage = { ...usage, usedPercent: usage.usedBytes / usage.totalBytes * 100 };
     const alert = partitionAlertLevel(usage.usedPercent, settings);
     const pressure = partitionPressureLevel(usage.usedPercent, settings);
     state = {
@@ -132,7 +149,9 @@ export function createBotPartitionThresholdRuntime(
   return {
     updateFromPartition,
     markUnmeasured,
-    current: () => state,
+    current: () => state.partition && !isFreshPhysicalSample(state.partition, now().getTime())
+      ? markUnmeasured()
+      : state,
     resolveThresholds,
   };
 }

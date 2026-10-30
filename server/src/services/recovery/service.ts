@@ -57,6 +57,7 @@ import {
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
+  issueWorkProducts,
   issueComments,
   issueApprovals,
   issueRecoveryActions,
@@ -4119,6 +4120,24 @@ export function recoveryService(
     ) {
       const latestRun = strandedAutoPolicyLatestRun;
       const assigneeAgentId = input.issue.assigneeAgentId;
+      const handoffEvidence = input.successfulRunHandoffEvidence ??
+        isExhaustedSuccessfulRunHandoff(latestRun);
+      const handoffExhausted = Boolean(
+        handoffEvidence &&
+          handoffEvidence.handoffAttempt >= handoffEvidence.maxHandoffAttempts,
+      );
+      // A replay must stand down even when its queued wake used the last retry.
+      // Check before the counter can select a manager handoff or blocked state.
+      const retryIdempotencyKey = buildStrandedAutoPolicyRetryIdempotencyKey({
+        issueId: input.issue.id,
+        sourceRunId: latestRun.id,
+      });
+      if (!handoffExhausted && await findExistingStrandedAutoPolicyRetryWake({
+        companyId: input.issue.companyId,
+        idempotencyKey: retryIdempotencyKey,
+      })) {
+        return input.issue;
+      }
       const maxAttemptsPerDay = readStrandedAutoRetriesPerDay();
       const [attemptsInWindow, managerAgentId, assigneeAgent] = await Promise.all([
         countStrandedAutoPolicyAttemptsInWindow(db, {
@@ -4166,7 +4185,23 @@ export function recoveryService(
         managerAgentId,
         escalationAgentId,
         targetIsAdm,
-        hasExecutionWorkflow: issueHasExistingExecutionWorkflow(input.issue),
+        hasExecutionWorkflow: issueHasExistingExecutionWorkflow({
+          ...input.issue,
+          hasOpenPullRequest: Boolean(await db.query.issueWorkProducts.findFirst({
+            where: and(
+              eq(issueWorkProducts.issueId, input.issue.id),
+              eq(issueWorkProducts.type, "pull_request"),
+              inArray(issueWorkProducts.status, [
+                "open",
+                "active",
+                "ready_for_review",
+                "approved",
+              ]),
+            ),
+            columns: { id: true },
+          })),
+        }),
+        successfulRunHandoffExhausted: handoffExhausted,
         assigneePaused,
       });
 

@@ -39,10 +39,12 @@ import {
   listWikiProjectOptions,
   listOperations,
   listPages,
+  listPageRevisions,
   listSources,
   readCompanyIdFromParams,
   readTemplate,
   readWikiPage,
+  rollbackWikiPage,
   recordPaperclipDistillationOutcome,
   reconcileWikiAgentResource,
   reconcileWikiProjectResource,
@@ -1131,6 +1133,60 @@ const plugin = definePlugin({
           title: stringField(body?.title),
           contents: stringField(body?.contents),
           expectedHash: stringField(body?.expectedHash),
+        }),
+      };
+    }
+
+    if (input.routeKey === "pages") {
+      return {
+        status: 200,
+        body: await listPages(ctx, {
+          companyId: input.companyId,
+          wikiId: stringField(input.query.wikiId),
+          spaceSlug: stringField(input.query.spaceSlug),
+          pageType: stringField(input.query.pageType),
+          includeRaw: input.query.includeRaw === "true" || input.query.includeRaw === "1",
+          limit: typeof input.query.limit === "string" ? Number(input.query.limit) : null,
+        }),
+      };
+    }
+
+    if (input.routeKey === "read-page") {
+      return {
+        status: 200,
+        body: await readWikiPage(ctx, {
+          companyId: input.companyId,
+          wikiId: stringField(input.query.wikiId),
+          spaceSlug: stringField(input.query.spaceSlug),
+          path: stringField(input.query.path) ?? "",
+        }),
+      };
+    }
+
+    if (input.routeKey === "page-revisions") {
+      return {
+        status: 200,
+        body: await listPageRevisions(ctx, {
+          companyId: input.companyId,
+          wikiId: stringField(input.query.wikiId),
+          spaceSlug: stringField(input.query.spaceSlug),
+          path: stringField(input.query.path) ?? "",
+          limit: typeof input.query.limit === "string" ? Number(input.query.limit) : null,
+        }),
+      };
+    }
+
+    if (input.routeKey === "rollback-page") {
+      const body = input.body as Record<string, unknown> | null;
+      return {
+        status: 200,
+        body: await rollbackWikiPage(ctx, {
+          companyId: input.companyId,
+          wikiId: stringField(body?.wikiId),
+          spaceSlug: stringField(body?.spaceSlug),
+          path: stringField(body?.path) ?? "",
+          revisionId: stringField(body?.revisionId) ?? "",
+          reason: stringField(body?.reason),
         }),
       };
     }
