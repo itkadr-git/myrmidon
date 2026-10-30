@@ -657,6 +657,7 @@ import {
   resolvePaperclipRunnerIdleTimeoutMs,
   resolveSessionCompactionPolicy,
   RunGuard,
+  resolveRunGuardOptions,
   type RunGuardStopReason,
   type RuntimeStatusUpdate,
   type SessionCompactionPolicy,
@@ -21773,7 +21774,7 @@ export function heartbeatService(
         run.controllerBootId !== legacyControllerBootId) return;
     activeRunExecutions.add(run.id);
     const executionControl = createAdapterExecutionControl();
-    const runGuard = new RunGuard();
+    let runGuard = new RunGuard();
     let runGuardStopReason: RunGuardStopReason | null = null;
     const stopForRunGuard = (reason: RunGuardStopReason) => {
       runGuardStopReason ??= reason;
@@ -21827,6 +21828,12 @@ export function heartbeatService(
         if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
         return;
       }
+
+      const teamLiveness = await teamLivenessRead().catch(() => null);
+      runGuard = new RunGuard(resolveRunGuardOptions({
+        agentConfig: agent.adapterConfig,
+        teamLiveness: teamLiveness?.settings,
+      }));
 
       // The claimed adapter identity is immutable recovery evidence. Do not
       // execute a newly selected adapter under a previous adapter's claim.

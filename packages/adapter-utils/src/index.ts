@@ -1,5 +1,5 @@
-export { RunGuard } from "./run-guard.js";
-export type { RunGuardDecision, RunGuardOptions, RunGuardStopReason } from "./run-guard.js";
+export { RunGuard, resolveRunGuardOptions } from "./run-guard.js";
+export type { RunGuardConfig, RunGuardDecision, RunGuardOptions, RunGuardStopReason } from "./run-guard.js";
 export type {
   AdapterAgent,
   AdapterRuntime,

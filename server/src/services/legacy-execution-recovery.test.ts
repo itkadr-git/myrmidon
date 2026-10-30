@@ -1,12 +1,18 @@
 import { expect, it, vi } from "vitest";
-import { RunGuard, toolFailureSignature, type AdapterExecutionContext } from "@myrmidon/adapter-utils";
+import {
+  RunGuard,
+  resolveRunGuardOptions,
+  toolFailureSignature,
+  type AdapterExecutionContext,
+} from "@myrmidon/adapter-utils";
 import { execute as executeHermesGateway } from "@myrmidon/hermes-paperclip-adapter/gateway/server";
 import { legacyExecutionNeedsReconciliation } from "./legacy-execution-recovery.js";
+import { buildHeartbeatRunStopMetadata } from "./heartbeat-stop-metadata.js";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../myrmidon/maintenance/domain.js";
 
 const runGuardReasons = ["model_call_limit", "idle_timeout", "tool_retry_loop"] as const;
 
-it.each(runGuardReasons)("turns %s into a no-auto-replay reconciliation", (reason) => {
+it.each(runGuardReasons)("does not hold guard-stopped %s runs in reconciliation", (reason) => {
   for (const status of ["failed", "timed_out", "interrupted", "cancelled"]) {
     expect(legacyExecutionNeedsReconciliation({
       runtimeMode: "legacy",
@@ -14,15 +20,209 @@ it.each(runGuardReasons)("turns %s into a no-auto-replay reconciliation", (reaso
       errorCode: reason,
       scheduledRetryAttempt: 0,
       resultJson: { conversationContinuation: "continue_conversation_v1" },
-    })).toBe(true);
+    })).toBe(false);
     expect(legacyExecutionNeedsReconciliation({
       runtimeMode: "legacy",
       status,
       errorCode: "cancelled",
       scheduledRetryAttempt: 0,
       resultJson: { runGuardStopReason: reason },
-    })).toBe(true);
+    })).toBe(false);
   }
+});
+
+it("pauses the idle deadline during an active quiet tool run for 25 minutes", async () => {
+  vi.useFakeTimers();
+  try {
+    const guard = new RunGuard({ idleTimeoutMs: 20 * 60 * 1000 });
+    const onIdle = vi.fn();
+    guard.startIdleWatch(onIdle);
+
+    // Active tool starts: idle timer is paused
+    guard.pauseIdle();
+
+    // 25 minutes elapsed during quiet tool execution (exceeding 20 minute limit)
+    await vi.advanceTimersByTimeAsync(25 * 60 * 1000);
+    expect(guard.idle().stop).toBe(false);
+    expect(onIdle).not.toHaveBeenCalled();
+
+    // Tool completes: idle timer resumes
+    guard.resumeIdle();
+    expect(onIdle).not.toHaveBeenCalled();
+
+    // Another 19 minutes of silence: still not timed out
+    await vi.advanceTimersByTimeAsync(19 * 60 * 1000);
+    expect(guard.idle().stop).toBe(false);
+    expect(onIdle).not.toHaveBeenCalled();
+
+    // Reaching 20 minutes of silence after tool completion: triggers idle_timeout
+    await vi.advanceTimersByTimeAsync(1 * 60 * 1000);
+    expect(guard.idle().stop).toBe(true);
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("pauses gateway idle timeout during a 25-minute quiet tool execution without false idle trigger", async () => {
+  vi.useFakeTimers();
+  try {
+    const guard = new RunGuard({ idleTimeoutMs: 20 * 60 * 1000 });
+    const onRunGuardStop = vi.fn(async () => undefined);
+    const ctx: AdapterExecutionContext = {
+      runId: "quiet-tool-run",
+      agent: { id: "agent-test", companyId: "company-test", name: "test", adapterType: "hermes_gateway", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: "issue-test" },
+      config: { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "test", timeoutSec: 10, sessionKeyStrategy: "run" },
+      context: { issueId: "issue-test" },
+      runGuard: guard,
+      onRunGuardStop,
+      onLog: vi.fn(async () => undefined),
+      onMeta: vi.fn(async () => undefined),
+    };
+
+    const newline = String.fromCharCode(10);
+    const startSse = [
+      `event: tool.started`,
+      `data: ${JSON.stringify({ tool: "bash", preview: "make long-build" })}`,
+      "", "",
+    ].join(newline);
+
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "quiet-tool-gateway-run", status: "started" }), { status: 200 });
+      if (url.includes("/events")) return new Response(startSse, { status: 200, headers: { "content-type": "text/event-stream" } });
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    }));
+
+    await executeHermesGateway(ctx);
+
+    // Tool started -> idle is paused
+    expect(guard.isIdlePaused()).toBe(true);
+
+    // 25 minutes of quiet tool execution
+    await vi.advanceTimersByTimeAsync(25 * 60 * 1000);
+    expect(guard.idle().stop).toBe(false);
+    expect(onRunGuardStop).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("deduplicates repeated failed tool call updates by callId so duplicate events do not increment retry count", () => {
+  const guard = new RunGuard({ toolRetryLimit: 3 });
+  const failedCalls = new Set<string>();
+
+  const recordFailedCall = (callId: string, name: string, args: unknown) => {
+    if (failedCalls.has(callId)) {
+      return guard.event();
+    }
+    failedCalls.add(callId);
+    return guard.toolFailure(name, args);
+  };
+
+  const args = { file: "test.ts" };
+  // First failed event for call-1: count 1
+  expect(recordFailedCall("call-1", "patch", args).stop).toBe(false);
+  // Duplicate failed event for same call-1: deduplicated, count remains 1
+  expect(recordFailedCall("call-1", "patch", args).stop).toBe(false);
+  expect(recordFailedCall("call-1", "patch", args).stop).toBe(false);
+
+  // Second failure for call-2: count 2
+  expect(recordFailedCall("call-2", "patch", args).stop).toBe(false);
+  // Duplicate for call-2: deduplicated
+  expect(recordFailedCall("call-2", "patch", args).stop).toBe(false);
+
+  // Third failure for call-3: reaches limit 3 -> stops
+  expect(recordFailedCall("call-3", "patch", args)).toEqual({ stop: true, reason: "tool_retry_loop" });
+});
+
+it("resolves guard limits with defaults (150 calls / 20 min / 3) and applies agent/team/env overrides", () => {
+  // Defaults
+  const def = resolveRunGuardOptions();
+  expect(def.modelCallLimit).toBe(150);
+  expect(def.idleTimeoutMs).toBe(20 * 60 * 1000);
+  expect(def.toolRetryLimit).toBe(3);
+
+  // Team overrides
+  const team = resolveRunGuardOptions({
+    teamLiveness: {
+      runGuard: { modelCallLimit: 80, idleTimeoutSec: 600, toolRetryLimit: 5 },
+    },
+  });
+  expect(team.modelCallLimit).toBe(80);
+  expect(team.idleTimeoutMs).toBe(600 * 1000);
+  expect(team.toolRetryLimit).toBe(5);
+
+  // Agent overrides (takes precedence over team)
+  const agent = resolveRunGuardOptions({
+    teamLiveness: { modelCallLimit: 80 },
+    agentConfig: {
+      runGuard: { modelCallLimit: 50, idleTimeoutMs: 300000, toolRetryLimit: 2 },
+    },
+  });
+  expect(agent.modelCallLimit).toBe(50);
+  expect(agent.idleTimeoutMs).toBe(300000);
+  expect(agent.toolRetryLimit).toBe(2);
+
+  // Env overrides
+  const env = resolveRunGuardOptions({
+    env: {
+      MYRMIDON_RUN_GUARD_MODEL_CALL_LIMIT: "200",
+      MYRMIDON_RUN_GUARD_IDLE_TIMEOUT_MS: "900000",
+      MYRMIDON_RUN_GUARD_TOOL_RETRY_LIMIT: "4",
+    },
+  });
+  expect(env.modelCallLimit).toBe(200);
+  expect(env.idleTimeoutMs).toBe(900000);
+  expect(env.toolRetryLimit).toBe(4);
+});
+
+it("aborts executionControl, sets runErrorCode and avoids same-revision reschedule on run guard stop", () => {
+  const executionControl = {
+    controller: new AbortController(),
+  };
+  const guard = new RunGuard();
+  let runGuardStopReason: string | null = null;
+
+  const stopForRunGuard = (reason: "model_call_limit" | "idle_timeout" | "tool_retry_loop") => {
+    runGuardStopReason ??= reason;
+    guard.stop(reason);
+    guard.clearIdleWatch();
+    if (!executionControl.controller.signal.aborted) {
+      executionControl.controller.abort(new Error(reason));
+    }
+  };
+
+  // Trigger guard stop
+  stopForRunGuard("idle_timeout");
+
+  // 1. executionControl signal is aborted with error
+  expect(executionControl.controller.signal.aborted).toBe(true);
+  expect(executionControl.controller.signal.reason).toBeInstanceOf(Error);
+  expect((executionControl.controller.signal.reason as Error).message).toBe("idle_timeout");
+
+  // 2. runGuardStopReason and stopReason in metadata match
+  expect(runGuardStopReason).toBe("idle_timeout");
+  const stopMetadata = buildHeartbeatRunStopMetadata({
+    adapterType: "hermes_gateway",
+    adapterConfig: {},
+    outcome: "cancelled",
+    errorCode: "idle_timeout",
+    errorMessage: "Run guard stopped: idle_timeout",
+  });
+  expect(stopMetadata.stopReason).toBe("idle_timeout");
+
+  // 3. legacyExecutionNeedsReconciliation returns false (no manual hold)
+  const isHeld = legacyExecutionNeedsReconciliation({
+    runtimeMode: "legacy",
+    status: "cancelled",
+    errorCode: "idle_timeout",
+    scheduledRetryAttempt: 0,
+    resultJson: { runGuardStopReason: "idle_timeout" },
+  });
+  expect(isHeld).toBe(false);
 });
 
 it("allows N model calls and rejects N+1 before it can dispatch", () => {

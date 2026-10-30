@@ -984,6 +984,9 @@ async function observeRunGuardEvent(input: {
   if (!guard) return;
   if (eventName === "tool.started") {
     state.guardPendingToolCalls += 1;
+    if (state.guardPendingToolCalls === 1) {
+      guard.pauseIdle();
+    }
     await observeModelTurn(ctx, state);
     const name = toolNameFromEvent(record);
     const args = record?.input ?? record?.arguments ?? record?.preview;
@@ -993,6 +996,9 @@ async function observeRunGuardEvent(input: {
   }
   if (eventName === "tool.completed") {
     state.guardPendingToolCalls = Math.max(0, state.guardPendingToolCalls - 1);
+    if (state.guardPendingToolCalls === 0) {
+      guard.resumeIdle();
+    }
     const name = toolNameFromEvent(record);
     const args = popGuardToolArguments(state, name);
     const decision = toolHasError(record)
@@ -1002,7 +1008,16 @@ async function observeRunGuardEvent(input: {
     if (state.guardPendingToolCalls === 0) state.guardModelTurnObserved = false;
     return;
   }
-  if (eventName === "message.delta" && state.guardPendingToolCalls === 0) {
+  if (
+    (eventName === "message.delta" ||
+      eventName === "reasoning.available" ||
+      eventName === "content" ||
+      eventName === "model.request" ||
+      eventName === "model.started" ||
+      eventName === "llm.request" ||
+      eventName === "llm.started") &&
+    state.guardPendingToolCalls === 0
+  ) {
     await observeModelTurn(ctx, state);
   }
   guard.event();

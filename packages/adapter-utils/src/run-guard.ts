@@ -18,6 +18,84 @@ export interface RunGuardOptions {
   now?: () => number;
 }
 
+export interface RunGuardConfig {
+  modelCallLimit?: number | null;
+  idleTimeoutMs?: number | null;
+  idleTimeoutSec?: number | null;
+  toolRetryLimit?: number | null;
+}
+
+export function resolveRunGuardOptions(sources?: {
+  agentConfig?: unknown;
+  teamLiveness?: unknown;
+  env?: Record<string, string | undefined>;
+  now?: () => number;
+}): RunGuardOptions {
+  const agentObj = sources?.agentConfig && typeof sources.agentConfig === "object"
+    ? (sources.agentConfig as Record<string, unknown>)
+    : undefined;
+  const agentGuardObj = agentObj?.runGuard && typeof agentObj.runGuard === "object"
+    ? (agentObj.runGuard as Record<string, unknown>)
+    : undefined;
+
+  const teamObj = sources?.teamLiveness && typeof sources.teamLiveness === "object"
+    ? (sources.teamLiveness as Record<string, unknown>)
+    : undefined;
+  const teamGuardObj = teamObj?.runGuard && typeof teamObj.runGuard === "object"
+    ? (teamObj.runGuard as Record<string, unknown>)
+    : undefined;
+
+  const env = sources?.env ?? process.env;
+
+  const parseNum = (val: unknown): number | undefined => {
+    if (typeof val === "number" && Number.isFinite(val) && val > 0) return val;
+    if (typeof val === "string") {
+      const n = Number(val);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+    return undefined;
+  };
+
+  const modelCallLimit =
+    parseNum(agentGuardObj?.modelCallLimit) ??
+    parseNum(agentObj?.modelCallLimit) ??
+    parseNum(teamGuardObj?.modelCallLimit) ??
+    parseNum(teamObj?.modelCallLimit) ??
+    parseNum(env.MYRMIDON_RUN_GUARD_MODEL_CALL_LIMIT) ??
+    DEFAULT_MODEL_CALL_LIMIT;
+
+  const idleTimeoutSec =
+    parseNum(agentGuardObj?.idleTimeoutSec) ??
+    parseNum(agentObj?.idleTimeoutSec) ??
+    parseNum(teamGuardObj?.idleTimeoutSec) ??
+    parseNum(teamObj?.idleTimeoutSec) ??
+    parseNum(env.MYRMIDON_RUN_GUARD_IDLE_TIMEOUT_SEC);
+
+  const idleTimeoutMs =
+    parseNum(agentGuardObj?.idleTimeoutMs) ??
+    parseNum(agentObj?.idleTimeoutMs) ??
+    parseNum(teamGuardObj?.idleTimeoutMs) ??
+    parseNum(teamObj?.idleTimeoutMs) ??
+    (idleTimeoutSec !== undefined ? idleTimeoutSec * 1000 : undefined) ??
+    parseNum(env.MYRMIDON_RUN_GUARD_IDLE_TIMEOUT_MS) ??
+    DEFAULT_IDLE_TIMEOUT_MS;
+
+  const toolRetryLimit =
+    parseNum(agentGuardObj?.toolRetryLimit) ??
+    parseNum(agentObj?.toolRetryLimit) ??
+    parseNum(teamGuardObj?.toolRetryLimit) ??
+    parseNum(teamObj?.toolRetryLimit) ??
+    parseNum(env.MYRMIDON_RUN_GUARD_TOOL_RETRY_LIMIT) ??
+    DEFAULT_TOOL_RETRY_LIMIT;
+
+  return {
+    modelCallLimit,
+    idleTimeoutMs,
+    toolRetryLimit,
+    now: sources?.now,
+  };
+}
+
 /**
  * Pure, adapter-neutral run circuit breaker. Callers provide already-classified
  * model/tool events; no tool arguments or provider payloads are retained.
@@ -31,6 +109,7 @@ export class RunGuard {
   private lastEventAt: number;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private idleCallback: (() => void) | null = null;
+  private idlePausedCount = 0;
   private lastToolFailure: string | null = null;
   private toolFailureCount = 0;
   private stoppedReason: RunGuardStopReason | null = null;
@@ -60,11 +139,28 @@ export class RunGuard {
     return { stop: false };
   }
 
+  pauseIdle(): void {
+    this.idlePausedCount += 1;
+    this.clearIdleWatch();
+  }
+
+  resumeIdle(): void {
+    this.idlePausedCount = Math.max(0, this.idlePausedCount - 1);
+    if (this.idlePausedCount === 0) {
+      this.lastEventAt = this.now();
+      this.scheduleIdleWatch();
+    }
+  }
+
+  isIdlePaused(): boolean {
+    return this.idlePausedCount > 0;
+  }
+
   private scheduleIdleWatch(): void {
-    if (!this.idleCallback || this.stoppedReason) return;
+    if (!this.idleCallback || this.stoppedReason || this.idlePausedCount > 0) return;
     this.clearIdleWatch();
     this.idleTimer = setTimeout(() => {
-      if (this.stoppedReason) return;
+      if (this.stoppedReason || this.idlePausedCount > 0) return;
       const onIdle = this.idleCallback;
       const decision = this.idle();
       if (decision.stop) onIdle?.();
@@ -82,6 +178,8 @@ export class RunGuard {
   }
 
   idle(): RunGuardDecision {
+    if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
+    if (this.idlePausedCount > 0) return { stop: false };
     return this.now() - this.lastEventAt >= this.idleTimeoutMs
       ? this.stop("idle_timeout")
       : { stop: false };
@@ -122,7 +220,7 @@ export class RunGuard {
 }
 
 export function toolFailureSignature(name: string, args: unknown): string {
-  return createHash("sha256").update(`${name}\u0000${stableJson(args)}`).digest("hex");
+  return createHash("sha256").update(`${name}\0${stableJson(args)}`).digest("hex");
 }
 
 function stableJson(value: unknown): string {
