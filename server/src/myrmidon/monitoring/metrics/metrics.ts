@@ -18,6 +18,12 @@
 //  - index.ts — the app wiring (app.ts mounts that).
 
 import { and, count, eq, gt, gte, isNotNull, isNull, sql } from "drizzle-orm";
+import type { ExecutionProjection } from "@myrmidon/shared";
+import { executionProjectionsForRuns } from "../../../services/execution-projection.js";
+import {
+  KNOWN_EXECUTION_PHASES,
+  computeRunsExecutionEvaluation,
+} from "./runs-reconnecting.js";
 import {
   agents,
   companies,
@@ -106,6 +112,8 @@ export const METRIC_FAMILIES = [
   "myrmidon_runs_failed_total",
   "myrmidon_runs_failed_window",
   "myrmidon_run_duration_seconds",
+  "myrmidon_runs_execution_phase",
+  "myrmidon_runs_reconnecting_oldest_seconds",
   "myrmidon_role_queue_tasks",
   "myrmidon_review_tasks_without_reviewer",
   "myrmidon_blocked_tasks_without_assignee",
@@ -260,6 +268,16 @@ export interface MetricsSnapshotFields {
   corpusShadowRagflowSecondsP95?: number | null;
   corpusShadowModuleSecondsP50?: number | null;
   corpusShadowModuleSecondsP95?: number | null;
+
+  /**
+   * myrmidon(1.6.6 rc.19 MONITORING OPE-10046): live runs by projection phase.
+   */
+  runsExecutionPhase?: Array<{ phase: string; count: number }> | null;
+
+  /**
+   * myrmidon(1.6.6 rc.19 MONITORING OPE-10046): duration in seconds of the oldest run in reconnecting.
+   */
+  runsReconnectingOldestSeconds?: number | null;
 }
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
@@ -357,6 +375,75 @@ async function readRunCounters(db: Db): Promise<{
     } else if (row.status === "failed") failedTotal += Number(row.total);
   }
   return { active, queued, failedTotal };
+}
+
+/**
+ * Reads live runs, computes execution projections, and returns phase counts and oldest reconnecting seconds.
+ * myrmidon(1.6.6 rc.19 MONITORING OPE-10046).
+ */
+async function readRunsExecutionMetrics(
+  db: Db,
+  now: Date,
+): Promise<{
+  runsExecutionPhase: Array<{ phase: string; count: number }>;
+  runsReconnectingOldestSeconds: number;
+}> {
+  const liveRuns = await db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      status: heartbeatRuns.status,
+      startedAt: heartbeatRuns.startedAt,
+      createdAt: heartbeatRuns.createdAt,
+      lastConfirmedActivityAt: heartbeatRuns.lastConfirmedActivityAt,
+      lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
+      lastOutputAt: heartbeatRuns.lastOutputAt,
+      lastEventAt: heartbeatRuns.lastEventAt,
+      updatedAt: heartbeatRuns.updatedAt,
+    })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.status, "running"));
+
+  const runsByCompany = new Map<string, string[]>();
+  for (const run of liveRuns) {
+    const list = runsByCompany.get(run.companyId) ?? [];
+    list.push(run.id);
+    runsByCompany.set(run.companyId, list);
+  }
+
+  const allProjections = new Map<string, ExecutionProjection>();
+  for (const [companyId, runIds] of runsByCompany.entries()) {
+    const projections = await executionProjectionsForRuns(
+      db,
+      companyId,
+      runIds,
+      now,
+    );
+    for (const [runId, proj] of projections.entries()) {
+      allProjections.set(runId, proj);
+    }
+  }
+
+  const evaluation = computeRunsExecutionEvaluation(
+    liveRuns,
+    allProjections,
+    now,
+  );
+
+  const phaseList: Array<{ phase: string; count: number }> = [];
+  for (const phase of KNOWN_EXECUTION_PHASES) {
+    phaseList.push({ phase, count: evaluation.phaseCounts[phase] ?? 0 });
+  }
+  for (const [phase, count] of Object.entries(evaluation.phaseCounts)) {
+    if (!KNOWN_EXECUTION_PHASES.includes(phase as any)) {
+      phaseList.push({ phase, count });
+    }
+  }
+
+  return {
+    runsExecutionPhase: phaseList,
+    runsReconnectingOldestSeconds: evaluation.reconnectingOldestSeconds,
+  };
 }
 
 /** p50/p95 over finished run durations (finishedAt - startedAt), seconds. */
@@ -579,6 +666,17 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readRunCounters(deps.db),
     { active: 0, queued: 0, failedTotal: 0 },
   );
+  const runsExecution = await guarded(
+    "myrmidon_runs_execution_phase|myrmidon_runs_reconnecting_oldest_seconds",
+    () => readRunsExecutionMetrics(deps.db, now),
+    {
+      runsExecutionPhase: KNOWN_EXECUTION_PHASES.map((phase) => ({
+        phase,
+        count: 0,
+      })),
+      runsReconnectingOldestSeconds: 0,
+    },
+  );
   const durations = await guarded(
     "myrmidon_run_duration_seconds",
     () => readRunDurations(deps.db, latencyWindowStart),
@@ -700,6 +798,8 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       runsFailedWindow: failedWindow,
       runDurationSecondsP50: durations.p50,
       runDurationSecondsP95: durations.p95,
+      runsExecutionPhase: runsExecution.runsExecutionPhase,
+      runsReconnectingOldestSeconds: runsExecution.runsReconnectingOldestSeconds,
       corpusShadowRagflowSecondsP50: shadowLatencies.ragflow.p50,
       corpusShadowRagflowSecondsP95: shadowLatencies.ragflow.p95,
       corpusShadowModuleSecondsP50: shadowLatencies.module.p50,
@@ -921,6 +1021,31 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
         ...(snapshot.runDurationSecondsP95 !== null
           ? [`myrmidon_run_duration_seconds{${R},quantile="0.95"} ${formatSampleValue(snapshot.runDurationSecondsP95)}`]
           : []),
+      ],
+    ),
+  );
+  const phaseSamples = (
+    snapshot.runsExecutionPhase ??
+    KNOWN_EXECUTION_PHASES.map((phase) => ({ phase, count: 0 }))
+  ).map(
+    (item) =>
+      `myrmidon_runs_execution_phase{${R},phase="${escapeLabelValue(item.phase)}"} ${formatSampleValue(item.count)}`,
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_runs_execution_phase",
+      "Live runs (status running) by execution projection phase.",
+      "gauge",
+      phaseSamples,
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_runs_reconnecting_oldest_seconds",
+      "Duration in seconds of the oldest run currently in reconnecting.",
+      "gauge",
+      [
+        `myrmidon_runs_reconnecting_oldest_seconds{${R}} ${formatSampleValue(snapshot.runsReconnectingOldestSeconds ?? 0)}`,
       ],
     ),
   );

@@ -1847,6 +1847,15 @@ configured token the endpoint answers 401 for everyone — it never falls open.
 | `MYRMIDON_METRICS_TOKEN` | 1.7-METRICS | unset | The scraper bearer token read from the environment, used when no secret name is configured | Unset together with the secret name — 401 for every request |
 | `MYRMIDON_METRICS_ERROR_WINDOW_SEC` | 1.7-METRICS | `3600` | Window (seconds) of the error families (failed runs, gateway spend). A request may override it per scrape with `?window=<sec>` | From 60 to 86400; below 60 — 60, above 86400 — 86400, non-numeric — the default |
 | `MYRMIDON_METRICS_LATENCY_WINDOW_SEC` | 1.7-METRICS | `21600` | Window (seconds) of the latency family: p50/p95 of finished run durations (finishedAt − startedAt). A request may override it with `?latency_window=<sec>` | From 300 to 86400; below 300 — 300, above 86400 — 86400, non-numeric — the default |
+
+### Runs Execution Phase & Reconnecting Watchdog (1.6.6 rc.19 MONITORING OPE-10046)
+
+The `/metrics` endpoint exposes two gauges for monitoring live run health:
+- `myrmidon_runs_execution_phase{role="all",phase="..."}`: Gauge of live runs (status `running`) by execution projection phase (`working`, `reconnecting`, `finishing`, `retry_scheduled`, `recovery_needed`). Computed using the standard `executionProjectionsForRuns` service.
+- `myrmidon_runs_reconnecting_oldest_seconds{role="all"}`: Duration in seconds of the oldest run currently hanging in `reconnecting` (0 when no runs are reconnecting).
+
+In-product watchdog `RunsReconnectingWatchdog` periodically inspects live runs. If >= 3 runs are in `reconnecting` for > 5 minutes OR > 50% of live runs are in `reconnecting`, it raises an alert in the board's alert recovery system with runbook `runs-reconnecting` listing affected run IDs.
+
 <!-- myrmidon(BOT-DISK-A): bot disk lifecycle — settings row -->
 | `MYRMIDON_BOT_DISK_IDLE_TTL_MS` | BOT-DISK-A | `21600000` (6 h) | First-start default of the idle time after which an abandoned bot draft directory (bot `scratch` volume and clones in `workspace`; the `hermes` memory volume is never touched) is reaped by the maintenance-tick sweep. Once an instance admin saves `idleTtlMs` through `PATCH /api/myrmidon/bot-disk` (stored in `instance_settings.general.botDisk`, audited as `instance.bot_disk.updated`), the stored value wins; the sweep re-reads it every tick, no restart needed. `GET /api/myrmidon/bot-disk` (any board member) reports the effective values and their sources | From 5 min to 30 days; outside the window — the default (6 h) |
 | `MYRMIDON_BOT_DISK_LIFECYCLE_ENABLED` | BOT-DISK-A | unset (on) | First-start default of whether the sweep reaps at all; `1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`. A stored `enabled` in `general.botDisk` (`PATCH /api/myrmidon/bot-disk`, instance admin) wins | Any other value is ignored (on) |
