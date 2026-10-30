@@ -134,6 +134,15 @@ describe("interaction readdress report", () => {
         INSERT INTO companies (id, name, issue_prefix)
         VALUES (${companyId}, 'Interaction readdress report test', 'IRR-REPORT-TEST')
       `);
+      // Create agents first to satisfy projects.lead_agent_id and project_memberships FKs
+      await db.execute(sql`
+        INSERT INTO agents (id, company_id, name)
+        VALUES (${id(1)}, ${companyId}, 'Creator'),
+               (${id(2)}, ${companyId}, 'Existing recipient'),
+               (${id(3)}, ${companyId}, 'Architect'),
+               (${id(4)}, ${companyId}, 'Secondary reviewer'),
+               (${id(10)}, ${companyId}, 'Project Lead Only In LeadAgentId')
+      `);
       // Point 2 & 3: project with lead_agent_id = id(10) (lead only in lead_agent_id, not in project_memberships)
       await db.execute(sql`
         INSERT INTO projects (id, company_id, name, lead_agent_id)
@@ -142,16 +151,6 @@ describe("interaction readdress report", () => {
       await db.execute(sql`
         INSERT INTO issues (id, company_id, title, identifier, project_id, caste_key)
         VALUES (${issueId}, ${companyId}, 'Readdress report fixture', 'IRR-1', ${projectId}, 'review')
-      `);
-      await db.execute(sql`
-        INSERT INTO agents (id, company_id, name)
-        VALUES (${id(1)}, ${companyId}, 'Creator'), (${id(2)}, ${companyId}, 'Existing recipient'),
-               (${id(10)}, ${companyId}, 'Project Lead Only In LeadAgentId')
-      `);
-
-      await db.execute(sql`
-        INSERT INTO agents (id, company_id, name)
-        VALUES (${id(3)}, ${companyId}, 'Architect'), (${id(4)}, ${companyId}, 'Secondary reviewer')
       `);
       // Note: id(3) and id(4) are in project_memberships; id(10) is ONLY in projects.lead_agent_id
       await db.execute(sql`

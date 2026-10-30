@@ -4,13 +4,21 @@ import {
   buildEscalationChain,
   type EscalationChainPolicy,
   type EscalationRole,
-  type InteractionPrincipal,
   type InteractionRecipient,
   type ProjectEscalationRoles,
-  type ProjectInteractionRole,
-  type ScopedInteractionPrincipal,
   interactionRecipientSchema,
 } from "@myrmidon/shared";
+
+type ScopedInteractionPrincipal = {
+  type?: "agent" | "user";
+  agentId?: string | null;
+  userId?: string | null;
+  serviceQueue?: string | null;
+  projectId?: string | null;
+  casteKey?: string | null;
+  projectRoles?: readonly EscalationRole[] | null;
+  isJoinedMember?: boolean;
+};
 
 export type PendingCard = {
   id: string;
@@ -63,14 +71,6 @@ function resolveReportRecipient(params: {
   if (params.explicitRecipient) return params.explicitRecipient;
   if (params.serviceQueue) return { serviceQueue: params.serviceQueue };
 
-  if (params.policy === "anyone" || params.policy === "not_creator") {
-    throw new Error(
-      params.policy === "anyone"
-        ? "anyone defines an audience, not a deterministic recipient"
-        : "not_creator excludes the creator, but no eligible independent recipient is configured"
-    );
-  }
-
   const sameRecipient = (a: InteractionRecipient, b: InteractionRecipient): boolean => {
     if ("agentId" in a && "agentId" in b) return a.agentId === b.agentId;
     if ("userId" in a && "userId" in b) return a.userId === b.userId;
@@ -87,7 +87,13 @@ function resolveReportRecipient(params: {
     return candidate;
   }
 
-  throw new Error(`No eligible recipient configured for policy: ${params.policy}`);
+  throw new Error(
+    params.policy === "anyone"
+      ? "anyone defines an audience, not a deterministic recipient"
+      : params.policy === "not_creator"
+        ? "not_creator excludes the creator, but no eligible independent recipient is configured"
+        : `No eligible recipient configured for policy: ${params.policy}`
+  );
 }
 
 /** Resolve a concrete participant when one is eligible; otherwise explain ambiguity. */
@@ -107,7 +113,7 @@ export function resolveAddresslessCard<T extends AddresslessCardInput>(card: T):
   const executionPolicy = asObject(card.executionPolicy);
   const payloadPolicy = asObject(card.payload?.escalationPolicy);
   const reviewPolicy = payloadPolicy ?? asObject(executionPolicy?.reviewEscalationPolicy);
-  const participants = asObject(reviewPolicy?.participants) as Partial<Record<ProjectInteractionRole, ScopedInteractionPrincipal | InteractionRecipient | null>> | null;
+  const participants = asObject(reviewPolicy?.participants) as Partial<Record<EscalationRole, ScopedInteractionPrincipal | InteractionRecipient | null>> | null;
 
   const creator: InteractionRecipient = card.createdByAgentId
     ? { agentId: card.createdByAgentId }
@@ -121,7 +127,7 @@ export function resolveAddresslessCard<T extends AddresslessCardInput>(card: T):
 
   const rawRouting = asObject(card.payload?.routing) ?? card.payload ?? {};
   const routingPolicy = asObject(rawRouting.escalationPolicy) ?? asObject(rawRouting.policy);
-  const routingRoles = asObject(rawRouting.projectRoles) as Partial<Record<ProjectInteractionRole, ScopedInteractionPrincipal | InteractionRecipient | null>> | null;
+  const routingRoles = asObject(rawRouting.projectRoles) as Partial<Record<EscalationRole, ScopedInteractionPrincipal | InteractionRecipient | null>> | null;
 
   // Canonical project membership: lead_agent_id OR joined membership OR agent_nests (server/src/myrmidon/project-membership.ts)
   const isProjectMember = (agentId: string | null | undefined): boolean => {
@@ -173,8 +179,13 @@ export function resolveAddresslessCard<T extends AddresslessCardInput>(card: T):
     ? rawRouting.routeType
     : "decision";
 
-  const parsedRecipient = interactionRecipientSchema.safeParse(rawRouting.recipient);
-  const explicitRecipient = parsedRecipient.success ? parsedRecipient.data : null;
+  const rawRecipient = asObject(rawRouting.recipient);
+  const explicitRecipient: InteractionRecipient | null = rawRecipient
+    ? (typeof rawRecipient.agentId === "string" && rawRecipient.agentId ? { agentId: rawRecipient.agentId }
+      : typeof rawRecipient.userId === "string" && rawRecipient.userId ? { userId: rawRecipient.userId }
+      : typeof rawRecipient.serviceQueue === "string" && rawRecipient.serviceQueue ? { serviceQueue: rawRecipient.serviceQueue }
+      : null)
+    : null;
   const serviceQueue = typeof rawRouting.serviceQueue === "string" ? rawRouting.serviceQueue : null;
   const stepDelayMinutes = typeof effectivePolicy?.stepDelayMinutes === "number" && Number.isFinite(effectivePolicy.stepDelayMinutes)
     ? effectivePolicy.stepDelayMinutes
