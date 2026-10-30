@@ -8,7 +8,7 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { errorHandler } from "../../routes/error-handler.js";
+import { errorHandler } from "../../middleware/error-handler.js";
 import { moduleStatuses } from "./client-license.js";
 import { createDenyListReader, writeDenyListFile } from "./denylist.js";
 import { keyId, verifyLicense } from "./license.js";
