@@ -29,6 +29,7 @@ export async function hydrateSuccessfulRunHandoffLiveness(
     .map(([issueId]) => issueId);
   if (unresolvedIssueIds.length === 0) return states;
 
+  const unresolvedSet = new Set(unresolvedIssueIds);
   const [activeRuns, activeWakes] = await Promise.all([
     dbOrTx
       .select({ id: heartbeatRuns.id, issueId: heartbeatRunIssueId })
@@ -36,7 +37,6 @@ export async function hydrateSuccessfulRunHandoffLiveness(
       .where(and(
         eq(heartbeatRuns.companyId, companyId),
         inArray(heartbeatRuns.status, [...SUCCESSFUL_RUN_HANDOFF_LIVE_RUN_STATUSES]),
-        inArray(heartbeatRunIssueId, unresolvedIssueIds),
       )),
     dbOrTx
       .select({ issueId: wakeRequestIssueId })
@@ -44,18 +44,19 @@ export async function hydrateSuccessfulRunHandoffLiveness(
       .where(and(
         eq(agentWakeupRequests.companyId, companyId),
         inArray(agentWakeupRequests.status, [...SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES]),
-        inArray(wakeRequestIssueId, unresolvedIssueIds),
       )),
   ]);
 
   const liveRunByIssueId = new Map<string, string>();
   for (const row of activeRuns as Array<{ id: string; issueId: string | null }>) {
-    if (row.issueId && !liveRunByIssueId.has(row.issueId)) liveRunByIssueId.set(row.issueId, row.id);
+    if (row.issueId && unresolvedSet.has(row.issueId) && !liveRunByIssueId.has(row.issueId)) {
+      liveRunByIssueId.set(row.issueId, row.id);
+    }
   }
   const liveWakeIssueIds = new Set(
     (activeWakes as Array<{ issueId: string | null }>)
       .map((row) => row.issueId)
-      .filter((issueId): issueId is string => Boolean(issueId)),
+      .filter((issueId): issueId is string => Boolean(issueId && unresolvedSet.has(issueId))),
   );
 
   for (const issueId of unresolvedIssueIds) {

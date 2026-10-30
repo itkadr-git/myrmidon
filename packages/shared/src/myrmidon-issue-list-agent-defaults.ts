@@ -14,9 +14,10 @@
 //   - the full view stays reachable through an explicit `view=full` with an
 //     explicit `limit <= 100`.
 //
-// The board actor (`req.actor.type === "board"`) is untouched — the UI keeps
-// the previous behaviour byte-for-byte. Setting `enabled: false` restores
-// the pre-feature behaviour for the agent actor as well, byte-for-byte.
+// The board session actor (`req.actor.type === "board"` without `source === "board_key"`)
+// is untouched — the UI keeps the previous behaviour byte-for-byte. Non-agent integration
+// board keys (`source === "board_key"`) get the same default limit and compact view as agents (OPE-9997).
+// Setting `enabled: false` restores the pre-feature behaviour for both, byte-for-byte.
 //
 // The settings live in `instance_settings.general.issuesListAgentDefaults`;
 // the key is absent on instances that never toggled it, and absent means

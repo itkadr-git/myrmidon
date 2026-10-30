@@ -8516,12 +8516,12 @@ export function issueRoutes(
       rawLimit !== undefined && /^\d+$/.test(rawLimit)
         ? Number.parseInt(rawLimit, 10)
         : null;
-    // myrmidon(F16): agent actors get the defect-fix defaults (compact view,
-    // limit 200, max 500, description omitted in compact) behind the instance
-    // setting `issuesListAgentDefaults`; absent means ON, `{enabled: false}`
-    // restores the pre-feature behaviour byte-for-byte.
+    // myrmidon(F16, OPE-9997): agent actors and non-agent integration board keys
+    // get the defect-fix defaults (compact view, limit 200, max 500, description
+    // omitted in compact) behind the instance setting `issuesListAgentDefaults`;
+    // absent means ON, `{enabled: false}` restores the pre-feature behaviour byte-for-byte.
     const agentDefaultsEnabled =
-      req.actor.type === "agent" &&
+      (req.actor.type === "agent" || req.actor.source === "board_key") &&
       issueListAgentDefaultsEnabled(
         (await instanceSettings.getGeneral()).issuesListAgentDefaults,
       );
