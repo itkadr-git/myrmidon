@@ -37,6 +37,22 @@ const actors: Record<string, unknown> = {
 };
 const agentActor = { type: "agent", source: "agent_key", agentId: "a", companyId: COMPANY_A, keyId: "k" };
 
+type MockFn<T extends (...args: any[]) => any> = ReturnType<typeof vi.fn<T>>;
+
+type TestDeps = {
+  [K in keyof FleetSiteRoutesDeps as K extends "log" ? never : K]-?: FleetSiteRoutesDeps[K] extends ((...args: any[]) => any) | undefined
+    ? MockFn<NonNullable<FleetSiteRoutesDeps[K]>>
+    : FleetSiteRoutesDeps[K];
+} & {
+  rows: FleetSite[];
+  logEntries: Array<{ level: string; msg: string }>;
+  log: {
+    warn: MockFn<(objOrMsg: unknown, msg?: string) => void>;
+    error: MockFn<(objOrMsg: unknown, msg?: string) => void>;
+    info: MockFn<(objOrMsg: unknown, msg?: string) => void>;
+  };
+};
+
 function harness(
   secrets: string[] = ["fleetd-myr-vm1-token", "fleetd-myr-vm1-client-cert", "fleetd-myr-vm1-client-key", "myrmidon-site-ca"],
   opts: {
@@ -45,7 +61,7 @@ function harness(
     siteCa?: ReturnType<typeof generateSiteCa> | null;
     logMessages?: string[];
   } = {},
-) {
+): { app: express.Express; deps: TestDeps } {
   const rows: FleetSite[] = [];
   const logEntries: Array<{ level: string; msg: string }> = [];
   const recordLog = (level: string, objOrMsg: unknown, maybeMsg?: string) => {
@@ -68,7 +84,7 @@ function harness(
     rows.push(row);
     return row;
   });
-  const deps: FleetSiteRoutesDeps & { rows: FleetSite[]; logEntries: typeof logEntries } = {
+  const deps: TestDeps = {
     rows,
     logEntries,
     listSites: vi.fn(async (companyId: string) => rows.filter((r) => r.companyId === companyId)),
@@ -87,7 +103,7 @@ function harness(
     writeSecret: vi.fn(async (_companyId: string, _name: string, _value: string) => undefined),
     deleteSecret: vi.fn(async (_companyId: string, _name: string) => undefined),
     refreshRegistry: vi.fn(),
-    updateSite: vi.fn(async (companyId: string, name: string, patch: Partial<FleetSite>) => {
+    updateSite: vi.fn(async (companyId: string, name: string, patch: Partial<Pick<FleetSite, "clientCertNotAfter" | "clientCertFingerprint" | "certRotatedAt">>) => {
       const row = rows.find((site) => site.companyId === companyId && site.name === name);
       if (row) Object.assign(row, patch);
     }),
@@ -214,8 +230,7 @@ describe("fleet site enroll routes", () => {
     await request(app).post(path).send(body()).expect(201);
     const writesBeforeGet = deps.writeSecret.mock.calls.length;
 
-    const site = deps.createSite.mock.calls[0]![0] as unknown as FleetSite;
-    site.clientCertNotAfter = new Date(Date.now() + 86_400_000); // near expiry
+    deps.rows[0]!.clientCertNotAfter = new Date(Date.now() + 86_400_000); // near expiry
 
     // GET request should not write any secrets
     await request(app).get(path).expect(200);
@@ -228,8 +243,7 @@ describe("fleet site enroll routes", () => {
     const { app, deps } = harness(undefined, { siteCa: ca });
     const callsBeforeRotation = deps.writeSecret.mock.calls.length;
     await request(app).post(path).send(body()).expect(201);
-    const site = deps.createSite.mock.calls[0]![0] as unknown as FleetSite;
-    site.clientCertNotAfter = new Date(Date.now() + 86_400_000);
+    deps.rows[0]!.clientCertNotAfter = new Date(Date.now() + 86_400_000);
     deps.readClientCertificate.mockResolvedValue(client.cert);
 
     await rotateDueFleetSiteCertificates(deps, COMPANY_A);
@@ -257,6 +271,8 @@ describe("fleet site enroll routes", () => {
       profile: {},
       labels: {},
       enrolledAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
     };
     const siteB: FleetSite = {
       id: "s-2",
@@ -271,11 +287,13 @@ describe("fleet site enroll routes", () => {
       profile: {},
       labels: {},
       enrolledAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
     };
     deps.listSites.mockResolvedValue([siteA, siteB]);
 
     // Make site-a rotation throw error
-    deps.writeSecret.mockImplementation(async (_cid, name) => {
+    deps.writeSecret.mockImplementation(async (_cid: string, name: string) => {
       if (name.includes("site-a")) throw new Error("Disk full on secret write");
     });
 
@@ -298,8 +316,7 @@ describe("fleet site enroll routes", () => {
     const callsBeforeRotation = deps.writeSecret.mock.calls.length;
 
     // Simulate certificate nearing expiry
-    const site = deps.createSite.mock.calls[0]![0] as unknown as FleetSite;
-    site.clientCertNotAfter = new Date(Date.now() + 86_400_000);
+    deps.rows[0]!.clientCertNotAfter = new Date(Date.now() + 86_400_000);
     deps.readClientCertificate.mockResolvedValue(client.cert);
 
     // Run scheduler directly without any HTTP GET call
