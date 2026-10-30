@@ -46,6 +46,7 @@ import {
   MAX_PHEROMONE_STRENGTH,
   MIN_PHEROMONE_STRENGTH,
 } from "../myrmidon-swarm-claim.js";
+import { INTERACTION_ROUTE_TYPES } from "../interaction-routing.js";
 
 // 1.6.5 (F-27 PHEROMONE): the issue pheromone strength — a non-negative
 // integer the swarm queue orders by inside the P0 band. Shared between the
@@ -2033,6 +2034,9 @@ const createIssueThreadInteractionCommon = {
   resolverPolicy: issueThreadInteractionResolverPolicySchema.optional(),
   addresseeAgentId: z.string().guid().nullable().optional(),
   addresseeUserId: z.string().trim().min(1).nullable().optional(),
+  routeType: z.enum(INTERACTION_ROUTE_TYPES).optional(),
+  addresseeQueue: z.string().trim().min(1).nullable().optional(),
+  timeoutAt: z.union([z.string().datetime(), z.date()]).nullable().optional(),
 };
 
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [

@@ -34,6 +34,10 @@ import type {
   IssueThreadInteractionStatus,
   IssueStatus,
 } from "../constants.js";
+import type {
+  InteractionRouteType,
+  InteractionEscalationStep,
+} from "../interaction-routing.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
@@ -1572,6 +1576,11 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   sourceIdentityContextId?: string | null;
   addresseeAgentId?: string | null;
   addresseeUserId?: string | null;
+  routeType?: InteractionRouteType | null;
+  addresseeQueue?: string | null;
+  timeoutAt?: Date | string | null;
+  escalationChain?: InteractionEscalationStep[] | null;
+  escalationLevel?: number;
   title?: string | null;
   summary?: string | null;
   status: IssueThreadInteractionStatus;
