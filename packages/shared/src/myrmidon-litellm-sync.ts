@@ -136,7 +136,8 @@ export const SPECIAL_MODEL_VALUES: readonly string[] = ["default", "auto"];
  * as a real deployment, which makes the key deny every model while staying
  * recoverable the moment a real list is applied again.
  */
-export const MYRMIDON_DISABLED_MODEL_SENTINEL = "__myrmidon_disabled__";
+export const DISABLED_MODEL_SENTINEL = "__myrmidon_disabled__";
+export const MYRMIDON_DISABLED_MODEL_SENTINEL = DISABLED_MODEL_SENTINEL;
 
 /** One loop: the models that form it, in walk order. */
 export interface FallbackCycle {

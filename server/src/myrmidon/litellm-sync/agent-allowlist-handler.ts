@@ -22,7 +22,7 @@
 
 import { and, eq } from "drizzle-orm";
 import { agents, modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
-import { agentKeySecretName, MYRMIDON_DISABLED_MODEL_SENTINEL, readGatewayKeySettings } from "@myrmidon/shared";
+import { agentKeySecretName, DISABLED_MODEL_SENTINEL, readGatewayKeySettings } from "@myrmidon/shared";
 import { notFound, unprocessable } from "../../errors.js";
 import { type AgentGatewayKeyDeps } from "../litellm-keys/agent-keys.js";
 
@@ -84,7 +84,7 @@ export async function updateAgentAllowlistsForCompany(
   // company. A sentinel name that is never registered denies every model
   // instead (verified live: 403 for held and never-held models alike, and the
   // key recovers when a real list is applied later).
-  const payloadModels = models.length > 0 ? models : [MYRMIDON_DISABLED_MODEL_SENTINEL];
+  const payloadModels = models.length > 0 ? models : [DISABLED_MODEL_SENTINEL];
 
   // The env carries the secret NAME; the gateway needs the VALUE.
   const adminKey = await agentGatewayKeys.readSecretValue(companyId, settings.adminKeySecret);
@@ -177,7 +177,7 @@ export async function updateAgentGatewayKeyWithAllowlist(
     // Same live-verified hazard as the company pass: models: [] REMOVES the
     // gateway's restrictions instead of denying everything (LiteLLM v1.103.2),
     // so an empty request is translated into the unregistered sentinel.
-    models: allowlist.models.length > 0 ? allowlist.models : [MYRMIDON_DISABLED_MODEL_SENTINEL],
+    models: allowlist.models.length > 0 ? allowlist.models : [DISABLED_MODEL_SENTINEL],
   });
   return { secretName: alias, applied };
 }

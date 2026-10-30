@@ -19,7 +19,7 @@ import {
   updateAgentGatewayKeyWithAllowlist,
 } from "./agent-allowlist-handler.js";
 import type { AgentGatewayKeyDeps, GatewayKeyAdminPort } from "../litellm-keys/agent-keys.js";
-import { agentKeySecretName, MYRMIDON_DISABLED_MODEL_SENTINEL } from "@myrmidon/shared";
+import { agentKeySecretName, DISABLED_MODEL_SENTINEL } from "@myrmidon/shared";
 
 const ENABLED_ENV = {
   MYRMIDON_LITELLM_BASE_URL: "http://gateway.internal:4000",
@@ -144,7 +144,7 @@ describe("updateAgentAllowlistsForCompany", () => {
       true,
     );
     const alias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Engineer One" });
-    expect(gateway.calls).toEqual([{ alias, models: [MYRMIDON_DISABLED_MODEL_SENTINEL] }]);
+    expect(gateway.calls).toEqual([{ alias, models: [DISABLED_MODEL_SENTINEL] }]);
     expect(result).toMatchObject({ attempted: 1, updated: 1 });
   });
 
@@ -232,7 +232,7 @@ describe("updateAgentGatewayKeyWithAllowlist", () => {
     );
     expect(result.applied).toBe(true);
     expect(gateway.calls).toEqual([
-      { alias: result.secretName, models: [MYRMIDON_DISABLED_MODEL_SENTINEL] },
+      { alias: result.secretName, models: [DISABLED_MODEL_SENTINEL] },
     ]);
   });
 
