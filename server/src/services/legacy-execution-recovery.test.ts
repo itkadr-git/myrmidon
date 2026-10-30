@@ -303,6 +303,7 @@ it("allows N model calls and rejects N+1 before it can dispatch", () => {
   expect(guard.modelCall().stop).toBe(false); // N
   expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" }); // N+1
   expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" });
+  expect(guard.stats().modelCallCount).toBe(3);
 });
 
 it("refreshes the idle deadline on model and board events without cutting a long active run", async () => {
