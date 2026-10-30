@@ -3064,7 +3064,7 @@ async function emitRuntimeEvent(
   coalescePlaceholderToolUpdates?: boolean,
 ) {
   if (ctx.runGuard) {
-    const ctxExt = ctx as Record<string, unknown>;
+    const ctxExt = ctx as unknown as Record<string, unknown>;
     const activeCalls = ((ctxExt.__acpxActiveToolCallIds ??= new Set<string>()) as Set<string>);
     const failedCalls = ((ctxExt.__acpxFailedToolCallIds ??= new Set<string>()) as Set<string>);
 
@@ -4797,7 +4797,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       const stepTurnStart = (signal: AbortSignal, startTimeoutMs: number | undefined): StartedTurn => {
         ctx.signal?.throwIfAborted();
-        (ctx as Record<string, unknown>).__acpxTurnModelStepPending = false;
+        (ctx as unknown as Record<string, unknown>).__acpxTurnModelStepPending = false;
         const callDecision = ctx.runGuard?.modelCall();
         if (callDecision?.stop) {
           void ctx.onRunGuardStop?.(callDecision.reason!);

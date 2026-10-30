@@ -86,6 +86,9 @@ it("pauses gateway idle timeout during a 25-minute quiet tool execution without 
       `event: tool.started`,
       `data: ${JSON.stringify({ tool: "bash", preview: "make long-build" })}`,
       "", "",
+      `event: run.completed`,
+      `data: ${JSON.stringify({ status: "completed", output: "done" })}`,
+      "", "",
     ].join(newline);
 
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
