@@ -30,9 +30,8 @@ import {
 } from "@myrmidon/db";
 import { readTracingHealthAttentionSignal } from "../../tracing-health/attention.js";
 import { readStaleBlockSignals } from "../../stale-block/attention.js";
-import {
-  readSwarmClaimAttentionSignals,
-} from "./swarm-signals.js";
+import { createPgReviewRoutingStore } from "../../review-routing/store.js";
+import { readSwarmClaimAttentionSignals } from "./swarm-signals.js";
 import {
   resolveProcessMetricsSource,
   type ProcessMetricsSample,
@@ -108,6 +107,8 @@ export const METRIC_FAMILIES = [
   "myrmidon_runs_failed_window",
   "myrmidon_run_duration_seconds",
   "myrmidon_role_queue_tasks",
+  "myrmidon_review_tasks_without_reviewer",
+  "myrmidon_blocked_tasks_without_assignee",
   "myrmidon_swarm_claims_active",
   "myrmidon_swarm_claims_total",
   "swarm_claim_conflicts_total",
@@ -191,6 +192,8 @@ export interface MetricsSnapshotFields {
   runDurationSecondsP95: number | null;
   /** Issue counts per assignee role and status. */
   roleQueueTasks: Array<{ role: string; status: string; count: number }>;
+  reviewTasksWithoutReviewer: number;
+  blockedTasksWithoutAssignee: number;
   /** Live (not released, not expired) SWARM claims. */
   swarmClaimsActive: number;
   /** All SWARM claim rows ever written. */
@@ -449,6 +452,23 @@ async function readRoleQueues(db: Db): Promise<Array<{ role: string; status: str
   }));
 }
 
+async function readBlockedTasksWithoutAssignee(db: Db): Promise<number> {
+  const [row] = await db
+    .select({ total: count() })
+    .from(issues)
+    .where(and(eq(issues.status, "blocked"), isNull(issues.assigneeAgentId), isNull(issues.assigneeUserId), isNull(issues.hiddenAt)));
+  return Number(row?.total ?? 0);
+}
+
+async function readReviewTasksWithoutReviewer(db: Db): Promise<number> {
+  const store = createPgReviewRoutingStore(db);
+  const companyIds = await store.listActiveCompanyIds();
+  const counts = await Promise.all(
+    companyIds.map((companyId) => store.countUnroutedReviewIssues(companyId)),
+  );
+  return counts.reduce((total, countValue) => total + countValue, 0);
+}
+
 /** SWARM claim counters — live claims and all rows ever. */
 async function readClaimCounters(
   db: Db,
@@ -577,6 +597,21 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readRoleQueues(deps.db),
     [] as Array<{ role: string; status: string; count: number }>,
   );
+  const issueStore = createPgReviewRoutingStore(deps.db);
+  const reviewTasksWithoutReviewer = await guarded(
+    "myrmidon_review_tasks_without_reviewer",
+    async () => {
+      const companyIds = await issueStore.listActiveCompanyIds();
+      const counts = await Promise.all(companyIds.map((id) => issueStore.countUnroutedReviewIssues(id, now)));
+      return counts.reduce((total, countValue) => total + countValue, 0);
+    },
+    0,
+  );
+  const blockedTasksWithoutAssignee = await guarded(
+    "myrmidon_blocked_tasks_without_assignee",
+    () => issueStore.countBlockedWithoutAssignee(),
+    0,
+  );
   const claimCounters = await guarded(
     "myrmidon_swarm_claims_active|myrmidon_swarm_claims_total",
     () => readClaimCounters(deps.db, now),
@@ -670,6 +705,8 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       corpusShadowModuleSecondsP50: shadowLatencies.module.p50,
       corpusShadowModuleSecondsP95: shadowLatencies.module.p95,
       roleQueueTasks: roleQueues,
+      reviewTasksWithoutReviewer,
+      blockedTasksWithoutAssignee,
       swarmClaimsActive: claimCounters.active,
       swarmClaimsTotal: claimCounters.total,
       agentErrorSignals: errorSignals,
@@ -928,6 +965,22 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
         (row) =>
           `myrmidon_role_queue_tasks{${R},assignee_role="${escapeLabelValue(row.role)}",status="${escapeLabelValue(row.status)}"} ${formatSampleValue(row.count)}`,
       ),
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_review_tasks_without_reviewer",
+      "Issues in review without an assigned reviewer participant.",
+      "gauge",
+      [`myrmidon_review_tasks_without_reviewer{${R}} ${formatSampleValue(snapshot.reviewTasksWithoutReviewer)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_blocked_tasks_without_assignee",
+      "Blocked issues without an assignee.",
+      "gauge",
+      [`myrmidon_blocked_tasks_without_assignee{${R}} ${formatSampleValue(snapshot.blockedTasksWithoutAssignee)}`],
     ),
   );
   blocks.push(
