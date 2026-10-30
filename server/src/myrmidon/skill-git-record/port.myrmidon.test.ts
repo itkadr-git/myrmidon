@@ -19,19 +19,31 @@ let repo: string;
 let binDir: string;
 let logFile: string;
 let savedPath: string | undefined;
+const createdDirs: string[] = [];
 
 async function setup(opts: { wrapperSleepMs?: number; hangMs?: number } = {}) {
-  repo = await mkdtemp(path.join(tmpdir(), "skill-git-record-"));
+  const tmpBase = process.env.PAPERCLIP_SCRATCH_DIR || tmpdir();
+  repo = await mkdtemp(path.join(tmpBase, "skill-git-record-"));
   await run(REAL_GIT, ["-C", repo, "init", "-q"]);
   await run(REAL_GIT, ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-q", "-m", "init"]);
-  binDir = await mkdtemp(path.join(tmpdir(), "skill-git-bin-"));
+  const upstream = await mkdtemp(path.join(tmpBase, "skill-git-upstream-"));
+  await run(REAL_GIT, ["init", "--bare", "-q", upstream]);
+  await run(REAL_GIT, ["-C", repo, "remote", "add", "origin", upstream]);
+  await run(REAL_GIT, ["-C", repo, "branch", "-M", "main"]);
+  await run(REAL_GIT, ["-C", repo, "push", "-u", "-q", "origin", "main"]);
+
+  binDir = await mkdtemp(path.join(tmpBase, "skill-git-bin-"));
   logFile = path.join(binDir, "git-calls.log");
-  const hang = opts.hangMs ? `sleep ${opts.hangMs / 1000}` : "";
+  const sleepCmd = opts.hangMs
+    ? `sleep ${opts.hangMs / 1000}`
+    : opts.wrapperSleepMs
+      ? `sleep ${opts.wrapperSleepMs / 1000}`
+      : "";
   await writeFile(
     path.join(binDir, "git"),
     `#!/bin/sh
 echo "s $(date +%s%3N)" >> ${JSON.stringify(logFile)}
-${hang}
+${sleepCmd}
 ${REAL_GIT} "$@"
 rc=$?
 echo "e $(date +%s%3N)" >> ${JSON.stringify(logFile)}
@@ -39,6 +51,7 @@ exit $rc
 `,
     { mode: 0o755 },
   );
+  createdDirs.push(repo, upstream, binDir);
 }
 
 function wrapPath() {
@@ -60,7 +73,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-  for (const dir of [repo, binDir].filter(Boolean)) {
+  for (const dir of createdDirs) {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 });
@@ -80,18 +93,22 @@ async function assertNoOverlappingGitCalls() {
 
 describe("myrmidon(OPE-9408): recordVerified key validation", () => {
   it.each(["../x", "..", "a/../b", "./x", "", "/abs", "team/../../escape"])(
-    "rejects the escaping key %j before touching the checkout",
+    "rejects the escaping key %j before touching the checkout and preserves sentinel outside skills",
     async (key) => {
       wrapPath();
       const port = createGitSkillRecordPort({ repository: repo });
+      const sentinel = path.join(repo, "sentinel.txt");
+      await writeFile(sentinel, "preserve-me", "utf8");
       await expect(
         port.recordVerified({ key, files: [{ path: "SKILL.md", content: "body" }], revisionNumber: 1 }),
       ).rejects.toThrow(/Invalid git skill key|A git skill entry/);
       restorePath();
-      // Nothing was written into the checkout: no skills/ tree, clean status.
+      // Nothing was written into the checkout: no skills/ tree, sentinel intact, clean status (except sentinel).
       expect(await readdir(path.join(repo, "skills")).catch(() => null)).toBeNull();
+      expect(await readFile(sentinel, "utf8")).toBe("preserve-me");
       const status = await run(REAL_GIT, ["-C", repo, "status", "--porcelain"]);
-      expect(status.stdout).toBe("");
+      expect(status.stdout).toBe("?? sentinel.txt\n");
+      await rm(sentinel).catch(() => {});
     },
   );
 
@@ -103,7 +120,7 @@ describe("myrmidon(OPE-9408): recordVerified key validation", () => {
 });
 
 describe("myrmidon(OPE-9408): repository-wide serialization", () => {
-  it("serializes concurrent recordVerified/listEntries across separate port instances", async () => {
+  it("serializes concurrent refresh, recordVerified, listEntries across separate port instances", async () => {
     await setup({ wrapperSleepMs: 60 });
     // Two instances over one physical checkout — exactly the production wiring
     // (app.ts webhook routes + the skill-lifecycle service each create a port).
@@ -115,6 +132,8 @@ describe("myrmidon(OPE-9408): repository-wide serialization", () => {
       portB.recordVerified({ key: "team/two", files: [{ path: "SKILL.md", content: "two" }], revisionNumber: 1 }),
       portA.listEntries(),
       portB.listEntries(),
+      portA.refresh(),
+      portB.refresh(),
     ]);
     restorePath();
     await assertNoOverlappingGitCalls();

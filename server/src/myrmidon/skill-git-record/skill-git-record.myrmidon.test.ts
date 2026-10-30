@@ -38,6 +38,7 @@ function store(): SkillLifecycleStore {
     async listEvents() { return []; },
     async getVersion() { return { id: VERSION, revisionNumber: 1, fileInventory: [{ path: "SKILL.md", content: "body" }] }; },
     async getApproval() { return null; },
+    async consumeApproval() { return null; },
     async setSkillCurrentVersion() {},
   };
 }
