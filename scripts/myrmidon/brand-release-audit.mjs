@@ -123,7 +123,7 @@ const ALLOWLIST = {
     "Релизы Paperclip", "экземпляра Paperclip", "форк Paperclip",
     "fork of\n[Paperclip]", "independent product maintained as a fork of",
     "endorsed by", "не одобрен", "не связан",
-    "`Paperclip`", '"Paperclip"', "«Paperclip ",
+    "`Paperclip`", '"Paperclip"', "«Paperclip»", "«Paperclip ",
     "vendor Paperclip endpoint", // telemetry goes to the vendor's service
     "vendor-product-word exceptions", "bare `\\bPaperclip\\b`", "old recovery body",
     "«Paperclip needs a disposition", "\"Paperclip needs a disposition", "старое «Paperclip …»", "«Paperclip …»",

@@ -410,7 +410,9 @@ export function buildStrandedAutoPolicyManagerReviewComment(input: {
 export function issueHasExistingExecutionWorkflow(issue: {
   executionPolicy?: unknown;
   executionState?: unknown;
+  hasOpenPullRequest?: boolean;
 }): boolean {
+  if (issue.hasOpenPullRequest === true) return true;
   if (issue.executionPolicy != null) return true;
 
   const state = issue.executionState;
