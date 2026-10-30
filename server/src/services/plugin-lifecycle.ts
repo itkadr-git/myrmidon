@@ -445,7 +445,9 @@ export function pluginLifecycleManager(
       return;
     }
 
-    const loadResult = await pluginLoaderInstance.loadSingle(pluginId, options);
+    const loadResult = options !== undefined
+      ? await pluginLoaderInstance.loadSingle(pluginId, options)
+      : await pluginLoaderInstance.loadSingle(pluginId);
     if (!loadResult.success) {
       throw new Error(
         loadResult.error
