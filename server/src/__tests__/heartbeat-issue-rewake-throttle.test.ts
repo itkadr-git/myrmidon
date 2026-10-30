@@ -207,6 +207,48 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       .then((rows) => rows[0] ?? null);
   }
 
+  it("freezes once, ignores repeated polls, and thaws on external comment or PR sync", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    for (let i = 0; i < 6; i += 1) {
+      await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 60 - i * 5 });
+    }
+    const poll = () => heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_continuation_needed",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system", requestedByActorId: "test",
+    });
+    expect(await poll()).toBeNull();
+    expect(await poll()).toBeNull();
+    const [frozenIssue] = await db.select({ state: issues.executionState }).from(issues).where(eq(issues.id, issueId));
+    expect(frozenIssue?.state?.issueRewakeFreeze).toMatchObject({ agentId, noProgressStreak: 6 });
+    const escalation = await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(escalation).toHaveLength(1);
+    expect(escalation[0]?.body).toContain("what is needed to continue?");
+    await db.insert(activityLog).values({
+      companyId, actorType: "user", actorId: "board-user", action: "issue.comment_added",
+      entityType: "issue", entityId: issueId,
+    });
+    expect(await poll()).not.toBeNull();
+  });
+
+  it("admits a PR sync event after a freeze", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    for (let i = 0; i < 6; i += 1) {
+      await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 60 - i * 5 });
+    }
+    const poll = () => heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_continuation_needed",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system", requestedByActorId: "test",
+    });
+    expect(await poll()).toBeNull();
+    await db.insert(activityLog).values({
+      companyId, actorType: "system", actorId: "task_pr_sync", action: "myrmidon.task_pr_sync.returned",
+      entityType: "issue", entityId: issueId,
+    });
+    expect(await poll()).not.toBeNull();
+  });
+
   it("does not throttle direct issue_assigned wakes after no-progress handoff runs", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
