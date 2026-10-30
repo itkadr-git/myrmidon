@@ -16,7 +16,7 @@
 //    open explained card closes, several make the bot ask which one.
 
 import { and, eq } from "drizzle-orm";
-import { chatMessageLinks, type Db } from "@paperclipai/db";
+import { chatMessageLinks, type Db } from "@myrmidon/db";
 import { listOwnerExplanations } from "../owner-delivery/owner-dialogue.js";
 import type { PendingOwnerCard } from "./pending-owner-cards.js";
 import {
@@ -74,7 +74,7 @@ export async function loadRepliedInteractionIds(
       ),
     )
     .limit(1)
-    .then((rows) => rows[0] ?? null);
+    .then((rows: Array<{ commentId: string | null }>) => rows[0] ?? null);
   if (!link?.commentId) return [];
   const explanations = await listOwnerExplanations(db, {
     companyId: input.companyId,

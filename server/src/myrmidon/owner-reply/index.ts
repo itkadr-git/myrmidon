@@ -52,6 +52,7 @@ export {
   handleTelegramOwnerReply,
   loadRepliedInteractionIds,
   narrowCardsToReply,
+  shouldSuppressTelegramOwnerWake,
 } from "./telegram-door.js";
 export type {
   OwnerReplyDeps,
