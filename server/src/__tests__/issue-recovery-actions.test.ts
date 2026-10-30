@@ -3990,4 +3990,115 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
   });
+
+  it("resolves recovery action when source status is in_review after changes_requested preserving returnAssignee and creating reviewer continuation", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const reviewerId = randomUUID();
+    await db.insert(agents).values({
+      id: reviewerId,
+      companyId,
+      name: "Reviewer",
+      role: "reviewer",
+      status: "idle",
+      reportsTo: managerId,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const stageId = randomUUID();
+    const executionPolicy = {
+      stages: [
+        {
+          id: stageId,
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerId }],
+        },
+      ],
+    };
+    const executionState = {
+      status: "changes_requested",
+      currentStageId: stageId,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: reviewerId },
+      returnAssignee: { type: "agent", agentId: coderId },
+      reviewRequest: null,
+      lastDecisionOutcome: "changes_requested",
+      completedStageIds: [],
+    };
+
+    await db.update(issues).set({
+      status: "blocked",
+      assigneeAgentId: coderId,
+      executionPolicy,
+      executionState,
+    }).where(eq(issues.id, sourceIssueId));
+
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      returnOwnerAgentId: coderId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:resubmit-after-changes-requested",
+      evidence: { latestIssueStatus: "blocked" },
+      nextAction: "Confirm whether the issue is actually stranded.",
+      wakePolicy: { type: "manual" },
+    });
+
+    const app = createApp({
+      type: "agent",
+      agentId: coderId,
+      companyId,
+      runId: randomUUID(),
+      source: "agent_jwt",
+    });
+
+    const resolved = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "in_review",
+        resolutionNote: "Resubmitting after addressing changes.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "in_review",
+      assigneeAgentId: reviewerId,
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.issue.executionState).toMatchObject({
+      status: "pending",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: reviewerId },
+      returnAssignee: { type: "agent", agentId: coderId },
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "restored",
+    });
+
+    const [updatedSource] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedSource?.status).toBe("in_review");
+    expect(updatedSource?.assigneeAgentId).toBe(reviewerId);
+    expect((updatedSource?.executionState as any)?.returnAssignee).toMatchObject({
+      type: "agent",
+      agentId: coderId,
+    });
+    expect((updatedSource?.executionState as any)?.currentParticipant).toMatchObject({
+      type: "agent",
+      agentId: reviewerId,
+    });
+
+    const activeActions = await recoveryActionSvc.listActiveForSourceIssue(sourceIssueId);
+    expect(activeActions).toHaveLength(0);
+  });
 });
