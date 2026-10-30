@@ -126,7 +126,7 @@ describeEmbeddedPostgres("metrics collector", () => {
       latencyWindowSec: 3600,
     });
     expect(snapshot.runsActive).toBe(2);
-    expect(snapshot.runsQueued).toBe(2);
+    expect(snapshot.runsQueued).toBe(3);
     expect(snapshot.runsQueuedOver30m).toBe(1);
     expect(snapshot.runsFailedTotal).toBe(1);
     expect(snapshot.runsFailedWindow).toBe(1);
@@ -355,7 +355,7 @@ describeEmbeddedPostgres("metrics collector", () => {
     await seedRun(companyId, agentId, { status: "queued", createdAt: new Date(NOW.getTime() - 31 * 60 * 1000) });
     await seedRun(companyId, agentId, { status: "queued", createdAt: new Date(NOW.getTime() - 5 * 60 * 1000) });
     const snapshot = await collectMetricsSnapshot({ db, now: () => NOW, errorWindowSec: 3600, latencyWindowSec: 3600 });
-    expect(snapshot.runsQueued).toBe(3);
+    expect(snapshot.runsQueued).toBe(2);
     expect(snapshot.runsQueuedOver30m).toBe(1);
   });
 
