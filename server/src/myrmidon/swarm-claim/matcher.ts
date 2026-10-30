@@ -1557,6 +1557,14 @@ function readyQueueConditions(db: Db, companyId: string): SQL[] {
     )`,
     // myrmidon(HOLD-READY): not held by an execution hold (see idle-pickup.ts).
     issueHasNoExecutionHold(db),
+    // myrmidon(OPE-7707): exclude issues waiting for thread interaction
+    sql`not exists (
+      select 1
+      from issue_thread_interactions iti
+      where iti.company_id = ${issues.companyId}
+        and iti.issue_id = ${issues.id}
+        and iti.status = 'pending'
+    )`,
     // A task that is already covered — a live lease, or a wake in flight
     // (not parked on a hold) — is being worked on and is not a queue
     // candidate; the pool is what is genuinely waiting.
